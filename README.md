@@ -89,14 +89,16 @@ Local setup:
    `s3:DeleteObject`. Never use account root credentials.
 5. Copy `config/rclone.local.conf.example` to `config/rclone.conf`, enter the
    same bucket, and generate the obscured Rclone password.
-6. Build the image, migrate the database, and start the application:
+6. Pull the published image, migrate the database, and start the application:
 
    ```bash
-   docker compose build
+   docker compose pull
    docker compose run --rm frostvault alembic upgrade head
    docker compose up -d
    ```
 
+   Compose uses `ghcr.io/paolodelcasale/frostvault:latest`. Developers who need
+   to change the image can still build from the `Dockerfile` locally.
 While `REPLACE...` placeholder values remain, the application blocks AWS calls
 instead of trying other credentials available on the computer.
 
@@ -179,7 +181,7 @@ modes at the same time.
 ## Run
 
 ```bash
-docker compose build
+docker compose pull
 docker compose run --rm frostvault alembic upgrade head
 docker compose up -d
 docker compose logs -f frostvault
@@ -188,6 +190,8 @@ docker compose logs -f frostvault
 The service listens on `127.0.0.1:8080` by default. Use an HTTPS reverse proxy or
 Tailscale to make it reachable. Set `COOKIE_SECURE=true` when using HTTPS.
 
+Compose pulls `ghcr.io/paolodelcasale/frostvault:latest` from the GitHub
+Container Registry (a standard deploy does not build the image locally).
 For production behind Traefik, use `compose.traefik.yaml` so the app is not
 published on host ports. See [docs/traefik.md](docs/traefik.md).
 

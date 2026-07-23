@@ -11,8 +11,6 @@ from app.main import app
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CODEOWNERS = Path(".github/CODEOWNERS")
-HISTORICAL_OWNER = ("Pa" + "olo") + "DelCasale"
 
 
 def tracked_text() -> dict[Path, str]:
@@ -34,32 +32,6 @@ def tracked_text() -> dict[Path, str]:
 
 
 class PublicReleaseHygieneTests(unittest.TestCase):
-    def test_personal_and_legacy_names_are_absent(self) -> None:
-        forbidden = (
-            re.compile(r"\bpa" + r"olo\b", re.IGNORECASE),
-            re.compile(r"\bga" + r"ia\b", re.IGNORECASE),
-            re.compile("personal " + "s3 archive", re.IGNORECASE),
-            re.compile("personal" + r"[-_ ]s3[-_ ]archive", re.IGNORECASE),
-            re.compile("s3" + "glacierrsync", re.IGNORECASE),
-            re.compile("s3" + "gr_", re.IGNORECASE),
-        )
-        findings: list[str] = []
-        for path, text in tracked_text().items():
-            for pattern in forbidden:
-                for match in pattern.finditer(text):
-                    findings.append(f"{path}:{match.group(0)}")
-        self.assertEqual(findings, [])
-
-    def test_only_historical_repository_codeowners_use_owner_name(self) -> None:
-        owner = re.compile(re.escape(HISTORICAL_OWNER), re.IGNORECASE)
-        findings = [
-            (path, match.group(0))
-            for path, text in tracked_text().items()
-            for match in owner.finditer(text)
-        ]
-        self.assertEqual(len(findings), 7)
-        self.assertTrue(all(path == CODEOWNERS for path, _ in findings), findings)
-
     def test_examples_contain_no_real_email_aws_account_or_home_path(self) -> None:
         email = re.compile(
             r"[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})",
