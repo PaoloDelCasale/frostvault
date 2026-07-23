@@ -149,7 +149,10 @@ class ContainerPublishContractTests(unittest.TestCase):
         text = path.read_text(encoding="utf-8")
         self.assertEqual((workflow.get("permissions") or {}).get("packages"), "write")
         self.assertIn("ghcr.io/paolodelcasale/frostvault", text)
-        self.assertRegex(text, r"push:\s*true")
+        self.assertIn("docker build", text)
+        self.assertIn("docker push", text)
+        # Repo Actions allowlist blocks docker/* marketplace actions.
+        self.assertNotRegex(text, r"(?m)^\s*uses:\s*docker/")
 
 
 class DependabotContractTests(unittest.TestCase):
