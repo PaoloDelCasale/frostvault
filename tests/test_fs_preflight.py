@@ -1,8 +1,11 @@
 """POSIX vault filesystem preflight (issue #9).
 
-Seam: app.services.fs_preflight.check_vault_filesystem — public diagnostics
-for vault root access, effective identity, unreadable files, unwritable
-directories, and symbolic links. Never mutates ownership or modes.
+Seams:
+- app.services.fs_preflight.check_vault_filesystem — public diagnostics
+  for vault root access, effective identity, unreadable files, unwritable
+  directories, and symbolic links. Never mutates ownership or modes.
+- app.services.fs_preflight.resolve_configured_vault_root — only returns
+  roots that stay under operator-configured allowed bases.
 """
 from __future__ import annotations
 
@@ -11,7 +14,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.services.fs_preflight import check_vault_filesystem
+from app.services.fs_preflight import (
+    check_vault_filesystem,
+    resolve_configured_vault_root,
+)
 
 
 class VaultFilesystemPreflightTests(unittest.TestCase):
@@ -110,6 +116,42 @@ class VaultFilesystemPreflightTests(unittest.TestCase):
             access = next(c for c in result.checks if c.code == "fs.root_access")
             self.assertEqual(access.status, "fail")
             self.assertIn("write", access.message.lower())
+
+
+class ConfiguredVaultRootResolutionTests(unittest.TestCase):
+    def test_accepts_root_nested_under_allowed_base(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            vault = base / "vault-a"
+            vault.mkdir()
+            resolved = resolve_configured_vault_root(vault, allowed_bases=[base])
+            self.assertEqual(resolved, vault.resolve())
+
+    def test_accepts_exact_allowed_base(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            resolved = resolve_configured_vault_root(base, allowed_bases=[base])
+            self.assertEqual(resolved, base.resolve())
+
+    def test_rejects_root_outside_allowed_bases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory) / "allowed"
+            base.mkdir()
+            outside = Path(directory) / "elsewhere"
+            outside.mkdir()
+            self.assertIsNone(
+                resolve_configured_vault_root(outside, allowed_bases=[base])
+            )
+
+    def test_rejects_prefix_spoof_without_separator(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory) / "sources"
+            base.mkdir()
+            spoof = Path(directory) / "sources_evil"
+            spoof.mkdir()
+            self.assertIsNone(
+                resolve_configured_vault_root(spoof, allowed_bases=[base])
+            )
 
 
 if __name__ == "__main__":

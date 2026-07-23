@@ -168,11 +168,13 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
                 db_backend="sqlite",
                 sqlite_path=str(database_path),
                 allow_local_delete=True,
+                vault_sources_root=str(directory),
+                bootstrap_vault_source_root="",
             )
             from app import main as main_module
 
             with (
-                patch.object(main_module, "settings", test_settings),
+                patch("app.main.settings", test_settings),
                 patch("app.database.settings", test_settings),
                 patch.object(main_module, "is_owner", lambda _role: True),
             ):

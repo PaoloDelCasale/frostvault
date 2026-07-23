@@ -286,7 +286,7 @@ async function loadStats() {
     [t("ui.active_operations"), data.active_jobs || 0, "count"],
   ];
   document.querySelector("#summary").innerHTML = cards.map(([label, value, kind]) =>
-    `<div class="card"><span>${label}</span><strong>${kind === "bytes" ? formatBytes(value) : value.toLocaleString("en-US")}</strong></div>`
+    `<div class="card"><span>${escapeHtml(label)}</span><strong>${kind === "bytes" ? formatBytes(value) : value.toLocaleString("en-US")}</strong></div>`
   ).join("");
   renderFilesystemHealth(data.filesystem);
   const runtimeError = data.runtime?.last_error;
@@ -444,7 +444,7 @@ function renderDirectoryState(file) {
     .filter(([, count]) => count)
     .map(([state, count]) => `${count} ${stateLabel(state)}`)
     .join(" · ");
-  return `<span class="badge ${file.state}">${stateLabel(file.state)}</span><small class="state-detail">${escapeHtml(details)}</small>`;
+  return `<span class="badge ${escapeHtml(file.state)}">${escapeHtml(stateLabel(file.state))}</span><small class="state-detail">${escapeHtml(details)}</small>`;
 }
 
 async function loadFiles() {

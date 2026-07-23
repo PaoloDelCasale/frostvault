@@ -42,6 +42,26 @@ class LocaleNormalizationTests(unittest.TestCase):
         self.assertEqual(i18n.normalize_locale(None), "en")
 
 
+class CatalogPathSafetyTests(unittest.TestCase):
+    """Seam: i18n.resolved_catalog_path — on-disk catalogs are allowlisted constants."""
+
+    def test_path_like_locale_resolves_to_english_catalog_file(self) -> None:
+        path = i18n.resolved_catalog_path("../../etc/passwd")
+        self.assertEqual(path, i18n.LOCALES_DIR / "en.json")
+        self.assertEqual(path.name, "en.json")
+
+    def test_italian_locale_resolves_to_italian_catalog_file(self) -> None:
+        path = i18n.resolved_catalog_path("it-IT")
+        self.assertEqual(path, i18n.LOCALES_DIR / "it.json")
+        self.assertTrue(path.is_file())
+
+    def test_resolved_path_never_embeds_raw_locale_segments(self) -> None:
+        raw = "en/../../tmp/evil"
+        path = i18n.resolved_catalog_path(raw)
+        self.assertNotIn("..", path.parts)
+        self.assertEqual(path.parent, i18n.LOCALES_DIR)
+
+
 class AvailableLocalesTests(unittest.TestCase):
     def test_available_locales_are_english_and_italian(self) -> None:
         self.assertEqual(i18n.available_locales(), ("en", "it"))
