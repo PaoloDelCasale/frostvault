@@ -1,4 +1,5 @@
-"""Automated deployment/configuration checks for container hardening (issue #9).
+"""Automated deployment/configuration checks for container hardening (issue #9)
+and production image packaging for PostgreSQL metadata backups (issue #7).
 
 Seam: deployment manifests (Dockerfile, compose.yaml, Traefik reference compose).
 Tests read public config files only — no Docker daemon required.
@@ -91,6 +92,16 @@ class DockerfileHardeningTests(unittest.TestCase):
             dockerfile,
             r"(?im)^USER\s+root\b",
             "image must not force USER root; entrypoint switches via PUID/PGID",
+        )
+
+    def test_image_installs_postgresql_16_client_tools(self) -> None:
+        """Production image must ship PG 16 clients for metadata backup/verify (issue #7)."""
+        dockerfile = DOCKERFILE_PATH.read_text(encoding="utf-8")
+        # Pin major 16 so the image does not rely on an older distro-default pg_dump.
+        self.assertRegex(
+            dockerfile,
+            r"(?i)postgresql-client-16\b",
+            "Dockerfile must install postgresql-client-16 for PostgreSQL 16 dumps",
         )
 
 

@@ -1,4 +1,5 @@
-"""Structural guarantees for layered CI (issue #13).
+"""Structural guarantees for layered CI (issue #13) and production-image
+PostgreSQL backup tooling (issue #7).
 
 Seams under test: workflow YAML and Dependabot config as the public CI contract
 contributors rely on — not GitHub's runtime.
@@ -153,6 +154,31 @@ class ContainerPublishContractTests(unittest.TestCase):
         self.assertIn("docker push", text)
         # Repo Actions allowlist blocks docker/* marketplace actions.
         self.assertNotRegex(text, r"(?m)^\s*uses:\s*docker/")
+
+
+class ProductionImagePostgresClientContractTests(unittest.TestCase):
+    """CI must keep PostgreSQL client tools in the production image (issue #7)."""
+
+    def test_pr_ci_builds_image_and_exercises_postgres_backup_path(self) -> None:
+        workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
+        jobs = workflow["jobs"]
+        self.assertIn(
+            "production-image-postgres-backup",
+            jobs,
+            "PR CI must build the production image and exercise the PG backup path",
+        )
+        job = jobs["production-image-postgres-backup"]
+        self.assertIn("postgres", (job.get("services") or {}))
+        self.assertEqual(
+            (job["services"]["postgres"].get("image") or ""),
+            "postgres:16",
+        )
+        runs = "\n".join(step.get("run", "") for step in job.get("steps", []))
+        self.assertIn("docker build", runs)
+        for tool in ("pg_dump", "pg_restore", "createdb", "dropdb", "psql"):
+            self.assertIn(f"{tool} --version", runs)
+        self.assertIn("app.backup_upgrade --skip-upgrade", runs)
+        self.assertIn("verify_restore_isolated", runs)
 
 
 class DependabotContractTests(unittest.TestCase):
