@@ -1,0 +1,14 @@
+--- a/app/storage.py
++++ b/app/storage.py
+@@ -1025,7 +1025,12 @@ def cleanup_abandoned_restore_files() -> int:
+             entries = root.rglob("*")
+             for entry in entries:
+-                if is_restore_temporary_name(entry.name):
++                # Do not delete free-space .cleanup-*.tmp salvage claims here.
++                if (
++                    RESTORE_TEMPORARY_RE.fullmatch(entry.name) is not None
++                    or VERIFY_TEMPORARY_RE.fullmatch(entry.name) is not None
++                ):
+                     try:
+                         entry.unlink(missing_ok=True)
+                         removed += 1

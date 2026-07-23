@@ -1,0 +1,61 @@
+# FrostVault Spec Audit — Shared Prompt (Council of Three)
+
+You are an independent specification auditor. Work alone. Do **not** read any files under `quality/spec_audits/` except this prompt file. Do **not** read `quality/BUGS.md`, `quality/bugs_manifest.json`, `quality/code_reviews/`, or other auditors' reports. Do **not** modify production source code outside writing your single auditor report file.
+
+## Context files to read (required)
+
+1. `quality/REQUIREMENTS.md`, `quality/CONTRACTS.md`, `quality/QUALITY.md`, `quality/EXPLORATION.md`
+2. `README.md`, `CONTEXT.md`, `SECURITY.md`
+3. `docs/adr/0001-stable-vault-file-identity.md`, `docs/adr/0004-break-glass-network-gating.md`, `docs/adr/0005-host-csrf-reauth-hardening.md`
+4. `docs/metadata-backups.md`, `docs/aws-s3-bucket.md`, `docs/filesystem-permissions.md`
+5. Implementation under `app/` — especially `app/storage.py`, `app/sessions.py`, `app/proxy.py`, `app/breakglass.py`, `app/security.py`, `app/main.py`, `app/services/vault_roles.py`, `app/services/metadata_backups.py`, `app/catalog.py`
+
+## Task
+
+Act as the Tester. Compare the **complete** implementation against the **complete** requirements (REQ-001..REQ-019) and contracts. Review the full surface — do not limit yourself to your secondary emphasis.
+
+**Requirement confidence tiers:** Weight by Tier in REQUIREMENTS.md. Inferred (Tier 5) divergences → add NEEDS REVIEW unless code-path proof is definitive.
+
+**Rules:**
+- ONLY list defects. Do not summarize what matches.
+- For EVERY defect, cite specific file and line number(s). If you cannot cite a line number, do not include the finding.
+- Before claiming missing, grep the codebase.
+- Before claiming exists, read the actual function body.
+- Classify each finding: MISSING / DIVERGENT / UNDOCUMENTED / PHANTOM
+- For inferred requirements, add NEEDS REVIEW when appropriate
+
+**Project-specific scrutiny areas:**
+
+1. Does `process_cloud_archive` / `process_rename` unversioned delete violate VersionId safety relative to recovery/purge?
+2. Does `process_job` recover status gating match peers and `process_jobs_once` selection?
+3. README Users vs `vault_roles` / `/api/free-space` / tests — which is authoritative?
+4. `verify_restore_isolated` list-only `ok: True` vs metadata backup docs “verified” language
+5. `csrf_token_for` vs `resolve_session` session_version parity
+6. `resolve_client_ip` + `is_break_glass_allowed` composition under forged XFF
+7. Crypt rclone `--s3-version-id` vs boto3 VersionId pin parity (REQ-001)
+8. Free-space claim restore failure paths (REQ-009)
+9. Operating window overnight rejection vs operator expectations
+10. QUALITY.md scenarios 1–10 — does code permit each failure mode?
+
+**Output format:**
+
+```markdown
+# Spec Audit Report — Auditor N ([model])
+
+Date: 2026-07-23
+Secondary emphasis: [your lens]
+Scope: Full requirements REQ-001..REQ-019 + contracts vs app/
+
+## Findings
+
+### [filename.ext]
+- **Line NNN:** [MISSING / DIVERGENT / UNDOCUMENTED / PHANTOM] [Req: REQ-NNN — tier] Description.
+  Spec says: …. Code does: ….
+  Confidence: high|medium|low
+```
+
+If you find zero defects, write `## Findings` then `None.` — but only after thorough grep/read of the scrutiny areas.
+
+## Write your report to exactly this path
+
+See your per-auditor instructions for the output filename.

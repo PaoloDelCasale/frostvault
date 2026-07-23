@@ -6,6 +6,7 @@ Started: 2026-07-23T23:09:52Z
 Completed Phase 1: 2026-07-23T23:13:35Z
 Completed Phase 2: 2026-07-23T23:23:34Z
 Completed Phase 3: 2026-07-23T23:35:30Z
+Completed Phase 4: 2026-07-23T23:55:00Z
 Benchmark: FrostVault
 Lever: baseline (Mode A skill-direct, --no-seeds)
 Runner: cursor
@@ -18,7 +19,7 @@ Documentation state: code_only
 - [x] Phase 1 - Explore
 - [x] Phase 2 - Generate
 - [x] Phase 3 - Code Review
-- [ ] Phase 4 - Spec Audit
+- [x] Phase 4 - Spec Audit
 - [ ] Phase 5 - Reconciliation
 - [ ] Phase 6 - Verify
 
@@ -86,6 +87,22 @@ Tracked files via `git ls-files`: **214**. Full exploration of high-risk subsyst
 - Production source outside `quality/` **not modified**
 - Phase 3 confirmation checklist: grids produced; BUG-default applied; Covers present; consolidation rationales for multi-cell BUGs; downgrades file present (empty); union covers absent cells
 
+## Phase 4 summary
+
+- Council of Three: 3/3 fresh independent auditor reports
+  - Auditor 1 (claude-opus-4-8): authz / validation / dispatch emphasis
+  - Auditor 2 (gpt-5.5): concurrency / versioning / lifecycle emphasis
+  - Auditor 3 (claude-4.6-sonnet): state / backups / sessions / security emphasis
+- Triage: `quality/spec_audits/2026-07-23-triage.md` with required Pre-audit docs validation
+- Executable probes: `quality/spec_audits/triage_probes.sh` (log: `quality/results/phase4-triage-probes.log`)
+- Independently reconfirmed BUG-001..005 (duplicates of Phase 3; not assumed from CR alone)
+- Net-new confirmed: **BUG-006** (High, REQ-009), **BUG-007** (Medium, REQ-012)
+- Minority FALSE-POSITIVE: upload/rename HeadObject vs REQ-001 (wrong REQ scope)
+- Regression tests: now **7** `@unittest.expectedFailure` (OK expected failures=7)
+- Layer-2 semantic citation check: empty `reviews[]` (Spec Gap — 0 Tier 1/2 REQs)
+- Production source outside `quality/` **not modified**; fix patches not applied
+- Phase 4 gate: PASS (auditor+triage+REQUIREMENTS+COVERAGE_MATRIX+tests)
+
 ## Cumulative BUG tracker
 
 | ID | Source | File:Line | Severity | Description | Closure |
@@ -95,6 +112,8 @@ Tracked files via `git ls-files`: **214**. Full exploration of high-risk subsyst
 | BUG-003 | Code Review | metadata_backups.py:447-456 | High | list-only ok promoted to verified | test_bug_003_list_only_not_full_verify (xfail) |
 | BUG-004 | Code Review | sessions.py:115-137 | Medium | csrf_token_for ignores session_version | test_bug_004_csrf_honors_session_version (xfail) |
 | BUG-005 | Code Review | README.md:19-20 | Medium | Users section overclaims operator free-space | test_bug_005_readme_users_owner_only_free_space (xfail) |
+| BUG-006 | Spec Audit | storage.py:1028 (+main:160, reconcile) | High | startup deletes free-space claims | test_bug_006_startup_preserves_free_space_claims (xfail) |
+| BUG-007 | Spec Audit | operation_policies.py:96-97 | Medium | window HH:MM string compare | test_bug_007_windows_compare_as_times_not_strings (xfail) |
 
 ## Phase 3 confirmation checklist
 
@@ -105,15 +124,24 @@ Tracked files via `git ls-files`: **214**. Full exploration of high-risk subsyst
 5. Downgrade records complete or unused — YES (empty downgrades file)
 6. Union Covers + downgrades = absent cells — YES (cardinality gate PASS)
 
+## Phase 4 confirmation checklist
+
+1. Three individual `*auditor*` reports — YES
+2. Dated triage with Pre-audit docs validation — YES
+3. Minority findings each have CONFIRMED or FALSE-POSITIVE — YES
+4. BUG-001..005 independently re-probed — YES
+5. Net-new bugs have writeups + regression xfails + patches — YES (BUG-006, BUG-007)
+6. `citation_semantic_check.json` present (empty reviews Spec Gap) — YES
+7. Functional pass + regression expected failures=7 — YES
+8. No production source edits — YES
+
 ## Recent events
 
-- 2026-07-23T23:09:52Z run_start / phase_start phase=1
-- 2026-07-23T23:13:35Z phase_end phase=1
-- 2026-07-23T23:16:53Z phase_start phase=2
-- 2026-07-23T23:23:34Z phase_end phase=2
-- 2026-07-23T23:28:22Z phase_start phase=3
-- 2026-07-23T23:35:30Z gate_check phase3 + cardinality + regression PASS
-- 2026-07-23T23:35:30Z phase_end phase=3 (5 bugs, 5 writeups)
+- 2026-07-23T23:39:13Z phase_start phase=4
+- 2026-07-23T23:39:31Z pass_started A/B/C (three independent auditors)
+- 2026-07-23T23:48:25Z pass_ended A/B/C + auditor artifacts written
+- 2026-07-23T23:49:53Z pass_started D (triage + Layer-2)
+- 2026-07-23T23:55:00Z pass_ended D; gate_check phase4 PASS; phase_end phase=4
 
 ## Artifacts produced
 
@@ -151,3 +179,16 @@ Tracked files via `git ls-files`: **214**. Full exploration of high-risk subsyst
 - `quality/writeups/BUG-001.md` … `BUG-005.md`
 - `quality/patches/BUG-00N-regression-test.patch` / `BUG-00N-fix.patch`
 - `quality/results/phase3-regression.unittest.log`
+
+### Phase 4 (spec audit)
+- `quality/spec_audits/2026-07-23-auditor-1.md`
+- `quality/spec_audits/2026-07-23-auditor-2.md`
+- `quality/spec_audits/2026-07-23-auditor-3.md`
+- `quality/spec_audits/2026-07-23-triage.md`
+- `quality/spec_audits/triage_probes.sh`
+- `quality/citation_semantic_check.json`
+- `quality/writeups/BUG-006.md`, `quality/writeups/BUG-007.md`
+- `quality/patches/BUG-006-*.patch`, `quality/patches/BUG-007-*.patch`
+- `quality/results/phase4-triage-probes.log`
+- `quality/results/phase4-regression.unittest.log`
+- `quality/results/phase4-gate.log`

@@ -1,6 +1,6 @@
 {
   "schema_version": "1.5.6",
-  "generated_at": "2026-07-23T23:33:57Z",
+  "generated_at": "2026-07-23T23:52:04Z",
   "records": [
     {
       "id": "BUG-001",
@@ -101,6 +101,42 @@
       "covers": [
         "REQ-003/cell-OWNER_ONLY_FREE_SPACE-README_USERS"
       ]
+    },
+    {
+      "id": "BUG-006",
+      "req_id": "REQ-009",
+      "title": "Startup cleanup destroys free-space claim files before reconcile",
+      "severity": "high",
+      "disposition": "code-fix",
+      "disposition_rationale": "REQ-009 claim/salvage invariant is voided when startup unlinks .cleanup-*.tmp before reconcile marks missing paths completed.",
+      "fix_type": "code",
+      "divergence_description": "Free-space salvage claims deleted at process start; Job completed as freed.",
+      "documented_intent": "Interrupted free-space must restore Local Copy or preserve salvage claim path.",
+      "code_behavior": "storage.py:1028 unlinks is_restore_temporary_name including CLEANUP; main.py:160 before reconcile; 1092-1109 completes without restore.",
+      "proposed_fix": "Exclude CLEANUP temps from abandoned-restore cleanup; reconcile restores claims before complete.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/storage.py",
+      "line": "1028",
+      "confidence": "high"
+    },
+    {
+      "id": "BUG-007",
+      "req_id": "REQ-012",
+      "title": "Operating windows compared as lexicographic strings",
+      "severity": "medium",
+      "disposition": "code-fix",
+      "disposition_rationale": "HTTP allows non-padded HH:MM (len 4-5); string compare accepts inverted 10:00-9:30 and rejects valid 9:30-10:00.",
+      "fix_type": "code",
+      "divergence_description": "REQ-012 start>end rejection fails for non-padded stamps.",
+      "documented_intent": "start > end must raise ValueError; valid start < end accepted.",
+      "code_behavior": "operation_policies.py:96-97 compares raw strings after int shape parse.",
+      "proposed_fix": "Compare parsed (hour, minute) tuples.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/services/operation_policies.py",
+      "line": "96-97",
+      "confidence": "high"
     }
   ]
 }

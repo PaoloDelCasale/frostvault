@@ -1,0 +1,58 @@
+# Regression test addition for BUG-006 (see quality/test_regression.py TestBug006)
+# Applied in-tree; this patch documents the expected-failure assertion.
++ class TestBug006(unittest.TestCase):
+
++     @unittest.expectedFailure
+
++     def test_bug_006_startup_preserves_free_space_claims(self) -> None:
+
++         ...
+
+# Full source:
+# def _cleanup_abandoned_body() -> str:
+#     start = STORAGE_PY.index("def cleanup_abandoned_restore_files")
+#     end = STORAGE_PY.index("\ndef reconcile_interrupted_jobs", start)
+#     return STORAGE_PY[start:end]
+# 
+# 
+# def _reconcile_free_space_block() -> str:
+#     start = STORAGE_PY.index('if job["action"] == "free-space":')
+#     # End at the shared requeue path after the free-space continue.
+#     end = STORAGE_PY.index("summary[\"completed\"] += 1", start)
+#     return STORAGE_PY[start:end]
+# 
+# 
+# class TestBug006(unittest.TestCase):
+#     """BUG-006: startup must not destroy free-space claim files (REQ-009)."""
+# 
+#     @unittest.expectedFailure
+#     def test_bug_006_startup_preserves_free_space_claims(self) -> None:
+#         """[BUG-006][Req: REQ-009] cleanup claims must survive startup reconciliation.
+# 
+#         Desired: ``cleanup_abandoned_restore_files`` must not unlink
+#         ``.cleanup-*.tmp`` claim files (or reconcile must restore them before
+#         any cleanup). Current: ``is_restore_temporary_name`` includes cleanup
+#         claims and startup cleanup deletes them before reconcile marks missing
+#         paths completed.
+#         Fix patch: quality/patches/BUG-006-fix.patch
+#         """
+#         cleanup = _cleanup_abandoned_body()
+#         # Desired: startup cleanup must not treat free-space claims as disposable
+#         # restore residues. Exclude CLEANUP_TEMPORARY_RE / is_restore_temporary_name
+#         # for cleanup claims, or never call a predicate that matches them.
+#         deletes_cleanup_claims = (
+#             "is_restore_temporary_name" in cleanup
+#             or "CLEANUP_TEMPORARY_RE" in cleanup
+#         )
+#         self.assertFalse(
+#             deletes_cleanup_claims,
+#             "cleanup_abandoned_restore_files must not delete .cleanup-*.tmp claims",
+#         )
+#         reconcile = _reconcile_free_space_block()
+#         self.assertIn(
+#             "restore_claimed_local_copy",
+#             reconcile,
+#             "reconcile free-space missing-path path must attempt claim restore",
+#         )
+# 
+# 

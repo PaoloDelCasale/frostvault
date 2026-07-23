@@ -1,0 +1,28 @@
+# Regression test addition for BUG-007 (see quality/test_regression.py TestBug007)
+# class TestBug007(unittest.TestCase):
+#     """BUG-007: operating windows must compare HH:MM as times (REQ-012)."""
+# 
+#     @unittest.expectedFailure
+#     def test_bug_007_windows_compare_as_times_not_strings(self) -> None:
+#         """[BUG-007][Req: REQ-012] non-padded inverted windows must be rejected.
+# 
+#         Desired: compare parsed hour/minute (or zero-padded canonical strings)
+#         so ``start=10:00,end=9:30`` raises and ``start=9:30,end=10:00`` accepts.
+#         Current: lexicographic ``start >= end`` at operation_policies.py:96-97.
+#         Fix patch: quality/patches/BUG-007-fix.patch
+#         """
+#         from app.services import operation_policies
+# 
+#         # Desired: inverted non-padded window rejected (REQ-012 CoS 2).
+#         with self.assertRaises(ValueError):
+#             operation_policies._normalize_windows(
+#                 [{"weekday": 1, "start": "10:00", "end": "9:30"}]
+#             )
+#         # Desired: valid non-padded morning window accepted (HTTP allows len 4–5).
+#         ok = operation_policies._normalize_windows(
+#             [{"weekday": 1, "start": "9:30", "end": "10:00"}]
+#         )
+#         self.assertEqual(ok[0]["start"], "9:30")
+#         self.assertEqual(ok[0]["end"], "10:00")
+# 
+# 
