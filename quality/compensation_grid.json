@@ -1,0 +1,266 @@
+{
+  "schema_version": "1.5.2",
+  "generated_at": "2026-07-23T23:31:07Z",
+  "reqs": {
+    "REQ-001": {
+      "pattern": "parity",
+      "items": [
+        "REQUIRE_VERSION_ID",
+        "PIN_IN_DOWNLOAD",
+        "DIGEST_VERIFY"
+      ],
+      "sites": [
+        "PLAINTEXT",
+        "CRYPT_NAME",
+        "CRYPT_CONTENT"
+      ],
+      "cells": [
+        {
+          "cell_id": "REQ-001/cell-REQUIRE_VERSION_ID-PLAINTEXT",
+          "item": "REQUIRE_VERSION_ID",
+          "site": "PLAINTEXT",
+          "present": true,
+          "evidence": "app/storage.py:1825-1826"
+        },
+        {
+          "cell_id": "REQ-001/cell-REQUIRE_VERSION_ID-CRYPT_NAME",
+          "item": "REQUIRE_VERSION_ID",
+          "site": "CRYPT_NAME",
+          "present": true,
+          "evidence": "app/storage.py:1825-1826"
+        },
+        {
+          "cell_id": "REQ-001/cell-REQUIRE_VERSION_ID-CRYPT_CONTENT",
+          "item": "REQUIRE_VERSION_ID",
+          "site": "CRYPT_CONTENT",
+          "present": true,
+          "evidence": "app/storage.py:1825-1826"
+        },
+        {
+          "cell_id": "REQ-001/cell-PIN_IN_DOWNLOAD-PLAINTEXT",
+          "item": "PIN_IN_DOWNLOAD",
+          "site": "PLAINTEXT",
+          "present": true,
+          "evidence": "app/storage.py:1858-1861"
+        },
+        {
+          "cell_id": "REQ-001/cell-PIN_IN_DOWNLOAD-CRYPT_NAME",
+          "item": "PIN_IN_DOWNLOAD",
+          "site": "CRYPT_NAME",
+          "present": true,
+          "evidence": "app/storage.py:1830-1842"
+        },
+        {
+          "cell_id": "REQ-001/cell-PIN_IN_DOWNLOAD-CRYPT_CONTENT",
+          "item": "PIN_IN_DOWNLOAD",
+          "site": "CRYPT_CONTENT",
+          "present": true,
+          "evidence": "app/storage.py:1843-1852"
+        },
+        {
+          "cell_id": "REQ-001/cell-DIGEST_VERIFY-PLAINTEXT",
+          "item": "DIGEST_VERIFY",
+          "site": "PLAINTEXT",
+          "present": true,
+          "evidence": "app/storage.py:2040-2044"
+        },
+        {
+          "cell_id": "REQ-001/cell-DIGEST_VERIFY-CRYPT_NAME",
+          "item": "DIGEST_VERIFY",
+          "site": "CRYPT_NAME",
+          "present": true,
+          "evidence": "app/storage.py:2040-2044"
+        },
+        {
+          "cell_id": "REQ-001/cell-DIGEST_VERIFY-CRYPT_CONTENT",
+          "item": "DIGEST_VERIFY",
+          "site": "CRYPT_CONTENT",
+          "present": true,
+          "evidence": "app/storage.py:2040-2044"
+        }
+      ]
+    },
+    "REQ-002": {
+      "pattern": "whitelist",
+      "items": [
+        "UPLOAD",
+        "RENAME",
+        "RECOVER",
+        "FREE_SPACE",
+        "CLOUD_ARCHIVE",
+        "CLOUD_PURGE"
+      ],
+      "sites": [
+        "PROCESS_JOB"
+      ],
+      "cells": [
+        {
+          "cell_id": "REQ-002/cell-UPLOAD-PROCESS_JOB",
+          "item": "UPLOAD",
+          "site": "PROCESS_JOB",
+          "present": true,
+          "evidence": "app/storage.py:2219"
+        },
+        {
+          "cell_id": "REQ-002/cell-RENAME-PROCESS_JOB",
+          "item": "RENAME",
+          "site": "PROCESS_JOB",
+          "present": true,
+          "evidence": "app/storage.py:2221"
+        },
+        {
+          "cell_id": "REQ-002/cell-RECOVER-PROCESS_JOB",
+          "item": "RECOVER",
+          "site": "PROCESS_JOB",
+          "present": false,
+          "evidence": "app/storage.py:2223-2224"
+        },
+        {
+          "cell_id": "REQ-002/cell-FREE_SPACE-PROCESS_JOB",
+          "item": "FREE_SPACE",
+          "site": "PROCESS_JOB",
+          "present": true,
+          "evidence": "app/storage.py:2225"
+        },
+        {
+          "cell_id": "REQ-002/cell-CLOUD_ARCHIVE-PROCESS_JOB",
+          "item": "CLOUD_ARCHIVE",
+          "site": "PROCESS_JOB",
+          "present": true,
+          "evidence": "app/storage.py:2227"
+        },
+        {
+          "cell_id": "REQ-002/cell-CLOUD_PURGE-PROCESS_JOB",
+          "item": "CLOUD_PURGE",
+          "site": "PROCESS_JOB",
+          "present": true,
+          "evidence": "app/storage.py:2229-2232"
+        }
+      ]
+    },
+    "REQ-003": {
+      "pattern": "compensation",
+      "items": [
+        "OWNER_ONLY_FREE_SPACE"
+      ],
+      "sites": [
+        "VAULT_ROLES",
+        "MAIN_API",
+        "AUTHZ_TESTS",
+        "README_USERS"
+      ],
+      "cells": [
+        {
+          "cell_id": "REQ-003/cell-OWNER_ONLY_FREE_SPACE-VAULT_ROLES",
+          "item": "OWNER_ONLY_FREE_SPACE",
+          "site": "VAULT_ROLES",
+          "present": true,
+          "evidence": "app/services/vault_roles.py:32-38"
+        },
+        {
+          "cell_id": "REQ-003/cell-OWNER_ONLY_FREE_SPACE-MAIN_API",
+          "item": "OWNER_ONLY_FREE_SPACE",
+          "site": "MAIN_API",
+          "present": true,
+          "evidence": "app/main.py:2451-2452"
+        },
+        {
+          "cell_id": "REQ-003/cell-OWNER_ONLY_FREE_SPACE-AUTHZ_TESTS",
+          "item": "OWNER_ONLY_FREE_SPACE",
+          "site": "AUTHZ_TESTS",
+          "present": true,
+          "evidence": "tests/test_vault_authorization.py:470-484"
+        },
+        {
+          "cell_id": "REQ-003/cell-OWNER_ONLY_FREE_SPACE-README_USERS",
+          "item": "OWNER_ONLY_FREE_SPACE",
+          "site": "README_USERS",
+          "present": false,
+          "evidence": "README.md:19-20"
+        }
+      ]
+    },
+    "REQ-004": {
+      "pattern": "parity",
+      "items": [
+        "LOAD_TARGET_KEY",
+        "DETECT_CURRENT_MISMATCH"
+      ],
+      "sites": [
+        "CLOUD_ARCHIVE",
+        "RENAME_HIDE"
+      ],
+      "cells": [
+        {
+          "cell_id": "REQ-004/cell-LOAD_TARGET_KEY-CLOUD_ARCHIVE",
+          "item": "LOAD_TARGET_KEY",
+          "site": "CLOUD_ARCHIVE",
+          "present": true,
+          "evidence": "app/storage.py:2086-2097"
+        },
+        {
+          "cell_id": "REQ-004/cell-DETECT_CURRENT_MISMATCH-CLOUD_ARCHIVE",
+          "item": "DETECT_CURRENT_MISMATCH",
+          "site": "CLOUD_ARCHIVE",
+          "present": false,
+          "evidence": "app/storage.py:2099-2102"
+        },
+        {
+          "cell_id": "REQ-004/cell-LOAD_TARGET_KEY-RENAME_HIDE",
+          "item": "LOAD_TARGET_KEY",
+          "site": "RENAME_HIDE",
+          "present": true,
+          "evidence": "app/storage.py:1621-1625"
+        },
+        {
+          "cell_id": "REQ-004/cell-DETECT_CURRENT_MISMATCH-RENAME_HIDE",
+          "item": "DETECT_CURRENT_MISMATCH",
+          "site": "RENAME_HIDE",
+          "present": false,
+          "evidence": "app/storage.py:1622-1625"
+        }
+      ]
+    },
+    "REQ-005": {
+      "pattern": "parity",
+      "items": [
+        "FULL_ISOLATED_OR_FAIL",
+        "MODE_DISTINGUISHED"
+      ],
+      "sites": [
+        "VERIFY_RESTORE_ISOLATED",
+        "VERIFY_LATEST_CONSUMER"
+      ],
+      "cells": [
+        {
+          "cell_id": "REQ-005/cell-FULL_ISOLATED_OR_FAIL-VERIFY_RESTORE_ISOLATED",
+          "item": "FULL_ISOLATED_OR_FAIL",
+          "site": "VERIFY_RESTORE_ISOLATED",
+          "present": false,
+          "evidence": "app/services/metadata_backups.py:447-456"
+        },
+        {
+          "cell_id": "REQ-005/cell-MODE_DISTINGUISHED-VERIFY_RESTORE_ISOLATED",
+          "item": "MODE_DISTINGUISHED",
+          "site": "VERIFY_RESTORE_ISOLATED",
+          "present": true,
+          "evidence": "app/services/metadata_backups.py:455"
+        },
+        {
+          "cell_id": "REQ-005/cell-FULL_ISOLATED_OR_FAIL-VERIFY_LATEST_CONSUMER",
+          "item": "FULL_ISOLATED_OR_FAIL",
+          "site": "VERIFY_LATEST_CONSUMER",
+          "present": false,
+          "evidence": "app/storage.py:2578-2600"
+        },
+        {
+          "cell_id": "REQ-005/cell-MODE_DISTINGUISHED-VERIFY_LATEST_CONSUMER",
+          "item": "MODE_DISTINGUISHED",
+          "site": "VERIFY_LATEST_CONSUMER",
+          "present": false,
+          "evidence": "app/storage.py:2578-2600"
+        }
+      ]
+    }
+  }
+}

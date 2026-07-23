@@ -1,4 +1,4 @@
-{"event": "_index", "ts": "2026-07-23T23:09:52Z", "schema_version": "1.5.6", "event_types": ["_index", "run_start", "phase_start", "pattern_walked", "finding_logged", "artifact_written", "phase_end", "error"], "benchmark": "FrostVault", "lever_state": "baseline", "started_at": "2026-07-23T23:09:52Z"}
+{"event": "_index", "ts": "2026-07-23T23:09:52Z", "schema_version": "1.5.6", "event_types": ["_index", "run_start", "phase_start", "pattern_walked", "finding_logged", "artifact_written", "phase_end", "error", "gate_check"], "benchmark": "FrostVault", "lever_state": "baseline", "started_at": "2026-07-23T23:09:52Z"}
 {"event": "run_start", "ts": "2026-07-23T23:09:52Z", "runner": "cursor", "playbook_version": "1.5.6", "target_path": "."}
 {"event": "phase_start", "ts": "2026-07-23T23:09:52Z", "phase": 1}
 {"event": "pattern_walked", "ts": "2026-07-23T23:13:35Z", "phase": 1, "pattern": 1, "findings_count": 3}
@@ -32,3 +32,37 @@
 {"event": "artifact_written", "ts": "2026-07-23T23:23:34Z", "relative_path": "quality/mechanical/process_job_action_branches.txt", "byte_size": 620, "line_count": 10}
 {"event": "artifact_written", "ts": "2026-07-23T23:23:34Z", "relative_path": "quality/mechanical/verify_receipt.txt", "byte_size": 544, "line_count": 10}
 {"event": "phase_end", "ts": "2026-07-23T23:23:34Z", "phase": 2, "key_counts": {"requirements": 19, "use_cases": 8, "fitness_scenarios": 10, "functional_tests": 29, "contracts": 74}, "artifacts_produced": ["quality/QUALITY.md", "quality/CONTRACTS.md", "quality/REQUIREMENTS.md", "quality/COVERAGE_MATRIX.md", "quality/COMPLETENESS_REPORT.md", "quality/test_functional.py", "quality/RUN_CODE_REVIEW.md", "quality/RUN_INTEGRATION_TESTS.md", "quality/RUN_SPEC_AUDIT.md", "quality/RUN_TDD_TESTS.md", "quality/requirements_manifest.json", "quality/use_cases_manifest.json", "quality/mechanical/verify.sh", "quality/mechanical/process_job_action_branches.txt", "quality/mechanical/verify_receipt.txt", "quality/PROGRESS.md", "quality/run_state.jsonl"]}
+{"event": "phase_start", "ts": "2026-07-23T23:28:22Z", "phase": 3}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/compensation_grid.json", "byte_size": 7818, "line_count": 266}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/compensation_grid_downgrades.json", "byte_size": 94, "line_count": 5}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/code_reviews/2026-07-23-phase3-three-pass.md", "byte_size": 13379, "line_count": 271}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/BUGS.md", "byte_size": 11918, "line_count": 146}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/bugs_manifest.json", "byte_size": 4951, "line_count": 106}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/test_regression.py", "byte_size": 9597, "line_count": 236}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/results/phase3-regression.unittest.log", "byte_size": 1175, "line_count": 16}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/writeups/BUG-001.md", "byte_size": 2082, "line_count": 56}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/patches/BUG-001-regression-test.patch", "byte_size": 9898, "line_count": 239}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/patches/BUG-001-fix.patch", "byte_size": 661, "line_count": 17}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/writeups/BUG-002.md", "byte_size": 2448, "line_count": 60}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/patches/BUG-002-regression-test.patch", "byte_size": 9898, "line_count": 239}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/patches/BUG-002-fix.patch", "byte_size": 996, "line_count": 21}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/writeups/BUG-003.md", "byte_size": 1925, "line_count": 55}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/patches/BUG-003-regression-test.patch", "byte_size": 9898, "line_count": 239}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/patches/BUG-003-fix.patch", "byte_size": 685, "line_count": 16}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/writeups/BUG-004.md", "byte_size": 2367, "line_count": 65}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/patches/BUG-004-regression-test.patch", "byte_size": 9898, "line_count": 239}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/patches/BUG-004-fix.patch", "byte_size": 1234, "line_count": 30}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/writeups/BUG-005.md", "byte_size": 1968, "line_count": 50}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/patches/BUG-005-regression-test.patch", "byte_size": 9898, "line_count": 239}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/patches/BUG-005-fix.patch", "byte_size": 856, "line_count": 15}
+{"event": "artifact_written", "ts": "2026-07-23T23:35:30Z", "relative_path": "quality/PROGRESS.md", "byte_size": 4269, "line_count": 107}
+{"event": "finding_logged", "ts": "2026-07-23T23:35:30Z", "phase": 3, "finding_id": "BUG-001", "category": "code-bug"}
+{"event": "finding_logged", "ts": "2026-07-23T23:35:30Z", "phase": 3, "finding_id": "BUG-002", "category": "code-bug"}
+{"event": "finding_logged", "ts": "2026-07-23T23:35:30Z", "phase": 3, "finding_id": "BUG-003", "category": "code-bug"}
+{"event": "finding_logged", "ts": "2026-07-23T23:35:30Z", "phase": 3, "finding_id": "BUG-004", "category": "code-bug"}
+{"event": "finding_logged", "ts": "2026-07-23T23:35:30Z", "phase": 3, "finding_id": "BUG-005", "category": "spec-divergence"}
+{"event": "gate_check", "ts": "2026-07-23T23:35:30Z", "gate_name": "phase3_cross_validation", "verdict": "pass", "reason": "code_reviews + patches + writeups + RUN_CODE_REVIEW.md"}
+{"event": "gate_check", "ts": "2026-07-23T23:35:30Z", "gate_name": "compensation_cardinality", "verdict": "pass", "reason": "validate_cardinality_gate empty failures"}
+{"event": "gate_check", "ts": "2026-07-23T23:35:30Z", "gate_name": "regression_unittest", "verdict": "pass", "reason": "5 expected failures"}
+{"event": "gate_check", "ts": "2026-07-23T23:35:30Z", "gate_name": "functional_unittest", "verdict": "pass", "reason": "29 OK"}
+{"event": "phase_end", "ts": "2026-07-23T23:35:30Z", "phase": 3, "key_counts": {"bugs_identified": 5, "bug_writeups": 5, "regression_tests": 5, "rejected_candidates": 1}, "artifacts_produced": ["quality/compensation_grid.json", "quality/compensation_grid_downgrades.json", "quality/code_reviews/2026-07-23-phase3-three-pass.md", "quality/BUGS.md", "quality/bugs_manifest.json", "quality/test_regression.py", "quality/results/phase3-regression.unittest.log", "quality/writeups/BUG-001.md", "quality/patches/BUG-001-regression-test.patch", "quality/patches/BUG-001-fix.patch", "quality/writeups/BUG-002.md", "quality/patches/BUG-002-regression-test.patch", "quality/patches/BUG-002-fix.patch", "quality/writeups/BUG-003.md", "quality/patches/BUG-003-regression-test.patch", "quality/patches/BUG-003-fix.patch", "quality/writeups/BUG-004.md", "quality/patches/BUG-004-regression-test.patch", "quality/patches/BUG-004-fix.patch", "quality/writeups/BUG-005.md", "quality/patches/BUG-005-regression-test.patch", "quality/patches/BUG-005-fix.patch", "quality/PROGRESS.md"]}

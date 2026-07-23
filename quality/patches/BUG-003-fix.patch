@@ -1,0 +1,16 @@
+diff --git a/app/services/metadata_backups.py b/app/services/metadata_backups.py
+index e9a6f3a..3487e45 100644
+--- a/app/services/metadata_backups.py
++++ b/app/services/metadata_backups.py
+@@ -445,9 +445,9 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
+         capture_output=True,
+     )
+     if created.returncode != 0:
+-        # Listing succeeded; treat as verified when a scratch DB cannot be created.
++        # Listing succeeded but isolated restore was not proven.
+         return {
+-            "ok": True,
++            "ok": False,
+             "user_count": None,
+             "vault_count": None,
+             "schema_revision": None,

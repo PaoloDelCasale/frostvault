@@ -1,0 +1,21 @@
+diff --git a/app/storage.py b/app/storage.py
+index c548cc0..50ae240 100644
+--- a/app/storage.py
++++ b/app/storage.py
+@@ -2096,6 +2096,16 @@ def process_cloud_archive(job: dict[str, Any]) -> None:
+     object_key = version["object_key"]
+     set_job(job["id"], "cleaning", message_key="job.cloud_archive_creating_marker")
+     ensure_job_active(job["id"], "Cloud archival stopped")
++    expected_version = version.get("provider_version_id")
++    if expected_version:
++        head = s3_client().head_object(Bucket=job["s3_bucket"], Key=object_key)
++        current_version = head.get("VersionId")
++        if current_version and current_version != expected_version:
++            raise RuntimeError(
++                "Cloud archival aborted: current object VersionId "
++                f"{current_version!r} does not match scheduled "
++                f"{expected_version!r}"
++            )
+     delete_result = s3_client().delete_object(
+         Bucket=job["s3_bucket"],
+         Key=object_key,

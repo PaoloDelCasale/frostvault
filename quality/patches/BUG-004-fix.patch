@@ -1,0 +1,30 @@
+diff --git a/app/sessions.py b/app/sessions.py
+index e3125ac..f7b3662 100644
+--- a/app/sessions.py
++++ b/app/sessions.py
+@@ -122,12 +122,22 @@ def csrf_token_for(connection: Any, raw_token: str | None) -> str | None:
+         return None
+     row = connection.execute(
+         """
+-        SELECT csrf_token, revoked_at, idle_expires_at, absolute_expires_at
+-        FROM sessions WHERE token_hash=%s
++        SELECT s.csrf_token AS csrf_token,
++               s.revoked_at AS revoked_at,
++               s.idle_expires_at AS idle_expires_at,
++               s.absolute_expires_at AS absolute_expires_at,
++               s.session_version AS session_session_version,
++               u.session_version AS user_session_version,
++               u.active AS user_active
++        FROM sessions s
++        JOIN users u ON u.id = s.user_id
++        WHERE s.token_hash=%s
+         """,
+         (_hash_token(raw_token),),
+     ).fetchone()
+-    if not row or row["revoked_at"]:
++    if not row or row["revoked_at"] or not row["user_active"]:
++        return None
++    if row["session_session_version"] != row["user_session_version"]:
+         return None
+     now = _now()
+     if now >= _parse(row["absolute_expires_at"]) or now >= _parse(

@@ -5,17 +5,19 @@ Date: 2026-07-23
 Started: 2026-07-23T23:09:52Z
 Completed Phase 1: 2026-07-23T23:13:35Z
 Completed Phase 2: 2026-07-23T23:23:34Z
+Completed Phase 3: 2026-07-23T23:35:30Z
 Benchmark: FrostVault
 Lever: baseline (Mode A skill-direct, --no-seeds)
 Runner: cursor
 Playbook version: 1.5.6
 Model: cursor-grok-4.5-high
+Documentation state: code_only
 
 ## Phase tracker
 
 - [x] Phase 1 - Explore
 - [x] Phase 2 - Generate
-- [ ] Phase 3 - Code Review
+- [x] Phase 3 - Code Review
 - [ ] Phase 4 - Spec Audit
 - [ ] Phase 5 - Reconciliation
 - [ ] Phase 6 - Verify
@@ -72,13 +74,46 @@ Tracked files via `git ls-files`: **214**. Full exploration of high-risk subsyst
 - COMPLETENESS_REPORT: baseline (pre-review, no final verdict)
 - Spec-Gap: 0 Tier 1/2 (no formal_docs_manifest)
 
+## Phase 3 summary
+
+- Three-pass review: `quality/code_reviews/2026-07-23-phase3-three-pass.md`
+- Confirmed bugs: **5** (High: BUG-001, BUG-002, BUG-003; Medium: BUG-004, BUG-005)
+- Rejected candidates: **1** (CAND-006 crypt VersionId propagation — unverified risk)
+- Compensation grids: REQ-001..005 in `quality/compensation_grid.json` (cardinality PASS)
+- Regression tests: `quality/test_regression.py` — 5 `@unittest.expectedFailure` (OK expected failures=5)
+- Writeups: `quality/writeups/BUG-001.md` .. `BUG-005.md`
+- Patches: regression + fix under `quality/patches/`
+- Production source outside `quality/` **not modified**
+- Phase 3 confirmation checklist: grids produced; BUG-default applied; Covers present; consolidation rationales for multi-cell BUGs; downgrades file present (empty); union covers absent cells
+
+## Cumulative BUG tracker
+
+| ID | Source | File:Line | Severity | Description | Closure |
+|----|--------|-----------|----------|-------------|---------|
+| BUG-001 | Code Review | app/storage.py:2223-2224 | High | recover lacks status whitelist | test_bug_001_recover_requires_status_whitelist (xfail) |
+| BUG-002 | Code Review | app/storage.py:2099-2102 | High | cloud hide no concurrent VersionId detect | test_bug_002_cloud_archive_detects_concurrent_version (xfail) |
+| BUG-003 | Code Review | metadata_backups.py:447-456 | High | list-only ok promoted to verified | test_bug_003_list_only_not_full_verify (xfail) |
+| BUG-004 | Code Review | sessions.py:115-137 | Medium | csrf_token_for ignores session_version | test_bug_004_csrf_honors_session_version (xfail) |
+| BUG-005 | Code Review | README.md:19-20 | Medium | Users section overclaims operator free-space | test_bug_005_readme_users_owner_only_free_space (xfail) |
+
+## Phase 3 confirmation checklist
+
+1. Pattern-tagged REQs have compensation grids — YES (REQ-001..005)
+2. BUG-default applied mechanically — YES
+3. Pattern BUG Covers fields present — YES (BUG-001,002,003,005)
+4. Multi-cover consolidation rationales — YES (BUG-002, BUG-003)
+5. Downgrade records complete or unused — YES (empty downgrades file)
+6. Union Covers + downgrades = absent cells — YES (cardinality gate PASS)
+
 ## Recent events
 
 - 2026-07-23T23:09:52Z run_start / phase_start phase=1
 - 2026-07-23T23:13:35Z phase_end phase=1
 - 2026-07-23T23:16:53Z phase_start phase=2
-- 2026-07-23T23:23:34Z artifact_written Phase 2 core set + manifests + mechanical
 - 2026-07-23T23:23:34Z phase_end phase=2
+- 2026-07-23T23:28:22Z phase_start phase=3
+- 2026-07-23T23:35:30Z gate_check phase3 + cardinality + regression PASS
+- 2026-07-23T23:35:30Z phase_end phase=3 (5 bugs, 5 writeups)
 
 ## Artifacts produced
 
@@ -105,3 +140,14 @@ Tracked files via `git ls-files`: **214**. Full exploration of high-risk subsyst
 - `quality/mechanical/verify.sh`
 - `quality/mechanical/process_job_action_branches.txt`
 - `quality/mechanical/verify_receipt.txt`
+
+### Phase 3 (code review)
+- `quality/code_reviews/2026-07-23-phase3-three-pass.md`
+- `quality/BUGS.md`
+- `quality/bugs_manifest.json`
+- `quality/compensation_grid.json`
+- `quality/compensation_grid_downgrades.json`
+- `quality/test_regression.py`
+- `quality/writeups/BUG-001.md` … `BUG-005.md`
+- `quality/patches/BUG-00N-regression-test.patch` / `BUG-00N-fix.patch`
+- `quality/results/phase3-regression.unittest.log`

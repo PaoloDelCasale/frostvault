@@ -1,0 +1,106 @@
+{
+  "schema_version": "1.5.6",
+  "generated_at": "2026-07-23T23:33:57Z",
+  "records": [
+    {
+      "id": "BUG-001",
+      "req_id": "REQ-002",
+      "title": "process_job recover branch lacks status whitelist",
+      "severity": "high",
+      "disposition": "code-fix",
+      "disposition_rationale": "Peer actions already whitelist statuses; recover omission is a dispatcher code gap, not a docs misread.",
+      "fix_type": "code",
+      "divergence_description": "Recover executes without an explicit status conjunct required by REQ-002.",
+      "documented_intent": "Recover only for queued|retrying|restoring.",
+      "code_behavior": "app/storage.py:2223-2224 bare recover branch calls process_recover.",
+      "proposed_fix": "Add status conjunct matching selection set.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/storage.py",
+      "line": "2223-2224",
+      "covers": [
+        "REQ-002/cell-RECOVER-PROCESS_JOB"
+      ]
+    },
+    {
+      "id": "BUG-002",
+      "req_id": "REQ-004",
+      "title": "Reversible cloud hide skips concurrent VersionId detection",
+      "severity": "high",
+      "disposition": "code-fix",
+      "disposition_rationale": "Scheduled provider_version_id is loaded but unused for compare; S3 delete-marker mechanics do not preclude Head/compare.",
+      "fix_type": "code",
+      "divergence_description": "Unversioned delete hides current without detecting scheduled\u2260current.",
+      "documented_intent": "Abort or audit when current generation \u2260 scheduled Archive Version.",
+      "code_behavior": "app/storage.py:2099-2102 delete_object without Head compare; rename 1622-1625 same class.",
+      "proposed_fix": "Head current VersionId and abort on mismatch before marker.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/storage.py",
+      "line": "2099-2102",
+      "covers": [
+        "REQ-004/cell-DETECT_CURRENT_MISMATCH-CLOUD_ARCHIVE",
+        "REQ-004/cell-DETECT_CURRENT_MISMATCH-RENAME_HIDE"
+      ]
+    },
+    {
+      "id": "BUG-003",
+      "req_id": "REQ-005",
+      "title": "List-only backup verification promoted to verified success",
+      "severity": "high",
+      "disposition": "code-fix",
+      "disposition_rationale": "Producer returns ok True for TOC-only and consumer marks verified; contradicts restore-verification fitness.",
+      "fix_type": "code",
+      "divergence_description": "pg_restore_list mode is treated as full verified success.",
+      "documented_intent": "List-only must not equal isolated restore success for consumers.",
+      "code_behavior": "metadata_backups.py:447-456 ok True; storage.py:2578-2600 status verified on ok.",
+      "proposed_fix": "Return ok False for list-only and/or require temp_database mode in consumer.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/services/metadata_backups.py",
+      "line": "447-456",
+      "covers": [
+        "REQ-005/cell-FULL_ISOLATED_OR_FAIL-VERIFY_RESTORE_ISOLATED",
+        "REQ-005/cell-FULL_ISOLATED_OR_FAIL-VERIFY_LATEST_CONSUMER",
+        "REQ-005/cell-MODE_DISTINGUISHED-VERIFY_LATEST_CONSUMER"
+      ]
+    },
+    {
+      "id": "BUG-004",
+      "req_id": "REQ-008",
+      "title": "csrf_token_for ignores session_version force-logout",
+      "severity": "medium",
+      "disposition": "code-fix",
+      "disposition_rationale": "resolve_session already enforces session_version; CSRF layer omission is a concrete code parity gap.",
+      "fix_type": "code",
+      "divergence_description": "Force-logout does not invalidate CSRF token lookup.",
+      "documented_intent": "CSRF lookup returns None when session_version diverges.",
+      "code_behavior": "sessions.py:115-137 omits session_version compare.",
+      "proposed_fix": "Join users and compare session_version in csrf_token_for.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/sessions.py",
+      "line": "115-137"
+    },
+    {
+      "id": "BUG-005",
+      "req_id": "REQ-003",
+      "title": "README Users overclaims operator free-space",
+      "severity": "medium",
+      "disposition": "spec-fix",
+      "disposition_rationale": "Code/tests correctly enforce owner-only; README Users wording is the compensation failure.",
+      "fix_type": "spec",
+      "divergence_description": "Users section advertises operator free-space contrary to authoritative code.",
+      "documented_intent": "Only primary owner may free local space.",
+      "code_behavior": "main.py:2451 is_owner gate; README.md:19-20 overclaim.",
+      "proposed_fix": "Edit README Users bullet to exclude free-space from operator capabilities.",
+      "source_type": "docs-derived",
+      "divergence_type": "internal-prose",
+      "file": "README.md",
+      "line": "19-20",
+      "covers": [
+        "REQ-003/cell-OWNER_ONLY_FREE_SPACE-README_USERS"
+      ]
+    }
+  ]
+}
