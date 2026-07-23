@@ -93,7 +93,11 @@ jobs:
         run: |
           set -euo pipefail
           DATA_DIR="${RUNNER_TEMP}/frostvault-pg-backup-data"
-          mkdir -p "${DATA_DIR}/backups"
+          # Only create the bind-mount root. The entrypoint chowns /data to
+          # PUID/PGID (99:100); pre-creating nested dirs as the runner leaves
+          # them unwritable by the archive identity (Permission denied on
+          # backup artifacts). The app creates METADATA_BACKUP_DIR itself.
+          mkdir -p "${DATA_DIR}"
           MASTER_KEY="$(
             docker run --rm --entrypoint python "$IMAGE" -c \
               'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
