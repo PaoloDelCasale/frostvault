@@ -1,0 +1,283 @@
+{
+  "schema_version": "1.5.6",
+  "generated_at": "2026-07-23T23:19:45Z",
+  "records": [
+    {
+      "id": "REQ-001",
+      "title": "Exact Archive Version recovery must pin provider VersionId on every download surface",
+      "tier": 3,
+      "functional_section": "Archive Version recovery",
+      "specificity": "specific",
+      "pattern": "parity",
+      "use_cases": [
+        "UC-01",
+        "UC-02"
+      ],
+      "references": [
+        "app/storage.py:1813-1862",
+        "app/storage.py:1884-2044"
+      ],
+      "summary": "Every download implementation must require and use provider_version_id."
+    },
+    {
+      "id": "REQ-002",
+      "title": "Job dispatcher must gate each action on an explicit status set",
+      "tier": 5,
+      "functional_section": "Job dispatcher",
+      "specificity": "specific",
+      "pattern": "whitelist",
+      "use_cases": [
+        "UC-03"
+      ],
+      "references": [
+        "app/storage.py:2196-2235"
+      ],
+      "summary": "Recover must only execute for queued|retrying|restoring."
+    },
+    {
+      "id": "REQ-003",
+      "title": "Free local space is owner-only",
+      "tier": 3,
+      "functional_section": "Vault authorization",
+      "specificity": "specific",
+      "pattern": "compensation",
+      "use_cases": [
+        "UC-04"
+      ],
+      "references": [
+        "app/services/vault_roles.py:32-38",
+        "app/main.py:2443-2458",
+        "README.md:19-20"
+      ],
+      "summary": "Only owner may queue free-space; README must compensate."
+    },
+    {
+      "id": "REQ-004",
+      "title": "Reversible cloud hide must not silently hide unexpected newer version",
+      "tier": 5,
+      "functional_section": "Cloud lifecycle",
+      "specificity": "specific",
+      "pattern": "parity",
+      "use_cases": [
+        "UC-05"
+      ],
+      "references": [
+        "app/storage.py:2078-2130",
+        "app/services/cloud_deletion.py:330-434"
+      ],
+      "summary": "Detect/abort/audit concurrent newer version on cloud-archive."
+    },
+    {
+      "id": "REQ-005",
+      "title": "Metadata backup verification must not claim full verify on list-only mode",
+      "tier": 5,
+      "functional_section": "Metadata backups",
+      "specificity": "specific",
+      "pattern": "parity",
+      "use_cases": [
+        "UC-06"
+      ],
+      "references": [
+        "app/services/metadata_backups.py:441-456"
+      ],
+      "summary": "List-only mode is not full isolated-restore verification."
+    },
+    {
+      "id": "REQ-006",
+      "title": "Break-glass allows only loopback union configured CIDRs and fails closed",
+      "tier": 3,
+      "functional_section": "Authentication and sessions",
+      "specificity": "specific",
+      "use_cases": [
+        "UC-07"
+      ],
+      "references": [
+        "app/breakglass.py:30-48"
+      ],
+      "summary": "Fail-closed break-glass IP gate."
+    },
+    {
+      "id": "REQ-007",
+      "title": "Client IP trusts X-Forwarded-For only from Trusted Proxies",
+      "tier": 3,
+      "functional_section": "Authentication and sessions",
+      "specificity": "specific",
+      "use_cases": [
+        "UC-07"
+      ],
+      "references": [
+        "app/proxy.py:28-48"
+      ],
+      "summary": "XFF only when peer trusted."
+    },
+    {
+      "id": "REQ-008",
+      "title": "CSRF token lookup should honor session_version revocation parity",
+      "tier": 5,
+      "functional_section": "Authentication and sessions",
+      "specificity": "specific",
+      "use_cases": [
+        "UC-07"
+      ],
+      "references": [
+        "app/sessions.py:70-137"
+      ],
+      "summary": "CSRF should align with resolve_session version check."
+    },
+    {
+      "id": "REQ-009",
+      "title": "Free-space claim must restore Local Copy when verification fails",
+      "tier": 3,
+      "functional_section": "Local cleanup safety",
+      "specificity": "specific",
+      "use_cases": [
+        "UC-08"
+      ],
+      "references": [
+        "app/storage.py:1700-1759"
+      ],
+      "summary": "Claim restore on failed verification."
+    },
+    {
+      "id": "REQ-010",
+      "title": "Application refuses start on non-head schema",
+      "tier": 3,
+      "functional_section": "Database and schema",
+      "specificity": "specific",
+      "use_cases": [
+        "UC-06"
+      ],
+      "references": [
+        "app/database.py:16",
+        "app/database.py:100-104"
+      ],
+      "summary": "HEAD_SCHEMA_REVISION gate."
+    },
+    {
+      "id": "REQ-011",
+      "title": "Crypt vault uploads require recovery-secret custody confirmation",
+      "tier": 3,
+      "functional_section": "Crypt custody",
+      "specificity": "specific",
+      "use_cases": [
+        "UC-02"
+      ],
+      "references": [
+        "app/services/vault_recovery.py:145-149"
+      ],
+      "summary": "Upload blocked until custody confirmed."
+    },
+    {
+      "id": "REQ-012",
+      "title": "Operating windows cannot span overnight within a day entry",
+      "tier": 3,
+      "functional_section": "Operating windows",
+      "specificity": "specific",
+      "use_cases": [
+        "UC-03"
+      ],
+      "references": [
+        "app/services/operation_policies.py:79-99"
+      ],
+      "summary": "start must be before end."
+    },
+    {
+      "id": "REQ-013",
+      "title": "Cloud purge deletes pin VersionId",
+      "tier": 3,
+      "functional_section": "Cloud lifecycle",
+      "specificity": "specific",
+      "use_cases": [
+        "UC-05"
+      ],
+      "references": [
+        "app/storage.py:2136-2164"
+      ],
+      "summary": "Purge uses versioned deletes."
+    },
+    {
+      "id": "REQ-014",
+      "title": "Automatic rename merge only for unambiguous digest matches",
+      "tier": 3,
+      "functional_section": "Catalog identity",
+      "specificity": "specific",
+      "use_cases": [
+        "UC-01"
+      ],
+      "references": [
+        "app/catalog.py:456-509"
+      ],
+      "summary": "auto only for 1:1 digest matches."
+    },
+    {
+      "id": "REQ-015",
+      "title": "Session vault selection requires membership",
+      "tier": 3,
+      "functional_section": "Authentication and sessions",
+      "specificity": "specific",
+      "use_cases": [
+        "UC-04"
+      ],
+      "references": [
+        "app/main.py"
+      ],
+      "summary": "Stale vault_id without membership cannot operate."
+    },
+    {
+      "id": "REQ-016",
+      "title": "Operators may upload and recover; viewers may not",
+      "tier": 3,
+      "functional_section": "Vault authorization",
+      "specificity": "specific",
+      "use_cases": [
+        "UC-04"
+      ],
+      "references": [
+        "app/services/vault_roles.py:27-38"
+      ],
+      "summary": "can_operate matrix."
+    },
+    {
+      "id": "REQ-017",
+      "title": "Viewers are read-only",
+      "tier": 3,
+      "functional_section": "Vault authorization",
+      "specificity": "specific",
+      "use_cases": [
+        "UC-04"
+      ],
+      "references": [
+        "app/services/vault_roles.py"
+      ],
+      "summary": "Viewer denied mutations."
+    },
+    {
+      "id": "REQ-018",
+      "title": "Destructive local delete remains defense-in-depth across API and worker",
+      "tier": 3,
+      "functional_section": "Local cleanup safety",
+      "specificity": "architectural-guidance",
+      "use_cases": [
+        "UC-08"
+      ],
+      "references": [
+        "README.md Local cleanup safety"
+      ],
+      "summary": "API and worker layers are complementary."
+    },
+    {
+      "id": "REQ-019",
+      "title": "Local source and data paths respect documented permission expectations",
+      "tier": 3,
+      "functional_section": "Filesystem permissions",
+      "specificity": "architectural-guidance",
+      "use_cases": [
+        "UC-08"
+      ],
+      "references": [
+        "docs/filesystem-permissions.md"
+      ],
+      "summary": "Deploy FS permissions for claim/temp/source."
+    }
+  ]
+}

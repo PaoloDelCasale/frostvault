@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.5.6",
+  "generated_at": "2026-07-23T23:19:45Z",
+  "records": [
+    {
+      "id": "UC-01",
+      "name": "Exact Archive Version recovery (plaintext)",
+      "actor": "Worker / vault operator",
+      "formal_doc_refs": []
+    },
+    {
+      "id": "UC-02",
+      "name": "Exact Archive Version recovery (crypt)",
+      "actor": "Worker / vault operator",
+      "formal_doc_refs": []
+    },
+    {
+      "id": "UC-03",
+      "name": "Dispatcher refuses recover outside allowed statuses",
+      "actor": "Worker",
+      "formal_doc_refs": []
+    },
+    {
+      "id": "UC-04",
+      "name": "Operator denied free local space",
+      "actor": "Operator User",
+      "formal_doc_refs": []
+    },
+    {
+      "id": "UC-05",
+      "name": "Cloud-archive concurrent newer version",
+      "actor": "Worker / S3",
+      "formal_doc_refs": []
+    },
+    {
+      "id": "UC-06",
+      "name": "Metadata backup list-only must not look fully verified",
+      "actor": "Backup verifier",
+      "formal_doc_refs": []
+    },
+    {
+      "id": "UC-07",
+      "name": "Break-glass denied for forged client IP",
+      "actor": "Untrusted client",
+      "formal_doc_refs": []
+    },
+    {
+      "id": "UC-08",
+      "name": "Free-space claim restore on verification failure",
+      "actor": "Worker",
+      "formal_doc_refs": []
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+2219: if job["action"] == "upload" and job["status"] in {"queued", "retrying"}:
+2221: elif job["action"] == "rename" and job["status"] == "queued":
+2223: elif job["action"] == "recover":
+2225: elif job["action"] == "free-space" and job["status"] == "queued":
+2227: elif job["action"] == "cloud-archive" and job["status"] == "queued":
+2229: elif job["action"] == "cloud-purge" and job["status"] in {
+2251: if job["action"] == "free-space":
+2272: if job["action"] == "upload" and failure_kind == "source_changed":
+2284: if job["action"] == "upload" and failure_kind == "transient":
+2295: if job["action"] == "free-space":
