@@ -47,6 +47,90 @@ jobs:
       - name: Frontend JS tests
         run: node --test tests/*.mjs
 
+  production-image-postgres-backup:
+    name: Production image PostgreSQL backup
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: frostvault_backup_ci
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d frostvault_backup_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      IMAGE: frostvault-ci:pg-backup
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build production image
+        run: docker build -t "$IMAGE" .
+      - name: Verify PostgreSQL client tools in image
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh "$IMAGE" -c 'pg_dump --version'
+          docker run --rm --entrypoint sh "$IMAGE" -c 'pg_restore --version'
+          docker run --rm --entrypoint sh "$IMAGE" -c 'createdb --version'
+          docker run --rm --entrypoint sh "$IMAGE" -c 'dropdb --version'
+          docker run --rm --entrypoint sh "$IMAGE" -c 'psql --version'
+      - name: Exercise PostgreSQL metadata backup path
+        env:
+          DB_BACKEND: postgresql
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGDATABASE: frostvault_backup_ci
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          METADATA_BACKUP_DIR: /data/backups
+        run: |
+          set -euo pipefail
+          DATA_DIR="${RUNNER_TEMP}/frostvault-pg-backup-data"
+          mkdir -p "${DATA_DIR}/backups"
+          MASTER_KEY="$(
+            docker run --rm --entrypoint python "$IMAGE" -c \
+              'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+          )"
+          run_app() {
+            docker run --rm -i --network host \
+              -e DB_BACKEND \
+              -e PGHOST \
+              -e PGPORT \
+              -e PGDATABASE \
+              -e PGUSER \
+              -e PGPASSWORD \
+              -e METADATA_BACKUP_DIR \
+              -e "ARCHIVE_MASTER_KEY=${MASTER_KEY}" \
+              -v "${DATA_DIR}:/data" \
+              "$IMAGE" \
+              "$@"
+          }
+          run_app python -m alembic upgrade head
+          run_app python -m app.backup_upgrade --skip-upgrade
+          test -n "$(find "${DATA_DIR}/backups" -name '*.bak.enc' -size +0c | head -n 1)"
+          run_app python - <<'PY'
+          from pathlib import Path
+
+          from app.services import metadata_backups
+
+          artifacts = sorted(Path("/data/backups").glob("*.bak.enc"))
+          assert artifacts, "expected a non-empty encrypted backup artifact"
+          assert artifacts[-1].stat().st_size > 0
+          result = metadata_backups.verify_restore_isolated(
+              artifacts[-1],
+              work_dir=Path("/data/verify"),
+          )
+          assert result.get("ok"), result
+          print("verify_restore_isolated ok:", result)
+          PY
+
   s3-compatible-integrity:
     name: S3-compatible integrity (MinIO)
     runs-on: ubuntu-latest

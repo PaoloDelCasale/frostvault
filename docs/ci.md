@@ -10,6 +10,7 @@ Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.y
 | Job | What it proves | Credentials |
 | --- | --- | --- |
 | Unit and migration tests | Python `unittest` suite (SQLite + PostgreSQL migrations) and frontend `node --test` | None. Live AWS/MinIO env vars are intentionally unset so S3 integration cases skip. |
+| Production image PostgreSQL backup | Builds the production Docker image, checks `pg_dump`/`pg_restore`/`createdb`/`dropdb`/`psql`, then runs Alembic + `backup_upgrade --skip-upgrade` + isolated restore verification against `postgres:16` | Ephemeral Postgres service only. |
 | S3-compatible integrity (MinIO) | Real Rclone + MinIO upload/recovery SHA-256 proofs (plain, crypt, empty, Unicode, multipart cutoff) plus prefix cleanup | Ephemeral MinIO only (`minioadmin`). No AWS account. |
 
 Failed MinIO cleanup writes `artifacts/s3-cleanup-report.json` and uploads it as a
