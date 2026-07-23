@@ -41,6 +41,16 @@ Workflow: [`.github/workflows/aws-s3-integrity.yml`](../.github/workflows/aws-s3
 Cleanup always runs and uploads `aws-s3-cleanup-report.json`. Rerun the workflow
 or the CLI above against the same bucket/prefix if leftovers remain.
 
+## Container image (GHCR)
+
+Workflow: [`.github/workflows/publish-image.yml`](../.github/workflows/publish-image.yml)
+
+- Triggers: push to `main`, version tags `v*`, and `workflow_dispatch`.
+- Publishes `ghcr.io/paolodelcasale/frostvault` (`latest` on `main`, semver on
+  tags, plus a short `sha-` tag).
+- Compose files pull this image; operators do not need a local image build for a
+  standard deploy.
+
 ## Repository security scanners
 
 Workflow: [`.github/workflows/security.yml`](../.github/workflows/security.yml)

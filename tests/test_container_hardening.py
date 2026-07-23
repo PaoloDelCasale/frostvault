@@ -21,7 +21,21 @@ def _load_compose(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
+PUBLISHED_IMAGE_PREFIX = "ghcr.io/paolodelcasale/frostvault"
+
+
 class ContainerHardeningComposeTests(unittest.TestCase):
+    def test_compose_files_reference_published_ghcr_image(self) -> None:
+        for path in (COMPOSE_PATH, TRAEFIK_COMPOSE_PATH):
+            with self.subTest(path=path.name):
+                service = _load_compose(path)["services"]["frostvault"]
+                image = str(service.get("image") or "")
+                self.assertTrue(
+                    image.startswith(PUBLISHED_IMAGE_PREFIX),
+                    f"{path.name} should pull {PUBLISHED_IMAGE_PREFIX}, got {image!r}",
+                )
+                self.assertNotIn("build", service)
+
     def test_service_drops_capabilities_and_uses_read_only_rootfs(self) -> None:
         compose = _load_compose(COMPOSE_PATH)
         service = compose["services"]["frostvault"]

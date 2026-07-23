@@ -141,6 +141,17 @@ class SecurityWorkflowContractTests(unittest.TestCase):
         self.assertTrue(any("gitleaks detect" in block for block in gitleaks_runs))
 
 
+class ContainerPublishContractTests(unittest.TestCase):
+    def test_publish_workflow_pushes_image_to_ghcr(self) -> None:
+        path = WORKFLOWS / "publish-image.yml"
+        self.assertTrue(path.is_file())
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        self.assertEqual((workflow.get("permissions") or {}).get("packages"), "write")
+        self.assertIn("ghcr.io/paolodelcasale/frostvault", text)
+        self.assertRegex(text, r"push:\s*true")
+
+
 class DependabotContractTests(unittest.TestCase):
     def test_dependabot_has_no_auto_merge(self) -> None:
         text = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
@@ -160,3 +171,8 @@ class ContributorCiDocsTests(unittest.TestCase):
         self.assertIn("OIDC", docs)
         self.assertIn("Trivy", docs)
         self.assertIn("s3_prefix_cleanup_cli", docs)
+        self.assertIn("ghcr.io/paolodelcasale/frostvault", docs)
+
+    def test_readme_mentions_published_image(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("ghcr.io/paolodelcasale/frostvault", readme)

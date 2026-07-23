@@ -1,6 +1,6 @@
 services:
   frostvault:
-    build: .
+    image: ghcr.io/paolodelcasale/frostvault:latest
     container_name: frostvault
     restart: unless-stopped
     env_file:

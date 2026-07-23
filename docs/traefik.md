@@ -22,13 +22,15 @@ docker network create proxy
 export ALLOWED_HOSTS=frostvault.example.com
 export TRUSTED_PROXIES=172.16.0.0/12
 export SOURCES_ROOT=/srv/frostvault/sources
+docker compose -f compose.traefik.yaml pull
 docker compose -f compose.traefik.yaml run --rm frostvault alembic upgrade head
 docker compose -f compose.traefik.yaml up -d
 ```
 
 Confirm there is no `ports:` mapping on `frostvault`. Reach the panel only
 through Traefik. Local development can keep using `compose.yaml`, which binds
-`127.0.0.1:${APP_PORT:-8080}:8080` for loopback access.
+`127.0.0.1:${APP_PORT:-8080}:8080` for loopback access. Both compose files pull
+`ghcr.io/paolodelcasale/frostvault:latest`.
 
 ## Headers and limits
 
