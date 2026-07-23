@@ -130,7 +130,10 @@ from .sessions import (
     rotate_session,
     set_session_vault,
 )
-from .services.fs_preflight import check_vault_filesystem
+from .services.fs_preflight import (
+    check_vault_filesystem,
+    resolve_configured_vault_root,
+)
 from .storage import (
     background_loop,
     cancel_jobs,
@@ -199,9 +202,12 @@ def _request_locale(request: Any | None = None) -> str:
 
 
 def _set_locale_cookie(response: Response, locale: str) -> None:
+    # Write only allowlisted constants — never echo raw client locale text.
+    resolved = normalize_locale(locale)
+    cookie_value = "it" if resolved == "it" else "en"
     response.set_cookie(
         LOCALE_COOKIE_NAME,
-        normalize_locale(locale),
+        cookie_value,
         max_age=365 * 24 * 60 * 60,
         httponly=False,
         secure=settings.cookie_secure,
@@ -1561,7 +1567,20 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
     with db() as connection:
         summary = ArchiveCatalog(connection).summary(vault["id"])
     source_root = vault.get("source_root") or ""
-    filesystem = check_vault_filesystem(source_root)
+    allowed_bases = [settings.vault_sources_root]
+    bootstrap_root = (settings.bootstrap_vault_source_root or "").strip()
+    if bootstrap_root:
+        allowed_bases.append(bootstrap_root)
+    safe_root = resolve_configured_vault_root(
+        source_root, allowed_bases=allowed_bases
+    )
+    if safe_root is None:
+        # Report missing under the configured sources root; never walk raw input.
+        filesystem = check_vault_filesystem(
+            f"{settings.vault_sources_root.rstrip('/')}/.missing-vault-root"
+        )
+    else:
+        filesystem = check_vault_filesystem(safe_root)
     filesystem_payload = {
         "ok": filesystem.ok,
         "uid": filesystem.uid,

@@ -52,12 +52,14 @@ class StatsTests(unittest.TestCase):
                 db_backend="sqlite",
                 sqlite_path=str(database_path),
                 allow_local_delete=False,
+                vault_sources_root="/source",
+                bootstrap_vault_source_root="",
             )
             with (
                 patch("app.database.settings", test_settings),
                 patch("app.main.settings", test_settings),
             ):
-                result = stats({"id": 2, "role": "viewer"})
+                result = stats({"id": 2, "role": "viewer", "source_root": "/source"})
 
             self.assertEqual(result["states"], {"both": 1})
             self.assertEqual(result["storage"], {"local_bytes": 12, "cloud_bytes": 44})

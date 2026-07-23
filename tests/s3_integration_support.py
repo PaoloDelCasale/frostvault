@@ -105,14 +105,14 @@ def write_s3_rclone_config(
         ).rstrip()
     else:
         host = endpoint.rstrip("/")
+        # access_key/secret_key stay on the signature for callers; MinIO remotes
+        # use env_auth so secrets are never written into the rclone config file.
         base = textwrap.dedent(
             f"""\
             [{base_name}]
             type = s3
             provider = Minio
-            env_auth = false
-            access_key_id = {access_key}
-            secret_access_key = {secret_key}
+            env_auth = true
             endpoint = {host}
             region = {os.getenv("AWS_DEFAULT_REGION", "us-east-1")}
             acl = private

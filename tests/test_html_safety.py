@@ -3,6 +3,7 @@
 Seams under test:
 - ``notify`` in app.js assigns through ``textContent``
 - ``escapeHtml`` escapes angle brackets before any HTML embedding
+- ``loadStats`` / ``loadFiles`` escape catalog-derived DOM text before ``innerHTML``
 - ``present_job_message`` / ``translate`` treat catalogs as plain text, not HTML
 """
 
@@ -34,6 +35,19 @@ class HtmlSafetyTests(unittest.TestCase):
         source = (ROOT / "app/static/app.js").read_text(encoding="utf-8")
         self.assertIn("function escapeHtml(value)", source)
         self.assertIn("escapeHtml(details)", source)
+
+    def test_summary_cards_escape_catalog_labels_before_inner_html(self) -> None:
+        source = (ROOT / "app/static/app.js").read_text(encoding="utf-8")
+        self.assertIn("escapeHtml(label)", source)
+        self.assertNotRegex(
+            source,
+            r"#summary\"\)\.innerHTML = cards\.map\(\(\[label,[^\]]*\]\) =>\s*"
+            r"`<div class=\"card\"><span>\$\{label\}</span>",
+        )
+
+    def test_directory_state_escapes_state_label_before_inner_html(self) -> None:
+        source = (ROOT / "app/static/app.js").read_text(encoding="utf-8")
+        self.assertIn("escapeHtml(stateLabel(file.state))", source)
 
     def test_quota_error_messages_are_escaped_before_inner_html(self) -> None:
         source = (ROOT / "app/static/vault_access.js").read_text(encoding="utf-8")

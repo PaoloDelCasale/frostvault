@@ -65,9 +65,22 @@ CRITICAL_KEYS: frozenset[str] = frozenset(
 )
 
 
+def resolved_catalog_path(locale: str | None = None) -> Path:
+    """Return the on-disk catalog path for an allowlisted locale only.
+
+    Filenames are chosen from constants after normalization so path construction
+    never embeds raw caller-controlled locale text.
+    """
+    resolved = normalize_locale(locale)
+    # Constant-backed branches keep filesystem paths independent of raw input.
+    if resolved == "it":
+        return LOCALES_DIR / "it.json"
+    return LOCALES_DIR / "en.json"
+
+
 @lru_cache(maxsize=None)
 def _load_catalog(locale: str) -> dict[str, str]:
-    path = LOCALES_DIR / f"{locale}.json"
+    path = resolved_catalog_path(locale)
     with path.open(encoding="utf-8") as handle:
         data = json.load(handle)
     if not isinstance(data, dict):
@@ -83,8 +96,10 @@ def normalize_locale(value: str | None) -> str:
     if not value:
         return DEFAULT_LOCALE
     language = value.replace("_", "-").split("-", 1)[0].strip().lower()
-    if language in SUPPORTED_LOCALES:
-        return language
+    if language == "it":
+        return "it"
+    if language == "en":
+        return "en"
     return DEFAULT_LOCALE
 
 

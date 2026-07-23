@@ -6,6 +6,7 @@ ownership or modes; it only reports access, identity, and per-entry problems.
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +30,30 @@ class FilesystemPreflightResult:
     gid: int
     checks: tuple[PreflightCheck, ...]
     findings: tuple[FilesystemFinding, ...]
+
+
+def resolve_configured_vault_root(
+    raw: str | Path,
+    *,
+    allowed_bases: Sequence[str | Path],
+) -> Path | None:
+    """Return a canonical vault root only when it stays under an allowed base.
+
+    Uses realpath + prefix checks so callers never walk operator-unexpected
+    paths derived from stored vault configuration.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    resolved = os.path.realpath(text)
+    for base in allowed_bases:
+        base_text = str(base or "").strip()
+        if not base_text:
+            continue
+        base_real = os.path.realpath(base_text)
+        if resolved == base_real or resolved.startswith(base_real + os.sep):
+            return Path(resolved)
+    return None
 
 
 def check_vault_filesystem(root: str | Path) -> FilesystemPreflightResult:

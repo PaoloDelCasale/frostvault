@@ -91,6 +91,22 @@ class LocaleHttpTests(unittest.TestCase):
         self.assertEqual(me.status_code, 200, me.text)
         self.assertEqual(me.json()["locale"], "it")
 
+    def test_put_locale_cookie_value_is_only_allowlisted_constant(self) -> None:
+        """Seam: PUT /api/locale — Set-Cookie never echoes raw client locale text."""
+        self._login()
+        response = self.client.put(
+            "/api/locale",
+            json={"locale": "it-IT"},
+            headers={"X-CSRF-Token": self.client.cookies.get("frostvault_csrf") or ""},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        set_cookie = response.headers.get("set-cookie", "")
+        self.assertRegex(
+            set_cookie,
+            rf"(?i){LOCALE_COOKIE_NAME}=it(;|,|$)",
+        )
+        self.assertNotIn("it-IT", set_cookie)
+
     def test_login_page_uses_locale_cookie_for_html_lang(self) -> None:
         self.client.cookies.set(LOCALE_COOKIE_NAME, "it")
         response = self.client.get("/login")
