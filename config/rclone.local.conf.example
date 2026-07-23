@@ -6,6 +6,11 @@ region = eu-south-1
 location_constraint = eu-south-1
 no_check_bucket = true
 
+# Shared plain remote rooted at the bucket (self-service plain vaults).
+[example-test-plain]
+type = alias
+remote = aws-s3:example-bucket
+
 [test-crypt]
 type = crypt
 remote = aws-s3:example-bucket/development/test

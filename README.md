@@ -165,13 +165,14 @@ adds `.bin` to object names, and the panel removes that suffix when displaying
 them. With an unencrypted remote such as `type = alias`, the panel uses the
 original name and does not add or remove `.bin`.
 
-To archive without client-side encryption, point an alias at the bucket and
-prefix configured for the vault:
+To archive without client-side encryption, point a shared alias at the bucket.
+FrostVault appends each vault's `s3_prefix` (`vaults/<uuid>/`) to every plain
+object path, so one remote can serve many self-service vaults:
 
 ```ini
 [frostvault-plain]
 type = alias
-remote = frostvault-s3:example-bucket/vaults/example-vault
+remote = frostvault-s3:example-bucket
 ```
 
 In the administration panel, **Rclone remote** must be `frostvault-crypt` for

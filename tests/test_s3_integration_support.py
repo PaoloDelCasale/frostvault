@@ -32,6 +32,8 @@ class RcloneConfigSecretStorageTests(unittest.TestCase):
             self.assertNotIn("access_key_id", text)
             self.assertIn("env_auth = true", text)
             self.assertIn("endpoint = http://127.0.0.1:9000", text)
+            self.assertIn("remote = ci-s3:ci", text)
+            self.assertNotIn("remote = ci-s3:ci/plain", text)
 
 
 if __name__ == "__main__":

@@ -6,14 +6,11 @@ region = eu-south-1
 location_constraint = eu-south-1
 no_check_bucket = true
 
-# Shared plain remote for legacy / bootstrap vaults. Self-service crypt vaults
-# no longer share one static crypt remote: the application generates a unique
-# password pair per vault, seals it with ARCHIVE_MASTER_KEY, and builds an
-# ephemeral Rclone crypt remote with filename_encryption = standard and
-# directory_name_encryption = true at runtime.
+# Shared plain remote for self-service vaults. Root the alias at the bucket;
+# FrostVault appends each vault's s3_prefix (vaults/<uuid>/) to every object path.
 [frostvault-plain]
 type = alias
-remote = frostvault-s3:example-bucket/vaults/example-vault-plain
+remote = frostvault-s3:example-bucket
 
 # Legacy shared crypt example kept for older bootstrap vaults that still use
 # plaintext object names (.bin suffix). Prefer per-vault crypt remotes for new

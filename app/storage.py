@@ -328,6 +328,28 @@ def expected_cloud_key(
     return f"{prefix}/{relative}" if prefix else relative
 
 
+def plain_rclone_destination(
+    remote_name: str,
+    s3_prefix: str,
+    logical_path: str,
+) -> str:
+    """Build a bucket-rooted plain Rclone object spec including the vault prefix."""
+    remote = remote_name.strip().rstrip(":")
+    if not remote:
+        raise ValueError("Rclone remote name is required")
+    key = expected_cloud_key(logical_path, s3_prefix, is_crypt=False)
+    return f"{remote}:{key}"
+
+
+def configured_rclone_destination(job: dict[str, Any], logical_path: str) -> str:
+    """Object spec for a preconfigured Rclone remote (not a runtime crypt remote)."""
+    if vault_encrypts_content(job):
+        return f"{job['rclone_remote']}:{logical_path}"
+    return plain_rclone_destination(
+        job["rclone_remote"], job["s3_prefix"], logical_path
+    )
+
+
 def is_restore_temporary_name(name: str) -> bool:
     return (
         RESTORE_TEMPORARY_RE.fullmatch(name) is not None
@@ -1155,7 +1177,7 @@ def download_with_rclone(job: dict[str, Any]) -> None:
         else:
             run_rclone(
                 "copyto",
-                f"{job['rclone_remote']}:{job['path']}",
+                configured_rclone_destination(job, job["path"]),
                 str(temporary),
                 job_progress_callback(job),
                 job_id=job["id"],
@@ -1266,7 +1288,7 @@ def _download_plaintext_for_verification(
     else:
         run_rclone(
             "copyto",
-            f"{job['rclone_remote']}:{job['path']}",
+            configured_rclone_destination(job, job["path"]),
             str(temporary),
             job_progress_callback(job),
             job_id=job["id"],
@@ -1317,7 +1339,7 @@ def process_upload(job: dict[str, Any]) -> None:
             run_rclone(
                 "copyto",
                 str(source),
-                f"{job['rclone_remote']}:{job['path']}",
+                configured_rclone_destination(job, job["path"]),
                 job_progress_callback(job),
                 job_id=job["id"],
                 bwlimit=job_bwlimit(job),
@@ -1513,7 +1535,7 @@ def process_rename(job: dict[str, Any]) -> None:
                 run_rclone(
                     "copyto",
                     str(source),
-                    f"{job['rclone_remote']}:{job['path']}",
+                    configured_rclone_destination(job, job["path"]),
                     job_progress_callback(job),
                     job_id=job["id"],
                     bwlimit=job_bwlimit(job),
@@ -1821,7 +1843,7 @@ def download_exact_version_plaintext(
         else:
             run_rclone(
                 "copyto",
-                f"{job['rclone_remote']}:{job['path']}",
+                configured_rclone_destination(job, job["path"]),
                 str(temporary),
                 version_flag,
                 job_progress_callback(job),
