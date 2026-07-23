@@ -1,0 +1,7 @@
+# Trivy ignore entries must include the advisory URL and a review date.
+#
+# GHSA-hrxh-6v49-42gf — google.golang.org/grpc in vendored rclone 1.74.4
+# (grpc v1.80.0; fixed in 1.82.1). Not exercised by archive application paths;
+# remediates when rclone publishes a release built against grpc >= 1.82.1.
+# https://github.com/advisories/GHSA-hrxh-6v49-42gf — review by 2026-10-23
+GHSA-hrxh-6v49-42gf

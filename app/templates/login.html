@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="{{ locale }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ t('login.title') }} · {{ product_name }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="auth-page">
+  <main class="auth-shell">
+    <section class="auth-card">
+      <p class="eyebrow">{{ product_name }}</p>
+      <h1>{{ t('login.welcome') }}</h1>
+      <p class="subtitle">{{ t('login.subtitle') }}</p>
+      {% if local_login %}
+      <form id="login-form" class="stack-form">
+        <label>{{ t('login.username') }}<input name="username" autocomplete="username" required autofocus></label>
+        <label>{{ t('login.password') }}<input name="password" type="password" autocomplete="current-password" required></label>
+        <div id="login-error" class="notice error hidden"></div>
+        <button type="submit">{{ t('login.submit') }}</button>
+      </form>
+      {% else %}
+      <div class="notice">{{ t('login.local_unavailable') }}</div>
+      {% endif %}
+      <label class="locale-switcher">
+        <span>{{ t('ui.language') }}</span>
+        <select id="locale-selector" aria-label="{{ t('ui.language') }}">
+          {% for code in available_locales() %}
+          <option value="{{ code }}" {% if code == locale %}selected{% endif %}>{{ t('ui.language_' + code) }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </section>
+  </main>
+  <script>
+    document.querySelector('#locale-selector').addEventListener('change', async event => {
+      const locale = event.currentTarget.value;
+      document.cookie = `frostvault_locale=${encodeURIComponent(locale)}; Path=/; Max-Age=31536000; SameSite=Lax`;
+      window.location.reload();
+    });
+  </script>
+  {% if local_login %}
+  <script>
+    document.querySelector('#login-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = event.currentTarget.querySelector('button');
+      const errorBox = document.querySelector('#login-error');
+      button.disabled = true; errorBox.classList.add('hidden');
+      try {
+        const form = new FormData(event.currentTarget);
+        const response = await fetch('/api/login', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({username: form.get('username'), password: form.get('password')})
+        });
+        const body = await response.text();
+        let data = {};
+        if (body) {
+          try { data = JSON.parse(body); } catch (_) {}
+        }
+        if (response.ok) {
+          window.location.href = '/';
+          return;
+        }
+        const failedLabel = {{ t('login.failed') | tojson }};
+        const fallback = response.status >= 500
+          ? `Internal server error (HTTP ${response.status})`
+          : `${failedLabel} (HTTP ${response.status})`;
+        throw new Error(data.detail || fallback);
+      } catch (requestError) {
+        errorBox.textContent = requestError.message || {{ t('login.failed') | tojson }};
+        errorBox.classList.remove('hidden');
+        button.disabled = false;
+      }
+    });
+  </script>
+  {% endif %}
+</body>
+</html>

@@ -1,0 +1,89 @@
+name: AWS S3 integrity
+
+# Real AWS proofs (issue #13). Manual or weekly — never on every pull request.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: aws-s3-integrity
+  cancel-in-progress: false
+
+jobs:
+  aws-integrity:
+    name: Upload and recovery digests on AWS
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: aws-ci
+    env:
+      AWS_DEFAULT_REGION: ${{ vars.AWS_CI_REGION || 'eu-south-1' }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      TEST_S3_BUCKET: ${{ vars.AWS_CI_TEST_BUCKET }}
+      # Dedicated namespace — IAM policy must restrict to this prefix.
+      TEST_S3_PREFIX_ROOT: ${{ vars.AWS_CI_TEST_PREFIX || 'ci/github' }}
+      TEST_S3_ENDPOINT: ""
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install rclone
+        run: |
+          RCLONE_VERSION=1.74.4
+          RCLONE_ARCHIVE="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
+          curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/${RCLONE_ARCHIVE}" \
+            -o "/tmp/${RCLONE_ARCHIVE}"
+          echo "fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d  /tmp/${RCLONE_ARCHIVE}" \
+            | sha256sum --check --strict
+          sudo unzip -qo "/tmp/${RCLONE_ARCHIVE}" -d /tmp
+          sudo cp "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+          role-session-name: github-aws-s3-integrity
+      - run: python -m pip install -r requirements.txt
+      - name: Prove digests against the dedicated AWS test namespace
+        env:
+          # Point boto3/rclone at real AWS (no custom endpoint).
+          AWS_ACCESS_KEY_ID: ${{ env.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ env.AWS_SESSION_TOKEN }}
+          # Reuse the MinIO integration module against AWS by setting a sentinel
+          # endpoint var that the harness treats as "use default AWS endpoint".
+          TEST_S3_ENDPOINT: aws
+          TEST_S3_BUCKET: ${{ vars.AWS_CI_TEST_BUCKET }}
+          TEST_S3_PROVIDER: AWS
+        run: |
+          test -n "$TEST_S3_BUCKET"
+          test -n "${{ vars.AWS_CI_ROLE_ARN }}"
+          python -m unittest tests.test_s3_integrity_integration -v
+      - name: Cleanup test prefixes (rerunnable)
+        if: always()
+        env:
+          TEST_S3_BUCKET: ${{ vars.AWS_CI_TEST_BUCKET }}
+        run: |
+          mkdir -p artifacts
+          ROOT="${{ vars.AWS_CI_TEST_PREFIX || 'ci/github' }}"
+          python -m app.services.s3_prefix_cleanup_cli \
+            --bucket "$TEST_S3_BUCKET" \
+            --prefix "$ROOT/ci-runs" \
+            --prefix "$ROOT/ci-crypt" \
+            --prefix "$ROOT/cleanup-test" \
+            --report-path artifacts/aws-s3-cleanup-report.json
+      - name: Upload cleanup report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: aws-s3-cleanup-report
+          path: artifacts/aws-s3-cleanup-report.json
+          if-no-files-found: ignore

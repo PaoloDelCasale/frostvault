@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>New vault · {{ product_name }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="auth-page">
+  <main class="auth-shell">
+    <section class="auth-card">
+      <p class="eyebrow">{{ product_name }}</p>
+      <h1>New vault</h1>
+      <p class="subtitle">Create a private archive for {{ user.display_name }}.</p>
+      <form id="vault-create-form" class="stack-form">
+        <label for="vault-name">Vault name
+          <input id="vault-name" name="name" maxlength="120" autocomplete="off" required autofocus>
+        </label>
+        <label for="vault-slug">Slug <span class="form-help">optional</span>
+          <input id="vault-slug" name="slug" maxlength="60" pattern="[a-z0-9-]+" autocomplete="off" placeholder="Leave blank to use the name">
+        </label>
+        <fieldset class="stack-form">
+          <legend>Encryption</legend>
+          <label class="choice">
+            <input type="radio" name="encryption_mode" value="plain" checked>
+            Plain — object keys keep readable names
+          </label>
+          <label class="choice">
+            <input type="radio" name="encryption_mode" value="crypt">
+            Crypt — encrypt content and file/directory names
+          </label>
+        </fieldset>
+        <div id="creation-error" class="notice error hidden" role="alert" aria-live="assertive"></div>
+        <div class="form-actions">
+          <button type="submit">Create vault</button>
+          <a class="button-link secondary" href="/">Cancel</a>
+        </div>
+      </form>
+      <div id="recovery-panel" class="stack-form hidden">
+        <h2>Save your recovery export</h2>
+        <p class="subtitle">
+          Store this Rclone configuration offline. Uploads stay blocked until you
+          confirm custody of the recovery secret.
+        </p>
+        <label for="recovery-export">Recovery export
+          <textarea id="recovery-export" rows="16" readonly></textarea>
+        </label>
+        <div id="recovery-error" class="notice error hidden" role="alert" aria-live="assertive"></div>
+        <div class="form-actions">
+          <button type="button" id="confirm-recovery">I saved it — confirm custody</button>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script src="/static/vault_create.js"></script>
+</body>
+</html>

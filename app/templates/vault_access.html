@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Manage access · {{ vault.name }} · {{ product_name }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main data-role="{{ vault.role }}">
+    <header>
+      <div>
+        <p class="eyebrow">{{ product_name }}</p>
+        <h1>{{ vault.name }}</h1>
+        <p class="subtitle">Share this vault without exposing your user directory.</p>
+      </div>
+      <div class="account-bar">
+        <a class="button-link secondary" href="/">Back to archive</a>
+        <button id="logout-button" class="secondary" type="button">Sign out</button>
+      </div>
+    </header>
+
+    <div id="access-notice" class="notice toast hidden" role="status" aria-live="polite" aria-atomic="true">
+      <span class="notice-icon" aria-hidden="true"></span>
+      <span class="notice-message"></span>
+      <button class="notice-close" type="button" aria-label="Close notification">×</button>
+    </div>
+
+    <section class="panel access-panel">
+      <h2>Add a member</h2>
+      <p class="form-help">Enter the exact username of an active user. No directory search is performed.</p>
+      <form id="user-lookup-form" class="member-form access-lookup-form">
+        <label class="sr-only" for="lookup-username">Exact username</label>
+        <input id="lookup-username" name="username" minlength="2" maxlength="80" pattern="[A-Za-z0-9._-]+" autocomplete="off" required placeholder="Exact username">
+        <button type="submit">Look up user</button>
+      </form>
+      <div id="lookup-result" class="lookup-result hidden"></div>
+    </section>
+
+    <section class="panel access-panel">
+      <div class="dialog-head"><h2>Current members</h2><button id="refresh-members" class="secondary" type="button">Refresh</button></div>
+      <div id="members-list" class="admin-list"></div>
+    </section>
+
+    <section id="quota-panel" class="panel access-panel quota-panel">
+      <h2>Vault quotas</h2>
+      <p class="form-help">Effective limits and current usage. Blank limits are unlimited. Storage and restore use bytes; concurrency uses jobs.</p>
+      <p id="owner-quota-load-state" class="form-help" role="status" aria-live="polite">Loading quota status…</p>
+      <div id="owner-quota-limits" class="quota-readout"></div>
+      <div id="owner-quota-usage" class="quota-readout"></div>
+      <div id="owner-quota-state" class="quota-state" aria-live="polite"></div>
+    </section>
+
+    <section id="operation-policy-panel" class="panel access-panel">
+      <h2>Local Copy retention</h2>
+      <p class="form-help">
+        Automatic cleanup is off by default. Retention starts when the latest matching Archive Version is successfully verified, never from the local file modification time. Cleanup remains queued and rechecks the exact fingerprint before removing only the Local Copy.
+      </p>
+      <p id="owner-operation-policy-load-state" class="form-help" role="status" aria-live="polite">Loading Local Copy retention…</p>
+      <form id="operation-policy-form" class="stack-form">
+        <label class="check">
+          <input id="auto-local-cleanup" type="checkbox">
+          Automatically clean verified Local Copies
+        </label>
+        <label for="local-retention-days">Retention after verification (days)</label>
+        <input id="local-retention-days" type="number" min="1" step="1" inputmode="numeric">
+        <p class="form-help">Changing this value recalculates eligibility during the next vault scan. Manual cleanup remains available.</p>
+        <div class="form-actions"><button type="submit">Save Local Copy retention</button></div>
+      </form>
+    </section>
+
+    <section id="lifecycle-panel" class="panel access-panel lifecycle-panel">
+      <h2>Lifecycle policy</h2>
+      <p class="form-help">Guided storage-class profiles apply through object tags, so crypt vaults do not need readable key prefixes. Changing a profile retags over time and updates application-owned S3 lifecycle rules. Profiles that archive can also transition retained noncurrent Archive Versions after a Delete Marker hides the current key.</p>
+      <p id="owner-lifecycle-load-state" class="form-help" role="status" aria-live="polite">Loading lifecycle policy…</p>
+      <form id="lifecycle-default-form" class="stack-form">
+        <label for="lifecycle-default-profile">Vault default profile</label>
+        <select id="lifecycle-default-profile" name="guided_profile" required></select>
+        <div class="form-actions"><button type="submit">Save default profile</button></div>
+      </form>
+      <form id="lifecycle-override-form" class="stack-form">
+        <h3>Folder override</h3>
+        <label for="lifecycle-folder-path">Folder path</label>
+        <input id="lifecycle-folder-path" name="folder_path" maxlength="500" placeholder="photos/2024" required>
+        <label for="lifecycle-folder-profile">Profile</label>
+        <select id="lifecycle-folder-profile" name="guided_profile" required></select>
+        <div class="form-actions"><button type="submit">Add or update override</button></div>
+      </form>
+      <div id="owner-lifecycle-overrides" class="admin-list"></div>
+      <div id="owner-lifecycle-warnings" class="form-help" aria-live="polite"></div>
+    </section>
+
+    <section id="cloud-deletion-panel" class="panel access-panel">
+      <h2>Cloud deletion</h2>
+      <p class="form-help" id="cloud-deletion-marker-help">
+        Cloud deletion is off by default. Reversible archival creates a Delete Marker that hides the current key without deleting Archive Version data. Permanent purge is a separate action with confirmation and a cancellable delay.
+      </p>
+      <p id="owner-cloud-deletion-load-state" class="form-help" role="status" aria-live="polite">Loading cloud deletion setting…</p>
+      <p id="cloud-deletion-risk" class="form-help"></p>
+      <form id="cloud-deletion-setting-form" class="stack-form">
+        <label class="check">
+          <input id="cloud-deletion-enabled" type="checkbox">
+          Enable cloud deletion workflows for this vault
+        </label>
+        <div class="form-actions"><button type="submit">Save cloud deletion setting</button></div>
+      </form>
+    </section>
+
+    <dialog id="transfer-dialog">
+      <form id="transfer-form" class="stack-form">
+        <div class="dialog-head"><h2>Transfer primary ownership</h2><button id="cancel-transfer" class="secondary" type="button">Cancel</button></div>
+        <p id="transfer-message"></p>
+        <input id="transfer-user-id" type="hidden">
+        <label class="check"><input id="transfer-confirm" type="checkbox" required> I understand that I will become an operator and lose access-management control.</label>
+        <div class="form-actions"><button type="submit" class="danger">Transfer ownership</button></div>
+      </form>
+    </dialog>
+  </main>
+  <script src="/static/vault_access.js"></script>
+</body>
+</html>

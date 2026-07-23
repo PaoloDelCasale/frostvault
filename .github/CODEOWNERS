@@ -1,0 +1,8 @@
+* @PaoloDelCasale
+
+.github/ @PaoloDelCasale
+app/security.py @PaoloDelCasale
+app/sessions.py @PaoloDelCasale
+app/oidc.py @PaoloDelCasale
+app/breakglass.py @PaoloDelCasale
+infra/ @PaoloDelCasale

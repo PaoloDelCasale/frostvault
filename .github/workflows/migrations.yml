@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite-and-postgresql:
+    name: Unit and migration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: archive_test
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d archive_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/archive_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "20"
+      - run: python -m pip install -r requirements.txt
+      - name: Python unit tests (no live AWS or MinIO credentials required)
+        run: python -m unittest discover -s tests -v
+      - name: Frontend JS tests
+        run: node --test tests/*.mjs
+
+  s3-compatible-integrity:
+    name: S3-compatible integrity (MinIO)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://127.0.0.1:9000
+      TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      TEST_S3_BUCKET: archive-ci
+      AWS_EC2_METADATA_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install rclone
+        run: |
+          RCLONE_VERSION=1.74.4
+          RCLONE_ARCHIVE="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
+          curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/${RCLONE_ARCHIVE}" \
+            -o "/tmp/${RCLONE_ARCHIVE}"
+          echo "fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d  /tmp/${RCLONE_ARCHIVE}" \
+            | sha256sum --check --strict
+          sudo unzip -qo "/tmp/${RCLONE_ARCHIVE}" -d /tmp
+          sudo cp "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+          rclone version
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio-ci \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:RELEASE.2025-09-07T16-13-09Z \
+            server /data --address :9000
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9000/minio/health/live; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "MinIO failed to become healthy" >&2
+          docker logs minio-ci >&2 || true
+          exit 1
+      - run: python -m pip install -r requirements.txt
+      - name: Create versioned test bucket
+        run: |
+          python - <<'PY'
+          import boto3
+          client = boto3.client(
+              "s3",
+              endpoint_url="http://127.0.0.1:9000",
+              region_name="us-east-1",
+              aws_access_key_id="minioadmin",
+              aws_secret_access_key="minioadmin",
+          )
+          bucket = "archive-ci"
+          try:
+              client.create_bucket(Bucket=bucket)
+          except Exception:
+              pass
+          client.put_bucket_versioning(
+              Bucket=bucket,
+              VersioningConfiguration={"Status": "Enabled"},
+          )
+          print("bucket ready")
+          PY
+      - name: S3 integrity integration tests
+        run: |
+          python -m unittest \
+            tests.test_s3_client_endpoint \
+            tests.test_s3_prefix_cleanup \
+            tests.test_s3_integrity_integration \
+            -v
+      - name: Surface leftover prefix cleanup
+        if: always()
+        run: |
+          mkdir -p artifacts
+          python -m app.services.s3_prefix_cleanup_cli \
+            --bucket archive-ci \
+            --prefix ci-runs \
+            --prefix ci-crypt \
+            --prefix cleanup-test \
+            --report-path artifacts/s3-cleanup-report.json
+      - name: Upload cleanup report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: s3-cleanup-report
+          path: artifacts/s3-cleanup-report.json
+          if-no-files-found: ignore

@@ -1,0 +1,14 @@
+[aws-s3]
+type = s3
+provider = AWS
+env_auth = true
+region = eu-south-1
+location_constraint = eu-south-1
+no_check_bucket = true
+
+[test-crypt]
+type = crypt
+remote = aws-s3:example-bucket/development/test
+filename_encryption = off
+directory_name_encryption = false
+password = REPLACE-WITH-PASSWORD-OBSCURED-BY-RCLONE

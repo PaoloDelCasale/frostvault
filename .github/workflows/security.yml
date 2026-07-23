@@ -1,0 +1,145 @@
+name: Repository security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "41 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  # Native actions/dependency-review-action needs Dependency graph + GitHub
+  # Advanced Security on private repositories. pip-audit is the portable gate
+  # for this Python stack and enforces a high+ severity policy without GHAS.
+  dependency-review:
+    name: Dependency review (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Install pip-audit
+        run: python -m pip install pip-audit==2.10.1
+      - name: Audit Python dependencies (fail on known vulnerabilities)
+        run: |
+          pip-audit -r requirements.txt --progress-spinner off
+        # Severity gate: any known vulnerability fails the job. Exception
+        # process: temporarily add --ignore-vuln IDs with a linked issue URL
+        # and review date in a workflow comment.
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      # Required only when the repository is public and SARIF is uploaded.
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
+        with:
+          languages: python, javascript
+          build-mode: none
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
+        with:
+          category: "/language:python-javascript"
+          # Bootstrap safely while private, then publish the same SARIF to
+          # GitHub Code Scanning as soon as the repository becomes public.
+          upload: ${{ github.event.repository.private == false }}
+          output: sarif-results
+      - name: Upload CodeQL SARIF artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codeql-sarif
+          path: sarif-results
+      - name: Fail on CodeQL error-severity findings
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          errors = []
+          for path in Path("sarif-results").glob("*.sarif"):
+              data = json.loads(path.read_text(encoding="utf-8"))
+              for run in data.get("runs", []):
+                  for result in run.get("results", []) or []:
+                      level = (result.get("level") or "").lower()
+                      properties = result.get("properties") or {}
+                      severity = str(properties.get("security-severity") or "").lower()
+                      if level == "error" or severity in {"critical", "high"}:
+                          rule = result.get("ruleId", "unknown")
+                          msg = (result.get("message") or {}).get("text", "")
+                          errors.append(f"{path.name}: {rule}: {msg}")
+          if errors:
+              print("CodeQL severity gate failed:")
+              for item in errors:
+                  print(f"  - {item}")
+              sys.exit(1)
+          print("CodeQL severity gate passed (no error/high/critical findings)")
+          PY
+
+  gitleaks:
+    name: Secret scanning (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # Run the CLI directly so we do not need pull-request write permissions
+      # that gitleaks-action uses for review comments.
+      - name: Install gitleaks
+        run: |
+          curl -sSfL \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
+            -o /tmp/gitleaks.tar.gz
+          echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tar.gz" \
+            | sha256sum --check --strict
+          sudo tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Run Gitleaks
+        run: gitleaks detect --source . --verbose --redact
+
+  sbom-and-image:
+    name: SBOM and image vulnerability scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Generate Python SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: .
+          format: spdx-json
+          artifact-name: python-sbom.spdx.json
+      - name: Build runtime image
+        run: docker build -t archive-ci:scan .
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: archive-ci:scan
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+        # Severity gate: CRITICAL/HIGH fail the job. Exceptions go in
+        # .trivyignore with an advisory URL and review date in a comment.

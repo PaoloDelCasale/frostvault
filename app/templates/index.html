@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="{{ locale }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ vault.name }} · {{ product_name }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main
+    data-role="{{ vault.role }}"
+    data-can-operate="{{ 'true' if can_operate else 'false' }}"
+    data-delete-enabled="{{ 'true' if delete_enabled else 'false' }}"
+    data-cloud-deletion-enabled="{{ 'true' if cloud_deletion_enabled else 'false' }}"
+    data-is-vault-owner="{{ 'true' if is_vault_owner else 'false' }}"
+    data-vault-name="{{ vault.name }}"
+  >
+    <header>
+      <div>
+        <p class="eyebrow">{{ product_name }}</p>
+        <h1>{{ vault.name }}</h1>
+        <p class="subtitle">{{ t('ui.archive_subtitle') }}</p>
+      </div>
+      <div class="account-bar">
+        <select id="vault-selector" aria-label="{{ t('ui.vault') }}"></select>
+        <a class="button-link secondary" href="/vaults/new">{{ t('ui.new_vault') }}</a>
+        {% if vault.role == 'owner' %}<a id="vault-access-link" class="button-link secondary" href="/vault/access">{{ t('ui.manage_access') }}</a>{% endif %}
+        {% if user.is_admin %}<a class="button-link secondary" href="/admin">{{ t('ui.administration') }}</a>{% endif %}
+        {% if can_operate %}<button id="scan-button" class="secondary">{{ t('ui.refresh_list') }}</button>{% endif %}
+        <label class="locale-switcher">
+          <span class="sr-only">{{ t('ui.language') }}</span>
+          <select id="locale-selector" aria-label="{{ t('ui.language') }}">
+            {% for code in available_locales() %}
+            <option value="{{ code }}" {% if code == locale %}selected{% endif %}>{{ t('ui.language_' + code) }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button id="logout-button" class="secondary">{{ t('ui.sign_out') }}</button>
+      </div>
+    </header>
+
+    <section id="summary" class="summary"></section>
+    <section id="filesystem-health" class="filesystem-health" hidden></section>
+
+    <section class="panel">
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="{{ t('ui.search_placeholder') }}">
+        <select id="state-filter" aria-label="{{ t('ui.filter_by_state') }}">
+          <option value="">{{ t('ui.all_items') }}</option>
+          <option value="local_only">{{ t('state.filter.local_only') }}</option>
+          <option value="both">{{ t('state.filter.both') }}</option>
+          <option value="cloud_only">{{ t('state.filter.cloud_only') }}</option>
+          <option value="restoring">{{ t('state.filter.restoring') }}</option>
+        </select>
+      </div>
+
+      <div class="browser-nav">
+        <button id="up-directory" class="secondary" type="button" aria-label="{{ t('ui.go_up') }}">{{ t('ui.up') }}</button>
+        <nav id="breadcrumbs" class="breadcrumbs" aria-label="Current path"></nav>
+      </div>
+
+      <div id="notice" class="notice toast hidden" role="status" aria-live="polite" aria-atomic="true">
+        <span class="notice-icon" aria-hidden="true"></span>
+        <span class="notice-message"></span>
+        <button class="notice-close" type="button" aria-label="{{ t('ui.close_notification') }}">×</button>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>{{ t('ui.name') }}</th>
+              <th>{{ t('ui.size') }}</th>
+              <th>{{ t('ui.state') }}</th>
+              <th>{{ t('ui.cloud_storage') }}</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="file-list"></tbody>
+        </table>
+      </div>
+
+      <div class="pagination">
+        <button id="previous" class="secondary">{{ t('ui.previous') }}</button>
+        <span id="page-label"></span>
+        <button id="next" class="secondary">{{ t('ui.next') }}</button>
+      </div>
+    </section>
+
+    <section class="safety">
+      <span>🔒</span>
+      <div><strong>{{ t('ui.protected_archive', name=user.display_name) }}</strong><br>{{ t('ui.protected_archive_detail') }}</div>
+    </section>
+  </main>
+  <script id="i18n-catalog" type="application/json">{{ catalog | tojson }}</script>
+  <script src="/static/app.js"></script>
+  <script>
+    document.querySelector("#locale-selector").addEventListener("change", async event => {
+      const locale = event.currentTarget.value;
+      try {
+        await fetch("/api/locale", {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRF-Token": document.cookie.split(";").map(part => part.trim()).find(part => part.startsWith("frostvault_csrf="))?.slice("frostvault_csrf=".length) || "",
+          },
+          body: JSON.stringify({locale}),
+        });
+      } catch (_) {
+        document.cookie = `frostvault_locale=${encodeURIComponent(locale)}; Path=/; Max-Age=31536000; SameSite=Lax`;
+      }
+      window.location.reload();
+    });
+  </script>
+</body>
+</html>

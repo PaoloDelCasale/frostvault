@@ -1,0 +1,6 @@
+aws_region  = "eu-south-1"
+bucket_name = "example-frostvault-archive"
+
+tags = {
+  project = "frostvault"
+}

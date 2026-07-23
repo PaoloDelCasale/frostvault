@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>No vault · {{ product_name }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="auth-page">
+  <main class="auth-shell">
+    <section class="auth-card">
+      <p class="eyebrow">{{ product_name }}</p>
+      <h1>No vault assigned yet</h1>
+      <p class="subtitle">Create a private vault for yourself, or ask an administrator to assign one.</p>
+      <div class="form-actions">
+        <a class="button-link" href="/vaults/new">Create a vault</a>
+        <button id="logout-button" class="secondary">Sign out</button>
+      </div>
+    </section>
+  </main>
+  <script>document.querySelector('#logout-button').onclick = async () => {
+    const match = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('frostvault_csrf='));
+    const csrf = match ? decodeURIComponent(match.slice('frostvault_csrf='.length)) : '';
+    await fetch('/api/logout', {method: 'POST', headers: {'X-CSRF-Token': csrf}});
+    location.href = '/login';
+  };</script>
+</body>
+</html>

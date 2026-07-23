@@ -1,0 +1,64 @@
+# Reference Traefik deployment. FrostVault stays on a private Docker
+# network and is never published with host ports — Traefik terminates TLS.
+#
+# Prerequisites: a Traefik instance with an entrypoint `websecure`, a
+# certificate resolver `letsencrypt`, and the external network `proxy`.
+# Point TRUSTED_PROXIES at the Traefik container CIDR and set ALLOWED_HOSTS
+# to the public hostname before enabling COOKIE_SECURE=true.
+
+networks:
+  proxy:
+    external: true
+  frostvault_internal:
+    driver: bridge
+    internal: true
+
+services:
+  frostvault:
+    build: .
+    container_name: frostvault
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PUID: ${PUID:-99}
+      PGID: ${PGID:-100}
+      COOKIE_SECURE: "true"
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-frostvault.example.com}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12}
+    volumes:
+      - "${SOURCES_ROOT}:/sources:rw"
+      - "./data:/data"
+      - "./config:/config/rclone:ro"
+    tmpfs:
+      - /tmp
+      - /run
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - frostvault_internal
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.frostvault.rule=Host(`${ALLOWED_HOSTS:-frostvault.example.com}`)"
+      - "traefik.http.routers.frostvault.entrypoints=websecure"
+      - "traefik.http.routers.frostvault.tls=true"
+      - "traefik.http.routers.frostvault.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.frostvault.middlewares=frostvault-headers,frostvault-ratelimit"
+      - "traefik.http.services.frostvault.loadbalancer.server.port=8080"
+      - "traefik.http.middlewares.frostvault-headers.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.frostvault-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.frostvault-headers.headers.stsPreload=true"
+      - "traefik.http.middlewares.frostvault-headers.headers.forceSTSHeader=true"
+      - "traefik.http.middlewares.frostvault-headers.headers.browserXssFilter=true"
+      - "traefik.http.middlewares.frostvault-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.frostvault-headers.headers.referrerPolicy=strict-origin-when-cross-origin"
+      - "traefik.http.middlewares.frostvault-headers.headers.customFrameOptionsValue=DENY"
+      - "traefik.http.middlewares.frostvault-headers.headers.contentSecurityPolicy=default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'"
+      - "traefik.http.middlewares.frostvault-ratelimit.rateLimit.average=100"
+      - "traefik.http.middlewares.frostvault-ratelimit.rateLimit.burst=200"
