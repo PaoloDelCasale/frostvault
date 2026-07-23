@@ -85,7 +85,10 @@ def write_s3_rclone_config(
     """Write S3 base remote and optional plain alias.
 
     Returns ``(plain_or_base_remote_name, base_remote_name)``.
+    ``prefix`` is unused for the plain alias (bucket-rooted; issue #9) and
+    remains only for call-site compatibility.
     """
+    del prefix
     provider = s3_provider()
     cutoff_line = (
         f"\nupload_cutoff = {upload_cutoff}" if upload_cutoff else ""
@@ -122,14 +125,16 @@ def write_s3_rclone_config(
     sections = [base]
     active = base_name
     if with_plain_alias:
-        if not bucket or prefix is None:
-            raise ValueError("plain alias requires bucket and prefix")
+        if not bucket:
+            raise ValueError("plain alias requires bucket")
+        # Bucket-rooted shared remotes: FrostVault appends vault s3_prefix
+        # at the object path (issue #9). Do not embed the prefix in the alias.
         sections.append(
             textwrap.dedent(
                 f"""\
                 [{remote_name}]
                 type = alias
-                remote = {base_name}:{bucket}/{prefix.strip("/")}
+                remote = {base_name}:{bucket}
                 """
             ).rstrip()
         )
@@ -143,21 +148,25 @@ def write_plain_rclone_config(
     *,
     endpoint: str,
     bucket: str,
-    prefix: str,
     access_key: str,
     secret_key: str,
     remote_name: str = "ci-plain",
     base_name: str = "ci-s3",
     upload_cutoff: str | None = None,
+    prefix: str | None = None,
 ) -> str:
-    """Write an alias remote whose root is ``bucket/prefix``; return remote name."""
+    """Write a bucket-rooted plain alias remote; return remote name.
+
+    ``prefix`` is accepted for call-site compatibility but is not embedded in
+    the alias: object paths include the vault ``s3_prefix`` separately.
+    """
+    del prefix  # kept only so older call sites keep working until updated
     remote, _base = write_s3_rclone_config(
         path,
         endpoint=endpoint,
         access_key=access_key,
         secret_key=secret_key,
         bucket=bucket,
-        prefix=prefix,
         remote_name=remote_name,
         base_name=base_name,
         with_plain_alias=True,
