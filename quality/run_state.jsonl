@@ -1,0 +1,17 @@
+{"event": "_index", "ts": "2026-07-23T23:09:52Z", "schema_version": "1.5.6", "event_types": ["_index", "run_start", "phase_start", "pattern_walked", "finding_logged", "artifact_written", "phase_end", "error"], "benchmark": "FrostVault", "lever_state": "baseline", "started_at": "2026-07-23T23:09:52Z"}
+{"event": "run_start", "ts": "2026-07-23T23:09:52Z", "runner": "cursor", "playbook_version": "1.5.6", "target_path": "."}
+{"event": "phase_start", "ts": "2026-07-23T23:09:52Z", "phase": 1}
+{"event": "pattern_walked", "ts": "2026-07-23T23:13:35Z", "phase": 1, "pattern": 1, "findings_count": 3}
+{"event": "pattern_walked", "ts": "2026-07-23T23:13:35Z", "phase": 1, "pattern": 2, "findings_count": 2}
+{"event": "pattern_walked", "ts": "2026-07-23T23:13:35Z", "phase": 1, "pattern": 3, "findings_count": 3}
+{"event": "pattern_walked", "ts": "2026-07-23T23:13:35Z", "phase": 1, "pattern": 7, "findings_count": 2}
+{"event": "finding_logged", "ts": "2026-07-23T23:13:35Z", "phase": 1, "finding_id": "CAND-001", "category": "code-bug"}
+{"event": "finding_logged", "ts": "2026-07-23T23:13:35Z", "phase": 1, "finding_id": "CAND-002", "category": "spec-divergence"}
+{"event": "finding_logged", "ts": "2026-07-23T23:13:35Z", "phase": 1, "finding_id": "CAND-003", "category": "code-bug"}
+{"event": "finding_logged", "ts": "2026-07-23T23:13:35Z", "phase": 1, "finding_id": "CAND-004", "category": "code-bug"}
+{"event": "finding_logged", "ts": "2026-07-23T23:13:35Z", "phase": 1, "finding_id": "CAND-005", "category": "code-bug"}
+{"event": "finding_logged", "ts": "2026-07-23T23:13:35Z", "phase": 1, "finding_id": "CAND-006", "category": "code-bug"}
+{"event": "artifact_written", "ts": "2026-07-23T23:13:35Z", "relative_path": "quality/EXPLORATION.md", "byte_size": 24747, "line_count": 283}
+{"event": "artifact_written", "ts": "2026-07-23T23:13:35Z", "relative_path": "quality/exploration_role_map.json", "byte_size": 41148, "line_count": 1291}
+{"event": "artifact_written", "ts": "2026-07-23T23:13:35Z", "relative_path": "quality/PROGRESS.md", "byte_size": 3801, "line_count": 71}
+{"event": "phase_end", "ts": "2026-07-23T23:13:35Z", "phase": 1, "key_counts": {"open_findings": 10, "quality_risks": 8, "full_patterns": 4, "candidate_bugs": 6, "role_map_files": 214}, "artifacts_produced": ["quality/EXPLORATION.md", "quality/exploration_role_map.json", "quality/PROGRESS.md", "quality/run_state.jsonl", "quality/results/run-2026-07-23T23-09-52.json"]}

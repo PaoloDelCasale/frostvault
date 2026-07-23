@@ -1,0 +1,1291 @@
+{
+  "schema_version": "1.0",
+  "timestamp_start": "2026-07-23T23:09:52Z",
+  "provenance": "git-ls-files",
+  "files": [
+    {
+      "path": ".env.example",
+      "role": "config",
+      "size_bytes": 5514,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": ".env.local.example",
+      "role": "config",
+      "size_bytes": 1958,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": ".github/CODEOWNERS",
+      "role": "config",
+      "size_bytes": 193,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": ".github/dependabot.yml",
+      "role": "config",
+      "size_bytes": 430,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": ".github/workflows/aws-s3-integrity.yml",
+      "role": "config",
+      "size_bytes": 3598,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": ".github/workflows/migrations.yml",
+      "role": "config",
+      "size_bytes": 8279,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": ".github/workflows/publish-image.yml",
+      "role": "config",
+      "size_bytes": 1761,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": ".github/workflows/security.yml",
+      "role": "config",
+      "size_bytes": 5635,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": ".gitignore",
+      "role": "config",
+      "size_bytes": 274,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": ".trivyignore",
+      "role": "config",
+      "size_bytes": 400,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "AGENTS.md",
+      "role": "docs",
+      "size_bytes": 3332,
+      "rationale": "Human-facing documentation or agent orientation; not executable product code."
+    },
+    {
+      "path": "CONTEXT.md",
+      "role": "docs",
+      "size_bytes": 2605,
+      "rationale": "Human-facing documentation or agent orientation; not executable product code."
+    },
+    {
+      "path": "Dockerfile",
+      "role": "config",
+      "size_bytes": 1729,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "LICENSE",
+      "role": "docs",
+      "size_bytes": 11357,
+      "rationale": "Human-facing documentation or agent orientation; not executable product code."
+    },
+    {
+      "path": "README.md",
+      "role": "docs",
+      "size_bytes": 14093,
+      "rationale": "Human-facing documentation or agent orientation; not executable product code."
+    },
+    {
+      "path": "SECURITY.md",
+      "role": "docs",
+      "size_bytes": 1078,
+      "rationale": "Human-facing documentation or agent orientation; not executable product code."
+    },
+    {
+      "path": "alembic.ini",
+      "role": "config",
+      "size_bytes": 558,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "app/__init__.py",
+      "role": "code",
+      "size_bytes": 1,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/audit.py",
+      "role": "code",
+      "size_bytes": 1898,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/backoff.py",
+      "role": "code",
+      "size_bytes": 3144,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/backup_upgrade.py",
+      "role": "code",
+      "size_bytes": 1931,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/branding.py",
+      "role": "code",
+      "size_bytes": 56,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/breakglass.py",
+      "role": "code",
+      "size_bytes": 1504,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/catalog.py",
+      "role": "code",
+      "size_bytes": 47677,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/config.py",
+      "role": "code",
+      "size_bytes": 9397,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/database.py",
+      "role": "code",
+      "size_bytes": 5642,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/i18n.py",
+      "role": "code",
+      "size_bytes": 6686,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/invites.py",
+      "role": "code",
+      "size_bytes": 3544,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/locales/en.json",
+      "role": "fixture",
+      "size_bytes": 6811,
+      "rationale": "Locale catalog or local data placeholder used as non-code fixture content."
+    },
+    {
+      "path": "app/locales/it.json",
+      "role": "fixture",
+      "size_bytes": 7339,
+      "rationale": "Locale catalog or local data placeholder used as non-code fixture content."
+    },
+    {
+      "path": "app/lookup_rate_limit.py",
+      "role": "code",
+      "size_bytes": 2632,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/main.py",
+      "role": "code",
+      "size_bytes": 121036,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/oidc.py",
+      "role": "code",
+      "size_bytes": 7510,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/proxy.py",
+      "role": "code",
+      "size_bytes": 1488,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/security.py",
+      "role": "code",
+      "size_bytes": 575,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/__init__.py",
+      "role": "code",
+      "size_bytes": 265,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/audit_events.py",
+      "role": "code",
+      "size_bytes": 5593,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/catalog_audit.py",
+      "role": "code",
+      "size_bytes": 5278,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/cloud_deletion.py",
+      "role": "code",
+      "size_bytes": 26459,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/cost_estimates.py",
+      "role": "code",
+      "size_bytes": 8406,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/email_templates.py",
+      "role": "code",
+      "size_bytes": 2580,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/fs_preflight.py",
+      "role": "code",
+      "size_bytes": 7215,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/health.py",
+      "role": "code",
+      "size_bytes": 1970,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/job_scheduler.py",
+      "role": "code",
+      "size_bytes": 3658,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/lifecycle_policies.py",
+      "role": "code",
+      "size_bytes": 8442,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/lifecycle_profiles.py",
+      "role": "code",
+      "size_bytes": 6274,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/metadata_backups.py",
+      "role": "code",
+      "size_bytes": 26488,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/metrics.py",
+      "role": "code",
+      "size_bytes": 3649,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/notifications.py",
+      "role": "code",
+      "size_bytes": 11847,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/operation_policies.py",
+      "role": "code",
+      "size_bytes": 16565,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/policy_reconciliation.py",
+      "role": "code",
+      "size_bytes": 1234,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/rclone_runtime.py",
+      "role": "code",
+      "size_bytes": 5373,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/restore_estimates.py",
+      "role": "code",
+      "size_bytes": 2688,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/s3_lifecycle_rules.py",
+      "role": "code",
+      "size_bytes": 3630,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/s3_object_tags.py",
+      "role": "code",
+      "size_bytes": 922,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/s3_prefix_cleanup.py",
+      "role": "code",
+      "size_bytes": 2912,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/s3_prefix_cleanup_cli.py",
+      "role": "code",
+      "size_bytes": 1914,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/s3_preflight.py",
+      "role": "code",
+      "size_bytes": 4747,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/vault_crypto.py",
+      "role": "code",
+      "size_bytes": 4682,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/vault_governance.py",
+      "role": "code",
+      "size_bytes": 11530,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/vault_quotas.py",
+      "role": "code",
+      "size_bytes": 13661,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/vault_recovery.py",
+      "role": "code",
+      "size_bytes": 4777,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/vault_roles.py",
+      "role": "code",
+      "size_bytes": 1277,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/vaults.py",
+      "role": "code",
+      "size_bytes": 7147,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/services/worker_errors.py",
+      "role": "code",
+      "size_bytes": 2902,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/sessions.py",
+      "role": "code",
+      "size_bytes": 5325,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/static/admin.js",
+      "role": "code",
+      "size_bytes": 19818,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/static/app.js",
+      "role": "code",
+      "size_bytes": 29824,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/static/style.css",
+      "role": "code",
+      "size_bytes": 15632,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/static/vault_access.js",
+      "role": "code",
+      "size_bytes": 20798,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/static/vault_create.js",
+      "role": "code",
+      "size_bytes": 4884,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/storage.py",
+      "role": "code",
+      "size_bytes": 100487,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/templates/admin.html",
+      "role": "code",
+      "size_bytes": 6289,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/templates/index.html",
+      "role": "code",
+      "size_bytes": 5016,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/templates/login.html",
+      "role": "code",
+      "size_bytes": 3207,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/templates/no_vault.html",
+      "role": "code",
+      "size_bytes": 1147,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/templates/vault_access.html",
+      "role": "code",
+      "size_bytes": 7010,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "app/templates/vault_create.html",
+      "role": "code",
+      "size_bytes": 2455,
+      "rationale": "Application runtime source (API, services, templates, or static UI)."
+    },
+    {
+      "path": "compose.traefik.yaml",
+      "role": "config",
+      "size_bytes": 2818,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "compose.yaml",
+      "role": "config",
+      "size_bytes": 761,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "config/rclone.conf.example",
+      "role": "config",
+      "size_bytes": 754,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "config/rclone.local.conf.example",
+      "role": "config",
+      "size_bytes": 451,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "data/.gitkeep",
+      "role": "fixture",
+      "size_bytes": 1,
+      "rationale": "Locale catalog or local data placeholder used as non-code fixture content."
+    },
+    {
+      "path": "docker/entrypoint.sh",
+      "role": "config",
+      "size_bytes": 1008,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "docs/adr/0001-stable-vault-file-identity.md",
+      "role": "formal-spec",
+      "size_bytes": 681,
+      "rationale": "Normative architecture decision record; product contracts derive from these ADRs."
+    },
+    {
+      "path": "docs/adr/0002-oidc-via-authlib.md",
+      "role": "formal-spec",
+      "size_bytes": 1805,
+      "rationale": "Normative architecture decision record; product contracts derive from these ADRs."
+    },
+    {
+      "path": "docs/adr/0003-invite-only-identity-binding.md",
+      "role": "formal-spec",
+      "size_bytes": 2021,
+      "rationale": "Normative architecture decision record; product contracts derive from these ADRs."
+    },
+    {
+      "path": "docs/adr/0004-break-glass-network-gating.md",
+      "role": "formal-spec",
+      "size_bytes": 2794,
+      "rationale": "Normative architecture decision record; product contracts derive from these ADRs."
+    },
+    {
+      "path": "docs/adr/0005-host-csrf-reauth-hardening.md",
+      "role": "formal-spec",
+      "size_bytes": 3501,
+      "rationale": "Normative architecture decision record; product contracts derive from these ADRs."
+    },
+    {
+      "path": "docs/adr/0006-english-default-i18n.md",
+      "role": "formal-spec",
+      "size_bytes": 1760,
+      "rationale": "Normative architecture decision record; product contracts derive from these ADRs."
+    },
+    {
+      "path": "docs/agents/domain.md",
+      "role": "docs",
+      "size_bytes": 2029,
+      "rationale": "Human-facing documentation or agent orientation; not executable product code."
+    },
+    {
+      "path": "docs/agents/issue-tracker.md",
+      "role": "docs",
+      "size_bytes": 3137,
+      "rationale": "Human-facing documentation or agent orientation; not executable product code."
+    },
+    {
+      "path": "docs/agents/triage-labels.md",
+      "role": "docs",
+      "size_bytes": 885,
+      "rationale": "Human-facing documentation or agent orientation; not executable product code."
+    },
+    {
+      "path": "docs/aws-s3-bucket.md",
+      "role": "docs",
+      "size_bytes": 6875,
+      "rationale": "Human-facing documentation or agent orientation; not executable product code."
+    },
+    {
+      "path": "docs/ci.md",
+      "role": "docs",
+      "size_bytes": 4433,
+      "rationale": "Human-facing documentation or agent orientation; not executable product code."
+    },
+    {
+      "path": "docs/filesystem-permissions.md",
+      "role": "docs",
+      "size_bytes": 2896,
+      "rationale": "Human-facing documentation or agent orientation; not executable product code."
+    },
+    {
+      "path": "docs/metadata-backups.md",
+      "role": "docs",
+      "size_bytes": 5390,
+      "rationale": "Human-facing documentation or agent orientation; not executable product code."
+    },
+    {
+      "path": "docs/traefik.md",
+      "role": "docs",
+      "size_bytes": 1864,
+      "rationale": "Human-facing documentation or agent orientation; not executable product code."
+    },
+    {
+      "path": "docs/translation-workflow.md",
+      "role": "docs",
+      "size_bytes": 1796,
+      "rationale": "Human-facing documentation or agent orientation; not executable product code."
+    },
+    {
+      "path": "infra/terraform/archive-bucket/README.md",
+      "role": "config",
+      "size_bytes": 1272,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "infra/terraform/archive-bucket/iam/archive-operator-policy.json",
+      "role": "config",
+      "size_bytes": 1078,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "infra/terraform/archive-bucket/iam/github-oidc-ci-policy.json",
+      "role": "config",
+      "size_bytes": 1170,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "infra/terraform/archive-bucket/main.tf",
+      "role": "config",
+      "size_bytes": 1215,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "infra/terraform/archive-bucket/outputs.tf",
+      "role": "config",
+      "size_bytes": 605,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "infra/terraform/archive-bucket/terraform.tfvars.example",
+      "role": "config",
+      "size_bytes": 107,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "infra/terraform/archive-bucket/variables.tf",
+      "role": "config",
+      "size_bytes": 561,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "infra/terraform/archive-bucket/versions.tf",
+      "role": "config",
+      "size_bytes": 195,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "infra/terraform/github-oidc-ci/README.md",
+      "role": "config",
+      "size_bytes": 809,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "infra/terraform/github-oidc-ci/main.tf",
+      "role": "config",
+      "size_bytes": 2937,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "migrations/env.py",
+      "role": "code",
+      "size_bytes": 1971,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/script.py.mako",
+      "role": "code",
+      "size_bytes": 593,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0001_current_schema.py",
+      "role": "code",
+      "size_bytes": 14847,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0002_versioned_archive.py",
+      "role": "code",
+      "size_bytes": 26898,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0003_server_side_sessions.py",
+      "role": "code",
+      "size_bytes": 1875,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0004_oidc_login.py",
+      "role": "code",
+      "size_bytes": 1915,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0005_invites.py",
+      "role": "code",
+      "size_bytes": 2779,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0006_auth_backoff.py",
+      "role": "code",
+      "size_bytes": 1182,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0007_vault_ownership.py",
+      "role": "code",
+      "size_bytes": 5342,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0008_lookup_rate_limit.py",
+      "role": "code",
+      "size_bytes": 1645,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0009_vault_quotas.py",
+      "role": "code",
+      "size_bytes": 3009,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0010_vault_encryption.py",
+      "role": "code",
+      "size_bytes": 1963,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0011_lifecycle_policies.py",
+      "role": "code",
+      "size_bytes": 2256,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0012_lifecycle_profile_json.py",
+      "role": "code",
+      "size_bytes": 722,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0013_upload_retry_schedule.py",
+      "role": "code",
+      "size_bytes": 936,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0014_rename_jobs.py",
+      "role": "code",
+      "size_bytes": 971,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0015_recovery_guardrails.py",
+      "role": "code",
+      "size_bytes": 1338,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0016_ops_observability.py",
+      "role": "code",
+      "size_bytes": 6917,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0017_job_message_keys.py",
+      "role": "code",
+      "size_bytes": 783,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0018_metadata_backups.py",
+      "role": "code",
+      "size_bytes": 1866,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0019_cloud_deletion.py",
+      "role": "code",
+      "size_bytes": 3315,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0020_operation_policies.py",
+      "role": "code",
+      "size_bytes": 3014,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/0021_local_retention.py",
+      "role": "code",
+      "size_bytes": 1843,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "migrations/versions/__init__.py",
+      "role": "code",
+      "size_bytes": 0,
+      "rationale": "Alembic migration script that mutates the application schema."
+    },
+    {
+      "path": "requirements.txt",
+      "role": "config",
+      "size_bytes": 249,
+      "rationale": "Deployment, CI, env template, or packaging configuration."
+    },
+    {
+      "path": "tests/oidc_fake.py",
+      "role": "test",
+      "size_bytes": 4480,
+      "rationale": "Test support helper used by the unittest suite, not production runtime."
+    },
+    {
+      "path": "tests/s3_integration_support.py",
+      "role": "test",
+      "size_bytes": 9158,
+      "rationale": "Test support helper used by the unittest suite, not production runtime."
+    },
+    {
+      "path": "tests/test_admin_ui.mjs",
+      "role": "test",
+      "size_bytes": 22085,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_audit.py",
+      "role": "test",
+      "size_bytes": 687,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_audit_events.py",
+      "role": "test",
+      "size_bytes": 4802,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_audit_visibility_http.py",
+      "role": "test",
+      "size_bytes": 5621,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_backoff.py",
+      "role": "test",
+      "size_bytes": 3722,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_bandwidth_limits.py",
+      "role": "test",
+      "size_bytes": 1394,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_breakglass.py",
+      "role": "test",
+      "size_bytes": 1739,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_breakglass_http.py",
+      "role": "test",
+      "size_bytes": 6305,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_catalog_audit.py",
+      "role": "test",
+      "size_bytes": 4122,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_ci_contracts.py",
+      "role": "test",
+      "size_bytes": 9417,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_cloud_deletion.py",
+      "role": "test",
+      "size_bytes": 23469,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_cloud_deletion_http.py",
+      "role": "test",
+      "size_bytes": 10402,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_config.py",
+      "role": "test",
+      "size_bytes": 4449,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_container_hardening.py",
+      "role": "test",
+      "size_bytes": 6550,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_cost_estimates.py",
+      "role": "test",
+      "size_bytes": 4484,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_database.py",
+      "role": "test",
+      "size_bytes": 32750,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_email_templates.py",
+      "role": "test",
+      "size_bytes": 1035,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_file_browser.py",
+      "role": "test",
+      "size_bytes": 10100,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_filesystem_ui.mjs",
+      "role": "test",
+      "size_bytes": 2038,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_fs_diagnostics.py",
+      "role": "test",
+      "size_bytes": 8031,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_fs_preflight.py",
+      "role": "test",
+      "size_bytes": 6743,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_hardening_http.py",
+      "role": "test",
+      "size_bytes": 8481,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_health_metrics.py",
+      "role": "test",
+      "size_bytes": 4873,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_html_safety.py",
+      "role": "test",
+      "size_bytes": 3432,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_i18n.py",
+      "role": "test",
+      "size_bytes": 3990,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_invite_http.py",
+      "role": "test",
+      "size_bytes": 10081,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_invites.py",
+      "role": "test",
+      "size_bytes": 10353,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_job_messages.py",
+      "role": "test",
+      "size_bytes": 9230,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_job_scheduler.py",
+      "role": "test",
+      "size_bytes": 8643,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_lifecycle_http.py",
+      "role": "test",
+      "size_bytes": 6332,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_lifecycle_policies.py",
+      "role": "test",
+      "size_bytes": 11061,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_lifecycle_profiles.py",
+      "role": "test",
+      "size_bytes": 1596,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_locale_http.py",
+      "role": "test",
+      "size_bytes": 4517,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_lookup_rate_limit.py",
+      "role": "test",
+      "size_bytes": 8653,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_metadata_backups.py",
+      "role": "test",
+      "size_bytes": 14681,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_metadata_backups_http.py",
+      "role": "test",
+      "size_bytes": 5892,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_migrations_postgresql.py",
+      "role": "test",
+      "size_bytes": 13272,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_notifications.py",
+      "role": "test",
+      "size_bytes": 6274,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_oidc.py",
+      "role": "test",
+      "size_bytes": 9248,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_oidc_http.py",
+      "role": "test",
+      "size_bytes": 7303,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_operation_policies.py",
+      "role": "test",
+      "size_bytes": 14534,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_operation_policy_http.py",
+      "role": "test",
+      "size_bytes": 7483,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_plain_rclone_destination.py",
+      "role": "test",
+      "size_bytes": 12915,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_proxy.py",
+      "role": "test",
+      "size_bytes": 1619,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_public_release_hygiene.py",
+      "role": "test",
+      "size_bytes": 2839,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_quota_admission_audit.py",
+      "role": "test",
+      "size_bytes": 3895,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_recovery_http.py",
+      "role": "test",
+      "size_bytes": 7423,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_recovery_verification.py",
+      "role": "test",
+      "size_bytes": 15202,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_recovery_versions.py",
+      "role": "test",
+      "size_bytes": 7509,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_rename_sync.py",
+      "role": "test",
+      "size_bytes": 46674,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_restore_guardrails.py",
+      "role": "test",
+      "size_bytes": 5463,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_s3_client_endpoint.py",
+      "role": "test",
+      "size_bytes": 1609,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_s3_integration_support.py",
+      "role": "test",
+      "size_bytes": 1407,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_s3_integrity_integration.py",
+      "role": "test",
+      "size_bytes": 13465,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_s3_lifecycle_rules.py",
+      "role": "test",
+      "size_bytes": 6062,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_s3_prefix_cleanup.py",
+      "role": "test",
+      "size_bytes": 2991,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_s3_prefix_cleanup_guards.py",
+      "role": "test",
+      "size_bytes": 900,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_s3_preflight.py",
+      "role": "test",
+      "size_bytes": 5400,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_session_http.py",
+      "role": "test",
+      "size_bytes": 3453,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_sessions.py",
+      "role": "test",
+      "size_bytes": 6982,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_stats.py",
+      "role": "test",
+      "size_bytes": 2680,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_storage_cleanup.py",
+      "role": "test",
+      "size_bytes": 58130,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_terraform_archive_bucket.py",
+      "role": "test",
+      "size_bytes": 2353,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_upload_operation_ui.mjs",
+      "role": "test",
+      "size_bytes": 4507,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_upload_retry_policy.py",
+      "role": "test",
+      "size_bytes": 2164,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_upload_verification.py",
+      "role": "test",
+      "size_bytes": 25166,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_vault_access_ui.mjs",
+      "role": "test",
+      "size_bytes": 6144,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_vault_authorization.py",
+      "role": "test",
+      "size_bytes": 41039,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_vault_creation.py",
+      "role": "test",
+      "size_bytes": 7042,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_vault_creation_http.py",
+      "role": "test",
+      "size_bytes": 19847,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_vault_crypto.py",
+      "role": "test",
+      "size_bytes": 3548,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_vault_encryption.py",
+      "role": "test",
+      "size_bytes": 12673,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_vault_encryption_http.py",
+      "role": "test",
+      "size_bytes": 11310,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_vault_ownership.py",
+      "role": "test",
+      "size_bytes": 21278,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_vault_quota_http.py",
+      "role": "test",
+      "size_bytes": 8402,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_vault_quotas.py",
+      "role": "test",
+      "size_bytes": 11076,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_vault_ui_http.py",
+      "role": "test",
+      "size_bytes": 8329,
+      "rationale": "Automated test module exercising application behavior."
+    },
+    {
+      "path": "tests/test_worker_errors.py",
+      "role": "test",
+      "size_bytes": 2150,
+      "rationale": "Automated test module exercising application behavior."
+    }
+  ]
+}
