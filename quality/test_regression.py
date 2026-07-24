@@ -116,48 +116,6 @@ class TestBug002(unittest.TestCase):
         )
 
 
-class TestBug003(unittest.TestCase):
-    """BUG-003: list-only verify must not equal full verified success (REQ-005)."""
-
-    @unittest.expectedFailure
-    def test_bug_003_list_only_not_full_verify(self) -> None:
-        """[BUG-003][Req: REQ-005] list-only mode must not yield full verify success.
-
-        Desired: createdb-failure path is not ok:True for full verify, OR consumer
-        refuses non-temp_database modes before status='verified'.
-        Fix patch: quality/patches/BUG-003-fix.patch
-        """
-        from app.services import metadata_backups
-
-        # Desired producer behavior: list-only is not a successful full verify.
-        # We assert the source contract consumers rely on.
-        list_only_return = (
-            '"ok": True' in METADATA_PY
-            and '"verification_mode": "pg_restore_list"' in METADATA_PY
-        )
-        consumer = _verify_latest_body()
-        consumer_checks_mode = (
-            "verification_mode" in consumer
-            and "temp_database" in consumer
-            and "verified" in consumer
-        )
-        # At least one side must enforce: either producer does not return ok True
-        # for list-only, or consumer refuses list-only before marking verified.
-        producer_ok_false_for_list = (
-            '"verification_mode": "pg_restore_list"' in METADATA_PY
-            and '"ok": False' in METADATA_PY[
-                METADATA_PY.index("created.returncode != 0") : METADATA_PY.index(
-                    '"verification_mode": "pg_restore_list"'
-                )
-                + 80
-            ]
-        )
-        self.assertTrue(
-            producer_ok_false_for_list or consumer_checks_mode,
-            "list-only path must not be treated as full verified success",
-        )
-        # Sanity: helper still exists.
-        self.assertTrue(inspect.isfunction(metadata_backups.verify_restore_isolated))
 
 
 class TestBug004(unittest.TestCase):

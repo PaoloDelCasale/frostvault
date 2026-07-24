@@ -1,0 +1,11 @@
+mechanical verify: process_job dispatcher
+storage=/workspace/app/storage.py
+FOUND: job["action"] == "upload" and job["status"] in {"queued", "retrying"}
+FOUND: job["action"] == "rename" and job["status"] == "queued"
+FOUND: job["action"] == "recover"
+FOUND: job["action"] == "free-space" and job["status"] == "queued"
+FOUND: job["action"] == "cloud-archive" and job["status"] == "queued"
+FOUND: job["action"] == "cloud-purge" and job["status"] in
+GAP: recover has no status conjunct (REQ-002 candidate)
+wrote /workspace/quality/mechanical/process_job_action_branches.txt (10 branches)
+VERIFY OK (gaps may still be noted above)

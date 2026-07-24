@@ -1,12 +1,12 @@
 {
   "schema_version": "1.5.6",
-  "generated_at": "2026-07-23T23:52:04Z",
+  "generated_at": "2026-07-24T00:06:51Z",
   "records": [
     {
       "id": "BUG-001",
       "req_id": "REQ-002",
       "title": "process_job recover branch lacks status whitelist",
-      "severity": "high",
+      "severity": "medium",
       "disposition": "code-fix",
       "disposition_rationale": "Peer actions already whitelist statuses; recover omission is a dispatcher code gap, not a docs misread.",
       "fix_type": "code",
@@ -26,7 +26,7 @@
       "id": "BUG-002",
       "req_id": "REQ-004",
       "title": "Reversible cloud hide skips concurrent VersionId detection",
-      "severity": "high",
+      "severity": "medium",
       "disposition": "code-fix",
       "disposition_rationale": "Scheduled provider_version_id is loaded but unused for compare; S3 delete-marker mechanics do not preclude Head/compare.",
       "fix_type": "code",
@@ -44,32 +44,10 @@
       ]
     },
     {
-      "id": "BUG-003",
-      "req_id": "REQ-005",
-      "title": "List-only backup verification promoted to verified success",
-      "severity": "high",
-      "disposition": "code-fix",
-      "disposition_rationale": "Producer returns ok True for TOC-only and consumer marks verified; contradicts restore-verification fitness.",
-      "fix_type": "code",
-      "divergence_description": "pg_restore_list mode is treated as full verified success.",
-      "documented_intent": "List-only must not equal isolated restore success for consumers.",
-      "code_behavior": "metadata_backups.py:447-456 ok True; storage.py:2578-2600 status verified on ok.",
-      "proposed_fix": "Return ok False for list-only and/or require temp_database mode in consumer.",
-      "source_type": "code-derived",
-      "divergence_type": "code-spec",
-      "file": "app/services/metadata_backups.py",
-      "line": "447-456",
-      "covers": [
-        "REQ-005/cell-FULL_ISOLATED_OR_FAIL-VERIFY_RESTORE_ISOLATED",
-        "REQ-005/cell-FULL_ISOLATED_OR_FAIL-VERIFY_LATEST_CONSUMER",
-        "REQ-005/cell-MODE_DISTINGUISHED-VERIFY_LATEST_CONSUMER"
-      ]
-    },
-    {
       "id": "BUG-004",
       "req_id": "REQ-008",
       "title": "csrf_token_for ignores session_version force-logout",
-      "severity": "medium",
+      "severity": "low",
       "disposition": "code-fix",
       "disposition_rationale": "resolve_session already enforces session_version; CSRF layer omission is a concrete code parity gap.",
       "fix_type": "code",
@@ -86,7 +64,7 @@
       "id": "BUG-005",
       "req_id": "REQ-003",
       "title": "README Users overclaims operator free-space",
-      "severity": "medium",
+      "severity": "low",
       "disposition": "spec-fix",
       "disposition_rationale": "Code/tests correctly enforce owner-only; README Users wording is the compensation failure.",
       "fix_type": "spec",

@@ -1,0 +1,14 @@
+GREEN
+bug=BUG-005
+test=quality.test_regression.TestBug005.test_bug_005_readme_users_owner_only_free_space
+patch_check_exit=0
+patch_apply_exit=0
+exit_code=0
+---
+test_bug_005_readme_users_owner_only_free_space (quality.test_regression.TestBug005.test_bug_005_readme_users_owner_only_free_space)
+[BUG-005][Req: REQ-003] Users section must match owner-only free-space. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK

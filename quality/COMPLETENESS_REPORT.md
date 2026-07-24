@@ -4,7 +4,7 @@
 > Date: 2026-07-23 · Project: FrostVault
 
 Generated: 2026-07-23  
-Stage: **baseline (pre-review)** — no final gate verdict; Phase 5 will add Post-Review Reconciliation.
+Stage: **final (post-reconciliation)** — Phase 5 authoritative verdict.
 
 ## Domain coverage
 
@@ -17,44 +17,38 @@ Stage: **baseline (pre-review)** — no final gate verdict; Phase 5 will add Pos
 | Resource management (claim/temp files, rclone runtime) | COVERED | REQ-001, REQ-009 |
 | Backward compatibility (role matrix, README drift) | COVERED | REQ-003 |
 | Security (break-glass, CSRF version, authz) | COVERED | REQ-003, REQ-006–008, REQ-015–017 |
-| Encoding | N/A for core audit scope | — |
 | Configuration (CIDRs, windows, flags) | COVERED | REQ-006, REQ-007, REQ-012 |
 | Entry points (download surfaces, HTTP free-space, dispatcher) | COVERED | REQ-001–004, REQ-009 |
 | Enums / roles whitelist | COVERED | REQ-002, REQ-016, REQ-017 |
 | Polymorphism / dual impl (crypt vs plain, SQLite vs PG gate) | COVERED | REQ-001, REQ-010 |
-| Docs commitment: filesystem-permissions | COVERED (architectural) | REQ-019 |
-| Docs commitment: metadata-backups | COVERED | REQ-005 |
+| Docs commitment: metadata-backups | COVERED (intentionally-partial after challenge) | REQ-005 |
 | Docs commitment: aws-s3 VersionId | COVERED | REQ-001, REQ-004, REQ-013 |
 
 ## Spec-Gap metric
 
 - Tier 1/2 requirements: **0** (no `reference_docs/` / `formal_docs_manifest.json`)
-- Tier 3: majority; Tier 5: REQ-002, REQ-004, REQ-005, REQ-008
-- Meta-finding: Spec Gap Analyzer mode — citations are in-repo README/ADR/code, not formal ingest excerpts.
+- Spec Gap Analyzer mode — citations are in-repo README/ADR/code.
 
-## Testability issues
+## Post-Review Reconciliation
 
-None blocking. REQ-004 and REQ-008 encode desired behavior that current code may violate — conditions remain testable via source inspection now and behavioral tests in Phase 3.
+- Phase 3 confirmed 5 bugs; Phase 4 added 2 net-new → **7** pre-challenge.
+- Phase 5 challenge gate: **4 DOWNGRADED**, **2 CONFIRMED**, **1 REJECTED**.
+- Active confirmed after reconciliation: **6** (BUG-001,002,004,005,006,007).
+- Rejected list-only metadata verify finding relocated to Reviewed and dismissed; REQ-005 absent cells covered by `intentionally-partial` downgrade records.
+- Every active bug has writeup, regression test (`@unittest.expectedFailure`), regression patch, fix patch, red+green TDD receipts.
+- Triage-confirmed Phase 4 code bugs remain synced (BUG-006, BUG-007).
+- Cardinality gate: Covers ∪ downgrades cover all absent pattern cells.
 
-## Consistency issues
+## TDD summary
 
-- REQ-003 (owner-only free-space) vs README Users — explicitly framed as compensation (docs must change), consistent with README Local cleanup safety.
-- REQ-004 desired detection vs current unversioned delete — intentional Phase 3 target, not an internal REQ contradiction.
-- REQ-001 pin-all-surfaces vs REQ-004 hide-current — different operations; Pass 3 should compare VersionId policies.
+| Metric | Count |
+|--------|-------|
+| Active bugs | 6 |
+| TDD verified (FAIL→PASS) | 6 |
+| confirmed open | 0 |
+| red failed | 0 |
+| green failed | 0 |
 
-## Architectural-guidance self-check
+## Verdict
 
-- Count: **2** (REQ-018, REQ-019) — within max bound ≤3.
-- Total REQs: 19 (≥15). Guidance present for defense-in-depth and deploy FS permissions.
-
-## Pattern field preservation
-
-Phase 1 Pattern tags on REQ-001 (parity), REQ-002 (whitelist), REQ-003 (compensation), REQ-004 (parity), REQ-005 (parity) preserved in REQUIREMENTS.md and `requirements_manifest.json`.
-
-## Cross-artifact gaps
-
-No Phase 3/4 results yet — baseline only.
-
-## Baseline assessment
-
-Requirements and contracts are sufficient to drive Phase 3 Pass 2 against high-risk subsystems identified in EXPLORATION.md. **No COMPLETE/INCOMPLETE final verdict** at this stage (per Phase 2 baseline rules).
+**COMPLETE** — Phase 5 reconciliation closed with six TDD-verified confirmed bugs, one challenge-rejected finding, consistent trackers (`PROGRESS.md` / `BUGS.md` / `bugs_manifest.json` / regression suite / triage), mechanical verification exit 0, and no production source edits outside `quality/`.

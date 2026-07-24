@@ -1,0 +1,14 @@
+GREEN
+bug=BUG-004
+test=quality.test_regression.TestBug004.test_bug_004_csrf_honors_session_version
+patch_check_exit=0
+patch_apply_exit=0
+exit_code=0
+---
+test_bug_004_csrf_honors_session_version (quality.test_regression.TestBug004.test_bug_004_csrf_honors_session_version)
+[BUG-004][Req: REQ-008] force-logout must invalidate CSRF lookup. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.508s
+
+OK

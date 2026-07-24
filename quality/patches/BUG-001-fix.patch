@@ -1,17 +1,13 @@
 diff --git a/app/storage.py b/app/storage.py
-index c548cc0..ebc91b8 100644
+index c548cc0..fa53197 100644
 --- a/app/storage.py
 +++ b/app/storage.py
-@@ -2220,7 +2220,11 @@ def process_job(job: dict[str, Any]) -> bool:
+@@ -2220,7 +2220,7 @@ def process_job(job: dict[str, Any]) -> bool:
              process_upload(job)
          elif job["action"] == "rename" and job["status"] == "queued":
              process_rename(job)
 -        elif job["action"] == "recover":
-+        elif job["action"] == "recover" and job["status"] in {
-+            "queued",
-+            "retrying",
-+            "restoring",
-+        }:
++        elif job["action"] == "recover" and job["status"] in {"queued", "retrying", "restoring"}:
              process_recover(job)
          elif job["action"] == "free-space" and job["status"] == "queued":
              process_free_space(job)

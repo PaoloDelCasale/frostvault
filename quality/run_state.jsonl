@@ -100,3 +100,26 @@
 {"event":"gate_check","ts":"2026-07-23T23:52:55Z","gate_name":"phase4_no_source_edits","verdict":"pass","reason":"only quality/ modified"}
 {"event":"gate_check","ts":"2026-07-23T23:52:55Z","gate_name":"phase4_citation_semantic_check","verdict":"pass","reason":"Spec Gap empty reviews[]"}
 {"event":"phase_end","ts":"2026-07-23T23:52:55Z","phase":4,"key_counts":{"req_count":19,"uc_count":8,"passes_complete":4,"auditor_reports":3,"net_new_bugs":2,"total_bugs":7,"regression_expected_failures":7},"artifacts_produced":["quality/spec_audits/2026-07-23-auditor-1.md","quality/spec_audits/2026-07-23-auditor-2.md","quality/spec_audits/2026-07-23-auditor-3.md","quality/spec_audits/2026-07-23-triage.md","quality/spec_audits/triage_probes.sh","quality/citation_semantic_check.json","quality/writeups/BUG-006.md","quality/writeups/BUG-007.md","quality/patches/BUG-006-fix.patch","quality/patches/BUG-006-regression-test.patch","quality/patches/BUG-007-fix.patch","quality/patches/BUG-007-regression-test.patch","quality/test_regression.py","quality/BUGS.md","quality/bugs_manifest.json","quality/PROGRESS.md","quality/results/phase4-triage-probes.log","quality/results/phase4-gate.log","quality/results/phase4-regression.unittest.log"]}
+{"event": "phase_start", "ts": "2026-07-23T23:57:32Z", "phase": 5}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/challenge/BUG-001-challenge.md", "byte_size": 1223, "line_count": 22}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/challenge/BUG-002-challenge.md", "byte_size": 1202, "line_count": 22}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/challenge/BUG-003-challenge.md", "byte_size": 1223, "line_count": 22}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/challenge/BUG-004-challenge.md", "byte_size": 1112, "line_count": 22}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/challenge/BUG-005-challenge.md", "byte_size": 978, "line_count": 22}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/challenge/BUG-006-challenge.md", "byte_size": 1044, "line_count": 22}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/challenge/BUG-007-challenge.md", "byte_size": 864, "line_count": 22}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/results/tdd-results.json", "byte_size": 3392, "line_count": 99}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/TDD_TRACEABILITY.md", "byte_size": 2118, "line_count": 15}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/COMPLETENESS_REPORT.md", "byte_size": 2864, "line_count": 54}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/INDEX.md", "byte_size": 1206, "line_count": 59}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/BUGS.md", "byte_size": 16002, "line_count": 188}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/PROGRESS.md", "byte_size": 9639, "line_count": 185}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/results/quality-gate.log", "byte_size": 4662, "line_count": 114}
+{"event": "artifact_written", "ts": "2026-07-24T00:10:23Z", "relative_path": "quality/results/mechanical-verify.log", "byte_size": 626, "line_count": 11}
+{"event": "gate_check", "ts": "2026-07-24T00:10:23Z", "gate_name": "challenge_gate", "verdict": "pass", "reason": "7 challenged; 4 DOWNGRADED 2 CONFIRMED 1 REJECTED"}
+{"event": "gate_check", "ts": "2026-07-24T00:10:23Z", "gate_name": "tdd_red_green", "verdict": "pass", "reason": "6/6 FAIL\u2192PASS"}
+{"event": "gate_check", "ts": "2026-07-24T00:10:23Z", "gate_name": "mechanical_verify", "verdict": "pass", "reason": "exit 0"}
+{"event": "gate_check", "ts": "2026-07-24T00:10:23Z", "gate_name": "terminal_gate", "verdict": "pass", "reason": "tracker=6 matches reconciled total"}
+{"event": "gate_check", "ts": "2026-07-24T00:10:23Z", "gate_name": "quality_gate.py", "verdict": "pass", "reason": "0 FAIL 2 WARN"}
+{"event": "gate_check", "ts": "2026-07-24T00:10:23Z", "gate_name": "source_unchanged", "verdict": "pass", "reason": "only quality/ modified"}
+{"event": "phase_end", "ts": "2026-07-24T00:10:23Z", "phase": 5, "key_counts": {"active_bugs_before_challenge": 7, "active_bugs_after_challenge": 6, "confirmed": 2, "downgraded": 4, "rejected": 1, "tdd_verified": 6, "req_count": 19}, "artifacts_produced": ["quality/challenge/BUG-001-challenge.md", "quality/challenge/BUG-002-challenge.md", "quality/challenge/BUG-003-challenge.md", "quality/challenge/BUG-004-challenge.md", "quality/challenge/BUG-005-challenge.md", "quality/challenge/BUG-006-challenge.md", "quality/challenge/BUG-007-challenge.md", "quality/results/tdd-results.json", "quality/TDD_TRACEABILITY.md", "quality/COMPLETENESS_REPORT.md", "quality/INDEX.md", "quality/BUGS.md", "quality/PROGRESS.md", "quality/results/quality-gate.log", "quality/results/mechanical-verify.log"]}

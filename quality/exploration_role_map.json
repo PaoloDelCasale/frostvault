@@ -1287,5 +1287,39 @@
       "size_bytes": 2150,
       "rationale": "Automated test module exercising application behavior."
     }
-  ]
+  ],
+  "breakdown": {
+    "counts": {
+      "skill": 0,
+      "code": 83,
+      "tool": 0,
+      "other": 131,
+      "total": 214,
+      "by_role": {
+        "config": 28,
+        "docs": 14,
+        "code": 83,
+        "fixture": 3,
+        "formal-spec": 6,
+        "test": 80
+      }
+    },
+    "percentages": {
+      "skill_share": 0.0,
+      "code_share": 38.79,
+      "tool_share": 0.0,
+      "other_share": 61.21
+    }
+  },
+  "summary": {
+    "file_count": 214,
+    "by_role": {
+      "config": 28,
+      "docs": 14,
+      "code": 83,
+      "fixture": 3,
+      "formal-spec": 6,
+      "test": 80
+    }
+  }
 }

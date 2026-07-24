@@ -1,5 +1,27 @@
 {
   "schema_version": "1.5.2",
-  "generated_at": "2026-07-23T23:31:07Z",
-  "downgrades": []
+  "generated_at": "2026-07-24T00:05:52Z",
+  "downgrades": [
+    {
+      "cell_id": "REQ-005/cell-FULL_ISOLATED_OR_FAIL-VERIFY_RESTORE_ISOLATED",
+      "authority_ref": "quality/challenge/BUG-003-challenge.md (REJECTED); app/services/metadata_backups.py:447-456 intentional comment",
+      "site_citation": "app/services/metadata_backups.py:447-456",
+      "reason_class": "intentionally-partial",
+      "falsifiable_claim": "If docs/ADRs define metadata_backup_runs.status=verified as requiring temp_database isolated restore only, then list-only ok:True would be a defect; challenge found no such authoritative contract."
+    },
+    {
+      "cell_id": "REQ-005/cell-FULL_ISOLATED_OR_FAIL-VERIFY_LATEST_CONSUMER",
+      "authority_ref": "quality/challenge/BUG-003-challenge.md (REJECTED); consumer keys off producer ok",
+      "site_citation": "app/storage.py:2578-2600",
+      "reason_class": "intentionally-partial",
+      "falsifiable_claim": "If consumer must refuse verification_mode!=temp_database before status=verified per product contract, current ok-only gate would be a defect; challenge rejected that as post-hoc Tier-5 aspiration."
+    },
+    {
+      "cell_id": "REQ-005/cell-MODE_DISTINGUISHED-VERIFY_LATEST_CONSUMER",
+      "authority_ref": "quality/challenge/BUG-003-challenge.md (REJECTED); producer already emits verification_mode",
+      "site_citation": "app/storage.py:2578-2600",
+      "reason_class": "intentionally-partial",
+      "falsifiable_claim": "If consumer were required to branch on verification_mode today, absence would be a defect; challenge held mode tagging at producer with ok-gated consumer is the shipped contract."
+    }
+  ]
 }

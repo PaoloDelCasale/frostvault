@@ -1,0 +1,13 @@
+GREEN
+bug=BUG-006
+test=quality.test_regression.TestBug006.test_bug_006_startup_preserves_free_space_claims
+patch_apply_exit=0
+exit_code=0
+---
+test_bug_006_startup_preserves_free_space_claims (quality.test_regression.TestBug006.test_bug_006_startup_preserves_free_space_claims)
+[BUG-006][Req: REQ-009] cleanup claims must survive startup reconciliation. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK
