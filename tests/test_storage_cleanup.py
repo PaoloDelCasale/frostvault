@@ -31,6 +31,7 @@ from app.storage import (
     object_key_to_path,
     parse_rclone_progress,
     process_free_space,
+    process_job,
     process_recover,
     process_upload,
     process_jobs_once,
@@ -611,6 +612,33 @@ class StorageCleanupTests(unittest.TestCase):
             with storage.operation_process_lock:
                 storage.active_operation_processes.pop(job_id, None)
                 storage.cancelled_jobs.discard(job_id)
+
+    def test_bug_001_recover_requires_status_whitelist(self) -> None:
+        """[BUG-001][Req: REQ-002] recover dispatcher must whitelist statuses.
+
+        A recover Job outside {queued, retrying, restoring} (e.g.
+        pending_approval) must not enter process_recover; process_job returns
+        False, matching peer action whitelists.
+        """
+        job = {
+            "id": 42,
+            "vault_id": 10,
+            "action": "recover",
+            "status": "pending_approval",
+            "updated_at": "2026-07-20T19:00:00+00:00",
+        }
+        connection = JobQueueConnection([job])
+        with (
+            patch("app.storage.db", return_value=connection),
+            patch("app.storage.process_recover") as mock_recover,
+        ):
+            processed = process_job(dict(job))
+
+        self.assertFalse(
+            processed,
+            "process_job must no-op for recover outside the status whitelist",
+        )
+        mock_recover.assert_not_called()
 
     def test_queue_processes_upload_recover_and_cleanup_in_parallel(self) -> None:
         jobs = [

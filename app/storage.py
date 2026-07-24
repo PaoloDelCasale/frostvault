@@ -2294,7 +2294,11 @@ def process_job(job: dict[str, Any]) -> bool:
             process_upload(job)
         elif job["action"] == "rename" and job["status"] == "queued":
             process_rename(job)
-        elif job["action"] == "recover":
+        elif job["action"] == "recover" and job["status"] in {
+            "queued",
+            "retrying",
+            "restoring",
+        }:
             process_recover(job)
         elif job["action"] == "free-space" and job["status"] == "queued":
             process_free_space(job)
