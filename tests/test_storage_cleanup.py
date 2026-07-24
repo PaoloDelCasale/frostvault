@@ -25,6 +25,7 @@ from app.storage import (
     OperationCancelled,
     apply_filesystem_changes,
     cancel_jobs,
+    cleanup_abandoned_restore_files,
     download_with_rclone,
     expected_cloud_key,
     object_key_to_path,
@@ -753,6 +754,138 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertTrue(
                 any("status='completed'" in sql and params[-1] == 21 for sql, params in job_updates)
             )
+
+    def test_bug_006_startup_preserves_free_space_claims(self) -> None:
+        """[BUG-006][Req: REQ-009] free-space claims survive startup cleanup+reconcile.
+
+        Seam: ``cleanup_abandoned_restore_files`` then ``reconcile_interrupted_jobs``
+        (same order as lifespan). Plants a mid-claim ``.cleanup-*.tmp`` Local Copy
+        with a ``cleaning`` free-space Job and asserts startup restores the claim
+        and requeues the Job instead of deleting the claim and marking freed.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            target, database_path = self.cleanup_fixture(directory)
+            payload = target.read_bytes()
+            claim = target.with_name(
+                f".{target.name}.cleanup-{'ab' * 16}.tmp"
+            )
+            target.rename(claim)
+            self.assertFalse(target.exists())
+            self.assertTrue(claim.is_file())
+
+            with SQLiteConnection(str(database_path)) as connection:
+                file_row = ArchiveCatalog(connection).get_file_by_path(
+                    2, "docs/file.txt"
+                )
+                job_id = connection.execute(
+                    """
+                    INSERT INTO jobs(
+                        vault_id, vault_file_id, path, action, status,
+                        requested_by, requested_at, updated_at, total_bytes
+                    ) VALUES (
+                        2, %s, 'docs/file.txt', 'free-space', 'cleaning',
+                        1, '2026-07-21T10:05:00+00:00',
+                        '2026-07-21T10:05:00+00:00', %s
+                    )
+                    RETURNING id
+                    """,
+                    (file_row["id"], len(payload)),
+                ).fetchone()["id"]
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            with (
+                patch("app.database.settings", database_settings),
+                patch("app.storage.settings", database_settings),
+            ):
+                # Lifespan order: abandoned-restore cleanup, then reconcile.
+                cleanup_abandoned_restore_files()
+                summary = reconcile_interrupted_jobs()
+
+            self.assertTrue(
+                target.is_file(),
+                "startup must restore the free-space claim to the Local Copy path",
+            )
+            self.assertEqual(target.read_bytes(), payload)
+            self.assertFalse(
+                claim.exists(),
+                "restored claim should no longer remain at the temporary path",
+            )
+            self.assertEqual(summary["completed"], 0)
+            self.assertEqual(summary["requeued"], 1)
+            self.assertEqual(summary["failed"], 0)
+
+            with SQLiteConnection(str(database_path)) as connection:
+                job = connection.execute(
+                    "SELECT status, message FROM jobs WHERE id=%s",
+                    (job_id,),
+                ).fetchone()
+                observed = ArchiveCatalog(connection).get_file_by_path(
+                    2, "docs/file.txt"
+                )
+            self.assertEqual(job["status"], "queued")
+            self.assertNotIn("Local space freed", job["message"] or "")
+            self.assertEqual(observed["local_copy"]["presence"], "present")
+
+    def test_bug_006_failed_claim_restore_does_not_mark_freed(self) -> None:
+        """[BUG-006] surviving claims must not complete free-space as freed."""
+        with tempfile.TemporaryDirectory() as directory:
+            target, database_path = self.cleanup_fixture(directory)
+            payload = target.read_bytes()
+            claim = target.with_name(
+                f".{target.name}.cleanup-{'cd' * 16}.tmp"
+            )
+            target.rename(claim)
+
+            with SQLiteConnection(str(database_path)) as connection:
+                file_row = ArchiveCatalog(connection).get_file_by_path(
+                    2, "docs/file.txt"
+                )
+                job_id = connection.execute(
+                    """
+                    INSERT INTO jobs(
+                        vault_id, vault_file_id, path, action, status,
+                        requested_by, requested_at, updated_at, total_bytes
+                    ) VALUES (
+                        2, %s, 'docs/file.txt', 'free-space', 'cleaning',
+                        1, '2026-07-21T10:05:00+00:00',
+                        '2026-07-21T10:05:00+00:00', %s
+                    )
+                    RETURNING id
+                    """,
+                    (file_row["id"], len(payload)),
+                ).fetchone()["id"]
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            with (
+                patch("app.database.settings", database_settings),
+                patch("app.storage.settings", database_settings),
+                patch(
+                    "app.storage.restore_claimed_local_copy",
+                    return_value=False,
+                ),
+            ):
+                cleanup_abandoned_restore_files()
+                summary = reconcile_interrupted_jobs()
+
+            self.assertTrue(claim.is_file())
+            self.assertEqual(claim.read_bytes(), payload)
+            self.assertFalse(target.exists())
+            self.assertEqual(summary["completed"], 0)
+            self.assertEqual(summary["failed"], 1)
+            with SQLiteConnection(str(database_path)) as connection:
+                job = connection.execute(
+                    "SELECT status, message FROM jobs WHERE id=%s",
+                    (job_id,),
+                ).fetchone()
+            self.assertEqual(job["status"], "failed")
+            self.assertIn(str(claim), job["message"])
+            self.assertNotIn("Local space freed", job["message"] or "")
 
     def test_all_operation_groups_can_be_cancelled(self) -> None:
         expected_messages = {
