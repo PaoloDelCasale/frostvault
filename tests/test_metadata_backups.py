@@ -12,6 +12,8 @@ Seams under test (confirmed for this issue):
   — restore into a temporary database without touching live DB or vault S3
 - ``app.services.metadata_backups.run_pre_upgrade_backup``
   — failure blocks application-managed schema upgrades
+- ``app.services.metadata_backups.default_object_store``
+  — public ObjectStore factory for configured off-host backup (BUG-010)
 - Admin HTTP: list / status / manual run / download
 """
 from __future__ import annotations
@@ -256,6 +258,43 @@ class IsolatedRestoreVerificationTests(unittest.TestCase):
             [key for key in self.store.objects if key.startswith("vaults/")],
             ["vaults/abc/file.bin"],
         )
+
+
+class DefaultObjectStoreFailClosedTests(unittest.TestCase):
+    """BUG-010: configured S3 backup failures must not become None success (REQ-022)."""
+
+    def test_bug_010_configured_store_failure_raises(self) -> None:
+        """[BUG-010][Req: REQ-022] configured bucket client errors fail closed.
+
+        Seam: ``default_object_store()`` — public factory used by admin/manual
+        backup, the scheduled worker, and ``backup_upgrade`` (pre-upgrade gate).
+        With ``vault_s3_bucket`` set and ``s3_client`` failing at the AWS
+        boundary, must raise ``BackupError`` rather than return ``None`` (which
+        aliases failure as “S3 unset” and yields silent local-only success).
+        """
+        configured = replace(
+            __import__("app.config", fromlist=["settings"]).settings,
+            vault_s3_bucket="frostvault-backups",
+        )
+        with (
+            patch.object(metadata_backups, "settings", configured),
+            patch(
+                "app.storage.s3_client",
+                side_effect=RuntimeError("AWS credentials are not configured"),
+            ),
+        ):
+            with self.assertRaises(metadata_backups.BackupError) as ctx:
+                metadata_backups.default_object_store()
+        self.assertIn("unavailable", str(ctx.exception).lower())
+
+    def test_bug_010_unset_bucket_returns_none(self) -> None:
+        """Unset bucket remains the only path that returns None (local-only OK)."""
+        unset = replace(
+            __import__("app.config", fromlist=["settings"]).settings,
+            vault_s3_bucket="",
+        )
+        with patch.object(metadata_backups, "settings", unset):
+            self.assertIsNone(metadata_backups.default_object_store())
 
 
 class PreUpgradeBackupGateTests(unittest.TestCase):
