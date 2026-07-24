@@ -2329,11 +2329,9 @@ def cancel_job_group(group_id: str, job_action: str, vault: dict[str, Any]):
             """,
             [message, message_key, "{}", now_iso(), *job_ids],
         )
-        if job_action == "recover":
-            ArchiveCatalog(connection).clear_restore_state_for_jobs(
-                job_ids,
-                checked_at=now_iso(),
-            )
+        # Do not clear archive_versions.restore_state on recover cancel:
+        # RestoreObject cannot be cancelled after AWS accepts it, and a later
+        # recover must be able to resume polling (REQ-030 / BUG-018).
         for row in automatic_cleanup_rows:
             audit_event_store.record_audit_event(
                 connection,

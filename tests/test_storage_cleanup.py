@@ -941,7 +941,8 @@ class StorageCleanupTests(unittest.TestCase):
                 )
                 self.assertEqual(select_params, (2, "group-123", action))
                 if action == "recover":
-                    self.assertTrue(
+                    # BUG-018 / REQ-030: cancel must not wipe Glacier restore_state.
+                    self.assertFalse(
                         any(
                             "restore_state=NULL" in sql
                             for sql, _ in connection.statements
