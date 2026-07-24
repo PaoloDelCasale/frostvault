@@ -498,6 +498,14 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
                 user_count = int(parts[0])
                 vault_count = int(parts[1])
                 schema_revision = parts[2] or None
+        if user_count is None or vault_count is None or not schema_revision:
+            detail = ""
+            if getattr(counted, "stderr", None):
+                detail = str(counted.stderr).strip()
+            raise BackupError(
+                "PostgreSQL isolated restore did not prove schema tables: "
+                f"{detail or 'count query failed or returned nulls'}"
+            )
         return {
             "ok": True,
             "user_count": user_count,
