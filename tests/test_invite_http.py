@@ -5,6 +5,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
 
@@ -244,6 +245,45 @@ class InviteHttpTests(unittest.TestCase):
                 "SELECT user_id FROM user_identities WHERE subject='member-subject'"
             ).fetchone()
         self.assertEqual(identity["user_id"], self.member_id)
+
+    def test_bug_021_oidc_link_requires_recent_reauth(self) -> None:
+        """[BUG-021][Req: REQ-033] self-link must gate invite creation on reauth.
+
+        A stale Session must not mint a self-Invite (ADR-0005 / ADR-0003). With
+        recent reauth, begin_login must request a fresh IdP login via prompt=login.
+        """
+        self._authenticate_session(self.member_id)
+        with SQLiteConnection(str(self.database_path)) as connection:
+            connection.execute(
+                "UPDATE sessions SET reauth_at=%s",
+                ("2000-01-01T00:00:00+00:00",),
+            )
+            invites_before = connection.execute(
+                "SELECT COUNT(*) AS n FROM invites"
+            ).fetchone()["n"]
+
+        self._use_oidc_client()
+        denied = self.client.get("/auth/oidc/link")
+        self.assertEqual(denied.status_code, 403, denied.text)
+        self.assertEqual(denied.json(), {"error": "reauth_required"})
+
+        with SQLiteConnection(str(self.database_path)) as connection:
+            invites_after = connection.execute(
+                "SELECT COUNT(*) AS n FROM invites"
+            ).fetchone()["n"]
+        self.assertEqual(invites_after, invites_before)
+
+        with SQLiteConnection(str(self.database_path)) as connection:
+            connection.execute(
+                "UPDATE sessions SET reauth_at=%s",
+                ("2099-01-01T00:00:00+00:00",),
+            )
+        allowed = self.client.get("/auth/oidc/link")
+        self.assertEqual(allowed.status_code, 303, allowed.text)
+        self.assertEqual(
+            parse_qs(urlparse(allowed.headers["location"]).query).get("prompt"),
+            ["login"],
+        )
 
 
 if __name__ == "__main__":
