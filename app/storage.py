@@ -1489,19 +1489,21 @@ def ensure_scheduled_current_version(
     expected_version_id: str | None,
     operation: str,
 ) -> None:
-    """Abort when the live current VersionId differs from the scheduled generation.
+    """Abort when the live current VersionId differs from the scheduled Archive Version.
 
     Unversioned delete_object is still required to create an S3 Delete Marker;
     this Head/compare detects concurrent uploads before that hide (REQ-004).
     """
     if not expected_version_id:
-        return
+        raise RuntimeError(
+            f"{operation} aborted: scheduled Archive Version has no provider VersionId"
+        )
     head = s3_client().head_object(Bucket=bucket, Key=object_key)
     current_version = head.get("VersionId")
-    if current_version and current_version != expected_version_id:
+    if not current_version or current_version != expected_version_id:
         raise RuntimeError(
-            f"{operation} aborted: current object VersionId "
-            f"{current_version!r} does not match scheduled "
+            f"{operation} aborted: current VersionId "
+            f"{current_version!r} does not match scheduled Archive Version "
             f"{expected_version_id!r}"
         )
 
