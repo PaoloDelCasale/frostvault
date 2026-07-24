@@ -4,7 +4,9 @@ Seams under test:
 - Recovery Job worker (`process_recover` / `process_jobs_once`) observed through
   Job status and Local Copy fingerprint via ArchiveCatalog.
 - Exact-version download adapter (`download_exact_version_plaintext`): must pin
-  S3 VersionId; path-only current-object download is forbidden.
+  S3 VersionId; path-only current-object download is forbidden. Crypt recover
+  must address rclone from Archive Version ``object_key``, not solely
+  ``job['path']`` (BUG-013 / REQ-025).
 - System boundaries mocked: S3 GetObject/HeadObject and Rclone.
 
 BUG-012 (REQ-024) uses the same recovery worker seam: catalog absence plus a
@@ -17,6 +19,7 @@ import hashlib
 import io
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -24,7 +27,8 @@ from unittest.mock import Mock, patch
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
 from app.main import queue_jobs
-from app.storage import process_jobs_once
+from app.services.rclone_runtime import RuntimeRcloneConfig
+from app.storage import download_exact_version_plaintext, process_jobs_once
 from tests.test_database import run_alembic
 
 
@@ -336,9 +340,125 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
                 r"local copy.*already exists|already exists.*recovery destination",
             )
 
+    def test_bug_013_crypt_download_uses_object_key(self) -> None:
+        """[BUG-013][Req: REQ-025] crypt rclone path derives from object_key.
 
-if __name__ == "__main__":
-    unittest.main()
+        After a rename, ``job['path']`` is the current Local Copy path while the
+        Archive Version ``object_key`` still names the pre-rename crypt object.
+        Exact-version crypt download must build the rclone source from
+        ``object_key`` (via name decode), not solely from ``job['path']``.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            temporary = root / "recovered.tmp"
+            job = {
+                "id": 913,
+                "path": "renamed.txt",
+                "s3_prefix": "docs",
+                "s3_bucket": "bucket",
+                "rclone_remote": "base",
+                "encryption_mode": "crypt",
+            }
+            object_key = "docs/nq/old-encrypted"
+            logical_from_key = "original.txt"
+            fake_config = RuntimeRcloneConfig(
+                path=root / "fake.rclone.conf",
+                remote_name="vault",
+                config_text="[vault]\ntype = crypt\n",
+                secrets=None,
+            )
+            fake_config.path.write_text(fake_config.config_text, encoding="utf-8")
+            rclone_sources: list[str] = []
+
+            @contextmanager
+            def fake_vault_rclone_config(_vault):
+                yield fake_config
+
+            def fake_rclone(command, source, destination, *args, **kwargs) -> None:
+                self.assertEqual(command, "copyto")
+                rclone_sources.append(str(source))
+                Path(destination).parent.mkdir(parents=True, exist_ok=True)
+                Path(destination).write_bytes(b"recovered-bytes")
+
+            with (
+                patch(
+                    "app.storage.vault_rclone_config",
+                    side_effect=fake_vault_rclone_config,
+                ),
+                patch(
+                    "app.storage.decode_object_relative_path",
+                    return_value=logical_from_key,
+                ),
+                patch("app.storage.run_rclone", side_effect=fake_rclone),
+            ):
+                download_exact_version_plaintext(
+                    job,
+                    object_key=object_key,
+                    provider_version_id="crypt-version-1",
+                    temporary=temporary,
+                )
+
+            self.assertEqual(
+                rclone_sources,
+                [f"vault:{logical_from_key}"],
+                "crypt download must address the Archive Version object_key path",
+            )
+            self.assertNotIn(
+                "renamed.txt",
+                rclone_sources[0] if rclone_sources else "",
+                "crypt download must not use only the post-rename job path",
+            )
+            self.assertTrue(temporary.is_file())
+
+    def test_bug_013_content_crypt_download_uses_object_key(self) -> None:
+        """[BUG-013][Req: REQ-025] content-crypt rclone path from object_key.
+
+        Legacy content-crypt remotes (no per-vault name encryption) still must
+        address the Archive Version key (``.bin`` stripped), not solely the
+        current ``job['path']`` after a rename.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            temporary = root / "recovered.tmp"
+            job = {
+                "id": 914,
+                "path": "renamed.txt",
+                "s3_prefix": "docs",
+                "s3_bucket": "bucket",
+                "rclone_remote": "crypt-remote",
+                # Legacy vault: content crypt via rclone remote, no name encryption.
+                "encryption_mode": None,
+            }
+            object_key = "docs/original.txt.bin"
+            rclone_sources: list[str] = []
+
+            def fake_rclone(command, source, destination, *args, **kwargs) -> None:
+                self.assertEqual(command, "copyto")
+                rclone_sources.append(str(source))
+                Path(destination).parent.mkdir(parents=True, exist_ok=True)
+                Path(destination).write_bytes(b"recovered-bytes")
+
+            with (
+                patch("app.storage.rclone_remote_is_crypt", return_value=True),
+                patch("app.storage.run_rclone", side_effect=fake_rclone),
+            ):
+                download_exact_version_plaintext(
+                    job,
+                    object_key=object_key,
+                    provider_version_id="crypt-version-2",
+                    temporary=temporary,
+                )
+
+            self.assertEqual(
+                rclone_sources,
+                ["crypt-remote:original.txt"],
+                "content-crypt download must strip object_key to the logical path",
+            )
+            self.assertNotIn(
+                "renamed.txt",
+                rclone_sources[0] if rclone_sources else "",
+            )
+            self.assertTrue(temporary.is_file())
 
 
 class GlacierRestoreWorkflowTests(unittest.TestCase):
@@ -451,3 +571,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(job["status"], "completed")
             self.assertEqual(version["restore_state"], "available")
+
+
+if __name__ == "__main__":
+    unittest.main()

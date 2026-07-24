@@ -1883,9 +1883,16 @@ def download_exact_version_plaintext(
         version_flag = f"--s3-version-id={provider_version_id}"
         if vault_encrypts_names(job):
             with vault_rclone_config(job) as runtime:
+                logical_path = object_key_to_path(
+                    object_key,
+                    job.get("s3_prefix") or "",
+                    is_crypt=True,
+                    encrypted_names=True,
+                    runtime=runtime,
+                ) or job["path"]
                 run_rclone(
                     "copyto",
-                    f"{runtime.remote_name}:{job['path']}",
+                    f"{runtime.remote_name}:{logical_path}",
                     str(temporary),
                     version_flag,
                     job_progress_callback(job),
@@ -1894,9 +1901,14 @@ def download_exact_version_plaintext(
                     bwlimit=job_bwlimit(job),
                 )
         else:
+            logical_path = object_key_to_path(
+                object_key,
+                job.get("s3_prefix") or "",
+                is_crypt=vault_encrypts_content(job),
+            ) or job["path"]
             run_rclone(
                 "copyto",
-                configured_rclone_destination(job, job["path"]),
+                configured_rclone_destination(job, logical_path),
                 str(temporary),
                 version_flag,
                 job_progress_callback(job),
