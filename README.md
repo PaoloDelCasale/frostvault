@@ -16,8 +16,8 @@ Search remains global across every file in the selected vault.
 - Each vault has its own local folder, S3 prefix, and Rclone remote.
 - Every query and operation includes the vault identifier.
 - Users can see only vaults assigned to them.
-- The primary `owner` manages sharing and policy; `operator` can upload, free
-  local space, and recover files; `viewer` is read-only.
+- The primary `owner` manages sharing and policy and may free local space;
+  `operator` can upload and recover files; `viewer` is read-only.
 - Queued or active uploads, recoveries, and local cleanup operations can be
   stopped with the **Stop** button shown next to their progress.
 - Operations run in parallel. `OPERATION_CONCURRENCY` controls the number of
