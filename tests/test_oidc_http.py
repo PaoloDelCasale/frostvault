@@ -194,6 +194,56 @@ class OidcHttpTests(unittest.TestCase):
             datetime(2020, 1, 1, tzinfo=timezone.utc),
         )
 
+    def test_bug_011_oidc_rejects_cross_account_switch(self) -> None:
+        """[BUG-011][Req: REQ-023] active Session must not be replaced by foreign identity.
+
+        While alice is signed in, completing OIDC with an identity already linked
+        to bob must return 403 and preserve alice's Session (ADR-0003 / ADR-0005).
+        """
+        bob_subject = "subject-bob"
+        with SQLiteConnection(str(self.database_path)) as connection:
+            bob_id = connection.execute(
+                """
+                INSERT INTO users(username, display_name, password_hash, is_admin)
+                VALUES ('bob', 'Bob', 'hash', FALSE)
+                RETURNING id
+                """
+            ).fetchone()["id"]
+            connection.execute(
+                """
+                INSERT INTO user_identities(user_id, issuer, subject, created_at)
+                VALUES (%s, %s, %s, '2026-07-21T00:00:00+00:00')
+                """,
+                (bob_id, self.provider.issuer, bob_subject),
+            )
+
+        self._sign_in()
+        me_before = self.client.get("/api/me")
+        self.assertEqual(me_before.status_code, 200, me_before.text)
+        self.assertEqual(me_before.json()["username"], "alice")
+        alice_cookie = self.client.cookies.get(self.cookie_name)
+        self.assertTrue(alice_cookie)
+
+        self._use_oidc_client()
+        self.client.get("/auth/oidc/login")
+        pending = self._latest_login()
+        id_token = self.provider.make_id_token(
+            nonce=pending["nonce"], subject=bob_subject
+        )
+        self._use_oidc_client(id_token=id_token)
+
+        callback = self.client.get(
+            "/auth/oidc/callback",
+            params={"state": pending["state"], "code": "auth-code"},
+        )
+        self.assertEqual(callback.status_code, 403, callback.text)
+        self.assertIn("sign out first", callback.text.lower())
+
+        me_after = self.client.get("/api/me")
+        self.assertEqual(me_after.status_code, 200, me_after.text)
+        self.assertEqual(me_after.json()["username"], "alice")
+        self.assertEqual(self.client.cookies.get(self.cookie_name), alice_cookie)
+
 
 if __name__ == "__main__":
     unittest.main()
