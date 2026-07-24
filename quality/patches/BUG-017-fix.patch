@@ -1,0 +1,50 @@
+diff --git a/app/services/cloud_deletion.py b/app/services/cloud_deletion.py
+index c9b22c7..cc13933 100644
+--- a/app/services/cloud_deletion.py
++++ b/app/services/cloud_deletion.py
+@@ -914,15 +914,33 @@ def record_archive_completed(
+         path=path,
+         delete_marker_version_id=marker_version_id,
+     )
+-    _notify_vault_owners(
+-        connection,
+-        vault_id=vault_id,
+-        event="cloud_deletion.archive_completed",
+-        title="Reversible cloud archival completed",
+-        body=(
+-            f"A Delete Marker hid {path}. "
+-            + delete_marker_explanation()
+-        ),
+-        actor_user_id=actor_user_id,
+-        job_id=job_id,
+-    )
++    # Best-effort notify (parity with local cleanup observability): a notify
++    # failure must not roll back the Delete Marker catalog row or fail the job
++    # into a retry that issues another delete_object.
++    try:
++        _notify_vault_owners(
++            connection,
++            vault_id=vault_id,
++            event="cloud_deletion.archive_completed",
++            title="Reversible cloud archival completed",
++            body=(
++                f"A Delete Marker hid {path}. "
++                + delete_marker_explanation()
++            ),
++            actor_user_id=actor_user_id,
++            job_id=job_id,
++        )
++    except Exception as exc:
++        try:
++            from . import worker_errors as worker_error_store
++
++            worker_error_store.record_worker_error(
++                connection,
++                component="cloud_archive_observability",
++                exc=exc,
++                vault_id=vault_id,
++                job_id=job_id,
++                event="cloud_deletion.archive_completed",
++            )
++        except Exception:
++            pass

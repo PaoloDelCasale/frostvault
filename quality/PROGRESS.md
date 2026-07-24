@@ -337,3 +337,51 @@ Run complete. **6** BUGs found (**4** from code review surviving challenge, **2*
 | BUG-013 | Unfiltered | High | TDD verified (FAIL→PASS) |
 | BUG-014 | Unfiltered | High | TDD verified (FAIL→PASS) |
 | BUG-015 | Unfiltered | High | TDD verified (FAIL→PASS) |
+
+## Iteration: parity started
+
+2026-07-24T08:34:10Z
+
+
+## Iteration: parity complete
+
+2026-07-24T08:47:00Z
+
+### Parity iteration summary
+
+- Strategy: **parity** (Mode B canonical prompt executed in-process; nested Copilot/Cursor CLI unavailable — aborted runner receipt under `quality/logs/20260724T083348Z/`)
+- Prior baseline + gap + unfiltered preserved (no archive/overwrite)
+- Parity inventory: P01–P26 (see ITERATION_PLAN.md); deep diffs on metadata verify↔download, cloud-archive↔local-cleanup observability, cancel recover↔RestoreObject persistence
+- Net-new confirmed bugs: **BUG-016** (High), **BUG-017** (High), **BUG-018** (High)
+- Prior active bugs re-confirmed unchanged: BUG-001,002,004,005,006,007,008,009,010,011,012,013,014,015
+- Rejected preserved: former BUG-003; CAND-006
+- Demoted candidates: DC-013..DC-015 (new); prior DC-001..012 preserved
+- Refinements/duplicates of existing bugs: BUG-001,002,004,008,009,010,013,014,015 (no new IDs)
+- Prior findings reconsidered: none reopened
+- TDD: 3/3 net-new FAIL→PASS; cumulative active bugs with RED+GREEN: **17**
+- Regression suite: 17 expected failures
+- Production source outside quality/: **unchanged**
+- Next strategy suggestion: **adversarial**
+
+### Cumulative BUG tracker (post-parity)
+
+| ID | Source | Severity | Closure |
+|----|--------|----------|---------|
+| BUG-001 | Baseline CR | Medium | TDD verified (unchanged) |
+| BUG-002 | Baseline CR | Medium | TDD verified (unchanged) |
+| BUG-004 | Baseline CR | Low | TDD verified (unchanged) |
+| BUG-005 | Baseline CR | Low | TDD verified (unchanged) |
+| BUG-006 | Baseline CR | High | TDD verified (unchanged) |
+| BUG-007 | Baseline CR | Medium | TDD verified (unchanged) |
+| BUG-008 | Gap iter | High | TDD verified (unchanged) |
+| BUG-009 | Gap iter | Medium | TDD verified (unchanged) |
+| BUG-010 | Gap iter | High | TDD verified (unchanged) |
+| BUG-011 | Gap iter | High | TDD verified (unchanged) |
+| BUG-012 | Unfiltered | High | TDD verified (unchanged) |
+| BUG-013 | Unfiltered | High | TDD verified (unchanged) |
+| BUG-014 | Unfiltered | High | TDD verified (unchanged) |
+| BUG-015 | Unfiltered | High | TDD verified (unchanged) |
+| BUG-016 | Parity | High | TDD verified (FAIL→PASS) |
+| BUG-017 | Parity | High | TDD verified (FAIL→PASS) |
+| BUG-018 | Parity | High | TDD verified (FAIL→PASS) |
+

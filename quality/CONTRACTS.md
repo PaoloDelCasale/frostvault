@@ -134,3 +134,10 @@ Scope note: Full-breadth first pass over auth, storage jobs, catalog identity, c
 72. [METHOD] `/api/free-space` enforces `is_owner` (+ reauth + ALLOW_LOCAL_DELETE)
 73. [METHOD] Operators allowed upload/recover; viewers denied mutations
 74. [COMPAT] README § Users claims operators can free local space — conflicts with code/tests and README § Local cleanup safety
+
+## Parity iteration contracts (REQ-028..030)
+
+75. [INVARIANT] Metadata backup verify stamps only the run whose artifact was restore-tested (REQ-028 / BUG-016)
+76. [INVARIANT] After Delete Marker success, cloud-archive notify failures are best-effort and must not retry hide (REQ-029 / BUG-017)
+77. [INVARIANT] Cancel recover retains archive_versions.restore_state after RestoreObject accept (REQ-030 / BUG-018)
+

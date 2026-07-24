@@ -1,6 +1,6 @@
 {
   "schema_version": "1.5.6",
-  "generated_at": "2026-07-24T07:30:19Z",
+  "generated_at": "2026-07-24T08:46:41Z",
   "records": [
     {
       "id": "BUG-001",
@@ -289,6 +289,72 @@
         "REQ-027/cell-PRICE-BOOK-PARITY"
       ],
       "reachability_analysis": "Activate custom cost_price_books row then compare estimate high_impact vs worker hold."
+    },
+    {
+      "id": "BUG-016",
+      "req_id": "REQ-028",
+      "title": "Metadata verify stamps a different run than the artifact checked",
+      "severity": "HIGH",
+      "disposition": "code-fix",
+      "disposition_rationale": "Verify path unbound from run digest/path while download binding already exists.",
+      "fix_type": "code",
+      "divergence_description": "artifacts[0] verified then newest succeeded id stamped without join.",
+      "documented_intent": "Verified status attaches to the restore-tested artifact/run.",
+      "code_behavior": "app/storage.py:_verify_latest_metadata_backup_once uses unbound newest file + newest succeeded id.",
+      "proposed_fix": "Select artifact from run local_path/digest; UPDATE that id.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/storage.py",
+      "line": "2563-2601",
+      "covers": [
+        "REQ-028/cell-VERIFY-BIND"
+      ],
+      "reachability_analysis": "Scheduled verify interval >0; orphan newer .bak.enc or reordered runs reachable.",
+      "iteration": "parity"
+    },
+    {
+      "id": "BUG-017",
+      "req_id": "REQ-029",
+      "title": "Cloud-archive fail-closes on observability after Delete Marker",
+      "severity": "HIGH",
+      "disposition": "code-fix",
+      "disposition_rationale": "Parity with local cleanup best-effort observability after non-idempotent S3 hide.",
+      "fix_type": "code",
+      "divergence_description": "Unguarded notify in record_archive_completed can roll back marker txn / fail job \u2192 retry delete_object.",
+      "documented_intent": "Post-Delete-Marker observability must not re-queue another hide.",
+      "code_behavior": "cloud_deletion.record_archive_completed bare _notify_vault_owners.",
+      "proposed_fix": "try/except best-effort notify + worker_error.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/services/cloud_deletion.py",
+      "line": "897-928",
+      "covers": [
+        "REQ-029/cell-ARCHIVE-OBSERVABILITY"
+      ],
+      "reachability_analysis": "Notification enqueue failure after successful delete_object.",
+      "iteration": "parity"
+    },
+    {
+      "id": "BUG-018",
+      "req_id": "REQ-030",
+      "title": "Cancel recover clears restore_state after non-cancellable RestoreObject",
+      "severity": "HIGH",
+      "disposition": "code-fix",
+      "disposition_rationale": "Worker documents RestoreObject cannot be cancelled; cancel still NULLs restore_state.",
+      "fix_type": "code",
+      "divergence_description": "clear_restore_state_for_jobs on recover cancel vs update_restore_state after restore_object.",
+      "documented_intent": "Retain restore_state/expiry for subsequent recover polling.",
+      "code_behavior": "app/main.py cancel recover clears restore_state.",
+      "proposed_fix": "Remove clear_restore_state_for_jobs from cancel recover path.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/main.py",
+      "line": "2323-2327",
+      "covers": [
+        "REQ-030/cell-CANCEL-RESTORE-STATE"
+      ],
+      "reachability_analysis": "User cancels recover while status restoring after AWS accepted RestoreObject.",
+      "iteration": "parity"
     }
   ]
 }

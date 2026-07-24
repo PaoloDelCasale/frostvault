@@ -382,6 +382,60 @@
       ],
       "summary": "Worker and estimate API share price book rates.",
       "source_type": "code-derived"
+    },
+    {
+      "id": "REQ-028",
+      "title": "Metadata backup verification must stamp the verified run row",
+      "tier": 3,
+      "pattern": "parity",
+      "related_bugs": [
+        "BUG-016"
+      ],
+      "functional_section": "Metadata backups",
+      "summary": "Verify stamps the restore-tested run row.",
+      "references": [
+        "app/storage.py:_verify_latest_metadata_backup_once",
+        "app/services/metadata_backups.py:747-780"
+      ],
+      "specificity": "specific",
+      "use_cases": [],
+      "source_type": "code-derived"
+    },
+    {
+      "id": "REQ-029",
+      "title": "Cloud-archive post-Delete-Marker observability must not fail the job",
+      "tier": 5,
+      "pattern": "parity",
+      "related_bugs": [
+        "BUG-017"
+      ],
+      "functional_section": "Cloud lifecycle",
+      "summary": "Post-Delete-Marker notify is best-effort.",
+      "references": [
+        "app/services/cloud_deletion.py:record_archive_completed",
+        "app/storage.py:1654-1697"
+      ],
+      "specificity": "specific",
+      "use_cases": [],
+      "source_type": "code-derived"
+    },
+    {
+      "id": "REQ-030",
+      "title": "Cancelling recover must not erase in-flight Glacier restore_state",
+      "tier": 5,
+      "pattern": "parity",
+      "related_bugs": [
+        "BUG-018"
+      ],
+      "functional_section": "Job dispatcher",
+      "summary": "Cancel recover retains Glacier restore_state.",
+      "references": [
+        "app/main.py:cancel recover",
+        "app/storage.py:2016-2021"
+      ],
+      "specificity": "specific",
+      "use_cases": [],
+      "source_type": "code-derived"
     }
   ]
 }

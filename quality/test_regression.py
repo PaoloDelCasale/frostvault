@@ -510,5 +510,94 @@ class TestBug015(unittest.TestCase):
         )
 
 
+def _cancel_recover_body() -> str:
+    """Slice of main.py around cancel_jobs recover restore_state handling."""
+    # Anchor on cancel_jobs call (stable across BUG-018 fix which removes the
+    # recover clear_restore_state block that previously served as the start marker).
+    start = MAIN_PY.index("cancel_jobs(job_ids)")
+    end = MAIN_PY.index("for row in automatic_cleanup_rows:", start)
+    return MAIN_PY[start:end]
+
+
+def _record_archive_completed_body() -> str:
+    cloud = (
+        REPO_ROOT / "app" / "services" / "cloud_deletion.py"
+    ).read_text(encoding="utf-8")
+    start = cloud.index("def record_archive_completed")
+    # next top-level def after this one, or EOF-ish
+    rest = cloud[start + 4 :]
+    next_def = rest.find("\ndef ")
+    return cloud[start : start + 4 + next_def] if next_def >= 0 else cloud[start:]
+
+
+class TestBug016(unittest.TestCase):
+    """BUG-016: metadata verify must stamp the verified run (REQ-028)."""
+
+    @unittest.expectedFailure
+    def test_bug_016_verify_binds_run_to_artifact(self) -> None:
+        """[BUG-016][Req: REQ-028] verified status binds path/digest to run.
+
+        Desired: ``_verify_latest_metadata_backup_once`` verifies the succeeded
+        run's ``local_path``/digest (or matches artifact to that run) before
+        UPDATE — not ``artifacts[0]`` + newest succeeded id unbound.
+        Current: verifies directory newest file then stamps newest succeeded id.
+        Fix patch: quality/patches/BUG-016-fix.patch
+        """
+        body = _verify_latest_body()
+        self.assertNotIn(
+            "artifacts[0]",
+            body,
+            "must not verify an unbound directory newest file",
+        )
+        self.assertTrue(
+            ("local_path" in body) or ("digest_sha256" in body),
+            "verify must bind to the run's local_path or digest_sha256",
+        )
+
+
+class TestBug017(unittest.TestCase):
+    """BUG-017: cloud-archive notify must be best-effort after Delete Marker (REQ-029)."""
+
+    @unittest.expectedFailure
+    def test_bug_017_archive_observability_best_effort(self) -> None:
+        """[BUG-017][Req: REQ-029] post-marker notify must not fail-close the job.
+
+        Desired: ``record_archive_completed`` wraps ``_notify_vault_owners`` in
+        try/except (parity with ``record_automatic_cleanup_outcome``) so a
+        notify failure cannot roll back the Delete Marker catalog txn or leave
+        the job failed/retryable.
+        Current: bare ``_notify_vault_owners`` inside the fail-closed DB path.
+        Fix patch: quality/patches/BUG-017-fix.patch
+        """
+        completed = _record_archive_completed_body()
+        notify_idx = completed.find("_notify_vault_owners")
+        self.assertGreaterEqual(notify_idx, 0, "_notify_vault_owners missing")
+        prelude = completed[:notify_idx]
+        self.assertIn(
+            "try:",
+            prelude,
+            "notify must be best-effort (try/except) after Delete Marker audit",
+        )
+
+
+class TestBug018(unittest.TestCase):
+    """BUG-018: cancel recover must retain restore_state (REQ-030)."""
+
+    @unittest.expectedFailure
+    def test_bug_018_cancel_preserves_restore_state(self) -> None:
+        """[BUG-018][Req: REQ-030] cancel must not wipe Glacier restore_state.
+
+        Desired: recover cancel does not call ``clear_restore_state_for_jobs``.
+        Current: cancel always clears restore_state/restore_expiry.
+        Fix patch: quality/patches/BUG-018-fix.patch
+        """
+        body = _cancel_recover_body()
+        self.assertNotIn(
+            "clear_restore_state_for_jobs",
+            body,
+            "cancel must not erase non-cancellable RestoreObject state",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

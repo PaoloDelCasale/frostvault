@@ -24,9 +24,9 @@ Repos:      1
   PASS: spec_audits/ has 4 auditor file(s)
   PASS: triage_probes.sh exists (executable triage evidence)
 [BUGS.md Heading Format]
-  PASS: All 14 bug headings use ### BUG-NNN format
+  PASS: All 17 bug headings use ### BUG-NNN format
 [TDD Sidecar JSON]
-  PASS: tdd-results.json exists (14 bugs)
+  PASS: tdd-results.json exists (17 bugs)
   PASS: has 'schema_version'
   PASS: has 'skill_version'
   PASS: has 'date'
@@ -34,13 +34,13 @@ Repos:      1
   PASS: has 'bugs'
   PASS: has 'summary'
   PASS: schema_version is '1.1'
-  PASS: per-bug field 'id' present (14x)
-  PASS: per-bug field 'requirement' present (14x)
-  PASS: per-bug field 'red_phase' present (14x)
-  PASS: per-bug field 'green_phase' present (14x)
-  PASS: per-bug field 'verdict' present (14x)
-  PASS: per-bug field 'fix_patch_present' present (14x)
-  PASS: per-bug field 'writeup_path' present (14x)
+  PASS: per-bug field 'id' present (17x)
+  PASS: per-bug field 'requirement' present (17x)
+  PASS: per-bug field 'red_phase' present (17x)
+  PASS: per-bug field 'green_phase' present (17x)
+  PASS: per-bug field 'verdict' present (17x)
+  PASS: per-bug field 'fix_patch_present' present (17x)
+  PASS: per-bug field 'writeup_path' present (17x)
   PASS: summary has 'total'
   PASS: summary has 'verified'
   PASS: summary has 'confirmed_open'
@@ -49,13 +49,13 @@ Repos:      1
   PASS: tdd-results.json date '2026-07-24' is valid
   PASS: all verdict values are canonical
 [TDD Log Files]
-  PASS: All 14 confirmed bug(s) have red-phase logs
-  PASS: All 14 bug(s) with fix patches have green-phase logs
+  PASS: All 17 confirmed bug(s) have red-phase logs
+  PASS: All 17 bug(s) with fix patches have green-phase logs
   PASS: All red-phase logs have valid status tags
   PASS: All green-phase logs have valid status tags
   PASS: phase5_env.log present (test-runner probe captured)
-  PASS: Sidecar-to-log cross-validation passed (28 checks)
-  PASS: TDD_TRACEABILITY.md exists (14 bugs with red-phase results)
+  PASS: Sidecar-to-log cross-validation passed (34 checks)
+  PASS: TDD_TRACEABILITY.md exists (17 bugs with red-phase results)
 [Integration Sidecar JSON]
   WARN: integration-results.json not present
 [Recheck Sidecar JSON]
@@ -76,17 +76,17 @@ Repos:      1
   PASS: verify.sh ran clean (exit 0)
   PASS: mechanical-verify.exit is 0
 [Patches]
-  PASS: test_regression.* exists (14 confirmed bugs require it)
-  PASS: 14 regression-test patch(es) for 14 bug(s)
-  PASS: 14 fix patch(es)
-  INFO: Total: 28 patch file(s) in quality/patches/
+  PASS: test_regression.* exists (17 confirmed bugs require it)
+  PASS: 17 regression-test patch(es) for 17 bug(s)
+  PASS: 17 fix patch(es)
+  INFO: Total: 34 patch file(s) in quality/patches/
 [Bug Writeups]
-  PASS: 14 writeup(s) for 14 bug(s)
-  PASS: All 14 writeup(s) have inline fix diffs
+  PASS: 17 writeup(s) for 17 bug(s)
+  PASS: All 17 writeup(s) have inline fix diffs
   PASS: All writeup ```diff blocks contain unified-diff content
   PASS: No writeups contain unfilled template sentinels
 [BUGS.md / patches consistency]
-  PASS: BUGS.md (14 bug(s)) and patches/ (28 patch(es)) are consistent
+  PASS: BUGS.md (17 bug(s)) and patches/ (34 patch(es)) are consistent
 [Verdict Shape]
   PASS: COMPLETENESS_REPORT.md verdict shape canonical (PASS)
 [Workspace Drift]
@@ -109,7 +109,7 @@ Repos:      1
   PASS: bugs_manifest.json: v1.5.7 090j triage precision (D1 reachability + D2 known-issue + D3 security-HIGH) complete
   PASS: quality/INDEX.md: §11 fields present
   PASS: citation_semantic_check.json: no Tier 1/2 REQs to review (invariant #17 vacuously satisfied)
-  PASS: challenge gate coverage: 14 triggered bug(s) all have valid challenge records
+  PASS: challenge gate coverage: 17 triggered bug(s) all have valid challenge records
   PASS: compensation_grid.json: v1.5.2 cardinality gate clean
   PASS: requirements_manifest.json: v1.5.3 source_type validation complete
   PASS: requirements_manifest.json: v1.5.3 skill_section consistency complete
@@ -139,14 +139,14 @@ Attribution: no shallow / fabrication signals detected — verdict reads as a re
 ── Run provenance ──
   Runner:  unknown (no AI-CLI environment marker detected)
   Model:   cursor-grok-4.5 (self-reported by the agent — not verified)
-  Bugs:    14 found (gate-counted)
+  Bugs:    17 found (gate-counted)
 
 ── What happened ──
 Quality Playbook reviewed this project's code in six phases — exploring it, deriving what it's supposed to do, reviewing the code against that, and verifying findings with tests.
 The gate is the final quality checkpoint that decides whether this run's results are trustworthy.
-Result: it completed and passed cleanly and verified 14 issues.
+Result: it completed and passed cleanly and verified 17 issues.
 
 ── What to do next ──
-Review the 14 confirmed issues in quality/BUGS.md; proposed fixes and their tests are in quality/patches/ and quality/results/.
+Review the 17 confirmed issues in quality/BUGS.md; proposed fixes and their tests are in quality/patches/ and quality/results/.
 ───────────────────────────────────────────
-::QPB:: {"v":1,"kind":"gate","gate_result":"PASS","verdict_state":"solid","ts":"2026-07-24T07:43:11Z"}
+::QPB:: {"v":1,"kind":"gate","gate_result":"PASS","verdict_state":"solid","ts":"2026-07-24T08:48:55Z"}

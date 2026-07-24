@@ -199,6 +199,48 @@
       "writeup_path": "quality/workspace/writeups/BUG-015.md",
       "junit_available": false,
       "notes": "unittest without junitxml; unfiltered iteration disposable worktrees"
+    },
+    {
+      "id": "BUG-016",
+      "requirement": "REQ-028",
+      "red_phase": "fail",
+      "green_phase": "pass",
+      "verdict": "TDD verified",
+      "regression_patch": "quality/patches/BUG-016-regression-test.patch",
+      "fix_patch": "quality/patches/BUG-016-fix.patch",
+      "fix_patch_present": true,
+      "patch_gate_passed": true,
+      "writeup_path": "quality/writeups/BUG-016.md",
+      "junit_available": false,
+      "notes": "parity iteration; unittest without junitxml; evidence in .red.log/.green.log"
+    },
+    {
+      "id": "BUG-017",
+      "requirement": "REQ-029",
+      "red_phase": "fail",
+      "green_phase": "pass",
+      "verdict": "TDD verified",
+      "regression_patch": "quality/patches/BUG-017-regression-test.patch",
+      "fix_patch": "quality/patches/BUG-017-fix.patch",
+      "fix_patch_present": true,
+      "patch_gate_passed": true,
+      "writeup_path": "quality/writeups/BUG-017.md",
+      "junit_available": false,
+      "notes": "parity iteration; unittest without junitxml; evidence in .red.log/.green.log"
+    },
+    {
+      "id": "BUG-018",
+      "requirement": "REQ-030",
+      "red_phase": "fail",
+      "green_phase": "pass",
+      "verdict": "TDD verified",
+      "regression_patch": "quality/patches/BUG-018-regression-test.patch",
+      "fix_patch": "quality/patches/BUG-018-fix.patch",
+      "fix_patch_present": true,
+      "patch_gate_passed": true,
+      "writeup_path": "quality/writeups/BUG-018.md",
+      "junit_available": false,
+      "notes": "parity iteration; unittest without junitxml; evidence in .red.log/.green.log"
     }
   ],
   "summary": {

@@ -1,0 +1,22 @@
+RED
+bug=BUG-018
+test=quality.test_regression.TestBug018.test_bug_018_cancel_preserves_restore_state
+Command: .venv/bin/python -m unittest quality.test_regression.TestBug018.test_bug_018_cancel_preserves_restore_state -v
+Exit code: 1
+---
+test_bug_018_cancel_preserves_restore_state (quality.test_regression.TestBug018.test_bug_018_cancel_preserves_restore_state)
+[BUG-018][Req: REQ-030] cancel must not wipe Glacier restore_state. ... FAIL
+
+======================================================================
+FAIL: test_bug_018_cancel_preserves_restore_state (quality.test_regression.TestBug018.test_bug_018_cancel_preserves_restore_state)
+[BUG-018][Req: REQ-030] cancel must not wipe Glacier restore_state.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/quality/test_regression.py", line 592, in test_bug_018_cancel_preserves_restore_state
+    self.assertNotIn(
+AssertionError: 'clear_restore_state_for_jobs' unexpectedly found in 'cancel_jobs(job_ids)\n        placeholders = ", ".join(["%s"] * len(job_ids))\n        connection.execute(\n            f"""\n            UPDATE jobs\n            SET status=\'cancelled\',\n                message=%s,\n                message_key=%s,\n                message_params=%s,\n                updated_at=%s\n            WHERE id IN ({placeholders})\n              AND status NOT IN (\'completed\', \'failed\', \'cancelled\')\n            """,\n            [message, message_key, "{}", now_iso(), *job_ids],\n        )\n        if job_action == "recover":\n            ArchiveCatalog(connection).clear_restore_state_for_jobs(\n                job_ids,\n                checked_at=now_iso(),\n            )\n        ' : cancel must not erase non-cancellable RestoreObject state
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)

@@ -1,0 +1,22 @@
+RED
+bug=BUG-016
+test=quality.test_regression.TestBug016.test_bug_016_verify_binds_run_to_artifact
+Command: .venv/bin/python -m unittest quality.test_regression.TestBug016.test_bug_016_verify_binds_run_to_artifact -v
+Exit code: 1
+---
+test_bug_016_verify_binds_run_to_artifact (quality.test_regression.TestBug016.test_bug_016_verify_binds_run_to_artifact)
+[BUG-016][Req: REQ-028] verified status binds path/digest to run. ... FAIL
+
+======================================================================
+FAIL: test_bug_016_verify_binds_run_to_artifact (quality.test_regression.TestBug016.test_bug_016_verify_binds_run_to_artifact)
+[BUG-016][Req: REQ-028] verified status binds path/digest to run.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/quality/test_regression.py", line 546, in test_bug_016_verify_binds_run_to_artifact
+    self.assertNotIn(
+AssertionError: 'artifacts[0]' unexpectedly found in 'def _verify_latest_metadata_backup_once() -> None:\n    """Periodically restore-verify the newest local backup into an isolated temp DB."""\n    if settings.metadata_backup_verify_interval_seconds <= 0:\n        return\n    backup_dir = Path(settings.metadata_backup_dir)\n    artifacts = metadata_backup_service.list_local_backup_files(backup_dir)\n    if not artifacts:\n        return\n    work_dir = backup_dir / "verify-scratch"\n    try:\n        result = metadata_backup_service.verify_restore_isolated(\n            artifacts[0],\n            work_dir=work_dir,\n            object_store=None,\n        )\n        if not result.get("ok"):\n            raise metadata_backup_service.BackupError("Restore verification reported not ok")\n        metrics_service.inc("metadata_backup_verifications_total", result="succeeded")\n        with db() as connection:\n            latest = connection.execute(\n                """\n                SELECT id FROM metadata_backup_runs\n                WHERE status=\'succeeded\'\n                ORDER BY id DESC LIMIT 1\n                """\n            ).fetchone()\n            if latest:\n                connection.execute(\n                    """\n                    UPDATE metadata_backup_runs\n                    SET status=\'verified\', verified_at=%s, finished_at=%s\n                    WHERE id=%s\n                    """,\n                    (\n                        metadata_backup_service.now_iso(),\n                        metadata_backup_service.now_iso(),\n                        latest["id"],\n                    ),\n                )\n    except Exception as exc:\n        metrics_service.inc("metadata_backup_verifications_total", result="failed")\n        try:\n            with db() as connection:\n                worker_error_store.record_worker_error(\n                    connection,\n                    component="metadata_backup_verify",\n                    exc=exc,\n                )\n                metadata_backup_service.notify_admins_of_backup_failure(\n                    connection,\n                    reason="verify",\n                    error_message=str(exc),\n                )\n        except Exception:\n            pass\n\n' : must not verify an unbound directory newest file
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)

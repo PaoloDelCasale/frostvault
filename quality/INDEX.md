@@ -6,7 +6,7 @@
 {
   "schema_version": "2.0",
   "run_timestamp_start": "2026-07-23T23:09:52Z",
-  "run_timestamp_end": "2026-07-24T07:41:34Z",
+  "run_timestamp_end": "2026-07-24T08:49:09Z",
   "duration_seconds": 25731,
   "qpb_version": "1.5.10",
   "target_repo_path": ".",
@@ -43,12 +43,13 @@
     }
   },
   "summary": {
-    "requirements": 27,
-    "bugs": 14,
+    "requirements": 30,
+    "bugs": 17,
     "gate_verdict": "pass",
     "iterations_completed": [
       "gap",
-      "unfiltered"
+      "unfiltered",
+      "parity"
     ]
   },
   "artifacts": [
@@ -67,7 +68,8 @@
     "quality/ITERATION_PLAN.md",
     "quality/EXPLORATION_ITER2.md",
     "quality/EXPLORATION_MERGED.md",
-    "quality/EXPLORATION_ITER3.md"
+    "quality/EXPLORATION_ITER3.md",
+    "quality/EXPLORATION_ITER4.md"
   ],
   "gap_iteration": {
     "completed_at": "2026-07-24T06:42:59Z",
@@ -132,6 +134,55 @@
       "DC-012"
     ],
     "next_strategy": "parity"
+  },
+  "parity_iteration": {
+    "completed_at": "2026-07-24T08:49:09Z",
+    "net_new_bugs": [
+      "BUG-016",
+      "BUG-017",
+      "BUG-018"
+    ],
+    "prior_bugs_preserved": [
+      "BUG-001",
+      "BUG-002",
+      "BUG-004",
+      "BUG-005",
+      "BUG-006",
+      "BUG-007",
+      "BUG-008",
+      "BUG-009",
+      "BUG-010",
+      "BUG-011",
+      "BUG-012",
+      "BUG-013",
+      "BUG-014",
+      "BUG-015"
+    ],
+    "rejected_preserved": [
+      "former-BUG-003",
+      "CAND-006"
+    ],
+    "demoted_preserved": [
+      "DC-001",
+      "DC-002",
+      "DC-003",
+      "DC-004",
+      "DC-005",
+      "DC-006",
+      "DC-007",
+      "DC-008",
+      "DC-009",
+      "DC-010",
+      "DC-011",
+      "DC-012"
+    ],
+    "demoted_new": [
+      "DC-013",
+      "DC-014",
+      "DC-015"
+    ],
+    "next_strategy": "adversarial",
+    "gate_verdict": "pass"
   }
 }
 ```

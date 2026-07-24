@@ -1,0 +1,22 @@
+RED
+bug=BUG-017
+test=quality.test_regression.TestBug017.test_bug_017_archive_observability_best_effort
+Command: .venv/bin/python -m unittest quality.test_regression.TestBug017.test_bug_017_archive_observability_best_effort -v
+Exit code: 1
+---
+test_bug_017_archive_observability_best_effort (quality.test_regression.TestBug017.test_bug_017_archive_observability_best_effort)
+[BUG-017][Req: REQ-029] post-marker notify must not fail-close the job. ... FAIL
+
+======================================================================
+FAIL: test_bug_017_archive_observability_best_effort (quality.test_regression.TestBug017.test_bug_017_archive_observability_best_effort)
+[BUG-017][Req: REQ-029] post-marker notify must not fail-close the job.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/quality/test_regression.py", line 574, in test_bug_017_archive_observability_best_effort
+    self.assertIn(
+AssertionError: 'try:' not found in 'def record_archive_completed(\n    connection: Any,\n    *,\n    job_id: int,\n    vault_id: int,\n    path: str,\n    marker_version_id: str,\n    actor_user_id: int | None,\n    updated_at: str,\n) -> None:\n    record_audit_event(\n        connection,\n        event="cloud_deletion.archive_completed",\n        actor_user_id=actor_user_id,\n        vault_id=vault_id,\n        job_id=job_id,\n        outcome="success",\n        path=path,\n        delete_marker_version_id=marker_version_id,\n    )\n    ' : notify must be best-effort (try/except) after Delete Marker audit
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)

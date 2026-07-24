@@ -1,0 +1,14 @@
+GREEN
+bug=BUG-018
+test=quality.test_regression.TestBug018.test_bug_018_cancel_preserves_restore_state
+Command: PYTHONPATH=/tmp/qpb-parity-green .venv/bin/python -m unittest quality.test_regression.TestBug018.test_bug_018_cancel_preserves_restore_state -v
+Worktree: /tmp/qpb-parity-green (patched; production /workspace/app unchanged)
+Exit code: 0
+---
+test_bug_018_cancel_preserves_restore_state (quality.test_regression.TestBug018.test_bug_018_cancel_preserves_restore_state)
+[BUG-018][Req: REQ-030] cancel must not wipe Glacier restore_state. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK

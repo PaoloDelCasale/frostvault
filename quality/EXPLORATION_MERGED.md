@@ -448,6 +448,11 @@ Demoted (see EXPLORATION_MERGED.md Demoted Candidates): G1-2 auth_time, G1-3 inv
 3. **CAND-U3-003** — User reactivation omits `session_version` bump — High — → promote BUG-014
 4. **CAND-U3-004** — Restore estimate price book ≠ worker high-impact rates — High — → promote BUG-015
 
+### From Iteration 4 (parity) — net-new candidates
+1. **CAND-P4-001** — Metadata verify stamps wrong `metadata_backup_runs` row — High — → promote BUG-016
+2. **CAND-P4-002** — Cloud-archive observability fail-closed after Delete Marker — High — → promote BUG-017
+3. **CAND-P4-003** — Cancel recover clears `restore_state` after RestoreObject — High — → promote BUG-018
+
 ## Demoted Candidates
 
 ### DC-001: OIDC reauth without auth_time/max_age proof
@@ -541,3 +546,78 @@ Demoted (see EXPLORATION_MERGED.md Demoted Candidates): G1-2 auth_time, G1-3 inv
 [Iteration 3: unfiltered] Full flat findings live in `quality/EXPLORATION_ITER3.md`.
 Promoted: CAND-U3-001..004 → BUG-012..015. Demoted: DC-004..012 (see Demoted Candidates).
 Prior BUG-001..011, former BUG-003, CAND-006, DC-001..003 preserved unchanged.
+
+### DC-013: OIDC self-link without require_recent_reauth
+- **Source:** Iteration 4 parity (Finding P4-4)
+- **Dismissal reason:** Adjacent to DC-007; admin invite step-up vs self-link may be intentional without ADR mandating step-up for self-service identity bind.
+- **Code location:** `app/main.py:1079-1096` vs `app/main.py:2643-2648`
+- **Re-promotion criteria:** ADR/REQUIREMENT that self-link must call `require_recent_reauth` (or equivalent), with a failing test proving bind succeeds on a stale session when admin invite path would refuse.
+- **Status:** DEMOTED
+
+### DC-014: Price-book config accepts unnormalized rates/keys
+- **Source:** Iteration 4 parity (Finding P4-5)
+- **Dismissal reason:** Adjacent to BUG-015 (worker vs estimate book); config-time validation alone not promoted as separate defect this iteration.
+- **Code location:** `app/main.py:730-739`; `app/services/cost_estimates.py:222-269`
+- **Re-promotion criteria:** Show accepted lowercase/negative rates produce silent zero/negative billing distinct from BUG-015’s hardcoded worker defaults, with a contract requiring config-time normalization.
+- **Status:** DEMOTED
+
+### DC-015: Cloud-archive failure lacks dedicated audit event
+- **Source:** Iteration 4 parity (Finding P4-6)
+- **Dismissal reason:** Observability hygiene; primary defect captured by BUG-017 non-idempotent retry after post-S3 failure.
+- **Code location:** `app/storage.py:2078-2130`; `process_job` except path
+- **Re-promotion criteria:** Spec requiring `cloud_deletion.archive_failed` (or equivalent) on every failed archive attempt independent of BUG-017 fix.
+- **Status:** DEMOTED
+
+
+
+---
+
+# Part D — Iteration 4 (parity) — [Iteration 4: parity]
+
+## Parity inventory (summary)
+
+Pairs P01–P26 enumerated in `quality/ITERATION_PLAN.md`. Deep diffs focused on
+metadata verify↔download binding, cloud-archive vs local-cleanup observability,
+and cancel recover vs RestoreObject persistence.
+
+## Findings attributed
+
+### [Iteration 4: parity] P4-1 Metadata verify stamps wrong run
+See EXPLORATION_ITER4.md — promote **BUG-016**.
+
+### [Iteration 4: parity] P4-2 Cloud-archive fail-closed after Delete Marker
+See EXPLORATION_ITER4.md — promote **BUG-017**.
+
+### [Iteration 4: parity] P4-3 Cancel clears non-cancellable restore_state
+See EXPLORATION_ITER4.md — promote **BUG-018**.
+
+### [Iteration 4: parity] Refinements of existing bugs
+BUG-001,002,004,008,009,010,013,014,015 — evidence refined; IDs unchanged.
+
+## Candidate Bugs (Iteration 4)
+
+1. **CAND-P4-001** — Verify updates wrong metadata_backup_runs row — High — → BUG-016
+2. **CAND-P4-002** — Cloud-archive observability fail-closed after S3 hide — High — → BUG-017
+3. **CAND-P4-003** — Cancel recover clears restore_state after RestoreObject — High — → BUG-018
+
+### DC-013: OIDC self-link without require_recent_reauth
+- **Source:** Iteration 4 parity (Finding P4-4)
+- **Dismissal reason:** Adjacent to DC-007; admin invite step-up vs self-link may be intentional without ADR mandating step-up for self-service identity bind.
+- **Code location:** `app/main.py:1079-1096` vs `app/main.py:2643-2648`
+- **Re-promotion criteria:** ADR/REQUIREMENT that self-link must call `require_recent_reauth` (or equivalent), with a failing test proving bind succeeds on a stale session when admin invite path would refuse.
+- **Status:** DEMOTED
+
+### DC-014: Price-book config accepts unnormalized rates/keys
+- **Source:** Iteration 4 parity (Finding P4-5)
+- **Dismissal reason:** Adjacent to BUG-015 (worker vs estimate book); config-time validation alone not promoted as separate defect this iteration.
+- **Code location:** `app/main.py:730-739`; `app/services/cost_estimates.py:222-269`
+- **Re-promotion criteria:** Show accepted lowercase/negative rates produce silent zero/negative billing distinct from BUG-015’s hardcoded worker defaults, with a contract requiring config-time normalization.
+- **Status:** DEMOTED
+
+### DC-015: Cloud-archive failure lacks dedicated audit event
+- **Source:** Iteration 4 parity (Finding P4-6)
+- **Dismissal reason:** Observability hygiene; primary defect captured by BUG-017 non-idempotent retry after post-S3 failure.
+- **Code location:** `app/storage.py:2078-2130`; `process_job` except path
+- **Re-promotion criteria:** Spec requiring `cloud_deletion.archive_failed` (or equivalent) on every failed archive attempt independent of BUG-017 fix.
+- **Status:** DEMOTED
+

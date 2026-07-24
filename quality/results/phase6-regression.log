@@ -26,8 +26,14 @@ test_bug_014_active_change_bumps_session_version (test_regression.TestBug014.tes
 [BUG-014][Req: REQ-026] deactivate/reactivate invalidates Sessions. ... expected failure
 test_bug_015_recover_uses_active_price_book (test_regression.TestBug015.test_bug_015_recover_uses_active_price_book)
 [BUG-015][Req: REQ-027] worker estimate matches recover/estimate book. ... expected failure
+test_bug_016_verify_binds_run_to_artifact (test_regression.TestBug016.test_bug_016_verify_binds_run_to_artifact)
+[BUG-016][Req: REQ-028] verified status binds path/digest to run. ... expected failure
+test_bug_017_archive_observability_best_effort (test_regression.TestBug017.test_bug_017_archive_observability_best_effort)
+[BUG-017][Req: REQ-029] post-marker notify must not fail-close the job. ... expected failure
+test_bug_018_cancel_preserves_restore_state (test_regression.TestBug018.test_bug_018_cancel_preserves_restore_state)
+[BUG-018][Req: REQ-030] cancel must not wipe Glacier restore_state. ... expected failure
 
 ----------------------------------------------------------------------
-Ran 14 tests in 0.557s
+Ran 17 tests in 0.567s
 
-OK (expected failures=14)
+OK (expected failures=17)

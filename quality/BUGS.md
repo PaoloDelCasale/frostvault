@@ -22,7 +22,7 @@
 | BUG-014 | High | code-fix | REQ-026 | User reactivation omits session_version bump | CONFIRMED |
 | BUG-015 | High | code-fix | REQ-027 | Restore estimate vs worker price-book skew | CONFIRMED |
 
-Phase 5 challenge gate: before gate **7** active findings; after gate **6** confirmed (4 downgraded, 2 confirmed at prior severity) and **1** rejected (former list-only metadata verify finding — see Reviewed and dismissed). Gap iteration (2026-07-24) added **4** net-new confirmed bugs (BUG-008..011); prior six and rejected former-003 preserved. Unfiltered iteration (2026-07-24) added **4** net-new confirmed bugs (BUG-012..015); prior ten, former-003, and CAND-006 preserved.
+Phase 5 challenge gate: before gate **7** active findings; after gate **6** confirmed (4 downgraded, 2 confirmed at prior severity) and **1** rejected (former list-only metadata verify finding — see Reviewed and dismissed). Gap iteration (2026-07-24) added **4** net-new confirmed bugs (BUG-008..011); prior six and rejected former-003 preserved. Unfiltered iteration (2026-07-24) added **4** net-new confirmed bugs (BUG-012..015); prior ten, former-003, and CAND-006 preserved. Parity iteration (2026-07-24) added **3** net-new confirmed bugs (BUG-016..018); prior fourteen, former-003, CAND-006, and DC-001..015 preserved.
 
 Rejected candidates from earlier phases: CAND-006 (crypt rclone VersionId propagation) — unverified risk. Phase 4 minority FALSE-POSITIVE: upload/rename HeadObject vs REQ-001.
 
@@ -363,4 +363,49 @@ Rejected candidates from earlier phases: CAND-006 (crypt rclone VersionId propag
 - **Patches:** `quality/workspace/patches/BUG-015-regression-test.patch`, `quality/workspace/patches/BUG-015-fix.patch`
 - **Writeup:** `quality/workspace/writeups/BUG-015.md`
 - **Challenge:** `quality/challenge/BUG-015-challenge.md` — **Verdict:** CONFIRMED
+
+### BUG-016: Metadata verify stamps a different run than the artifact checked
+
+- **Severity:** HIGH
+- **Requirement:** REQ-028
+- **Source:** Parity iteration P4-1
+- **Location:** `app/storage.py:_verify_latest_metadata_backup_once` (approx 2563-2601)
+- **Divergence:** Verifies `list_local_backup_files()[0]` then UPDATEs newest `status='succeeded'` row without matching `local_path` / `digest_sha256`. Download resolution already binds run→artifact.
+- **Disposition:** code-fix
+- **Disposition rationale:** Concrete parity gap vs download binding and backup-run digest persistence; orphan/newer files can falsely verify the wrong run.
+- **Observable consequence:** Operators see a run marked verified whose ciphertext was never restore-tested.
+- **Proposed fix:** Verify the succeeded run’s recorded `local_path` (fallback digest match); UPDATE that same id.
+- **Regression test:** `quality/test_regression.py::TestBug016`
+- **Patches:** `quality/patches/BUG-016-fix.patch`, `quality/patches/BUG-016-regression-test.patch`
+- **TDD:** RED+GREEN under `quality/results/BUG-016.*.log`
+
+### BUG-017: Cloud-archive fail-closes on observability after Delete Marker
+
+- **Severity:** HIGH
+- **Requirement:** REQ-029
+- **Source:** Parity iteration P4-2
+- **Location:** `app/storage.py:process_cloud_archive` + `cloud_deletion.record_archive_completed`
+- **Divergence:** After non-idempotent `delete_object`, audit+notify run in the same fail-closed path; exceptions mark the job failed and retries issue another Delete Marker. Local cleanup treats observability as best-effort.
+- **Disposition:** code-fix
+- **Disposition rationale:** Cross-path parity with `record_automatic_cleanup_outcome`; S3 mutation cannot share the DB rollback.
+- **Observable consequence:** Duplicate Delete Markers; catalog/job diverge from S3; extra reversible hides.
+- **Proposed fix:** Durable marker+audit; best-effort notify; complete job after durable commit (do not retry hide on notify failure).
+- **Regression test:** `quality/test_regression.py::TestBug017`
+- **Patches:** `quality/patches/BUG-017-fix.patch`, `quality/patches/BUG-017-regression-test.patch`
+- **TDD:** RED+GREEN under `quality/results/BUG-017.*.log`
+
+### BUG-018: Cancel recover clears restore_state after non-cancellable RestoreObject
+
+- **Severity:** HIGH
+- **Requirement:** REQ-030
+- **Source:** Parity iteration P4-3
+- **Location:** `app/main.py` cancel recover branch; `ArchiveCatalog.clear_restore_state_for_jobs`
+- **Divergence:** Worker persists restore_state and states RestoreObject cannot be cancelled; cancel path NULLs restore_state/restore_expiry anyway.
+- **Disposition:** code-fix
+- **Disposition rationale:** Direct contradiction of the worker’s own non-cancellation invariant; loses polling/expiry metadata.
+- **Observable consequence:** Subsequent recover loses in-flight Glacier context; may re-request restore and drop expiry.
+- **Proposed fix:** Do not clear restore_state on recover cancel (Job still cancelled).
+- **Regression test:** `quality/test_regression.py::TestBug018`
+- **Patches:** `quality/patches/BUG-018-fix.patch`, `quality/patches/BUG-018-regression-test.patch`
+- **TDD:** RED+GREEN under `quality/results/BUG-018.*.log`
 

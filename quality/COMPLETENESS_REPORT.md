@@ -49,5 +49,23 @@ Stage: **final (post-Phase-6 verification)** — Phase 5 reconciliation + Phase 
 | red failed | 0 |
 | green failed | 0 |
 
+## Domain updates (parity iteration)
+
+- Net-new bugs BUG-016..018 with REQ-028..030, writeups, patches, RED+GREEN logs, challenge verdicts CONFIRMED
+- Active bugs: **17** (was 14); rejected former-003 + CAND-006 preserved; DC-001..015 demoted preserved/added
+- Functional: 29 OK; Regression: 17 expected failures; Mechanical verify exit 0
+- Production source outside quality/: unchanged
+- Prior baseline + gap + unfiltered history preserved
+
+## TDD summary (cumulative)
+
+| Metric | Count |
+|--------|-------|
+| Active bugs | 17 |
+| TDD verified (FAIL→PASS) | 17 |
+| confirmed open | 0 |
+| red failed | 0 |
+| green failed | 0 |
+
 ## Verdict
 PASS

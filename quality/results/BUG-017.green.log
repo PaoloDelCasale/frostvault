@@ -1,0 +1,14 @@
+GREEN
+bug=BUG-017
+test=quality.test_regression.TestBug017.test_bug_017_archive_observability_best_effort
+Command: PYTHONPATH=/tmp/qpb-parity-green .venv/bin/python -m unittest quality.test_regression.TestBug017.test_bug_017_archive_observability_best_effort -v
+Worktree: /tmp/qpb-parity-green (patched; production /workspace/app unchanged)
+Exit code: 0
+---
+test_bug_017_archive_observability_best_effort (quality.test_regression.TestBug017.test_bug_017_archive_observability_best_effort)
+[BUG-017][Req: REQ-029] post-marker notify must not fail-close the job. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK

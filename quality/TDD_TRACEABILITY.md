@@ -22,3 +22,10 @@ All fourteen active confirmed bugs (six baseline + four gap + four unfiltered) c
 | BUG-013 | REQ-025 | quality/REQUIREMENTS.md; REQ-001 crypt | REQ-025 / crypt object_key | Crypt download uses object_key_to_path | quality/test_regression.py::TestBug013::test_bug_013_crypt_download_uses_object_key | FAIL (RED) | PASS (GREEN) |
 | BUG-014 | REQ-026 | quality/REQUIREMENTS.md; sessions | REQ-026 / active session_version | active update bumps session_version | quality/test_regression.py::TestBug014::test_bug_014_active_change_bumps_session_version | FAIL (RED) | PASS (GREEN) |
 | BUG-015 | REQ-027 | quality/REQUIREMENTS.md; cost_estimates | REQ-027 / price book parity | process_recover uses get_active_price_book | quality/test_regression.py::TestBug015::test_bug_015_recover_uses_active_price_book | FAIL (RED) | PASS (GREEN) |
+
+| BUG-016 | REQ-028 | quality/REQUIREMENTS.md; metadata-backups | REQ-028 / verify bind | verify stamps matching run | quality/test_regression.py::TestBug016::test_bug_016_verify_binds_run_to_artifact | FAIL (RED) | PASS (GREEN) |
+| BUG-017 | REQ-029 | quality/REQUIREMENTS.md; cloud_deletion | REQ-029 / archive observability | notify best-effort after Delete Marker | quality/test_regression.py::TestBug017::test_bug_017_archive_observability_best_effort | FAIL (RED) | PASS (GREEN) |
+| BUG-018 | REQ-030 | quality/REQUIREMENTS.md; recover cancel | REQ-030 / restore_state | cancel preserves restore_state | quality/test_regression.py::TestBug018::test_bug_018_cancel_preserves_restore_state | FAIL (RED) | PASS (GREEN) |
+
+All seventeen active confirmed bugs completed TDD FAIL→PASS in disposable Git worktrees (parity added BUG-016..018). Production source outside `quality/` was not modified.
+

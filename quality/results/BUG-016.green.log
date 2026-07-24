@@ -1,0 +1,14 @@
+GREEN
+bug=BUG-016
+test=quality.test_regression.TestBug016.test_bug_016_verify_binds_run_to_artifact
+Command: PYTHONPATH=/tmp/qpb-parity-green .venv/bin/python -m unittest quality.test_regression.TestBug016.test_bug_016_verify_binds_run_to_artifact -v
+Worktree: /tmp/qpb-parity-green (patched; production /workspace/app unchanged)
+Exit code: 0
+---
+test_bug_016_verify_binds_run_to_artifact (quality.test_regression.TestBug016.test_bug_016_verify_binds_run_to_artifact)
+[BUG-016][Req: REQ-028] verified status binds path/digest to run. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK

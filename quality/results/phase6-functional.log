@@ -50,6 +50,6 @@ test_req_017_viewer_not_owner (test_functional.TestSpecRequirements.test_req_017
 [Req: REQ-017] Viewer is read-only at role helpers. ... ok
 
 ----------------------------------------------------------------------
-Ran 29 tests in 0.095s
+Ran 29 tests in 0.166s
 
 OK
