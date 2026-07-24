@@ -14,6 +14,8 @@ Seams under test (confirmed for this issue):
   — failure blocks application-managed schema upgrades
 - ``app.services.metadata_backups.default_object_store``
   — public ObjectStore factory for configured off-host backup (BUG-010)
+- ``app.storage._verify_latest_metadata_backup_once``
+  — scheduled verify must stamp the run bound by local_path/digest (BUG-016)
 - Admin HTTP: list / status / manual run / download
 """
 from __future__ import annotations
@@ -24,10 +26,12 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
 
+from app import storage
 from app.database import SQLiteConnection
 from app.services import metadata_backups
 from tests.test_database import run_alembic
@@ -258,6 +262,97 @@ class IsolatedRestoreVerificationTests(unittest.TestCase):
             [key for key in self.store.objects if key.startswith("vaults/")],
             ["vaults/abc/file.bin"],
         )
+
+
+class MetadataVerifyRunBindingTests(unittest.TestCase):
+    """BUG-016: scheduled verify must stamp the restore-tested run (REQ-028)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.db_path = self.root / "live.db"
+        self.backup_dir = self.root / "backups"
+        self.backup_dir.mkdir()
+        migrated = run_alembic(self.db_path)
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        with SQLiteConnection(str(self.db_path)) as connection:
+            connection.execute(
+                """
+                INSERT INTO users(username, display_name, password_hash, is_admin)
+                VALUES ('admin', 'Admin', 'hash', TRUE)
+                """
+            )
+        self.master_key = Fernet.generate_key().decode("ascii")
+        self.settings = replace(
+            __import__("app.config", fromlist=["settings"]).settings,
+            db_backend="sqlite",
+            sqlite_path=str(self.db_path),
+            archive_master_key=self.master_key,
+            metadata_backup_dir=str(self.backup_dir),
+            metadata_backup_verify_interval_seconds=60,
+        )
+
+    def test_bug_016_verify_binds_run_to_artifact(self) -> None:
+        """[BUG-016][Req: REQ-028] verified status binds path/digest to run.
+
+        Seam: ``storage._verify_latest_metadata_backup_once`` — scheduled worker
+        entry used by ``background_loop``. Arrange a newest-on-disk orphan that
+        is not restore-viable while the newest ``succeeded`` run records a
+        different ``local_path``/digest. Verified must attach only after the
+        bound artifact is restore-tested (parity with ``open_backup_artifact``),
+        not after verifying an unbound directory newest file.
+        """
+        with patch.object(metadata_backups, "settings", self.settings):
+            artifact = metadata_backups.create_metadata_backup(
+                reason="manual",
+                backup_dir=self.backup_dir,
+                master_key=self.master_key,
+                db_backend="sqlite",
+                sqlite_path=str(self.db_path),
+                config_snapshot={"db_backend": "sqlite"},
+            )
+
+        orphan = self.backup_dir / "zzzz-unbound-orphan.bak.enc"
+        orphan.write_bytes(b"not-a-valid-encrypted-backup")
+        listed = metadata_backups.list_local_backup_files(self.backup_dir)
+        self.assertEqual(listed[0], orphan)
+        self.assertIn(artifact["path"], listed)
+
+        with SQLiteConnection(str(self.db_path)) as connection:
+            run = metadata_backups.record_backup_run(
+                connection,
+                reason="manual",
+                backend="sqlite",
+                status="succeeded",
+                digest_sha256=artifact["digest_sha256"],
+                local_path=str(artifact["path"]),
+                size_bytes=artifact["path"].stat().st_size,
+            )
+            run_id = run["id"]
+
+        database_settings = SimpleNamespace(
+            db_backend="sqlite",
+            sqlite_path=str(self.db_path),
+        )
+        with (
+            patch("app.database.settings", database_settings),
+            patch("app.storage.settings", self.settings),
+            patch.object(metadata_backups, "settings", self.settings),
+        ):
+            storage._verify_latest_metadata_backup_once()
+
+        with SQLiteConnection(str(self.db_path)) as connection:
+            row = connection.execute(
+                "SELECT status, verified_at FROM metadata_backup_runs WHERE id=%s",
+                (run_id,),
+            ).fetchone()
+        self.assertEqual(
+            row["status"],
+            "verified",
+            "verify must stamp the succeeded run whose local_path/digest was restore-tested",
+        )
+        self.assertIsNotNone(row["verified_at"])
 
 
 class DefaultObjectStoreFailClosedTests(unittest.TestCase):
