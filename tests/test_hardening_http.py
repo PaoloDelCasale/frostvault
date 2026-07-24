@@ -290,5 +290,47 @@ class AdminUserActiveSessionTests(HardeningHttpTestCase):
         )
 
 
+class AdminUserLastAdminGuardTests(unittest.TestCase):
+    """BUG-020: last-admin deactivate must be race-safe (REQ-032)."""
+
+    def test_bug_020_last_admin_guard_is_atomic_with_update(self) -> None:
+        """[BUG-020][Req: REQ-032] last-admin invariant must not be check-then-act.
+
+        Seam: update_user (PATCH /api/admin/users/{id}) handler source contract —
+        the same public admin-update boundary exercised by BUG-014 and by the
+        audited Quality Playbook regression. Asserts the last-admin guard is
+        encoded atomically with the mutating UPDATE (conditional COUNT /
+        FOR UPDATE in the same locked transaction), not as a separate
+        check-then-act across two ``with db()`` blocks.
+        Desired: deactivating an admin uses a single transaction and/or a
+        conditional UPDATE that refuses to leave zero active admins.
+        Previously: COUNT in one ``with db()`` then UPDATE in another with no
+        last-admin predicate on UPDATE.
+        """
+        main_py = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(
+            encoding="utf-8"
+        )
+        start = main_py.index("def update_user")
+        end = main_py.index("\ndef admin_vaults", start)
+        body = main_py[start:end]
+
+        self.assertIn("At least one administrator must remain active", body)
+        # The UPDATE that sets active must itself encode the last-admin guard
+        # (subquery / HAVING / FOR UPDATE in the same with-block as the mutate).
+        update_idx = body.find("UPDATE users SET")
+        self.assertGreaterEqual(update_idx, 0)
+        update_sql = body[update_idx : update_idx + 400]
+        self.assertTrue(
+            ("COUNT(" in update_sql)
+            or (
+                "active_admins"
+                in body[body.rfind("with db()", 0, update_idx) : update_idx + 50]
+                and "FOR UPDATE" in body
+            )
+            or ("SELECT COUNT" in update_sql),
+            "UPDATE must be conditional on last-admin count or share a locked txn",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

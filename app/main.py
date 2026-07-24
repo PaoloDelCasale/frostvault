@@ -2676,16 +2676,6 @@ def update_user(
 ):
     if action.active is False and user_id == admin["id"]:
         raise HTTPException(400, "You cannot deactivate your own account")
-    if action.active is False:
-        with db() as connection:
-            target = connection.execute(
-                "SELECT is_admin FROM users WHERE id=%s", (user_id,)
-            ).fetchone()
-            active_admins = connection.execute(
-                "SELECT COUNT(*) AS total FROM users WHERE is_admin=TRUE AND active=TRUE"
-            ).fetchone()["total"]
-        if target and target["is_admin"] and active_admins <= 1:
-            raise HTTPException(400, "At least one administrator must remain active")
     updates: list[str] = []
     params: list[Any] = []
     if action.active is not None:
@@ -2703,11 +2693,55 @@ def update_user(
         raise HTTPException(400, "No changes requested")
     params.append(user_id)
     with db() as connection:
+        if action.active is False:
+            # Serialize the last-admin check with the UPDATE (REQ-032).
+            # SQLite takes an immediate write lock; PostgreSQL locks every
+            # active-admin row (FOR UPDATE cannot wrap COUNT(*) aggregates).
+            backend = getattr(connection, "backend", settings.db_backend)
+            if backend == "sqlite":
+                connection.begin_immediate()
+                target = connection.execute(
+                    "SELECT is_admin FROM users WHERE id=%s",
+                    (user_id,),
+                ).fetchone()
+                active_admins = connection.execute(
+                    "SELECT COUNT(*) AS total FROM users "
+                    "WHERE is_admin=TRUE AND active=TRUE"
+                ).fetchone()["total"]
+            else:
+                target = connection.execute(
+                    "SELECT is_admin FROM users WHERE id=%s FOR UPDATE",
+                    (user_id,),
+                ).fetchone()
+                active_admin_rows = connection.execute(
+                    "SELECT id FROM users "
+                    "WHERE is_admin=TRUE AND active=TRUE FOR UPDATE"
+                ).fetchall()
+                active_admins = len(active_admin_rows)
+            if target and target["is_admin"] and active_admins <= 1:
+                raise HTTPException(
+                    400, "At least one administrator must remain active"
+                )
+        where_extra = ""
+        if action.active is False:
+            # Conditional UPDATE refuses concurrent last-admin races (REQ-032).
+            where_extra = (
+                " AND (is_admin=FALSE OR "
+                "(SELECT COUNT(*) FROM users WHERE is_admin=TRUE AND active=TRUE) > 1)"
+            )
         row = connection.execute(
-            f"UPDATE users SET {', '.join(updates)} WHERE id=%s "
+            f"UPDATE users SET {', '.join(updates)} WHERE id=%s{where_extra} "
             "RETURNING id, username, display_name, is_admin, active",
             params,
         ).fetchone()
+        if action.active is False and not row:
+            exists = connection.execute(
+                "SELECT id, is_admin FROM users WHERE id=%s", (user_id,)
+            ).fetchone()
+            if exists and exists["is_admin"]:
+                raise HTTPException(
+                    400, "At least one administrator must remain active"
+                )
     if not row:
         raise HTTPException(404, "User not found")
     return row
