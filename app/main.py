@@ -2691,6 +2691,7 @@ def update_user(
     if action.active is not None:
         updates.append("active=%s")
         params.append(action.active)
+        updates.append("session_version=session_version+1")
     if action.display_name is not None:
         updates.append("display_name=%s")
         params.append(action.display_name.strip())
