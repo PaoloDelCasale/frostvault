@@ -410,6 +410,56 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             )
             self.assertTrue(temporary.is_file())
 
+    def test_bug_013_content_crypt_download_uses_object_key(self) -> None:
+        """[BUG-013][Req: REQ-025] content-crypt rclone path from object_key.
+
+        Legacy content-crypt remotes (no per-vault name encryption) still must
+        address the Archive Version key (``.bin`` stripped), not solely the
+        current ``job['path']`` after a rename.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            temporary = root / "recovered.tmp"
+            job = {
+                "id": 914,
+                "path": "renamed.txt",
+                "s3_prefix": "docs",
+                "s3_bucket": "bucket",
+                "rclone_remote": "crypt-remote",
+                # Legacy vault: content crypt via rclone remote, no name encryption.
+                "encryption_mode": None,
+            }
+            object_key = "docs/original.txt.bin"
+            rclone_sources: list[str] = []
+
+            def fake_rclone(command, source, destination, *args, **kwargs) -> None:
+                self.assertEqual(command, "copyto")
+                rclone_sources.append(str(source))
+                Path(destination).parent.mkdir(parents=True, exist_ok=True)
+                Path(destination).write_bytes(b"recovered-bytes")
+
+            with (
+                patch("app.storage.rclone_remote_is_crypt", return_value=True),
+                patch("app.storage.run_rclone", side_effect=fake_rclone),
+            ):
+                download_exact_version_plaintext(
+                    job,
+                    object_key=object_key,
+                    provider_version_id="crypt-version-2",
+                    temporary=temporary,
+                )
+
+            self.assertEqual(
+                rclone_sources,
+                ["crypt-remote:original.txt"],
+                "content-crypt download must strip object_key to the logical path",
+            )
+            self.assertNotIn(
+                "renamed.txt",
+                rclone_sources[0] if rclone_sources else "",
+            )
+            self.assertTrue(temporary.is_file())
+
 
 class GlacierRestoreWorkflowTests(unittest.TestCase):
     def test_glacier_version_requests_restore_before_download(self) -> None:
