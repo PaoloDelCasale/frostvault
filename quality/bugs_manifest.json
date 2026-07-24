@@ -1,6 +1,6 @@
 {
   "schema_version": "1.5.6",
-  "generated_at": "2026-07-24T06:40:18Z",
+  "generated_at": "2026-07-24T07:30:19Z",
   "records": [
     {
       "id": "BUG-001",
@@ -205,6 +205,90 @@
         "REQ-023/cell-OIDC_NO_ACCOUNT_SWITCH"
       ],
       "reachability_analysis": "Checked oidc callback session branch vs ADR-0003/0005; _resolve_or_bind_identity returns foreign user before invite redeem; else create_session switches account; no sign-out guard."
+    },
+    {
+      "id": "BUG-012",
+      "req_id": "REQ-024",
+      "title": "Recover overwrites on-disk Local Copy when catalog says absent",
+      "severity": "HIGH",
+      "disposition": "code-fix",
+      "disposition_rationale": "Catalog presence lag must not authorize silent Path.replace overwrite of an existing file.",
+      "fix_type": "code",
+      "divergence_description": "process_recover checks catalog only then replace() without lexists.",
+      "documented_intent": "Restore missing Local Copy without destroying existing on-disk content.",
+      "code_behavior": "app/storage.py process_recover replace without destination existence check.",
+      "proposed_fix": "Refuse when os.path.lexists(destination).",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/storage.py",
+      "line": "2024-2046",
+      "covers": [
+        "REQ-024/cell-RECOVER-OVERWRITE"
+      ],
+      "reachability_analysis": "Free-space then external recreate before rescan reaches recover with local_presence!=present."
+    },
+    {
+      "id": "BUG-013",
+      "req_id": "REQ-025",
+      "title": "Crypt recover ignores Archive Version object_key",
+      "severity": "HIGH",
+      "disposition": "code-fix",
+      "disposition_rationale": "REQ-001 crypt surface must preserve Archive Version identity after rename; object_key is loaded then ignored.",
+      "fix_type": "code",
+      "divergence_description": "Crypt rclone uses job path; boto3 uses object_key.",
+      "documented_intent": "Exact VersionId recovery addresses the stored Archive Version key.",
+      "code_behavior": "download_exact_version_plaintext crypt branch job['path'] only.",
+      "proposed_fix": "object_key_to_path for crypt destinations.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/storage.py",
+      "line": "1829-1852",
+      "covers": [
+        "REQ-025/cell-CRYPT-OBJECT-KEY"
+      ],
+      "reachability_analysis": "Post-rename recover of historical Archive Version on crypt vault."
+    },
+    {
+      "id": "BUG-014",
+      "req_id": "REQ-026",
+      "title": "User reactivation omits session_version bump",
+      "severity": "HIGH",
+      "disposition": "code-fix",
+      "disposition_rationale": "Same revocation axis as force-logout/password change; reactivation must not revive pre-deactivation cookies.",
+      "fix_type": "code",
+      "divergence_description": "active updates omit session_version bump.",
+      "documented_intent": "Deactivate/reactivate invalidates existing Sessions.",
+      "code_behavior": "update_user only bumps version on password change.",
+      "proposed_fix": "Bump session_version when active is set.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/main.py",
+      "line": "2682-2691",
+      "covers": [
+        "REQ-026/cell-ACTIVE-SESSION-VERSION"
+      ],
+      "reachability_analysis": "Admin deactivate then reactivate; old cookie still resolves."
+    },
+    {
+      "id": "BUG-015",
+      "req_id": "REQ-027",
+      "title": "Restore estimate vs worker price-book skew",
+      "severity": "HIGH",
+      "disposition": "code-fix",
+      "disposition_rationale": "Operators act on estimate API; irreversible RestoreObject holds must use the same active price book.",
+      "fix_type": "code",
+      "divergence_description": "estimate API uses price book; process_recover uses DEFAULT rates.",
+      "documented_intent": "High-impact gating consistent with configured rates.",
+      "code_behavior": "estimate_restore without pricing= from get_active_price_book.",
+      "proposed_fix": "Pass book.restore_rates into estimate_restore.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/storage.py",
+      "line": "1925-1936",
+      "covers": [
+        "REQ-027/cell-PRICE-BOOK-PARITY"
+      ],
+      "reachability_analysis": "Activate custom cost_price_books row then compare estimate high_impact vs worker hold."
     }
   ]
 }

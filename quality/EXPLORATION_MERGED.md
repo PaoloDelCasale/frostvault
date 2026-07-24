@@ -4,6 +4,8 @@
 
 ## Merge policy
 
+
+> Also includes **[Iteration 3: unfiltered]** findings (2026-07-24): recover overwrite, crypt object_key path, session reactivation, restore price-book skew; see `EXPLORATION_ITER3.md` and Demoted DC-004..012.
 Baseline sections retained with `[Iteration 1]` attribution. Gap findings appended as `[Iteration 2: gap]`. Candidate Bugs re-consolidated. Demoted Candidates section is mandatory for adversarial follow-up.
 
 ---
@@ -440,6 +442,12 @@ Demoted (see EXPLORATION_MERGED.md Demoted Candidates): G1-2 auth_time, G1-3 inv
 3. **CAND-ITER-003** — Configured S3 object store failure → silent local-only backup success — High — → promote BUG-010
 4. **CAND-ITER-004** — OIDC callback switches account when identity already linked — High — → promote BUG-011
 
+### From Iteration 3 (unfiltered) — net-new candidates
+1. **CAND-U3-001** — Recover `replace()` overwrites on-disk file when catalog absent — Critical/High — → promote BUG-012
+2. **CAND-U3-002** — Crypt recover ignores Archive Version `object_key`, uses `job['path']` — High — → promote BUG-013
+3. **CAND-U3-003** — User reactivation omits `session_version` bump — High — → promote BUG-014
+4. **CAND-U3-004** — Restore estimate price book ≠ worker high-impact rates — High — → promote BUG-015
+
 ## Demoted Candidates
 
 ### DC-001: OIDC reauth without auth_time/max_age proof
@@ -462,3 +470,74 @@ Demoted (see EXPLORATION_MERGED.md Demoted Candidates): G1-2 auth_time, G1-3 inv
 - **Code location:** `app/static/app.js` cancel affordance; `app/main.py` cancel owner check
 - **Re-promotion criteria:** Show cancel succeeds for operator on cloud-archive/cloud-purge, or show UI claims success despite 403.
 - **Status:** DEMOTED
+
+### DC-004: Restart recover unlinks destination file
+- **Source:** Iteration 3 unfiltered (Finding U3-5)
+- **Dismissal reason:** Intentional + covered by `test_restart_reconciles_completed_and_incomplete_recoveries`; product treats destination during interrupted recover as non-durable worker output.
+- **Code location:** `app/storage.py:1059-1071`
+- **Re-promotion criteria:** Demonstrate a user-authored file (distinct digest / external create) deleted by reconcile while catalog never claimed FrostVault ownership of that inode, with a documented invariant forbidding that deletion.
+- **Status:** DEMOTED
+
+### DC-005: Metadata backup download without step-up reauth
+- **Source:** Iteration 3 unfiltered (Finding U3-6)
+- **Dismissal reason:** ADR-0005 scopes reauth to mutations / named sensitive actions; docs bind reauth to backup *runs*. Download is GET + admin gate.
+- **Code location:** `app/main.py:1828-1832` vs `1788-1792`
+- **Re-promotion criteria:** Tier 1/2 doc or ADR quote requiring reauth for ciphertext download specifically.
+- **Status:** DEMOTED
+
+### DC-006: Concurrent admin deactivation → zero admins
+- **Source:** Iteration 3 unfiltered (Finding U3-7)
+- **Dismissal reason:** Check-then-act race; needs concurrent stress evidence.
+- **Code location:** `app/main.py:2670-2700`
+- **Re-promotion criteria:** Two concurrent PATCH deactivate transactions both succeed leaving `COUNT(is_admin AND active)=0`.
+- **Status:** DEMOTED
+
+### DC-007: OIDC self-link GET side effect / CSRF
+- **Source:** Iteration 3 unfiltered (Finding U3-8)
+- **Dismissal reason:** Needs end-to-end CSRF+OIDC state exploit chain; not proven this iteration.
+- **Code location:** `app/main.py:1079-1096`
+- **Re-promotion criteria:** Show cross-site GET binds attacker-controlled subject to victim Session without CSRF token.
+- **Status:** DEMOTED
+
+### DC-008: Notification preferences unused / delivery clients unwired
+- **Source:** Iteration 3 unfiltered (Finding U3-9)
+- **Dismissal reason:** Incomplete wiring / silent no-op; not irreversible archive integrity defect.
+- **Code location:** `app/services/notifications.py`, `app/storage.py:2504-2520`
+- **Re-promotion criteria:** Documented contract that vault webhook/email prefs must deliver, with a failing integration proving prefs are ignored for a required event.
+- **Status:** DEMOTED
+
+### DC-009: Purge resume only via manual DB rewrite
+- **Source:** Iteration 3 unfiltered (Finding U3-10)
+- **Dismissal reason:** Operational gap pending explicit resume API requirement.
+- **Code location:** `app/storage.py` purge fail path; `cloud_deletion.py`
+- **Re-promotion criteria:** Spec/API promise of resumable purge without raw SQL, contradicted by implementation.
+- **Status:** DEMOTED
+
+### DC-010: Lifecycle tagging replaces entire TagSet
+- **Source:** Iteration 3 unfiltered (Finding U3-11)
+- **Dismissal reason:** May be intentional FrostVault ownership of object tags; need preserve-foreign-tags requirement.
+- **Code location:** `app/services/s3_object_tags.py:9-24`
+- **Re-promotion criteria:** Documented requirement to merge/preserve non-`psa:` tags.
+- **Status:** DEMOTED
+
+### DC-011: pg_restore warning / failed counts still ok True
+- **Source:** Iteration 3 unfiltered (Finding U3-12)
+- **Dismissal reason:** Adjacent to rejected former BUG-003 (list-only ok:True / REQ-005). Do not reopen without distinct challenge evidence.
+- **Code location:** `app/services/metadata_backups.py:464-500`
+- **Re-promotion criteria:** Isolated temp-DB path returns ok True when restore clearly failed (tables missing) independently of list-only mode; survive challenge vs former-003 dismissal.
+- **Status:** DEMOTED
+
+### DC-012: Owner membership audits omit actor_user_id
+- **Source:** Iteration 3 unfiltered (Finding U3-13)
+- **Dismissal reason:** Accountability hygiene; distinct from BUG-009 connection omission on rename.
+- **Code location:** `app/main.py` owner add/remove/transfer; `app/audit.py:18-41`
+- **Re-promotion criteria:** Requirement that owner self-service mutations must persist `actor_user_id` non-null in `audit_events`.
+- **Status:** DEMOTED
+
+---
+
+## Iteration 3 unfiltered findings (attribution)
+
+[Iteration 3: unfiltered] Full flat findings live in `quality/EXPLORATION_ITER3.md`.
+Promoted: CAND-U3-001..004 → BUG-012..015. Demoted: DC-004..012 (see Demoted Candidates).
+Prior BUG-001..011, former BUG-003, CAND-006, DC-001..003 preserved unchanged.

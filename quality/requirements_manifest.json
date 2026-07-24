@@ -1,6 +1,6 @@
 {
   "schema_version": "1.5.6",
-  "generated_at": "2026-07-24T06:40:18Z",
+  "generated_at": "2026-07-24T07:30:19Z",
   "records": [
     {
       "id": "REQ-001",
@@ -325,6 +325,63 @@
       "source_type": "docs-derived",
       "tier": 3,
       "functional_section": "OIDC session integrity"
+    },
+    {
+      "id": "REQ-024",
+      "title": "Recover must not overwrite an existing on-disk Local Copy blindly",
+      "tier": 5,
+      "functional_section": "Unfiltered iteration",
+      "specificity": "specific",
+      "pattern": "parity",
+      "use_cases": [],
+      "references": [
+        "app/storage.py:2024-2046"
+      ],
+      "summary": "Refuse recover replace when destination exists on disk.",
+      "source_type": "code-derived"
+    },
+    {
+      "id": "REQ-025",
+      "title": "Crypt recovery must address the Archive Version object_key",
+      "tier": 5,
+      "functional_section": "Unfiltered iteration",
+      "specificity": "specific",
+      "pattern": "parity",
+      "use_cases": [],
+      "references": [
+        "app/storage.py:1813-1856"
+      ],
+      "summary": "Crypt download derives path from object_key.",
+      "source_type": "code-derived"
+    },
+    {
+      "id": "REQ-026",
+      "title": "Changing User.active must invalidate existing Sessions via session_version",
+      "tier": 5,
+      "functional_section": "Unfiltered iteration",
+      "specificity": "specific",
+      "pattern": "parity",
+      "use_cases": [],
+      "references": [
+        "app/main.py:2661-2703"
+      ],
+      "summary": "active transitions bump session_version.",
+      "source_type": "code-derived"
+    },
+    {
+      "id": "REQ-027",
+      "title": "Restore high-impact gating must use the active cost price book",
+      "tier": 5,
+      "functional_section": "Unfiltered iteration",
+      "specificity": "specific",
+      "pattern": "parity",
+      "use_cases": [],
+      "references": [
+        "app/storage.py:1925-1936",
+        "app/main.py:2149-2197"
+      ],
+      "summary": "Worker and estimate API share price book rates.",
+      "source_type": "code-derived"
     }
   ]
 }

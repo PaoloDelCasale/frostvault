@@ -16,4 +16,9 @@
 | BUG-010 | REQ-022 | docs/metadata-backups.md | REQ-022 / fail closed | configured store errors raise BackupError | quality/test_regression.py::TestBug010::test_bug_010_configured_store_failure_raises | FAIL (RED) | PASS (GREEN) |
 | BUG-011 | REQ-023 | docs/adr/0003; 0005 | REQ-023 / no account switch | cross-user OIDC while logged in → 403 | quality/test_regression.py::TestBug011::test_bug_011_oidc_rejects_cross_account_switch | FAIL (RED) | PASS (GREEN) |
 
-All ten active confirmed bugs (six baseline + four gap-iteration) completed TDD FAIL→PASS in disposable Git worktrees. Production source outside `quality/` was not modified. Sidecar: `quality/workspace/results/tdd-results.json`.
+All fourteen active confirmed bugs (six baseline + four gap + four unfiltered) completed TDD FAIL→PASS in disposable Git worktrees. Production source outside `quality/` was not modified. Sidecar: `quality/workspace/results/tdd-results.json`.
+
+| BUG-012 | REQ-024 | quality/REQUIREMENTS.md; EXPLORATION_ITER3 | REQ-024 / recover overwrite | Refuse replace when destination exists | quality/test_regression.py::TestBug012::test_bug_012_recover_refuses_existing_destination | FAIL (RED) | PASS (GREEN) |
+| BUG-013 | REQ-025 | quality/REQUIREMENTS.md; REQ-001 crypt | REQ-025 / crypt object_key | Crypt download uses object_key_to_path | quality/test_regression.py::TestBug013::test_bug_013_crypt_download_uses_object_key | FAIL (RED) | PASS (GREEN) |
+| BUG-014 | REQ-026 | quality/REQUIREMENTS.md; sessions | REQ-026 / active session_version | active update bumps session_version | quality/test_regression.py::TestBug014::test_bug_014_active_change_bumps_session_version | FAIL (RED) | PASS (GREEN) |
+| BUG-015 | REQ-027 | quality/REQUIREMENTS.md; cost_estimates | REQ-027 / price book parity | process_recover uses get_active_price_book | quality/test_regression.py::TestBug015::test_bug_015_recover_uses_active_price_book | FAIL (RED) | PASS (GREEN) |

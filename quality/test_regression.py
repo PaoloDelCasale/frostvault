@@ -394,5 +394,121 @@ class TestBug011(unittest.TestCase):
         self.assertIn("sign out first", body.lower())
 
 
+def _process_recover_body() -> str:
+    start = STORAGE_PY.index("def process_recover")
+    end = STORAGE_PY.index("\ndef process_cloud_archive", start)
+    return STORAGE_PY[start:end]
+
+
+def _download_exact_body() -> str:
+    start = STORAGE_PY.index("def download_exact_version_plaintext")
+    end = STORAGE_PY.index("\ndef process_recover", start)
+    return STORAGE_PY[start:end]
+
+
+def _update_user_body() -> str:
+    start = MAIN_PY.index("def update_user")
+    end = MAIN_PY.index("\n@app.get", start)
+    return MAIN_PY[start:end]
+
+
+class TestBug012(unittest.TestCase):
+    """BUG-012: recover must refuse existing on-disk destination (REQ-024)."""
+
+    @unittest.expectedFailure
+    def test_bug_012_recover_refuses_existing_destination(self) -> None:
+        """[BUG-012][Req: REQ-024] do not Path.replace over an existing file.
+
+        Desired: before ``temporary.replace(destination)``, refuse when the
+        destination already exists on disk (catalog lag / external recreate).
+        Current: only catalog ``local_presence == 'present'`` is checked.
+        Fix patch: quality/workspace/patches/BUG-012-fix.patch
+        """
+        body = _process_recover_body()
+        self.assertIn("temporary.replace(destination)", body)
+        self.assertRegex(
+            body,
+            r"(os\.path\.lexists\(destination\)|destination\.exists\(\)|"
+            r"destination\.is_file\(\)|destination\.is_symlink\(\))",
+            "recover must check on-disk destination before replace",
+        )
+
+
+class TestBug013(unittest.TestCase):
+    """BUG-013: crypt download must use Archive Version object_key (REQ-025)."""
+
+    @unittest.expectedFailure
+    def test_bug_013_crypt_download_uses_object_key(self) -> None:
+        """[BUG-013][Req: REQ-025] crypt rclone path derives from object_key.
+
+        Desired: crypt/name-encrypt branch calls ``object_key_to_path`` (or
+        otherwise consumes ``object_key``) instead of only ``job['path']``.
+        Current: rclone sources use ``job['path']``; ``object_key`` unused.
+        Fix patch: quality/workspace/patches/BUG-013-fix.patch
+        """
+        body = _download_exact_body()
+        crypt_idx = body.find("vault_encrypts_names")
+        boto_idx = body.find("get_object")
+        self.assertGreaterEqual(crypt_idx, 0)
+        self.assertGreaterEqual(boto_idx, 0)
+        crypt_branch = body[crypt_idx:boto_idx]
+        self.assertIn(
+            "object_key_to_path",
+            crypt_branch,
+            "crypt branch must derive logical path from object_key",
+        )
+        self.assertNotRegex(
+            crypt_branch,
+            r"configured_rclone_destination\(job,\s*job\[\"path\"\]\)",
+            "crypt branch must not hardcode job path as the only address",
+        )
+
+
+class TestBug014(unittest.TestCase):
+    """BUG-014: active changes must bump session_version (REQ-026)."""
+
+    @unittest.expectedFailure
+    def test_bug_014_active_change_bumps_session_version(self) -> None:
+        """[BUG-014][Req: REQ-026] deactivate/reactivate invalidates Sessions.
+
+        Desired: when ``action.active is not None``, updates include
+        ``session_version=session_version+1`` (same axis as password change).
+        Current: only password changes bump the version.
+        Fix patch: quality/workspace/patches/BUG-014-fix.patch
+        """
+        body = _update_user_body()
+        active_block_start = body.index("if action.active is not None")
+        password_block_start = body.index("if action.password is not None")
+        active_block = body[active_block_start:password_block_start]
+        self.assertIn(
+            "session_version=session_version+1",
+            active_block,
+            "active transitions must bump session_version",
+        )
+
+
+class TestBug015(unittest.TestCase):
+    """BUG-015: recover high-impact cost must use active price book (REQ-027)."""
+
+    @unittest.expectedFailure
+    def test_bug_015_recover_uses_active_price_book(self) -> None:
+        """[BUG-015][Req: REQ-027] worker estimate matches recover/estimate book.
+
+        Desired: ``process_recover`` loads ``get_active_price_book`` (or
+        ``estimate_restore_cost``) before ``is_high_impact_restore``.
+        Current: ``estimate_restore`` uses hardcoded DEFAULT rates only.
+        Fix patch: quality/workspace/patches/BUG-015-fix.patch
+        """
+        body = _process_recover_body()
+        impact_idx = body.find("is_high_impact_restore")
+        self.assertGreaterEqual(impact_idx, 0)
+        prelude = body[:impact_idx]
+        self.assertTrue(
+            ("get_active_price_book" in prelude)
+            or ("estimate_restore_cost" in prelude),
+            "high-impact gating must consult the active price book",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

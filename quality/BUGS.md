@@ -17,8 +17,12 @@
 | BUG-009 | Medium | code-fix | REQ-021 | Rename audit_log omits connection | CONFIRMED |
 | BUG-010 | High | code-fix | REQ-022 | Configured S3 backup failure → silent local-only success | CONFIRMED |
 | BUG-011 | High | code-fix | REQ-023 | OIDC callback switches session on foreign linked identity | CONFIRMED |
+| BUG-012 | High | code-fix | REQ-024 | Recover overwrites on-disk file when catalog absent | CONFIRMED |
+| BUG-013 | High | code-fix | REQ-025 | Crypt recover ignores Archive Version object_key | CONFIRMED |
+| BUG-014 | High | code-fix | REQ-026 | User reactivation omits session_version bump | CONFIRMED |
+| BUG-015 | High | code-fix | REQ-027 | Restore estimate vs worker price-book skew | CONFIRMED |
 
-Phase 5 challenge gate: before gate **7** active findings; after gate **6** confirmed (4 downgraded, 2 confirmed at prior severity) and **1** rejected (former list-only metadata verify finding — see Reviewed and dismissed). Gap iteration (2026-07-24) added **4** net-new confirmed bugs (BUG-008..011); prior six and rejected former-003 preserved.
+Phase 5 challenge gate: before gate **7** active findings; after gate **6** confirmed (4 downgraded, 2 confirmed at prior severity) and **1** rejected (former list-only metadata verify finding — see Reviewed and dismissed). Gap iteration (2026-07-24) added **4** net-new confirmed bugs (BUG-008..011); prior six and rejected former-003 preserved. Unfiltered iteration (2026-07-24) added **4** net-new confirmed bugs (BUG-012..015); prior ten, former-003, and CAND-006 preserved.
 
 Rejected candidates from earlier phases: CAND-006 (crypt rclone VersionId propagation) — unverified risk. Phase 4 minority FALSE-POSITIVE: upload/rename HeadObject vs REQ-001.
 
@@ -287,3 +291,76 @@ Rejected candidates from earlier phases: CAND-006 (crypt rclone VersionId propag
 
 - **Verdict:** FALSE-POSITIVE against REQ-001
 - **Reason:** REQ-001 Conditions of Satisfaction scope exact *recovery* download surfaces (`download_exact_version_plaintext` / rclone `--s3-version-id` / boto3 `VersionId`). Upload-time unversioned `head_object` and path-only verify download are residual concurrency risks outside that requirement. Digest mismatch still fails content-divergent concurrent writers on upload verify. Not promoted to active defect.
+
+### BUG-012: Recover overwrites on-disk Local Copy when catalog says absent
+
+- **ID:** BUG-012
+- **Severity:** High
+- **Disposition:** code-fix
+- **Primary requirement:** REQ-024
+- **Source:** Unfiltered iteration (CAND-U3-001)
+- **Divergence description:** `process_recover` gates only on catalog `local_presence` then `Path.replace`s the destination without an on-disk existence check.
+- **Documented intent:** Restore a missing Local Copy; do not silently destroy an existing filesystem file.
+- **Code behavior:** `app/storage.py:1899-1900` + `2024-2046` replace without `lexists`.
+- **Expected:** Fail closed if destination already exists as a file/symlink.
+- **Minimal reproduction:** Catalog presence missing; write file at path; run recover → file content replaced.
+- **Proposed fix:** Check `os.path.lexists(destination)` (or equivalent) before replace; raise RuntimeError.
+- **Regression test:** `quality/test_regression.py::TestBug012::test_bug_012_recover_refuses_existing_destination`
+- **Patches:** `quality/workspace/patches/BUG-012-regression-test.patch`, `quality/workspace/patches/BUG-012-fix.patch`
+- **Writeup:** `quality/workspace/writeups/BUG-012.md`
+- **Challenge:** `quality/challenge/BUG-012-challenge.md` — **Verdict:** CONFIRMED
+
+### BUG-013: Crypt recover ignores Archive Version object_key
+
+- **ID:** BUG-013
+- **Severity:** High
+- **Disposition:** code-fix
+- **Primary requirement:** REQ-025
+- **Source:** Unfiltered iteration (CAND-U3-002)
+- **Divergence description:** Crypt/name-encrypt branch of `download_exact_version_plaintext` builds rclone sources from `job['path']` and never consumes the `object_key` parameter used by the plaintext boto3 branch.
+- **Documented intent:** Exact Archive Version identity on every download surface (REQ-001 crypt parity).
+- **Code behavior:** `app/storage.py:1829-1852` vs `1858-1861`.
+- **Expected:** Derive logical path via `object_key_to_path(object_key, ...)` (or equivalent) for rclone.
+- **Minimal reproduction:** Rename crypt Vault File; recover pre-rename Archive Version → wrong key / digest failure.
+- **Proposed fix:** Use `object_key_to_path` for crypt rclone destinations.
+- **Regression test:** `quality/test_regression.py::TestBug013::test_bug_013_crypt_download_uses_object_key`
+- **Patches:** `quality/workspace/patches/BUG-013-regression-test.patch`, `quality/workspace/patches/BUG-013-fix.patch`
+- **Writeup:** `quality/workspace/writeups/BUG-013.md`
+- **Challenge:** `quality/challenge/BUG-013-challenge.md` — **Verdict:** CONFIRMED
+
+### BUG-014: User reactivation omits session_version bump
+
+- **ID:** BUG-014
+- **Severity:** High
+- **Disposition:** code-fix
+- **Primary requirement:** REQ-026
+- **Source:** Unfiltered iteration (CAND-U3-003)
+- **Divergence description:** `update_user` bumps `session_version` only on password change, not on `active` transitions.
+- **Documented intent:** Deactivate/reactivate must invalidate existing Sessions; reactivation must not revive attacker cookies.
+- **Code behavior:** `app/main.py:2682-2691`; `app/sessions.py:86-96`.
+- **Expected:** Any `active` update increments `session_version`.
+- **Minimal reproduction:** Create session; deactivate; reactivate; old cookie still resolves.
+- **Proposed fix:** Append `session_version=session_version+1` when `action.active is not None`.
+- **Regression test:** `quality/test_regression.py::TestBug014::test_bug_014_active_change_bumps_session_version`
+- **Patches:** `quality/workspace/patches/BUG-014-regression-test.patch`, `quality/workspace/patches/BUG-014-fix.patch`
+- **Writeup:** `quality/workspace/writeups/BUG-014.md`
+- **Challenge:** `quality/challenge/BUG-014-challenge.md` — **Verdict:** CONFIRMED
+
+### BUG-015: Restore estimate vs worker price-book skew
+
+- **ID:** BUG-015
+- **Severity:** High
+- **Disposition:** code-fix
+- **Primary requirement:** REQ-027
+- **Source:** Unfiltered iteration (CAND-U3-004)
+- **Divergence description:** Estimate API uses `get_active_price_book`; `process_recover` / queue `estimate_restore` use hardcoded defaults.
+- **Documented intent:** High-impact RestoreObject holds must follow configured rates operators see in estimates.
+- **Code behavior:** `app/main.py:2181-2197` vs `app/storage.py:1925-1936`.
+- **Expected:** Worker loads active price book for cost/high-impact decisions.
+- **Minimal reproduction:** Activate custom GLACIER Bulk rate; estimate high_impact differs from worker hold.
+- **Proposed fix:** Pass `get_active_price_book(...).restore_rates` into `estimate_restore` / use `estimate_restore_cost`.
+- **Regression test:** `quality/test_regression.py::TestBug015::test_bug_015_recover_uses_active_price_book`
+- **Patches:** `quality/workspace/patches/BUG-015-regression-test.patch`, `quality/workspace/patches/BUG-015-fix.patch`
+- **Writeup:** `quality/workspace/writeups/BUG-015.md`
+- **Challenge:** `quality/challenge/BUG-015-challenge.md` — **Verdict:** CONFIRMED
+
