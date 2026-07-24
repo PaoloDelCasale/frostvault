@@ -1136,9 +1136,9 @@ def oidc_callback(
             raw_token = rotate_session(connection, existing["id"])
             csrf_token = existing["csrf_token"]
         elif existing and existing["user"]["id"] != user_id:
-            # Do not silently switch the browser into another account when the
-            # resolved identity differs from the active Session (self-link /
-            # invite misuse of an already-bound identity).
+            # Do not silently switch the browser into another User when the
+            # resolved Identity differs from the active Session (self-link /
+            # invite misuse of an already-bound Identity).
             raise HTTPException(
                 403,
                 "This identity belongs to a different user; sign out first",

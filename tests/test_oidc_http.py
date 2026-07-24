@@ -194,10 +194,10 @@ class OidcHttpTests(unittest.TestCase):
             datetime(2020, 1, 1, tzinfo=timezone.utc),
         )
 
-    def test_bug_011_oidc_rejects_cross_account_switch(self) -> None:
-        """[BUG-011][Req: REQ-023] active Session must not be replaced by foreign identity.
+    def test_bug_011_oidc_rejects_foreign_identity_session_switch(self) -> None:
+        """[BUG-011][Req: REQ-023] active Session must not be replaced by foreign Identity.
 
-        While alice is signed in, completing OIDC with an identity already linked
+        While alice is signed in, completing OIDC with an Identity already linked
         to bob must return 403 and preserve alice's Session (ADR-0003 / ADR-0005).
         """
         bob_subject = "subject-bob"
