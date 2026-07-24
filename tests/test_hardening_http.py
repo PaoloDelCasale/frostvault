@@ -14,7 +14,7 @@ from app.database import SQLiteConnection
 from app.main import app
 from app.main import _safe_return_to
 from app.security import hash_password
-from app.sessions import is_reauth_recent
+from app.sessions import create_session, is_reauth_recent
 from tests.test_database import run_alembic
 
 
@@ -228,6 +228,66 @@ class ReauthWindowTests(unittest.TestCase):
 
     def test_missing_reauth_is_not_recent(self) -> None:
         self.assertFalse(is_reauth_recent(None, now=self.now, window_seconds=600))
+
+
+class AdminUserActiveSessionTests(HardeningHttpTestCase):
+    """BUG-014: active transitions must invalidate existing Sessions (REQ-026)."""
+
+    def test_bug_014_active_change_bumps_session_version(self) -> None:
+        """[BUG-014][Req: REQ-026] deactivate/reactivate invalidates Sessions.
+
+        Seam: PATCH /api/admin/users/{id} (public admin update) with observation
+        via the target user's existing session cookie against GET /api/me.
+        Desired: any active update bumps session_version so old cookies fail.
+        Previously: only password changes bump the version; reactivation revives
+        pre-deactivation cookies.
+        """
+        # Non-admins cannot use Break-glass Login; seed the kind of server-side
+        # Session they would obtain through OIDC (same harness as invite_http).
+        with SQLiteConnection(str(self.database_path)) as connection:
+            member_id = connection.execute(
+                """
+                INSERT INTO users(
+                    username, display_name, password_hash, is_admin, active
+                ) VALUES ('member', 'Member', %s, FALSE, TRUE)
+                RETURNING id
+                """,
+                (hash_password("member-horse-battery"),),
+            ).fetchone()["id"]
+            stale_cookie = create_session(
+                connection, user_id=member_id, auth_method="oidc"
+            )
+
+        member = TestClient(app, client=("127.0.0.1", 50001))
+        member.cookies.set(self.cookie_name, stale_cookie)
+        self.assertEqual(member.get("/api/me").status_code, 200)
+
+        self._login()
+        csrf = self._csrf()
+        deactivate = self.client.patch(
+            f"/api/admin/users/{member_id}",
+            headers={"X-CSRF-Token": csrf},
+            json={"active": False},
+        )
+        self.assertEqual(deactivate.status_code, 200, deactivate.text)
+        self.assertFalse(deactivate.json()["active"])
+
+        reactivate = self.client.patch(
+            f"/api/admin/users/{member_id}",
+            headers={"X-CSRF-Token": csrf},
+            json={"active": True},
+        )
+        self.assertEqual(reactivate.status_code, 200, reactivate.text)
+        self.assertTrue(reactivate.json()["active"])
+
+        replayed = TestClient(app, client=("127.0.0.1", 50002))
+        replayed.cookies.set(self.cookie_name, stale_cookie)
+        response = replayed.get("/api/me")
+        self.assertEqual(
+            response.status_code,
+            401,
+            "pre-deactivation cookie must not authenticate after reactivate",
+        )
 
 
 if __name__ == "__main__":
