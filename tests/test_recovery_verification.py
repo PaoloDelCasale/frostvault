@@ -6,6 +6,9 @@ Seams under test:
 - Exact-version download adapter (`download_exact_version_plaintext`): must pin
   S3 VersionId; path-only current-object download is forbidden.
 - System boundaries mocked: S3 GetObject/HeadObject and Rclone.
+
+BUG-012 (REQ-024) uses the same recovery worker seam: catalog absence plus a
+real on-disk destination must fail closed without overwrite.
 """
 
 from __future__ import annotations
@@ -276,6 +279,61 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             self.assertTrue(
                 all("VersionId" in call for call in client.get_calls),
                 msg="Recovery must pin VersionId on GetObject",
+            )
+
+    def test_bug_012_recover_refuses_existing_destination(self) -> None:
+        """[BUG-012][Req: REQ-024] do not replace over an existing on-disk file.
+
+        Catalog local_presence may lag behind the filesystem (external recreate
+        or incomplete free-space). Recover must fail closed when the destination
+        already exists as a file/symlink, rather than Path.replace overwriting it.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archived = b"archived-plaintext"
+            preexisting = b"on-disk-local-copy"
+            source, database_path, _version_id = _prepare_cloud_only_version(
+                root,
+                relative_path="report.txt",
+                payload=archived,
+                object_key="docs/report.txt",
+            )
+            destination = source / "report.txt"
+            destination.write_bytes(preexisting)
+
+            with SQLiteConnection(str(database_path)) as connection:
+                observed = ArchiveCatalog(connection).get_file_by_path(
+                    2, "report.txt"
+                )
+            self.assertEqual(observed["local_copy"]["presence"], "missing")
+
+            _run_plain_recover(
+                database_path,
+                relative_path="report.txt",
+                downloaded_bytes=archived,
+            )
+
+            self.assertEqual(
+                destination.read_bytes(),
+                preexisting,
+                "recover must not overwrite an existing on-disk Local Copy",
+            )
+            self.assertEqual(list(source.glob("**/.*.restore-*.tmp")), [])
+
+            with SQLiteConnection(str(database_path)) as connection:
+                observed = ArchiveCatalog(connection).get_file_by_path(
+                    2, "report.txt"
+                )
+                job = connection.execute(
+                    "SELECT status, message FROM jobs WHERE path=%s",
+                    ("report.txt",),
+                ).fetchone()
+
+            self.assertEqual(observed["local_copy"]["presence"], "missing")
+            self.assertEqual(job["status"], "failed")
+            self.assertRegex(
+                (job["message"] or "").lower(),
+                r"local copy.*already exists|already exists.*recovery destination",
             )
 
 

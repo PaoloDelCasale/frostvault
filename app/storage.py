@@ -2096,6 +2096,10 @@ def process_recover(job: dict[str, Any]) -> None:
                 "Recovered plaintext digest does not match the Archive Version"
             )
         destination.parent.mkdir(parents=True, exist_ok=True)
+        if os.path.lexists(destination):
+            raise RuntimeError(
+                "A local copy already exists at the recovery destination"
+            )
         temporary.replace(destination)
     finally:
         temporary.unlink(missing_ok=True)
