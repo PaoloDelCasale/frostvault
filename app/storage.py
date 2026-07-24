@@ -1025,7 +1025,11 @@ def cleanup_abandoned_restore_files() -> int:
         try:
             entries = root.rglob("*")
             for entry in entries:
-                if is_restore_temporary_name(entry.name):
+                # Do not delete free-space .cleanup-*.tmp salvage claims here.
+                if (
+                    RESTORE_TEMPORARY_RE.fullmatch(entry.name) is not None
+                    or VERIFY_TEMPORARY_RE.fullmatch(entry.name) is not None
+                ):
                     try:
                         entry.unlink(missing_ok=True)
                         removed += 1
@@ -1090,6 +1094,33 @@ def reconcile_interrupted_jobs() -> dict[str, int]:
                         raise RuntimeError("Source folder is unavailable")
                     target = safe_local_entry_path(job["source_root"], job["path"])
                     if not os.path.lexists(target):
+                        # Prefer restoring a surviving free-space claim over completing.
+                        claim_restored = False
+                        for claim in sorted(
+                            target.parent.glob(f".{target.name}.cleanup-*.tmp")
+                        ):
+                            if CLEANUP_TEMPORARY_RE.fullmatch(claim.name) is None:
+                                continue
+                            if restore_claimed_local_copy(claim, target) and os.path.lexists(
+                                target
+                            ):
+                                claim_restored = True
+                                break
+                        if claim_restored:
+                            connection.execute(
+                                """
+                                UPDATE jobs SET status='queued', transferred_bytes=0,
+                                    message=%s, updated_at=%s
+                                WHERE id=%s
+                                """,
+                                (
+                                    "Cleanup claim restored after restart; free-space resumed",
+                                    timestamp,
+                                    job["id"],
+                                ),
+                            )
+                            summary["requeued"] += 1
+                            continue
                         ArchiveCatalog(connection).mark_local_copy_missing(
                             job["vault_file_id"],
                             observed_at=timestamp,
