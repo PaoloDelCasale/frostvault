@@ -160,6 +160,7 @@ class PlainRenamePrefixedRemoteTests(unittest.TestCase):
         prefix = "vaults/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
         old_path = "reports/old-name.txt"
         new_path = "archive/new-name.txt"
+        old_key = f"{prefix}/{old_path}"
         new_key = f"{prefix}/{new_path}"
         expected_remote = f"frostvault-plain:{new_key}"
         payload = b"rename-prefixed"
@@ -287,7 +288,11 @@ class PlainRenamePrefixedRemoteTests(unittest.TestCase):
                             head_object=lambda **kwargs: (
                                 head_keys.append(kwargs["Key"])
                                 or {
-                                    "VersionId": "new-s3-version",
+                                    "VersionId": (
+                                        "old-s3-version"
+                                        if kwargs["Key"] == old_key
+                                        else "new-s3-version"
+                                    ),
                                     "ContentLength": len(payload),
                                     "StorageClass": "STANDARD",
                                     "ETag": '"new-etag"',
@@ -304,4 +309,4 @@ class PlainRenamePrefixedRemoteTests(unittest.TestCase):
 
             self.assertTrue(rclone_calls)
             self.assertEqual(rclone_calls[0][2], expected_remote)
-            self.assertEqual(head_keys, [new_key])
+            self.assertEqual(head_keys, [new_key, old_key])

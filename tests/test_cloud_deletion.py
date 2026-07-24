@@ -348,6 +348,10 @@ class ReversibleArchiveExecutionTests(_CloudDeletionTestCase):
                 )
 
             client = Mock()
+            client.head_object.return_value = {
+                "VersionId": "s3-v2",
+                "ContentLength": 11,
+            }
             client.delete_object.return_value = {"VersionId": "marker-1", "DeleteMarker": True}
             database_settings = SimpleNamespace(
                 db_backend="sqlite",
@@ -362,6 +366,9 @@ class ReversibleArchiveExecutionTests(_CloudDeletionTestCase):
             ):
                 process_jobs_once()
 
+            client.head_object.assert_called_once_with(
+                Bucket="bucket", Key="docs/report.txt"
+            )
             client.delete_object.assert_called_once()
             kwargs = client.delete_object.call_args.kwargs
             self.assertEqual(kwargs["Key"], "docs/report.txt")

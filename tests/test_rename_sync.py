@@ -135,6 +135,7 @@ def _rename_worker(
     database_path: Path,
     *,
     payload: bytes,
+    old_key: str,
     new_key: str,
 ):
     rclone_calls: list[tuple[str, ...]] = []
@@ -154,6 +155,13 @@ def _rename_worker(
 
     def fake_head_object(**kwargs):
         head_calls.append({"Bucket": kwargs["Bucket"], "Key": kwargs["Key"]})
+        if kwargs["Key"] == old_key:
+            return {
+                "VersionId": "old-s3-version",
+                "ContentLength": len(payload),
+                "StorageClass": "STANDARD",
+                "ETag": '"old-etag"',
+            }
         if kwargs["Key"] != new_key:
             raise RuntimeError(f"unexpected head key {kwargs['Key']}")
         return {
@@ -388,6 +396,7 @@ class RenameCloudJobTests(unittest.TestCase):
                 with _rename_worker(
                     database_path,
                     payload=payload,
+                    old_key=old_key,
                     new_key=new_key,
                 ) as (rclone_calls, deleted_keys, head_calls):
                     process_jobs_once()
@@ -425,7 +434,7 @@ class RenameCloudJobTests(unittest.TestCase):
                 deleted_keys,
                 [{"Bucket": "bucket", "Key": old_key, "VersionId": ""}],
             )
-            self.assertEqual([call["Key"] for call in head_calls], [new_key])
+            self.assertEqual([call["Key"] for call in head_calls], [new_key, old_key])
             self.assertTrue(any(call[:1] == ("copyto",) for call in rclone_calls))
 
     def test_failed_verification_never_hides_the_old_key(self) -> None:
@@ -871,7 +880,11 @@ class CryptRenameTests(unittest.TestCase):
                         "app.storage.s3_client",
                         return_value=SimpleNamespace(
                             head_object=lambda **kwargs: {
-                                "VersionId": "crypt-new",
+                                "VersionId": (
+                                    "crypt-old"
+                                    if kwargs["Key"] == old_key
+                                    else "crypt-new"
+                                ),
                                 "ContentLength": len(payload),
                                 "StorageClass": "STANDARD",
                                 "ETag": '"etag"',
@@ -1009,6 +1022,12 @@ class RenameRestartTests(unittest.TestCase):
                     patch(
                         "app.storage.s3_client",
                         return_value=SimpleNamespace(
+                            head_object=lambda **kwargs: {
+                                "VersionId": "old-s3-version",
+                                "ContentLength": len(payload),
+                                "StorageClass": "STANDARD",
+                                "ETag": '"old-etag"',
+                            },
                             delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
                             or {
                                 "VersionId": "delete-marker-resume",
