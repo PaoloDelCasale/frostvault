@@ -56,14 +56,18 @@ def resolve_configured_vault_root(
     return None
 
 
-def check_vault_filesystem(root: str | Path) -> FilesystemPreflightResult:
+def check_vault_filesystem(
+    root: str | Path,
+    *,
+    allowed_bases: Sequence[str | Path],
+) -> FilesystemPreflightResult:
     """Inspect ``root`` for archive-safe local filesystem access.
 
     Reports vault-root read/write/execute access, the effective UID/GID,
     unreadable files, unwritable directories, and symbolic links. Does not
     follow directory symlinks when walking, and never mutates permissions.
     """
-    root_path = Path(root)
+    root_path = resolve_configured_vault_root(root, allowed_bases=allowed_bases)
     uid = os.geteuid()
     gid = os.getegid()
     checks: list[PreflightCheck] = [
@@ -74,6 +78,27 @@ def check_vault_filesystem(root: str | Path) -> FilesystemPreflightResult:
         )
     ]
     findings: list[FilesystemFinding] = []
+
+    if root_path is None:
+        checks.append(
+            PreflightCheck(
+                code="fs.root_access",
+                status="fail",
+                message="Vault root is outside the configured source roots",
+                remediation=(
+                    "Choose a vault directory that stays under a configured "
+                    "source root"
+                ),
+            )
+        )
+        return FilesystemPreflightResult(
+            root=str(root or ""),
+            ok=False,
+            uid=uid,
+            gid=gid,
+            checks=tuple(checks),
+            findings=(),
+        )
 
     if not root_path.exists() or not root_path.is_dir():
         checks.append(

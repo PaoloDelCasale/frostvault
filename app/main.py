@@ -1585,10 +1585,11 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
     if safe_root is None:
         # Report missing under the configured sources root; never walk raw input.
         filesystem = check_vault_filesystem(
-            f"{settings.vault_sources_root.rstrip('/')}/.missing-vault-root"
+            f"{settings.vault_sources_root.rstrip('/')}/.missing-vault-root",
+            allowed_bases=allowed_bases,
         )
     else:
-        filesystem = check_vault_filesystem(safe_root)
+        filesystem = check_vault_filesystem(safe_root, allowed_bases=allowed_bases)
     filesystem_payload = {
         "ok": filesystem.ok,
         "uid": filesystem.uid,
