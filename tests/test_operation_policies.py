@@ -24,8 +24,52 @@ from app.services.operation_policies import (
     path_is_included,
     preview_glob_rules,
     set_policy,
+    validate_policy,
 )
 from tests.test_database import run_alembic
+
+
+class OperatingWindowOrderingTests(unittest.TestCase):
+    """BUG-007 / REQ-012: operating windows compare as clock times, not strings.
+
+    Seam: ``validate_policy`` / ``set_policy`` (public operation-policy API), which
+    normalize and order-check ``operating_windows`` before persistence. Chosen over
+    private ``_normalize_windows`` so the regression survives internal refactors
+    while still exercising the real defective comparison path.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "policies.db"
+        result = run_alembic(self.path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
+                "VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')"
+            )
+
+    def test_bug_007_windows_compare_as_times_not_strings(self) -> None:
+        """[BUG-007][Req: REQ-012] non-padded inverted windows must be rejected."""
+        # Desired: inverted non-padded window rejected (REQ-012).
+        with self.assertRaises(ValueError):
+            validate_policy(
+                OperationPolicy(
+                    operating_windows=(
+                        {"weekday": 1, "start": "10:00", "end": "9:30"},
+                    )
+                )
+            )
+        # Desired: valid non-padded morning window accepted (HTTP allows len 4–5).
+        desired = OperationPolicy(
+            operating_windows=({"weekday": 1, "start": "9:30", "end": "10:00"},)
+        )
+        validate_policy(desired)
+        with SQLiteConnection(str(self.path)) as connection:
+            stored = set_policy(connection, 1, desired)
+        self.assertEqual(stored.operating_windows[0]["start"], "9:30")
+        self.assertEqual(stored.operating_windows[0]["end"], "10:00")
 
 
 class OperationPolicyDefaultTests(unittest.TestCase):
