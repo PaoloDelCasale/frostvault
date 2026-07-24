@@ -1096,11 +1096,13 @@ def reconcile_interrupted_jobs() -> dict[str, int]:
                     if not os.path.lexists(target):
                         # Prefer restoring a surviving free-space claim over completing.
                         claim_restored = False
+                        surviving_claims: list[Path] = []
                         for claim in sorted(
                             target.parent.glob(f".{target.name}.cleanup-*.tmp")
                         ):
                             if CLEANUP_TEMPORARY_RE.fullmatch(claim.name) is None:
                                 continue
+                            surviving_claims.append(claim)
                             if restore_claimed_local_copy(claim, target) and os.path.lexists(
                                 target
                             ):
@@ -1120,6 +1122,26 @@ def reconcile_interrupted_jobs() -> dict[str, int]:
                                 ),
                             )
                             summary["requeued"] += 1
+                            continue
+                        remaining_claims = [
+                            claim for claim in surviving_claims if claim.exists()
+                        ]
+                        if remaining_claims:
+                            # Never mark freed while a salvageable claim is still on disk.
+                            preserved = remaining_claims[0]
+                            connection.execute(
+                                """
+                                UPDATE jobs SET status='failed', message=%s, updated_at=%s
+                                WHERE id=%s
+                                """,
+                                (
+                                    "Cleanup claim could not be restored after restart; "
+                                    f"original content was preserved at {preserved}",
+                                    timestamp,
+                                    job["id"],
+                                ),
+                            )
+                            summary["failed"] += 1
                             continue
                         ArchiveCatalog(connection).mark_local_copy_missing(
                             job["vault_file_id"],
