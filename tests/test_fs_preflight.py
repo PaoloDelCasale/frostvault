@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from app.services.fs_preflight import (
@@ -25,7 +26,7 @@ class VaultFilesystemPreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "notes.txt").write_text("ok", encoding="utf-8")
-            result = check_vault_filesystem(root)
+            result = check_vault_filesystem(root, allowed_bases=[root])
             self.assertTrue(result.ok)
             self.assertEqual(result.uid, os.geteuid())
             self.assertEqual(result.gid, os.getegid())
@@ -37,13 +38,15 @@ class VaultFilesystemPreflightTests(unittest.TestCase):
             self.assertEqual(result.findings, ())
 
     def test_missing_root_fails_with_remediation(self) -> None:
-        missing = Path("/tmp/does-not-exist-vault-preflight-issue-9")
-        result = check_vault_filesystem(missing)
-        self.assertFalse(result.ok)
-        access = next(c for c in result.checks if c.code == "fs.root_access")
-        self.assertEqual(access.status, "fail")
-        self.assertIn("not available", access.message.lower())
-        self.assertTrue(access.remediation)
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            missing = base / "does-not-exist-vault-preflight-issue-9"
+            result = check_vault_filesystem(missing, allowed_bases=[base])
+            self.assertFalse(result.ok)
+            access = next(c for c in result.checks if c.code == "fs.root_access")
+            self.assertEqual(access.status, "fail")
+            self.assertIn("not available", access.message.lower())
+            self.assertTrue(access.remediation)
 
     def test_unreadable_file_is_reported_precisely(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -52,7 +55,7 @@ class VaultFilesystemPreflightTests(unittest.TestCase):
             secret.write_bytes(b"secret")
             secret.chmod(0o000)
             try:
-                result = check_vault_filesystem(root)
+                result = check_vault_filesystem(root, allowed_bases=[root])
             finally:
                 secret.chmod(0o600)
             self.assertFalse(result.ok)
@@ -67,7 +70,7 @@ class VaultFilesystemPreflightTests(unittest.TestCase):
             nested.mkdir()
             nested.chmod(0o555)
             try:
-                result = check_vault_filesystem(root)
+                result = check_vault_filesystem(root, allowed_bases=[root])
             finally:
                 nested.chmod(0o755)
             self.assertFalse(result.ok)
@@ -81,7 +84,7 @@ class VaultFilesystemPreflightTests(unittest.TestCase):
             target.write_text("data", encoding="utf-8")
             link = root / "alias.txt"
             link.symlink_to(target)
-            result = check_vault_filesystem(root)
+            result = check_vault_filesystem(root, allowed_bases=[root])
             finding = next(f for f in result.findings if f.path == "alias.txt")
             self.assertEqual(finding.code, "fs.symlink")
             self.assertIn("symbolic link", finding.message.lower())
@@ -96,7 +99,7 @@ class VaultFilesystemPreflightTests(unittest.TestCase):
             restricted.chmod(0o400)
             before_mode = restricted.stat().st_mode
             before_uid = restricted.stat().st_uid
-            check_vault_filesystem(root)
+            check_vault_filesystem(root, allowed_bases=[root])
             after = restricted.stat()
             self.assertEqual(after.st_mode, before_mode)
             self.assertEqual(after.st_uid, before_uid)
@@ -109,13 +112,27 @@ class VaultFilesystemPreflightTests(unittest.TestCase):
             try:
                 if os.access(root, os.W_OK):
                     self.skipTest("running as root; cannot simulate unwritable root")
-                result = check_vault_filesystem(root)
+                result = check_vault_filesystem(root, allowed_bases=[root])
             finally:
                 root.chmod(0o755)
             self.assertFalse(result.ok)
             access = next(c for c in result.checks if c.code == "fs.root_access")
             self.assertEqual(access.status, "fail")
             self.assertIn("write", access.message.lower())
+
+    def test_root_outside_allowed_bases_fails_without_walking(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory) / "allowed"
+            base.mkdir()
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            with mock.patch("app.services.fs_preflight.os.walk") as walk:
+                result = check_vault_filesystem(outside, allowed_bases=[base])
+            self.assertFalse(result.ok)
+            walk.assert_not_called()
+            access = next(c for c in result.checks if c.code == "fs.root_access")
+            self.assertEqual(access.status, "fail")
+            self.assertIn("outside the configured source roots", access.message.lower())
 
 
 class ConfiguredVaultRootResolutionTests(unittest.TestCase):
