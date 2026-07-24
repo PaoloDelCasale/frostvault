@@ -1,6 +1,6 @@
 {
   "schema_version": "1.5.6",
-  "generated_at": "2026-07-23T23:19:45Z",
+  "generated_at": "2026-07-24T06:40:18Z",
   "records": [
     {
       "id": "REQ-001",
@@ -17,7 +17,8 @@
         "app/storage.py:1813-1862",
         "app/storage.py:1884-2044"
       ],
-      "summary": "Every download implementation must require and use provider_version_id."
+      "summary": "Every download implementation must require and use provider_version_id.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-002",
@@ -32,7 +33,8 @@
       "references": [
         "app/storage.py:2196-2235"
       ],
-      "summary": "Recover must only execute for queued|retrying|restoring."
+      "summary": "Recover must only execute for queued|retrying|restoring.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-003",
@@ -49,7 +51,8 @@
         "app/main.py:2443-2458",
         "README.md:19-20"
       ],
-      "summary": "Only owner may queue free-space; README must compensate."
+      "summary": "Only owner may queue free-space; README must compensate.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-004",
@@ -65,7 +68,8 @@
         "app/storage.py:2078-2130",
         "app/services/cloud_deletion.py:330-434"
       ],
-      "summary": "Detect/abort/audit concurrent newer version on cloud-archive."
+      "summary": "Detect/abort/audit concurrent newer version on cloud-archive.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-005",
@@ -80,7 +84,8 @@
       "references": [
         "app/services/metadata_backups.py:441-456"
       ],
-      "summary": "List-only mode is not full isolated-restore verification."
+      "summary": "List-only mode is not full isolated-restore verification.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-006",
@@ -94,7 +99,8 @@
       "references": [
         "app/breakglass.py:30-48"
       ],
-      "summary": "Fail-closed break-glass IP gate."
+      "summary": "Fail-closed break-glass IP gate.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-007",
@@ -108,7 +114,8 @@
       "references": [
         "app/proxy.py:28-48"
       ],
-      "summary": "XFF only when peer trusted."
+      "summary": "XFF only when peer trusted.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-008",
@@ -122,7 +129,8 @@
       "references": [
         "app/sessions.py:70-137"
       ],
-      "summary": "CSRF should align with resolve_session version check."
+      "summary": "CSRF should align with resolve_session version check.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-009",
@@ -136,7 +144,8 @@
       "references": [
         "app/storage.py:1700-1759"
       ],
-      "summary": "Claim restore on failed verification."
+      "summary": "Claim restore on failed verification.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-010",
@@ -151,7 +160,8 @@
         "app/database.py:16",
         "app/database.py:100-104"
       ],
-      "summary": "HEAD_SCHEMA_REVISION gate."
+      "summary": "HEAD_SCHEMA_REVISION gate.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-011",
@@ -165,7 +175,8 @@
       "references": [
         "app/services/vault_recovery.py:145-149"
       ],
-      "summary": "Upload blocked until custody confirmed."
+      "summary": "Upload blocked until custody confirmed.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-012",
@@ -179,7 +190,8 @@
       "references": [
         "app/services/operation_policies.py:79-99"
       ],
-      "summary": "start must be before end."
+      "summary": "start must be before end.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-013",
@@ -193,7 +205,8 @@
       "references": [
         "app/storage.py:2136-2164"
       ],
-      "summary": "Purge uses versioned deletes."
+      "summary": "Purge uses versioned deletes.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-014",
@@ -207,7 +220,8 @@
       "references": [
         "app/catalog.py:456-509"
       ],
-      "summary": "auto only for 1:1 digest matches."
+      "summary": "auto only for 1:1 digest matches.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-015",
@@ -221,7 +235,8 @@
       "references": [
         "app/main.py"
       ],
-      "summary": "Stale vault_id without membership cannot operate."
+      "summary": "Stale vault_id without membership cannot operate.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-016",
@@ -235,7 +250,8 @@
       "references": [
         "app/services/vault_roles.py:27-38"
       ],
-      "summary": "can_operate matrix."
+      "summary": "can_operate matrix.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-017",
@@ -249,7 +265,8 @@
       "references": [
         "app/services/vault_roles.py"
       ],
-      "summary": "Viewer denied mutations."
+      "summary": "Viewer denied mutations.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-018",
@@ -263,7 +280,8 @@
       "references": [
         "README.md Local cleanup safety"
       ],
-      "summary": "API and worker layers are complementary."
+      "summary": "API and worker layers are complementary.",
+      "source_type": "code-derived"
     },
     {
       "id": "REQ-019",
@@ -277,7 +295,36 @@
       "references": [
         "docs/filesystem-permissions.md"
       ],
-      "summary": "Deploy FS permissions for claim/temp/source."
+      "summary": "Deploy FS permissions for claim/temp/source.",
+      "source_type": "code-derived"
+    },
+    {
+      "id": "REQ-020",
+      "title": "Cloud rediscovery preserves Vault File identity",
+      "source_type": "code-derived",
+      "tier": 3,
+      "functional_section": "Catalog Path History / cloud rediscovery"
+    },
+    {
+      "id": "REQ-021",
+      "title": "Path History durable audit",
+      "source_type": "code-derived",
+      "tier": 5,
+      "functional_section": "Audit / Path History mutations"
+    },
+    {
+      "id": "REQ-022",
+      "title": "Configured backup store fail-closed",
+      "source_type": "docs-derived",
+      "tier": 3,
+      "functional_section": "Metadata backups / object store"
+    },
+    {
+      "id": "REQ-023",
+      "title": "OIDC no cross-account session switch",
+      "source_type": "docs-derived",
+      "tier": 3,
+      "functional_section": "OIDC session integrity"
     }
   ]
 }

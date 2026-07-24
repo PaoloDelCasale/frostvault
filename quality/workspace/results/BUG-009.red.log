@@ -1,0 +1,21 @@
+RED
+bug=BUG-009
+test=quality.test_regression.TestBug009.test_bug_009_rename_audit_passes_connection
+exit_code=1
+---
+test_bug_009_rename_audit_passes_connection (quality.test_regression.TestBug009.test_bug_009_rename_audit_passes_connection)
+[BUG-009][Req: REQ-021] Path History mutations must durable-audit. ... FAIL
+
+======================================================================
+FAIL: test_bug_009_rename_audit_passes_connection (quality.test_regression.TestBug009.test_bug_009_rename_audit_passes_connection)
+[BUG-009][Req: REQ-021] Path History mutations must durable-audit.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/qpb-tdd-BUG-009-red/quality/test_regression.py", line 334, in test_bug_009_rename_audit_passes_connection
+    self.assertRegex(
+AssertionError: Regex didn't match: 'audit_log\\(\\s*"vault_file_renamed",\\s*connection\\s*,' not found in 'def confirm_rename(\n    action: ConfirmRenameAction,\n    user: dict[str, Any] = Depends(current_user),\n    vault: dict[str, Any] = Depends(current_vault),\n):\n    if not can_operate(vault["role"]):\n        raise HTTPException(403, "Vault is read-only")\n    new_path = safe_relative_path(action.new_path).as_posix()\n    with db() as connection:\n        catalog = ArchiveCatalog(connection)\n        catalog.confirm_file_rename(\n            vault_file_id=action.vault_file_id,\n            new_path=new_path,\n            changed_at=now_iso(),\n        )\n        audit_log(\n            "vault_file_renamed",\n            vault_id=vault["id"],\n            vault_file_id=action.vault_file_id,\n            new_path=new_path,\n            decision="confirmed",\n            actor_id=user["id"],\n        )\n    try:\n        queued = queue_jobs(new_path, "rename", vault["id"], user["id"])\n    except HTTPException as exc:\n        if exc.status_code == 409:\n            return {\n                "vault_file_id": action.vault_file_id,\n                "path": new_path,\n                "message": "Rename confirmed; no cloud migration required",\n            }\n        raise\n    return {\n        **queued,\n        "vault_file_id": action.vault_file_id,\n        "path": new_path,\n        "message": "Rename confirmed",\n    }\n\n' : confirm_rename must pass connection to audit_log
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)

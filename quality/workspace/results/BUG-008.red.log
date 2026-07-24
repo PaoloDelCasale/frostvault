@@ -1,0 +1,21 @@
+RED
+bug=BUG-008
+test=quality.test_regression.TestBug008.test_bug_008_cloud_record_reuses_identity_before_create
+exit_code=1
+---
+test_bug_008_cloud_record_reuses_identity_before_create (quality.test_regression.TestBug008.test_bug_008_cloud_record_reuses_identity_before_create)
+[BUG-008][Req: REQ-020] Path History identity survives cloud rediscovery. ... FAIL
+
+======================================================================
+FAIL: test_bug_008_cloud_record_reuses_identity_before_create (quality.test_regression.TestBug008.test_bug_008_cloud_record_reuses_identity_before_create)
+[BUG-008][Req: REQ-020] Path History identity survives cloud rediscovery.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/qpb-tdd-BUG-008-red/quality/test_regression.py", line 307, in test_bug_008_cloud_record_reuses_identity_before_create
+    self.assertLess(
+AssertionError: 732 not less than 480 : archive_versions object_key lookup must run before Vault File minting
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)

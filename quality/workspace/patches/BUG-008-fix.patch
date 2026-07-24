@@ -1,0 +1,77 @@
+--- a/app/catalog.py
++++ b/app/catalog.py
+@@ -57,6 +57,39 @@
+         )
+         return file_id
+ 
++    def _resolve_cloud_path_file(self, vault_id: int, path: str, created_at: str) -> str:
++        """Map a cloud logical path to a Vault File without forking renamed identities.
++
++        Prefers the current path, then an active Vault File that still carries
++        ``path`` in Path History, and only then creates a new identity.
++        """
++        current = self.connection.execute(
++            """
++            SELECT vf.id
++            FROM vault_files vf
++            JOIN file_paths fp
++              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
++            WHERE vf.vault_id=%s AND fp.path=%s
++            """,
++            (vault_id, path),
++        ).fetchone()
++        if current:
++            return current["id"]
++        historical = self.connection.execute(
++            """
++            SELECT vf.id
++            FROM vault_files vf
++            JOIN file_paths fp ON fp.vault_file_id=vf.id
++            WHERE vf.vault_id=%s AND fp.path=%s AND vf.status='active'
++            ORDER BY fp.valid_from DESC
++            LIMIT 1
++            """,
++            (vault_id, path),
++        ).fetchone()
++        if historical:
++            return historical["id"]
++        return self._get_or_create_file(vault_id, path, created_at)
++
+     def observe_local_copy(
+         self,
+         *,
+@@ -147,11 +180,8 @@
+         desired_policy_id: str | None = None,
+         applied_policy_id: str | None = None,
+     ) -> str:
+-        file_id = self._get_or_create_file(vault_id, path, observed_at)
+-        self.connection.execute(
+-            "UPDATE vault_files SET status=status WHERE id=%s",
+-            (file_id,),
+-        )
++        # Resolve existing Archive Version BEFORE minting a Vault File so a
++        # cloud scan of a renamed file's old key cannot orphan a new identity.
+         existing = self.connection.execute(
+             """
+             SELECT id FROM archive_versions
+@@ -181,6 +211,11 @@
+                 ),
+             )
+             return existing["id"]
++        file_id = self._resolve_cloud_path_file(vault_id, path, observed_at)
++        self.connection.execute(
++            "UPDATE vault_files SET status=status WHERE id=%s",
++            (file_id,),
++        )
+         latest = self.connection.execute(
+             """
+             SELECT COALESCE(MAX(version_number), 0) AS version_number
+@@ -676,7 +711,7 @@
+         created_at: str,
+         observed_at: str,
+     ) -> str:
+-        file_id = self._get_or_create_file(vault_id, path, observed_at)
++        file_id = self._resolve_cloud_path_file(vault_id, path, observed_at)
+         existing = self.connection.execute(
+             """
+             SELECT id FROM delete_markers

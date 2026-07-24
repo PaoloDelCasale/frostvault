@@ -1,0 +1,5 @@
+tool=.venv/bin/python
+Python 3.12.3
+exit_code=0
+unittest probe:
+unittest_help_exit=0

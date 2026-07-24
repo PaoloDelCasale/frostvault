@@ -1,0 +1,30 @@
+--- a/app/services/metadata_backups.py
++++ b/app/services/metadata_backups.py
+@@ -86,7 +86,13 @@
+ 
+ 
+ def default_object_store() -> ObjectStore | None:
+-    """Build the configured S3 object store, or None when bucket/credentials are unset."""
++    """Build the configured S3 object store, or None when the bucket is unset.
++
++    When a bucket *is* configured, client/credential failures raise
++    ``BackupError`` instead of returning ``None`` so callers cannot silently
++    record a successful local-only backup while believing off-host storage was
++    used.
++    """
+     bucket = (settings.vault_s3_bucket or "").strip()
+     if not bucket:
+         return None
+@@ -94,8 +100,10 @@
+         from ..storage import s3_client
+ 
+         return Boto3ObjectStore(s3_client(), bucket)
+-    except Exception:
+-        return None
++    except Exception as exc:  # noqa: BLE001 - normalize to BackupError
++        raise BackupError(
++            f"Configured metadata backup object store is unavailable: {exc}"
++        ) from exc
+ 
+ 
+ class BackupError(RuntimeError):

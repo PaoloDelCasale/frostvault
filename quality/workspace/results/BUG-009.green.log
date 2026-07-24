@@ -1,0 +1,13 @@
+GREEN
+bug=BUG-009
+test=quality.test_regression.TestBug009.test_bug_009_rename_audit_passes_connection
+patch_apply_exit=0
+exit_code=0
+---
+test_bug_009_rename_audit_passes_connection (quality.test_regression.TestBug009.test_bug_009_rename_audit_passes_connection)
+[BUG-009][Req: REQ-021] Path History mutations must durable-audit. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK

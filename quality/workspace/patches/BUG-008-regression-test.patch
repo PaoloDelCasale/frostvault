@@ -1,0 +1,3 @@
+# Regression test addition for BUG-008 (see quality/test_regression.py TestBug08)
+# Canonical source of truth: quality/test_regression.py
+# Fix patch: quality/workspace/patches/BUG-008-fix.patch

@@ -24,9 +24,9 @@ Repos:      1
   PASS: spec_audits/ has 4 auditor file(s)
   PASS: triage_probes.sh exists (executable triage evidence)
 [BUGS.md Heading Format]
-  PASS: All 6 bug headings use ### BUG-NNN format
+  PASS: All 10 bug headings use ### BUG-NNN format
 [TDD Sidecar JSON]
-  PASS: tdd-results.json exists (6 bugs)
+  PASS: tdd-results.json exists (10 bugs)
   PASS: has 'schema_version'
   PASS: has 'skill_version'
   PASS: has 'date'
@@ -34,27 +34,27 @@ Repos:      1
   PASS: has 'bugs'
   PASS: has 'summary'
   PASS: schema_version is '1.1'
-  PASS: per-bug field 'id' present (6x)
-  PASS: per-bug field 'requirement' present (6x)
-  PASS: per-bug field 'red_phase' present (6x)
-  PASS: per-bug field 'green_phase' present (6x)
-  PASS: per-bug field 'verdict' present (6x)
-  PASS: per-bug field 'fix_patch_present' present (6x)
-  PASS: per-bug field 'writeup_path' present (6x)
+  PASS: per-bug field 'id' present (10x)
+  PASS: per-bug field 'requirement' present (10x)
+  PASS: per-bug field 'red_phase' present (10x)
+  PASS: per-bug field 'green_phase' present (10x)
+  PASS: per-bug field 'verdict' present (10x)
+  PASS: per-bug field 'fix_patch_present' present (10x)
+  PASS: per-bug field 'writeup_path' present (10x)
   PASS: summary has 'total'
   PASS: summary has 'verified'
   PASS: summary has 'confirmed_open'
   PASS: summary has 'red_failed'
   PASS: summary has 'green_failed'
-  PASS: tdd-results.json date '2026-07-23' is valid
+  PASS: tdd-results.json date '2026-07-24' is valid
   PASS: all verdict values are canonical
 [TDD Log Files]
-  PASS: All 6 confirmed bug(s) have red-phase logs
-  PASS: All 6 bug(s) with fix patches have green-phase logs
+  PASS: All 10 confirmed bug(s) have red-phase logs
+  PASS: All 10 bug(s) with fix patches have green-phase logs
   PASS: All red-phase logs have valid status tags
   PASS: All green-phase logs have valid status tags
-  PASS: Sidecar-to-log cross-validation passed (12 checks)
-  PASS: TDD_TRACEABILITY.md exists (6 bugs with red-phase results)
+  PASS: Sidecar-to-log cross-validation passed (20 checks)
+  PASS: TDD_TRACEABILITY.md exists (10 bugs with red-phase results)
 [Integration Sidecar JSON]
   WARN: integration-results.json not present
 [Recheck Sidecar JSON]
@@ -70,13 +70,13 @@ Repos:      1
   PASS: verify.sh exists
   PASS: mechanical-verify.exit is 0
 [Patches]
-  PASS: test_regression.* exists (6 confirmed bugs require it)
-  PASS: 6 regression-test patch(es) for 6 bug(s)
-  PASS: 6 fix patch(es)
-  INFO: Total: 12 patch file(s) in quality/patches/
+  PASS: test_regression.* exists (10 confirmed bugs require it)
+  PASS: 10 regression-test patch(es) for 10 bug(s)
+  PASS: 10 fix patch(es)
+  INFO: Total: 20 patch file(s) in quality/patches/
 [Bug Writeups]
-  PASS: 6 writeup(s) for 6 bug(s)
-  PASS: All 6 writeup(s) have inline fix diffs
+  PASS: 10 writeup(s) for 10 bug(s)
+  PASS: All 10 writeup(s) have inline fix diffs
   PASS: All writeup ```diff blocks contain unified-diff content
   PASS: No writeups contain unfilled template sentinels
 [Version Stamps]
@@ -94,9 +94,10 @@ Repos:      1
   PASS: bugs_manifest.json: v1.5.1 Layer-1 BUG checks complete
   PASS: quality/INDEX.md: §11 fields present
   PASS: citation_semantic_check.json: no Tier 1/2 REQs to review (invariant #17 vacuously satisfied)
-  PASS: challenge gate coverage: 6 triggered bug(s) all have valid challenge records
+  PASS: challenge gate coverage: 10 triggered bug(s) all have valid challenge records
   PASS: compensation_grid.json: v1.5.2 cardinality gate clean
-  WARN: requirements_manifest.json: legacy manifest detected; treating absent REQ.source_type as 'code-derived' per schemas.md §3.10 backward-compat rule
+  PASS: requirements_manifest.json: v1.5.3 source_type validation complete
+  PASS: requirements_manifest.json: v1.5.3 skill_section consistency complete
   PASS: bugs_manifest.json: v1.5.3 divergence_type validation complete
 [Phase 4: skill-section REQ coverage]
   INFO: check_skill_section_req_coverage: skip (project_type='Code')
@@ -109,5 +110,5 @@ Repos:      1
 
 
 ===========================================
-Total: 0 FAIL, 2 WARN
+Total: 0 FAIL, 1 WARN
 RESULT: GATE PASSED

@@ -246,3 +246,50 @@ Run complete. **6** BUGs found (**4** from code review surviving challenge, **2*
 - `quality/workspace/` reorganization + top-level symlinks
 - Updated: `quality/PROGRESS.md`, `quality/INDEX.md`, `quality/COMPLETENESS_REPORT.md`, stamps, requirement counts
 
+
+## Iteration: gap started
+
+2026-07-24T06:27:13Z
+
+
+## Iteration: gap complete
+
+2026-07-24T06:41:07Z
+
+### Gap iteration summary
+
+- Strategy: **gap** (Mode B canonical prompt executed in-process; nested Cursor CLI unauthenticated in this environment)
+- Prior baseline preserved (no archive/overwrite of Phases 1–6 artifacts)
+- Coverage gaps targeted: OIDC/invites, catalog Path History × cloud scan, metadata backup object-store fallback, durable rename audit, frontend cancel UX
+- Net-new confirmed bugs: **BUG-008** (High), **BUG-009** (Medium), **BUG-010** (High), **BUG-011** (High)
+- Prior active bugs re-confirmed unchanged: BUG-001,002,004,005,006,007
+- Rejected preserved: former BUG-003; CAND-006
+- Demoted candidates: DC-001 auth_time, DC-002 invite race, DC-003 cancel UX (see EXPLORATION_MERGED.md)
+- TDD: 4/4 net-new FAIL→PASS; cumulative active bugs with RED+GREEN: **10**
+- Production source outside : **unchanged**
+- Next strategy suggestion: **unfiltered**
+
+### Cumulative BUG tracker (post-gap)
+
+| ID | Source | Severity | Closure |
+|----|--------|----------|---------|
+| BUG-001 | Baseline CR | Medium | TDD verified (unchanged) |
+| BUG-002 | Baseline CR | Medium | TDD verified (unchanged) |
+| BUG-004 | Baseline CR | Low | TDD verified (unchanged) |
+| BUG-005 | Baseline CR | Low | TDD verified (unchanged) |
+| BUG-006 | Baseline SA | High | TDD verified (unchanged) |
+| BUG-007 | Baseline SA | Medium | TDD verified (unchanged) |
+| BUG-008 | Gap iter | High | TDD verified (FAIL→PASS) |
+| BUG-009 | Gap iter | Medium | TDD verified (FAIL→PASS) |
+| BUG-010 | Gap iter | High | TDD verified (FAIL→PASS) |
+| BUG-011 | Gap iter | High | TDD verified (FAIL→PASS) |
+
+### Iteration completion gate
+
+- ITERATION_PLAN.md strategy=gap — YES
+- EXPLORATION_ITER2.md ≥80 lines — YES
+- EXPLORATION_MERGED.md + Demoted Candidates — YES
+- ≥2 net-new candidates — YES (4 confirmed)
+- New code area vs baseline — YES
+- RED→GREEN for net-new — YES (008–011)
+- quality_gate / mechanical — see iteration verification log

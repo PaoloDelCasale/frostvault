@@ -1,0 +1,28 @@
+--- a/app/main.py
++++ b/app/main.py
+@@ -1493,6 +1493,7 @@
+         )
+         audit_log(
+             "vault_file_renamed",
++            connection,
+             vault_id=vault["id"],
+             vault_file_id=action.vault_file_id,
+             new_path=new_path,
+@@ -1537,6 +1538,7 @@
+         )
+         audit_log(
+             "vault_folder_renamed",
++            connection,
+             vault_id=vault["id"],
+             old_prefix=old_prefix,
+             new_prefix=new_prefix,
+--- a/app/storage.py
++++ b/app/storage.py
+@@ -800,6 +800,7 @@
+             )
+             audit_log(
+                 "vault_file_renamed",
++                connection,
+                 vault_id=vault["id"],
+                 vault_file_id=candidate["missing_vault_file_id"],
+                 old_path=candidate["missing_path"],

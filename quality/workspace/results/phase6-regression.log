@@ -10,8 +10,16 @@ test_bug_006_startup_preserves_free_space_claims (test_regression.TestBug006.tes
 [BUG-006][Req: REQ-009] cleanup claims must survive startup reconciliation. ... expected failure
 test_bug_007_windows_compare_as_times_not_strings (test_regression.TestBug007.test_bug_007_windows_compare_as_times_not_strings)
 [BUG-007][Req: REQ-012] non-padded inverted windows must be rejected. ... expected failure
+test_bug_008_cloud_record_reuses_identity_before_create (test_regression.TestBug008.test_bug_008_cloud_record_reuses_identity_before_create)
+[BUG-008][Req: REQ-020] Path History identity survives cloud rediscovery. ... expected failure
+test_bug_009_rename_audit_passes_connection (test_regression.TestBug009.test_bug_009_rename_audit_passes_connection)
+[BUG-009][Req: REQ-021] Path History mutations must durable-audit. ... expected failure
+test_bug_010_configured_store_failure_raises (test_regression.TestBug010.test_bug_010_configured_store_failure_raises)
+[BUG-010][Req: REQ-022] configured bucket client errors fail closed. ... expected failure
+test_bug_011_oidc_rejects_cross_account_switch (test_regression.TestBug011.test_bug_011_oidc_rejects_cross_account_switch)
+[BUG-011][Req: REQ-023] active Session must not be replaced by foreign identity. ... expected failure
 
 ----------------------------------------------------------------------
-Ran 6 tests in 0.532s
+Ran 10 tests in 0.516s
 
-OK (expected failures=6)
+OK (expected failures=10)

@@ -1,12 +1,12 @@
 {
   "schema_version": "1.5.6",
-  "generated_at": "2026-07-24T00:06:51Z",
+  "generated_at": "2026-07-24T06:40:18Z",
   "records": [
     {
       "id": "BUG-001",
       "req_id": "REQ-002",
       "title": "process_job recover branch lacks status whitelist",
-      "severity": "medium",
+      "severity": "MEDIUM",
       "disposition": "code-fix",
       "disposition_rationale": "Peer actions already whitelist statuses; recover omission is a dispatcher code gap, not a docs misread.",
       "fix_type": "code",
@@ -20,13 +20,14 @@
       "line": "2223-2224",
       "covers": [
         "REQ-002/cell-RECOVER-PROCESS_JOB"
-      ]
+      ],
+      "reachability_analysis": "Searched process_jobs_once selection filter and peer action status conjuncts; selection is not a substitute for dispatcher whitelist \u2014 stale job dict still reaches recover."
     },
     {
       "id": "BUG-002",
       "req_id": "REQ-004",
       "title": "Reversible cloud hide skips concurrent VersionId detection",
-      "severity": "medium",
+      "severity": "MEDIUM",
       "disposition": "code-fix",
       "disposition_rationale": "Scheduled provider_version_id is loaded but unused for compare; S3 delete-marker mechanics do not preclude Head/compare.",
       "fix_type": "code",
@@ -41,13 +42,14 @@
       "covers": [
         "REQ-004/cell-DETECT_CURRENT_MISMATCH-CLOUD_ARCHIVE",
         "REQ-004/cell-DETECT_CURRENT_MISMATCH-RENAME_HIDE"
-      ]
+      ],
+      "reachability_analysis": "Searched for HeadObject/VersionId compare before delete_object in process_cloud_archive and process_rename; provider_version_id loaded but unused; one-active-file job gate is mitigation not prevention."
     },
     {
       "id": "BUG-004",
       "req_id": "REQ-008",
       "title": "csrf_token_for ignores session_version force-logout",
-      "severity": "low",
+      "severity": "LOW",
       "disposition": "code-fix",
       "disposition_rationale": "resolve_session already enforces session_version; CSRF layer omission is a concrete code parity gap.",
       "fix_type": "code",
@@ -58,13 +60,14 @@
       "source_type": "code-derived",
       "divergence_type": "code-spec",
       "file": "app/sessions.py",
-      "line": "115-137"
+      "line": "115-137",
+      "reachability_analysis": "Compared csrf_token_for against resolve_session session_version join; resolve_session enforces, csrf path omits \u2014 force-logout compensation incomplete."
     },
     {
       "id": "BUG-005",
       "req_id": "REQ-003",
       "title": "README Users overclaims operator free-space",
-      "severity": "low",
+      "severity": "LOW",
       "disposition": "spec-fix",
       "disposition_rationale": "Code/tests correctly enforce owner-only; README Users wording is the compensation failure.",
       "fix_type": "spec",
@@ -78,13 +81,14 @@
       "line": "19-20",
       "covers": [
         "REQ-003/cell-OWNER_ONLY_FREE_SPACE-README_USERS"
-      ]
+      ],
+      "reachability_analysis": "Compared README Users vs is_owner free-space gate and tests; code/tests authoritative."
     },
     {
       "id": "BUG-006",
       "req_id": "REQ-009",
       "title": "Startup cleanup destroys free-space claim files before reconcile",
-      "severity": "high",
+      "severity": "HIGH",
       "disposition": "code-fix",
       "disposition_rationale": "REQ-009 claim/salvage invariant is voided when startup unlinks .cleanup-*.tmp before reconcile marks missing paths completed.",
       "fix_type": "code",
@@ -96,13 +100,14 @@
       "divergence_type": "code-spec",
       "file": "app/storage.py",
       "line": "1028",
-      "confidence": "high"
+      "confidence": "high",
+      "reachability_analysis": "Traced lifespan cleanup_abandoned_restore_files before reconcile; is_restore_temporary_name includes CLEANUP_TEMPORARY_RE; no upstream restore_claimed_local_copy before unlink."
     },
     {
       "id": "BUG-007",
       "req_id": "REQ-012",
       "title": "Operating windows compared as lexicographic strings",
-      "severity": "medium",
+      "severity": "MEDIUM",
       "disposition": "code-fix",
       "disposition_rationale": "HTTP allows non-padded HH:MM (len 4-5); string compare accepts inverted 10:00-9:30 and rejects valid 9:30-10:00.",
       "fix_type": "code",
@@ -114,7 +119,92 @@
       "divergence_type": "code-spec",
       "file": "app/services/operation_policies.py",
       "line": "96-97",
-      "confidence": "high"
+      "confidence": "high",
+      "reachability_analysis": "Checked _normalize_windows for parsed time compare; only lexicographic start>=end; HTTP allows len 4\u20135 so non-padded values reach comparator."
+    },
+    {
+      "id": "BUG-008",
+      "req_id": "REQ-020",
+      "title": "Cloud scan forks Vault File identity after rename",
+      "severity": "HIGH",
+      "disposition": "code-fix",
+      "disposition_rationale": "CONTEXT Path History identity must survive renames; scan minting orphans is a code gap.",
+      "fix_type": "code",
+      "divergence_description": "record_archive_version creates Vault File before object_key dedupe; current-path-only lookup.",
+      "documented_intent": "One Vault File identity across Path History.",
+      "code_behavior": "catalog.py record_archive_version calls _get_or_create_file first.",
+      "proposed_fix": "Lookup existing archive_versions first; _resolve_cloud_path_file for historical paths.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/catalog.py",
+      "line": "150",
+      "covers": [
+        "REQ-020/cell-CLOUD_REDISCOVERY-PATH_HISTORY"
+      ],
+      "reachability_analysis": "Checked archive_versions object_key dedupe order vs _get_or_create_file; create precedes dedupe; historical Path History not consulted; confirm_file_rename correctly closes paths."
+    },
+    {
+      "id": "BUG-009",
+      "req_id": "REQ-021",
+      "title": "Rename audit_log omits connection",
+      "severity": "MEDIUM",
+      "disposition": "code-fix",
+      "disposition_rationale": "audit_log persistence contract requires connection inside db transactions.",
+      "fix_type": "code",
+      "divergence_description": "Rename mutations are log-only.",
+      "documented_intent": "Durable audit_events for Path History changes.",
+      "code_behavior": "main.py confirm_rename audit_log without connection.",
+      "proposed_fix": "Pass connection to audit_log.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/main.py",
+      "line": "1494-1501",
+      "covers": [
+        "REQ-021/cell-RENAME_AUDIT-CONNECTION"
+      ],
+      "reachability_analysis": "Checked audit_log callers in confirm_rename/folder/auto-rename inside db(); connection omitted; /api/audit-events reads only durable rows."
+    },
+    {
+      "id": "BUG-010",
+      "req_id": "REQ-022",
+      "title": "Configured S3 backup failure silent local-only success",
+      "severity": "HIGH",
+      "disposition": "code-fix",
+      "disposition_rationale": "Configured off-host backup must fail closed per metadata-backups docs.",
+      "fix_type": "code",
+      "divergence_description": "except Exception return None.",
+      "documented_intent": "local + S3 when configured.",
+      "code_behavior": "default_object_store returns None on client errors.",
+      "proposed_fix": "Raise BackupError when bucket configured.",
+      "source_type": "docs-derived",
+      "divergence_type": "code-spec",
+      "file": "app/services/metadata_backups.py",
+      "line": "88-98",
+      "covers": [
+        "REQ-022/cell-OBJECT_STORE-FAIL_CLOSED"
+      ],
+      "reachability_analysis": "Checked default_object_store except path; bucket-set failures return None identical to unset; run_metadata_backup treats None as success; docs require S3 when configured."
+    },
+    {
+      "id": "BUG-011",
+      "req_id": "REQ-023",
+      "title": "OIDC callback switches session on foreign linked identity",
+      "severity": "HIGH",
+      "disposition": "code-fix",
+      "disposition_rationale": "ADR-0003/0005 forbid silent account switch during self-link/step-up.",
+      "fix_type": "code",
+      "divergence_description": "else create_session for other user_id.",
+      "documented_intent": "Reject cross-account while logged in.",
+      "code_behavior": "main.py oidc callback else-branch session mint.",
+      "proposed_fix": "elif existing user != user_id: HTTP 403.",
+      "source_type": "docs-derived",
+      "divergence_type": "code-spec",
+      "file": "app/main.py",
+      "line": "1130-1146",
+      "covers": [
+        "REQ-023/cell-OIDC_NO_ACCOUNT_SWITCH"
+      ],
+      "reachability_analysis": "Checked oidc callback session branch vs ADR-0003/0005; _resolve_or_bind_identity returns foreign user before invite redeem; else create_session switches account; no sign-out guard."
     }
   ]
 }

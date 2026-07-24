@@ -29,6 +29,8 @@ METADATA_PY = (
     REPO_ROOT / "app" / "services" / "metadata_backups.py"
 ).read_text(encoding="utf-8")
 README = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+CATALOG_PY = (REPO_ROOT / "app" / "catalog.py").read_text(encoding="utf-8")
+MAIN_PY = (REPO_ROOT / "app" / "main.py").read_text(encoding="utf-8")
 
 
 def _process_job_body() -> str:
@@ -262,6 +264,134 @@ class TestBug007(unittest.TestCase):
         )
         self.assertEqual(ok[0]["start"], "9:30")
         self.assertEqual(ok[0]["end"], "10:00")
+
+
+def _record_archive_version_body() -> str:
+    start = CATALOG_PY.index("def record_archive_version")
+    end = CATALOG_PY.index("\n    def ", start + 1)
+    return CATALOG_PY[start:end]
+
+
+def _confirm_rename_audit_snippet() -> str:
+    start = MAIN_PY.index("def confirm_rename")
+    end = MAIN_PY.index("\n@app.post", start)
+    return MAIN_PY[start:end]
+
+
+def _oidc_callback_session_branch() -> str:
+    start = MAIN_PY.index("user_id = _resolve_or_bind_identity")
+    end = MAIN_PY.index("redirect = RedirectResponse", start)
+    return MAIN_PY[start:end]
+
+
+class TestBug008(unittest.TestCase):
+    """BUG-008: cloud scan must not fork Vault File identity after rename (REQ-020)."""
+
+    @unittest.expectedFailure
+    def test_bug_008_cloud_record_reuses_identity_before_create(self) -> None:
+        """[BUG-008][Req: REQ-020] Path History identity survives cloud rediscovery.
+
+        Desired: ``record_archive_version`` dedupes by object_key/VersionId before
+        minting a Vault File, and resolves historical Path History for active
+        files. Current: ``_get_or_create_file`` runs first and only matches
+        ``valid_to IS NULL`` paths, creating orphans on post-rename scans.
+        Fix patch: quality/workspace/patches/BUG-008-fix.patch
+        """
+        body = _record_archive_version_body()
+        create_idx = body.find("_get_or_create_file")
+        resolve_idx = body.find("_resolve_cloud_path_file")
+        existing_idx = body.find("SELECT id FROM archive_versions")
+        self.assertGreaterEqual(existing_idx, 0, "must look up existing archive versions")
+        # Desired: existing object_key lookup precedes any identity create/resolve.
+        first_create = create_idx if create_idx >= 0 else resolve_idx
+        self.assertGreaterEqual(first_create, 0, "must resolve or create a Vault File")
+        self.assertLess(
+            existing_idx,
+            first_create,
+            "archive_versions object_key lookup must run before Vault File minting",
+        )
+        self.assertIn(
+            "_resolve_cloud_path_file",
+            CATALOG_PY,
+            "cloud path resolution must consult Path History for active files",
+        )
+
+
+class TestBug009(unittest.TestCase):
+    """BUG-009: rename audits must persist via connection (REQ-021)."""
+
+    @unittest.expectedFailure
+    def test_bug_009_rename_audit_passes_connection(self) -> None:
+        """[BUG-009][Req: REQ-021] Path History mutations must durable-audit.
+
+        Desired: ``audit_log(..., connection, ...)`` inside confirm rename /
+        folder rename so ``audit_events`` receives the row. Current: connection
+        omitted → log-only.
+        Fix patch: quality/workspace/patches/BUG-009-fix.patch
+        """
+        snippet = _confirm_rename_audit_snippet()
+        self.assertIn('audit_log(\n            "vault_file_renamed"', snippet)
+        # Desired positional connection argument immediately after event name.
+        self.assertRegex(
+            snippet,
+            r'audit_log\(\s*"vault_file_renamed",\s*connection\s*,',
+            "confirm_rename must pass connection to audit_log",
+        )
+        folder = MAIN_PY[
+            MAIN_PY.index("def confirm_folder_rename") : MAIN_PY.index(
+                "\n@app.post", MAIN_PY.index("def confirm_folder_rename")
+            )
+        ]
+        self.assertRegex(
+            folder,
+            r'audit_log\(\s*"vault_folder_renamed",\s*connection\s*,',
+            "confirm_folder_rename must pass connection to audit_log",
+        )
+
+
+class TestBug010(unittest.TestCase):
+    """BUG-010: configured S3 backup failures must not become None success (REQ-022)."""
+
+    @unittest.expectedFailure
+    def test_bug_010_configured_store_failure_raises(self) -> None:
+        """[BUG-010][Req: REQ-022] configured bucket client errors fail closed.
+
+        Desired: when ``VAULT_S3_BUCKET`` is set and ``s3_client`` raises,
+        ``default_object_store`` raises ``BackupError`` (not ``None``).
+        Current: bare ``except Exception: return None``.
+        Fix patch: quality/workspace/patches/BUG-010-fix.patch
+        """
+        start = METADATA_PY.index("def default_object_store")
+        end = METADATA_PY.index("\nclass BackupError", start)
+        body = METADATA_PY[start:end]
+        self.assertIn("raise BackupError", body)
+        self.assertNotRegex(
+            body,
+            r"except Exception:\s*\n\s*return None",
+            "configured-store failures must not collapse to None",
+        )
+
+class TestBug011(unittest.TestCase):
+    """BUG-011: OIDC must not switch sessions on foreign already-linked identity (REQ-023)."""
+
+    @unittest.expectedFailure
+    def test_bug_011_oidc_rejects_cross_account_switch(self) -> None:
+        """[BUG-011][Req: REQ-023] active Session must not be replaced by foreign identity.
+
+        Desired: when ``resolve_session`` user ≠ resolved identity user, callback
+        raises 403 instead of ``create_session`` for the other user.
+        Current: else-branch always mints a new session for ``user_id``.
+        Fix patch: quality/workspace/patches/BUG-011-fix.patch
+        """
+        body = _oidc_callback_session_branch()
+        self.assertIn('existing and existing["user"]["id"] == user_id', body)
+        self.assertRegex(
+            body,
+            r'elif existing and existing\["user"\]\["id"\] != user_id',
+            "callback must explicitly reject cross-account identity while logged in",
+        )
+        self.assertIn("HTTPException", body)
+        self.assertIn("sign out first", body.lower())
 
 
 if __name__ == "__main__":
