@@ -9,6 +9,7 @@ from typing import Any
 from app.database import SQLiteConnection
 from app.sessions import (
     create_session,
+    csrf_token_for,
     resolve_session,
     revoke_session,
     rotate_session,
@@ -129,6 +130,29 @@ class SessionStoreTests(unittest.TestCase):
             )
         with self._connect() as connection:
             self.assertIsNone(resolve_session(connection, token))
+
+    def test_bug_004_csrf_honors_session_version(self) -> None:
+        """[BUG-004][Req: REQ-008] force-logout must invalidate CSRF lookup.
+
+        After users.session_version bump, csrf_token_for must return None
+        just like resolve_session (parity for CSRF middleware fail-closed).
+        """
+        with self._connect() as connection:
+            user_id = _insert_user(connection, username="csrf-user", is_admin=False)
+            token = create_session(
+                connection, user_id=user_id, auth_method="local"
+            )
+            self.assertIsNotNone(csrf_token_for(connection, token))
+            self.assertIsNotNone(resolve_session(connection, token))
+            connection.execute(
+                "UPDATE users SET session_version=session_version+1 WHERE id=%s",
+                (user_id,),
+            )
+            self.assertIsNone(resolve_session(connection, token))
+            self.assertIsNone(
+                csrf_token_for(connection, token),
+                "csrf_token_for must return None after session_version bump",
+            )
 
     def test_session_for_deactivated_user_does_not_resolve(self) -> None:
         token = self._new_session()
