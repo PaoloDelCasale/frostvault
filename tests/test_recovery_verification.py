@@ -11,6 +11,11 @@ Seams under test:
 
 BUG-012 (REQ-024) uses the same recovery worker seam: catalog absence plus a
 real on-disk destination must fail closed without overwrite.
+
+BUG-018 (REQ-030) uses the public cancel seam ``cancel_job_group``: after a
+recover Job has persisted Glacier ``restore_state`` / expiry (RestoreObject
+accepted and non-cancellable), cancel must leave that polling context intact
+while still cancelling the Job.
 """
 
 from __future__ import annotations
@@ -26,7 +31,7 @@ from unittest.mock import Mock, patch
 
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
-from app.main import queue_jobs
+from app.main import cancel_job_group, queue_jobs
 from app.services.rclone_runtime import RuntimeRcloneConfig
 from app.storage import download_exact_version_plaintext, process_jobs_once
 from tests.test_database import run_alembic
@@ -505,6 +510,89 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
             self.assertEqual(job["status"], "restoring")
             self.assertIn("cannot be cancelled", (job["message"] or "").lower())
             self.assertEqual(version["restore_state"], "restoring")
+
+    def test_bug_018_cancel_preserves_restore_state(self) -> None:
+        """[BUG-018][Req: REQ-030] cancel must not wipe Glacier restore_state.
+
+        Seam: ``cancel_job_group`` for action ``recover``, observed through Job
+        status and Archive Version ``restore_state`` / ``restore_expiry`` on a
+        real SQLite catalog (same cancel path as ``/api/jobs/cancel``).
+
+        After RestoreObject has been accepted, cancel must stop the Job but
+        retain restore polling/expiry context for a later recover.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"cold-archive"
+            _source, database_path, version_id = _prepare_cloud_only_version(
+                root,
+                relative_path="cold.txt",
+                payload=payload,
+                storage_class="GLACIER",
+                object_key="docs/cold.txt",
+            )
+            restore_expiry = "2026-07-28T12:00:00+00:00"
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            with patch("app.database.settings", database_settings):
+                queued = queue_jobs("cold.txt", "recover", 2, 1)
+                with SQLiteConnection(str(database_path)) as connection:
+                    connection.execute(
+                        """
+                        UPDATE jobs
+                        SET status='restoring',
+                            message=%s,
+                            updated_at=%s
+                        WHERE id=%s
+                        """,
+                        (
+                            "Waiting for Glacier restore; RestoreObject cannot "
+                            "be cancelled after AWS accepts it",
+                            "2026-07-24T10:00:00+00:00",
+                            queued["job_ids"][0],
+                        ),
+                    )
+                    ArchiveCatalog(connection).update_restore_state(
+                        version_id,
+                        state="restoring",
+                        expiry=restore_expiry,
+                        checked_at="2026-07-24T10:00:00+00:00",
+                        storage_class="GLACIER",
+                    )
+
+                result = cancel_job_group(
+                    queued["group_id"],
+                    "recover",
+                    {"id": 2, "role": "owner", "member_user_id": 1},
+                )
+
+            self.assertEqual(result["cancelled_count"], 1)
+            with SQLiteConnection(str(database_path)) as connection:
+                job = connection.execute(
+                    "SELECT status, group_id FROM jobs WHERE id=%s",
+                    (queued["job_ids"][0],),
+                ).fetchone()
+                version = connection.execute(
+                    """
+                    SELECT restore_state, restore_expiry
+                    FROM archive_versions WHERE id=%s
+                    """,
+                    (version_id,),
+                ).fetchone()
+
+            self.assertEqual(job["status"], "cancelled")
+            self.assertEqual(
+                version["restore_state"],
+                "restoring",
+                "cancel must retain non-cancellable RestoreObject restore_state",
+            )
+            self.assertEqual(
+                version["restore_expiry"],
+                restore_expiry,
+                "cancel must retain restore_expiry for subsequent polling",
+            )
 
     def test_restored_glacier_version_downloads_after_restore_available(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

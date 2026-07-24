@@ -319,24 +319,6 @@ class ArchiveCatalog:
             (state, expiry, checked_at, storage_class, archive_version_id),
         )
 
-    def clear_restore_state_for_jobs(
-        self, job_ids: list[int], *, checked_at: str
-    ) -> None:
-        if not job_ids:
-            return
-        placeholders = ", ".join(["%s"] * len(job_ids))
-        self.connection.execute(
-            f"""
-            UPDATE archive_versions
-            SET restore_state=NULL, restore_expiry=NULL, restore_checked_at=%s
-            WHERE id IN (
-                SELECT archive_version_id FROM jobs
-                WHERE id IN ({placeholders})
-            )
-            """,
-            [checked_at, *job_ids],
-        )
-
     def mark_local_copy_missing(
         self, vault_file_id: str, *, observed_at: str
     ) -> None:
