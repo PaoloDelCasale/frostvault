@@ -7,7 +7,8 @@ Seams under test:
 - Worker execution via `process_jobs_once` / `process_cloud_archive` /
   `process_cloud_purge`: S3 delete_object (marker only) vs
   DeleteObjectVersion for every version/marker; cancel before delay
-  must never call S3; batch items resume with per-version failures.
+  must never call S3; batch items resume with per-version failures;
+  post-marker notify failures must not fail-close archive (BUG-017).
 - Lifecycle rule builder emits NoncurrentVersionTransitions for retained
   noncurrent Archive Versions (cheapest configured archive class).
 
@@ -470,6 +471,84 @@ class ReversibleArchiveExecutionTests(_CloudDeletionTestCase):
             self.assertEqual(job["status"], "failed")
             self.assertIn("VersionId", job["message"] or "")
             self.assertEqual(markers, [])
+
+    def test_bug_017_archive_observability_best_effort(self) -> None:
+        """[BUG-017][Req: REQ-029] post-marker notify must not fail-close the job.
+
+        Seam: process_jobs_once → process_cloud_archive → record_archive_completed
+        with S3 mocked at the system boundary and enqueue_notification forced to
+        raise after the Delete Marker is written to S3.
+
+        A notify failure must leave the job completed with the Delete Marker
+        catalogued (parity with local cleanup best-effort observability), so a
+        later retry cannot issue another hide.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            database_path, vault_id, file_id = _prepare_vault_with_versions(
+                Path(directory), cloud_deletion_enabled=True, version_count=2
+            )
+            with SQLiteConnection(str(database_path)) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO vault_members(vault_id, user_id, role)
+                    VALUES (%s, 1, 'owner')
+                    """,
+                    (vault_id,),
+                )
+                cloud_deletion.schedule_cloud_archive(
+                    connection,
+                    vault_id=vault_id,
+                    paths=["report.txt"],
+                    is_directory=False,
+                    actor_user_id=1,
+                    requested_at=_iso(_now()),
+                )
+
+            client = Mock()
+            client.head_object.return_value = {
+                "VersionId": "s3-v2",
+                "ContentLength": 11,
+            }
+            client.delete_object.return_value = {
+                "VersionId": "marker-1",
+                "DeleteMarker": True,
+            }
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            worker_settings = SimpleNamespace(operation_concurrency=1)
+            with (
+                patch("app.database.settings", database_settings),
+                patch("app.storage.settings", worker_settings),
+                patch("app.storage.validate_cloud_vault"),
+                patch("app.storage.s3_client", return_value=client),
+                patch(
+                    "app.services.cloud_deletion.enqueue_notification",
+                    side_effect=RuntimeError("notify boom"),
+                ),
+            ):
+                process_jobs_once()
+
+            client.delete_object.assert_called_once()
+            with SQLiteConnection(str(database_path)) as connection:
+                markers = connection.execute(
+                    "SELECT provider_version_id FROM delete_markers WHERE vault_file_id=%s",
+                    (file_id,),
+                ).fetchall()
+                job = connection.execute(
+                    "SELECT status, message FROM jobs WHERE action='cloud-archive'"
+                ).fetchone()
+            self.assertEqual(
+                job["status"],
+                "completed",
+                "notify failure must not fail-close the archive job after Delete Marker",
+            )
+            self.assertEqual(
+                [row["provider_version_id"] for row in markers],
+                ["marker-1"],
+                "Delete Marker catalog row must survive notify failure",
+            )
 
 
 class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
