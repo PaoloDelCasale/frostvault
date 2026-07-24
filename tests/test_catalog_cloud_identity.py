@@ -117,3 +117,83 @@ class CloudRediscoveryIdentityTests(unittest.TestCase):
                 (2,),
             ).fetchone()
             self.assertEqual(int(active["count"]), 1)
+
+    def test_bug_008_new_cloud_version_at_historical_path_reuses_identity(
+        self,
+    ) -> None:
+        """[BUG-008][Req: REQ-020] New cloud VersionId at a historical path
+        attaches to the active Vault File that still carries that path in
+        Path History, instead of minting an orphan current identity.
+        """
+        old_path = "reports/q2.pdf"
+        new_path = "archive/q2.pdf"
+
+        with SQLiteConnection(str(self.db_path)) as connection:
+            connection.execute(
+                """
+                INSERT INTO vaults(
+                    id, slug, name, source_root, s3_bucket, s3_prefix,
+                    rclone_remote
+                ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                """
+            )
+            catalog = ArchiveCatalog(connection)
+            file_id = catalog.observe_local_copy(
+                vault_id=2,
+                path=old_path,
+                file_type="regular",
+                size=16,
+                mtime_ns=2_000,
+                observed_at="2026-07-21T10:00:00+00:00",
+            )
+            catalog.record_archive_version(
+                vault_id=2,
+                path=old_path,
+                object_key="docs/reports/q2.pdf",
+                provider_version_id="s3-v-1",
+                size=16,
+                storage_class="STANDARD",
+                etag="etag-1",
+                uploaded_at="2026-07-21T10:01:00+00:00",
+                observed_at="2026-07-21T10:01:00+00:00",
+                scan_id="2026-07-21T10:01:00+00:00",
+                origin="upload",
+            )
+            catalog.confirm_file_rename(
+                vault_file_id=file_id,
+                new_path=new_path,
+                changed_at="2026-07-21T11:00:00+00:00",
+            )
+
+            new_version_id = catalog.record_archive_version(
+                vault_id=2,
+                path=old_path,
+                object_key="docs/reports/q2.pdf",
+                provider_version_id="s3-v-2",
+                size=16,
+                storage_class="STANDARD",
+                etag="etag-2",
+                uploaded_at="2026-07-21T12:00:00+00:00",
+                observed_at="2026-07-21T12:00:00+00:00",
+                scan_id="2026-07-21T12:00:00+00:00",
+                origin="discovered",
+            )
+
+            self.assertIsNone(catalog.get_file_by_path(2, old_path))
+            self.assertEqual(catalog.get_file_by_path(2, new_path)["id"], file_id)
+            row = connection.execute(
+                """
+                SELECT vault_file_id FROM archive_versions WHERE id=%s
+                """,
+                (new_version_id,),
+            ).fetchone()
+            self.assertEqual(row["vault_file_id"], file_id)
+            active = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM vault_files
+                WHERE vault_id=%s AND status='active'
+                """,
+                (2,),
+            ).fetchone()
+            self.assertEqual(int(active["count"]), 1)
