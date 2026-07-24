@@ -2098,7 +2098,7 @@ def process_recover(job: dict[str, Any]) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         if os.path.lexists(destination):
             raise RuntimeError(
-                "A local file already exists at the recovery destination"
+                "A local copy already exists at the recovery destination"
             )
         temporary.replace(destination)
     finally:

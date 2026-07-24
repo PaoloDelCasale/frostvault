@@ -333,7 +333,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             self.assertEqual(job["status"], "failed")
             self.assertRegex(
                 (job["message"] or "").lower(),
-                r"already exists|local (file|copy).*exist",
+                r"local copy.*already exists|already exists.*recovery destination",
             )
 
 
