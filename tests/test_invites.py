@@ -177,6 +177,55 @@ class RedeemInviteTests(InviteTestBase):
         row = self._invite_row(invite_id)
         self.assertIsNone(row["redeemed_at"])
 
+    def test_bug_022_redeem_update_guards_unredeemed(self) -> None:
+        """[BUG-022][Req: REQ-034] concurrent redeem must not clobber redeemer fields.
+
+        Simulates TOCTOU: winner redeems first; loser's SELECT still sees an
+        unredeemed Invite (stale snapshot). Conditional UPDATE + failure path
+        must raise already_redeemed and leave the winner's redeemer fields.
+        """
+        _, invite_id = self._create()
+        with self.connect() as connection:
+            invites.redeem_invite(
+                connection, invite_id=invite_id, issuer=ISSUER, subject="winner"
+            )
+
+        class StaleSelectConnection:
+            """Connection that returns an unredeemed snapshot for the invite SELECT."""
+
+            def __init__(self, real: SQLiteConnection) -> None:
+                self._real = real
+
+            def execute(self, sql: str, params: Any = ()) -> Any:
+                compact = " ".join(str(sql).split()).lower()
+                if compact.startswith("select * from invites where id="):
+                    row = self._real.execute(sql, params).fetchone()
+                    assert row is not None
+                    stale = dict(row)
+                    stale["redeemed_at"] = None
+                    stale["redeemed_issuer"] = None
+                    stale["redeemed_subject"] = None
+
+                    class _StaleResult:
+                        def fetchone(self_inner) -> dict[str, Any]:
+                            return stale
+
+                    return _StaleResult()
+                return self._real.execute(sql, params)
+
+        with self.connect() as connection:
+            with self.assertRaises(invites.InviteError) as error:
+                invites.redeem_invite(
+                    StaleSelectConnection(connection),
+                    invite_id=invite_id,
+                    issuer=ISSUER,
+                    subject="loser",
+                )
+        self.assertEqual(error.exception.reason, "already_redeemed")
+        row = self._invite_row(invite_id)
+        self.assertEqual(row["redeemed_issuer"], ISSUER)
+        self.assertEqual(row["redeemed_subject"], "winner")
+
 
 class ResolveInviteTests(InviteTestBase):
     def _create(self, ttl_seconds: int = 3600) -> str:
