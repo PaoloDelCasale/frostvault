@@ -247,10 +247,11 @@ class InviteHttpTests(unittest.TestCase):
         self.assertEqual(identity["user_id"], self.member_id)
 
     def test_bug_021_oidc_link_requires_recent_reauth(self) -> None:
-        """[BUG-021][Req: REQ-033] self-link must gate invite creation on reauth.
+        """[BUG-021][Req: REQ-033] self-link Invite creation requires Reauthentication.
 
         A stale Session must not mint a self-Invite (ADR-0005 / ADR-0003). With
-        recent reauth, begin_login must request a fresh IdP login via prompt=login.
+        recent Reauthentication, begin_login must force a fresh IdP proof via
+        prompt=login.
         """
         self._authenticate_session(self.member_id)
         with SQLiteConnection(str(self.database_path)) as connection:
