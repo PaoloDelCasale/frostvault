@@ -239,7 +239,7 @@ class AdminUserActiveSessionTests(HardeningHttpTestCase):
         Seam: PATCH /api/admin/users/{id} (public admin update) with observation
         via the target user's existing session cookie against GET /api/me.
         Desired: any active update bumps session_version so old cookies fail.
-        Current: only password changes bump the version; reactivation revives
+        Previously: only password changes bump the version; reactivation revives
         pre-deactivation cookies.
         """
         # Non-admins cannot use Break-glass Login; seed the kind of server-side
