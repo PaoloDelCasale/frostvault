@@ -300,8 +300,9 @@ class MetadataVerifyRunBindingTests(unittest.TestCase):
         entry used by ``background_loop``. Arrange a newest-on-disk orphan that
         is not restore-viable while the newest ``succeeded`` run records a
         different ``local_path``/digest. Verified must attach only after the
-        bound artifact is restore-tested (parity with ``open_backup_artifact``),
-        not after verifying an unbound directory newest file.
+        bound artifact is restore-tested (same run→path/digest binding idea as
+        ``open_backup_artifact``), not after verifying an unbound directory
+        newest file.
         """
         with patch.object(metadata_backups, "settings", self.settings):
             artifact = metadata_backups.create_metadata_backup(

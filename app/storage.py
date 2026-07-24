@@ -2677,7 +2677,7 @@ def _run_scheduled_metadata_backup_once() -> None:
 
 
 def _verify_latest_metadata_backup_once() -> None:
-    """Periodically restore-verify the newest local backup into an isolated temp DB."""
+    """Periodically restore-verify the newest succeeded backup run's bound artifact."""
     if settings.metadata_backup_verify_interval_seconds <= 0:
         return
     backup_dir = Path(settings.metadata_backup_dir)
@@ -2694,13 +2694,19 @@ def _verify_latest_metadata_backup_once() -> None:
         if not latest:
             return
         artifact = None
+        recorded_digest = latest.get("digest_sha256")
         if latest.get("local_path"):
             candidate = Path(str(latest["local_path"]))
             if candidate.is_file():
-                artifact = candidate
-        if artifact is None and latest.get("digest_sha256"):
+                if (
+                    not recorded_digest
+                    or hashlib.sha256(candidate.read_bytes()).hexdigest()
+                    == recorded_digest
+                ):
+                    artifact = candidate
+        if artifact is None and recorded_digest:
             for path in metadata_backup_service.list_local_backup_files(backup_dir):
-                if hashlib.sha256(path.read_bytes()).hexdigest() == latest["digest_sha256"]:
+                if hashlib.sha256(path.read_bytes()).hexdigest() == recorded_digest:
                     artifact = path
                     break
         if artifact is None:
