@@ -1,6 +1,6 @@
-Parity iteration verification 2026-07-24T08:49:09Z
-Functional: 29 OK (see phase6-functional.log)
-Regression: 17 expected failures OK (see phase6-regression.log)
-Mechanical verify exit: 0
-Quality gate: 0 FAIL, 1 WARN — PASSED
-Production source unmodified
+Adversarial iteration Phase 6 verification
+functional: exit 0 (see phase6-functional.log)
+regression: exit 0 expected failures=22 (see phase6-regression.log)
+mechanical-verify.exit: 0
+quality_gate: PASS fail=0 warn=2
+production app/: unchanged

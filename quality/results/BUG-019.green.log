@@ -1,0 +1,14 @@
+GREEN
+bug=BUG-019
+test=quality.test_regression.TestBug019.test_bug_019_temp_database_requires_proven_counts
+Command: cd /tmp/qpb-adv-green && PYTHONPATH=/tmp/qpb-adv-green .venv/bin/python -m unittest quality.test_regression.TestBug019.test_bug_019_temp_database_requires_proven_counts -v
+Worktree: /tmp/qpb-adv-green (patched; production /workspace/app unchanged)
+Exit code: 0
+---
+test_bug_019_temp_database_requires_proven_counts (quality.test_regression.TestBug019.test_bug_019_temp_database_requires_proven_counts)
+[BUG-019][Req: REQ-031] temp_database mode must fail closed without counts. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.011s
+
+OK

@@ -67,5 +67,15 @@ Stage: **final (post-Phase-6 verification)** — Phase 5 reconciliation + Phase 
 | red failed | 0 |
 | green failed | 0 |
 
+
+## Adversarial iteration completeness (2026-07-24)
+
+- Active confirmed bugs: **21** (was 17; +BUG-019..022)
+- All active bugs have RED+GREEN logs under `quality/results/`
+- Rejected/demoted history preserved (former-003, CAND-006, DC-001..015 with adversarial verdicts)
+- Production source outside `quality/`: unchanged
+- Canonical nested runner: unavailable (Copilot CLI); `B-prompt-in-process` fallback used; abort log `quality/logs/20260724T091311Z/`
+- Iteration strategies completed: gap, unfiltered, parity, adversarial
+
 ## Verdict
 PASS

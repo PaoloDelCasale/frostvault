@@ -1,6 +1,6 @@
 {
   "schema_version": "1.5.6",
-  "generated_at": "2026-07-24T07:30:19Z",
+  "generated_at": "2026-07-24T09:37:20Z",
   "records": [
     {
       "id": "REQ-001",
@@ -436,6 +436,77 @@
       "specificity": "specific",
       "use_cases": [],
       "source_type": "code-derived"
+    },
+    {
+      "id": "REQ-031",
+      "title": "Temp-database metadata verify must prove schema tables",
+      "tier": 3,
+      "pattern": "compensation",
+      "functional_section": "Metadata backups",
+      "summary": "temp_database verify must prove users/vaults/alembic counts.",
+      "references": [
+        "app/services/metadata_backups.py:458-500",
+        "docs/metadata-backups.md"
+      ],
+      "specificity": "specific",
+      "use_cases": [],
+      "source_type": "docs-derived",
+      "related_bugs": [
+        "BUG-019"
+      ]
+    },
+    {
+      "id": "REQ-032",
+      "title": "Last remaining administrator cannot be deactivated via race",
+      "tier": 5,
+      "pattern": "compensation",
+      "functional_section": "Admin user management",
+      "summary": "Last-admin deactivate must be atomic.",
+      "references": [
+        "app/main.py:2670-2700"
+      ],
+      "specificity": "specific",
+      "use_cases": [],
+      "source_type": "code-derived",
+      "related_bugs": [
+        "BUG-020"
+      ]
+    },
+    {
+      "id": "REQ-033",
+      "title": "Invite creation including OIDC self-link requires recent reauth",
+      "tier": 5,
+      "pattern": "compensation",
+      "related_bugs": [
+        "BUG-021"
+      ],
+      "functional_section": "OIDC / invites",
+      "summary": "Self-link invite creation requires require_recent_reauth.",
+      "references": [
+        "docs/adr/0005-host-csrf-reauth-hardening.md",
+        "app/main.py:1079-1096"
+      ],
+      "specificity": "specific",
+      "use_cases": [],
+      "source_type": "docs-derived"
+    },
+    {
+      "id": "REQ-034",
+      "title": "Invite redemption must remain single-use under concurrency",
+      "tier": 5,
+      "pattern": "compensation",
+      "related_bugs": [
+        "BUG-022"
+      ],
+      "functional_section": "OIDC / invites",
+      "summary": "redeem_invite UPDATE guards redeemed_at IS NULL.",
+      "references": [
+        "docs/adr/0003-invite-only-identity-binding.md",
+        "app/invites.py:84-107"
+      ],
+      "specificity": "specific",
+      "use_cases": [],
+      "source_type": "docs-derived"
     }
   ]
 }

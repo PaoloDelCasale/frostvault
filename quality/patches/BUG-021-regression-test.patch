@@ -1,0 +1,4 @@
+# Regression test addition for BUG-021 (see quality/test_regression.py TestBug021)
+# Canonical source of truth: quality/test_regression.py
+# Fix patch: quality/patches/BUG-021-fix.patch
+# Promoted from: DC-013

@@ -1,0 +1,23 @@
+RED
+bug=BUG-022
+test=quality.test_regression.TestBug022.test_bug_022_redeem_update_guards_unredeemed
+Command: PYTHONPATH=/tmp/qpb-adv-red-harness:/workspace .venv/bin/python -m unittest quality.test_regression.TestBug022.test_bug_022_redeem_update_guards_unredeemed -v
+Production: unpatched /workspace/app
+Exit code: 1
+---
+test_bug_022_redeem_update_guards_unredeemed (quality.test_regression.TestBug022.test_bug_022_redeem_update_guards_unredeemed)
+[BUG-022][Req: REQ-034] redeem UPDATE must refuse already-redeemed rows. ... FAIL
+
+======================================================================
+FAIL: test_bug_022_redeem_update_guards_unredeemed (quality.test_regression.TestBug022.test_bug_022_redeem_update_guards_unredeemed)
+[BUG-022][Req: REQ-034] redeem UPDATE must refuse already-redeemed rows.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/qpb-adv-red-harness/quality/test_regression.py", line 749, in test_bug_022_redeem_update_guards_unredeemed
+    self.assertRegex(
+AssertionError: Regex didn't match: 'redeemed_at\\s+IS\\s+NULL' not found in 'def redeem_invite(\n    connection: Any, *, invite_id: int, issuer: str, subject: str\n) -> int:\n    invite = connection.execute(\n        "SELECT * FROM invites WHERE id=%s", (invite_id,)\n    ).fetchone()\n    if not invite:\n        raise InviteError("unknown")\n    if invite["redeemed_at"]:\n        raise InviteError("already_redeemed")\n    if _now() >= _parse(invite["expires_at"]):\n        raise InviteError("expired")\n    _bind_identity(\n        connection, user_id=invite["target_user_id"], issuer=issuer, subject=subject\n    )\n    connection.execute(\n        """\n        UPDATE invites\n        SET redeemed_at=%s, redeemed_issuer=%s, redeemed_subject=%s\n        WHERE id=%s\n        """,\n        (_now().isoformat(), issuer, subject, invite_id),\n    )\n    return int(invite["target_user_id"])\n\n' : redeem UPDATE must condition on redeemed_at IS NULL
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)

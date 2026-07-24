@@ -599,5 +599,162 @@ class TestBug018(unittest.TestCase):
         )
 
 
+def _oidc_link_body() -> str:
+    start = MAIN_PY.index("def oidc_link")
+    end = MAIN_PY.index("\ndef _resolve_invite_id", start)
+    return MAIN_PY[start:end]
+
+
+def _update_user_body() -> str:
+    start = MAIN_PY.index("def update_user")
+    end = MAIN_PY.index("\ndef admin_vaults", start)
+    return MAIN_PY[start:end]
+
+
+def _redeem_invite_body() -> str:
+    invites = (REPO_ROOT / "app" / "invites.py").read_text(encoding="utf-8")
+    start = invites.index("def redeem_invite")
+    end = invites.index("\ndef resolve_invite", start)
+    return invites[start:end]
+
+
+def _postgres_verify_body() -> str:
+    start = METADATA_PY.index("def _verify_postgres_dump_isolated")
+    end = METADATA_PY.index("\ndef _row_run", start)
+    return METADATA_PY[start:end]
+
+
+class TestBug019(unittest.TestCase):
+    """BUG-019: temp_database verify must not ok when tables unproven (REQ-031)."""
+
+    @unittest.expectedFailure
+    def test_bug_019_temp_database_requires_proven_counts(self) -> None:
+        """[BUG-019][Req: REQ-031] temp_database mode must fail closed without counts.
+
+        Desired: after createdb succeeds, if psql COUNT cannot prove users/vaults/
+        alembic_version, raise BackupError (or ok:False) — do not return ok:True
+        with null counts under verification_mode=temp_database.
+        Current: accepts pg_restore rc 0/1 then returns ok:True even when counts
+        stay None (metadata_backups.py:458-500). Distinct from rejected list-only
+        former BUG-003.
+        Fix patch: quality/patches/BUG-019-fix.patch
+        Promoted from: DC-011
+        """
+        from app.services import metadata_backups as mb
+
+        list_ok = MagicMock(returncode=0, stderr=b"", stdout=b"")
+        created_ok = MagicMock(returncode=0, stderr=b"", stdout=b"")
+        restore_soft = MagicMock(returncode=1, stderr=b"WARNING: role missing", stdout=b"")
+        psql_fail = MagicMock(
+            returncode=1,
+            stderr="ERROR: relation \"users\" does not exist\n",
+            stdout="",
+        )
+        drop_ok = MagicMock(returncode=0, stderr=b"", stdout=b"")
+
+        with patch.object(mb.subprocess, "run", side_effect=[
+            list_ok, created_ok, restore_soft, psql_fail, drop_ok
+        ]):
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaises(mb.BackupError):
+                    mb._verify_postgres_dump_isolated(b"not-a-real-dump", Path(tmp))
+
+    @unittest.expectedFailure
+    def test_bug_019_temp_database_source_rejects_null_count_success(self) -> None:
+        """[BUG-019][Req: REQ-031] source must reject null counts in temp_database path.
+
+        Desired: after the count query, code raises when user_count/vault_count/
+        schema_revision remain None under temp_database (explicit null guard).
+        Current: unconditional ``\"ok\": True`` return after optional parse.
+        """
+        body = _postgres_verify_body()
+        # Intentional list-only fallback must remain (former BUG-003 rejected).
+        self.assertIn("pg_restore_list", body)
+        temp_idx = body.find('"temp_database"')
+        self.assertGreaterEqual(temp_idx, 0)
+        # Before returning temp_database ok, counts must be explicitly validated.
+        prelude = body[:temp_idx]
+        self.assertIn(
+            "user_count is None",
+            prelude,
+            "temp_database success path must explicitly guard null user_count",
+        )
+
+
+class TestBug020(unittest.TestCase):
+    """BUG-020: last-admin deactivate must be race-safe (REQ-032)."""
+
+    @unittest.expectedFailure
+    def test_bug_020_last_admin_guard_is_atomic_with_update(self) -> None:
+        """[BUG-020][Req: REQ-032] last-admin invariant must not be check-then-act.
+
+        Desired: deactivating an admin uses a single transaction and/or a
+        conditional UPDATE that refuses to leave zero active admins.
+        Current: COUNT in one ``with db()`` then UPDATE in another
+        (main.py:2670-2700) with no last-admin predicate on UPDATE.
+        Fix patch: quality/patches/BUG-020-fix.patch
+        Promoted from: DC-006
+        """
+        body = _update_user_body()
+        self.assertIn("At least one administrator must remain active", body)
+        # The UPDATE that sets active must itself encode the last-admin guard
+        # (subquery / HAVING / FOR UPDATE in the same with-block as the mutate).
+        update_idx = body.find("UPDATE users SET")
+        self.assertGreaterEqual(update_idx, 0)
+        update_sql = body[update_idx : update_idx + 400]
+        self.assertTrue(
+            ("COUNT(" in update_sql)
+            or ("active_admins" in body[body.rfind("with db()", 0, update_idx) : update_idx + 50]
+                and "FOR UPDATE" in body)
+            or ("SELECT COUNT" in update_sql),
+            "UPDATE must be conditional on last-admin count or share a locked txn",
+        )
+
+
+class TestBug021(unittest.TestCase):
+    """BUG-021: OIDC self-link invite creation requires recent reauth (REQ-033)."""
+
+    @unittest.expectedFailure
+    def test_bug_021_oidc_link_requires_recent_reauth(self) -> None:
+        """[BUG-021][Req: REQ-033] self-link must gate invite creation on reauth.
+
+        Desired: ``oidc_link`` Depends includes ``require_recent_reauth`` (ADR-0005
+        lists invite creation as a sensitive action; ADR-0003 self-link IS invite
+        issuance). Current: only ``current_user`` (main.py:1079-1096).
+        Fix patch: quality/patches/BUG-021-fix.patch
+        Promoted from: DC-013
+        """
+        body = _oidc_link_body()
+        self.assertIn("create_invite", body)
+        self.assertIn(
+            "require_recent_reauth",
+            body,
+            "self-link invite creation must require recent reauthentication",
+        )
+
+
+class TestBug022(unittest.TestCase):
+    """BUG-022: invite redeem must be single-use under concurrency (REQ-034)."""
+
+    @unittest.expectedFailure
+    def test_bug_022_redeem_update_guards_unredeemed(self) -> None:
+        """[BUG-022][Req: REQ-034] redeem UPDATE must refuse already-redeemed rows.
+
+        Desired: ``UPDATE invites ... WHERE id=%s AND redeemed_at IS NULL``
+        (or equivalent) so concurrent redeemers cannot both succeed / clobber.
+        Current: UPDATE by id only after a non-locking SELECT
+        (invites.py:99-106) — TOCTOU vs ADR-0003 single-use.
+        Fix patch: quality/patches/BUG-022-fix.patch
+        Promoted from: DC-002
+        """
+        body = _redeem_invite_body()
+        self.assertIn("UPDATE invites", body)
+        self.assertRegex(
+            body,
+            r"redeemed_at\s+IS\s+NULL",
+            "redeem UPDATE must condition on redeemed_at IS NULL",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,14 @@
+GREEN
+bug=BUG-021
+test=quality.test_regression.TestBug021.test_bug_021_oidc_link_requires_recent_reauth
+Command: cd /tmp/qpb-adv-green && PYTHONPATH=/tmp/qpb-adv-green .venv/bin/python -m unittest quality.test_regression.TestBug021.test_bug_021_oidc_link_requires_recent_reauth -v
+Worktree: /tmp/qpb-adv-green (patched; production /workspace/app unchanged)
+Exit code: 0
+---
+test_bug_021_oidc_link_requires_recent_reauth (quality.test_regression.TestBug021.test_bug_021_oidc_link_requires_recent_reauth)
+[BUG-021][Req: REQ-033] self-link must gate invite creation on reauth. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK

@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "skill_version": "1.5.10",
+  "project": "FrostVault",
+  "model": "cursor-grok-4.5",
+  "model_provider": "cursor",
+  "runner": "cursor",
+  "start_time": "2026-07-24T09:13:41Z",
+  "end_time": "2026-07-24T09:47:54Z",
+  "duration_minutes": null,
+  "phases_completed": [
+    "Iteration adversarial"
+  ],
+  "iterations_completed": [
+    "gap",
+    "unfiltered",
+    "parity",
+    "adversarial"
+  ],
+  "bug_count": 21,
+  "bug_severity": {
+    "HIGH": 16,
+    "MEDIUM": 4,
+    "LOW": 1
+  },
+  "gate_result": "pass",
+  "gate_fail_count": 0,
+  "gate_warn_count": 2,
+  "notes": "Adversarial iteration Mode B-prompt-in-process; BUG-019..022 promoted from DC-011/006/013/002; prior 17 preserved; abort log quality/logs/20260724T091311Z/; prior run meta under quality/results/previous_run_meta/"
+}

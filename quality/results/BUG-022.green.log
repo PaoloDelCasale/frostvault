@@ -1,0 +1,14 @@
+GREEN
+bug=BUG-022
+test=quality.test_regression.TestBug022.test_bug_022_redeem_update_guards_unredeemed
+Command: cd /tmp/qpb-adv-green && PYTHONPATH=/tmp/qpb-adv-green .venv/bin/python -m unittest quality.test_regression.TestBug022.test_bug_022_redeem_update_guards_unredeemed -v
+Worktree: /tmp/qpb-adv-green (patched; production /workspace/app unchanged)
+Exit code: 0
+---
+test_bug_022_redeem_update_guards_unredeemed (quality.test_regression.TestBug022.test_bug_022_redeem_update_guards_unredeemed)
+[BUG-022][Req: REQ-034] redeem UPDATE must refuse already-redeemed rows. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK

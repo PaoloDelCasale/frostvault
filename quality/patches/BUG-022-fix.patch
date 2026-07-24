@@ -1,0 +1,37 @@
+diff --git a/app/invites.py b/app/invites.py
+index 1703cdf..1f037f4 100644
+--- a/app/invites.py
++++ b/app/invites.py
+@@ -96,14 +96,30 @@ def redeem_invite(
+     _bind_identity(
+         connection, user_id=invite["target_user_id"], issuer=issuer, subject=subject
+     )
+-    connection.execute(
++    updated = connection.execute(
+         """
+         UPDATE invites
+         SET redeemed_at=%s, redeemed_issuer=%s, redeemed_subject=%s
+-        WHERE id=%s
++        WHERE id=%s AND redeemed_at IS NULL
+         """,
+         (_now().isoformat(), issuer, subject, invite_id),
+     )
++    # Concurrent redeemers: second UPDATE matches 0 rows (ADR-0003 single-use).
++    rowcount = getattr(updated, "rowcount", None)
++    if rowcount == 0:
++        raise InviteError("already_redeemed")
++    if rowcount is None:
++        # Drivers that omit rowcount: re-read and confirm our redeem stuck.
++        row = connection.execute(
++            "SELECT redeemed_issuer, redeemed_subject FROM invites WHERE id=%s",
++            (invite_id,),
++        ).fetchone()
++        if (
++            not row
++            or row["redeemed_issuer"] != issuer
++            or row["redeemed_subject"] != subject
++        ):
++            raise InviteError("already_redeemed")
+     return int(invite["target_user_id"])
+ 
+ 

@@ -1,0 +1,25 @@
+diff --git a/app/main.py b/app/main.py
+index 8dbc1a2..f8f5e72 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -1077,7 +1077,11 @@ def oidc_login(
+ 
+ 
+ @app.get("/auth/oidc/link")
+-def oidc_link(request: Request, user: dict[str, Any] = Depends(current_user)):
++def oidc_link(
++    request: Request,
++    user: dict[str, Any] = Depends(current_user),
++    _reauth: dict[str, Any] = Depends(require_recent_reauth),
++):
+     if not settings.oidc_enabled:
+         raise HTTPException(404, "OIDC login is not enabled")
+     redirect_uri = str(request.url_for("oidc_callback"))
+@@ -1091,6 +1095,7 @@ def oidc_link(request: Request, user: dict[str, Any] = Depends(current_user)):
+             redirect_uri=redirect_uri,
+             return_to="/",
+             invite_id=invite_id,
++            prompt="login",
+             http_client=_oidc_client(),
+         )
+     return RedirectResponse(authorization_url, status_code=303)

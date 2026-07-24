@@ -461,13 +461,15 @@ Demoted (see EXPLORATION_MERGED.md Demoted Candidates): G1-2 auth_time, G1-3 inv
 - **Code location:** `app/oidc.py:166-198`, `app/main.py:973-990`
 - **Re-promotion criteria:** Show a committed requirement/ADR quote mandating `auth_time`/`max_age` validation, or demonstrate with a test double IdP that ignores `prompt=login` yet FrostVault still marks reauth while claiming "fresh provider login" as an enforceable invariant.
 - **Status:** DEMOTED
+- **Adversarial verdict (Iteration 5):** PRESERVED-DEMOTED — ADR-0005 chooses prompt=login, not auth_time.
 
 ### DC-002: Concurrent invite double-redeem under PostgreSQL
 - **Source:** Iteration 2 gap (Finding G1-3)
 - **Dismissal reason:** Needs concurrent Postgres stress; SQLite serializes writers. Baseline deferred deep PG migration focus; insufficient runtime evidence in this iteration.
 - **Code location:** `app/invites.py:84-107`
 - **Re-promotion criteria:** Reproduce two concurrent `redeem_invite` transactions on Postgres 16 binding two different subjects to one invite; show both succeed or final state violates single-use ADR-0003.
-- **Status:** DEMOTED
+- **Status:** RE-PROMOTED [Iteration 5: adversarial] → BUG-022
+- **Adversarial note:** ADR-0003 single-use; UPDATE without redeemed_at IS NULL.
 
 ### DC-003: Operator Stop button for owner-only cloud deletion
 - **Source:** Iteration 2 gap (Finding G5-1)
@@ -475,6 +477,7 @@ Demoted (see EXPLORATION_MERGED.md Demoted Candidates): G1-2 auth_time, G1-3 inv
 - **Code location:** `app/static/app.js` cancel affordance; `app/main.py` cancel owner check
 - **Re-promotion criteria:** Show cancel succeeds for operator on cloud-archive/cloud-purge, or show UI claims success despite 403.
 - **Status:** DEMOTED
+- **Adversarial verdict (Iteration 5):** PRESERVED-DEMOTED — UI affordance only; server 403.
 
 ### DC-004: Restart recover unlinks destination file
 - **Source:** Iteration 3 unfiltered (Finding U3-5)
@@ -482,6 +485,7 @@ Demoted (see EXPLORATION_MERGED.md Demoted Candidates): G1-2 auth_time, G1-3 inv
 - **Code location:** `app/storage.py:1059-1071`
 - **Re-promotion criteria:** Demonstrate a user-authored file (distinct digest / external create) deleted by reconcile while catalog never claimed FrostVault ownership of that inode, with a documented invariant forbidding that deletion.
 - **Status:** DEMOTED
+- **Adversarial verdict (Iteration 5):** PRESERVED-DEMOTED — intentional reconcile behavior.
 
 ### DC-005: Metadata backup download without step-up reauth
 - **Source:** Iteration 3 unfiltered (Finding U3-6)
@@ -489,13 +493,15 @@ Demoted (see EXPLORATION_MERGED.md Demoted Candidates): G1-2 auth_time, G1-3 inv
 - **Code location:** `app/main.py:1828-1832` vs `1788-1792`
 - **Re-promotion criteria:** Tier 1/2 doc or ADR quote requiring reauth for ciphertext download specifically.
 - **Status:** DEMOTED
+- **Adversarial verdict (Iteration 5):** PRESERVED-DEMOTED — download outside ADR-0005 mutation/reauth scope.
 
 ### DC-006: Concurrent admin deactivation → zero admins
 - **Source:** Iteration 3 unfiltered (Finding U3-7)
 - **Dismissal reason:** Check-then-act race; needs concurrent stress evidence.
 - **Code location:** `app/main.py:2670-2700`
 - **Re-promotion criteria:** Two concurrent PATCH deactivate transactions both succeed leaving `COUNT(is_admin AND active)=0`.
-- **Status:** DEMOTED
+- **Status:** RE-PROMOTED [Iteration 5: adversarial] → BUG-020
+- **Adversarial note:** check-then-act across separate db() transactions; UPDATE lacks last-admin predicate.
 
 ### DC-007: OIDC self-link GET side effect / CSRF
 - **Source:** Iteration 3 unfiltered (Finding U3-8)
@@ -503,6 +509,7 @@ Demoted (see EXPLORATION_MERGED.md Demoted Candidates): G1-2 auth_time, G1-3 inv
 - **Code location:** `app/main.py:1079-1096`
 - **Re-promotion criteria:** Show cross-site GET binds attacker-controlled subject to victim Session without CSRF token.
 - **Status:** DEMOTED
+- **Adversarial verdict (Iteration 5):** PRESERVED-DEMOTED — CSRF+OIDC chain unproven; DC-013 promoted separately.
 
 ### DC-008: Notification preferences unused / delivery clients unwired
 - **Source:** Iteration 3 unfiltered (Finding U3-9)
@@ -510,6 +517,7 @@ Demoted (see EXPLORATION_MERGED.md Demoted Candidates): G1-2 auth_time, G1-3 inv
 - **Code location:** `app/services/notifications.py`, `app/storage.py:2504-2520`
 - **Re-promotion criteria:** Documented contract that vault webhook/email prefs must deliver, with a failing integration proving prefs are ignored for a required event.
 - **Status:** DEMOTED
+- **Adversarial verdict (Iteration 5):** PRESERVED-DEMOTED — incomplete wiring.
 
 ### DC-009: Purge resume only via manual DB rewrite
 - **Source:** Iteration 3 unfiltered (Finding U3-10)
@@ -517,6 +525,7 @@ Demoted (see EXPLORATION_MERGED.md Demoted Candidates): G1-2 auth_time, G1-3 inv
 - **Code location:** `app/storage.py` purge fail path; `cloud_deletion.py`
 - **Re-promotion criteria:** Spec/API promise of resumable purge without raw SQL, contradicted by implementation.
 - **Status:** DEMOTED
+- **Adversarial verdict (Iteration 5):** PRESERVED-DEMOTED — no resume API promise.
 
 ### DC-010: Lifecycle tagging replaces entire TagSet
 - **Source:** Iteration 3 unfiltered (Finding U3-11)
@@ -524,13 +533,15 @@ Demoted (see EXPLORATION_MERGED.md Demoted Candidates): G1-2 auth_time, G1-3 inv
 - **Code location:** `app/services/s3_object_tags.py:9-24`
 - **Re-promotion criteria:** Documented requirement to merge/preserve non-`psa:` tags.
 - **Status:** DEMOTED
+- **Adversarial verdict (Iteration 5):** PRESERVED-DEMOTED — no preserve-foreign-tags requirement.
 
 ### DC-011: pg_restore warning / failed counts still ok True
 - **Source:** Iteration 3 unfiltered (Finding U3-12)
 - **Dismissal reason:** Adjacent to rejected former BUG-003 (list-only ok:True / REQ-005). Do not reopen without distinct challenge evidence.
 - **Code location:** `app/services/metadata_backups.py:464-500`
 - **Re-promotion criteria:** Isolated temp-DB path returns ok True when restore clearly failed (tables missing) independently of list-only mode; survive challenge vs former-003 dismissal.
-- **Status:** DEMOTED
+- **Status:** RE-PROMOTED [Iteration 5: adversarial] → BUG-019
+- **Adversarial note:** temp_database ok:True with null counts after createdb succeeded; distinct from former-003 list-only.
 
 ### DC-012: Owner membership audits omit actor_user_id
 - **Source:** Iteration 3 unfiltered (Finding U3-13)
@@ -538,6 +549,7 @@ Demoted (see EXPLORATION_MERGED.md Demoted Candidates): G1-2 auth_time, G1-3 inv
 - **Code location:** `app/main.py` owner add/remove/transfer; `app/audit.py:18-41`
 - **Re-promotion criteria:** Requirement that owner self-service mutations must persist `actor_user_id` non-null in `audit_events`.
 - **Status:** DEMOTED
+- **Adversarial verdict (Iteration 5):** PRESERVED-DEMOTED — actor_user_id hygiene; ≠ BUG-009.
 
 ---
 
@@ -552,7 +564,8 @@ Prior BUG-001..011, former BUG-003, CAND-006, DC-001..003 preserved unchanged.
 - **Dismissal reason:** Adjacent to DC-007; admin invite step-up vs self-link may be intentional without ADR mandating step-up for self-service identity bind.
 - **Code location:** `app/main.py:1079-1096` vs `app/main.py:2643-2648`
 - **Re-promotion criteria:** ADR/REQUIREMENT that self-link must call `require_recent_reauth` (or equivalent), with a failing test proving bind succeeds on a stale session when admin invite path would refuse.
-- **Status:** DEMOTED
+- **Status:** RE-PROMOTED [Iteration 5: adversarial] → BUG-021
+- **Adversarial note:** ADR-0005 invite creation requires reauth; self-link creates invite without require_recent_reauth.
 
 ### DC-014: Price-book config accepts unnormalized rates/keys
 - **Source:** Iteration 4 parity (Finding P4-5)
@@ -560,6 +573,7 @@ Prior BUG-001..011, former BUG-003, CAND-006, DC-001..003 preserved unchanged.
 - **Code location:** `app/main.py:730-739`; `app/services/cost_estimates.py:222-269`
 - **Re-promotion criteria:** Show accepted lowercase/negative rates produce silent zero/negative billing distinct from BUG-015’s hardcoded worker defaults, with a contract requiring config-time normalization.
 - **Status:** DEMOTED
+- **Adversarial verdict (Iteration 5):** PRESERVED-DEMOTED — silent €0 demonstrated; config-normalization contract bar unmet.
 
 ### DC-015: Cloud-archive failure lacks dedicated audit event
 - **Source:** Iteration 4 parity (Finding P4-6)
@@ -567,6 +581,7 @@ Prior BUG-001..011, former BUG-003, CAND-006, DC-001..003 preserved unchanged.
 - **Code location:** `app/storage.py:2078-2130`; `process_job` except path
 - **Re-promotion criteria:** Spec requiring `cloud_deletion.archive_failed` (or equivalent) on every failed archive attempt independent of BUG-017 fix.
 - **Status:** DEMOTED
+- **Adversarial verdict (Iteration 5):** PRESERVED-DEMOTED — observability hygiene; BUG-017 primary.
 
 
 
@@ -605,7 +620,8 @@ BUG-001,002,004,008,009,010,013,014,015 — evidence refined; IDs unchanged.
 - **Dismissal reason:** Adjacent to DC-007; admin invite step-up vs self-link may be intentional without ADR mandating step-up for self-service identity bind.
 - **Code location:** `app/main.py:1079-1096` vs `app/main.py:2643-2648`
 - **Re-promotion criteria:** ADR/REQUIREMENT that self-link must call `require_recent_reauth` (or equivalent), with a failing test proving bind succeeds on a stale session when admin invite path would refuse.
-- **Status:** DEMOTED
+- **Status:** RE-PROMOTED [Iteration 5: adversarial] → BUG-021
+- **Adversarial note:** ADR-0005 invite creation requires reauth; self-link creates invite without require_recent_reauth.
 
 ### DC-014: Price-book config accepts unnormalized rates/keys
 - **Source:** Iteration 4 parity (Finding P4-5)
@@ -613,6 +629,7 @@ BUG-001,002,004,008,009,010,013,014,015 — evidence refined; IDs unchanged.
 - **Code location:** `app/main.py:730-739`; `app/services/cost_estimates.py:222-269`
 - **Re-promotion criteria:** Show accepted lowercase/negative rates produce silent zero/negative billing distinct from BUG-015’s hardcoded worker defaults, with a contract requiring config-time normalization.
 - **Status:** DEMOTED
+- **Adversarial verdict (Iteration 5):** PRESERVED-DEMOTED — silent €0 demonstrated; config-normalization contract bar unmet.
 
 ### DC-015: Cloud-archive failure lacks dedicated audit event
 - **Source:** Iteration 4 parity (Finding P4-6)
@@ -620,4 +637,37 @@ BUG-001,002,004,008,009,010,013,014,015 — evidence refined; IDs unchanged.
 - **Code location:** `app/storage.py:2078-2130`; `process_job` except path
 - **Re-promotion criteria:** Spec requiring `cloud_deletion.archive_failed` (or equivalent) on every failed archive attempt independent of BUG-017 fix.
 - **Status:** DEMOTED
+- **Adversarial verdict (Iteration 5):** PRESERVED-DEMOTED — observability hygiene; BUG-017 primary.
 
+---
+
+# Part E — Iteration 5 (adversarial) — [Iteration 5: adversarial]
+
+Full adversarial passes A–C live in `quality/EXPLORATION_ITER5.md`.
+
+## Promotions
+
+| Former ID | New BUG | Severity | Verdict |
+|-----------|---------|----------|---------|
+| DC-011 | BUG-019 | High | RE-PROMOTED |
+| DC-006 | BUG-020 | High | RE-PROMOTED |
+| DC-013 | BUG-021 | High | RE-PROMOTED |
+| DC-002 | BUG-022 | Medium | RE-PROMOTED |
+
+## Preserved dismissals (adversarial)
+
+former BUG-003, CAND-006, DC-001, DC-003, DC-004, DC-005, DC-007, DC-008,
+DC-009, DC-010, DC-012, DC-014, DC-015, SA-M HeadObject/REQ-001 FALSE-POSITIVE —
+each challenged with fresh evidence; verdicts preserved (see EXPLORATION_ITER5.md).
+
+## Refinements (no new IDs)
+
+BUG-002 rename-hide sibling coverage gap; BUG-015 additional estimate call sites;
+BUG-017 notify-only fix vs broader observability claim — documented, not duplicated.
+
+## Candidate Bugs (Iteration 5)
+
+1. CAND-A5-001 → BUG-019
+2. CAND-A5-002 → BUG-020
+3. CAND-A5-003 → BUG-021
+4. CAND-A5-004 → BUG-022

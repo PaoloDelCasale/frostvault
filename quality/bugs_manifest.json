@@ -1,6 +1,6 @@
 {
   "schema_version": "1.5.6",
-  "generated_at": "2026-07-24T08:46:41Z",
+  "generated_at": "2026-07-24T09:37:20Z",
   "records": [
     {
       "id": "BUG-001",
@@ -355,6 +355,94 @@
       ],
       "reachability_analysis": "User cancels recover while status restoring after AWS accepted RestoreObject.",
       "iteration": "parity"
+    },
+    {
+      "id": "BUG-019",
+      "req_id": "REQ-031",
+      "title": "Temp-database metadata verify reports success without proven schema",
+      "severity": "HIGH",
+      "disposition": "code-fix",
+      "disposition_rationale": "Distinct from rejected list-only former-003; temp_database mode returns ok:True with null counts after createdb succeeded.",
+      "fix_type": "code",
+      "divergence_description": "Isolated PG verify ok without proven users/vaults/alembic counts.",
+      "documented_intent": "Verification restores into isolated temp DB and proves schema.",
+      "code_behavior": "metadata_backups.py:458-500 returns ok:True with null counts under temp_database.",
+      "proposed_fix": "Raise BackupError when counts remain null in temp_database mode.",
+      "source_type": "docs-derived",
+      "divergence_type": "code-spec",
+      "file": "app/services/metadata_backups.py",
+      "line": "458-500",
+      "covers": [
+        "REQ-031/cell-TEMP_DB-PROVE_COUNTS"
+      ],
+      "reachability_analysis": "Mocked subprocess probe: createdb ok, restore rc=1, psql fail \u2192 ok:True today.",
+      "promoted_from": "DC-011"
+    },
+    {
+      "id": "BUG-020",
+      "req_id": "REQ-032",
+      "title": "Last-admin deactivation check races the UPDATE",
+      "severity": "HIGH",
+      "disposition": "code-fix",
+      "disposition_rationale": "Invariant stated in-handler; check and UPDATE are separate transactions without conditional WHERE.",
+      "fix_type": "code",
+      "divergence_description": "Concurrent admin deactivate can yield zero active admins.",
+      "documented_intent": "At least one administrator must remain active.",
+      "code_behavior": "main.py:2670-2700 separate with db() blocks; UPDATE unconditional.",
+      "proposed_fix": "FOR UPDATE + conditional last-admin WHERE in same transaction.",
+      "source_type": "code-derived",
+      "divergence_type": "code-spec",
+      "file": "app/main.py",
+      "line": "2670-2700",
+      "covers": [
+        "REQ-032/cell-LAST_ADMIN-ATOMIC"
+      ],
+      "reachability_analysis": "Structural TOCTOU; SQLite may serialize but predicate still missing.",
+      "promoted_from": "DC-006"
+    },
+    {
+      "id": "BUG-021",
+      "req_id": "REQ-033",
+      "title": "OIDC self-link invite creation skips recent reauth",
+      "severity": "HIGH",
+      "disposition": "code-fix",
+      "disposition_rationale": "ADR-0005 lists invite creation as sensitive; ADR-0003 self-link is invite issuance; admin path already gates.",
+      "fix_type": "code",
+      "divergence_description": "oidc_link create_invite without require_recent_reauth.",
+      "documented_intent": "Invite creation requires reauth_at within window.",
+      "code_behavior": "main.py:1079-1096 Depends(current_user) only.",
+      "proposed_fix": "Add require_recent_reauth + prompt=login on begin_login.",
+      "source_type": "docs-derived",
+      "divergence_type": "code-spec",
+      "file": "app/main.py",
+      "line": "1079-1096",
+      "covers": [
+        "REQ-033/cell-SELF_LINK-REAUTH"
+      ],
+      "reachability_analysis": "Compared to admin invites Depends(require_recent_reauth) at 2643-2648.",
+      "promoted_from": "DC-013"
+    },
+    {
+      "id": "BUG-022",
+      "req_id": "REQ-034",
+      "title": "Invite redeem UPDATE is not single-use under concurrency",
+      "severity": "MEDIUM",
+      "disposition": "code-fix",
+      "disposition_rationale": "ADR-0003 single-use; UPDATE by id only after non-locking SELECT.",
+      "fix_type": "code",
+      "divergence_description": "Concurrent redeem can bind multiple subjects / clobber redeemer fields.",
+      "documented_intent": "Invites are single-use.",
+      "code_behavior": "invites.py:99-106 UPDATE WHERE id=%s only.",
+      "proposed_fix": "WHERE id=%s AND redeemed_at IS NULL + rowcount check.",
+      "source_type": "docs-derived",
+      "divergence_type": "code-spec",
+      "file": "app/invites.py",
+      "line": "84-107",
+      "covers": [
+        "REQ-034/cell-REDEEM-SINGLE_USE"
+      ],
+      "reachability_analysis": "No FOR UPDATE / conditional UPDATE; UNIQUE only on (issuer,subject).",
+      "promoted_from": "DC-002"
     }
   ]
 }

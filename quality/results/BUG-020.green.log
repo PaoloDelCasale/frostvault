@@ -1,0 +1,14 @@
+GREEN
+bug=BUG-020
+test=quality.test_regression.TestBug020.test_bug_020_last_admin_guard_is_atomic_with_update
+Command: cd /tmp/qpb-adv-green && PYTHONPATH=/tmp/qpb-adv-green .venv/bin/python -m unittest quality.test_regression.TestBug020.test_bug_020_last_admin_guard_is_atomic_with_update -v
+Worktree: /tmp/qpb-adv-green (patched; production /workspace/app unchanged)
+Exit code: 0
+---
+test_bug_020_last_admin_guard_is_atomic_with_update (quality.test_regression.TestBug020.test_bug_020_last_admin_guard_is_atomic_with_update)
+[BUG-020][Req: REQ-032] last-admin invariant must not be check-then-act. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK

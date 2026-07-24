@@ -22,7 +22,7 @@
 | BUG-014 | High | code-fix | REQ-026 | User reactivation omits session_version bump | CONFIRMED |
 | BUG-015 | High | code-fix | REQ-027 | Restore estimate vs worker price-book skew | CONFIRMED |
 
-Phase 5 challenge gate: before gate **7** active findings; after gate **6** confirmed (4 downgraded, 2 confirmed at prior severity) and **1** rejected (former list-only metadata verify finding — see Reviewed and dismissed). Gap iteration (2026-07-24) added **4** net-new confirmed bugs (BUG-008..011); prior six and rejected former-003 preserved. Unfiltered iteration (2026-07-24) added **4** net-new confirmed bugs (BUG-012..015); prior ten, former-003, and CAND-006 preserved. Parity iteration (2026-07-24) added **3** net-new confirmed bugs (BUG-016..018); prior fourteen, former-003, CAND-006, and DC-001..015 preserved.
+Phase 5 challenge gate: before gate **7** active findings; after gate **6** confirmed (4 downgraded, 2 confirmed at prior severity) and **1** rejected (former list-only metadata verify finding — see Reviewed and dismissed). Gap iteration (2026-07-24) added **4** net-new confirmed bugs (BUG-008..011); prior six and rejected former-003 preserved. Unfiltered iteration (2026-07-24) added **4** net-new confirmed bugs (BUG-012..015); prior ten, former-003, and CAND-006 preserved. Parity iteration (2026-07-24) added **3** net-new confirmed bugs (BUG-016..018); prior fourteen, former-003, CAND-006, and DC-001..015 preserved. Adversarial iteration (2026-07-24) promoted **4** demoted findings to confirmed bugs (BUG-019..022 from DC-011, DC-006, DC-013, DC-002); prior seventeen, former-003, CAND-006, and remaining DC-* verdicts preserved with adversarial appendices.
 
 Rejected candidates from earlier phases: CAND-006 (crypt rclone VersionId propagation) — unverified risk. Phase 4 minority FALSE-POSITIVE: upload/rename HeadObject vs REQ-001.
 
@@ -273,24 +273,50 @@ Rejected candidates from earlier phases: CAND-006 (crypt rclone VersionId propag
 - **Challenge:** `quality/challenge/BUG-011-challenge.md` — **Verdict:** CONFIRMED
 
 ---
-## Reviewed and dismissed
 
-### Former finding: list-only PostgreSQL backup verification reported as full verified success
+### BUG-019: Temp-database metadata verify reports success without proven schema
 
-- **Former ID:** removed from active tracker after Phase 5 challenge gate
-- **Challenge:** Phase 5 two-round challenge report under `quality/challenge/` (list-only metadata verify finding)
-- **Verdict:** REJECTED
-- **Reason:** Round 1 treated TOC-list `ok:True` + consumer `status='verified'` as false DR confidence. Round 2 (maintainer challenge) established the path is an intentional, commented, mode-tagged degradation when `createdb` is unavailable; producer and consumer agree on `ok`; REQ-005 was a post-hoc Tier 5 aspiration rather than an authoritative pre-existing status semantic. Relocated artifacts: `quality/challenge/dismissed/former-003-*`. REQ-005 absent compensation cells covered by `intentionally-partial` downgrade records in `quality/compensation_grid_downgrades.json`.
+- **Severity:** High
+- **Requirement:** REQ-031
+- **Source:** Adversarial iteration — promoted from DC-011
+- **Code:** `app/services/metadata_backups.py:458-500`
+- **Disposition:** code-fix
+- **TDD:** RED→GREEN (`quality/results/BUG-019.*.log`)
+- **Writeup:** `quality/writeups/BUG-019.md`
+- **Note:** Distinct from rejected former-003 (list-only). DC-011 status → RE-PROMOTED [Iteration 5: adversarial].
 
-### CAND-006: Crypt rclone `--s3-version-id` may not pin same generation as boto3
+### BUG-020: Last-admin deactivation check races the UPDATE
 
-- **Verdict:** REJECTED as confirmed bug (unverified risk / QUESTION)
-- **Reason:** `download_exact_version_plaintext` passes `--s3-version-id=` on both crypt branches and requires VersionId before download; `process_recover` digest-checks. No failing code path or integration evidence in this environment that rclone drops the pin. Remains an integration residual risk for Phase 4/6 if MinIO/crypt fixtures are available — not a confirmed defect.
+- **Severity:** High
+- **Requirement:** REQ-032
+- **Source:** Adversarial iteration — promoted from DC-006
+- **Code:** `app/main.py:2670-2700`
+- **Disposition:** code-fix
+- **TDD:** RED→GREEN (`quality/results/BUG-020.*.log`)
+- **Writeup:** `quality/writeups/BUG-020.md`
+- **Note:** DC-006 status → RE-PROMOTED [Iteration 5: adversarial].
 
-### SA-M-B4..B6: Upload/rename HeadObject / verify without VersionId (vs REQ-001)
+### BUG-021: OIDC self-link creates invites without recent reauthentication
 
-- **Verdict:** FALSE-POSITIVE against REQ-001
-- **Reason:** REQ-001 Conditions of Satisfaction scope exact *recovery* download surfaces (`download_exact_version_plaintext` / rclone `--s3-version-id` / boto3 `VersionId`). Upload-time unversioned `head_object` and path-only verify download are residual concurrency risks outside that requirement. Digest mismatch still fails content-divergent concurrent writers on upload verify. Not promoted to active defect.
+- **Severity:** High
+- **Requirement:** REQ-033
+- **Source:** Adversarial iteration — promoted from DC-013
+- **Code:** `app/main.py:1079-1096` (vs admin invite `2643-2648`)
+- **Disposition:** code-fix
+- **TDD:** RED→GREEN (`quality/results/BUG-021.*.log`)
+- **Writeup:** `quality/writeups/BUG-021.md`
+- **Note:** DC-013 status → RE-PROMOTED [Iteration 5: adversarial]. DC-007 remains DEMOTED.
+
+### BUG-022: Invite redeem UPDATE is not single-use under concurrency
+
+- **Severity:** Medium
+- **Requirement:** REQ-034
+- **Source:** Adversarial iteration — promoted from DC-002
+- **Code:** `app/invites.py:84-107`
+- **Disposition:** code-fix
+- **TDD:** RED→GREEN (`quality/results/BUG-022.*.log`)
+- **Writeup:** `quality/writeups/BUG-022.md`
+- **Note:** DC-002 status → RE-PROMOTED [Iteration 5: adversarial].
 
 ### BUG-012: Recover overwrites on-disk Local Copy when catalog says absent
 
@@ -409,3 +435,26 @@ Rejected candidates from earlier phases: CAND-006 (crypt rclone VersionId propag
 - **Patches:** `quality/patches/BUG-018-fix.patch`, `quality/patches/BUG-018-regression-test.patch`
 - **TDD:** RED+GREEN under `quality/results/BUG-018.*.log`
 
+
+
+## Reviewed and dismissed
+
+### Former finding: list-only PostgreSQL backup verification reported as full verified success
+
+- **Former ID:** removed from active tracker after Phase 5 challenge gate
+- **Challenge:** Phase 5 two-round challenge report under `quality/challenge/` (list-only metadata verify finding)
+- **Verdict:** REJECTED
+- **Adversarial verdict (Iteration 5):** PRESERVED-REJECTED — list-only intentional; DC-011 promoted separately as BUG-019 for temp_database null-count success.
+- **Reason:** Round 1 treated TOC-list `ok:True` + consumer `status='verified'` as false DR confidence. Round 2 (maintainer challenge) established the path is an intentional, commented, mode-tagged degradation when `createdb` is unavailable; producer and consumer agree on `ok`; REQ-005 was a post-hoc Tier 5 aspiration rather than an authoritative pre-existing status semantic. Relocated artifacts: `quality/challenge/dismissed/former-003-*`. REQ-005 absent compensation cells covered by `intentionally-partial` downgrade records in `quality/compensation_grid_downgrades.json`.
+
+### CAND-006: Crypt rclone `--s3-version-id` may not pin same generation as boto3
+
+- **Adversarial verdict (Iteration 5):** PRESERVED-REJECTED — flag present; no integration failure; BUG-013 covers object_key addressing instead.
+
+- **Verdict:** REJECTED as confirmed bug (unverified risk / QUESTION)
+- **Reason:** `download_exact_version_plaintext` passes `--s3-version-id=` on both crypt branches and requires VersionId before download; `process_recover` digest-checks. No failing code path or integration evidence in this environment that rclone drops the pin. Remains an integration residual risk for Phase 4/6 if MinIO/crypt fixtures are available — not a confirmed defect.
+
+### SA-M-B4..B6: Upload/rename HeadObject / verify without VersionId (vs REQ-001)
+
+- **Verdict:** FALSE-POSITIVE against REQ-001
+- **Reason:** REQ-001 Conditions of Satisfaction scope exact *recovery* download surfaces (`download_exact_version_plaintext` / rclone `--s3-version-id` / boto3 `VersionId`). Upload-time unversioned `head_object` and path-only verify download are residual concurrency risks outside that requirement. Digest mismatch still fails content-divergent concurrent writers on upload verify. Not promoted to active defect.

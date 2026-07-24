@@ -1,0 +1,23 @@
+RED
+bug=BUG-020
+test=quality.test_regression.TestBug020.test_bug_020_last_admin_guard_is_atomic_with_update
+Command: PYTHONPATH=/tmp/qpb-adv-red-harness:/workspace .venv/bin/python -m unittest quality.test_regression.TestBug020.test_bug_020_last_admin_guard_is_atomic_with_update -v
+Production: unpatched /workspace/app
+Exit code: 1
+---
+test_bug_020_last_admin_guard_is_atomic_with_update (quality.test_regression.TestBug020.test_bug_020_last_admin_guard_is_atomic_with_update)
+[BUG-020][Req: REQ-032] last-admin invariant must not be check-then-act. ... FAIL
+
+======================================================================
+FAIL: test_bug_020_last_admin_guard_is_atomic_with_update (quality.test_regression.TestBug020.test_bug_020_last_admin_guard_is_atomic_with_update)
+[BUG-020][Req: REQ-032] last-admin invariant must not be check-then-act.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/qpb-adv-red-harness/quality/test_regression.py", line 704, in test_bug_020_last_admin_guard_is_atomic_with_update
+    self.assertTrue(
+AssertionError: False is not true : UPDATE must be conditional on last-admin count or share a locked txn
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)

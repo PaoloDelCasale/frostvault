@@ -26,6 +26,10 @@ All fourteen active confirmed bugs (six baseline + four gap + four unfiltered) c
 | BUG-016 | REQ-028 | quality/REQUIREMENTS.md; metadata-backups | REQ-028 / verify bind | verify stamps matching run | quality/test_regression.py::TestBug016::test_bug_016_verify_binds_run_to_artifact | FAIL (RED) | PASS (GREEN) |
 | BUG-017 | REQ-029 | quality/REQUIREMENTS.md; cloud_deletion | REQ-029 / archive observability | notify best-effort after Delete Marker | quality/test_regression.py::TestBug017::test_bug_017_archive_observability_best_effort | FAIL (RED) | PASS (GREEN) |
 | BUG-018 | REQ-030 | quality/REQUIREMENTS.md; recover cancel | REQ-030 / restore_state | cancel preserves restore_state | quality/test_regression.py::TestBug018::test_bug_018_cancel_preserves_restore_state | FAIL (RED) | PASS (GREEN) |
+| BUG-019 | REQ-031 | quality/REQUIREMENTS.md; docs/metadata-backups.md | REQ-031 temp_database prove counts | Temp-DB verify fails closed without counts | quality/test_regression.py::TestBug019 | FAIL (RED) | PASS (GREEN) |
+| BUG-020 | REQ-032 | quality/REQUIREMENTS.md | REQ-032 last-admin atomic | Last-admin guard atomic with UPDATE | quality/test_regression.py::TestBug020 | FAIL (RED) | PASS (GREEN) |
+| BUG-021 | REQ-033 | ADR-0005; ADR-0003 | REQ-033 self-link reauth | oidc_link requires require_recent_reauth | quality/test_regression.py::TestBug021 | FAIL (RED) | PASS (GREEN) |
+| BUG-022 | REQ-034 | ADR-0003 | REQ-034 redeem single-use | redeem UPDATE guards redeemed_at IS NULL | quality/test_regression.py::TestBug022 | FAIL (RED) | PASS (GREEN) |
 
 All seventeen active confirmed bugs completed TDD FAIL→PASS in disposable Git worktrees (parity added BUG-016..018). Production source outside `quality/` was not modified.
 

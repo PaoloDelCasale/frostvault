@@ -1,0 +1,114 @@
+WARN: No QPB-installed SKILL.md found for /workspace. Expected at one of the canonical install layouts: SKILL.md, .claude/skills/quality-playbook/SKILL.md, .github/skills/SKILL.md, .cursor/skills/quality-playbook/SKILL.md, .continue/skills/quality-playbook/SKILL.md, .github/skills/quality-playbook/SKILL.md, .codex/skills/quality-playbook/SKILL.md, .windsurf/skills/quality-playbook/SKILL.md, .cline/skills/quality-playbook/SKILL.md, .aider/skills/quality-playbook/SKILL.md — the playbook may not be installed there. (SKILL.md is the root/bootstrap form — must have `name: quality-playbook` frontmatter.)
+WARN: No QPB-installed SKILL.md found for /workspace. Expected at one of the canonical install layouts: SKILL.md, .claude/skills/quality-playbook/SKILL.md, .github/skills/SKILL.md, .cursor/skills/quality-playbook/SKILL.md, .continue/skills/quality-playbook/SKILL.md, .github/skills/quality-playbook/SKILL.md, .codex/skills/quality-playbook/SKILL.md, .windsurf/skills/quality-playbook/SKILL.md, .cline/skills/quality-playbook/SKILL.md, .aider/skills/quality-playbook/SKILL.md — the playbook may not be installed there. (SKILL.md is the root/bootstrap form — must have `name: quality-playbook` frontmatter.)
+=== Quality Playbook - Artifact Generation ===
+Version:  unknown
+Runner:   copilot
+Model:    gpt-5.4
+No seeds: True  (Phase 0/0b skipped when true)
+Progress:  headers  (PROGRESS.md poll every 2s)
+Parallel: False
+Mode:     next-iteration (strategy: adversarial, builds on existing quality/)
+Targets:
+  /workspace
+Run ID:   20260724-091311
+
+=== Runner logs (one file per target) ===
+/workspace/quality/logs/20260724T091311Z/runner.log
+
+Writing run log to: /workspace/quality/logs/20260724T091311Z/runner.log
+================================================================================
+  Quality Playbook v1.5.10 -- by Andrew Stellman
+  https://github.com/andrewstellman/quality-playbook
+
+  AI code review is good. Quality engineering is better.
+  Because code that looks right can still do the wrong thing.
+
+  Licensed under the Apache License, Version 2.0
+================================================================================
+========================================================================
+QPB v1.5.10 run starting
+========================================================================
+Target:            /workspace
+Log file:          /workspace/quality/logs/20260724T091311Z/runner.log
+Watch log:         tail -f /workspace/quality/logs/20260724T091311Z/runner.log
+Watch transcript:  tail -f /workspace/quality/logs/20260724T091311Z/phase1.output.txt
+Watch progress:    watch -n 2 'grep "^##\?" /workspace/quality/PROGRESS.md'
+
+Plan:
+  Iteration strategies: adversarial
+========================================================================
+09:13:11 WARN: workspace - reference_docs/ (and legacy docs_gathered/) missing or empty; proceeding with code-only analysis
+
+========================================================================
+WARN: pre-run reference_docs guard triggered
+
+  neither reference_docs/ nor docs_gathered/ contains plaintext at /workspace
+
+  The playbook will proceed using only Tier 3 evidence (the source
+  tree itself). For better results, drop plaintext documentation into:
+    reference_docs/            <- AI chats, design notes, retrospectives (Tier 4)
+    reference_docs/cite/       <- project specs, RFCs, API contracts (Tier 1/2)
+  Suppress this warning with --no-formal-docs for self-audit bootstrap / minimal-repo cases that legitimately have no reference docs.
+========================================================================
+
+09:13:11 Starting iteration (adversarial): workspace (runner=copilot, building on existing quality/)
+09:13:11 ABORT: child runner exited 1
+09:13:11 [finalizer:abort-during-adversarial] bugs=17 status=aborted
+
+
+=== Artifact Summary ===
+Repo                   REQS BUGS  TDD INTG FUNC REGR    T1    T2    T3
+------------------------------------------------------------------------------
+workspace                 Y    Y    Y    Y    Y    Y     0     0    19
+
+=== Quality Checks ===
+workspace: 30 reqs, 8 UCs, 4 arch-guidance, intg(UC=17 infra=1), tdd(verified=14 failed=0) WARN:arch-guidance>3
+
+  Run finished with errors — inspect the repo's phase-prompt input/output (under quality/logs/<run-id>/ for v1.5.7+ centralized layout, quality/control_prompts/ for --logs-flat / pre-v1.5.7) and re-run with --phase <N>
+================================================================================
+  Quality Playbook v1.5.10 -- by Andrew Stellman
+  https://github.com/andrewstellman/quality-playbook
+
+  AI code review is good. Quality engineering is better.
+  Because code that looks right can still do the wrong thing.
+
+  Licensed under the Apache License, Version 2.0
+================================================================================
+================================================================================
+  Quality Playbook v1.5.10 -- by Andrew Stellman
+  https://github.com/andrewstellman/quality-playbook
+
+  AI code review is good. Quality engineering is better.
+  Because code that looks right can still do the wrong thing.
+
+  Licensed under the Apache License, Version 2.0
+================================================================================
+=== Quality Playbook - Artifact Generation ===
+Version:  unknown
+Runner:   copilot
+Model:    gpt-5.4
+No seeds: True  (Phase 0/0b skipped when true)
+Progress:  headers  (PROGRESS.md poll every 2s)
+Parallel: True
+Mode:     next-iteration (strategy: adversarial, builds on existing quality/)
+Targets:
+  /workspace
+Run ID:   20260724-091311
+
+=== Runner logs (one file per target) ===
+/workspace/quality/logs/20260724T091311Z/runner.log
+
+PIDs written to /tmp/qpb-full/.run_pids.4456 - stop with: python bin/run_playbook.py --kill
+
+
+=== Parallel run complete. 1 failures out of 1 targets. ===
+
+=== Artifact Summary ===
+Repo                   REQS BUGS  TDD INTG FUNC REGR    T1    T2    T3
+------------------------------------------------------------------------------
+workspace                 Y    Y    Y    Y    Y    Y     0     0    19
+
+=== Quality Checks ===
+workspace: 30 reqs, 8 UCs, 4 arch-guidance, intg(UC=17 infra=1), tdd(verified=14 failed=0) WARN:arch-guidance>3
+
+  Run finished with errors — inspect the repo's phase-prompt input/output (under quality/logs/<run-id>/ for v1.5.7+ centralized layout, quality/control_prompts/ for --logs-flat / pre-v1.5.7) and re-run with --phase <N>

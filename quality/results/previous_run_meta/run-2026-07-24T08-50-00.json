@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "skill_version": "1.5.10",
+  "project": "FrostVault",
+  "model": "cursor-grok-4.5",
+  "model_provider": "cursor",
+  "runner": "cursor",
+  "start_time": "2026-07-24T08:34:10Z",
+  "end_time": "2026-07-24T08:49:09Z",
+  "duration_minutes": null,
+  "phases_completed": [
+    "Iteration parity"
+  ],
+  "iterations_completed": [
+    "gap",
+    "unfiltered",
+    "parity"
+  ],
+  "bug_count": 17,
+  "bug_severity": {
+    "HIGH": 13,
+    "MEDIUM": 3,
+    "LOW": 1
+  },
+  "gate_result": "pass",
+  "gate_fail_count": 0,
+  "gate_warn_count": 1,
+  "notes": "Parity iteration Mode B-prompt-in-process; BUG-016..018 net-new; prior 14 preserved; prior run meta archived under quality/results/previous_run_meta/"
+}

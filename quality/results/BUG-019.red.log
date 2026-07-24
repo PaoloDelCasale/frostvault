@@ -1,0 +1,23 @@
+RED
+bug=BUG-019
+test=quality.test_regression.TestBug019.test_bug_019_temp_database_requires_proven_counts
+Command: PYTHONPATH=/tmp/qpb-adv-red-harness:/workspace .venv/bin/python -m unittest quality.test_regression.TestBug019.test_bug_019_temp_database_requires_proven_counts -v
+Production: unpatched /workspace/app
+Exit code: 1
+---
+test_bug_019_temp_database_requires_proven_counts (quality.test_regression.TestBug019.test_bug_019_temp_database_requires_proven_counts)
+[BUG-019][Req: REQ-031] temp_database mode must fail closed without counts. ... FAIL
+
+======================================================================
+FAIL: test_bug_019_temp_database_requires_proven_counts (quality.test_regression.TestBug019.test_bug_019_temp_database_requires_proven_counts)
+[BUG-019][Req: REQ-031] temp_database mode must fail closed without counts.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/qpb-adv-red-harness/quality/test_regression.py", line 658, in test_bug_019_temp_database_requires_proven_counts
+    with self.assertRaises(mb.BackupError):
+AssertionError: BackupError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.009s
+
+FAILED (failures=1)

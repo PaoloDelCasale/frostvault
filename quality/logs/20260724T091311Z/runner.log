@@ -1,0 +1,50 @@
+========================================================================
+QPB v1.5.10 run starting
+========================================================================
+Target:            /workspace
+Log file:          /workspace/quality/logs/20260724T091311Z/runner.log
+Watch log:         tail -f /workspace/quality/logs/20260724T091311Z/runner.log
+Watch transcript:  tail -f /workspace/quality/logs/20260724T091311Z/phase1.output.txt
+Watch progress:    watch -n 2 'grep "^##\?" /workspace/quality/PROGRESS.md'
+
+Plan:
+  Iteration strategies: adversarial
+========================================================================
+
+========================================================================
+WARN: pre-run reference_docs guard triggered
+
+  neither reference_docs/ nor docs_gathered/ contains plaintext at /workspace
+
+  The playbook will proceed using only Tier 3 evidence (the source
+  tree itself). For better results, drop plaintext documentation into:
+    reference_docs/            <- AI chats, design notes, retrospectives (Tier 4)
+    reference_docs/cite/       <- project specs, RFCs, API contracts (Tier 1/2)
+  Suppress this warning with --no-formal-docs for self-audit bootstrap / minimal-repo cases that legitimately have no reference docs.
+========================================================================
+09:13:11 Starting iteration (adversarial): workspace (runner=copilot, building on existing quality/)
+
+================================================================================
+PLAYBOOK RUNNER - pass: iteration-adversarial
+Working directory: /workspace
+Tool transcript (raw stdout/stderr): /workspace/quality/logs/20260724T091311Z/playbook_run.output.txt
+================================================================================
+SHELL COMMAND (exact invocation - cwd is repo root):
+  /exec-daemon/gh copilot -p 'Read the quality playbook skill using the documented install-location fallback list: SKILL.md, .claude/skills/quality-playbook/SKILL.md, .github/skills/SKILL.md, .cursor/skills/quality-playbook/SKILL.md, .continue/skills/quality-playbook/SKILL.md, .github/skills/quality-playbook/SKILL.md, .codex/skills/quality-playbook/SKILL.md, .windsurf/skills/quality-playbook/SKILL.md, .cline/skills/quality-playbook/SKILL.md, .aider/skills/quality-playbook/SKILL.md. Resolve reference files using the same documented fallback order. Before running the iteration, READ `references/iteration.md` (resolve via the same documented fallback order as SKILL.md). It contains the iteration-strategy protocol for `adversarial` — what artifacts to consult, what to surface, what to update, and what NOT to touch. Iteration work that hasn'"'"'t loaded that reference will miss strategy-specific contracts (the adversarial strategy has a different probe pattern than the other three; see references/iteration.md for the canonical specification).
+
+Then run the next iteration using the adversarial strategy. Any updates to quality/PROGRESS.md must keep the existing phase tracker in checkbox format (`- [x] Phase N - <name>`) — do not rewrite it as a table. The orchestrator appends `## Iteration: <strategy> started/complete` sections itself; iteration work should not touch the existing phase tracker lines.
+
+After this iteration completes, emit `## What just happened` + `### What to do next` as the LAST visible output in chat per the decision tree at `references/what_just_happened.md`. Apply Rules 4 and 5 of the classifier (both key off `quality/PROGRESS.md` `^## Iteration: <strategy> complete$` heading scans): use State I if more strategies remain in the gap → unfiltered → parity → adversarial cycle, or State F if this `adversarial` iteration is the last one (i.e., the `gap complete`, `unfiltered complete`, and `parity complete` headings are all already present in PROGRESS.md).' --model gpt-5.4 --yolo
+
+--- BEGIN PROMPT (1965 bytes) ---
+Read the quality playbook skill using the documented install-location fallback list: SKILL.md, .claude/skills/quality-playbook/SKILL.md, .github/skills/SKILL.md, .cursor/skills/quality-playbook/SKILL.md, .continue/skills/quality-playbook/SKILL.md, .github/skills/quality-playbook/SKILL.md, .codex/skills/quality-playbook/SKILL.md, .windsurf/skills/quality-playbook/SKILL.md, .cline/skills/quality-playbook/SKILL.md, .aider/skills/quality-playbook/SKILL.md. Resolve reference files using the same documented fallback order. Before running the iteration, READ `references/iteration.md` (resolve via the same documented fallback order as SKILL.md). It contains the iteration-strategy protocol for `adversarial` — what artifacts to consult, what to surface, what to update, and what NOT to touch. Iteration work that hasn't loaded that reference will miss strategy-specific contracts (the adversarial strategy has a different probe pattern than the other three; see references/iteration.md for the canonical specification).
+
+Then run the next iteration using the adversarial strategy. Any updates to quality/PROGRESS.md must keep the existing phase tracker in checkbox format (`- [x] Phase N - <name>`) — do not rewrite it as a table. The orchestrator appends `## Iteration: <strategy> started/complete` sections itself; iteration work should not touch the existing phase tracker lines.
+
+After this iteration completes, emit `## What just happened` + `### What to do next` as the LAST visible output in chat per the decision tree at `references/what_just_happened.md`. Apply Rules 4 and 5 of the classifier (both key off `quality/PROGRESS.md` `^## Iteration: <strategy> complete$` heading scans): use State I if more strategies remain in the gap → unfiltered → parity → adversarial cycle, or State F if this `adversarial` iteration is the last one (i.e., the `gap complete`, `unfiltered complete`, and `parity complete` headings are all already present in PROGRESS.md).
+--- END PROMPT ---
+
+! Copilot CLI not installed
+--- EXIT CODE: 1 ---
+09:13:11 ABORT: child runner exited 1
+09:13:11 [finalizer:abort-during-adversarial] bugs=17 status=aborted

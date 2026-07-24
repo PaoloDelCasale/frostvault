@@ -385,3 +385,62 @@ Run complete. **6** BUGs found (**4** from code review surviving challenge, **2*
 | BUG-017 | Parity | High | TDD verified (FAIL→PASS) |
 | BUG-018 | Parity | High | TDD verified (FAIL→PASS) |
 
+
+## Run finalization (abort-during-adversarial)
+
+- Timestamp: 2026-07-24T09:13:11Z
+- Bug count: 17
+- Gate status: ABORTED
+- Receipt: <not produced — gate script not found>
+- Abort reason: runner exited 1
+
+## Iteration: adversarial started
+
+2026-07-24T09:13:41Z
+
+## Iteration: adversarial complete
+
+2026-07-24T09:39:28Z
+
+### Adversarial iteration summary
+
+- Strategy: **adversarial** (Mode B canonical prompt executed in-process; nested Copilot/Cursor CLI unavailable — aborted runner receipt under `quality/logs/20260724T091311Z/`)
+- Prior baseline + gap + unfiltered + parity preserved (no archive/overwrite)
+- Passes: A (rejected/demoted), B (thin SATISFIED), C (active bug boundaries)
+- Net-new confirmed bugs (promoted): **BUG-019** (High, ex DC-011), **BUG-020** (High, ex DC-006), **BUG-021** (High, ex DC-013), **BUG-022** (Medium, ex DC-002)
+- Prior active bugs re-confirmed unchanged: BUG-001,002,004,005,006,007,008,009,010,011,012,013,014,015,016,017,018
+- Rejected preserved: former BUG-003; CAND-006; SA-M HeadObject/REQ-001 FALSE-POSITIVE
+- Demoted preserved: DC-001,003,004,005,007,008,009,010,012,014,015 (adversarial appendices)
+- Demoted re-promoted: DC-002→BUG-022, DC-006→BUG-020, DC-011→BUG-019, DC-013→BUG-021
+- Refinements/scope expansions (no new IDs): BUG-002, BUG-015, BUG-017
+- TDD: 4/4 net-new FAIL→PASS; cumulative active bugs with RED+GREEN: **21**
+- Regression suite: 22 expected failures (21 bugs; BUG-019 has 2 tests)
+- Production source outside quality/: **unchanged**
+- Next strategy suggestion: cycle complete (gap → unfiltered → parity → adversarial)
+
+### Cumulative BUG tracker (post-adversarial)
+
+| ID | Source | Severity | Closure |
+|----|--------|----------|---------|
+| BUG-001 | Baseline CR | Medium | TDD verified (unchanged) |
+| BUG-002 | Baseline CR | Medium | TDD verified (scope note) |
+| BUG-004 | Baseline CR | Low | TDD verified (unchanged) |
+| BUG-005 | Baseline CR | Low | TDD verified (unchanged) |
+| BUG-006 | Baseline CR | High | TDD verified (unchanged) |
+| BUG-007 | Baseline CR | Medium | TDD verified (unchanged) |
+| BUG-008 | Gap iter | High | TDD verified (unchanged) |
+| BUG-009 | Gap iter | Medium | TDD verified (unchanged) |
+| BUG-010 | Gap iter | High | TDD verified (unchanged) |
+| BUG-011 | Gap iter | High | TDD verified (unchanged) |
+| BUG-012 | Unfiltered | High | TDD verified (unchanged) |
+| BUG-013 | Unfiltered | High | TDD verified (unchanged) |
+| BUG-014 | Unfiltered | High | TDD verified (unchanged) |
+| BUG-015 | Unfiltered | High | TDD verified (scope note) |
+| BUG-016 | Parity | High | TDD verified (unchanged) |
+| BUG-017 | Parity | High | TDD verified (refinement note) |
+| BUG-018 | Parity | High | TDD verified (unchanged) |
+| BUG-019 | Adversarial (DC-011) | High | TDD verified (FAIL→PASS) |
+| BUG-020 | Adversarial (DC-006) | High | TDD verified (FAIL→PASS) |
+| BUG-021 | Adversarial (DC-013) | High | TDD verified (FAIL→PASS) |
+| BUG-022 | Adversarial (DC-002) | Medium | TDD verified (FAIL→PASS) |
+

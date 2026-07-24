@@ -32,8 +32,18 @@ test_bug_017_archive_observability_best_effort (test_regression.TestBug017.test_
 [BUG-017][Req: REQ-029] post-marker notify must not fail-close the job. ... expected failure
 test_bug_018_cancel_preserves_restore_state (test_regression.TestBug018.test_bug_018_cancel_preserves_restore_state)
 [BUG-018][Req: REQ-030] cancel must not wipe Glacier restore_state. ... expected failure
+test_bug_019_temp_database_requires_proven_counts (test_regression.TestBug019.test_bug_019_temp_database_requires_proven_counts)
+[BUG-019][Req: REQ-031] temp_database mode must fail closed without counts. ... expected failure
+test_bug_019_temp_database_source_rejects_null_count_success (test_regression.TestBug019.test_bug_019_temp_database_source_rejects_null_count_success)
+[BUG-019][Req: REQ-031] source must reject null counts in temp_database path. ... expected failure
+test_bug_020_last_admin_guard_is_atomic_with_update (test_regression.TestBug020.test_bug_020_last_admin_guard_is_atomic_with_update)
+[BUG-020][Req: REQ-032] last-admin invariant must not be check-then-act. ... expected failure
+test_bug_021_oidc_link_requires_recent_reauth (test_regression.TestBug021.test_bug_021_oidc_link_requires_recent_reauth)
+[BUG-021][Req: REQ-033] self-link must gate invite creation on reauth. ... expected failure
+test_bug_022_redeem_update_guards_unredeemed (test_regression.TestBug022.test_bug_022_redeem_update_guards_unredeemed)
+[BUG-022][Req: REQ-034] redeem UPDATE must refuse already-redeemed rows. ... expected failure
 
 ----------------------------------------------------------------------
-Ran 17 tests in 0.567s
+Ran 22 tests in 0.487s
 
-OK (expected failures=17)
+OK (expected failures=22)

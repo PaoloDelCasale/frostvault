@@ -1,0 +1,23 @@
+RED
+bug=BUG-021
+test=quality.test_regression.TestBug021.test_bug_021_oidc_link_requires_recent_reauth
+Command: PYTHONPATH=/tmp/qpb-adv-red-harness:/workspace .venv/bin/python -m unittest quality.test_regression.TestBug021.test_bug_021_oidc_link_requires_recent_reauth -v
+Production: unpatched /workspace/app
+Exit code: 1
+---
+test_bug_021_oidc_link_requires_recent_reauth (quality.test_regression.TestBug021.test_bug_021_oidc_link_requires_recent_reauth)
+[BUG-021][Req: REQ-033] self-link must gate invite creation on reauth. ... FAIL
+
+======================================================================
+FAIL: test_bug_021_oidc_link_requires_recent_reauth (quality.test_regression.TestBug021.test_bug_021_oidc_link_requires_recent_reauth)
+[BUG-021][Req: REQ-033] self-link must gate invite creation on reauth.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/qpb-adv-red-harness/quality/test_regression.py", line 727, in test_bug_021_oidc_link_requires_recent_reauth
+    self.assertIn(
+AssertionError: 'require_recent_reauth' not found in 'def oidc_link(request: Request, user: dict[str, Any] = Depends(current_user)):\n    if not settings.oidc_enabled:\n        raise HTTPException(404, "OIDC login is not enabled")\n    redirect_uri = str(request.url_for("oidc_callback"))\n    with db() as connection:\n        token = create_invite(\n            connection, target_user_id=user["id"], created_by=user["id"]\n        )\n        invite_id = _resolve_invite_id(connection, token)\n        authorization_url = begin_login(\n            connection,\n            redirect_uri=redirect_uri,\n            return_to="/",\n            invite_id=invite_id,\n            http_client=_oidc_client(),\n        )\n    return RedirectResponse(authorization_url, status_code=303)\n\n' : self-link invite creation must require recent reauthentication
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)
