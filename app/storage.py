@@ -1987,11 +1987,16 @@ def process_recover(job: dict[str, Any]) -> None:
             or getattr(settings, "restore_days", 3)
             or 3
         )
+        with db() as connection:
+            from .services.cost_estimates import get_active_price_book
+
+            book = get_active_price_book(connection)
         estimate = estimate_restore(
             size_bytes=size_bytes,
             storage_class=str(storage_class),
             tier=str(tier),
             days=days,
+            pricing=book.restore_rates,
         )
         if is_high_impact_restore(
             size_bytes=size_bytes,
