@@ -2681,13 +2681,32 @@ def _verify_latest_metadata_backup_once() -> None:
     if settings.metadata_backup_verify_interval_seconds <= 0:
         return
     backup_dir = Path(settings.metadata_backup_dir)
-    artifacts = metadata_backup_service.list_local_backup_files(backup_dir)
-    if not artifacts:
-        return
     work_dir = backup_dir / "verify-scratch"
     try:
+        with db() as connection:
+            latest = connection.execute(
+                """
+                SELECT id, local_path, digest_sha256 FROM metadata_backup_runs
+                WHERE status='succeeded'
+                ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+        if not latest:
+            return
+        artifact = None
+        if latest.get("local_path"):
+            candidate = Path(str(latest["local_path"]))
+            if candidate.is_file():
+                artifact = candidate
+        if artifact is None and latest.get("digest_sha256"):
+            for path in metadata_backup_service.list_local_backup_files(backup_dir):
+                if hashlib.sha256(path.read_bytes()).hexdigest() == latest["digest_sha256"]:
+                    artifact = path
+                    break
+        if artifact is None:
+            return
         result = metadata_backup_service.verify_restore_isolated(
-            artifacts[0],
+            artifact,
             work_dir=work_dir,
             object_store=None,
         )
@@ -2695,26 +2714,18 @@ def _verify_latest_metadata_backup_once() -> None:
             raise metadata_backup_service.BackupError("Restore verification reported not ok")
         metrics_service.inc("metadata_backup_verifications_total", result="succeeded")
         with db() as connection:
-            latest = connection.execute(
+            connection.execute(
                 """
-                SELECT id FROM metadata_backup_runs
-                WHERE status='succeeded'
-                ORDER BY id DESC LIMIT 1
-                """
-            ).fetchone()
-            if latest:
-                connection.execute(
-                    """
-                    UPDATE metadata_backup_runs
-                    SET status='verified', verified_at=%s, finished_at=%s
-                    WHERE id=%s
-                    """,
-                    (
-                        metadata_backup_service.now_iso(),
-                        metadata_backup_service.now_iso(),
-                        latest["id"],
-                    ),
-                )
+                UPDATE metadata_backup_runs
+                SET status='verified', verified_at=%s, finished_at=%s
+                WHERE id=%s
+                """,
+                (
+                    metadata_backup_service.now_iso(),
+                    metadata_backup_service.now_iso(),
+                    latest["id"],
+                ),
+            )
     except Exception as exc:
         metrics_service.inc("metadata_backup_verifications_total", result="failed")
         try:
