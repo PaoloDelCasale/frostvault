@@ -135,6 +135,7 @@ def _rename_worker(
     database_path: Path,
     *,
     payload: bytes,
+    old_key: str,
     new_key: str,
 ):
     rclone_calls: list[tuple[str, ...]] = []
@@ -154,6 +155,13 @@ def _rename_worker(
 
     def fake_head_object(**kwargs):
         head_calls.append({"Bucket": kwargs["Bucket"], "Key": kwargs["Key"]})
+        if kwargs["Key"] == old_key:
+            return {
+                "VersionId": "old-s3-version",
+                "ContentLength": len(payload),
+                "StorageClass": "STANDARD",
+                "ETag": '"old-etag"',
+            }
         if kwargs["Key"] != new_key:
             raise RuntimeError(f"unexpected head key {kwargs['Key']}")
         return {
@@ -388,6 +396,7 @@ class RenameCloudJobTests(unittest.TestCase):
                 with _rename_worker(
                     database_path,
                     payload=payload,
+                    old_key=old_key,
                     new_key=new_key,
                 ) as (rclone_calls, deleted_keys, head_calls):
                     process_jobs_once()
@@ -425,8 +434,103 @@ class RenameCloudJobTests(unittest.TestCase):
                 deleted_keys,
                 [{"Bucket": "bucket", "Key": old_key, "VersionId": ""}],
             )
-            self.assertEqual([call["Key"] for call in head_calls], [new_key])
+            self.assertEqual([call["Key"] for call in head_calls], [new_key, old_key])
             self.assertTrue(any(call[:1] == ("copyto",) for call in rclone_calls))
+
+    def test_bug_002_rename_hide_detects_concurrent_version(self) -> None:
+        """[BUG-002][Req: REQ-004] rename hide aborts on live VersionId mismatch.
+
+        After a verified copy to the new key, Head on the previous key shows a
+        newer current VersionId than the scheduled Archive Version; hide must
+        abort without creating a Delete Marker.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"rename-concurrent"
+            old_path = "old.txt"
+            new_path = "new.txt"
+            old_key = f"docs/{old_path}"
+            new_key = f"docs/{new_path}"
+            _source, database_path, file_id = _prepare_renamed_plain_file(
+                root,
+                old_path=old_path,
+                new_path=new_path,
+                payload=payload,
+            )
+
+            deleted: list[str] = []
+            head_keys: list[str] = []
+
+            def fake_rclone(*args, **kwargs) -> None:
+                command = tuple(str(arg) for arg in args if not callable(arg))
+                if command[:1] != ("copyto",) or len(command) < 3:
+                    return
+                origin, destination = command[1], command[2]
+                if ":" in origin and not Path(origin).exists():
+                    target = Path(destination)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(payload)
+
+            def fake_head_object(**kwargs):
+                head_keys.append(kwargs["Key"])
+                if kwargs["Key"] == old_key:
+                    return {
+                        "VersionId": "old-s3-concurrent",
+                        "ContentLength": len(payload),
+                        "StorageClass": "STANDARD",
+                        "ETag": '"old-etag"',
+                    }
+                return {
+                    "VersionId": "new-s3-version",
+                    "ContentLength": len(payload),
+                    "StorageClass": "STANDARD",
+                    "ETag": '"new-etag"',
+                }
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            worker_settings = SimpleNamespace(
+                operation_concurrency=1,
+                restore_poll_interval=900,
+            )
+            with patch("app.database.settings", database_settings):
+                queue_jobs(new_path, "rename", 2, 1)
+                with (
+                    patch("app.storage.settings", worker_settings),
+                    patch("app.storage.validate_cloud_vault"),
+                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
+                    patch("app.storage.run_rclone", side_effect=fake_rclone),
+                    patch(
+                        "app.storage.s3_client",
+                        return_value=SimpleNamespace(
+                            head_object=fake_head_object,
+                            delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
+                            or {
+                                "VersionId": "delete-marker-wrong",
+                                "DeleteMarker": True,
+                            },
+                        ),
+                    ),
+                ):
+                    process_jobs_once()
+
+            with SQLiteConnection(str(database_path)) as connection:
+                markers = connection.execute(
+                    "SELECT id FROM delete_markers WHERE vault_file_id=%s",
+                    (file_id,),
+                ).fetchall()
+                job = connection.execute(
+                    "SELECT status, message FROM jobs WHERE path=%s",
+                    (new_path,),
+                ).fetchone()
+
+            self.assertEqual(deleted, [])
+            self.assertEqual(markers, [])
+            self.assertEqual(job["status"], "failed")
+            self.assertIn("VersionId", job["message"] or "")
+            self.assertEqual(head_keys, [new_key, old_key])
 
     def test_failed_verification_never_hides_the_old_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -871,7 +975,11 @@ class CryptRenameTests(unittest.TestCase):
                         "app.storage.s3_client",
                         return_value=SimpleNamespace(
                             head_object=lambda **kwargs: {
-                                "VersionId": "crypt-new",
+                                "VersionId": (
+                                    "crypt-old"
+                                    if kwargs["Key"] == old_key
+                                    else "crypt-new"
+                                ),
                                 "ContentLength": len(payload),
                                 "StorageClass": "STANDARD",
                                 "ETag": '"etag"',
@@ -1009,6 +1117,12 @@ class RenameRestartTests(unittest.TestCase):
                     patch(
                         "app.storage.s3_client",
                         return_value=SimpleNamespace(
+                            head_object=lambda **kwargs: {
+                                "VersionId": "old-s3-version",
+                                "ContentLength": len(payload),
+                                "StorageClass": "STANDARD",
+                                "ETag": '"old-etag"',
+                            },
                             delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
                             or {
                                 "VersionId": "delete-marker-resume",

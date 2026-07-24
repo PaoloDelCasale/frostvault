@@ -1482,6 +1482,32 @@ def process_upload(job: dict[str, Any]) -> None:
         raise RuntimeError(safe_error_message(exc, secrets)) from exc
 
 
+def ensure_scheduled_current_version(
+    *,
+    bucket: str,
+    object_key: str,
+    expected_version_id: str | None,
+    operation: str,
+) -> None:
+    """Abort when the live current VersionId differs from the scheduled Archive Version.
+
+    Unversioned delete_object is still required to create an S3 Delete Marker;
+    this Head/compare detects concurrent uploads before that hide (REQ-004).
+    """
+    if not expected_version_id:
+        raise RuntimeError(
+            f"{operation} aborted: scheduled Archive Version has no provider VersionId"
+        )
+    head = s3_client().head_object(Bucket=bucket, Key=object_key)
+    current_version = head.get("VersionId")
+    if not current_version or current_version != expected_version_id:
+        raise RuntimeError(
+            f"{operation} aborted: current VersionId "
+            f"{current_version!r} does not match scheduled Archive Version "
+            f"{expected_version_id!r}"
+        )
+
+
 def process_rename(job: dict[str, Any]) -> None:
     """Copy verified content to the new key, then hide the previous key."""
     ensure_job_active(job["id"], "Rename stopped")
@@ -1672,6 +1698,12 @@ def process_rename(job: dict[str, Any]) -> None:
         assert version_id is not None
         ensure_job_active(job["id"], "Rename stopped")
         set_job(job["id"], "cleaning", message_key="job.rename_hiding_previous")
+        ensure_scheduled_current_version(
+            bucket=job["s3_bucket"],
+            object_key=old_key,
+            expected_version_id=previous.get("provider_version_id"),
+            operation="Rename hide",
+        )
         delete_result = s3_client().delete_object(
             Bucket=job["s3_bucket"],
             Key=old_key,
@@ -2170,6 +2202,12 @@ def process_cloud_archive(job: dict[str, Any]) -> None:
     object_key = version["object_key"]
     set_job(job["id"], "cleaning", message_key="job.cloud_archive_creating_marker")
     ensure_job_active(job["id"], "Cloud archival stopped")
+    ensure_scheduled_current_version(
+        bucket=job["s3_bucket"],
+        object_key=object_key,
+        expected_version_id=version.get("provider_version_id"),
+        operation="Cloud archival",
+    )
     delete_result = s3_client().delete_object(
         Bucket=job["s3_bucket"],
         Key=object_key,

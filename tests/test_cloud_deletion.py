@@ -348,6 +348,10 @@ class ReversibleArchiveExecutionTests(_CloudDeletionTestCase):
                 )
 
             client = Mock()
+            client.head_object.return_value = {
+                "VersionId": "s3-v2",
+                "ContentLength": 11,
+            }
             client.delete_object.return_value = {"VersionId": "marker-1", "DeleteMarker": True}
             database_settings = SimpleNamespace(
                 db_backend="sqlite",
@@ -362,6 +366,9 @@ class ReversibleArchiveExecutionTests(_CloudDeletionTestCase):
             ):
                 process_jobs_once()
 
+            client.head_object.assert_called_once_with(
+                Bucket="bucket", Key="docs/report.txt"
+            )
             client.delete_object.assert_called_once()
             kwargs = client.delete_object.call_args.kwargs
             self.assertEqual(kwargs["Key"], "docs/report.txt")
@@ -389,6 +396,80 @@ class ReversibleArchiveExecutionTests(_CloudDeletionTestCase):
                 [row["availability"] for row in versions],
                 ["available", "available"],
             )
+
+    def test_bug_002_cloud_archive_detects_concurrent_version(self) -> None:
+        """[BUG-002][Req: REQ-004] compare live current VersionId before hide.
+
+        Seam: process_jobs_once → process_cloud_archive with S3 mocked at the
+        system boundary (same path as reversible-archive execution tests).
+
+        Schedules cloud-archive against the current Archive Version (s3-v2),
+        presents a newer live VersionId via Head, and asserts the hide aborts
+        instead of creating a Delete Marker on the wrong generation.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            database_path, vault_id, file_id = _prepare_vault_with_versions(
+                Path(directory), cloud_deletion_enabled=True, version_count=2
+            )
+            with SQLiteConnection(str(database_path)) as connection:
+                cloud_deletion.schedule_cloud_archive(
+                    connection,
+                    vault_id=vault_id,
+                    paths=["report.txt"],
+                    is_directory=False,
+                    actor_user_id=1,
+                    requested_at=_iso(_now()),
+                )
+                scheduled = connection.execute(
+                    """
+                    SELECT archive_version_id FROM jobs
+                    WHERE action='cloud-archive'
+                    """
+                ).fetchone()
+                pinned = connection.execute(
+                    """
+                    SELECT provider_version_id FROM archive_versions
+                    WHERE id=%s
+                    """,
+                    (scheduled["archive_version_id"],),
+                ).fetchone()["provider_version_id"]
+
+            self.assertEqual(pinned, "s3-v2")
+
+            client = Mock()
+            client.head_object.return_value = {
+                "VersionId": "s3-v-concurrent",
+                "ContentLength": 12,
+            }
+            client.delete_object.return_value = {
+                "VersionId": "marker-wrong",
+                "DeleteMarker": True,
+            }
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            worker_settings = SimpleNamespace(operation_concurrency=1)
+            with (
+                patch("app.database.settings", database_settings),
+                patch("app.storage.settings", worker_settings),
+                patch("app.storage.validate_cloud_vault"),
+                patch("app.storage.s3_client", return_value=client),
+            ):
+                process_jobs_once()
+
+            client.delete_object.assert_not_called()
+            with SQLiteConnection(str(database_path)) as connection:
+                markers = connection.execute(
+                    "SELECT provider_version_id FROM delete_markers WHERE vault_file_id=%s",
+                    (file_id,),
+                ).fetchall()
+                job = connection.execute(
+                    "SELECT status, message FROM jobs WHERE action='cloud-archive'"
+                ).fetchone()
+            self.assertEqual(job["status"], "failed")
+            self.assertIn("VersionId", job["message"] or "")
+            self.assertEqual(markers, [])
 
 
 class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
