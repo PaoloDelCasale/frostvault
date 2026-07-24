@@ -77,7 +77,7 @@ Role helpers match owner/operator/viewer matrix. No structural defect.
   crypt integration fixture. Code pins the flag; digest check is the backstop.
   Classification: unverified risk / rejected as confirmed bug (CAND-006).
 
-Mechanical dispatcher extract (`quality/mechanical/process_job_action_branches.txt`)
+Mechanical dispatcher extract (`quality/workspace/mechanical/process_job_action_branches.txt`)
 re-checked: recover line has no status set — FOUND gap vs List B
 `{queued, retrying, restoring}`.
 

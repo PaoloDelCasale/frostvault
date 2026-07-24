@@ -4,7 +4,7 @@
 > Date: 2026-07-23 · Project: FrostVault
 
 Generated: 2026-07-23  
-Stage: **final (post-reconciliation)** — Phase 5 authoritative verdict.
+Stage: **final (post-Phase-6 verification)** — Phase 5 reconciliation + Phase 6 gate authoritative verdict.
 
 ## Domain coverage
 
@@ -51,4 +51,4 @@ Stage: **final (post-reconciliation)** — Phase 5 authoritative verdict.
 
 ## Verdict
 
-**COMPLETE** — Phase 5 reconciliation closed with six TDD-verified confirmed bugs, one challenge-rejected finding, consistent trackers (`PROGRESS.md` / `BUGS.md` / `bugs_manifest.json` / regression suite / triage), mechanical verification exit 0, and no production source edits outside `quality/`.
+**COMPLETE** — Phase 5 reconciliation + Phase 6 verification closed with six TDD-verified confirmed bugs, one challenge-rejected finding, consistent trackers (`PROGRESS.md` / `BUGS.md` / `bugs_manifest.json` / regression suite / triage), mechanical verification exit 0, quality_gate 0 FAIL / 2 WARN, functional 29 OK + regression 6 expected failures, and no production source edits outside `quality/`.

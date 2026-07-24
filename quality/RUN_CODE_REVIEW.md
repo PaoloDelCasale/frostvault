@@ -56,7 +56,7 @@ Read the code and report anything that looks wrong. No requirements focus — st
 
 #### 5. Enumeration and whitelist completeness
 
-Mechanical check for `process_job` — use `quality/mechanical/process_job_action_branches.txt` (List A). Spec List B desired recover statuses: `{queued, retrying, restoring}`. Diff and report FOUND/NOT IN CODE. Run `./quality/mechanical/verify.sh` and attach receipt.
+Mechanical check for `process_job` — use `quality/workspace/mechanical/process_job_action_branches.txt` (List A). Spec List B desired recover statuses: `{queued, retrying, restoring}`. Diff and report FOUND/NOT IN CODE. Run `./quality/workspace/mechanical/verify.sh` and attach receipt.
 
 Do **not** copy lists from REQUIREMENTS.md — extract from `app/storage.py`.
 
@@ -120,4 +120,4 @@ Compare at least these shared concepts:
 
 Overall assessment: SHIP / FIX BEFORE MERGE / BLOCK
 
-Every confirmed BUG → regression test in `quality/test_regression.py` with `@unittest.expectedFailure` (project uses unittest) + patches under `quality/patches/`.
+Every confirmed BUG → regression test in `quality/test_regression.py` with `@unittest.expectedFailure` (project uses unittest) + patches under `quality/workspace/patches/`.

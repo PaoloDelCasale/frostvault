@@ -1,0 +1,55 @@
+test_break_glass_empty_string_ip_denied (test_functional.TestBoundaries.test_break_glass_empty_string_ip_denied) ... ok
+test_cloud_archive_source_records_marker_version (test_functional.TestBoundaries.test_cloud_archive_source_records_marker_version) ... ok
+test_download_helper_signature_requires_version_id (test_functional.TestBoundaries.test_download_helper_signature_requires_version_id) ... ok
+test_operating_window_rejects_bad_weekday (test_functional.TestBoundaries.test_operating_window_rejects_bad_weekday) ... ok
+test_process_job_cancelled_short_circuit_in_source (test_functional.TestBoundaries.test_process_job_cancelled_short_circuit_in_source) ... ok
+test_resolve_client_ip_all_hops_trusted_returns_first (test_functional.TestBoundaries.test_resolve_client_ip_all_hops_trusted_returns_first) ... ok
+test_resolve_client_ip_missing_peer (test_functional.TestBoundaries.test_resolve_client_ip_missing_peer) ... ok
+test_valid_roles_closed_set (test_functional.TestBoundaries.test_valid_roles_closed_set) ... ok
+test_scenario_10_schema_gate_message_contract (test_functional.TestFitnessScenarios.test_scenario_10_schema_gate_message_contract)
+Scenario 10: DatabaseSchemaError is the refuse-start signal type. ... ok
+test_scenario_1_cloud_archive_delete_object_omits_version_id (test_functional.TestFitnessScenarios.test_scenario_1_cloud_archive_delete_object_omits_version_id)
+Scenario 1: process_cloud_archive delete_object has no VersionId kwarg in source. ... ok
+test_scenario_2_readme_users_vs_owner_matrix (test_functional.TestFitnessScenarios.test_scenario_2_readme_users_vs_owner_matrix)
+Scenario 2: README Users vs is_owner matrix drift. ... ok
+test_scenario_3_recover_dispatcher_gap (test_functional.TestFitnessScenarios.test_scenario_3_recover_dispatcher_gap)
+Scenario 3: recover action branch lacks status guard. ... ok
+test_scenario_4_list_only_mode_marked_in_source (test_functional.TestFitnessScenarios.test_scenario_4_list_only_mode_marked_in_source)
+Scenario 4: createdb failure returns ok True with pg_restore_list mode. ... ok
+test_scenario_5_untrusted_peer_ignores_xff (test_functional.TestFitnessScenarios.test_scenario_5_untrusted_peer_ignores_xff)
+Scenario 5: forged XFF from untrusted peer does not win. ... ok
+test_scenario_6_restore_claimed_helper_exists (test_functional.TestFitnessScenarios.test_scenario_6_restore_claimed_helper_exists)
+Scenario 6: restore_claimed_local_copy exists and is used by free-space path. ... ok
+test_scenario_7_crypt_and_plain_version_pins (test_functional.TestFitnessScenarios.test_scenario_7_crypt_and_plain_version_pins)
+Scenario 7: both crypt flag and boto3 VersionId appear in download helper. ... ok
+test_scenario_8_csrf_query_omits_session_version (test_functional.TestFitnessScenarios.test_scenario_8_csrf_query_omits_session_version)
+Scenario 8: csrf_token_for SQL does not select session_version (gap). ... ok
+test_scenario_9_overnight_window_rejected (test_functional.TestFitnessScenarios.test_scenario_9_overnight_window_rejected)
+Scenario 9: overnight span raises ValueError. ... ok
+test_req_001_version_id_required_and_pinned_in_source (test_functional.TestSpecRequirements.test_req_001_version_id_required_and_pinned_in_source)
+[Req: REQ-001] Exact VersionId required; crypt and plain pins present. ... ok
+test_req_002_recover_branch_lacks_status_conjunct (test_functional.TestSpecRequirements.test_req_002_recover_branch_lacks_status_conjunct)
+[Req: REQ-002] Recover branch currently has no status whitelist (known gap). ... ok
+test_req_003_operator_not_owner_and_readme_conflict (test_functional.TestSpecRequirements.test_req_003_operator_not_owner_and_readme_conflict)
+[Req: REQ-003] Operators are not owners; README Users over-claims free-space. ... ok
+test_req_006_break_glass_fail_closed_and_loopback (test_functional.TestSpecRequirements.test_req_006_break_glass_fail_closed_and_loopback)
+[Req: REQ-006] Missing IP denied; loopback allowed with empty CIDRs. ... ok
+test_req_007_trusted_peer_uses_rightmost_untrusted_hop (test_functional.TestSpecRequirements.test_req_007_trusted_peer_uses_rightmost_untrusted_hop)
+[Req: REQ-007] Trusted peer + XFF selects client hop. ... ok
+test_req_007_untrusted_peer_ignores_forwarded_for (test_functional.TestSpecRequirements.test_req_007_untrusted_peer_ignores_forwarded_for)
+[Req: REQ-007] XFF ignored when peer is not a Trusted Proxy. ... ok
+test_req_010_head_schema_constant (test_functional.TestSpecRequirements.test_req_010_head_schema_constant)
+[Req: REQ-010] HEAD_SCHEMA_REVISION matches expected migration id. ... ok
+test_req_011_custody_message_has_no_secret_material (test_functional.TestSpecRequirements.test_req_011_custody_message_has_no_secret_material)
+[Req: REQ-011] RecoveryCustodyRequired message does not embed secrets. ... ok
+test_req_012_operating_window_start_before_end (test_functional.TestSpecRequirements.test_req_012_operating_window_start_before_end)
+[Req: REQ-012] Overnight / inverted windows rejected. ... ok
+test_req_016_can_operate_matrix (test_functional.TestSpecRequirements.test_req_016_can_operate_matrix)
+[Req: REQ-016] Owner and operator can operate; viewer cannot. ... ok
+test_req_017_viewer_not_owner (test_functional.TestSpecRequirements.test_req_017_viewer_not_owner)
+[Req: REQ-017] Viewer is read-only at role helpers. ... ok
+
+----------------------------------------------------------------------
+Ran 29 tests in 0.164s
+
+OK

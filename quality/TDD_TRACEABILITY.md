@@ -12,4 +12,4 @@
 | BUG-006 | REQ-009 | quality/REQUIREMENTS.md; UC-08 | REQ-009 / claim restore | claim must restore or remain salvageable | quality/test_regression.py::TestBug006::test_bug_006_startup_preserves_free_space_claims | FAIL (RED) | PASS (GREEN) |
 | BUG-007 | REQ-012 | quality/REQUIREMENTS.md | REQ-012 / window ordering | start must be before end as clock times | quality/test_regression.py::TestBug007::test_bug_007_windows_compare_as_times_not_strings | FAIL (RED) | PASS (GREEN) |
 
-All six surviving confirmed bugs completed TDD FAIL→PASS in disposable Git worktrees. Production source outside `quality/` was not modified. Sidecar: `quality/results/tdd-results.json`.
+All six surviving confirmed bugs completed TDD FAIL→PASS in disposable Git worktrees. Production source outside `quality/` was not modified. Sidecar: `quality/workspace/results/tdd-results.json`.

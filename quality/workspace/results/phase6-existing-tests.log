@@ -1,0 +1,616 @@
+/workspace/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+/workspace/app/oidc.py:21: AuthlibDeprecationWarning: authlib.jose module is deprecated, please use joserfc instead.
+It will be compatible before version 2.0.0.
+  from authlib.jose import JsonWebKey, jwt
+test_audit_log_emits_a_structured_record (test_audit.AuditLogTests.test_audit_log_emits_a_structured_record) ... ok
+test_recorded_audit_event_is_retrievable_for_the_vault (test_audit_events.AuditEventPersistenceTests.test_recorded_audit_event_is_retrievable_for_the_vault) ... {"actor_user_id": 1, "audit_event_id": 1, "correlation_id": "corr-1", "event": "vault_membership_changed", "job_id": null, "outcome": "success", "role": "viewer", "target_user_id": 99, "vault_id": 1, "visibility": "vault"}
+ok
+test_sensitive_fields_are_redacted_in_persisted_detail (test_audit_events.AuditEventPersistenceTests.test_sensitive_fields_are_redacted_in_persisted_detail) ... {"actor_user_id": null, "audit_event_id": 1, "authorization": "[REDACTED]", "cookie": "[REDACTED]", "correlation_id": null, "event": "break_glass_failed", "ip": "203.0.113.9", "job_id": null, "outcome": "failure", "password": "[REDACTED]", "recovery_secret": "[REDACTED]", "vault_id": null, "visibility": "admin"}
+ok
+test_admin_can_list_all_audit_events (test_audit_visibility_http.AuditVisibilityHttpTests.test_admin_can_list_all_audit_events) ... {"actor_user_id": 2, "audit_event_id": 1, "correlation_id": null, "event": "vault_membership_changed", "job_id": null, "outcome": "success", "role": "viewer", "vault_id": 1, "visibility": "vault"}
+{"actor_user_id": null, "audit_event_id": 2, "correlation_id": null, "event": "break_glass_failed", "ip": "203.0.113.10", "job_id": null, "outcome": "failure", "vault_id": null, "visibility": "admin"}
+ok
+test_outsider_cannot_read_vault_audit_events (test_audit_visibility_http.AuditVisibilityHttpTests.test_outsider_cannot_read_vault_audit_events) ... {"actor_user_id": 2, "audit_event_id": 1, "correlation_id": null, "event": "vault_membership_changed", "job_id": null, "outcome": "success", "role": "viewer", "vault_id": 1, "visibility": "vault"}
+{"actor_user_id": null, "audit_event_id": 2, "correlation_id": null, "event": "break_glass_failed", "ip": "203.0.113.10", "job_id": null, "outcome": "failure", "vault_id": null, "visibility": "admin"}
+ok
+test_owner_cannot_use_admin_audit_endpoint (test_audit_visibility_http.AuditVisibilityHttpTests.test_owner_cannot_use_admin_audit_endpoint) ... {"actor_user_id": 2, "audit_event_id": 1, "correlation_id": null, "event": "vault_membership_changed", "job_id": null, "outcome": "success", "role": "viewer", "vault_id": 1, "visibility": "vault"}
+{"actor_user_id": null, "audit_event_id": 2, "correlation_id": null, "event": "break_glass_failed", "ip": "203.0.113.10", "job_id": null, "outcome": "failure", "vault_id": null, "visibility": "admin"}
+ok
+test_vault_member_sees_vault_events_but_not_admin_only_events (test_audit_visibility_http.AuditVisibilityHttpTests.test_vault_member_sees_vault_events_but_not_admin_only_events) ... {"actor_user_id": 2, "audit_event_id": 1, "correlation_id": null, "event": "vault_membership_changed", "job_id": null, "outcome": "success", "role": "viewer", "vault_id": 1, "visibility": "vault"}
+{"actor_user_id": null, "audit_event_id": 2, "correlation_id": null, "event": "break_glass_failed", "ip": "203.0.113.10", "job_id": null, "outcome": "failure", "vault_id": null, "visibility": "admin"}
+ok
+test_backoff_doubles_after_the_threshold (test_backoff.BackoffTests.test_backoff_doubles_after_the_threshold) ... ok
+test_backoff_is_capped_at_fifteen_minutes (test_backoff.BackoffTests.test_backoff_is_capped_at_fifteen_minutes) ... ok
+test_counters_decay_after_an_hour_of_quiet (test_backoff.BackoffTests.test_counters_decay_after_an_hour_of_quiet) ... ok
+test_failures_below_threshold_do_not_block (test_backoff.BackoffTests.test_failures_below_threshold_do_not_block) ... ok
+test_fresh_key_is_allowed (test_backoff.BackoffTests.test_fresh_key_is_allowed) ... ok
+test_success_resets_the_counter (test_backoff.BackoffTests.test_success_resets_the_counter) ... ok
+test_threshold_failures_start_a_thirty_second_backoff (test_backoff.BackoffTests.test_threshold_failures_start_a_thirty_second_backoff) ... ok
+test_bwlimit_arg_formats_kibps (test_bandwidth_limits.RcloneBandwidthTests.test_bwlimit_arg_formats_kibps) ... ok
+test_run_rclone_inserts_bwlimit_before_command_args (test_bandwidth_limits.RcloneBandwidthTests.test_run_rclone_inserts_bwlimit_before_command_args) ... ok
+test_ip_inside_a_configured_cidr_is_allowed (test_breakglass.BreakGlassNetworkTests.test_ip_inside_a_configured_cidr_is_allowed) ... ok
+test_ip_outside_configured_cidrs_is_denied (test_breakglass.BreakGlassNetworkTests.test_ip_outside_configured_cidrs_is_denied) ... ok
+test_loopback_is_allowed_when_no_cidrs_configured (test_breakglass.BreakGlassNetworkTests.test_loopback_is_allowed_when_no_cidrs_configured) ... ok
+test_loopback_stays_allowed_even_when_cidrs_are_set (test_breakglass.BreakGlassNetworkTests.test_loopback_stays_allowed_even_when_cidrs_are_set) ... ok
+test_missing_or_unparseable_ip_is_denied (test_breakglass.BreakGlassNetworkTests.test_missing_or_unparseable_ip_is_denied) ... ok
+test_public_ip_is_denied_when_no_cidrs_configured (test_breakglass.BreakGlassNetworkTests.test_public_ip_is_denied_when_no_cidrs_configured) ... ok
+test_break_glass_login_from_loopback_succeeds (test_breakglass_http.BreakGlassHttpTests.test_break_glass_login_from_loopback_succeeds) ... ok
+test_break_glass_login_from_outside_network_is_forbidden (test_breakglass_http.BreakGlassHttpTests.test_break_glass_login_from_outside_network_is_forbidden) ... {"actor_user_id": null, "audit_event_id": 1, "correlation_id": null, "event": "break_glass_denied", "ip": "203.0.113.7", "job_id": null, "outcome": null, "username": "admin", "vault_id": null, "visibility": "admin"}
+ok
+test_invite_guessing_is_throttled_by_ip (test_breakglass_http.BreakGlassHttpTests.test_invite_guessing_is_throttled_by_ip) ... {"actor_user_id": null, "audit_event_id": 1, "correlation_id": null, "event": "invite_guess", "ip": "203.0.113.7", "job_id": null, "outcome": null, "vault_id": null, "visibility": "admin"}
+{"actor_user_id": null, "audit_event_id": 2, "correlation_id": null, "event": "invite_guess", "ip": "203.0.113.7", "job_id": null, "outcome": null, "vault_id": null, "visibility": "admin"}
+{"actor_user_id": null, "audit_event_id": 3, "correlation_id": null, "event": "invite_guess", "ip": "203.0.113.7", "job_id": null, "outcome": null, "vault_id": null, "visibility": "admin"}
+{"actor_user_id": null, "audit_event_id": 4, "correlation_id": null, "event": "invite_guess", "ip": "203.0.113.7", "job_id": null, "outcome": null, "vault_id": null, "visibility": "admin"}
+{"actor_user_id": null, "audit_event_id": 5, "correlation_id": null, "event": "invite_guess", "ip": "203.0.113.7", "job_id": null, "outcome": null, "vault_id": null, "visibility": "admin"}
+{"actor_user_id": null, "audit_event_id": 6, "correlation_id": null, "event": "auth_backoff_blocked", "flow": "invite_redemption", "ip": "203.0.113.7", "job_id": null, "outcome": null, "retry_after": 30, "vault_id": null, "visibility": "admin"}
+ok
+test_login_page_hides_local_form_outside_network (test_breakglass_http.BreakGlassHttpTests.test_login_page_hides_local_form_outside_network) ... ok
+test_non_admin_cannot_break_glass_login (test_breakglass_http.BreakGlassHttpTests.test_non_admin_cannot_break_glass_login) ... {"actor_user_id": null, "audit_event_id": 1, "correlation_id": null, "event": "break_glass_failed", "ip": "127.0.0.1", "job_id": null, "outcome": null, "username": "member", "vault_id": null, "visibility": "admin"}
+ok
+test_null_password_user_cannot_break_glass_login (test_breakglass_http.BreakGlassHttpTests.test_null_password_user_cannot_break_glass_login) ... {"actor_user_id": null, "audit_event_id": 1, "correlation_id": null, "event": "break_glass_failed", "ip": "127.0.0.1", "job_id": null, "outcome": null, "username": "shell", "vault_id": null, "visibility": "admin"}
+ok
+test_repeated_failures_trigger_backoff (test_breakglass_http.BreakGlassHttpTests.test_repeated_failures_trigger_backoff) ... {"actor_user_id": null, "audit_event_id": 1, "correlation_id": null, "event": "break_glass_failed", "ip": "127.0.0.1", "job_id": null, "outcome": null, "username": "admin", "vault_id": null, "visibility": "admin"}
+{"actor_user_id": null, "audit_event_id": 2, "correlation_id": null, "event": "break_glass_failed", "ip": "127.0.0.1", "job_id": null, "outcome": null, "username": "admin", "vault_id": null, "visibility": "admin"}
+{"actor_user_id": null, "audit_event_id": 3, "correlation_id": null, "event": "break_glass_failed", "ip": "127.0.0.1", "job_id": null, "outcome": null, "username": "admin", "vault_id": null, "visibility": "admin"}
+{"actor_user_id": null, "audit_event_id": 4, "correlation_id": null, "event": "break_glass_failed", "ip": "127.0.0.1", "job_id": null, "outcome": null, "username": "admin", "vault_id": null, "visibility": "admin"}
+{"actor_user_id": null, "audit_event_id": 5, "correlation_id": null, "event": "break_glass_failed", "ip": "127.0.0.1", "job_id": null, "outcome": null, "username": "admin", "vault_id": null, "visibility": "admin"}
+{"actor_user_id": null, "audit_event_id": 6, "correlation_id": null, "event": "auth_backoff_blocked", "flow": "break_glass", "ip": "127.0.0.1", "job_id": null, "outcome": null, "retry_after": 30, "username": "admin", "vault_id": null, "visibility": "admin"}
+ok
+test_successful_login_resets_backoff (test_breakglass_http.BreakGlassHttpTests.test_successful_login_resets_backoff) ... {"actor_user_id": null, "audit_event_id": 1, "correlation_id": null, "event": "break_glass_failed", "ip": "127.0.0.1", "job_id": null, "outcome": null, "username": "admin", "vault_id": null, "visibility": "admin"}
+{"actor_user_id": null, "audit_event_id": 2, "correlation_id": null, "event": "break_glass_failed", "ip": "127.0.0.1", "job_id": null, "outcome": null, "username": "admin", "vault_id": null, "visibility": "admin"}
+{"actor_user_id": null, "audit_event_id": 3, "correlation_id": null, "event": "break_glass_failed", "ip": "127.0.0.1", "job_id": null, "outcome": null, "username": "admin", "vault_id": null, "visibility": "admin"}
+ok
+test_reports_missing_cloud_version_without_restoring (test_catalog_audit.CatalogAuditTests.test_reports_missing_cloud_version_without_restoring) ... ok
+test_reports_storage_class_and_policy_tag_drift (test_catalog_audit.CatalogAuditTests.test_reports_storage_class_and_policy_tag_drift) ... ok
+test_aws_workflow_is_manual_or_weekly_not_on_pull_request (test_ci_contracts.AwsWorkflowContractTests.test_aws_workflow_is_manual_or_weekly_not_on_pull_request) ... ok
+test_publish_workflow_pushes_image_to_ghcr (test_ci_contracts.ContainerPublishContractTests.test_publish_workflow_pushes_image_to_ghcr) ... ok
+test_ci_status_is_documented (test_ci_contracts.ContributorCiDocsTests.test_ci_status_is_documented) ... ok
+test_readme_mentions_published_image (test_ci_contracts.ContributorCiDocsTests.test_readme_mentions_published_image) ... ok
+test_dependabot_has_no_auto_merge (test_ci_contracts.DependabotContractTests.test_dependabot_has_no_auto_merge) ... ok
+test_pr_ci_builds_image_and_exercises_postgres_backup_path (test_ci_contracts.ProductionImagePostgresClientContractTests.test_pr_ci_builds_image_and_exercises_postgres_backup_path) ... ok
+test_pr_unit_job_runs_js_tests (test_ci_contracts.PullRequestCiContractTests.test_pr_unit_job_runs_js_tests) ... ok
+test_pr_workflow_has_no_aws_oidc_or_static_keys (test_ci_contracts.PullRequestCiContractTests.test_pr_workflow_has_no_aws_oidc_or_static_keys) ... ok
+test_security_scanners_declare_severity_gates (test_ci_contracts.SecurityWorkflowContractTests.test_security_scanners_declare_severity_gates) ... ok
+test_codeql_uploads_sarif_only_when_public (test_ci_contracts.WorkflowHardeningContractTests.test_codeql_uploads_sarif_only_when_public) ... ok
+test_external_actions_are_pinned_and_checkouts_drop_credentials (test_ci_contracts.WorkflowHardeningContractTests.test_external_actions_are_pinned_and_checkouts_drop_credentials) ... ok
+test_untrusted_pr_events_do_not_cross_privileged_boundaries (test_ci_contracts.WorkflowHardeningContractTests.test_untrusted_pr_events_do_not_cross_privileged_boundaries) ... ok
+test_owner_can_enable_cloud_deletion_setting (test_cloud_deletion.CloudDeletionSettingTests.test_owner_can_enable_cloud_deletion_setting) ... {"actor_user_id": 9, "at": "2026-07-24T06:09:13+00:00", "audit_event_id": 1, "correlation_id": null, "enabled": true, "event": "cloud_deletion.setting_changed", "job_id": null, "outcome": "success", "vault_id": 1, "visibility": "vault"}
+ok
+test_vault_cloud_deletion_defaults_to_disabled (test_cloud_deletion.CloudDeletionSettingTests.test_vault_cloud_deletion_defaults_to_disabled) ... ok
+test_delete_marker_copy_never_claims_object_data (test_cloud_deletion.ConfirmationPhraseTests.test_delete_marker_copy_never_claims_object_data) ... ok
+test_vault_name_or_generated_phrase_is_accepted (test_cloud_deletion.ConfirmationPhraseTests.test_vault_name_or_generated_phrase_is_accepted) ... ok
+test_preview_counts_objects_versions_and_bytes (test_cloud_deletion.DeletionPreviewTests.test_preview_counts_objects_versions_and_bytes) ... ok
+test_archive_tiered_rule_transitions_noncurrent_to_cheapest_class (test_cloud_deletion.NoncurrentLifecycleTransitionTests.test_archive_tiered_rule_transitions_noncurrent_to_cheapest_class) ... ok
+test_purge_after_delay_deletes_every_version_and_marker_resumably (test_cloud_deletion.PermanentPurgeExecutionTests.test_purge_after_delay_deletes_every_version_and_marker_resumably) ... {"actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "event": "cloud_deletion.purge_requested", "group_id": "0881a944-c908-4805-b53a-2753a7733d51", "job_id": 1, "outcome": "requested", "path": "report.txt", "pending_until": "2026-07-23T11:00:00+00:00", "preview": {"byte_count": 21, "delete_marker_count": 1, "object_count": 1, "version_count": 2}, "reason": "permanent cleanup", "vault_id": 2, "visibility": "vault"}
+{"actor_user_id": 1, "audit_event_id": 2, "correlation_id": null, "deleted": 2, "event": "cloud_deletion.purge_partial_failure", "failed": 1, "job_id": 1, "outcome": "partial_failure", "pending": 0, "vault_id": 2, "visibility": "vault"}
+{"actor_user_id": 1, "audit_event_id": 3, "correlation_id": null, "deleted": 3, "event": "cloud_deletion.purge_completed", "job_id": 1, "outcome": "success", "vault_id": 2, "visibility": "vault"}
+ok
+test_cancel_during_delay_prevents_all_deletion_calls (test_cloud_deletion.PermanentPurgeGateTests.test_cancel_during_delay_prevents_all_deletion_calls) ... {"actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "event": "cloud_deletion.purge_requested", "group_id": "59f2baf0-6b23-4972-8a74-6cae116f169c", "job_id": 1, "outcome": "requested", "path": "report.txt", "pending_until": "2026-07-24T12:00:00+00:00", "preview": {"byte_count": 21, "delete_marker_count": 0, "object_count": 1, "version_count": 2}, "reason": "cleanup", "vault_id": 2, "visibility": "vault"}
+{"action": "cloud-purge", "actor_user_id": 1, "audit_event_id": 2, "correlation_id": null, "event": "cloud_deletion.cancelled", "group_id": "59f2baf0-6b23-4972-8a74-6cae116f169c", "job_id": 1, "outcome": "cancelled", "previous_status": "pending_delay", "vault_id": 2, "visibility": "vault"}
+ok
+test_purge_requires_setting_confirmation_reason_and_delay (test_cloud_deletion.PermanentPurgeGateTests.test_purge_requires_setting_confirmation_reason_and_delay) ... {"actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "event": "cloud_deletion.purge_requested", "group_id": "6eba6364-5ec0-4024-959a-365a3430a684", "job_id": 1, "outcome": "requested", "path": "report.txt", "pending_until": "2026-07-24T12:00:00+00:00", "preview": {"byte_count": 21, "delete_marker_count": 0, "object_count": 1, "version_count": 2}, "reason": "obsolete duplicates", "vault_id": 2, "visibility": "vault"}
+ok
+test_reversible_archive_creates_delete_marker_without_purging_versions (test_cloud_deletion.ReversibleArchiveExecutionTests.test_reversible_archive_creates_delete_marker_without_purging_versions) ... {"actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "event": "cloud_deletion.archive_requested", "group_id": "eab19eaf-5100-414a-868b-f5e694dc1883", "job_id": 1, "outcome": "requested", "path": "report.txt", "vault_id": 2, "visibility": "vault"}
+{"actor_user_id": 1, "audit_event_id": 2, "correlation_id": null, "delete_marker_version_id": "marker-1", "event": "cloud_deletion.archive_completed", "job_id": 1, "outcome": "success", "path": "report.txt", "vault_id": 2, "visibility": "vault"}
+ok
+test_archive_requires_enabled_setting (test_cloud_deletion.ReversibleArchiveGateTests.test_archive_requires_enabled_setting) ... ok
+test_operators_and_viewers_cannot_purge_or_archive (test_cloud_deletion_http.CloudDeletionHttpTests.test_operators_and_viewers_cannot_purge_or_archive) ... ok
+test_owner_purge_requires_confirmation_and_schedules_delay (test_cloud_deletion_http.CloudDeletionHttpTests.test_owner_purge_requires_confirmation_and_schedules_delay) ... {"actor_user_id": 2, "audit_event_id": 1, "correlation_id": null, "event": "cloud_deletion.purge_requested", "group_id": "5010cf29-7f17-41ca-acf6-2a0e300fb3be", "job_id": 1, "outcome": "requested", "path": "report.txt", "pending_until": "2026-07-25T06:09:18.296975+00:00", "preview": {"byte_count": 12, "delete_marker_count": 0, "object_count": 1, "version_count": 1}, "reason": "cleanup obsolete copies", "vault_id": 1, "visibility": "vault"}
+{"action": "cloud-purge", "actor_user_id": 2, "audit_event_id": 2, "correlation_id": null, "event": "cloud_deletion.cancelled", "group_id": "5010cf29-7f17-41ca-acf6-2a0e300fb3be", "job_id": 1, "outcome": "cancelled", "previous_status": "pending_delay", "vault_id": 1, "visibility": "vault"}
+ok
+test_setting_defaults_off_and_owner_can_enable_with_reauth (test_cloud_deletion_http.CloudDeletionHttpTests.test_setting_defaults_off_and_owner_can_enable_with_reauth) ... {"actor_user_id": 2, "at": "2026-07-24T06:09:18+00:00", "audit_event_id": 1, "correlation_id": null, "enabled": true, "event": "cloud_deletion.setting_changed", "job_id": null, "outcome": "success", "vault_id": 1, "visibility": "vault"}
+{"actor_user_id": 2, "at": "2026-07-24T06:09:18+00:00", "audit_event_id": 2, "correlation_id": null, "enabled": true, "event": "cloud_deletion.setting_changed", "job_id": null, "outcome": "success", "vault_id": 1, "visibility": "vault"}
+ok
+test_empty_cidr_list_is_accepted (test_config.BreakGlassConfigValidationTests.test_empty_cidr_list_is_accepted) ... ok
+test_invalid_cidr_entry_is_rejected (test_config.BreakGlassConfigValidationTests.test_invalid_cidr_entry_is_rejected) ... ok
+test_valid_cidr_list_is_accepted (test_config.BreakGlassConfigValidationTests.test_valid_cidr_list_is_accepted) ... ok
+test_disabled_oidc_needs_no_oidc_settings (test_config.OidcConfigValidationTests.test_disabled_oidc_needs_no_oidc_settings) ... ok
+test_enabled_oidc_without_client_secret_is_rejected (test_config.OidcConfigValidationTests.test_enabled_oidc_without_client_secret_is_rejected) ... ok
+test_enabled_oidc_without_issuer_is_rejected (test_config.OidcConfigValidationTests.test_enabled_oidc_without_issuer_is_rejected) ... ok
+test_fully_configured_oidc_is_accepted (test_config.OidcConfigValidationTests.test_fully_configured_oidc_is_accepted) ... ok
+test_development_defaults_need_no_hardening_env (test_config.ProductionHardeningConfigTests.test_development_defaults_need_no_hardening_env) ... ok
+test_invalid_trusted_proxy_cidr_is_rejected (test_config.ProductionHardeningConfigTests.test_invalid_trusted_proxy_cidr_is_rejected) ... ok
+test_secure_cookie_requires_allowed_hosts (test_config.ProductionHardeningConfigTests.test_secure_cookie_requires_allowed_hosts) ... ok
+test_secure_cookie_requires_trusted_proxies (test_config.ProductionHardeningConfigTests.test_secure_cookie_requires_trusted_proxies) ... ok
+test_secure_cookie_with_both_present_is_accepted (test_config.ProductionHardeningConfigTests.test_secure_cookie_with_both_present_is_accepted) ... ok
+test_compose_files_reference_published_ghcr_image (test_container_hardening.ContainerHardeningComposeTests.test_compose_files_reference_published_ghcr_image) ... ok
+test_service_drops_capabilities_and_uses_read_only_rootfs (test_container_hardening.ContainerHardeningComposeTests.test_service_drops_capabilities_and_uses_read_only_rootfs) ... ok
+test_service_runs_as_configurable_unraid_compatible_identity (test_container_hardening.ContainerHardeningComposeTests.test_service_runs_as_configurable_unraid_compatible_identity) ... ok
+test_writable_mounts_are_limited_to_required_volumes (test_container_hardening.ContainerHardeningComposeTests.test_writable_mounts_are_limited_to_required_volumes) ... ok
+test_image_declares_non_root_entrypoint_helper (test_container_hardening.DockerfileHardeningTests.test_image_declares_non_root_entrypoint_helper) ... ok
+test_image_installs_postgresql_16_client_tools (test_container_hardening.DockerfileHardeningTests.test_image_installs_postgresql_16_client_tools)
+Production image must ship PG 16 clients for metadata backup/verify (issue #7). ... ok
+test_filesystem_permission_recipes_cover_linux_unraid_and_desktop (test_container_hardening.PermissionAndTraefikDocumentationTests.test_filesystem_permission_recipes_cover_linux_unraid_and_desktop) ... ok
+test_traefik_docs_describe_private_upstream (test_container_hardening.PermissionAndTraefikDocumentationTests.test_traefik_docs_describe_private_upstream) ... ok
+test_reference_compose_keeps_app_off_public_ports (test_container_hardening.TraefikReferenceDeploymentTests.test_reference_compose_keeps_app_off_public_ports) ... ok
+test_missing_active_book_uses_builtin_defaults_with_timestamp (test_cost_estimates.PriceBookDefaultTests.test_missing_active_book_uses_builtin_defaults_with_timestamp) ... ok
+test_activated_book_is_used_for_estimates (test_cost_estimates.PriceBookPersistenceTests.test_activated_book_is_used_for_estimates) ... ok
+test_restore_estimate_exposes_assumptions_and_timestamp (test_cost_estimates.RestoreEstimateFromPriceBookTests.test_restore_estimate_exposes_assumptions_and_timestamp) ... ok
+test_adoption_rejects_schema_missing_a_required_index (test_database.DatabaseMigrationTests.test_adoption_rejects_schema_missing_a_required_index) ... ok
+test_catalog_observes_a_new_local_file_through_one_interface (test_database.DatabaseMigrationTests.test_catalog_observes_a_new_local_file_through_one_interface) ... ok
+test_cleanup_action_migration_preserves_existing_jobs (test_database.DatabaseMigrationTests.test_cleanup_action_migration_preserves_existing_jobs) ... ok
+test_confirmed_rename_preserves_identity_and_path_history (test_database.DatabaseMigrationTests.test_confirmed_rename_preserves_identity_and_path_history) ... ok
+test_current_catalog_migrates_without_losing_file_state (test_database.DatabaseMigrationTests.test_current_catalog_migrates_without_losing_file_state) ... ok
+test_downgrade_refuses_to_resurrect_a_missing_archive_version (test_database.DatabaseMigrationTests.test_downgrade_refuses_to_resurrect_a_missing_archive_version) ... ok
+test_fresh_sqlite_database_migrates_to_a_startable_schema (test_database.DatabaseMigrationTests.test_fresh_sqlite_database_migrates_to_a_startable_schema) ... ok
+test_head_creates_auth_backoff (test_database.DatabaseMigrationTests.test_head_creates_auth_backoff) ... ok
+test_head_creates_invites_and_makes_password_nullable (test_database.DatabaseMigrationTests.test_head_creates_invites_and_makes_password_nullable) ... ok
+test_head_creates_oidc_login_and_user_identities (test_database.DatabaseMigrationTests.test_head_creates_oidc_login_and_user_identities) ... ok
+test_invites_migration_preserves_existing_rows (test_database.DatabaseMigrationTests.test_invites_migration_preserves_existing_rows) ... ok
+test_lossless_schema_can_downgrade_and_upgrade_again (test_database.DatabaseMigrationTests.test_lossless_schema_can_downgrade_and_upgrade_again) ... ok
+test_stale_cloud_scan_does_not_hide_a_concurrent_upload (test_database.DatabaseMigrationTests.test_stale_cloud_scan_does_not_hide_a_concurrent_upload) ... ok
+test_startup_rejects_an_unmigrated_database (test_database.DatabaseMigrationTests.test_startup_rejects_an_unmigrated_database) ... ok
+test_upgrade_blocks_conflicting_active_legacy_jobs (test_database.DatabaseMigrationTests.test_upgrade_blocks_conflicting_active_legacy_jobs) ... ok
+test_known_event_uses_ready_made_template (test_email_templates.EmailTemplateTests.test_known_event_uses_ready_made_template) ... ok
+test_unknown_event_falls_back_to_default_template (test_email_templates.EmailTemplateTests.test_unknown_event_falls_back_to_default_template) ... ok
+test_cleanup_group_reports_freed_bytes_and_files (test_file_browser.FileBrowserTests.test_cleanup_group_reports_freed_bytes_and_files) ... ok
+test_directory_aggregates_size_state_and_available_actions (test_file_browser.FileBrowserTests.test_directory_aggregates_size_state_and_available_actions) ... ok
+test_directory_is_normalized_and_traversal_is_rejected (test_file_browser.FileBrowserTests.test_directory_is_normalized_and_traversal_is_rejected) ... ok
+test_file_browser_reads_the_versioned_catalog (test_file_browser.FileBrowserTests.test_file_browser_reads_the_versioned_catalog) ... ok
+test_folder_progress_is_weighted_by_bytes_not_file_count (test_file_browser.FileBrowserTests.test_folder_progress_is_weighted_by_bytes_not_file_count) ... ok
+test_interrupted_group_has_a_terminal_cancelled_status (test_file_browser.FileBrowserTests.test_interrupted_group_has_a_terminal_cancelled_status) ... ok
+test_nested_level_only_contains_direct_children (test_file_browser.FileBrowserTests.test_nested_level_only_contains_direct_children) ... ok
+test_root_contains_folders_before_files (test_file_browser.FileBrowserTests.test_root_contains_folders_before_files) ... ok
+test_state_filter_keeps_real_directory_aggregates (test_file_browser.FileBrowserTests.test_state_filter_keeps_real_directory_aggregates) ... ok
+test_scan_catalogues_symlink_as_unsupported_not_regular (test_fs_diagnostics.ScanSymlinkAndPermissionTests.test_scan_catalogues_symlink_as_unsupported_not_regular) ... ok
+test_unreadable_file_during_scan_is_recorded_not_skipped (test_fs_diagnostics.ScanSymlinkAndPermissionTests.test_unreadable_file_during_scan_is_recorded_not_skipped) ... ok
+test_safe_local_entry_path_rejects_symlink_for_cleanup (test_fs_diagnostics.SymlinkPathRejectionTests.test_safe_local_entry_path_rejects_symlink_for_cleanup) ... ok
+test_safe_local_path_rejects_final_symlink_without_following (test_fs_diagnostics.SymlinkPathRejectionTests.test_safe_local_path_rejects_final_symlink_without_following) ... ok
+test_stats_include_filesystem_preflight_for_vault (test_fs_diagnostics.VaultFilesystemHealthStatsTests.test_stats_include_filesystem_preflight_for_vault) ... ok
+test_accepts_exact_allowed_base (test_fs_preflight.ConfiguredVaultRootResolutionTests.test_accepts_exact_allowed_base) ... ok
+test_accepts_root_nested_under_allowed_base (test_fs_preflight.ConfiguredVaultRootResolutionTests.test_accepts_root_nested_under_allowed_base) ... ok
+test_rejects_prefix_spoof_without_separator (test_fs_preflight.ConfiguredVaultRootResolutionTests.test_rejects_prefix_spoof_without_separator) ... ok
+test_rejects_root_outside_allowed_bases (test_fs_preflight.ConfiguredVaultRootResolutionTests.test_rejects_root_outside_allowed_bases) ... ok
+test_healthy_root_passes_and_reports_effective_identity (test_fs_preflight.VaultFilesystemPreflightTests.test_healthy_root_passes_and_reports_effective_identity) ... ok
+test_missing_root_fails_with_remediation (test_fs_preflight.VaultFilesystemPreflightTests.test_missing_root_fails_with_remediation) ... ok
+test_preflight_never_changes_ownership_or_modes (test_fs_preflight.VaultFilesystemPreflightTests.test_preflight_never_changes_ownership_or_modes) ... ok
+test_root_without_write_access_fails (test_fs_preflight.VaultFilesystemPreflightTests.test_root_without_write_access_fails) ... ok
+test_symlink_is_reported_and_not_treated_as_regular_content (test_fs_preflight.VaultFilesystemPreflightTests.test_symlink_is_reported_and_not_treated_as_regular_content) ... ok
+test_unreadable_file_is_reported_precisely (test_fs_preflight.VaultFilesystemPreflightTests.test_unreadable_file_is_reported_precisely) ... ok
+test_unwritable_directory_is_reported (test_fs_preflight.VaultFilesystemPreflightTests.test_unwritable_directory_is_reported) ... ok
+test_cross_origin_mutation_is_rejected_even_with_a_token (test_hardening_http.CsrfEnforcementTests.test_cross_origin_mutation_is_rejected_even_with_a_token) ... ok
+test_mutation_with_a_wrong_csrf_header_is_rejected (test_hardening_http.CsrfEnforcementTests.test_mutation_with_a_wrong_csrf_header_is_rejected) ... ok
+test_mutation_with_the_session_csrf_token_passes (test_hardening_http.CsrfEnforcementTests.test_mutation_with_the_session_csrf_token_passes) ... ok
+test_mutation_without_a_csrf_header_is_rejected (test_hardening_http.CsrfEnforcementTests.test_mutation_without_a_csrf_header_is_rejected) ... ok
+test_me_exposes_a_csrf_token_and_readable_cookie (test_hardening_http.CsrfExposureTests.test_me_exposes_a_csrf_token_and_readable_cookie) ... ok
+test_request_with_a_disallowed_host_is_rejected (test_hardening_http.HostHardeningTests.test_request_with_a_disallowed_host_is_rejected) ... ok
+test_request_with_an_allowed_host_passes (test_hardening_http.HostHardeningTests.test_request_with_an_allowed_host_passes) ... ok
+test_absolute_url_is_rejected (test_hardening_http.OpenRedirectGuardTests.test_absolute_url_is_rejected) ... ok
+test_backslash_trick_is_rejected (test_hardening_http.OpenRedirectGuardTests.test_backslash_trick_is_rejected) ... ok
+test_local_path_is_preserved (test_hardening_http.OpenRedirectGuardTests.test_local_path_is_preserved) ... ok
+test_missing_value_falls_back_to_root (test_hardening_http.OpenRedirectGuardTests.test_missing_value_falls_back_to_root) ... ok
+test_non_path_value_is_rejected (test_hardening_http.OpenRedirectGuardTests.test_non_path_value_is_rejected) ... ok
+test_protocol_relative_url_is_rejected (test_hardening_http.OpenRedirectGuardTests.test_protocol_relative_url_is_rejected) ... ok
+test_break_glass_password_reauth_restores_access (test_hardening_http.ReauthTests.test_break_glass_password_reauth_restores_access) ... ok
+test_break_glass_reauth_with_a_wrong_password_is_rejected (test_hardening_http.ReauthTests.test_break_glass_reauth_with_a_wrong_password_is_rejected) ... ok
+test_fresh_login_counts_as_recent_reauth (test_hardening_http.ReauthTests.test_fresh_login_counts_as_recent_reauth) ... ok
+test_stale_reauth_blocks_a_sensitive_action (test_hardening_http.ReauthTests.test_stale_reauth_blocks_a_sensitive_action) ... ok
+test_missing_reauth_is_not_recent (test_hardening_http.ReauthWindowTests.test_missing_reauth_is_not_recent) ... ok
+test_reauth_older_than_window_is_not_recent (test_hardening_http.ReauthWindowTests.test_reauth_older_than_window_is_not_recent) ... ok
+test_reauth_within_window_is_recent (test_hardening_http.ReauthWindowTests.test_reauth_within_window_is_recent) ... ok
+test_liveness_stays_ok_even_when_dependencies_are_down (test_health_metrics.HealthAndMetricsHttpTests.test_liveness_stays_ok_even_when_dependencies_are_down) ... ok
+test_metrics_expose_low_cardinality_prometheus_counters (test_health_metrics.HealthAndMetricsHttpTests.test_metrics_expose_low_cardinality_prometheus_counters) ... ok
+test_readiness_ok_when_database_worker_and_config_are_healthy (test_health_metrics.HealthAndMetricsHttpTests.test_readiness_ok_when_database_worker_and_config_are_healthy) ... ok
+test_readiness_reports_not_ready_when_database_is_unavailable (test_health_metrics.HealthAndMetricsHttpTests.test_readiness_reports_not_ready_when_database_is_unavailable) ... ok
+test_metrics_reject_sensitive_label_names (test_health_metrics.MetricsLabelGuardTests.test_metrics_reject_sensitive_label_names) ... ok
+test_directory_state_escapes_state_label_before_inner_html (test_html_safety.HtmlSafetyTests.test_directory_state_escapes_state_label_before_inner_html) ... ok
+test_escape_html_is_defined_for_dynamic_table_cells (test_html_safety.HtmlSafetyTests.test_escape_html_is_defined_for_dynamic_table_cells) ... ok
+test_notify_assigns_message_via_text_content (test_html_safety.HtmlSafetyTests.test_notify_assigns_message_via_text_content) ... ok
+test_present_job_message_keeps_params_as_plain_text (test_html_safety.HtmlSafetyTests.test_present_job_message_keeps_params_as_plain_text) ... ok
+test_quota_error_messages_are_escaped_before_inner_html (test_html_safety.HtmlSafetyTests.test_quota_error_messages_are_escaped_before_inner_html) ... ok
+test_summary_cards_escape_catalog_labels_before_inner_html (test_html_safety.HtmlSafetyTests.test_summary_cards_escape_catalog_labels_before_inner_html) ... ok
+test_tojson_filter_cannot_terminate_a_script_element (test_html_safety.HtmlSafetyTests.test_tojson_filter_cannot_terminate_a_script_element) ... ok
+test_translate_does_not_interpret_html_in_parameters (test_html_safety.HtmlSafetyTests.test_translate_does_not_interpret_html_in_parameters) ... ok
+test_available_locales_are_english_and_italian (test_i18n.AvailableLocalesTests.test_available_locales_are_english_and_italian) ... ok
+test_critical_keys_are_not_orphaned_from_english_catalog (test_i18n.CatalogIntegrityTests.test_critical_keys_are_not_orphaned_from_english_catalog) ... ok
+test_email_templates_render_from_stable_keys (test_i18n.CatalogIntegrityTests.test_email_templates_render_from_stable_keys) ... ok
+test_english_and_italian_catalogs_have_matching_keys (test_i18n.CatalogIntegrityTests.test_english_and_italian_catalogs_have_matching_keys) ... ok
+test_english_catalog_defines_every_critical_key (test_i18n.CatalogIntegrityTests.test_english_catalog_defines_every_critical_key) ... ok
+test_italian_catalog_defines_every_critical_key (test_i18n.CatalogIntegrityTests.test_italian_catalog_defines_every_critical_key) ... ok
+test_italian_locale_resolves_to_italian_catalog_file (test_i18n.CatalogPathSafetyTests.test_italian_locale_resolves_to_italian_catalog_file) ... ok
+test_path_like_locale_resolves_to_english_catalog_file (test_i18n.CatalogPathSafetyTests.test_path_like_locale_resolves_to_english_catalog_file) ... ok
+test_resolved_path_never_embeds_raw_locale_segments (test_i18n.CatalogPathSafetyTests.test_resolved_path_never_embeds_raw_locale_segments) ... ok
+test_normalize_accepts_language_tags (test_i18n.LocaleNormalizationTests.test_normalize_accepts_language_tags) ... ok
+test_normalize_rejects_unknown_to_default (test_i18n.LocaleNormalizationTests.test_normalize_rejects_unknown_to_default) ... ok
+test_missing_key_returns_key_itself (test_i18n.TranslateTests.test_missing_key_returns_key_itself) ... ok
+test_translate_formats_named_parameters (test_i18n.TranslateTests.test_translate_formats_named_parameters) ... ok
+test_translate_returns_english_default_for_known_key (test_i18n.TranslateTests.test_translate_returns_english_default_for_known_key) ... ok
+test_translate_returns_italian_for_known_key (test_i18n.TranslateTests.test_translate_returns_italian_for_known_key) ... ok
+test_unknown_locale_falls_back_to_english (test_i18n.TranslateTests.test_unknown_locale_falls_back_to_english) ... ok
+test_admin_can_create_a_passwordless_shell_user (test_invite_http.InviteHttpTests.test_admin_can_create_a_passwordless_shell_user) ... ok
+test_admin_creates_an_invite_for_a_target_user (test_invite_http.InviteHttpTests.test_admin_creates_an_invite_for_a_target_user) ... ok
+test_authenticated_user_self_links_their_identity (test_invite_http.InviteHttpTests.test_authenticated_user_self_links_their_identity) ... ok
+test_expired_invite_is_rejected_at_login (test_invite_http.InviteHttpTests.test_expired_invite_is_rejected_at_login) ... ok
+test_invited_identity_is_bound_and_signed_in (test_invite_http.InviteHttpTests.test_invited_identity_is_bound_and_signed_in) ... ok
+test_non_admin_cannot_create_invites (test_invite_http.InviteHttpTests.test_non_admin_cannot_create_invites) ... ok
+test_shell_user_cannot_break_glass_login (test_invite_http.InviteHttpTests.test_shell_user_cannot_break_glass_login) ... {"actor_user_id": null, "audit_event_id": 1, "correlation_id": null, "event": "break_glass_failed", "ip": "127.0.0.1", "job_id": null, "outcome": null, "username": "oidcuser", "vault_id": null, "visibility": "admin"}
+ok
+test_unlinked_identity_without_invite_is_refused (test_invite_http.InviteHttpTests.test_unlinked_identity_without_invite_is_refused) ... ok
+test_create_invite_for_unknown_user_is_rejected (test_invites.CreateInviteTests.test_create_invite_for_unknown_user_is_rejected) ... ok
+test_create_invite_stores_only_the_token_hash (test_invites.CreateInviteTests.test_create_invite_stores_only_the_token_hash) ... ok
+test_link_identity_binds_an_identity_to_a_user (test_invites.LinkIdentityTests.test_link_identity_binds_an_identity_to_a_user) ... ok
+test_link_identity_rejects_a_duplicate_binding (test_invites.LinkIdentityTests.test_link_identity_rejects_a_duplicate_binding) ... ok
+test_redeem_already_used_invite_is_rejected (test_invites.RedeemInviteTests.test_redeem_already_used_invite_is_rejected) ... ok
+test_redeem_binds_identity_and_marks_the_invite (test_invites.RedeemInviteTests.test_redeem_binds_identity_and_marks_the_invite) ... ok
+test_redeem_expired_invite_binds_nothing (test_invites.RedeemInviteTests.test_redeem_expired_invite_binds_nothing) ... ok
+test_redeem_rejects_an_already_bound_identity (test_invites.RedeemInviteTests.test_redeem_rejects_an_already_bound_identity) ... ok
+test_redeem_unknown_invite_is_rejected (test_invites.RedeemInviteTests.test_redeem_unknown_invite_is_rejected) ... ok
+test_resolve_rejects_an_already_redeemed_token (test_invites.ResolveInviteTests.test_resolve_rejects_an_already_redeemed_token) ... ok
+test_resolve_rejects_an_expired_token (test_invites.ResolveInviteTests.test_resolve_rejects_an_expired_token) ... ok
+test_resolve_rejects_an_unknown_token (test_invites.ResolveInviteTests.test_resolve_rejects_an_unknown_token) ... ok
+test_resolve_returns_the_pending_invite_for_a_valid_token (test_invites.ResolveInviteTests.test_resolve_returns_the_pending_invite_for_a_valid_token) ... ok
+test_jobs_api_localizes_message_for_locale_cookie (test_job_messages.JobMessageHttpTests.test_jobs_api_localizes_message_for_locale_cookie) ... ok
+test_schedule_upload_retry_stores_transient_key (test_job_messages.JobMessagePersistenceTests.test_schedule_upload_retry_stores_transient_key) ... ok
+test_set_job_stores_message_key_and_english_fallback (test_job_messages.JobMessagePersistenceTests.test_set_job_stores_message_key_and_english_fallback) ... ok
+test_keyed_message_localizes_with_params (test_job_messages.PresentJobMessageTests.test_keyed_message_localizes_with_params) ... ok
+test_legacy_prose_message_is_returned_unchanged (test_job_messages.PresentJobMessageTests.test_legacy_prose_message_is_returned_unchanged) ... ok
+test_cancelled_queued_job_is_not_started (test_job_scheduler.FairSchedulerIntegrationTests.test_cancelled_queued_job_is_not_started) ... ok
+test_process_jobs_once_does_not_starve_second_vault (test_job_scheduler.FairSchedulerIntegrationTests.test_process_jobs_once_does_not_starve_second_vault) ... ok
+test_empty_windows_always_allow (test_job_scheduler.OperatingWindowTests.test_empty_windows_always_allow) ... ok
+test_job_inside_window_is_allowed (test_job_scheduler.OperatingWindowTests.test_job_inside_window_is_allowed) ... ok
+test_job_outside_window_is_deferred (test_job_scheduler.OperatingWindowTests.test_job_outside_window_is_deferred) ... ok
+test_continues_round_robin_after_first_pass (test_job_scheduler.SelectFairJobsTests.test_continues_round_robin_after_first_pass) ... ok
+test_empty_input_returns_empty (test_job_scheduler.SelectFairJobsTests.test_empty_input_returns_empty) ... ok
+test_interleaves_oldest_jobs_across_vaults (test_job_scheduler.SelectFairJobsTests.test_interleaves_oldest_jobs_across_vaults) ... ok
+test_operator_cannot_read_lifecycle (test_lifecycle_http.VaultLifecycleHttpTests.test_operator_cannot_read_lifecycle) ... ok
+test_owner_can_read_lifecycle_catalog (test_lifecycle_http.VaultLifecycleHttpTests.test_owner_can_read_lifecycle_catalog) ... ok
+test_owner_can_set_and_clear_folder_override (test_lifecycle_http.VaultLifecycleHttpTests.test_owner_can_set_and_clear_folder_override) ... {"actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "event": "vault_lifecycle_folder_override_updated", "folder_path": "photos", "guided_profile": "archive_tiered", "job_id": null, "outcome": null, "policy_id": "62c405b7-4daa-4884-9e4e-d356280392da", "vault_id": 1, "visibility": "vault"}
+{"actor_user_id": 1, "audit_event_id": 2, "correlation_id": null, "event": "vault_lifecycle_folder_override_removed", "folder_path": "photos", "job_id": null, "outcome": null, "vault_id": 1, "visibility": "vault"}
+ok
+test_owner_update_requires_reauth_and_applies_guided_profile (test_lifecycle_http.VaultLifecycleHttpTests.test_owner_update_requires_reauth_and_applies_guided_profile) ... {"actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "event": "vault_lifecycle_default_updated", "guided_profile": "ia_after_30", "job_id": null, "outcome": null, "policy_id": "c41e322a-b5e3-4214-9431-25ae751f6e11", "vault_id": 1, "visibility": "vault"}
+ok
+test_apply_version_policy_tag_calls_put_object_tagging (test_lifecycle_policies.ApplyVersionPolicyTagTests.test_apply_version_policy_tag_calls_put_object_tagging) ... ok
+test_folder_override_updates_desired_policy_on_existing_versions (test_lifecycle_policies.LifecyclePolicyDatabaseTests.test_folder_override_updates_desired_policy_on_existing_versions) ... ok
+test_load_policy_assignments_reads_defaults_and_overrides (test_lifecycle_policies.LifecyclePolicyDatabaseTests.test_load_policy_assignments_reads_defaults_and_overrides) ... ok
+test_policy_object_tags_use_stable_key (test_lifecycle_policies.PolicyObjectTagsTests.test_policy_object_tags_use_stable_key) ... ok
+test_reconcile_pending_policy_tags_applies_s3_tag_and_records_applied_id (test_lifecycle_policies.PolicyReconciliationTests.test_reconcile_pending_policy_tags_applies_s3_tag_and_records_applied_id) ... ok
+test_longest_folder_override_wins (test_lifecycle_policies.ResolveEffectivePolicyIdTests.test_longest_folder_override_wins) ... ok
+test_vault_default_applies_when_no_folder_override (test_lifecycle_policies.ResolveEffectivePolicyIdTests.test_vault_default_applies_when_no_folder_override) ... ok
+test_plain_upload_tags_object_version_and_records_policy_ids (test_lifecycle_policies.UploadPolicyTagIntegrationTests.test_plain_upload_tags_object_version_and_records_policy_ids) ... ok
+test_rejects_non_increasing_transition_days (test_lifecycle_profiles.LifecycleProfileValidationTests.test_rejects_non_increasing_transition_days) ... ok
+test_rejects_transition_before_minimum_days (test_lifecycle_profiles.LifecycleProfileValidationTests.test_rejects_transition_before_minimum_days) ... ok
+test_valid_tiered_profile_passes (test_lifecycle_profiles.LifecycleProfileValidationTests.test_valid_tiered_profile_passes) ... ok
+test_warns_about_glacier_retrieval_costs (test_lifecycle_profiles.LifecycleProfileValidationTests.test_warns_about_glacier_retrieval_costs) ... ok
+test_catalog_endpoint_honors_locale_query (test_locale_http.LocaleHttpTests.test_catalog_endpoint_honors_locale_query) ... ok
+test_catalog_endpoint_returns_english_by_default (test_locale_http.LocaleHttpTests.test_catalog_endpoint_returns_english_by_default) ... ok
+test_login_page_uses_locale_cookie_for_html_lang (test_locale_http.LocaleHttpTests.test_login_page_uses_locale_cookie_for_html_lang) ... ok
+test_put_locale_cookie_value_is_only_allowlisted_constant (test_locale_http.LocaleHttpTests.test_put_locale_cookie_value_is_only_allowlisted_constant)
+Seam: PUT /api/locale — Set-Cookie never echoes raw client locale text. ... ok
+test_put_locale_sets_cookie_and_returns_italian_catalog (test_locale_http.LocaleHttpTests.test_put_locale_sets_cookie_and_returns_italian_catalog) ... ok
+test_independent_users_and_ips_have_separate_postgresql_budgets (test_lookup_rate_limit.PostgreSQLSharedLookupRateLimitTests.test_independent_users_and_ips_have_separate_postgresql_budgets) ... skipped 'TEST_POSTGRES_URL is not configured'
+test_independent_workers_enforce_ten_attempts_in_one_postgresql_window (test_lookup_rate_limit.PostgreSQLSharedLookupRateLimitTests.test_independent_workers_enforce_ten_attempts_in_one_postgresql_window) ... skipped 'TEST_POSTGRES_URL is not configured'
+test_concurrent_workers_cannot_admit_more_than_ten_attempts (test_lookup_rate_limit.SharedLookupRateLimitTests.test_concurrent_workers_cannot_admit_more_than_ten_attempts) ... ok
+test_independent_app_instances_share_the_ten_attempt_window (test_lookup_rate_limit.SharedLookupRateLimitTests.test_independent_app_instances_share_the_ten_attempt_window) ... ok
+test_failed_backup_records_status_and_notifies_admins (test_metadata_backups.BackupOrchestrationNotificationTests.test_failed_backup_records_status_and_notifies_admins) ... ok
+test_create_backup_is_encrypted_checksummed_and_excludes_master_key (test_metadata_backups.CreateMetadataBackupTests.test_create_backup_is_encrypted_checksummed_and_excludes_master_key) ... ok
+test_verify_restore_isolated_does_not_touch_live_db_or_vault_objects (test_metadata_backups.IsolatedRestoreVerificationTests.test_verify_restore_isolated_does_not_touch_live_db_or_vault_objects) ... ok
+test_retention_keeps_newest_artifacts_only (test_metadata_backups.LocalRetentionRotationTests.test_retention_keeps_newest_artifacts_only) ... ok
+test_store_backup_uses_system_backups_prefix_only (test_metadata_backups.ObjectStoreBackupTests.test_store_backup_uses_system_backups_prefix_only) ... ok
+test_failed_pre_upgrade_backup_blocks_schema_upgrade (test_metadata_backups.PreUpgradeBackupGateTests.test_failed_pre_upgrade_backup_blocks_schema_upgrade) ... ok
+test_pre_upgrade_backup_success_allows_upgrade (test_metadata_backups.PreUpgradeBackupGateTests.test_pre_upgrade_backup_success_allows_upgrade) ... ok
+test_admin_can_run_list_and_download_backup (test_metadata_backups_http.MetadataBackupHttpTests.test_admin_can_run_list_and_download_backup) ... {"actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "digest_sha256": "85f04128f5f9fc43e35c409b248d54ae3c050c99da169463cd1cb18b16817f97", "event": "metadata_backup_created", "job_id": null, "outcome": "success", "reason": "operator requested backup", "s3_key": "system/backups/2026-07-24T061008Z-sqlite-manual.bak.enc", "vault_id": null, "visibility": "admin"}
+{"actor_user_id": 1, "audit_event_id": 2, "correlation_id": null, "digest_sha256": "85f04128f5f9fc43e35c409b248d54ae3c050c99da169463cd1cb18b16817f97", "event": "metadata_backup_downloaded", "job_id": null, "outcome": "success", "run_id": 1, "vault_id": null, "visibility": "admin"}
+ok
+test_member_cannot_list_or_run_backups (test_metadata_backups_http.MetadataBackupHttpTests.test_member_cannot_list_or_run_backups) ... ok
+test_current_release_data_migrates_without_loss (test_migrations_postgresql.PostgreSQLMigrationTests.test_current_release_data_migrates_without_loss) ... skipped 'TEST_POSTGRES_URL is not configured'
+test_duplicate_job_does_not_abort_the_catalog_transaction (test_migrations_postgresql.PostgreSQLMigrationTests.test_duplicate_job_does_not_abort_the_catalog_transaction) ... skipped 'TEST_POSTGRES_URL is not configured'
+test_fresh_database_upgrades_and_rolls_back_losslessly (test_migrations_postgresql.PostgreSQLMigrationTests.test_fresh_database_upgrades_and_rolls_back_losslessly) ... skipped 'TEST_POSTGRES_URL is not configured'
+test_ownerless_vault_without_memberships_fails_atomically (test_migrations_postgresql.PostgreSQLMigrationTests.test_ownerless_vault_without_memberships_fails_atomically) ... skipped 'TEST_POSTGRES_URL is not configured'
+test_vault_ownership_migration_preserves_normal_and_narrows_multi_owner_data (test_migrations_postgresql.PostgreSQLMigrationTests.test_vault_ownership_migration_preserves_normal_and_narrows_multi_owner_data) ... skipped 'TEST_POSTGRES_URL is not configured'
+test_zero_owner_vault_fails_atomically_without_widening_access (test_migrations_postgresql.PostgreSQLMigrationTests.test_zero_owner_vault_fails_atomically_without_widening_access) ... skipped 'TEST_POSTGRES_URL is not configured'
+test_enqueue_creates_retrievable_in_app_notification (test_notifications.NotificationDeliveryTests.test_enqueue_creates_retrievable_in_app_notification) ... ok
+test_webhook_retries_are_bounded_and_do_not_change_job_result (test_notifications.NotificationDeliveryTests.test_webhook_retries_are_bounded_and_do_not_change_job_result) ... ok
+test_begin_login_forwards_prompt_for_step_up (test_oidc.BeginLoginTests.test_begin_login_forwards_prompt_for_step_up) ... ok
+test_begin_login_persists_state_and_returns_authorization_url (test_oidc.BeginLoginTests.test_begin_login_persists_state_and_returns_authorization_url) ... ok
+test_begin_login_without_prompt_omits_it (test_oidc.BeginLoginTests.test_begin_login_without_prompt_omits_it) ... ok
+test_at_hash_mismatch_is_rejected (test_oidc.CompleteLoginTests.test_at_hash_mismatch_is_rejected) ... ok
+test_expired_id_token_is_rejected (test_oidc.CompleteLoginTests.test_expired_id_token_is_rejected) ... ok
+test_expired_login_state_is_rejected (test_oidc.CompleteLoginTests.test_expired_login_state_is_rejected) ... ok
+test_happy_path_returns_validated_claims_and_consumes_state (test_oidc.CompleteLoginTests.test_happy_path_returns_validated_claims_and_consumes_state) ... ok
+test_nonce_mismatch_is_rejected (test_oidc.CompleteLoginTests.test_nonce_mismatch_is_rejected) ... ok
+test_state_is_single_use (test_oidc.CompleteLoginTests.test_state_is_single_use) ... ok
+test_sweep_removes_only_expired_login_state (test_oidc.CompleteLoginTests.test_sweep_removes_only_expired_login_state) ... ok
+test_token_exchange_sends_the_pkce_verifier (test_oidc.CompleteLoginTests.test_token_exchange_sends_the_pkce_verifier) ... ok
+test_unknown_state_is_rejected (test_oidc.CompleteLoginTests.test_unknown_state_is_rejected) ... ok
+test_wrong_audience_is_rejected (test_oidc.CompleteLoginTests.test_wrong_audience_is_rejected) ... ok
+test_wrong_issuer_is_rejected (test_oidc.CompleteLoginTests.test_wrong_issuer_is_rejected) ... ok
+test_callback_refuses_an_unlinked_identity (test_oidc_http.OidcHttpTests.test_callback_refuses_an_unlinked_identity) ... ok
+test_callback_signs_in_a_linked_identity (test_oidc_http.OidcHttpTests.test_callback_signs_in_a_linked_identity) ... ok
+test_login_endpoint_redirects_to_provider_and_persists_state (test_oidc_http.OidcHttpTests.test_login_endpoint_redirects_to_provider_and_persists_state) ... ok
+test_replaying_a_used_state_is_rejected (test_oidc_http.OidcHttpTests.test_replaying_a_used_state_is_rejected) ... ok
+test_step_up_reauth_refreshes_the_reauth_window (test_oidc_http.OidcHttpTests.test_step_up_reauth_refreshes_the_reauth_window) ... ok
+test_auto_cleanup_queues_only_matching_versions_past_retention (test_operation_policies.AutoUploadEligibilityTests.test_auto_cleanup_queues_only_matching_versions_past_retention) ... {"actor_user_id": 1, "archive_version_id": "a30d6c87-8258-4909-9525-bb5b65483c5f", "audit_event_id": 1, "correlation_id": null, "event": "local_cleanup.auto_queued", "job_id": 1, "outcome": "queued", "path": "due.txt", "vault_id": 2, "visibility": "vault"}
+ok
+test_auto_upload_queues_only_stable_included_files (test_operation_policies.AutoUploadEligibilityTests.test_auto_upload_queues_only_stable_included_files) ... ok
+test_manual_default_queues_nothing (test_operation_policies.AutoUploadEligibilityTests.test_manual_default_queues_nothing) ... ok
+test_vault_override_beats_global_limit (test_operation_policies.BandwidthPolicyTests.test_vault_override_beats_global_limit) ... ok
+test_exclude_wins_over_include (test_operation_policies.GlobRuleTests.test_exclude_wins_over_include) ... ok
+test_preview_lists_included_and_excluded_sample_paths (test_operation_policies.GlobRuleTests.test_preview_lists_included_and_excluded_sample_paths) ... ok
+test_cleanup_becomes_due_from_verification_time_at_retention_boundary (test_operation_policies.LocalRetentionWindowTests.test_cleanup_becomes_due_from_verification_time_at_retention_boundary) ... ok
+test_missing_row_means_manual_upload_and_no_exclusions (test_operation_policies.OperationPolicyDefaultTests.test_missing_row_means_manual_upload_and_no_exclusions) ... ok
+test_set_policy_round_trips (test_operation_policies.OperationPolicyPersistenceTests.test_set_policy_round_trips) ... ok
+test_file_is_stable_only_after_window (test_operation_policies.StabilityWindowTests.test_file_is_stable_only_after_window) ... ok
+test_admin_can_manage_price_books (test_operation_policy_http.OperationPolicyHttpTests.test_admin_can_manage_price_books) ... {"actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "effective_at": "2026-07-01T00:00:00+00:00", "event": "cost_price_book_created", "job_id": null, "outcome": "created", "price_book_id": 1, "reason": "Publish July pricing", "vault_id": null, "visibility": "admin"}
+{"actor_user_id": 1, "audit_event_id": 2, "correlation_id": null, "effective_at": "2026-07-01T00:00:00+00:00", "event": "cost_price_book_activated", "job_id": null, "outcome": "activated", "price_book_id": 1, "reason": "Activate July pricing", "vault_id": null, "visibility": "admin"}
+ok
+test_operator_cannot_change_operation_policy (test_operation_policy_http.OperationPolicyHttpTests.test_operator_cannot_change_operation_policy) ... ok
+test_owner_can_update_policy_and_preview_globs (test_operation_policy_http.OperationPolicyHttpTests.test_owner_can_update_policy_and_preview_globs) ... {"actor_user_id": 2, "audit_event_id": 1, "correlation_id": null, "event": "vault_operation_policy_updated", "job_id": null, "outcome": "updated", "policy": {"auto_local_cleanup": true, "auto_upload": true, "bandwidth_limit_kibps": 256, "exclude_globs": ["tmp/**"], "include_globs": ["**/*.txt"], "local_retention_days": 30, "operating_windows": [{"end": "17:00", "start": "09:00", "weekday": 0}], "stability_seconds": 600}, "vault_id": 1, "visibility": "vault"}
+ok
+test_owner_reads_default_manual_policy (test_operation_policy_http.OperationPolicyHttpTests.test_owner_reads_default_manual_policy) ... ok
+test_rejects_path_traversal (test_plain_rclone_destination.PlainRcloneDestinationTests.test_rejects_path_traversal) ... ok
+test_two_vault_prefixes_isolate_the_same_logical_path (test_plain_rclone_destination.PlainRcloneDestinationTests.test_two_vault_prefixes_isolate_the_same_logical_path) ... ok
+test_rename_copy_destination_includes_vault_prefix (test_plain_rclone_destination.PlainRenamePrefixedRemoteTests.test_rename_copy_destination_includes_vault_prefix) ... ok
+test_upload_and_read_back_use_vault_prefix_matching_head_object (test_plain_rclone_destination.PlainUploadPrefixedRemoteTests.test_upload_and_read_back_use_vault_prefix_matching_head_object) ... ok
+test_spoofed_left_most_untrusted_value_is_ignored (test_proxy.ClientIpTests.test_spoofed_left_most_untrusted_value_is_ignored) ... ok
+test_trusted_peer_strips_trusted_hops_from_forwarded_for (test_proxy.ClientIpTests.test_trusted_peer_strips_trusted_hops_from_forwarded_for) ... ok
+test_untrusted_peer_is_returned_verbatim (test_proxy.ClientIpTests.test_untrusted_peer_is_returned_verbatim) ... ok
+test_example_configuration_values_fail_closed (test_public_release_hygiene.PublicReleaseHygieneTests.test_example_configuration_values_fail_closed) ... ok
+test_examples_contain_no_real_email_aws_account_or_home_path (test_public_release_hygiene.PublicReleaseHygieneTests.test_examples_contain_no_real_email_aws_account_or_home_path) ... ok
+test_frostvault_brand_and_apache_license_are_declared (test_public_release_hygiene.PublicReleaseHygieneTests.test_frostvault_brand_and_apache_license_are_declared) ... ok
+test_hard_block_is_audited_and_raises (test_quota_admission_audit.QuotaAdmissionAuditTests.test_hard_block_is_audited_and_raises) ... {"action": "upload", "actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "decisions": [{"code": "quota.storage.hard_exceeded", "limit": 10, "projected": 100, "severity": "block"}], "event": "quota_hard_block", "job_id": null, "outcome": "blocked", "vault_id": 2, "visibility": "vault"}
+ok
+test_soft_warning_is_audited_on_admit (test_quota_admission_audit.QuotaAdmissionAuditTests.test_soft_warning_is_audited_on_admit) ... {"action": "upload", "actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "decisions": [{"code": "quota.storage.soft_exceeded", "limit": 10, "projected": 100, "severity": "warning"}], "event": "quota_soft_warning", "job_id": null, "outcome": "warned", "vault_id": 2, "visibility": "vault"}
+ok
+test_operator_cannot_approve_high_impact_restore (test_recovery_http.RecoveryHttpTests.test_operator_cannot_approve_high_impact_restore) ... ok
+test_versions_and_estimate_expose_irreversible_restore_boundary (test_recovery_http.RecoveryHttpTests.test_versions_and_estimate_expose_irreversible_restore_boundary) ... ok
+test_glacier_version_requests_restore_before_download (test_recovery_verification.GlacierRestoreWorkflowTests.test_glacier_version_requests_restore_before_download) ... ok
+test_restored_glacier_version_downloads_after_restore_available (test_recovery_verification.GlacierRestoreWorkflowTests.test_restored_glacier_version_downloads_after_restore_available) ... ok
+test_mismatched_recovery_digest_does_not_replace_destination (test_recovery_verification.PlainRecoveryVerificationTests.test_mismatched_recovery_digest_does_not_replace_destination) ... ok
+test_path_only_rclone_download_is_never_used_for_plain_recovery (test_recovery_verification.PlainRecoveryVerificationTests.test_path_only_rclone_download_is_never_used_for_plain_recovery)
+Regression: current-key rclone copyto must not recover plain versions. ... ok
+test_recover_verifies_digest_before_replacing_local_copy (test_recovery_verification.PlainRecoveryVerificationTests.test_recover_verifies_digest_before_replacing_local_copy) ... ok
+test_default_recover_targets_highest_recoverable_version_number (test_recovery_versions.VersionSelectionTests.test_default_recover_targets_highest_recoverable_version_number) ... ok
+test_list_versions_marks_non_selectable_with_reason (test_recovery_versions.VersionSelectionTests.test_list_versions_marks_non_selectable_with_reason) ... ok
+test_queue_recover_can_target_explicit_archive_version (test_recovery_versions.VersionSelectionTests.test_queue_recover_can_target_explicit_archive_version) ... ok
+test_crypt_rename_verifies_new_key_before_hiding_old_key (test_rename_sync.CryptRenameTests.test_crypt_rename_verifies_new_key_before_hiding_old_key) ... ok
+test_file_history_returns_continuous_versions_across_keys (test_rename_sync.FileHistoryApiTests.test_file_history_returns_continuous_versions_across_keys) ... ok
+test_case_only_and_unicode_renames_preserve_identity (test_rename_sync.FolderRenameTests.test_case_only_and_unicode_renames_preserve_identity) ... ok
+test_folder_rename_updates_all_descendants_atomically (test_rename_sync.FolderRenameTests.test_folder_rename_updates_all_descendants_atomically) ... ok
+test_failed_verification_never_hides_the_old_key (test_rename_sync.RenameCloudJobTests.test_failed_verification_never_hides_the_old_key) ... ok
+test_plain_rename_verifies_new_key_before_hiding_old_key (test_rename_sync.RenameCloudJobTests.test_plain_rename_verifies_new_key_before_hiding_old_key) ... ok
+test_rename_cancellation_leaves_old_key_accessible (test_rename_sync.RenameCloudJobTests.test_rename_cancellation_leaves_old_key_accessible) ... ok
+test_ambiguous_equal_digest_candidates_are_never_auto_merged (test_rename_sync.RenameMatchingTests.test_ambiguous_equal_digest_candidates_are_never_auto_merged) ... ok
+test_size_and_mtime_alone_never_produce_automatic_match (test_rename_sync.RenameMatchingTests.test_size_and_mtime_alone_never_produce_automatic_match) ... ok
+test_unique_digest_match_is_auto_confirmed_without_duplicate_file (test_rename_sync.RenameMatchingTests.test_unique_digest_match_is_auto_confirmed_without_duplicate_file) ... ok
+test_interrupted_cleaning_rename_resumes_without_losing_old_key (test_rename_sync.RenameRestartTests.test_interrupted_cleaning_rename_resumes_without_losing_old_key) ... ok
+test_high_impact_glacier_restore_waits_for_owner_approval (test_restore_guardrails.HighImpactApprovalTests.test_high_impact_glacier_restore_waits_for_owner_approval) ... ok
+test_bulk_glacier_estimate_uses_configured_pricing (test_restore_guardrails.RestoreEstimateTests.test_bulk_glacier_estimate_uses_configured_pricing) ... ok
+test_high_impact_triggered_by_size_or_cost (test_restore_guardrails.RestoreEstimateTests.test_high_impact_triggered_by_size_or_cost) ... ok
+test_s3_client_can_create_and_head_bucket_on_compatible_endpoint (test_s3_client_endpoint.S3ClientEndpointTests.test_s3_client_can_create_and_head_bucket_on_compatible_endpoint)
+The client must use AWS_ENDPOINT_URL so CI can target MinIO without AWS. ... skipped 'Set TEST_S3_ENDPOINT to an S3-compatible endpoint (e.g. http://127.0.0.1:9000)'
+test_minio_config_does_not_store_secret_in_clear_text (test_s3_integration_support.RcloneConfigSecretStorageTests.test_minio_config_does_not_store_secret_in_clear_text) ... ok
+test_crypt_upload_verifies_and_hides_plaintext_names (test_s3_integrity_integration.CryptS3IntegrityIntegrationTests.test_crypt_upload_verifies_and_hides_plaintext_names) ... skipped 'Set TEST_S3_ENDPOINT for S3-compatible integrity integration tests'
+test_empty_file_upload_and_recovery (test_s3_integrity_integration.PlainS3IntegrityIntegrationTests.test_empty_file_upload_and_recovery) ... skipped 'Set TEST_S3_ENDPOINT for S3-compatible integrity integration tests'
+test_multipart_cutoff_upload_and_recovery (test_s3_integrity_integration.PlainS3IntegrityIntegrationTests.test_multipart_cutoff_upload_and_recovery)
+Force multipart via a tiny upload_cutoff and still verify digests. ... skipped 'Set TEST_S3_ENDPOINT for S3-compatible integrity integration tests'
+test_plain_upload_and_recovery_match_sha256 (test_s3_integrity_integration.PlainS3IntegrityIntegrationTests.test_plain_upload_and_recovery_match_sha256)
+Upload then recover against live object storage; digests must match. ... skipped 'Set TEST_S3_ENDPOINT for S3-compatible integrity integration tests'
+test_unicode_path_upload_and_recovery (test_s3_integrity_integration.PlainS3IntegrityIntegrationTests.test_unicode_path_upload_and_recovery) ... skipped 'Set TEST_S3_ENDPOINT for S3-compatible integrity integration tests'
+test_rule_filters_by_policy_tag_not_object_prefix (test_s3_lifecycle_rules.BuildPolicyLifecycleRuleTests.test_rule_filters_by_policy_tag_not_object_prefix) ... ok
+test_set_policy_profile_rejects_invalid_profile (test_s3_lifecycle_rules.LifecyclePolicyProfileDatabaseTests.test_set_policy_profile_rejects_invalid_profile) ... ok
+test_sync_lifecycle_rules_for_bucket_builds_tag_filtered_rules (test_s3_lifecycle_rules.LifecyclePolicyProfileDatabaseTests.test_sync_lifecycle_rules_for_bucket_builds_tag_filtered_rules) ... ok
+test_enforce_rule_limit_rejects_buckets_over_1000_rules (test_s3_lifecycle_rules.LifecycleRuleLimitTests.test_enforce_rule_limit_rejects_buckets_over_1000_rules) ... ok
+test_merge_preserves_non_application_rules (test_s3_lifecycle_rules.MergeLifecycleRulesTests.test_merge_preserves_non_application_rules) ... ok
+test_sync_merges_application_rules_and_puts_configuration (test_s3_lifecycle_rules.SyncBucketLifecycleRulesTests.test_sync_merges_application_rules_and_puts_configuration) ... ok
+test_cleanup_is_idempotent_on_empty_prefix (test_s3_prefix_cleanup.S3PrefixCleanupTests.test_cleanup_is_idempotent_on_empty_prefix) ... skipped 'Set TEST_S3_ENDPOINT to an S3-compatible endpoint'
+test_cleanup_removes_all_versions_and_reports_empty_leftovers (test_s3_prefix_cleanup.S3PrefixCleanupTests.test_cleanup_removes_all_versions_and_reports_empty_leftovers) ... skipped 'Set TEST_S3_ENDPOINT to an S3-compatible endpoint'
+test_empty_prefix_is_refused_without_listing (test_s3_prefix_cleanup_guards.PrefixCleanupGuardTests.test_empty_prefix_is_refused_without_listing) ... ok
+test_slash_only_prefix_is_refused (test_s3_prefix_cleanup_guards.PrefixCleanupGuardTests.test_slash_only_prefix_is_refused) ... ok
+test_denied_versioning_permission_reports_actionable_failure (test_s3_preflight.BucketConfigurationPreflightTests.test_denied_versioning_permission_reports_actionable_failure) ... ok
+test_placeholder_bucket_is_rejected_without_aws_calls (test_s3_preflight.BucketConfigurationPreflightTests.test_placeholder_bucket_is_rejected_without_aws_calls) ... ok
+test_missing_versioning_status_fails (test_s3_preflight.BucketVersioningFailureTests.test_missing_versioning_status_fails) ... ok
+test_suspended_versioning_fails_with_remediation (test_s3_preflight.BucketVersioningFailureTests.test_suspended_versioning_fails_with_remediation) ... ok
+test_enabled_versioning_passes (test_s3_preflight.BucketVersioningPreflightTests.test_enabled_versioning_passes) ... ok
+test_validate_cloud_vault_blocks_when_versioning_disabled (test_s3_preflight.ValidateCloudVaultIntegrationTests.test_validate_cloud_vault_blocks_when_versioning_disabled) ... ok
+test_validate_cloud_vault_passes_when_bucket_is_ready (test_s3_preflight.ValidateCloudVaultIntegrationTests.test_validate_cloud_vault_passes_when_bucket_is_ready) ... ok
+test_login_sets_a_hardened_session_cookie (test_session_http.SessionHttpTests.test_login_sets_a_hardened_session_cookie) ... ok
+test_logout_revokes_the_session_server_side (test_session_http.SessionHttpTests.test_logout_revokes_the_session_server_side) ... ok
+test_me_is_reachable_with_the_session_cookie (test_session_http.SessionHttpTests.test_me_is_reachable_with_the_session_cookie) ... ok
+test_me_requires_a_session_cookie (test_session_http.SessionHttpTests.test_me_requires_a_session_cookie) ... ok
+test_activity_slides_the_idle_window (test_sessions.SessionStoreTests.test_activity_slides_the_idle_window) ... ok
+test_bumping_session_version_invalidates_existing_sessions (test_sessions.SessionStoreTests.test_bumping_session_version_invalidates_existing_sessions) ... ok
+test_created_session_resolves_to_the_same_user (test_sessions.SessionStoreTests.test_created_session_resolves_to_the_same_user) ... ok
+test_idle_expired_session_does_not_resolve (test_sessions.SessionStoreTests.test_idle_expired_session_does_not_resolve) ... ok
+test_raw_token_is_never_stored (test_sessions.SessionStoreTests.test_raw_token_is_never_stored) ... ok
+test_revoked_session_stops_resolving_immediately (test_sessions.SessionStoreTests.test_revoked_session_stops_resolving_immediately) ... ok
+test_rotation_invalidates_the_old_token_and_keeps_the_session (test_sessions.SessionStoreTests.test_rotation_invalidates_the_old_token_and_keeps_the_session) ... ok
+test_selected_vault_persists_across_resolves (test_sessions.SessionStoreTests.test_selected_vault_persists_across_resolves) ... ok
+test_session_for_deactivated_user_does_not_resolve (test_sessions.SessionStoreTests.test_session_for_deactivated_user_does_not_resolve) ... ok
+test_session_past_absolute_expiry_does_not_resolve (test_sessions.SessionStoreTests.test_session_past_absolute_expiry_does_not_resolve) ... ok
+test_unknown_token_does_not_resolve (test_sessions.SessionStoreTests.test_unknown_token_does_not_resolve) ... ok
+test_stats_read_local_and_cloud_totals_from_versioned_catalog (test_stats.StatsTests.test_stats_read_local_and_cloud_totals_from_versioned_catalog) ... ok
+test_all_operation_groups_can_be_cancelled (test_storage_cleanup.StorageCleanupTests.test_all_operation_groups_can_be_cancelled) ... ok
+test_automatic_cleanup_failure_is_audited_and_notified (test_storage_cleanup.StorageCleanupTests.test_automatic_cleanup_failure_is_audited_and_notified) ... {"actor_user_id": 1, "archive_version_id": "cd79b141-a43a-443d-8cac-0dabc7349880", "audit_event_id": 1, "correlation_id": null, "event": "local_cleanup.auto_queued", "job_id": 1, "outcome": "queued", "path": "docs/file.txt", "vault_id": 2, "visibility": "vault"}
+{"actor_user_id": 1, "archive_version_id": "cd79b141-a43a-443d-8cac-0dabc7349880", "audit_event_id": 2, "correlation_id": null, "event": "local_cleanup.failed", "job_id": 1, "outcome": "failure", "path": "docs/file.txt", "vault_id": 2, "visibility": "vault"}
+ok
+test_automatic_cleanup_records_completion_and_keeps_recovery_available (test_storage_cleanup.StorageCleanupTests.test_automatic_cleanup_records_completion_and_keeps_recovery_available) ... {"actor_user_id": 1, "archive_version_id": "f680cf13-4ac9-4805-9fce-6d5e36166ec1", "audit_event_id": 1, "correlation_id": null, "event": "local_cleanup.auto_queued", "job_id": 1, "outcome": "queued", "path": "docs/file.txt", "vault_id": 2, "visibility": "vault"}
+{"actor_user_id": 1, "archive_version_id": "f680cf13-4ac9-4805-9fce-6d5e36166ec1", "audit_event_id": 2, "correlation_id": null, "event": "local_cleanup.completed", "job_id": 1, "outcome": "success", "path": "docs/file.txt", "vault_id": 2, "visibility": "vault"}
+ok
+test_cancelled_operations_do_not_start (test_storage_cleanup.StorageCleanupTests.test_cancelled_operations_do_not_start) ... ok
+test_cancelling_an_active_transfer_terminates_rclone (test_storage_cleanup.StorageCleanupTests.test_cancelling_an_active_transfer_terminates_rclone) ... ok
+test_cancelling_automatic_cleanup_is_audited_and_notified (test_storage_cleanup.StorageCleanupTests.test_cancelling_automatic_cleanup_is_audited_and_notified) ... ok
+test_cleanup_job_keeps_local_file_when_s3_check_fails (test_storage_cleanup.StorageCleanupTests.test_cleanup_job_keeps_local_file_when_s3_check_fails) ... ok
+test_cleanup_job_verifies_s3_then_deletes_local_file (test_storage_cleanup.StorageCleanupTests.test_cleanup_job_verifies_s3_then_deletes_local_file) ... ok
+test_cleanup_never_deletes_content_changed_after_fingerprinting (test_storage_cleanup.StorageCleanupTests.test_cleanup_never_deletes_content_changed_after_fingerprinting) ... ok
+test_cleanup_preserves_a_file_replaced_during_atomic_claim (test_storage_cleanup.StorageCleanupTests.test_cleanup_preserves_a_file_replaced_during_atomic_claim) ... ok
+test_cloud_keys_add_bin_only_for_crypt_remotes (test_storage_cleanup.StorageCleanupTests.test_cloud_keys_add_bin_only_for_crypt_remotes) ... ok
+test_cloud_scan_records_the_exact_s3_version (test_storage_cleanup.StorageCleanupTests.test_cloud_scan_records_the_exact_s3_version) ... ok
+test_cloud_versions_have_deterministic_internal_order (test_storage_cleanup.StorageCleanupTests.test_cloud_versions_have_deterministic_internal_order) ... ok
+test_download_restores_atomically_to_original_source (test_storage_cleanup.StorageCleanupTests.test_download_restores_atomically_to_original_source) ... ok
+test_failed_download_does_not_leave_a_partial_file (test_storage_cleanup.StorageCleanupTests.test_failed_download_does_not_leave_a_partial_file) ... ok
+test_filesystem_events_update_only_changed_catalog_entries (test_storage_cleanup.StorageCleanupTests.test_filesystem_events_update_only_changed_catalog_entries) ... ok
+test_free_space_queues_background_jobs (test_storage_cleanup.StorageCleanupTests.test_free_space_queues_background_jobs) ... ok
+test_local_scan_ignores_all_rclone_recovery_temporaries (test_storage_cleanup.StorageCleanupTests.test_local_scan_ignores_all_rclone_recovery_temporaries) ... ok
+test_local_scan_updates_the_versioned_catalog (test_storage_cleanup.StorageCleanupTests.test_local_scan_updates_the_versioned_catalog) ... ok
+test_queue_processes_upload_recover_and_cleanup_in_parallel (test_storage_cleanup.StorageCleanupTests.test_queue_processes_upload_recover_and_cleanup_in_parallel) ... ok
+test_rclone_json_stats_expose_real_transferred_bytes (test_storage_cleanup.StorageCleanupTests.test_rclone_json_stats_expose_real_transferred_bytes) ... ok
+test_recovery_pins_version_id_and_skips_path_only_rclone (test_storage_cleanup.StorageCleanupTests.test_recovery_pins_version_id_and_skips_path_only_rclone) ... ok
+test_remote_type_is_read_from_rclone_config (test_storage_cleanup.StorageCleanupTests.test_remote_type_is_read_from_rclone_config) ... ok
+test_remove_local_copies_removes_source_only (test_storage_cleanup.StorageCleanupTests.test_remove_local_copies_removes_source_only) ... ok
+test_restart_reconciles_completed_and_incomplete_recoveries (test_storage_cleanup.StorageCleanupTests.test_restart_reconciles_completed_and_incomplete_recoveries) ... ok
+test_restart_requeues_upload_and_completes_finished_cleanup (test_storage_cleanup.StorageCleanupTests.test_restart_requeues_upload_and_completes_finished_cleanup) ... ok
+test_upload_job_targets_a_stable_vault_file (test_storage_cleanup.StorageCleanupTests.test_upload_job_targets_a_stable_vault_file) ... ok
+test_upload_without_read_back_leaves_an_unverified_archive_version (test_storage_cleanup.StorageCleanupTests.test_upload_without_read_back_leaves_an_unverified_archive_version) ... ok
+test_vault_scan_queues_due_local_cleanup_through_policy_scheduler (test_storage_cleanup.StorageCleanupTests.test_vault_scan_queues_due_local_cleanup_through_policy_scheduler) ... ok
+test_github_oidc_ci_policy_is_prefix_scoped (test_terraform_archive_bucket.ArchiveBucketTerraformTests.test_github_oidc_ci_policy_is_prefix_scoped) ... ok
+test_main_tf_declares_required_bucket_baseline (test_terraform_archive_bucket.ArchiveBucketTerraformTests.test_main_tf_declares_required_bucket_baseline) ... ok
+test_operator_policy_covers_archive_operations (test_terraform_archive_bucket.ArchiveBucketTerraformTests.test_operator_policy_covers_archive_operations) ... ok
+test_outputs_expose_application_settings (test_terraform_archive_bucket.ArchiveBucketTerraformTests.test_outputs_expose_application_settings) ... ok
+test_integrity_errors_are_not_retryable (test_upload_retry_policy.UploadRetryPolicyTests.test_integrity_errors_are_not_retryable) ... ok
+test_permission_and_configuration_errors_are_not_retryable (test_upload_retry_policy.UploadRetryPolicyTests.test_permission_and_configuration_errors_are_not_retryable) ... ok
+test_retry_delay_grows_exponentially_up_to_a_cap (test_upload_retry_policy.UploadRetryPolicyTests.test_retry_delay_grows_exponentially_up_to_a_cap) ... ok
+test_source_mutation_is_rescheduled (test_upload_retry_policy.UploadRetryPolicyTests.test_source_mutation_is_rescheduled) ... ok
+test_transient_transport_errors_are_retryable (test_upload_retry_policy.UploadRetryPolicyTests.test_transient_transport_errors_are_retryable) ... ok
+test_crypt_upload_verifies_via_rclone_without_plaintext_bin_keys (test_upload_verification.CryptUploadVerificationTests.test_crypt_upload_verifies_via_rclone_without_plaintext_bin_keys) ... ok
+test_changed_source_after_transfer_leaves_version_unverified (test_upload_verification.PlainUploadVerificationTests.test_changed_source_after_transfer_leaves_version_unverified) ... ok
+test_empty_and_unicode_paths_verify_end_to_end (test_upload_verification.PlainUploadVerificationTests.test_empty_and_unicode_paths_verify_end_to_end) ... ok
+test_head_object_success_alone_never_marks_version_verified (test_upload_verification.PlainUploadVerificationTests.test_head_object_success_alone_never_marks_version_verified)
+HeadObject after rclone exit must not flip Integrity to verified. ... ok
+test_mismatched_read_back_digest_leaves_version_unverified (test_upload_verification.PlainUploadVerificationTests.test_mismatched_read_back_digest_leaves_version_unverified) ... ok
+test_plain_upload_reaches_verified_after_read_back_digest_match (test_upload_verification.PlainUploadVerificationTests.test_plain_upload_reaches_verified_after_read_back_digest_match)
+Successful rclone transfer + HeadObject is not enough; read-back must match. ... ok
+test_transient_upload_failure_enters_retrying_state (test_upload_verification.PlainUploadVerificationTests.test_transient_upload_failure_enters_retrying_state) ... ok
+test_verification_can_be_cancelled (test_upload_verification.PlainUploadVerificationTests.test_verification_can_be_cancelled) ... ok
+test_admin_members_report_activity_for_transfer_eligibility (test_vault_authorization.VaultAuthorizationHttpTests.test_admin_members_report_activity_for_transfer_eligibility) ... ok
+test_admin_override_cannot_assign_the_owner_role (test_vault_authorization.VaultAuthorizationHttpTests.test_admin_override_cannot_assign_the_owner_role) ... ok
+test_admin_override_cannot_demote_the_primary_owner (test_vault_authorization.VaultAuthorizationHttpTests.test_admin_override_cannot_demote_the_primary_owner) ... ok
+test_admin_override_membership_is_audited_and_notifies_the_owner (test_vault_authorization.VaultAuthorizationHttpTests.test_admin_override_membership_is_audited_and_notifies_the_owner) ... ok
+test_admin_override_removal_requires_a_reason_and_is_audited (test_vault_authorization.VaultAuthorizationHttpTests.test_admin_override_removal_requires_a_reason_and_is_audited) ... ok
+test_admin_override_without_a_reason_is_rejected (test_vault_authorization.VaultAuthorizationHttpTests.test_admin_override_without_a_reason_is_rejected) ... ok
+test_admin_transfer_ownership_notifies_both_previous_and_new_owner (test_vault_authorization.VaultAuthorizationHttpTests.test_admin_transfer_ownership_notifies_both_previous_and_new_owner) ... ok
+test_admin_transfer_ownership_without_a_reason_is_rejected (test_vault_authorization.VaultAuthorizationHttpTests.test_admin_transfer_ownership_without_a_reason_is_rejected) ... ok
+test_assignment_rejects_stale_owner_authorization (test_vault_authorization.VaultAuthorizationHttpTests.test_assignment_rejects_stale_owner_authorization) ... ok
+test_concurrent_transfer_rejects_request_with_stale_owner_authorization (test_vault_authorization.VaultAuthorizationHttpTests.test_concurrent_transfer_rejects_request_with_stale_owner_authorization) ... {"actor_user_id": null, "admin_override": false, "audit_event_id": 1, "correlation_id": null, "event": "vault_ownership_transferred", "job_id": null, "new_owner_id": 4, "outcome": null, "previous_owner_id": 2, "vault_id": 1, "visibility": "vault"}
+ok
+test_lookup_is_limited_to_ten_attempts_per_owner_and_client_ip (test_vault_authorization.VaultAuthorizationHttpTests.test_lookup_is_limited_to_ten_attempts_per_owner_and_client_ip) ... ok
+test_lookup_requires_owner_recent_reauth_and_csrf (test_vault_authorization.VaultAuthorizationHttpTests.test_lookup_requires_owner_recent_reauth_and_csrf) ... ok
+test_non_admin_cannot_use_the_admin_override_routes (test_vault_authorization.VaultAuthorizationHttpTests.test_non_admin_cannot_use_the_admin_override_routes) ... ok
+test_operator_and_viewer_cannot_manage_sharing (test_vault_authorization.VaultAuthorizationHttpTests.test_operator_and_viewer_cannot_manage_sharing) ... ok
+test_operator_and_viewer_cannot_transfer_ownership (test_vault_authorization.VaultAuthorizationHttpTests.test_operator_and_viewer_cannot_transfer_ownership) ... ok
+test_operator_can_upload_and_recover_but_not_free_space (test_vault_authorization.VaultAuthorizationHttpTests.test_operator_can_upload_and_recover_but_not_free_space) ... ok
+test_owner_can_upload_recover_and_free_space (test_vault_authorization.VaultAuthorizationHttpTests.test_owner_can_upload_recover_and_free_space) ... ok
+test_owner_cannot_demote_themself_via_assignment (test_vault_authorization.VaultAuthorizationHttpTests.test_owner_cannot_demote_themself_via_assignment) ... ok
+test_owner_cannot_remove_themself_without_transferring_first (test_vault_authorization.VaultAuthorizationHttpTests.test_owner_cannot_remove_themself_without_transferring_first) ... ok
+test_owner_cannot_transfer_to_a_nonmember (test_vault_authorization.VaultAuthorizationHttpTests.test_owner_cannot_transfer_to_a_nonmember) ... ok
+test_owner_lookup_returns_only_safe_active_user_fields (test_vault_authorization.VaultAuthorizationHttpTests.test_owner_lookup_returns_only_safe_active_user_fields) ... ok
+test_owner_manages_sharing_as_operator_or_viewer_only (test_vault_authorization.VaultAuthorizationHttpTests.test_owner_manages_sharing_as_operator_or_viewer_only) ... {"actor_user_id": null, "admin_override": false, "audit_event_id": 1, "correlation_id": null, "event": "vault_membership_changed", "job_id": null, "member_user_id": 5, "outcome": null, "role": "operator", "vault_id": 1, "visibility": "vault"}
+{"actor_user_id": null, "admin_override": false, "audit_event_id": 2, "correlation_id": null, "event": "vault_membership_changed", "job_id": null, "member_user_id": 5, "outcome": null, "role": null, "vault_id": 1, "visibility": "vault"}
+ok
+test_owner_transfers_ownership_preserving_exactly_one_owner (test_vault_authorization.VaultAuthorizationHttpTests.test_owner_transfers_ownership_preserving_exactly_one_owner) ... {"actor_user_id": null, "admin_override": false, "audit_event_id": 1, "correlation_id": null, "event": "vault_ownership_transferred", "job_id": null, "new_owner_id": 3, "outcome": null, "previous_owner_id": 2, "vault_id": 1, "visibility": "vault"}
+ok
+test_removal_rejects_stale_owner_authorization (test_vault_authorization.VaultAuthorizationHttpTests.test_removal_rejects_stale_owner_authorization) ... ok
+test_scan_requires_operation_authorization_without_invoking_scan (test_vault_authorization.VaultAuthorizationHttpTests.test_scan_requires_operation_authorization_without_invoking_scan) ... ok
+test_stale_reauth_blocks_sharing_and_transfer_for_the_owner (test_vault_authorization.VaultAuthorizationHttpTests.test_stale_reauth_blocks_sharing_and_transfer_for_the_owner) ... ok
+test_viewer_cannot_upload_recover_or_free_space (test_vault_authorization.VaultAuthorizationHttpTests.test_viewer_cannot_upload_recover_or_free_space) ... ok
+test_assign_member_role_accepts_operator_and_viewer (test_vault_authorization.VaultGovernanceServiceTests.test_assign_member_role_accepts_operator_and_viewer) ... ok
+test_assign_member_role_never_hands_out_owner (test_vault_authorization.VaultGovernanceServiceTests.test_assign_member_role_never_hands_out_owner) ... ok
+test_assign_member_role_refuses_to_demote_the_primary_owner (test_vault_authorization.VaultGovernanceServiceTests.test_assign_member_role_refuses_to_demote_the_primary_owner) ... ok
+test_assign_member_role_rejects_unknown_vault_or_user (test_vault_authorization.VaultGovernanceServiceTests.test_assign_member_role_rejects_unknown_vault_or_user) ... ok
+test_assignment_cannot_demote_owner_promoted_by_concurrent_transfer (test_vault_authorization.VaultGovernanceServiceTests.test_assignment_cannot_demote_owner_promoted_by_concurrent_transfer) ... ok
+test_removal_cannot_delete_owner_promoted_by_concurrent_transfer (test_vault_authorization.VaultGovernanceServiceTests.test_removal_cannot_delete_owner_promoted_by_concurrent_transfer) ... ok
+test_remove_member_deletes_a_non_owner (test_vault_authorization.VaultGovernanceServiceTests.test_remove_member_deletes_a_non_owner) ... ok
+test_remove_member_refuses_to_remove_the_primary_owner (test_vault_authorization.VaultGovernanceServiceTests.test_remove_member_refuses_to_remove_the_primary_owner) ... ok
+test_remove_member_rejects_when_no_non_owner_row_is_deleted (test_vault_authorization.VaultGovernanceServiceTests.test_remove_member_rejects_when_no_non_owner_row_is_deleted) ... ok
+test_stale_owner_authorization_cannot_transfer_after_concurrent_transfer (test_vault_authorization.VaultGovernanceServiceTests.test_stale_owner_authorization_cannot_transfer_after_concurrent_transfer) ... ok
+test_transfer_rejects_transferring_to_the_current_owner (test_vault_authorization.VaultGovernanceServiceTests.test_transfer_rejects_transferring_to_the_current_owner) ... ok
+test_transfer_rejects_unknown_vault_or_target_user (test_vault_authorization.VaultGovernanceServiceTests.test_transfer_rejects_unknown_vault_or_target_user) ... ok
+test_transfer_swaps_roles_and_never_touches_the_namespace (test_vault_authorization.VaultGovernanceServiceTests.test_transfer_swaps_roles_and_never_touches_the_namespace) ... ok
+test_only_the_owner_governs_sharing_and_policy (test_vault_authorization.VaultRolesTests.test_only_the_owner_governs_sharing_and_policy) ... ok
+test_only_the_three_matrix_roles_are_valid (test_vault_authorization.VaultRolesTests.test_only_the_three_matrix_roles_are_valid) ... ok
+test_owner_and_operator_can_operate_but_viewer_cannot (test_vault_authorization.VaultRolesTests.test_owner_and_operator_can_operate_but_viewer_cannot) ... ok
+test_a_name_with_no_alphanumeric_characters_is_rejected (test_vault_creation.VaultCreationServiceTestCase.test_a_name_with_no_alphanumeric_characters_is_rejected) ... ok
+test_blank_name_is_rejected (test_vault_creation.VaultCreationServiceTestCase.test_blank_name_is_rejected) ... ok
+test_concurrent_creation_never_collides_in_db_or_filesystem (test_vault_creation.VaultCreationServiceTestCase.test_concurrent_creation_never_collides_in_db_or_filesystem) ... ok
+test_creates_vault_owner_membership_and_directory_atomically (test_vault_creation.VaultCreationServiceTestCase.test_creates_vault_owner_membership_and_directory_atomically) ... ok
+test_creation_is_unavailable_without_a_configured_bucket_and_remote (test_vault_creation.VaultCreationServiceTestCase.test_creation_is_unavailable_without_a_configured_bucket_and_remote) ... ok
+test_directory_creation_failure_rolls_back_the_database_rows (test_vault_creation.VaultCreationServiceTestCase.test_directory_creation_failure_rolls_back_the_database_rows) ... ok
+test_duplicate_slug_is_rejected_and_leaves_nothing_partial_behind (test_vault_creation.VaultCreationServiceTestCase.test_duplicate_slug_is_rejected_and_leaves_nothing_partial_behind) ... ok
+test_renaming_the_label_never_changes_the_storage_identity (test_vault_creation.VaultCreationServiceTestCase.test_renaming_the_label_never_changes_the_storage_identity) ... ok
+test_the_service_accepts_only_labels_and_encryption_mode (test_vault_creation.VaultCreationServiceTestCase.test_the_service_accepts_only_labels_and_encryption_mode) ... ok
+test_admin_creation_rejects_caller_storage_identity_fields (test_vault_creation_http.AdminVaultCreationHttpTests.test_admin_creation_rejects_caller_storage_identity_fields) ... ok
+test_admin_creation_requires_reason_and_is_audited (test_vault_creation_http.AdminVaultCreationHttpTests.test_admin_creation_requires_reason_and_is_audited) ... ok
+test_admin_creation_uses_server_storage_identity_and_provisioning (test_vault_creation_http.AdminVaultCreationHttpTests.test_admin_creation_uses_server_storage_identity_and_provisioning) ... {"actor_user_id": 1, "admin_override": true, "audit_event_id": 1, "correlation_id": null, "event": "vault_created", "job_id": null, "notify_user_id": 2, "outcome": "success", "reason": "provision archive for owner", "vault_id": 1, "visibility": "owner"}
+ok
+test_admin_provisioning_failure_rolls_back_vault_and_membership (test_vault_creation_http.AdminVaultCreationHttpTests.test_admin_provisioning_failure_rolls_back_vault_and_membership) ... ok
+test_an_authenticated_user_can_create_their_own_vault (test_vault_creation_http.SelfServiceVaultCreationTests.test_an_authenticated_user_can_create_their_own_vault) ... ok
+test_caller_supplied_storage_fields_are_rejected_outright (test_vault_creation_http.SelfServiceVaultCreationTests.test_caller_supplied_storage_fields_are_rejected_outright) ... ok
+test_concurrent_creation_requests_never_collide (test_vault_creation_http.SelfServiceVaultCreationTests.test_concurrent_creation_requests_never_collide) ... ok
+test_create_and_select_flow_opens_the_new_archive (test_vault_creation_http.SelfServiceVaultCreationTests.test_create_and_select_flow_opens_the_new_archive) ... ok
+test_creation_requires_a_valid_csrf_token (test_vault_creation_http.SelfServiceVaultCreationTests.test_creation_requires_a_valid_csrf_token) ... ok
+test_creation_requires_authentication (test_vault_creation_http.SelfServiceVaultCreationTests.test_creation_requires_authentication) ... ok
+test_duplicate_slug_is_a_conflict (test_vault_creation_http.SelfServiceVaultCreationTests.test_duplicate_slug_is_a_conflict) ... ok
+test_identical_names_from_different_users_collide_on_the_slug_label (test_vault_creation_http.SelfServiceVaultCreationTests.test_identical_names_from_different_users_collide_on_the_slug_label) ... ok
+test_no_new_user_is_ever_provisioned_by_creating_a_vault (test_vault_creation_http.SelfServiceVaultCreationTests.test_no_new_user_is_ever_provisioned_by_creating_a_vault) ... ok
+test_two_users_creating_vaults_never_collide_on_storage_identity (test_vault_creation_http.SelfServiceVaultCreationTests.test_two_users_creating_vaults_never_collide_on_storage_identity) ... ok
+test_unauthenticated_vault_create_page_redirects_to_login (test_vault_creation_http.SelfServiceVaultCreationTests.test_unauthenticated_vault_create_page_redirects_to_login) ... ok
+test_vault_create_page_is_linked_from_no_vault_and_archive_pages (test_vault_creation_http.SelfServiceVaultCreationTests.test_vault_create_page_is_linked_from_no_vault_and_archive_pages) ... ok
+test_creation_fails_clearly_when_the_server_has_no_default_storage (test_vault_creation_http.UnconfiguredSelfServiceVaultCreationTests.test_creation_fails_clearly_when_the_server_has_no_default_storage) ... ok
+test_audit_helper_never_emits_plaintext_secrets (test_vault_crypto.VaultCryptoTests.test_audit_helper_never_emits_plaintext_secrets) ... ok
+test_envelope_encryption_hides_plaintext_from_storage_blob (test_vault_crypto.VaultCryptoTests.test_envelope_encryption_hides_plaintext_from_storage_blob) ... ok
+test_generated_crypt_secrets_are_independent (test_vault_crypto.VaultCryptoTests.test_generated_crypt_secrets_are_independent) ... ok
+test_redact_secrets_removes_plaintext_from_text_and_mappings (test_vault_crypto.VaultCryptoTests.test_redact_secrets_removes_plaintext_from_text_and_mappings) ... ok
+test_wrong_master_key_cannot_reveal_vault_secrets (test_vault_crypto.VaultCryptoTests.test_wrong_master_key_cannot_reveal_vault_secrets) ... ok
+test_migration_adds_encryption_columns_with_plain_default (test_vault_encryption.VaultEncryptionMigrationTests.test_migration_adds_encryption_columns_with_plain_default) ... ok
+test_create_accepts_immutable_encryption_mode (test_vault_encryption.VaultEncryptionServiceTests.test_create_accepts_immutable_encryption_mode) ... ok
+test_crypt_creation_requires_master_key_and_base_remote (test_vault_encryption.VaultEncryptionServiceTests.test_crypt_creation_requires_master_key_and_base_remote) ... ok
+test_crypt_vaults_get_independent_secrets_encrypted_at_rest (test_vault_encryption.VaultEncryptionServiceTests.test_crypt_vaults_get_independent_secrets_encrypted_at_rest) ... ok
+test_invalid_encryption_mode_is_rejected (test_vault_encryption.VaultEncryptionServiceTests.test_invalid_encryption_mode_is_rejected) ... ok
+test_mode_change_is_not_an_in_place_update (test_vault_encryption.VaultEncryptionServiceTests.test_mode_change_is_not_an_in_place_update) ... ok
+test_plain_vault_has_no_stored_crypt_material (test_vault_encryption.VaultEncryptionServiceTests.test_plain_vault_has_no_stored_crypt_material) ... ok
+test_recovery_export_round_trips_through_standalone_rclone (test_vault_encryption.VaultEncryptionServiceTests.test_recovery_export_round_trips_through_standalone_rclone) ... skipped 'rclone binary is required for recovery export coverage'
+test_runtime_config_enables_standard_name_encryption (test_vault_encryption.VaultEncryptionServiceTests.test_runtime_config_enables_standard_name_encryption) ... skipped 'rclone binary is required for runtime config coverage'
+test_uploads_blocked_until_recovery_custody_confirmed (test_vault_encryption.VaultEncryptionServiceTests.test_uploads_blocked_until_recovery_custody_confirmed) ... {"actor_user_id": null, "audit_event_id": 1, "confirmed_at": "2026-07-24T06:11:43.043492+00:00", "correlation_id": null, "event": "vault_recovery_custody_confirmed", "job_id": null, "outcome": null, "vault_id": 1, "visibility": "vault"}
+ok
+test_admin_reexport_notifies_owner (test_vault_encryption_http.VaultEncryptionHttpTests.test_admin_reexport_notifies_owner) ... ok
+test_create_crypt_vault_returns_one_time_recovery_material (test_vault_encryption_http.VaultEncryptionHttpTests.test_create_crypt_vault_returns_one_time_recovery_material) ... ok
+test_create_form_offers_encryption_mode (test_vault_encryption_http.VaultEncryptionHttpTests.test_create_form_offers_encryption_mode) ... ok
+test_operator_cannot_export_recovery_secret (test_vault_encryption_http.VaultEncryptionHttpTests.test_operator_cannot_export_recovery_secret) ... ok
+test_owner_can_confirm_custody_and_then_upload (test_vault_encryption_http.VaultEncryptionHttpTests.test_owner_can_confirm_custody_and_then_upload) ... {"actor_user_id": null, "audit_event_id": 1, "confirmed_at": "2026-07-24T06:11:45.539700+00:00", "correlation_id": null, "event": "vault_recovery_custody_confirmed", "job_id": null, "outcome": null, "vault_id": 1, "visibility": "vault"}
+ok
+test_reexport_requires_reauth_reason_and_is_audited (test_vault_encryption_http.VaultEncryptionHttpTests.test_reexport_requires_reauth_reason_and_is_audited) ... {"actor_user_id": null, "audit_event_id": 1, "confirmed_at": "2026-07-24T06:11:46.141260+00:00", "correlation_id": null, "event": "vault_recovery_custody_confirmed", "job_id": null, "outcome": null, "vault_id": 1, "visibility": "vault"}
+ok
+test_upload_api_blocks_crypt_vault_before_custody_confirmation (test_vault_encryption_http.VaultEncryptionHttpTests.test_upload_api_blocks_crypt_vault_before_custody_confirmation) ... ok
+test_a_vault_can_have_only_one_primary_owner (test_vault_ownership.VaultOwnershipMigrationTests.test_a_vault_can_have_only_one_primary_owner) ... ok
+test_downgrade_restores_the_pre_operator_schema_losslessly (test_vault_ownership.VaultOwnershipMigrationTests.test_downgrade_restores_the_pre_operator_schema_losslessly) ... ok
+test_migrating_a_multi_owner_vault_narrows_instead_of_widening (test_vault_ownership.VaultOwnershipMigrationTests.test_migrating_a_multi_owner_vault_narrows_instead_of_widening) ... ok
+test_migrating_a_normal_vault_preserves_all_memberships (test_vault_ownership.VaultOwnershipMigrationTests.test_migrating_a_normal_vault_preserves_all_memberships) ... ok
+test_migrating_a_vault_without_members_fails_atomically (test_vault_ownership.VaultOwnershipMigrationTests.test_migrating_a_vault_without_members_fails_atomically) ... ok
+test_migrating_a_zero_owner_vault_fails_without_widening_access (test_vault_ownership.VaultOwnershipMigrationTests.test_migrating_a_zero_owner_vault_fails_without_widening_access) ... ok
+test_operator_role_is_accepted_and_bogus_roles_are_rejected (test_vault_ownership.VaultOwnershipMigrationTests.test_operator_role_is_accepted_and_bogus_roles_are_rejected) ... ok
+test_ownership_transfer_only_updates_the_membership_row (test_vault_ownership.VaultOwnershipMigrationTests.test_ownership_transfer_only_updates_the_membership_row)
+Transferring the primary owner never touches Files or Archive ... ok
+test_two_vaults_never_collide_on_the_generated_namespace (test_vault_ownership.VaultOwnershipMigrationTests.test_two_vaults_never_collide_on_the_generated_namespace) ... ok
+test_vault_gains_an_immutable_generated_namespace_uuid (test_vault_ownership.VaultOwnershipMigrationTests.test_vault_gains_an_immutable_generated_namespace_uuid) ... ok
+test_admin_update_requires_reauth_reason_and_notifies_owner (test_vault_quota_http.VaultQuotaHttpTests.test_admin_update_requires_reauth_reason_and_notifies_owner) ... {"action": "upload", "actor_user_id": 3, "audit_event_id": 2, "correlation_id": null, "decisions": [{"code": "quota.concurrency.hard_exceeded", "limit": 0, "projected": 1, "severity": "block"}], "event": "quota_hard_block", "job_id": null, "outcome": "blocked", "vault_id": 1, "visibility": "vault"}
+ok
+test_invalid_quota_order_is_rejected (test_vault_quota_http.VaultQuotaHttpTests.test_invalid_quota_order_is_rejected) ... ok
+test_owner_read_is_separate_from_admin_and_denies_other_roles (test_vault_quota_http.VaultQuotaHttpTests.test_owner_read_is_separate_from_admin_and_denies_other_roles) ... ok
+test_quota_api_reports_an_evaluated_allow_with_no_decisions (test_vault_quota_http.VaultQuotaHttpTests.test_quota_api_reports_an_evaluated_allow_with_no_decisions) ... ok
+test_quota_api_reports_authoritative_current_warning_reason (test_vault_quota_http.VaultQuotaHttpTests.test_quota_api_reports_authoritative_current_warning_reason) ... {"action": "upload", "actor_user_id": 2, "audit_event_id": 1, "correlation_id": null, "decisions": [{"code": "quota.concurrency.soft_exceeded", "limit": 0, "projected": 1, "severity": "warning"}], "event": "quota_soft_warning", "job_id": null, "outcome": "warned", "vault_id": 1, "visibility": "vault"}
+ok
+test_available_versions_and_nonterminal_jobs_are_accounted (test_vault_quotas.VaultQuotaTests.test_available_versions_and_nonterminal_jobs_are_accounted) ... ok
+test_concurrent_admissions_are_serialized (test_vault_quotas.VaultQuotaTests.test_concurrent_admissions_are_serialized) ... {"action": "upload", "actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "decisions": [{"code": "quota.concurrency.hard_exceeded", "limit": 1, "projected": 2, "severity": "block"}], "event": "quota_hard_block", "job_id": null, "outcome": "blocked", "vault_id": 2, "visibility": "vault"}
+ok
+test_concurrent_pending_uploads_reserve_storage (test_vault_quotas.VaultQuotaTests.test_concurrent_pending_uploads_reserve_storage) ... {"action": "upload", "actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "decisions": [{"code": "quota.storage.hard_exceeded", "limit": 10, "projected": 12, "severity": "block"}], "event": "quota_hard_block", "job_id": null, "outcome": "blocked", "vault_id": 2, "visibility": "vault"}
+ok
+test_directory_admission_ignores_already_queued_duplicate (test_vault_quotas.VaultQuotaTests.test_directory_admission_ignores_already_queued_duplicate) ... ok
+test_sequential_pending_uploads_reserve_storage (test_vault_quotas.VaultQuotaTests.test_sequential_pending_uploads_reserve_storage) ... {"action": "upload", "actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "decisions": [{"code": "quota.storage.hard_exceeded", "limit": 10, "projected": 11, "severity": "block"}], "event": "quota_hard_block", "job_id": null, "outcome": "blocked", "vault_id": 2, "visibility": "vault"}
+ok
+test_soft_warning_admits_and_hard_block_inserts_no_jobs (test_vault_quotas.VaultQuotaTests.test_soft_warning_admits_and_hard_block_inserts_no_jobs) ... {"action": "upload", "actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "decisions": [{"code": "quota.storage.soft_exceeded", "limit": 4, "projected": 5, "severity": "warning"}], "event": "quota_soft_warning", "job_id": null, "outcome": "warned", "vault_id": 2, "visibility": "vault"}
+{"action": "upload", "actor_user_id": 1, "audit_event_id": 2, "correlation_id": null, "decisions": [{"code": "quota.storage.hard_exceeded", "limit": 10, "projected": 16, "severity": "block"}], "event": "quota_hard_block", "job_id": null, "outcome": "blocked", "vault_id": 2, "visibility": "vault"}
+ok
+test_unknown_sizes_return_stable_unknown_codes (test_vault_quotas.VaultQuotaTests.test_unknown_sizes_return_stable_unknown_codes) ... {"action": "upload", "actor_user_id": 1, "audit_event_id": 1, "correlation_id": null, "decisions": [{"code": "storage.usage_unknown", "limit": null, "projected": null, "severity": "block"}], "event": "quota_hard_block", "job_id": null, "outcome": "blocked", "vault_id": 2, "visibility": "vault"}
+ok
+test_admin_governance_ui_keeps_membership_and_transfer_explicit (test_vault_ui_http.VaultRoleUiHttpTests.test_admin_governance_ui_keeps_membership_and_transfer_explicit) ... ok
+test_global_admin_uses_their_vault_member_role_in_archive_ui (test_vault_ui_http.VaultRoleUiHttpTests.test_global_admin_uses_their_vault_member_role_in_archive_ui) ... ok
+test_operator_gets_operations_but_not_owner_only_controls (test_vault_ui_http.VaultRoleUiHttpTests.test_operator_gets_operations_but_not_owner_only_controls) ... ok
+test_owner_gets_operation_controls_and_configuration_gated_cleanup (test_vault_ui_http.VaultRoleUiHttpTests.test_owner_gets_operation_controls_and_configuration_gated_cleanup) ... ok
+test_viewer_gets_read_only_rendering_without_mutation_controls (test_vault_ui_http.VaultRoleUiHttpTests.test_viewer_gets_read_only_rendering_without_mutation_controls) ... ok
+test_classify_maps_common_failure_kinds (test_worker_errors.WorkerErrorPersistenceTests.test_classify_maps_common_failure_kinds) ... ok
+test_recorded_worker_error_is_classified_and_retrievable (test_worker_errors.WorkerErrorPersistenceTests.test_recorded_worker_error_is_classified_and_retrievable) ... ok
+
+----------------------------------------------------------------------
+Ran 524 tests in 183.891s
+
+OK (skipped=18)

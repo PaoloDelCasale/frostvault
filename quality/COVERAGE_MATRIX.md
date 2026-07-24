@@ -4,6 +4,7 @@
 > Date: 2026-07-23 · Project: FrostVault
 
 Generated: 2026-07-23
+Total requirements: **19** (REQ-001..REQ-019)
 Total contracts: 74 (CONTRACTS.md numbered 1–74; categories summarized)
 Covered: 70 (95%)
 Uncovered: 0 (0%)

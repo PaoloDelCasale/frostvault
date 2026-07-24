@@ -68,7 +68,7 @@ Project-specific fake tests to reject:
 
 **The requirement:** Explicit recover status whitelist (REQ-002).
 
-**How to verify:** `TestSpecRequirements.test_req_002_recover_branch_lacks_status_conjunct` + mechanical `quality/mechanical/verify.sh`.
+**How to verify:** `TestSpecRequirements.test_req_002_recover_branch_lacks_status_conjunct` + mechanical `quality/workspace/mechanical/verify.sh`.
 
 ---
 

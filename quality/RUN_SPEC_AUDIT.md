@@ -69,7 +69,7 @@ Result: CLAIM FALSE if asserted as pinned
 
 1. Identical prompt → three AI tools
 2. Independent — no cross-contamination
-3. Collect three reports under `quality/spec_audits/`
+3. Collect three reports under `quality/workspace/spec_audits/`
 
 ## Optional secondary emphasis lenses
 
@@ -79,10 +79,10 @@ Result: CLAIM FALSE if asserted as pinned
 
 ## Triage Process
 
-- Merge by confidence; minority findings require re-investigation with executable probes in `quality/mechanical/verify.sh` or `quality/spec_audits/triage_probes.sh`
+- Merge by confidence; minority findings require re-investigation with executable probes in `quality/workspace/mechanical/verify.sh` or `quality/workspace/spec_audits/triage_probes.sh`
 - Do not raise evidentiary bar above code-path analysis
 - Code review vs spec audit conflicts → verification probe with line-cited assertions
 
 ## Fix execution rules
 
-Small batches by subsystem (`storage` jobs, auth/proxy, metadata backups, docs compensation). Patches only under `quality/patches/`.
+Small batches by subsystem (`storage` jobs, auth/proxy, metadata backups, docs compensation). Patches only under `quality/workspace/patches/`.

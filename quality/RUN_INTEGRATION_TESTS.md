@@ -21,7 +21,7 @@ test -x .venv/bin/python
 .venv/bin/python -c "import fastapi, alembic"
 .venv/bin/python -m unittest discover -s tests -p 'test_vault_authorization.py' --collect-only 2>/dev/null || \
   .venv/bin/python -m unittest tests.test_vault_authorization -v 2>&1 | head -5
-./quality/mechanical/verify.sh
+./quality/workspace/mechanical/verify.sh
 PYTHONPATH=. .venv/bin/python -m unittest discover -s quality -p 'test_functional.py' --quiet
 ```
 
@@ -49,7 +49,7 @@ Re-read schema/code immediately before asserting field names in any new gate.
 | 2 | Break-glass network gate | `.venv/bin/python -m unittest tests.test_breakglass -v` | UC-07 | Loopback allow; public deny; CIDR membership |
 | 3 | Trusted proxy IP resolution | `.venv/bin/python -m unittest tests.test_proxy -v` | UC-07 | Untrusted peer ignores XFF |
 | 4 | Quality functional REQ/scenarios | `PYTHONPATH=. .venv/bin/python -m unittest discover -s quality -p 'test_functional.py' -v` | UC-01, UC-02, UC-03, UC-05, UC-06, UC-08 | All tests OK |
-| 5 | Mechanical dispatcher enum | `./quality/mechanical/verify.sh` | UC-03 | VERIFY OK; recover gap noted |
+| 5 | Mechanical dispatcher enum | `./quality/workspace/mechanical/verify.sh` | UC-03 | VERIFY OK; recover gap noted |
 | 6 | Cloud deletion unit suite | `.venv/bin/python -m unittest tests.test_cloud_deletion -v` | UC-05 | Existing suite green |
 | 7 | Metadata backups suite | `.venv/bin/python -m unittest discover -s tests -p 'test_metadata*' -v` | UC-06 | Suite green or skip if module name differs — adjust after collect |
 | 8 | [Infrastructure] Full unit suite | `.venv/bin/python -m unittest discover -s tests -v` | [Infrastructure] regression guard | Zero unexpected failures (S3/PG tests skip without env) |
@@ -79,7 +79,7 @@ If a discover pattern finds zero tests, fix the selector before recording result
 
 Write JUnit if available (`--junit-xml` not native to unittest — optional `unittest-xml-reporting`; else set `junit_available: false`).
 
-Mandatory sidecar: `quality/results/integration-results.json` using schema_version `1.1`, skill_version `1.5.6`, `groups[]` with `use_cases`, and `uc_coverage` for every UC-01..UC-08.
+Mandatory sidecar: `quality/workspace/results/integration-results.json` using schema_version `1.1`, skill_version `1.5.6`, `groups[]` with `use_cases`, and `uc_coverage` for every UC-01..UC-08.
 
 Template (fill after execution — Phase 3+ run; Phase 2 defines protocol only):
 

@@ -16,33 +16,33 @@ For each bug in `quality/BUGS.md`:
 
 ## Red-green execution
 
-For each bug with `quality/patches/BUG-NNN-fix.patch`:
+For each bug with `quality/workspace/patches/BUG-NNN-fix.patch`:
 
 ### Red (never skipped)
 
 ```bash
 # Ensure fix not applied
-git apply -R quality/patches/BUG-NNN-fix.patch 2>/dev/null || true
+git apply -R quality/workspace/patches/BUG-NNN-fix.patch 2>/dev/null || true
 # Temporarily remove @expectedFailure for the target test, then:
 PYTHONPATH=. .venv/bin/python -m unittest quality.test_regression.TestRegression.test_bug_nnn -v
 # Expect FAIL. Capture:
-# quality/results/BUG-NNN.red.log  (first line: RED)
+# quality/workspace/results/BUG-NNN.red.log  (first line: RED)
 ```
 
 ### Green
 
 ```bash
-git apply quality/patches/BUG-NNN-fix.patch
+git apply quality/workspace/patches/BUG-NNN-fix.patch
 PYTHONPATH=. .venv/bin/python -m unittest quality.test_regression.TestRegression.test_bug_nnn -v
-# Expect PASS. Capture quality/results/BUG-NNN.green.log (first line: GREEN)
+# Expect PASS. Capture quality/workspace/results/BUG-NNN.green.log (first line: GREEN)
 # Re-enable @expectedFailure if fix will be reverted from the tree
 ```
 
 Patch validation before confirm:
 
 ```bash
-git apply --check quality/patches/BUG-NNN-regression-test.patch
-git apply --check quality/patches/BUG-NNN-fix.patch
+git apply --check quality/workspace/patches/BUG-NNN-regression-test.patch
+git apply --check quality/workspace/patches/BUG-NNN-fix.patch
 # compile check in disposable worktree:
 git worktree add /tmp/qpb-patch-check HEAD --quiet
 # apply + .venv/bin/python -m py_compile … && unittest …
@@ -51,7 +51,7 @@ git worktree remove /tmp/qpb-patch-check --force
 
 ## Structured output
 
-Mandatory when bugs confirmed: `quality/results/tdd-results.json` (schema_version `1.1`, skill_version `1.5.6`) and `quality/TDD_TRACEABILITY.md`.
+Mandatory when bugs confirmed: `quality/workspace/results/tdd-results.json` (schema_version `1.1`, skill_version `1.5.6`) and `quality/TDD_TRACEABILITY.md`.
 
 Valid verdicts: `TDD verified` | `red failed` | `green failed` | `confirmed open` | `deferred` — never `skipped`.
 
@@ -67,7 +67,7 @@ For each TDD-verified bug: one-sentence spec citation, FAIL→PASS transcript, t
 
 ## Bug writeups
 
-Every confirmed bug → `quality/writeups/BUG-NNN.md` with sections 1–4, 6, 7 and a fenced ` ```diff ` block (gate-enforced).
+Every confirmed bug → `quality/workspace/writeups/BUG-NNN.md` with sections 1–4, 6, 7 and a fenced ` ```diff ` block (gate-enforced).
 
 ## Phase 2 note
 

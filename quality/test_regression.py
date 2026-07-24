@@ -64,7 +64,7 @@ class TestBug001(unittest.TestCase):
 
         Desired: ``elif job["action"] == "recover" and job["status"] in {...}``
         Current: bare ``elif job["action"] == "recover":`` at storage.py:2223.
-        Fix patch: quality/patches/BUG-001-fix.patch
+        Fix patch: quality/workspace/patches/BUG-001-fix.patch
         """
         body = _process_job_body()
         recover_lines = [
@@ -90,7 +90,7 @@ class TestBug002(unittest.TestCase):
 
         Desired: Head/compare scheduled provider_version_id before unversioned
         delete_object. Current: delete_object(Bucket, Key) only at 2099-2102.
-        Fix patch: quality/patches/BUG-002-fix.patch
+        Fix patch: quality/workspace/patches/BUG-002-fix.patch
         """
         body = _cloud_archive_body()
         self.assertIn("delete_object(", body)
@@ -134,7 +134,7 @@ class TestBug004(unittest.TestCase):
 
         Desired: after users.session_version bump, csrf_token_for returns None
         just like resolve_session. Current: token still returned (sessions.py:115-137).
-        Fix patch: quality/patches/BUG-004-fix.patch
+        Fix patch: quality/workspace/patches/BUG-004-fix.patch
         """
         # Source shape: csrf body must mention session_version (desired).
         self.assertIn(
@@ -176,7 +176,7 @@ class TestBug005(unittest.TestCase):
 
         Desired: operator capabilities exclude free local space.
         Current: README.md:19-20 claims operator can free local space.
-        Fix patch: quality/patches/BUG-005-fix.patch
+        Fix patch: quality/workspace/patches/BUG-005-fix.patch
         """
         users_start = README.index("## Users and vaults")
         users_end = README.index("## Local cleanup safety", users_start)
@@ -215,7 +215,7 @@ class TestBug006(unittest.TestCase):
         any cleanup). Current: ``is_restore_temporary_name`` includes cleanup
         claims and startup cleanup deletes them before reconcile marks missing
         paths completed.
-        Fix patch: quality/patches/BUG-006-fix.patch
+        Fix patch: quality/workspace/patches/BUG-006-fix.patch
         """
         cleanup = _cleanup_abandoned_body()
         # Desired: startup cleanup must not treat free-space claims as disposable
@@ -247,7 +247,7 @@ class TestBug007(unittest.TestCase):
         Desired: compare parsed hour/minute (or zero-padded canonical strings)
         so ``start=10:00,end=9:30`` raises and ``start=9:30,end=10:00`` accepts.
         Current: lexicographic ``start >= end`` at operation_policies.py:96-97.
-        Fix patch: quality/patches/BUG-007-fix.patch
+        Fix patch: quality/workspace/patches/BUG-007-fix.patch
         """
         from app.services import operation_policies
 

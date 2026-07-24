@@ -1,0 +1,17 @@
+test_bug_001_recover_requires_status_whitelist (test_regression.TestBug001.test_bug_001_recover_requires_status_whitelist)
+[BUG-001][Req: REQ-002] recover branch must conjunct status set. ... expected failure
+test_bug_002_cloud_archive_detects_concurrent_version (test_regression.TestBug002.test_bug_002_cloud_archive_detects_concurrent_version)
+[BUG-002][Req: REQ-004] compare live current VersionId before hide. ... expected failure
+test_bug_004_csrf_honors_session_version (test_regression.TestBug004.test_bug_004_csrf_honors_session_version)
+[BUG-004][Req: REQ-008] force-logout must invalidate CSRF lookup. ... expected failure
+test_bug_005_readme_users_owner_only_free_space (test_regression.TestBug005.test_bug_005_readme_users_owner_only_free_space)
+[BUG-005][Req: REQ-003] Users section must match owner-only free-space. ... expected failure
+test_bug_006_startup_preserves_free_space_claims (test_regression.TestBug006.test_bug_006_startup_preserves_free_space_claims)
+[BUG-006][Req: REQ-009] cleanup claims must survive startup reconciliation. ... expected failure
+test_bug_007_windows_compare_as_times_not_strings (test_regression.TestBug007.test_bug_007_windows_compare_as_times_not_strings)
+[BUG-007][Req: REQ-012] non-padded inverted windows must be rejected. ... expected failure
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.532s
+
+OK (expected failures=6)

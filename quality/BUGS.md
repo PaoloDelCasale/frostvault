@@ -35,12 +35,12 @@ Rejected candidates from earlier phases: CAND-006 (crypt rclone VersionId propag
 - **Expected:** `elif job["action"] == "recover" and job["status"] in {"queued", "retrying", "restoring"}:`
 - **Actual:** Status-ungated recover dispatch.
 - **Minimal reproduction:** Construct a job dict `action=recover`, `status=pending_approval` (or call `process_job` after DB status is `pending_approval` while dict still says `queued`); observe `process_recover` entry / RestoreObject path instead of False no-op.
-- **Spec basis:** Code inconsistency with peer dispatcher guards; inferred REQ-002 from `process_job` whitelist pattern (Tier 5). Mechanical extract: `quality/mechanical/process_job_action_branches.txt`.
+- **Spec basis:** Code inconsistency with peer dispatcher guards; inferred REQ-002 from `process_job` whitelist pattern (Tier 5). Mechanical extract: `quality/workspace/mechanical/process_job_action_branches.txt`.
 - **fix_type:** code
 - **Proposed fix:** Add status conjunct aligned with selection + restoring poll; return False otherwise.
 - **Regression test:** `quality/test_regression.py::TestBug001::test_bug_001_recover_requires_status_whitelist`
-- **Patches:** `quality/patches/BUG-001-regression-test.patch`, `quality/patches/BUG-001-fix.patch`
-- **Writeup:** `quality/writeups/BUG-001.md`
+- **Patches:** `quality/workspace/patches/BUG-001-regression-test.patch`, `quality/workspace/patches/BUG-001-fix.patch`
+- **Writeup:** `quality/workspace/writeups/BUG-001.md`
 - **Challenge:** `quality/challenge/BUG-001-challenge.md` — **Verdict:** DOWNGRADED
 
 ---
@@ -65,8 +65,8 @@ Rejected candidates from earlier phases: CAND-006 (crypt rclone VersionId propag
 - **fix_type:** code
 - **Proposed fix:** Before unversioned delete, `head_object` current key; compare `VersionId` to scheduled `provider_version_id`; abort/audit on mismatch. Apply same helper to rename hide.
 - **Regression test:** `quality/test_regression.py::TestBug002::test_bug_002_cloud_archive_detects_concurrent_version`
-- **Patches:** `quality/patches/BUG-002-regression-test.patch`, `quality/patches/BUG-002-fix.patch`
-- **Writeup:** `quality/writeups/BUG-002.md`
+- **Patches:** `quality/workspace/patches/BUG-002-regression-test.patch`, `quality/workspace/patches/BUG-002-fix.patch`
+- **Writeup:** `quality/workspace/writeups/BUG-002.md`
 - **Challenge:** `quality/challenge/BUG-002-challenge.md` — **Verdict:** DOWNGRADED
 
 ---
@@ -89,8 +89,8 @@ Rejected candidates from earlier phases: CAND-006 (crypt rclone VersionId propag
 - **fix_type:** code
 - **Proposed fix:** Join users and compare session_version inside `csrf_token_for` (read-only; still no last_seen touch).
 - **Regression test:** `quality/test_regression.py::TestBug004::test_bug_004_csrf_honors_session_version`
-- **Patches:** `quality/patches/BUG-004-regression-test.patch`, `quality/patches/BUG-004-fix.patch`
-- **Writeup:** `quality/writeups/BUG-004.md`
+- **Patches:** `quality/workspace/patches/BUG-004-regression-test.patch`, `quality/workspace/patches/BUG-004-fix.patch`
+- **Writeup:** `quality/workspace/writeups/BUG-004.md`
 - **Challenge:** `quality/challenge/BUG-004-challenge.md` — **Verdict:** DOWNGRADED
 
 ---
@@ -114,8 +114,8 @@ Rejected candidates from earlier phases: CAND-006 (crypt rclone VersionId propag
 - **fix_type:** spec
 - **Proposed fix:** Edit README Users bullet to match owner-only free-space (operators: upload + recover only).
 - **Regression test:** `quality/test_regression.py::TestBug005::test_bug_005_readme_users_owner_only_free_space`
-- **Patches:** `quality/patches/BUG-005-regression-test.patch`, `quality/patches/BUG-005-fix.patch`
-- **Writeup:** `quality/writeups/BUG-005.md`
+- **Patches:** `quality/workspace/patches/BUG-005-regression-test.patch`, `quality/workspace/patches/BUG-005-fix.patch`
+- **Writeup:** `quality/workspace/writeups/BUG-005.md`
 - **Challenge:** `quality/challenge/BUG-005-challenge.md` — **Verdict:** DOWNGRADED
 
 ---
@@ -138,8 +138,8 @@ Rejected candidates from earlier phases: CAND-006 (crypt rclone VersionId propag
 - **fix_type:** code
 - **Proposed fix:** Narrow `cleanup_abandoned_restore_files` to restore/verify temps only; teach reconcile to restore `.cleanup-*.tmp` siblings.
 - **Regression test:** `quality/test_regression.py::TestBug006::test_bug_006_startup_preserves_free_space_claims`
-- **Patches:** `quality/patches/BUG-006-regression-test.patch`, `quality/patches/BUG-006-fix.patch`
-- **Writeup:** `quality/writeups/BUG-006.md`
+- **Patches:** `quality/workspace/patches/BUG-006-regression-test.patch`, `quality/workspace/patches/BUG-006-fix.patch`
+- **Writeup:** `quality/workspace/writeups/BUG-006.md`
 - **Challenge:** `quality/challenge/BUG-006-challenge.md` — **Verdict:** CONFIRMED
 
 ---
@@ -162,8 +162,8 @@ Rejected candidates from earlier phases: CAND-006 (crypt rclone VersionId propag
 - **fix_type:** code
 - **Proposed fix:** Retain parsed hour/minute and compare tuples.
 - **Regression test:** `quality/test_regression.py::TestBug007::test_bug_007_windows_compare_as_times_not_strings`
-- **Patches:** `quality/patches/BUG-007-regression-test.patch`, `quality/patches/BUG-007-fix.patch`
-- **Writeup:** `quality/writeups/BUG-007.md`
+- **Patches:** `quality/workspace/patches/BUG-007-regression-test.patch`, `quality/workspace/patches/BUG-007-fix.patch`
+- **Writeup:** `quality/workspace/writeups/BUG-007.md`
 - **Challenge:** `quality/challenge/BUG-007-challenge.md` — **Verdict:** CONFIRMED
 
 ---

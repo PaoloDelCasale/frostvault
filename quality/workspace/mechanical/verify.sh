@@ -3,10 +3,15 @@
 # Author: Andrew Stellman · Date: 2026-07-23 · Project: FrostVault
 # Mechanical enumeration check for process_job action/status dispatcher branches.
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-CASES="$ROOT/quality/mechanical/process_job_action_branches.txt"
+# Resolve repo root whether invoked via quality/mechanical/ symlink or
+# quality/workspace/mechanical/ canonical path.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# If invoked through the top-level symlink, SCRIPT_DIR is still the real
+# workspace/mechanical path after pwd -P, so ../../../ is the repo root.
+CASES="$ROOT/quality/workspace/mechanical/process_job_action_branches.txt"
 STORAGE="$ROOT/app/storage.py"
-RECEIPT="$ROOT/quality/mechanical/verify_receipt.txt"
+RECEIPT="$ROOT/quality/workspace/mechanical/verify_receipt.txt"
 
 : >"$RECEIPT"
 echo "mechanical verify: process_job dispatcher" | tee -a "$RECEIPT"

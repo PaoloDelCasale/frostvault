@@ -6,8 +6,8 @@
 {
   "schema_version": "2.0",
   "run_timestamp_start": "2026-07-23T23:09:52Z",
-  "run_timestamp_end": "2026-07-24T00:09:24Z",
-  "duration_seconds": 3600,
+  "run_timestamp_end": "2026-07-24T06:18:43Z",
+  "duration_seconds": 25731,
   "qpb_version": "1.5.6",
   "target_repo_path": ".",
   "target_repo_git_sha": "0fa7cbd317d67f8456d135f6a37795eb7b6838ab",
@@ -16,7 +16,8 @@
     2,
     3,
     4,
-    5
+    5,
+    6
   ],
   "target_role_breakdown": {
     "counts": {
@@ -44,16 +45,21 @@
   "summary": {
     "requirements": 19,
     "bugs": 6,
-    "gate_verdict": "partial"
+    "gate_verdict": "pass"
   },
   "artifacts": [
     "quality/EXPLORATION.md",
     "quality/REQUIREMENTS.md",
     "quality/BUGS.md",
     "quality/COMPLETENESS_REPORT.md",
-    "quality/results/tdd-results.json",
+    "quality/INDEX.md",
+    "quality/PROGRESS.md",
+    "quality/workspace/results/tdd-results.json",
     "quality/TDD_TRACEABILITY.md",
-    "quality/challenge/"
+    "quality/workspace/results/quality-gate.log",
+    "quality/workspace/results/phase6-verification.log",
+    "quality/challenge/",
+    "quality/workspace/"
   ]
 }
 ```

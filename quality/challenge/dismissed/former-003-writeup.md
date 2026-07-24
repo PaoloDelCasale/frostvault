@@ -50,6 +50,6 @@ index e9a6f3a..3487e45 100644
 ## 7. The test
 
 - Regression test: `quality/test_regression.py::TestBug003::test_bug_003_list_only_not_full_verify`
-- Regression patch: `quality/patches/BUG-003-regression-test.patch`
-- Fix patch: `quality/patches/BUG-003-fix.patch`
+- Regression patch: `quality/workspace/patches/BUG-003-regression-test.patch`
+- Fix patch: `quality/workspace/patches/BUG-003-fix.patch`
 - Guard: `@unittest.expectedFailure` until the fix lands.
