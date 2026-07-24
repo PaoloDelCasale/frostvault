@@ -87,13 +87,15 @@ def _normalize_windows(
         start = str(item["start"])
         end = str(item["end"])
         # Validate HH:MM shape early so HTTP callers get a clear 422.
+        parsed: dict[str, tuple[int, int]] = {}
         for label, stamp in (("start", start), ("end", end)):
             hour_text, minute_text = stamp.split(":", 1)
             hour = int(hour_text)
             minute = int(minute_text)
             if hour < 0 or hour > 23 or minute < 0 or minute > 59:
                 raise ValueError(f"invalid {label} time")
-        if start >= end:
+            parsed[label] = (hour, minute)
+        if parsed["start"] >= parsed["end"]:
             raise ValueError("operating window start must be before end")
         windows.append({"weekday": weekday, "start": start, "end": end})
     return tuple(windows)
