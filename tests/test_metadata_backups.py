@@ -16,6 +16,8 @@ Seams under test (confirmed for this issue):
   — public ObjectStore factory for configured off-host backup (BUG-010)
 - ``app.storage._verify_latest_metadata_backup_once``
   — scheduled verify must stamp the run bound by local_path/digest (BUG-016)
+- ``app.services.metadata_backups._verify_postgres_dump_isolated``
+  — temp_database verify must prove schema counts (BUG-019 / REQ-031)
 - Admin HTTP: list / status / manual run / download
 """
 from __future__ import annotations
@@ -27,7 +29,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from cryptography.fernet import Fernet
 
@@ -482,6 +484,66 @@ class BackupOrchestrationNotificationTests(unittest.TestCase):
 
         self.assertEqual(status["last_status"], "failed")
         self.assertTrue(any(row["event"] == "metadata_backup_failed" for row in notes))
+
+
+class TempDatabaseVerifyProvenCountsTests(unittest.TestCase):
+    """BUG-019: temp_database verify must not ok when tables unproven (REQ-031)."""
+
+    def test_bug_019_temp_database_requires_proven_counts(self) -> None:
+        """[BUG-019][Req: REQ-031] temp_database mode must fail closed without counts.
+
+        Seam: ``_verify_postgres_dump_isolated`` — producer of
+        ``verification_mode=temp_database`` results used by
+        ``verify_restore_isolated`` / scheduled verify. After ``createdb``
+        succeeds, if ``psql`` COUNT cannot prove users/vaults/alembic_version,
+        raise ``BackupError`` — do not return ``ok: True`` with null counts.
+        Distinct from intentional ``pg_restore_list`` fallback (former BUG-003).
+        """
+        list_ok = MagicMock(returncode=0, stderr=b"", stdout=b"")
+        created_ok = MagicMock(returncode=0, stderr=b"", stdout=b"")
+        restore_soft = MagicMock(returncode=1, stderr=b"WARNING: role missing", stdout=b"")
+        psql_fail = MagicMock(
+            returncode=1,
+            stderr="ERROR: relation \"users\" does not exist\n",
+            stdout="",
+        )
+        drop_ok = MagicMock(returncode=0, stderr=b"", stdout=b"")
+
+        with patch.object(
+            metadata_backups.subprocess,
+            "run",
+            side_effect=[list_ok, created_ok, restore_soft, psql_fail, drop_ok],
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaises(metadata_backups.BackupError):
+                    metadata_backups._verify_postgres_dump_isolated(
+                        b"not-a-real-dump", Path(tmp)
+                    )
+
+    def test_bug_019_temp_database_source_rejects_null_count_success(self) -> None:
+        """[BUG-019][Req: REQ-031] source must reject null counts in temp_database path.
+
+        Intentional list-only fallback must remain (former BUG-003 rejected).
+        Before returning temp_database ok, counts must be explicitly validated.
+        """
+        body = (
+            Path(__file__).resolve().parents[1]
+            / "app"
+            / "services"
+            / "metadata_backups.py"
+        ).read_text(encoding="utf-8")
+        start = body.index("def _verify_postgres_dump_isolated")
+        end = body.index("\ndef _row_run", start)
+        fn_body = body[start:end]
+        self.assertIn("pg_restore_list", fn_body)
+        temp_idx = fn_body.find('"temp_database"')
+        self.assertGreaterEqual(temp_idx, 0)
+        prelude = fn_body[:temp_idx]
+        self.assertIn(
+            "user_count is None",
+            prelude,
+            "temp_database success path must explicitly guard null user_count",
+        )
 
 
 if __name__ == "__main__":
