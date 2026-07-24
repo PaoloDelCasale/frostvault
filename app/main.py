@@ -2695,21 +2695,29 @@ def update_user(
     with db() as connection:
         if action.active is False:
             # Serialize the last-admin check with the UPDATE (REQ-032).
-            # SQLite takes an immediate write lock; PostgreSQL locks the rows.
+            # SQLite takes an immediate write lock; PostgreSQL locks every
+            # active-admin row (FOR UPDATE cannot wrap COUNT(*) aggregates).
             backend = getattr(connection, "backend", settings.db_backend)
             if backend == "sqlite":
                 connection.begin_immediate()
-                lock_suffix = ""
+                target = connection.execute(
+                    "SELECT is_admin FROM users WHERE id=%s",
+                    (user_id,),
+                ).fetchone()
+                active_admins = connection.execute(
+                    "SELECT COUNT(*) AS total FROM users "
+                    "WHERE is_admin=TRUE AND active=TRUE"
+                ).fetchone()["total"]
             else:
-                lock_suffix = " FOR UPDATE"
-            target = connection.execute(
-                f"SELECT is_admin FROM users WHERE id=%s{lock_suffix}",
-                (user_id,),
-            ).fetchone()
-            active_admins = connection.execute(
-                "SELECT COUNT(*) AS total FROM users "
-                f"WHERE is_admin=TRUE AND active=TRUE{lock_suffix}"
-            ).fetchone()["total"]
+                target = connection.execute(
+                    "SELECT is_admin FROM users WHERE id=%s FOR UPDATE",
+                    (user_id,),
+                ).fetchone()
+                active_admin_rows = connection.execute(
+                    "SELECT id FROM users "
+                    "WHERE is_admin=TRUE AND active=TRUE FOR UPDATE"
+                ).fetchall()
+                active_admins = len(active_admin_rows)
             if target and target["is_admin"] and active_admins <= 1:
                 raise HTTPException(
                     400, "At least one administrator must remain active"
