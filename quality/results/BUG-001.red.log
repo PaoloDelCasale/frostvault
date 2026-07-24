@@ -1,0 +1,22 @@
+RED
+bug=BUG-001
+test=quality.test_regression.TestBug001.test_bug_001_recover_requires_status_whitelist
+Command: .venv/bin/python -m unittest quality.test_regression.TestBug001.test_bug_001_recover_requires_status_whitelist -v
+Exit code: 1
+---
+test_bug_001_recover_requires_status_whitelist (quality.test_regression.TestBug001.test_bug_001_recover_requires_status_whitelist)
+[BUG-001][Req: REQ-002] recover branch must conjunct status set. ... FAIL
+
+======================================================================
+FAIL: test_bug_001_recover_requires_status_whitelist (quality.test_regression.TestBug001.test_bug_001_recover_requires_status_whitelist)
+[BUG-001][Req: REQ-002] recover branch must conjunct status set.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/qpb-tdd-qYSBv5/red/quality/test_regression.py", line 76, in test_bug_001_recover_requires_status_whitelist
+    self.assertIn("status", line)
+AssertionError: 'status' not found in 'elif job["action"] == "recover":'
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)

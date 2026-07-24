@@ -1,0 +1,14 @@
+GREEN
+bug=BUG-001
+test=quality.test_regression.TestBug001.test_bug_001_recover_requires_status_whitelist
+Command: .venv/bin/python -m unittest quality.test_regression.TestBug001.test_bug_001_recover_requires_status_whitelist -v
+patch_apply_exit=0
+Exit code: 0
+---
+test_bug_001_recover_requires_status_whitelist (quality.test_regression.TestBug001.test_bug_001_recover_requires_status_whitelist)
+[BUG-001][Req: REQ-002] recover branch must conjunct status set. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK

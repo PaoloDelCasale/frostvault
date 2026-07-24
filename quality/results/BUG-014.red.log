@@ -1,0 +1,22 @@
+RED
+bug=BUG-014
+test=quality.test_regression.TestBug014.test_bug_014_active_change_bumps_session_version
+Command: .venv/bin/python -m unittest quality.test_regression.TestBug014.test_bug_014_active_change_bumps_session_version -v
+Exit code: 1
+---
+test_bug_014_active_change_bumps_session_version (quality.test_regression.TestBug014.test_bug_014_active_change_bumps_session_version)
+[BUG-014][Req: REQ-026] deactivate/reactivate invalidates Sessions. ... FAIL
+
+======================================================================
+FAIL: test_bug_014_active_change_bumps_session_version (quality.test_regression.TestBug014.test_bug_014_active_change_bumps_session_version)
+[BUG-014][Req: REQ-026] deactivate/reactivate invalidates Sessions.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/qpb-tdd-BUG-014-red/quality/test_regression.py", line 482, in test_bug_014_active_change_bumps_session_version
+    self.assertIn(
+AssertionError: 'session_version=session_version+1' not found in 'if action.active is not None:\n        updates.append("active=%s")\n        params.append(action.active)\n    if action.display_name is not None:\n        updates.append("display_name=%s")\n        params.append(action.display_name.strip())\n    ' : active transitions must bump session_version
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)

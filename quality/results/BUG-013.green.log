@@ -1,0 +1,16 @@
+GREEN
+bug=BUG-013
+test=quality.test_regression.TestBug013.test_bug_013_crypt_download_uses_object_key
+Command: .venv/bin/python -m unittest quality.test_regression.TestBug013.test_bug_013_crypt_download_uses_object_key -v
+patch_apply_exit=0
+Exit code: 0
+---
+patching file app/storage.py
+---
+test_bug_013_crypt_download_uses_object_key (quality.test_regression.TestBug013.test_bug_013_crypt_download_uses_object_key)
+[BUG-013][Req: REQ-025] crypt rclone path derives from object_key. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK

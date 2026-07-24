@@ -1,0 +1,14 @@
+GREEN
+bug=BUG-007
+test=quality.test_regression.TestBug007.test_bug_007_windows_compare_as_times_not_strings
+Command: .venv/bin/python -m unittest quality.test_regression.TestBug007.test_bug_007_windows_compare_as_times_not_strings -v
+patch_apply_exit=0
+Exit code: 0
+---
+test_bug_007_windows_compare_as_times_not_strings (quality.test_regression.TestBug007.test_bug_007_windows_compare_as_times_not_strings)
+[BUG-007][Req: REQ-012] non-padded inverted windows must be rejected. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.007s
+
+OK

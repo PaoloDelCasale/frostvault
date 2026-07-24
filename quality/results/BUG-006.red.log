@@ -1,0 +1,22 @@
+RED
+bug=BUG-006
+test=quality.test_regression.TestBug006.test_bug_006_startup_preserves_free_space_claims
+Command: .venv/bin/python -m unittest quality.test_regression.TestBug006.test_bug_006_startup_preserves_free_space_claims -v
+Exit code: 1
+---
+test_bug_006_startup_preserves_free_space_claims (quality.test_regression.TestBug006.test_bug_006_startup_preserves_free_space_claims)
+[BUG-006][Req: REQ-009] cleanup claims must survive startup reconciliation. ... FAIL
+
+======================================================================
+FAIL: test_bug_006_startup_preserves_free_space_claims (quality.test_regression.TestBug006.test_bug_006_startup_preserves_free_space_claims)
+[BUG-006][Req: REQ-009] cleanup claims must survive startup reconciliation.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/qpb-tdd-kcPRAv/red/quality/test_regression.py", line 227, in test_bug_006_startup_preserves_free_space_claims
+    self.assertFalse(
+AssertionError: True is not false : cleanup_abandoned_restore_files must not delete .cleanup-*.tmp claims
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)

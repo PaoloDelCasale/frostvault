@@ -1,0 +1,16 @@
+GREEN
+bug=BUG-014
+test=quality.test_regression.TestBug014.test_bug_014_active_change_bumps_session_version
+Command: .venv/bin/python -m unittest quality.test_regression.TestBug014.test_bug_014_active_change_bumps_session_version -v
+patch_apply_exit=0
+Exit code: 0
+---
+patching file app/main.py
+---
+test_bug_014_active_change_bumps_session_version (quality.test_regression.TestBug014.test_bug_014_active_change_bumps_session_version)
+[BUG-014][Req: REQ-026] deactivate/reactivate invalidates Sessions. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK

@@ -1,0 +1,22 @@
+RED
+bug=BUG-013
+test=quality.test_regression.TestBug013.test_bug_013_crypt_download_uses_object_key
+Command: .venv/bin/python -m unittest quality.test_regression.TestBug013.test_bug_013_crypt_download_uses_object_key -v
+Exit code: 1
+---
+test_bug_013_crypt_download_uses_object_key (quality.test_regression.TestBug013.test_bug_013_crypt_download_uses_object_key)
+[BUG-013][Req: REQ-025] crypt rclone path derives from object_key. ... FAIL
+
+======================================================================
+FAIL: test_bug_013_crypt_download_uses_object_key (quality.test_regression.TestBug013.test_bug_013_crypt_download_uses_object_key)
+[BUG-013][Req: REQ-025] crypt rclone path derives from object_key.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/qpb-tdd-BUG-013-red/quality/test_regression.py", line 454, in test_bug_013_crypt_download_uses_object_key
+    self.assertIn(
+AssertionError: 'object_key_to_path' not found in 'vault_encrypts_names(job) or vault_encrypts_content(job):\n        version_flag = f"--s3-version-id={provider_version_id}"\n        if vault_encrypts_names(job):\n            with vault_rclone_config(job) as runtime:\n                run_rclone(\n                    "copyto",\n                    f"{runtime.remote_name}:{job[\'path\']}",\n                    str(temporary),\n                    version_flag,\n                    job_progress_callback(job),\n                    job_id=job["id"],\n                    config_path=str(runtime.path),\n                    bwlimit=job_bwlimit(job),\n                )\n        else:\n            run_rclone(\n                "copyto",\n                configured_rclone_destination(job, job["path"]),\n                str(temporary),\n                version_flag,\n                job_progress_callback(job),\n                job_id=job["id"],\n                bwlimit=job_bwlimit(job),\n            )\n        ensure_job_active(job["id"], "Recovery stopped")\n        if not temporary.is_file():\n            raise RuntimeError("Rclone did not create the recovered file")\n        return\n\n    response = s3_client().' : crypt branch must derive logical path from object_key
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)

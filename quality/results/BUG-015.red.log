@@ -1,0 +1,22 @@
+RED
+bug=BUG-015
+test=quality.test_regression.TestBug015.test_bug_015_recover_uses_active_price_book
+Command: .venv/bin/python -m unittest quality.test_regression.TestBug015.test_bug_015_recover_uses_active_price_book -v
+Exit code: 1
+---
+test_bug_015_recover_uses_active_price_book (quality.test_regression.TestBug015.test_bug_015_recover_uses_active_price_book)
+[BUG-015][Req: REQ-027] worker estimate matches recover/estimate book. ... FAIL
+
+======================================================================
+FAIL: test_bug_015_recover_uses_active_price_book (quality.test_regression.TestBug015.test_bug_015_recover_uses_active_price_book)
+[BUG-015][Req: REQ-027] worker estimate matches recover/estimate book.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/qpb-tdd-BUG-015-red/quality/test_regression.py", line 505, in test_bug_015_recover_uses_active_price_book
+    self.assertTrue(
+AssertionError: False is not true : high-impact gating must consult the active price book
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)

@@ -1,0 +1,152 @@
+=== Quality Gate — Post-Run Validation ===
+Version:    1.5.10
+Strictness: benchmark
+Repos:      1
+
+=== workspace ===
+[File Existence]
+  PASS: BUGS.md exists
+  PASS: REQUIREMENTS.md exists
+  PASS: QUALITY.md exists
+  PASS: PROGRESS.md exists
+  PASS: COVERAGE_MATRIX.md exists
+  PASS: COMPLETENESS_REPORT.md exists
+  PASS: CONTRACTS.md exists
+  PASS: RUN_CODE_REVIEW.md exists
+  PASS: RUN_SPEC_AUDIT.md exists
+  PASS: RUN_INTEGRATION_TESTS.md exists
+  PASS: RUN_TDD_TESTS.md exists
+  PASS: functional test file exists
+  PASS: AGENTS.md exists
+  PASS: EXPLORATION.md exists
+  PASS: code_reviews/ has .md files
+  PASS: spec_audits/ has triage file
+  PASS: spec_audits/ has 4 auditor file(s)
+  PASS: triage_probes.sh exists (executable triage evidence)
+[BUGS.md Heading Format]
+  PASS: All 14 bug headings use ### BUG-NNN format
+[TDD Sidecar JSON]
+  PASS: tdd-results.json exists (14 bugs)
+  PASS: has 'schema_version'
+  PASS: has 'skill_version'
+  PASS: has 'date'
+  PASS: has 'project'
+  PASS: has 'bugs'
+  PASS: has 'summary'
+  PASS: schema_version is '1.1'
+  PASS: per-bug field 'id' present (14x)
+  PASS: per-bug field 'requirement' present (14x)
+  PASS: per-bug field 'red_phase' present (14x)
+  PASS: per-bug field 'green_phase' present (14x)
+  PASS: per-bug field 'verdict' present (14x)
+  PASS: per-bug field 'fix_patch_present' present (14x)
+  PASS: per-bug field 'writeup_path' present (14x)
+  PASS: summary has 'total'
+  PASS: summary has 'verified'
+  PASS: summary has 'confirmed_open'
+  PASS: summary has 'red_failed'
+  PASS: summary has 'green_failed'
+  PASS: tdd-results.json date '2026-07-24' is valid
+  PASS: all verdict values are canonical
+[TDD Log Files]
+  PASS: All 14 confirmed bug(s) have red-phase logs
+  PASS: All 14 bug(s) with fix patches have green-phase logs
+  PASS: All red-phase logs have valid status tags
+  PASS: All green-phase logs have valid status tags
+  PASS: phase5_env.log present (test-runner probe captured)
+  PASS: Sidecar-to-log cross-validation passed (28 checks)
+  PASS: TDD_TRACEABILITY.md exists (14 bugs with red-phase results)
+[Integration Sidecar JSON]
+  WARN: integration-results.json not present
+[Recheck Sidecar JSON]
+  INFO: recheck-results.json not present (only required when recheck mode was run)
+[Heartbeat NDJSON]
+  INFO: heartbeat.ndjson not present (only emitted under the harness)
+[Use Cases]
+  PASS: Found 8 distinct UC identifiers (28 total references, 151 source files)
+[Test File Extension]
+  PASS: test_functional.py matches project language (py)
+  PASS: test_regression.py matches project language (py)
+[Functional Test Content]
+  PASS: test_functional.py: 29 of 29 test function(s) carry real assertions (v1.5.7 090s no-op detection)
+[Terminal Gate]
+  PASS: PROGRESS.md has Terminal Gate section
+[Mechanical Verification]
+  PASS: verify.sh exists (pre-W4 back-compat)
+  PASS: verify.sh ran clean (exit 0)
+  PASS: mechanical-verify.exit is 0
+[Patches]
+  PASS: test_regression.* exists (14 confirmed bugs require it)
+  PASS: 14 regression-test patch(es) for 14 bug(s)
+  PASS: 14 fix patch(es)
+  INFO: Total: 28 patch file(s) in quality/patches/
+[Bug Writeups]
+  PASS: 14 writeup(s) for 14 bug(s)
+  PASS: All 14 writeup(s) have inline fix diffs
+  PASS: All writeup ```diff blocks contain unified-diff content
+  PASS: No writeups contain unfilled template sentinels
+[BUGS.md / patches consistency]
+  PASS: BUGS.md (14 bug(s)) and patches/ (28 patch(es)) are consistent
+[Verdict Shape]
+  PASS: COMPLETENESS_REPORT.md verdict shape canonical (PASS)
+[Workspace Drift]
+  PASS: no non-canonical quality/workspace/ tree present
+[Version Stamps]
+  PASS: PROGRESS.md version matches (1.5.10)
+  PASS: tdd-results.json skill_version matches
+[Cross-Run Contamination]
+  PASS: No version mismatch detected
+[Run Metadata]
+  PASS: run-metadata JSON present
+[Asymmetry promotion (A-5)]
+  PASS: no compensation-asymmetry prose in EXPLORATION.md
+  PASS: requirements_manifest.json: manifest wrapper valid
+  PASS: use_cases_manifest.json: manifest wrapper valid
+  PASS: bugs_manifest.json: manifest wrapper valid
+  PASS: citation_semantic_check.json: manifest wrapper valid
+  PASS: requirements_manifest.json: v1.5.1 Layer-1 REQ checks complete
+  PASS: bugs_manifest.json: v1.5.1 Layer-1 BUG checks complete
+  PASS: bugs_manifest.json: v1.5.7 090j triage precision (D1 reachability + D2 known-issue + D3 security-HIGH) complete
+  PASS: quality/INDEX.md: §11 fields present
+  PASS: citation_semantic_check.json: no Tier 1/2 REQs to review (invariant #17 vacuously satisfied)
+  PASS: challenge gate coverage: 14 triggered bug(s) all have valid challenge records
+  PASS: compensation_grid.json: v1.5.2 cardinality gate clean
+  PASS: requirements_manifest.json: v1.5.3 source_type validation complete
+  PASS: requirements_manifest.json: v1.5.3 skill_section consistency complete
+  PASS: bugs_manifest.json: v1.5.3 divergence_type validation complete
+[Phase 4: skill-section REQ coverage]
+  INFO: check_skill_section_req_coverage: skip — not applicable for Code projects (skill-derivation Pass D only fires on Skill / Hybrid targets)
+[Phase 4: reference-file REQ coverage]
+  INFO: check_reference_file_req_coverage: skip — not applicable for Code projects (no references/ directory expected)
+[Phase 4: hybrid cross-cutting REQs]
+  INFO: check_hybrid_cross_cutting_reqs: skip — not applicable for Code projects (cross-cutting triangulation requires both skill-section and code-derived REQs)
+[Phase 4: role-map consistency]
+  PASS: quality/exploration_role_map.json: role map well-formed (legacy-derived project type 'Code'; check_role_map_consistency)
+
+
+===========================================
+Total: 0 FAIL, 1 WARN
+RESULT: GATE PASSED
+
+--- Operator Verdict ---
+[PASS] GATE PASSED -- this run looks solid
+
+Attribution: no shallow / fabrication signals detected — verdict reads as a real PASS.
+
+1 actionable WARN above — review:
+  • integration-results.json not present
+
+── Run provenance ──
+  Runner:  unknown (no AI-CLI environment marker detected)
+  Model:   cursor-grok-4.5 (self-reported by the agent — not verified)
+  Bugs:    14 found (gate-counted)
+
+── What happened ──
+Quality Playbook reviewed this project's code in six phases — exploring it, deriving what it's supposed to do, reviewing the code against that, and verifying findings with tests.
+The gate is the final quality checkpoint that decides whether this run's results are trustworthy.
+Result: it completed and passed cleanly and verified 14 issues.
+
+── What to do next ──
+Review the 14 confirmed issues in quality/BUGS.md; proposed fixes and their tests are in quality/patches/ and quality/results/.
+───────────────────────────────────────────
+::QPB:: {"v":1,"kind":"gate","gate_result":"PASS","verdict_state":"solid","ts":"2026-07-24T07:43:11Z"}

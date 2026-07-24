@@ -1,0 +1,22 @@
+RED
+bug=BUG-005
+test=quality.test_regression.TestBug005.test_bug_005_readme_users_owner_only_free_space
+Command: .venv/bin/python -m unittest quality.test_regression.TestBug005.test_bug_005_readme_users_owner_only_free_space -v
+Exit code: 1
+---
+test_bug_005_readme_users_owner_only_free_space (quality.test_regression.TestBug005.test_bug_005_readme_users_owner_only_free_space)
+[BUG-005][Req: REQ-003] Users section must match owner-only free-space. ... FAIL
+
+======================================================================
+FAIL: test_bug_005_readme_users_owner_only_free_space (quality.test_regression.TestBug005.test_bug_005_readme_users_owner_only_free_space)
+[BUG-005][Req: REQ-003] Users section must match owner-only free-space.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/qpb-tdd-NTZoiK/red/quality/test_regression.py", line 183, in test_bug_005_readme_users_owner_only_free_space
+    self.assertNotRegex(
+AssertionError: Regex matched: 'operator` can upload, free' matches 'operator`[^.\\n]*free' in "## Users and vaults\n\n- Users sign in with configured OIDC, or with the restricted break-glass\n  administrator password when that path is enabled for the client network.\n- Each vault has its own local folder, S3 prefix, and Rclone remote.\n- Every query and operation includes the vault identifier.\n- Users can see only vaults assigned to them.\n- The primary `owner` manages sharing and policy; `operator` can upload, free\n  local space, and recover files; `viewer` is read-only.\n- Queued or active uploads, recoveries, and local cleanup operations can be\n  stopped with the **Stop** button shown next to their progress.\n- Operations run in parallel. `OPERATION_CONCURRENCY` controls the number of\n  simultaneous processes (default: `4`, maximum: `16`). The previous\n  `UPLOAD_CONCURRENCY` variable remains supported as a fallback.\n- Local cleanup runs in the background and reports progress for each file or\n  folder.\n- Authenticated users can create their own vaults; administrators retain global\n  access with reauthentication for sensitive actions.\n- Every vault must retain exactly one primary owner.\n\nAdministrators do not automatically enter other users' vaults. They must be\nexplicitly assigned like any other user before they can browse files.\n\n" : README Users must not claim operators can free local space
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)

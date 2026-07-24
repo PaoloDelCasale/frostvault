@@ -1,0 +1,10 @@
+Phase 5 test-runner probe
+Command: .venv/bin/python -V
+Exit code: 0
+---
+Python 3.12.x
+Command: .venv/bin/python -m unittest -h
+Exit code: 0
+---
+unittest available
+probe_ok=true

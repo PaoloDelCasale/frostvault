@@ -1,0 +1,27 @@
+[Step 6.1] Mechanical verification: PASS (exit 0)
+[Step 6.2] quality_gate.py: PASS (exit 0) — checks passed, 0 FAIL, 2 WARN (integration-results.json absent; legacy requirements_manifest source_type)
+[Step 6.3] Functional tests: PASS — 29 tests, 0 failures, 0 errors
+[Step 6.3] Regression suite: PASS — 6 tests, 6 expected failures (BUG-001,002,004,005,006,007); no BUG-003; exit 0
+[Step 6.3] Existing project tests: PASS — 524 tests, 0 failures, 0 errors, 18 skipped (benchmark 9)
+[Step 6.4A] QUALITY.md scenarios: PASS — 10 scenarios, 10 matching test_scenario_* functions; cited symbols exist in app/ (process_cloud_archive, csrf_token_for, restore_claimed_local_copy, resolve_client_ip, DatabaseSchemaError, is_owner); Req tags present (benchmarks 1-2, 10)
+[Step 6.4B] Functional test quality: PASS — ~31% cross-variant (9/29 via loops/subTest/matrices); boundary/negative suite present (TestBoundaries + deny/untrusted/overnight/reject cases); majority value assertions over presence-only; outcomes asserted (roles, IPs, VersionId pins, schema gate) not mere exception types (benchmarks 3-7)
+[Step 6.4C] Protocol files: PASS — RUN_CODE_REVIEW self-contained (bootstrap/3 passes/guardrails); RUN_INTEGRATION_TESTS has Field Reference Table (24 rows) + executable unittest commands; RUN_SPEC_AUDIT has copy-pasteable Definitive Audit Prompt with Req tags (benchmarks 11-13)
+[Step 6.4D] Regression tests: PASS — 6/6 @unittest.expectedFailure guards referencing BUG-001/002/004/005/006/007; no run=False; no BUG-003; patch validation gate present in RUN_TDD_TESTS.md; all 6 regression+fix patches exist and git apply --check succeeds (benchmarks 15-16, 24, 44)
+[Step 6.4E] Enumeration/triage: PASS — mechanical process_job_action_branches.txt provides code-side branch list with line numbers; review cites gap vs expected status set; triage probes have executable assertions in triage_probes.sh + triage.md; no circular quality/mechanical reads in probes; contradiction gate clean for active bugs (benchmarks 19, 21-22, 25, 36)
+[Step 6.4F] Continuation mode: SKIP — no SEED_CHECKS.md / previous_runs (benchmarks 32-33)
+[Step 6.4] Benchmark 14 sidecar schemas: PASS — tdd-results.json schema_version 1.1 with required keys + confirmed_open; integration-results.json absent (WARN only, not blocking)
+[Step 6.4] Benchmark 17 integration discovery: PASS — RUN_INTEGRATION_TESTS.md uses unittest discover/collect commands against existing tests.* modules
+[Step 6.4] Benchmark 18/26 version stamps: PASS after correction — added Generated-by v1.5.6 stamps to PROGRESS, EXPLORATION, auditor-1/2/3, shared auditor prompt; other generated MD/PY already stamped
+[Step 6.4] Benchmark 20/30 writeups: PASS — 6/6 writeups exist with ```diff blocks
+[Step 6.4] Benchmark 23/27/35/37 mechanical: PASS — verify.sh present, exit 0 receipts, Phase 6 used bash verify.sh
+[Step 6.4] Benchmark 28 TDD closure: PASS — tdd-results.json + TDD_TRACEABILITY.md present for 6 RED bugs
+[Step 6.4] Benchmark 29/31/38 triage sync: PASS — auditors 1–3 + triage exist; confirmed code bugs in BUGS.md
+[Step 6.4] Benchmark 34/39 BUGS.md: PASS — exists; ### BUG-NNN headings for 6 active bugs; rejected former-003 in Reviewed and dismissed
+[Step 6.4] Benchmark 40 artifacts on disk: PASS — core Generate/Review/Audit/TDD artifacts present; AGENTS.md at repo root present
+[Step 6.4] Benchmark 41–45: PASS — sidecar valid; quality_gate exit 0 logged; UC-01..UC-08 present; 6 regression patches; 6 writeup inline diffs
+[Step 6.4] BUG-003 stale active refs: PASS — not in bugs_manifest/tdd-results/test_regression active set; dismissed consistently in BUGS.md Reviewed section
+[Step 6.5] Metadata consistency: PASS — requirement counts = 19 across REQUIREMENTS.md, PROGRESS.md inventory, COVERAGE_MATRIX.md, requirements_manifest.json; With docs: no matches absent reference_docs/; Terminal Gate Verification complete; COMPLETENESS_REPORT.md single ## Verdict = COMPLETE; 6 active bugs closed (TDD verified); rejected finding recorded; TDD summary 6 RED + 6 GREEN; INDEX.md schema 2.0 with gate_verdict field (updated at finalize)
+
+[Step 6.5] Metadata consistency finalize: PASS — requirement counts=19; With docs=no; Terminal Gate present; single COMPLETE verdict; INDEX gate_verdict=pass
+[Phase 6 finalize] workspace reorganization: moved code_reviews,spec_audits,patches,writeups,mechanical,results under quality/workspace/; top-level symlinks restored
+[Phase 6 finalize] Cross-validation: BUGS.md has 6 active ### BUG- sections; INDEX.md gate_verdict=pass; quality-gate.log non-empty; Terminal Gate Verification present; ts=2026-07-24T06:18:43Z
