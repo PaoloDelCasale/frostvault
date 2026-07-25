@@ -23,14 +23,40 @@ Some issues are worked by cloud agents without a human in the loop. The loop is:
 
 1. An issue carries `agent-pipeline` (it belongs to an automated epic) and gets
    `ready-for-agent` once nothing blocks it.
-2. A Cursor Automation triggers on that label and starts a cloud agent, which
+2. The same workflow that labelled it starts a cloud agent through
+   `POST https://api.cursor.com/v1/agents`, with `autoCreatePR`, and the agent
    opens a pull request whose body says `Closes #N`.
 3. `.github/workflows/agent-automerge.yml` squash-merges that pull request once
    every check run for its head commit is finished and green. Merging closes the
    issue.
 4. `.github/workflows/agent-unblock.yml` reacts to the closure: for every issue
    the closed one was blocking, it adds `ready-for-agent` if all of that issue's
-   blockers are now closed — which starts the next agent.
+   blockers are now closed — and dispatches an agent for it.
+
+Start the first issue of a chain with the **Agent pipeline dispatch** workflow
+(`workflow_dispatch`, takes an issue number): nothing closes before it, so no
+unblock event exists to start it.
+
+### Configuration
+
+| Name | Kind | Purpose |
+| --- | --- | --- |
+| `CURSOR_API_KEY` | secret | Cursor API key (`cursor.com/dashboard/api`). Without it the pipeline only labels |
+| `CURSOR_AGENT_MODEL` | variable | Model id from `GET https://api.cursor.com/v1/models`. Unset means your configured default |
+| `CURSOR_AGENT_MODEL_PARAMS` | variable | Per-model parameters as `key=value` pairs, e.g. `effort=high,fast=false` |
+| `CURSOR_AGENT_ENV` | variable | Named cloud environment. Set it if agents come up without `.venv/`; the API treats it as mutually exclusive with the repository block |
+| `CURSOR_AGENT_BASE_REF` | variable | Branch agents start from. Defaults to `main` |
+
+The intended model for this repository is **Grok 4.5 at high effort, not the fast
+variant**: `CURSOR_AGENT_MODEL=grok-4.5` and
+`CURSOR_AGENT_MODEL_PARAMS=effort=high,fast=false`. Only `GET /v1/models` knows the
+authoritative ids and parameter names, so a dispatch validates the choice against
+that endpoint first and refuses — listing the valid ids or values — rather than
+sending a request that would fail opaquely or quietly select a different variant.
+
+Agents are dispatched with a deterministic `agentId` derived from the issue
+number, so a repeated dispatch returns a conflict instead of forking the work
+onto a second branch.
 
 Consequences worth knowing:
 
@@ -43,9 +69,15 @@ Consequences worth knowing:
 - The `Cursor Bugbot` check reports findings as `neutral`, not `failure`, so
   requiring it would not block a merge on findings. Do not rely on it as a gate.
 
+- **A Cursor Automation is not used to start agents.** Automations can trigger on
+  a label added to a *pull request*, but not on a label added to an *issue*, which
+  is the event this pipeline produces. Calling the API keeps the trigger in our
+  hands. If `CURSOR_API_KEY` is absent the workflows still label, so an Automation
+  watching `ready-for-agent` remains a working alternative.
+
 To stop the pipeline: remove `ready-for-agent` from the open issues, or remove
-`agent-pipeline` from the ones that should wait. Disabling the Cursor Automation
-stops new agents but does not stop merges; disabling
+`agent-pipeline` from the ones that should wait. Deleting `CURSOR_API_KEY` stops
+new agents but does not stop merges; disabling
 `.github/workflows/agent-automerge.yml` stops merges.
 
 Issue dependencies are only writable over REST

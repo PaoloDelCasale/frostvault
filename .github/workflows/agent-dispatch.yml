@@ -1,27 +1,33 @@
-name: Agent pipeline unblock
+name: Agent pipeline dispatch
 
-# When an issue closes, label the issues it was blocking that nothing blocks any
-# more, and start a cloud agent on each of them.
-# See AGENTS.md ("Automated agent pipeline").
+# Manual entry point: start a cloud agent on one issue.
+#
+# Needed to kick off the first issue of a chain, since nothing closes before it,
+# and useful to restart an issue whose agent died. Refuses any issue that does not
+# carry agent-pipeline.
 
 on:
-  issues:
-    types: [closed]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number to hand to an agent
+        required: true
+        type: string
 
 permissions:
   contents: read
   issues: write
 
 jobs:
-  unblock:
-    name: Start the next unblocked issues
+  dispatch:
+    name: Dispatch one issue
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Label and dispatch the dependents whose blockers are all closed
+      - name: Start a cloud agent on the issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
@@ -31,4 +37,4 @@ jobs:
           CURSOR_AGENT_BASE_REF: ${{ vars.CURSOR_AGENT_BASE_REF }}
         run: |
           python .github/scripts/agent_pipeline.py \
-            "${{ github.repository }}" unblock "${{ github.event.issue.number }}"
+            "${{ github.repository }}" dispatch "${{ inputs.issue }}"

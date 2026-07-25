@@ -68,14 +68,21 @@ Docker. **Auto-merge is disabled**; humans review and merge.
 
 ## Automated agent pipeline
 
-Workflows: [`.github/workflows/agent-unblock.yml`](../.github/workflows/agent-unblock.yml)
-and [`.github/workflows/agent-automerge.yml`](../.github/workflows/agent-automerge.yml),
-both driven by [`.github/scripts/agent_pipeline.py`](../.github/scripts/agent_pipeline.py).
+Three workflows, all driven by
+[`.github/scripts/agent_pipeline.py`](../.github/scripts/agent_pipeline.py):
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| Agent pipeline unblock | `issues: closed` | Adds `ready-for-agent` to every dependent issue whose blockers are now all closed, but only if it carries `agent-pipeline` |
-| Agent pipeline auto-merge | Every 10 minutes, plus `workflow_dispatch` | Squash-merges open pull requests that pass every gate below |
+| [Agent pipeline unblock](../.github/workflows/agent-unblock.yml) | `issues: closed` | Labels `ready-for-agent` on every dependent whose blockers are now all closed — only if it carries `agent-pipeline` — and starts a cloud agent on each |
+| [Agent pipeline dispatch](../.github/workflows/agent-dispatch.yml) | `workflow_dispatch` | Starts a cloud agent on one issue. Needed for the first issue of a chain |
+| [Agent pipeline auto-merge](../.github/workflows/agent-automerge.yml) | Every 10 minutes, plus `workflow_dispatch` | Squash-merges open pull requests that pass every gate below |
+
+Agents are started through `POST https://api.cursor.com/v1/agents`, configured by
+`CURSOR_API_KEY` (secret) plus the `CURSOR_AGENT_*` repository variables described
+in `AGENTS.md`. The model choice is validated against `GET /v1/models` before an
+agent is created, so a wrong id or parameter fails with the list of valid values
+instead of an opaque API error. Without the key the workflows only label, which
+leaves a Cursor Automation watching the label as an alternative.
 
 Auto-merge gates, all required: a same-repo `cursor/*` branch, not a draft, a body
 that closes an issue, that issue carrying `agent-pipeline`, a mergeable state, and
