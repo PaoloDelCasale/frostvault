@@ -7,6 +7,7 @@ import secrets
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -149,9 +150,8 @@ from .storage import (
 )
 
 
-TEMPLATE_DIR = __import__("pathlib").Path(__file__).parent / "templates"
-STATIC_DIR = __import__("pathlib").Path(__file__).parent / "static"
-Path = __import__("pathlib").Path
+TEMPLATE_DIR = Path(__file__).parent / "templates"
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _spa_dist_dir() -> Path:
