@@ -108,3 +108,12 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         self.assertEqual(vault["role"], "owner")
         self.assertTrue(vault["is_vault_owner"])
         self.assertTrue(vault["can_operate"])
+
+    def test_operator_me_can_operate_but_is_not_vault_owner(self) -> None:
+        """Seam 2: operator → can_operate true, is_vault_owner false."""
+        payload = self._me("operator")
+
+        vault = payload["vault"]
+        self.assertEqual(vault["role"], "operator")
+        self.assertTrue(vault["can_operate"])
+        self.assertFalse(vault["is_vault_owner"])
