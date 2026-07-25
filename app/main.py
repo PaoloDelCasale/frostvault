@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from jinja2.utils import htmlsafe_json_dumps
@@ -151,6 +151,34 @@ from .storage import (
 
 TEMPLATE_DIR = __import__("pathlib").Path(__file__).parent / "templates"
 STATIC_DIR = __import__("pathlib").Path(__file__).parent / "static"
+Path = __import__("pathlib").Path
+
+
+def _spa_dist_dir() -> Path:
+    return Path(settings.frontend_dist_dir)
+
+
+def _spa_index_response() -> FileResponse:
+    index_path = _spa_dist_dir() / "index.html"
+    if not index_path.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "FRONTEND_SPA is enabled but frontend/dist/index.html is missing. "
+                "Build the SPA with: cd frontend && npm ci && npm run build"
+            ),
+        )
+    return FileResponse(
+        index_path,
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _serve_spa_if_enabled() -> FileResponse | None:
+    if not settings.frontend_spa:
+        return None
+    return _spa_index_response()
 
 
 @asynccontextmanager
@@ -1200,6 +1228,9 @@ def vault_create_page(request: Request, response: Response):
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
+    spa = _serve_spa_if_enabled()
+    if spa is not None:
+        return spa
     try:
         user = current_user(request)
         vault = current_vault(request, user)
