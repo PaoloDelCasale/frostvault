@@ -180,3 +180,53 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         self.assertEqual(payload["auth_method"], "oidc")
         self.assertEqual(payload["locale"], "en")
         self.assertEqual(payload["locales"], ["en", "it"])
+
+    def test_me_capabilities_match_jinja_archive_data_attributes(self) -> None:
+        """Seam 8: /api/me values match what the Jinja template computes."""
+        cases = (
+            ("owner", True),
+            ("operator", True),
+            ("viewer", True),
+            ("owner", False),  # allow_local_delete off
+        )
+        for username, allow_local_delete in cases:
+            with self.subTest(username=username, allow_local_delete=allow_local_delete):
+                settings_override = replace(
+                    self.test_settings, allow_local_delete=allow_local_delete
+                )
+                with patch("app.main.settings", settings_override):
+                    self._authenticate(username)
+                    page = self.client.get("/")
+                    self.assertEqual(page.status_code, 200, page.text)
+                    me = self.client.get("/api/me")
+                    self.assertEqual(me.status_code, 200, me.text)
+
+                html = page.text
+                vault = me.json()["vault"]
+                self.assertEqual(
+                    self._data_attr(html, "role"),
+                    vault["role"],
+                )
+                self.assertEqual(
+                    self._data_attr(html, "can-operate") == "true",
+                    vault["can_operate"],
+                )
+                self.assertEqual(
+                    self._data_attr(html, "delete-enabled") == "true",
+                    vault["delete_enabled"],
+                )
+                self.assertEqual(
+                    self._data_attr(html, "cloud-deletion-enabled") == "true",
+                    vault["cloud_deletion_enabled"],
+                )
+                self.assertEqual(
+                    self._data_attr(html, "is-vault-owner") == "true",
+                    vault["is_vault_owner"],
+                )
+
+    @staticmethod
+    def _data_attr(html: str, name: str) -> str:
+        match = re.search(rf'data-{name}="([^"]*)"', html)
+        if match is None:
+            raise AssertionError(f"missing data-{name} in archive HTML")
+        return match.group(1)
