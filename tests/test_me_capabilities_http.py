@@ -164,3 +164,19 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
 
         self.assertIsNone(payload["vault"])
         self.assertEqual(payload["username"], "orphan")
+
+    def test_me_keeps_existing_fields_unchanged(self) -> None:
+        """Seam 7: every field returned today is still present and unchanged."""
+        payload = self._me("owner")
+
+        self.assertEqual(payload["id"], self.user_ids["owner"])
+        self.assertEqual(payload["username"], "owner")
+        self.assertEqual(payload["display_name"], "Owner")
+        self.assertFalse(payload["is_admin"])
+        self.assertTrue(payload["active"])
+        self.assertEqual(payload["session_version"], 0)
+        self.assertIsInstance(payload["csrf_token"], str)
+        self.assertTrue(payload["csrf_token"])
+        self.assertEqual(payload["auth_method"], "oidc")
+        self.assertEqual(payload["locale"], "en")
+        self.assertEqual(payload["locales"], ["en", "it"])
