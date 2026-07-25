@@ -1,0 +1,115 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@theme {
+  /* FrostVault palette — migrated from app/static/style.css */
+  --ink: #18221d;
+  --muted: #65716a;
+  --line: #dce4de;
+  --surface: #ffffff;
+  --canvas: #f4f7f4;
+  --green: #257a4b;
+  --green-soft: #e2f3e9;
+  --blue-soft: #e5effb;
+  --amber-soft: #fff1cc;
+  --red-soft: #fde8e5;
+  --violet-soft: #eee9fb;
+
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-surface: var(--surface);
+  --color-canvas: var(--canvas);
+  --color-green: var(--green);
+  --color-green-soft: var(--green-soft);
+  --color-blue-soft: var(--blue-soft);
+  --color-amber-soft: var(--amber-soft);
+  --color-red-soft: var(--red-soft);
+  --color-violet-soft: var(--violet-soft);
+
+  --color-background: var(--canvas);
+  --color-foreground: var(--ink);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--ink);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--ink);
+  --color-primary: var(--green);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--surface);
+  --color-secondary-foreground: var(--ink);
+  --color-muted-foreground: var(--muted);
+  --color-accent: var(--green-soft);
+  --color-accent-foreground: var(--ink);
+  --color-destructive: #a33a31;
+  --color-border: var(--line);
+  --color-input: #cbd6ce;
+  --color-ring: var(--green);
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.125rem;
+}
+
+/* shadcn semantic tokens — same FrostVault hex values, not a rebrand */
+:root {
+  --background: #f4f7f4;
+  --foreground: #18221d;
+  --card: #ffffff;
+  --card-foreground: #18221d;
+  --popover: #ffffff;
+  --popover-foreground: #18221d;
+  --primary: #257a4b;
+  --primary-foreground: #ffffff;
+  --secondary: #ffffff;
+  --secondary-foreground: #18221d;
+  --accent: #e2f3e9;
+  --accent-foreground: #18221d;
+  --destructive: #a33a31;
+  --border: #dce4de;
+  --input: #cbd6ce;
+  --ring: #257a4b;
+  --radius: 0.625rem;
+  /* shadcn "muted" surface vs FrostVault --muted text color */
+  --fv-muted-text: #65716a;
+  --muted-foreground: #65716a;
+  --muted-surface: #e2f3e9;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-canvas text-ink antialiased;
+    margin: 0;
+    /* System fonts only — epic #56: no CDN / no webfont load */
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+}
