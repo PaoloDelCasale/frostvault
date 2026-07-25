@@ -1,0 +1,37 @@
+name: Agent pipeline dispatch
+
+# Manual entry point: start a cloud agent on one issue.
+#
+# Needed to kick off the first issue of a chain, since nothing closes before it,
+# and useful to restart an issue whose agent died. Refuses any issue that does not
+# carry agent-pipeline.
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number to hand to an agent
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  dispatch:
+    name: Dispatch one issue
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Start a cloud agent on the issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURSOR_EPIC_56_WEBHOOK_URL: ${{ secrets.CURSOR_EPIC_56_WEBHOOK_URL }}
+          CURSOR_EPIC_56_WEBHOOK_KEY: ${{ secrets.CURSOR_EPIC_56_WEBHOOK_KEY }}
+        run: |
+          python .github/scripts/agent_pipeline.py \
+            "${{ github.repository }}" dispatch "${{ inputs.issue }}"

@@ -66,6 +66,47 @@ Workflow: [`.github/workflows/security.yml`](../.github/workflows/security.yml)
 Dependabot (`.github/dependabot.yml`) opens weekly update PRs for pip, Actions, and
 Docker. **Auto-merge is disabled**; humans review and merge.
 
+## Temporary agent pipeline for epic #56
+
+This infrastructure is deliberately disposable. It has a hard-coded allowlist
+containing only epic #56 sub-issues #57–#72 and the self-removal issue #86; the
+label alone cannot enrol any other issue.
+
+Three workflows, all driven by
+[`.github/scripts/agent_pipeline.py`](../.github/scripts/agent_pipeline.py):
+
+| Workflow | Trigger | What it does |
+| --- | --- | --- |
+| [Agent pipeline unblock](../.github/workflows/agent-unblock.yml) | `issues: closed` | Labels `ready-for-agent` on every dependent whose blockers are now all closed — only if it carries `agent-pipeline` — and starts a cloud agent on each |
+| [Agent pipeline dispatch](../.github/workflows/agent-dispatch.yml) | `workflow_dispatch` | Starts a cloud agent on one issue. Needed for the first issue of a chain |
+| [Agent pipeline auto-merge](../.github/workflows/agent-automerge.yml) | Every 10 minutes, plus `workflow_dispatch` | Squash-merges open pull requests that pass every gate below |
+
+Agents are started through the private webhook of the repo-backed
+`FrostVault Epic 56 TDD Pipeline` Cursor Automation. The endpoint and Bearer value
+live in `CURSOR_EPIC_56_WEBHOOK_URL` and `CURSOR_EPIC_56_WEBHOOK_KEY` Actions
+secrets. The model (**Cursor Grok 4.5 High**, non-fast), environment and pull
+request capability are fixed in Cursor, so GitHub never holds a personal Cursor
+API key.
+
+Auto-merge gates, all required: a same-repo `cursor/*` branch, not a draft, a body
+that closes an issue, that issue carrying `agent-pipeline`, a mergeable state, and
+**every** check run on the head commit finished and green. A commit with no checks
+at all is never merged. `neutral` counts as passing, since `Cursor Bugbot` reports
+findings that way.
+
+This does **not** change how human or Dependabot pull requests are handled: a pull
+request that does not close an `agent-pipeline` issue is left alone.
+
+After #72 completes, #86 removes the workflows, script, tests and documentation.
+The already-running merge process then closes epic #56 and deletes the dedicated
+label. GitHub's historical issues and pull requests remain, but no active
+automation or repository configuration remains.
+
+A schedule is used rather than reacting to CI finishing because `workflow_run` and
+`pull_request_target` are forbidden in this repository — both hand a privileged
+token to a workflow chosen by pull-request activity. `tests/test_ci_contracts.py`
+enforces that, and `tests/test_agent_pipeline.py` covers the gates.
+
 ## Local commands
 
 ```bash
