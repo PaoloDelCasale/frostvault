@@ -37,4 +37,11 @@ export default tseslint.config(
       "react/no-danger": "error",
     },
   },
+  {
+    files: ["src/components/ui/**/*.{ts,tsx}"],
+    rules: {
+      // shadcn vendored components export variants alongside components.
+      "react-refresh/only-export-components": "off",
+    },
+  },
 );

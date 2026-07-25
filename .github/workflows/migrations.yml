@@ -40,12 +40,24 @@ jobs:
           cache: pip
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "20"
+          # Vite 8 requires Node ^20.19.0 || >=22.12.0; use current Node 22 LTS.
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - run: python -m pip install -r requirements.txt
       - name: Python unit tests (no live AWS or MinIO credentials required)
         run: python -m unittest discover -s tests -v
       - name: Frontend JS tests
         run: node --test tests/*.mjs
+      - name: Frontend SPA lint
+        working-directory: frontend
+        run: npm ci && npm run lint
+      - name: Frontend SPA unit tests
+        working-directory: frontend
+        run: npm run test
+      - name: Frontend SPA build
+        working-directory: frontend
+        run: npm run build
 
   production-image-postgres-backup:
     name: Production image PostgreSQL backup
