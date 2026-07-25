@@ -133,3 +133,18 @@ class FrontendSpaHttpTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["username"], "owner")
         self.assertNotIn("spa-shell", response.text)
+
+    def test_spa_cache_headers_for_assets_and_index(self) -> None:
+        """Seam 5: hashed asset → immutable; index.html → no-store."""
+        self._enable_spa()
+        index = self.client.get("/")
+        self.assertEqual(index.status_code, 200, index.text)
+        self.assertEqual(index.headers.get("cache-control"), "no-store")
+
+        asset = self.client.get("/assets/index-abc123.js")
+        self.assertEqual(asset.status_code, 200, asset.text)
+        self.assertEqual(
+            asset.headers.get("cache-control"),
+            "public, max-age=31536000, immutable",
+        )
+        self.assertIn("spa", asset.text)

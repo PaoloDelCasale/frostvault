@@ -3557,6 +3557,23 @@ def metrics():
 _SPA_FALLBACK_EXCLUDED_PREFIXES = frozenset({"api", "auth", "static", "assets"})
 
 
+@app.get("/assets/{asset_path:path}")
+def spa_asset(asset_path: str):
+    """Serve hashed Vite build assets with long-lived immutable caching."""
+    if not settings.frontend_spa:
+        raise HTTPException(status_code=404, detail="Not Found")
+    assets_root = (_spa_dist_dir() / "assets").resolve()
+    if not assets_root.is_dir():
+        raise HTTPException(status_code=404, detail="Not Found")
+    target = (assets_root / asset_path).resolve()
+    if not target.is_relative_to(assets_root) or not target.is_file():
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(
+        target,
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
 @app.get("/{full_path:path}", response_class=HTMLResponse)
 def spa_fallback(full_path: str):
     """SPA client-route fallback; never intercepts API, auth, or static assets."""
