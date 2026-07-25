@@ -157,3 +157,10 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         self.assertFalse(operator["vault"]["cloud_deletion_enabled"])
         viewer = self._me("viewer")
         self.assertFalse(viewer["vault"]["cloud_deletion_enabled"])
+
+    def test_user_without_vault_gets_null_vault_block(self) -> None:
+        """Seam 6: user with no vault → valid response with a null vault block."""
+        payload = self._me("orphan")
+
+        self.assertIsNone(payload["vault"])
+        self.assertEqual(payload["username"], "orphan")
