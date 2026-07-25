@@ -16,8 +16,10 @@ notion of "blocked". This module is the missing link, in three commands:
     Sweep the open pull requests and squash-merge the ones that are finished.
     Merging closes the issue, which triggers ``unblock`` in turn.
 
-Only issues carrying ``agent-pipeline`` are ever touched, so making an ordinary
-issue depend on a pipeline issue never drags it into the pipeline.
+The target issue must both carry ``agent-pipeline`` and be one of the explicitly
+enumerated sub-issues of epic #56. The allowlist is deliberately not reusable:
+the final sub-issue removes this module, its workflows, tests, documentation and
+label, then closes the epic.
 
 Two design notes worth keeping:
 
@@ -49,6 +51,11 @@ from typing import Any, Callable, Iterable, Sequence
 PIPELINE_LABEL = "agent-pipeline"
 READY_LABEL = "ready-for-agent"
 AGENT_BRANCH_PREFIX = "cursor/"
+EPIC_ISSUE = 56
+BOOTSTRAP_ISSUE = 84
+CLEANUP_ISSUE = 86
+PIPELINE_ISSUES = frozenset({*range(57, 73), CLEANUP_ISSUE})
+UNBLOCK_SOURCES = PIPELINE_ISSUES | {BOOTSTRAP_ISSUE}
 
 CURSOR_AGENTS_URL = "https://api.cursor.com/v1/agents"
 CURSOR_MODELS_URL = "https://api.cursor.com/v1/models"
@@ -133,6 +140,12 @@ class GitHubCli:
                 "--delete-branch",
             ]
         )
+
+    def close_issue(self, number: int) -> None:
+        self._gh(["issue", "close", str(number), "--repo", self.repo])
+
+    def delete_label(self, label: str) -> None:
+        self._gh(["label", "delete", label, "--repo", self.repo, "--yes"])
 
 
 class CursorAgents:
@@ -305,6 +318,12 @@ def dispatch(
     client: GitHubCli, cursor: CursorAgents | None, issue: int, repo: str
 ) -> str:
     """Start a cloud agent on ``issue``. Returns what happened, for logging."""
+    if issue not in PIPELINE_ISSUES:
+        print(
+            f"#{issue}: not a sub-issue of the temporary epic #{EPIC_ISSUE}; "
+            "refusing to dispatch."
+        )
+        return "outside-epic"
     if cursor is None:
         print(
             f"#{issue}: no CURSOR_API_KEY, leaving it labelled for an Automation "
@@ -363,11 +382,23 @@ def failed_check_names(check_runs: Iterable[dict[str, Any]]) -> list[str]:
 
 def unblock(client: GitHubCli, closed_issue: int) -> list[int]:
     """Label the dependents of ``closed_issue`` that nothing blocks any more."""
+    if closed_issue not in UNBLOCK_SOURCES:
+        print(
+            f"#{closed_issue}: outside the temporary epic #{EPIC_ISSUE}, "
+            "ignoring it."
+        )
+        return []
     labelled: list[int] = []
     for dependent in client.blocking(closed_issue):
         if dependent.get("state") != "open":
             continue
         number = int(dependent["number"])
+        if number not in PIPELINE_ISSUES:
+            print(
+                f"#{number}: not a sub-issue of the temporary epic "
+                f"#{EPIC_ISSUE}, skipping."
+            )
+            continue
         labels = {label["name"] for label in dependent.get("labels", [])}
         if PIPELINE_LABEL not in labels:
             print(f"#{number}: not in the pipeline, skipping.")
@@ -406,8 +437,11 @@ def merge_reason_to_skip(
     branch = pull_request.get("headRefName", "")
     if not branch.startswith(AGENT_BRANCH_PREFIX):
         return f"branch {branch!r} is not an agent branch"
-    if closing_issue_number(pull_request.get("body")) is None:
+    issue = closing_issue_number(pull_request.get("body"))
+    if issue is None:
         return "closes no issue"
+    if issue not in PIPELINE_ISSUES:
+        return f"issue #{issue} is not part of temporary epic #{EPIC_ISSUE}"
     if issue_labels is None or PIPELINE_LABEL not in issue_labels:
         return "the issue it closes is not in the pipeline"
     if pull_request.get("mergeable") != "MERGEABLE":
@@ -427,7 +461,11 @@ def merge_ready(client: GitHubCli) -> list[int]:
     for pull_request in client.open_pull_requests():
         number = int(pull_request["number"])
         issue = closing_issue_number(pull_request.get("body"))
-        labels = client.labels(issue) if issue is not None else None
+        labels = (
+            client.labels(issue)
+            if issue is not None and issue in PIPELINE_ISSUES
+            else None
+        )
         verdict = (
             checks_verdict(client.check_runs(pull_request["headRefOid"]))
             if labels and PIPELINE_LABEL in labels
@@ -440,6 +478,15 @@ def merge_ready(client: GitHubCli) -> list[int]:
         client.merge(number)
         merged.append(number)
         print(f"#{number}: merged, closing #{issue}.")
+        if issue == CLEANUP_ISSUE:
+            # This process is running the pre-merge copy of the script, so it can
+            # finish after the cleanup PR has removed the checked-in automation.
+            client.close_issue(EPIC_ISSUE)
+            client.delete_label(PIPELINE_LABEL)
+            print(
+                f"Temporary epic #{EPIC_ISSUE} closed and label "
+                f"{PIPELINE_LABEL!r} deleted."
+            )
     if not merged:
         print("Nothing to merge.")
     return merged
@@ -499,6 +546,13 @@ def main(argv: Sequence[str]) -> int:
             print("dispatch needs the issue number", file=sys.stderr)
             return 2
         issue = int(argv[3])
+        if issue not in PIPELINE_ISSUES:
+            print(
+                f"#{issue}: not a sub-issue of temporary epic #{EPIC_ISSUE}; "
+                "refusing to dispatch.",
+                file=sys.stderr,
+            )
+            return 1
         labels = client.labels(issue)
         if PIPELINE_LABEL not in labels:
             print(f"#{issue}: not in the pipeline, refusing to dispatch.", file=sys.stderr)

@@ -78,6 +78,8 @@ class FakeGitHub:
         self._titles = titles or {}
         self.added_labels: list[tuple[int, str]] = []
         self.merged: list[int] = []
+        self.closed_issues: list[int] = []
+        self.deleted_labels: list[str] = []
 
     def title(self, issue: int) -> str:
         return self._titles.get(issue, f"Issue {issue}")
@@ -102,6 +104,12 @@ class FakeGitHub:
 
     def merge(self, number: int) -> None:
         self.merged.append(number)
+
+    def close_issue(self, number: int) -> None:
+        self.closed_issues.append(number)
+
+    def delete_label(self, label: str) -> None:
+        self.deleted_labels.append(label)
 
 
 class ClosingIssueTests(unittest.TestCase):
@@ -173,10 +181,20 @@ class UnblockTests(unittest.TestCase):
     def test_ignores_an_issue_outside_the_pipeline(self) -> None:
         # Out-of-epic issues depend on the epic on purpose; they must not start.
         client = FakeGitHub(
-            blocking={71: [_issue(81, labels=("enhancement",))]},
+            blocking={
+                71: [_issue(81, labels=("enhancement", "agent-pipeline"))]
+            },
             blocked_by={81: [_issue(71, state="closed")]},
         )
         self.assertEqual(pipeline.unblock(client, 71), [])
+        self.assertEqual(client.added_labels, [])
+
+    def test_ignores_a_closed_issue_outside_the_temporary_epic(self) -> None:
+        client = FakeGitHub(
+            blocking={4: [_issue(57, labels=("agent-pipeline",))]},
+            blocked_by={57: []},
+        )
+        self.assertEqual(pipeline.unblock(client, 4), [])
         self.assertEqual(client.added_labels, [])
 
     def test_does_not_relabel_an_already_ready_issue(self) -> None:
@@ -244,6 +262,12 @@ class MergeGateTests(unittest.TestCase):
         reason = pipeline.merge_reason_to_skip(_pull_request(), {"enhancement"}, "green")
         self.assertEqual(reason, "the issue it closes is not in the pipeline")
 
+    def test_a_label_cannot_enrol_an_issue_outside_epic_56(self) -> None:
+        reason = pipeline.merge_reason_to_skip(
+            _pull_request(body="Closes #73"), {"agent-pipeline"}, "green"
+        )
+        self.assertEqual(reason, "issue #73 is not part of temporary epic #56")
+
     def test_pending_and_absent_checks_block_the_merge(self) -> None:
         for verdict, expected in (
             ("pending", "checks are still running"),
@@ -295,6 +319,27 @@ class MergeSweepTests(unittest.TestCase):
             checks={"abc123": [_check("Unit and migration tests")]},
         )
         self.assertEqual(pipeline.merge_ready(client), [])
+
+    def test_cleanup_merge_closes_the_epic_and_deletes_the_pipeline_label(self) -> None:
+        client = FakeGitHub(
+            pull_requests=[_pull_request(body="Closes #86", number=502)],
+            labels={86: {"agent-pipeline"}},
+            checks={"abc123": [_check("Unit and migration tests")]},
+        )
+        self.assertEqual(pipeline.merge_ready(client), [502])
+        self.assertEqual(client.merged, [502])
+        self.assertEqual(client.closed_issues, [56])
+        self.assertEqual(client.deleted_labels, ["agent-pipeline"])
+
+    def test_an_ordinary_merge_does_not_run_tracker_cleanup(self) -> None:
+        client = FakeGitHub(
+            pull_requests=[_pull_request()],
+            labels={57: {"agent-pipeline"}},
+            checks={"abc123": [_check("Unit and migration tests")]},
+        )
+        pipeline.merge_ready(client)
+        self.assertEqual(client.closed_issues, [])
+        self.assertEqual(client.deleted_labels, [])
 
 
 class RecordingSender:
@@ -482,6 +527,12 @@ class DispatchTests(unittest.TestCase):
         # The label still lets a Cursor Automation pick the issue up.
         self.assertEqual(pipeline.dispatch(FakeGitHub(), None, 57, "o/r"), "skipped")
 
+    def test_dispatch_refuses_an_issue_outside_epic_56_even_with_a_client(self) -> None:
+        sender = RecordingSender()
+        result = pipeline.dispatch(FakeGitHub(), _cursor(sender), 73, "o/r")
+        self.assertEqual(result, "outside-epic")
+        self.assertEqual(sender.payloads, [])
+
     def test_a_misconfigured_model_stops_the_dispatch_with_a_useful_message(self) -> None:
         sender = RecordingSender()
         cursor = _cursor(sender, model_id="grok-4.5-high")
@@ -576,6 +627,7 @@ class PipelineWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("pull_request", triggers)
         self.assertNotIn("pull_request_target", triggers)
         self.assertNotIn("workflow_run", triggers)
+        self.assertEqual(workflow["permissions"]["issues"], "write")
 
     def test_all_pipeline_workflows_call_the_tested_script(self) -> None:
         for name in ("agent-unblock.yml", "agent-automerge.yml", "agent-dispatch.yml"):
@@ -597,9 +649,10 @@ class PipelineWorkflowContractTests(unittest.TestCase):
 
     def test_pipeline_is_documented_for_the_next_agent(self) -> None:
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-        self.assertIn("Automated agent pipeline", agents)
+        self.assertIn("Temporary agent pipeline for epic #56", agents)
         self.assertIn("agent-pipeline", agents)
         self.assertIn("ready-for-agent", agents)
+        self.assertIn("self-removal issue #86", agents)
 
 
 if __name__ == "__main__":

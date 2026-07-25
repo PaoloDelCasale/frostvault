@@ -17,9 +17,11 @@ Uses default labels: needs-triage, needs-info, ready-for-agent, ready-for-human,
 
 Single-context: CONTEXT.md at the repo root; ADRs in docs/adr/. See docs/agents/domain.md.
 
-## Automated agent pipeline
+## Temporary agent pipeline for epic #56
 
-Some issues are worked by cloud agents without a human in the loop. The loop is:
+This automation exists **only** for epic #56. Its target allowlist is hard-coded
+to sub-issues #57–#72 and the self-removal issue #86; adding `agent-pipeline` to
+any other issue cannot enrol it. The loop is:
 
 1. An issue carries `agent-pipeline` (it belongs to an automated epic) and gets
    `ready-for-agent` once nothing blocks it.
@@ -36,6 +38,11 @@ Some issues are worked by cloud agents without a human in the loop. The loop is:
 Start the first issue of a chain with the **Agent pipeline dispatch** workflow
 (`workflow_dispatch`, takes an issue number): nothing closes before it, so no
 unblock event exists to start it.
+
+After #72 closes, #86 removes all three workflows, the script, its tests and
+these documentation sections. The running pre-merge copy then closes epic #56
+and deletes the dedicated `agent-pipeline` label. Historical GitHub issues and
+pull requests remain, but no active repository automation remains.
 
 ### Configuration
 
@@ -60,8 +67,9 @@ onto a second branch.
 
 Consequences worth knowing:
 
-- **Only `agent-pipeline` issues are touched.** Both workflows check that label,
-  so an ordinary issue that merely depends on a pipeline issue stays untouched.
+- **Only the hard-coded #56 sub-issues are touched.** Both the allowlist and
+  `agent-pipeline` label must match. An ordinary issue stays untouched even if it
+  depends on a pipeline issue or receives the label accidentally.
 - **Auto-merge means CI is the review.** Nothing else gates a merge, which is why
   pipeline issues carry explicit seams and acceptance criteria in their body.
 - **Only `cursor/*` branches are merged**, and only when the pull request closes

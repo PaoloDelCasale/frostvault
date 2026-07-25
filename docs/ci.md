@@ -66,7 +66,11 @@ Workflow: [`.github/workflows/security.yml`](../.github/workflows/security.yml)
 Dependabot (`.github/dependabot.yml`) opens weekly update PRs for pip, Actions, and
 Docker. **Auto-merge is disabled**; humans review and merge.
 
-## Automated agent pipeline
+## Temporary agent pipeline for epic #56
+
+This infrastructure is deliberately disposable. It has a hard-coded allowlist
+containing only epic #56 sub-issues #57–#72 and the self-removal issue #86; the
+label alone cannot enrol any other issue.
 
 Three workflows, all driven by
 [`.github/scripts/agent_pipeline.py`](../.github/scripts/agent_pipeline.py):
@@ -92,6 +96,11 @@ findings that way.
 
 This does **not** change how human or Dependabot pull requests are handled: a pull
 request that does not close an `agent-pipeline` issue is left alone.
+
+After #72 completes, #86 removes the workflows, script, tests and documentation.
+The already-running merge process then closes epic #56 and deletes the dedicated
+label. GitHub's historical issues and pull requests remain, but no active
+automation or repository configuration remains.
 
 A schedule is used rather than reacting to CI finishing because `workflow_run` and
 `pull_request_target` are forbidden in this repository — both hand a privileged
