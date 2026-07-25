@@ -1261,6 +1261,7 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
             "name": vault["name"],
             "role": role,
             "can_operate": can_operate(role),
+            "delete_enabled": settings.allow_local_delete and is_owner(role),
             "is_vault_owner": is_owner(role),
         }
     return {

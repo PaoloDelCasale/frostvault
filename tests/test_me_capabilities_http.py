@@ -126,3 +126,13 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         self.assertEqual(vault["role"], "viewer")
         self.assertFalse(vault["can_operate"])
         self.assertFalse(vault["is_vault_owner"])
+
+    def test_delete_enabled_false_for_owner_when_local_delete_disabled(self) -> None:
+        """Seam 4: delete_enabled false when allow_local_delete is off, even for owner."""
+        with patch(
+            "app.main.settings",
+            replace(self.test_settings, allow_local_delete=False),
+        ):
+            payload = self._me("owner")
+
+        self.assertFalse(payload["vault"]["delete_enabled"])
