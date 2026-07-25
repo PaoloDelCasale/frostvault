@@ -174,7 +174,7 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         self.assertEqual(payload["display_name"], "Owner")
         self.assertFalse(payload["is_admin"])
         self.assertTrue(payload["active"])
-        self.assertEqual(payload["session_version"], 0)
+        self.assertEqual(payload["session_version"], 1)
         self.assertIsInstance(payload["csrf_token"], str)
         self.assertTrue(payload["csrf_token"])
         self.assertEqual(payload["auth_method"], "oidc")
