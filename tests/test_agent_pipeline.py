@@ -459,21 +459,23 @@ MODEL_CATALOGUE = [
         ],
     },
     {
-        "id": "grok-4.5",
-        "parameters": [
-            {
-                "id": "effort",
-                "values": [{"value": "low"}, {"value": "medium"}, {"value": "high"}],
-            },
-            {"id": "fast", "values": [{"value": "false"}, {"value": "true"}]},
-        ],
+        "id": "cursor-grok-4.5-high",
+        "parameters": [],
+    },
+    {
+        "id": "cursor-grok-4.5-high-fast",
+        "parameters": [],
     },
 ]
 
 
 class ModelSelectionTests(unittest.TestCase):
     def test_a_known_model_without_parameters_is_accepted(self) -> None:
-        self.assertIsNone(pipeline.model_selection_error(MODEL_CATALOGUE, "grok-4.5", None))
+        self.assertIsNone(
+            pipeline.model_selection_error(
+                MODEL_CATALOGUE, "cursor-grok-4.5-high", None
+            )
+        )
 
     def test_an_alias_is_accepted(self) -> None:
         self.assertIsNone(
@@ -481,17 +483,17 @@ class ModelSelectionTests(unittest.TestCase):
         )
 
     def test_an_unknown_model_lists_what_is_available(self) -> None:
-        error = pipeline.model_selection_error(MODEL_CATALOGUE, "grok-4.5-high", None)
+        error = pipeline.model_selection_error(MODEL_CATALOGUE, "grok-4.5", None)
         self.assertIn("unknown model", error or "")
-        self.assertIn("grok-4.5", error or "")
+        self.assertIn("cursor-grok-4.5-high", error or "")
         self.assertIn("composer-2", error or "")
 
     def test_valid_parameters_are_accepted(self) -> None:
         self.assertIsNone(
             pipeline.model_selection_error(
                 MODEL_CATALOGUE,
-                "grok-4.5",
-                [{"id": "effort", "value": "high"}, {"id": "fast", "value": "false"}],
+                "composer-2",
+                [{"id": "fast", "value": "true"}],
             )
         )
 
@@ -504,10 +506,10 @@ class ModelSelectionTests(unittest.TestCase):
 
     def test_an_unsupported_parameter_value_lists_the_allowed_ones(self) -> None:
         error = pipeline.model_selection_error(
-            MODEL_CATALOGUE, "grok-4.5", [{"id": "effort", "value": "extreme"}]
+            MODEL_CATALOGUE, "composer-2", [{"id": "fast", "value": "sometimes"}]
         )
-        self.assertIn("effort='extreme'", error or "")
-        self.assertIn("high", error or "")
+        self.assertIn("fast='sometimes'", error or "")
+        self.assertIn("true", error or "")
 
 
 class DispatchTests(unittest.TestCase):
@@ -535,7 +537,7 @@ class DispatchTests(unittest.TestCase):
 
     def test_a_misconfigured_model_stops_the_dispatch_with_a_useful_message(self) -> None:
         sender = RecordingSender()
-        cursor = _cursor(sender, model_id="grok-4.5-high")
+        cursor = _cursor(sender, model_id="grok-4.5")
         cursor.models = lambda: MODEL_CATALOGUE  # type: ignore[method-assign]
         with self.assertRaises(RuntimeError) as raised:
             pipeline.dispatch(FakeGitHub(), cursor, 57, "o/r")
@@ -546,14 +548,12 @@ class DispatchTests(unittest.TestCase):
 
     def test_a_valid_model_is_dispatched(self) -> None:
         sender = RecordingSender()
-        cursor = _cursor(
-            sender, model_id="grok-4.5", model_params=[{"id": "effort", "value": "high"}]
-        )
+        cursor = _cursor(sender, model_id="cursor-grok-4.5-high")
         cursor.models = lambda: MODEL_CATALOGUE  # type: ignore[method-assign]
         self.assertEqual(pipeline.dispatch(FakeGitHub(), cursor, 57, "o/r"), "dispatched")
         self.assertEqual(
             sender.payloads[0]["model"],
-            {"id": "grok-4.5", "params": [{"id": "effort", "value": "high"}]},
+            {"id": "cursor-grok-4.5-high"},
         )
 
 

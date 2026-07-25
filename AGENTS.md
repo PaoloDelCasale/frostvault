@@ -50,16 +50,16 @@ pull requests remain, but no active repository automation remains.
 | --- | --- | --- |
 | `CURSOR_API_KEY` | secret | Cursor API key (`cursor.com/dashboard/api`). Without it the pipeline only labels |
 | `CURSOR_AGENT_MODEL` | variable | Model id from `GET https://api.cursor.com/v1/models`. Unset means your configured default |
-| `CURSOR_AGENT_MODEL_PARAMS` | variable | Per-model parameters as `key=value` pairs, e.g. `effort=high,fast=false` |
+| `CURSOR_AGENT_MODEL_PARAMS` | variable | Optional per-model parameters as `key=value` pairs. Leave unset for the selected Grok model |
 | `CURSOR_AGENT_ENV` | variable | Named cloud environment. Set it if agents come up without `.venv/`; the API treats it as mutually exclusive with the repository block |
 | `CURSOR_AGENT_BASE_REF` | variable | Branch agents start from. Defaults to `main` |
 
 The intended model for this repository is **Grok 4.5 at high effort, not the fast
-variant**: `CURSOR_AGENT_MODEL=grok-4.5` and
-`CURSOR_AGENT_MODEL_PARAMS=effort=high,fast=false`. Only `GET /v1/models` knows the
-authoritative ids and parameter names, so a dispatch validates the choice against
-that endpoint first and refuses — listing the valid ids or values — rather than
-sending a request that would fail opaquely or quietly select a different variant.
+variant**: `CURSOR_AGENT_MODEL=cursor-grok-4.5-high` and no model parameters. The
+fast variant is a separate model, `cursor-grok-4.5-high-fast`, not a boolean
+parameter on the selected model. A dispatch validates the choice against
+`GET /v1/models` and refuses — listing the valid ids — rather than sending a
+request that would fail opaquely or quietly select a different variant.
 
 Agents are dispatched with a deterministic `agentId` derived from the issue
 number, so a repeated dispatch returns a conflict instead of forking the work
