@@ -141,3 +141,54 @@ describe("apiRequest Reauthentication", () => {
     ]);
   });
 });
+
+describe("apiRequest session and errors", () => {
+  const fetchMock = vi.fn();
+  const navigate = vi.fn();
+
+  beforeEach(() => {
+    resetApiClientForTests();
+    document.cookie = "frostvault_csrf=test-csrf-token";
+    fetchMock.mockReset();
+    navigate.mockReset();
+    configureApiClient({
+      fetch: fetchMock,
+      navigate,
+      translate: (key) =>
+        key === "api.quota_exceeded"
+          ? "Storage quota exceeded."
+          : key === "ui.reauth_failed"
+            ? "Reauthentication failed."
+            : key,
+    });
+  });
+
+  afterEach(() => {
+    document.cookie = "frostvault_csrf=";
+    resetApiClientForTests();
+  });
+
+  it("navigates to the sign-in screen on 401", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: "Unauthorized" }, 401));
+
+    await expect(apiRequest("/api/me")).rejects.toMatchObject({ status: 401 });
+    expect(navigate).toHaveBeenCalledWith("/login");
+  });
+
+  it("turns an error response carrying message_key into the matching localized message", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        { message_key: "api.quota_exceeded", message: "ignored fallback" },
+        409,
+      ),
+    );
+
+    await expect(
+      apiRequest("/api/upload", { method: "POST", body: "{}" }),
+    ).rejects.toMatchObject({
+      message: "Storage quota exceeded.",
+      messageKey: "api.quota_exceeded",
+      status: 409,
+    });
+  });
+});
