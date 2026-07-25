@@ -17,6 +17,42 @@ Uses default labels: needs-triage, needs-info, ready-for-agent, ready-for-human,
 
 Single-context: CONTEXT.md at the repo root; ADRs in docs/adr/. See docs/agents/domain.md.
 
+## Automated agent pipeline
+
+Some issues are worked by cloud agents without a human in the loop. The loop is:
+
+1. An issue carries `agent-pipeline` (it belongs to an automated epic) and gets
+   `ready-for-agent` once nothing blocks it.
+2. A Cursor Automation triggers on that label and starts a cloud agent, which
+   opens a pull request whose body says `Closes #N`.
+3. `.github/workflows/agent-automerge.yml` squash-merges that pull request once
+   every check run for its head commit is finished and green. Merging closes the
+   issue.
+4. `.github/workflows/agent-unblock.yml` reacts to the closure: for every issue
+   the closed one was blocking, it adds `ready-for-agent` if all of that issue's
+   blockers are now closed — which starts the next agent.
+
+Consequences worth knowing:
+
+- **Only `agent-pipeline` issues are touched.** Both workflows check that label,
+  so an ordinary issue that merely depends on a pipeline issue stays untouched.
+- **Auto-merge means CI is the review.** Nothing else gates a merge, which is why
+  pipeline issues carry explicit seams and acceptance criteria in their body.
+- **Only `cursor/*` branches are merged**, and only when the pull request closes
+  an `agent-pipeline` issue. Human pull requests are never merged automatically.
+- The `Cursor Bugbot` check reports findings as `neutral`, not `failure`, so
+  requiring it would not block a merge on findings. Do not rely on it as a gate.
+
+To stop the pipeline: remove `ready-for-agent` from the open issues, or remove
+`agent-pipeline` from the ones that should wait. Disabling the Cursor Automation
+stops new agents but does not stop merges; disabling
+`.github/workflows/agent-automerge.yml` stops merges.
+
+Issue dependencies are only writable over REST
+(`POST /repos/{owner}/{repo}/issues/{n}/dependencies/blocked_by` with an integer
+`issue_id`). GraphQL exposes `blockedBy` and `blocking` read-only; `addSubIssue`
+is the only relevant mutation, and it covers parents, not dependencies.
+
 ## Cursor Cloud specific instructions
 
 Python 3.12 FastAPI app ("FrostVault"). The startup update script creates

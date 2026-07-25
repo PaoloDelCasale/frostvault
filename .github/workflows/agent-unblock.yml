@@ -1,0 +1,28 @@
+name: Agent pipeline unblock
+
+# When an issue closes, hand the next unblocked issue to the agent pipeline by
+# labelling it ready-for-agent. See AGENTS.md ("Automated agent pipeline").
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  unblock:
+    name: Label unblocked dependents
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Label dependents whose blockers are all closed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/scripts/agent_pipeline.py \
+            "${{ github.repository }}" unblock "${{ github.event.issue.number }}"
