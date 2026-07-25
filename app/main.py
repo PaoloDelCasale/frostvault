@@ -1262,6 +1262,8 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
             "role": role,
             "can_operate": can_operate(role),
             "delete_enabled": settings.allow_local_delete and is_owner(role),
+            "cloud_deletion_enabled": bool(vault.get("cloud_deletion_enabled"))
+            and is_owner(role),
             "is_vault_owner": is_owner(role),
         }
     return {

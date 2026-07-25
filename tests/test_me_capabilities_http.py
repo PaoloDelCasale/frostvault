@@ -136,3 +136,24 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
             payload = self._me("owner")
 
         self.assertFalse(payload["vault"]["delete_enabled"])
+
+    def test_cloud_deletion_enabled_requires_vault_flag_and_owner_role(self) -> None:
+        """Seam 5: cloud_deletion_enabled reflects vault setting AND owner role."""
+        # Default vault flag is off → owner still sees false.
+        owner_off = self._me("owner")
+        self.assertFalse(owner_off["vault"]["cloud_deletion_enabled"])
+
+        with SQLiteConnection(str(self.database_path)) as connection:
+            connection.execute(
+                "UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=%s",
+                (self.vault_id,),
+            )
+
+        owner_on = self._me("owner")
+        self.assertTrue(owner_on["vault"]["cloud_deletion_enabled"])
+
+        # Non-owners never get the capability even when the vault flag is on.
+        operator = self._me("operator")
+        self.assertFalse(operator["vault"]["cloud_deletion_enabled"])
+        viewer = self._me("viewer")
+        self.assertFalse(viewer["vault"]["cloud_deletion_enabled"])
