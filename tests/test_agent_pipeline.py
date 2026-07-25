@@ -1,7 +1,7 @@
 """Gates of the automated agent pipeline (issue #84).
 
 Seams under test: the decision functions in ``.github/scripts/agent_pipeline.py``
-and the two workflows that call them — not GitHub's runtime. Every gate matters
+and the three workflows that call them — not GitHub's runtime. Every gate matters
 on its own, because auto-merge means nothing else stands between an agent's pull
 request and ``main``.
 """
@@ -9,6 +9,7 @@ request and ``main``.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import unittest
 from pathlib import Path
@@ -329,7 +330,9 @@ class MergeSweepTests(unittest.TestCase):
         self.assertEqual(pipeline.merge_ready(client), [502])
         self.assertEqual(client.merged, [502])
         self.assertEqual(client.closed_issues, [56])
-        self.assertEqual(client.deleted_labels, ["agent-pipeline"])
+        self.assertEqual(
+            client.deleted_labels, ["agent-pipeline", "agent-dispatched"]
+        )
 
     def test_an_ordinary_merge_does_not_run_tracker_cleanup(self) -> None:
         client = FakeGitHub(
@@ -343,10 +346,10 @@ class MergeSweepTests(unittest.TestCase):
 
 
 class RecordingSender:
-    """Stands in for the Cursor API so payloads can be asserted."""
+    """Stands in for the Automation webhook so payloads can be asserted."""
 
     def __init__(self, response: dict | None = None) -> None:
-        self.response = response or {"id": "bc-123"}
+        self.response = response or {"accepted": True}
         self.payloads: list[dict] = []
 
     def __call__(self, payload: dict) -> dict:
@@ -354,28 +357,12 @@ class RecordingSender:
         return self.response
 
 
-def _cursor(sender: RecordingSender, **overrides) -> Any:
-    options = {
-        "api_key": "key",
-        "repo_url": "https://github.com/PaoloDelCasale/frostvault",
-        "sender": sender,
-    }
-    options.update(overrides)
-    return pipeline.CursorAgents(**options)
-
-
-class AgentIdentityTests(unittest.TestCase):
-    def test_the_same_issue_always_gets_the_same_agent_id(self) -> None:
-        first = pipeline.agent_id_for("https://github.com/o/r", 57)
-        second = pipeline.agent_id_for("https://github.com/o/r", 57)
-        self.assertEqual(first, second)
-        self.assertTrue(first.startswith("bc-"))
-
-    def test_different_issues_get_different_agent_ids(self) -> None:
-        self.assertNotEqual(
-            pipeline.agent_id_for("https://github.com/o/r", 57),
-            pipeline.agent_id_for("https://github.com/o/r", 58),
-        )
+def _automation(sender: RecordingSender) -> Any:
+    return pipeline.CursorAutomation(
+        webhook_url="https://cursor.example/automation",
+        webhook_key="secret",
+        sender=sender,
+    )
 
 
 class AgentPromptTests(unittest.TestCase):
@@ -398,175 +385,64 @@ class AgentPromptTests(unittest.TestCase):
         self.assertIn("node --test", prompt)
 
 
-class CursorPayloadTests(unittest.TestCase):
-    def test_a_repository_agent_starts_from_the_base_ref_and_opens_a_pull_request(self) -> None:
+class AutomationPayloadTests(unittest.TestCase):
+    def test_payload_identifies_the_event_repository_and_issue(self) -> None:
         sender = RecordingSender()
-        _cursor(sender, starting_ref="main").create(57, "Toolchain", "do it")
+        _automation(sender).start("o/r", 57, "Toolchain", "do it")
         payload = sender.payloads[0]
-        self.assertEqual(payload["prompt"]["text"], "do it")
-        self.assertTrue(payload["autoCreatePR"])
+        self.assertEqual(payload["event"], "frostvault_epic_56_issue_ready")
+        self.assertEqual(payload["idempotency_key"], "o/r#57")
+        self.assertEqual(payload["repository"], "o/r")
         self.assertEqual(
-            payload["repos"],
-            [
-                {
-                    "url": "https://github.com/PaoloDelCasale/frostvault",
-                    "startingRef": "main",
-                }
-            ],
-        )
-        self.assertNotIn("env", payload)
-
-    def test_a_named_environment_replaces_the_repository_block(self) -> None:
-        # The API treats env and repos as mutually exclusive.
-        sender = RecordingSender()
-        _cursor(sender, environment="PaoloDelCasale/frostvault").create(57, "t", "p")
-        payload = sender.payloads[0]
-        self.assertEqual(payload["env"], {"type": "cloud", "name": "PaoloDelCasale/frostvault"})
-        self.assertNotIn("repos", payload)
-
-    def test_the_model_is_omitted_unless_chosen(self) -> None:
-        sender = RecordingSender()
-        _cursor(sender).create(57, "t", "p")
-        self.assertNotIn("model", sender.payloads[0])
-
-    def test_a_chosen_model_and_its_parameters_are_sent(self) -> None:
-        sender = RecordingSender()
-        _cursor(
-            sender,
-            model_id="claude-4.6-sonnet-thinking",
-            model_params=[{"id": "fast", "value": "true"}],
-        ).create(57, "t", "p")
-        self.assertEqual(
-            sender.payloads[0]["model"],
+            payload["issue"],
             {
-                "id": "claude-4.6-sonnet-thinking",
-                "params": [{"id": "fast", "value": "true"}],
+                "number": 57,
+                "title": "Toolchain",
+                "url": "https://github.com/o/r/issues/57",
             },
         )
+        self.assertEqual(payload["instructions"], "do it")
 
-    def test_the_agent_name_stays_within_the_api_limit(self) -> None:
+    def test_payload_contains_no_webhook_credentials(self) -> None:
         sender = RecordingSender()
-        _cursor(sender).create(57, "x" * 200, "p")
-        self.assertLessEqual(len(sender.payloads[0]["name"]), 100)
-
-
-MODEL_CATALOGUE = [
-    {
-        "id": "composer-2",
-        "aliases": ["composer-latest", "composer"],
-        "parameters": [
-            {"id": "fast", "values": [{"value": "false"}, {"value": "true"}]}
-        ],
-    },
-    {
-        "id": "cursor-grok-4.5-high",
-        "parameters": [],
-    },
-    {
-        "id": "cursor-grok-4.5-high-fast",
-        "parameters": [],
-    },
-]
-
-
-class ModelSelectionTests(unittest.TestCase):
-    def test_a_known_model_without_parameters_is_accepted(self) -> None:
-        self.assertIsNone(
-            pipeline.model_selection_error(
-                MODEL_CATALOGUE, "cursor-grok-4.5-high", None
-            )
-        )
-
-    def test_an_alias_is_accepted(self) -> None:
-        self.assertIsNone(
-            pipeline.model_selection_error(MODEL_CATALOGUE, "composer-latest", None)
-        )
-
-    def test_an_unknown_model_lists_what_is_available(self) -> None:
-        error = pipeline.model_selection_error(MODEL_CATALOGUE, "grok-4.5", None)
-        self.assertIn("unknown model", error or "")
-        self.assertIn("cursor-grok-4.5-high", error or "")
-        self.assertIn("composer-2", error or "")
-
-    def test_valid_parameters_are_accepted(self) -> None:
-        self.assertIsNone(
-            pipeline.model_selection_error(
-                MODEL_CATALOGUE,
-                "composer-2",
-                [{"id": "fast", "value": "true"}],
-            )
-        )
-
-    def test_an_unsupported_parameter_name_is_reported(self) -> None:
-        error = pipeline.model_selection_error(
-            MODEL_CATALOGUE, "composer-2", [{"id": "effort", "value": "high"}]
-        )
-        self.assertIn("does not accept the parameter", error or "")
-        self.assertIn("fast", error or "")
-
-    def test_an_unsupported_parameter_value_lists_the_allowed_ones(self) -> None:
-        error = pipeline.model_selection_error(
-            MODEL_CATALOGUE, "composer-2", [{"id": "fast", "value": "sometimes"}]
-        )
-        self.assertIn("fast='sometimes'", error or "")
-        self.assertIn("true", error or "")
+        _automation(sender).start("o/r", 57, "t", "p")
+        serialized = json.dumps(sender.payloads[0])
+        self.assertNotIn("secret", serialized)
+        self.assertNotIn("cursor.example", serialized)
 
 
 class DispatchTests(unittest.TestCase):
     def test_dispatch_sends_the_issue_title_in_the_prompt(self) -> None:
         sender = RecordingSender()
         client = FakeGitHub(titles={57: "Frontend toolchain"})
-        result = pipeline.dispatch(client, _cursor(sender), 57, "o/r")
+        result = pipeline.dispatch(client, _automation(sender), 57, "o/r")
         self.assertEqual(result, "dispatched")
-        self.assertIn("Frontend toolchain", sender.payloads[0]["prompt"]["text"])
+        self.assertIn("Frontend toolchain", sender.payloads[0]["instructions"])
+        self.assertEqual(client.added_labels, [(57, "agent-dispatched")])
 
-    def test_a_conflict_means_already_dispatched_not_an_error(self) -> None:
-        sender = RecordingSender(response={"conflict": True, "detail": "exists"})
-        result = pipeline.dispatch(FakeGitHub(), _cursor(sender), 57, "o/r")
+    def test_the_dispatched_label_makes_retries_idempotent(self) -> None:
+        sender = RecordingSender()
+        client = FakeGitHub(labels={57: {"agent-dispatched"}})
+        result = pipeline.dispatch(client, _automation(sender), 57, "o/r")
         self.assertEqual(result, "already-dispatched")
+        self.assertEqual(sender.payloads, [])
 
-    def test_without_an_api_key_the_issue_is_only_labelled(self) -> None:
-        # The label still lets a Cursor Automation pick the issue up.
+    def test_without_webhook_secrets_the_issue_is_only_labelled(self) -> None:
         self.assertEqual(pipeline.dispatch(FakeGitHub(), None, 57, "o/r"), "skipped")
 
     def test_dispatch_refuses_an_issue_outside_epic_56_even_with_a_client(self) -> None:
         sender = RecordingSender()
-        result = pipeline.dispatch(FakeGitHub(), _cursor(sender), 73, "o/r")
+        result = pipeline.dispatch(FakeGitHub(), _automation(sender), 73, "o/r")
         self.assertEqual(result, "outside-epic")
         self.assertEqual(sender.payloads, [])
 
-    def test_a_misconfigured_model_stops_the_dispatch_with_a_useful_message(self) -> None:
-        sender = RecordingSender()
-        cursor = _cursor(sender, model_id="grok-4.5")
-        cursor.models = lambda: MODEL_CATALOGUE  # type: ignore[method-assign]
-        with self.assertRaises(RuntimeError) as raised:
-            pipeline.dispatch(FakeGitHub(), cursor, 57, "o/r")
-        message = str(raised.exception)
-        self.assertIn("unknown model", message)
-        self.assertIn("CURSOR_AGENT_MODEL", message)
-        self.assertEqual(sender.payloads, [])
-
-    def test_a_valid_model_is_dispatched(self) -> None:
-        sender = RecordingSender()
-        cursor = _cursor(sender, model_id="cursor-grok-4.5-high")
-        cursor.models = lambda: MODEL_CATALOGUE  # type: ignore[method-assign]
-        self.assertEqual(pipeline.dispatch(FakeGitHub(), cursor, 57, "o/r"), "dispatched")
-        self.assertEqual(
-            sender.payloads[0]["model"],
-            {"id": "cursor-grok-4.5-high"},
-        )
-
-
-class CursorFromEnvironmentTests(unittest.TestCase):
+class AutomationFromEnvironmentTests(unittest.TestCase):
     def setUp(self) -> None:
         self._saved = {
             name: os.environ.pop(name, None)
             for name in (
-                "CURSOR_API_KEY",
-                "CURSOR_AGENT_MODEL",
-                "CURSOR_AGENT_MODEL_PARAMS",
-                "CURSOR_AGENT_ENV",
-                "CURSOR_AGENT_BASE_REF",
+                "CURSOR_EPIC_56_WEBHOOK_URL",
+                "CURSOR_EPIC_56_WEBHOOK_KEY",
             )
         }
 
@@ -577,31 +453,18 @@ class CursorFromEnvironmentTests(unittest.TestCase):
             else:
                 os.environ[name] = value
 
-    def test_no_key_means_no_client(self) -> None:
-        self.assertIsNone(pipeline.cursor_from_environment("o/r"))
+    def test_both_secrets_are_required(self) -> None:
+        self.assertIsNone(pipeline.automation_from_environment())
+        os.environ["CURSOR_EPIC_56_WEBHOOK_URL"] = "https://cursor.example/hook"
+        self.assertIsNone(pipeline.automation_from_environment())
 
-    def test_a_blank_key_means_no_client(self) -> None:
-        os.environ["CURSOR_API_KEY"] = "   "
-        self.assertIsNone(pipeline.cursor_from_environment("o/r"))
-
-    def test_the_model_choice_comes_from_the_environment(self) -> None:
-        os.environ["CURSOR_API_KEY"] = "key"
-        os.environ["CURSOR_AGENT_MODEL"] = "composer-2"
-        os.environ["CURSOR_AGENT_MODEL_PARAMS"] = "fast=true"
-        client = pipeline.cursor_from_environment("PaoloDelCasale/frostvault")
-        assert client is not None
-        self.assertEqual(client.model_id, "composer-2")
-        self.assertEqual(client.model_params, [{"id": "fast", "value": "true"}])
-        self.assertEqual(
-            client.repo_url, "https://github.com/PaoloDelCasale/frostvault"
-        )
-
-    def test_malformed_model_parameters_are_ignored_rather_than_crashing(self) -> None:
-        os.environ["CURSOR_API_KEY"] = "key"
-        os.environ["CURSOR_AGENT_MODEL_PARAMS"] = "fast,=true,thinking=high"
-        client = pipeline.cursor_from_environment("o/r")
-        assert client is not None
-        self.assertEqual(client.model_params, [{"id": "thinking", "value": "high"}])
+    def test_webhook_configuration_comes_from_secrets(self) -> None:
+        os.environ["CURSOR_EPIC_56_WEBHOOK_URL"] = "https://cursor.example/hook"
+        os.environ["CURSOR_EPIC_56_WEBHOOK_KEY"] = "key"
+        automation = pipeline.automation_from_environment()
+        assert automation is not None
+        self.assertEqual(automation.webhook_url, "https://cursor.example/hook")
+        self.assertEqual(automation.webhook_key, "key")
 
 
 class PipelineWorkflowContractTests(unittest.TestCase):
@@ -640,12 +503,12 @@ class PipelineWorkflowContractTests(unittest.TestCase):
         self.assertEqual(list(triggers), ["workflow_dispatch"])
         self.assertIn("issue", triggers["workflow_dispatch"]["inputs"])
 
-    def test_dispatching_workflows_pass_the_api_key_and_the_model_choice(self) -> None:
-        # The model is a repository variable so it can change without a commit.
+    def test_dispatching_workflows_pass_only_the_narrow_webhook_secrets(self) -> None:
         for name in ("agent-unblock.yml", "agent-dispatch.yml"):
             text = (WORKFLOWS / name).read_text(encoding="utf-8")
-            self.assertIn("secrets.CURSOR_API_KEY", text, name)
-            self.assertIn("vars.CURSOR_AGENT_MODEL", text, name)
+            self.assertIn("secrets.CURSOR_EPIC_56_WEBHOOK_URL", text, name)
+            self.assertIn("secrets.CURSOR_EPIC_56_WEBHOOK_KEY", text, name)
+            self.assertNotIn("CURSOR_API_KEY", text, name)
 
     def test_pipeline_is_documented_for_the_next_agent(self) -> None:
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")

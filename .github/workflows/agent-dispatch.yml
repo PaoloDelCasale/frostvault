@@ -30,11 +30,8 @@ jobs:
       - name: Start a cloud agent on the issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-          CURSOR_AGENT_MODEL: ${{ vars.CURSOR_AGENT_MODEL }}
-          CURSOR_AGENT_MODEL_PARAMS: ${{ vars.CURSOR_AGENT_MODEL_PARAMS }}
-          CURSOR_AGENT_ENV: ${{ vars.CURSOR_AGENT_ENV }}
-          CURSOR_AGENT_BASE_REF: ${{ vars.CURSOR_AGENT_BASE_REF }}
+          CURSOR_EPIC_56_WEBHOOK_URL: ${{ secrets.CURSOR_EPIC_56_WEBHOOK_URL }}
+          CURSOR_EPIC_56_WEBHOOK_KEY: ${{ secrets.CURSOR_EPIC_56_WEBHOOK_KEY }}
         run: |
           python .github/scripts/agent_pipeline.py \
             "${{ github.repository }}" dispatch "${{ inputs.issue }}"

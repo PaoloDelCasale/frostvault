@@ -23,12 +23,9 @@ label, then closes the epic.
 
 Two design notes worth keeping:
 
-Agents are started through ``POST /v1/agents`` rather than by a Cursor
-Automation reacting to the label. Automations can trigger on a label added to a
-*pull request*, but not on a label added to an *issue*, which is the event this
-pipeline produces. Calling the API keeps the trigger in our hands. When
-``CURSOR_API_KEY`` is absent the pipeline still labels issues, so an Automation
-watching the label remains a valid alternative.
+Agents are started through one private Cursor Automation webhook. This gives the
+repository only the narrow credential for this one temporary automation rather
+than a personal Cursor API key capable of launching arbitrary agents.
 
 The merge half runs on a schedule instead of reacting to a workflow completion,
 because this repository forbids ``workflow_run`` and ``pull_request_target``
@@ -39,30 +36,22 @@ workflow selected by pull-request activity.
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import sys
 import urllib.error
 import urllib.request
-import uuid
 from typing import Any, Callable, Iterable, Sequence
 
 PIPELINE_LABEL = "agent-pipeline"
 READY_LABEL = "ready-for-agent"
+DISPATCHED_LABEL = "agent-dispatched"
 AGENT_BRANCH_PREFIX = "cursor/"
 EPIC_ISSUE = 56
 BOOTSTRAP_ISSUE = 84
 CLEANUP_ISSUE = 86
 PIPELINE_ISSUES = frozenset({*range(57, 73), CLEANUP_ISSUE})
 UNBLOCK_SOURCES = PIPELINE_ISSUES | {BOOTSTRAP_ISSUE}
-
-CURSOR_AGENTS_URL = "https://api.cursor.com/v1/agents"
-CURSOR_MODELS_URL = "https://api.cursor.com/v1/models"
-
-# Namespace for deterministic agent ids: re-dispatching an issue must not create a
-# second agent working the same branch.
-AGENT_ID_NAMESPACE = uuid.UUID("6f2d0a1e-2f2a-4f3d-9a4b-1c5d6e7f8a90")
 
 # A check run that ended in any other conclusion blocks the merge.
 PASSING_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
@@ -148,144 +137,58 @@ class GitHubCli:
         self._gh(["label", "delete", label, "--repo", self.repo, "--yes"])
 
 
-class CursorAgents:
-    """Launches cloud agents through the Cursor Cloud Agents API."""
+class CursorAutomation:
+    """Starts the one temporary, repo-backed Cursor Automation."""
 
     def __init__(
         self,
-        api_key: str,
-        repo_url: str,
-        starting_ref: str = "main",
-        model_id: str | None = None,
-        model_params: list[dict[str, str]] | None = None,
-        environment: str | None = None,
+        webhook_url: str,
+        webhook_key: str,
         sender: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
-        self.api_key = api_key
-        self.repo_url = repo_url
-        self.starting_ref = starting_ref
-        self.model_id = model_id
-        self.model_params = model_params
-        self.environment = environment
+        self.webhook_url = webhook_url
+        self.webhook_key = webhook_key
         self._sender = sender or self._post
 
-    def payload(self, issue: int, title: str, prompt: str) -> dict[str, Any]:
-        body: dict[str, Any] = {
-            "prompt": {"text": prompt},
-            "autoCreatePR": True,
-            "name": f"Issue #{issue}: {title}"[:100],
-            "agentId": agent_id_for(self.repo_url, issue),
+    def payload(
+        self, repo: str, issue: int, title: str, instructions: str
+    ) -> dict[str, Any]:
+        return {
+            "event": "frostvault_epic_56_issue_ready",
+            "idempotency_key": f"{repo}#{issue}",
+            "repository": repo,
+            "issue": {
+                "number": issue,
+                "title": title,
+                "url": f"https://github.com/{repo}/issues/{issue}",
+            },
+            "instructions": instructions,
         }
-        if self.environment:
-            # A named environment already carries its repository, and the two are
-            # mutually exclusive in the API.
-            body["env"] = {"type": "cloud", "name": self.environment}
-        else:
-            body["repos"] = [
-                {"url": self.repo_url, "startingRef": self.starting_ref}
-            ]
-        if self.model_id:
-            model: dict[str, Any] = {"id": self.model_id}
-            if self.model_params:
-                model["params"] = self.model_params
-            body["model"] = model
-        return body
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         request = urllib.request.Request(
-            CURSOR_AGENTS_URL,
+            self.webhook_url,
             data=json.dumps(body).encode("utf-8"),
             headers={
-                "Authorization": f"Bearer {self.api_key}",
+                "Authorization": f"Bearer {self.webhook_key}",
                 "Content-Type": "application/json",
             },
             method="POST",
         )
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
-                return json.loads(response.read().decode("utf-8"))
+                raw = response.read().decode("utf-8")
+                return json.loads(raw) if raw else {"accepted": True}
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", "replace")
-            if error.code == 409:
-                return {"conflict": True, "detail": detail}
             raise RuntimeError(
-                f"Cursor API returned {error.code}: {detail}"
+                f"Cursor Automation webhook returned {error.code}: {detail}"
             ) from error
 
-    def create(self, issue: int, title: str, prompt: str) -> dict[str, Any]:
-        return self._sender(self.payload(issue, title, prompt))
-
-    def models(self) -> list[dict[str, Any]]:
-        request = urllib.request.Request(
-            CURSOR_MODELS_URL,
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            method="GET",
-        )
-        with urllib.request.urlopen(request, timeout=60) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        return list(payload.get("items", []))
-
-    def model_error(self) -> str | None:
-        """Why the configured model cannot be used, or ``None`` if it can.
-
-        Worth the extra call: a wrong model id is otherwise an opaque 400 at
-        dispatch time, and a wrong parameter silently gets you a different variant
-        from the one you asked for.
-        """
-        if not self.model_id:
-            return None
-        return model_selection_error(self.models(), self.model_id, self.model_params)
-
-
-def model_selection_error(
-    items: Iterable[dict[str, Any]],
-    model_id: str,
-    params: list[dict[str, str]] | None,
-) -> str | None:
-    """Validate a model id and its parameters against ``GET /v1/models``."""
-    catalogue = list(items)
-    match = next(
-        (
-            item
-            for item in catalogue
-            if item.get("id") == model_id or model_id in (item.get("aliases") or [])
-        ),
-        None,
-    )
-    if match is None:
-        available = ", ".join(sorted(str(item.get("id")) for item in catalogue))
-        return f"unknown model {model_id!r}. Available: {available}"
-
-    if not params:
-        return None
-
-    accepted = {
-        str(parameter.get("id")): {
-            str(value.get("value")) for value in parameter.get("values") or []
-        }
-        for parameter in match.get("parameters") or []
-    }
-    for parameter in params:
-        name, value = parameter["id"], parameter["value"]
-        if name not in accepted:
-            known = ", ".join(sorted(accepted)) or "none"
-            return (
-                f"model {model_id!r} does not accept the parameter {name!r}. "
-                f"Accepted parameters: {known}"
-            )
-        if accepted[name] and value not in accepted[name]:
-            allowed = ", ".join(sorted(accepted[name]))
-            return (
-                f"model {model_id!r} does not accept {name}={value!r}. "
-                f"Allowed values: {allowed}"
-            )
-    return None
-
-
-def agent_id_for(repo_url: str, issue: int) -> str:
-    """A stable agent id per issue, so a repeated dispatch cannot fork the work."""
-    seed = f"{repo_url}#{issue}"
-    return f"bc-{uuid.uuid5(AGENT_ID_NAMESPACE, seed)}"
+    def start(
+        self, repo: str, issue: int, title: str, instructions: str
+    ) -> dict[str, Any]:
+        return self._sender(self.payload(repo, issue, title, instructions))
 
 
 def agent_prompt(repo: str, issue: int, title: str) -> str:
@@ -315,33 +218,31 @@ it. Do not open it with tests you have not run."""
 
 
 def dispatch(
-    client: GitHubCli, cursor: CursorAgents | None, issue: int, repo: str
+    client: GitHubCli,
+    automation: CursorAutomation | None,
+    issue: int,
+    repo: str,
 ) -> str:
-    """Start a cloud agent on ``issue``. Returns what happened, for logging."""
+    """Start the automation on ``issue``. Returns what happened, for logging."""
     if issue not in PIPELINE_ISSUES:
         print(
             f"#{issue}: not a sub-issue of the temporary epic #{EPIC_ISSUE}; "
             "refusing to dispatch."
         )
         return "outside-epic"
-    if cursor is None:
+    if DISPATCHED_LABEL in client.labels(issue):
+        print(f"#{issue}: already dispatched.")
+        return "already-dispatched"
+    if automation is None:
         print(
-            f"#{issue}: no CURSOR_API_KEY, leaving it labelled for an Automation "
-            "to pick up."
+            f"#{issue}: Cursor Automation webhook secrets are missing; leaving "
+            "it labelled for manual recovery."
         )
         return "skipped"
-    problem = cursor.model_error()
-    if problem:
-        raise RuntimeError(
-            f"Refusing to dispatch #{issue}: {problem}. Fix the "
-            "CURSOR_AGENT_MODEL / CURSOR_AGENT_MODEL_PARAMS repository variables."
-        )
     title = client.title(issue)
-    response = cursor.create(issue, title, agent_prompt(repo, issue, title))
-    if response.get("conflict"):
-        print(f"#{issue}: an agent was already dispatched for this issue.")
-        return "already-dispatched"
-    print(f"#{issue}: dispatched agent {response.get('id', '?')}.")
+    automation.start(repo, issue, title, agent_prompt(repo, issue, title))
+    client.add_label(issue, DISPATCHED_LABEL)
+    print(f"#{issue}: dispatched through the temporary Cursor Automation.")
     return "dispatched"
 
 
@@ -483,42 +384,26 @@ def merge_ready(client: GitHubCli) -> list[int]:
             # finish after the cleanup PR has removed the checked-in automation.
             client.close_issue(EPIC_ISSUE)
             client.delete_label(PIPELINE_LABEL)
+            client.delete_label(DISPATCHED_LABEL)
             print(
-                f"Temporary epic #{EPIC_ISSUE} closed and label "
-                f"{PIPELINE_LABEL!r} deleted."
+                f"Temporary epic #{EPIC_ISSUE} closed and dispatch labels deleted."
             )
     if not merged:
         print("Nothing to merge.")
     return merged
 
 
-def cursor_from_environment(repo: str) -> CursorAgents | None:
-    """Build the API client from the workflow environment, or ``None`` if unset.
+def automation_from_environment() -> CursorAutomation | None:
+    """Build the webhook client from workflow secrets, or ``None`` if unset."""
+    import os
 
-    Without a key the pipeline degrades to labelling only, which keeps a Cursor
-    Automation watching ``ready-for-agent`` as a working alternative.
-    """
-    api_key = os.environ.get("CURSOR_API_KEY", "").strip()
-    if not api_key:
+    webhook_url = os.environ.get("CURSOR_EPIC_56_WEBHOOK_URL", "").strip()
+    webhook_key = os.environ.get("CURSOR_EPIC_56_WEBHOOK_KEY", "").strip()
+    if not webhook_url or not webhook_key:
         return None
-    model_id = os.environ.get("CURSOR_AGENT_MODEL", "").strip() or None
-    raw_params = os.environ.get("CURSOR_AGENT_MODEL_PARAMS", "").strip()
-    model_params: list[dict[str, str]] | None = None
-    if raw_params:
-        # "fast=true,thinking=high" — kept as a flat string so it can live in a
-        # repository variable rather than in code.
-        model_params = [
-            {"id": key.strip(), "value": value.strip()}
-            for key, _, value in (item.partition("=") for item in raw_params.split(","))
-            if key.strip() and value.strip()
-        ]
-    return CursorAgents(
-        api_key=api_key,
-        repo_url=f"https://github.com/{repo}",
-        starting_ref=os.environ.get("CURSOR_AGENT_BASE_REF", "main").strip() or "main",
-        model_id=model_id,
-        model_params=model_params,
-        environment=os.environ.get("CURSOR_AGENT_ENV", "").strip() or None,
+    return CursorAutomation(
+        webhook_url=webhook_url,
+        webhook_key=webhook_key,
     )
 
 
@@ -537,9 +422,9 @@ def main(argv: Sequence[str]) -> int:
         if len(argv) < 4:
             print("unblock needs the closed issue number", file=sys.stderr)
             return 2
-        cursor = cursor_from_environment(repo)
+        automation = automation_from_environment()
         for issue in unblock(client, int(argv[3])):
-            dispatch(client, cursor, issue, repo)
+            dispatch(client, automation, issue, repo)
         return 0
     if command == "dispatch":
         if len(argv) < 4:
@@ -559,7 +444,7 @@ def main(argv: Sequence[str]) -> int:
             return 1
         if READY_LABEL not in labels:
             client.add_label(issue, READY_LABEL)
-        dispatch(client, cursor_from_environment(repo), issue, repo)
+        dispatch(client, automation_from_environment(), issue, repo)
         return 0
     if command == "merge":
         merge_ready(client)

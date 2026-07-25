@@ -81,12 +81,12 @@ Three workflows, all driven by
 | [Agent pipeline dispatch](../.github/workflows/agent-dispatch.yml) | `workflow_dispatch` | Starts a cloud agent on one issue. Needed for the first issue of a chain |
 | [Agent pipeline auto-merge](../.github/workflows/agent-automerge.yml) | Every 10 minutes, plus `workflow_dispatch` | Squash-merges open pull requests that pass every gate below |
 
-Agents are started through `POST https://api.cursor.com/v1/agents`, configured by
-`CURSOR_API_KEY` (secret) plus the `CURSOR_AGENT_*` repository variables described
-in `AGENTS.md`. The model choice is validated against `GET /v1/models` before an
-agent is created, so a wrong id or parameter fails with the list of valid values
-instead of an opaque API error. Without the key the workflows only label, which
-leaves a Cursor Automation watching the label as an alternative.
+Agents are started through the private webhook of the repo-backed
+`FrostVault Epic 56 TDD Pipeline` Cursor Automation. The endpoint and Bearer value
+live in `CURSOR_EPIC_56_WEBHOOK_URL` and `CURSOR_EPIC_56_WEBHOOK_KEY` Actions
+secrets. The model (**Cursor Grok 4.5 High**, non-fast), environment and pull
+request capability are fixed in Cursor, so GitHub never holds a personal Cursor
+API key.
 
 Auto-merge gates, all required: a same-repo `cursor/*` branch, not a draft, a body
 that closes an issue, that issue carrying `agent-pipeline`, a mergeable state, and
