@@ -1506,7 +1506,7 @@ def confirm_rename(
         )
         audit_log(
             "vault_file_renamed",
-            connection,
+            connection=connection,
             vault_id=vault["id"],
             vault_file_id=action.vault_file_id,
             new_path=new_path,
@@ -1551,7 +1551,7 @@ def confirm_folder_rename(
         )
         audit_log(
             "vault_folder_renamed",
-            connection,
+            connection=connection,
             vault_id=vault["id"],
             old_prefix=old_prefix,
             new_prefix=new_prefix,

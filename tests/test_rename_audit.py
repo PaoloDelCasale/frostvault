@@ -163,11 +163,11 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             return old_id
 
     def test_bug_009_rename_audit_persists_to_audit_events(self) -> None:
-        """[BUG-009][Req: REQ-021] Path History mutations must durable-audit.
+        """[BUG-009][Req: REQ-021] File rename must durable-audit.
 
-        Desired: confirm rename / folder rename pass ``connection`` into
-        ``audit_log`` so ``audit_events`` (and ``GET /api/audit-events``)
-        receive the row. Current: connection omitted → log-only.
+        Desired: confirm rename passes ``connection`` into ``audit_log`` so
+        ``audit_events`` (and ``GET /api/audit-events``) receive the row.
+        Current: connection omitted → log-only.
         """
         old_id = self._seed_digest_rename(
             old_path="reports/old-name.txt",
@@ -192,19 +192,23 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             "confirm_rename must persist a durable vault_file_renamed audit event",
         )
 
-        # Folder rename Path History mutation (second site in the audited defect).
+    def test_bug_009_folder_rename_audit_persists_to_audit_events(self) -> None:
+        """[BUG-009][Req: REQ-021] Folder rename must durable-audit."""
         folder_old = self._seed_digest_rename(
             old_path="docs/a.txt",
             new_path="archive/a.txt",
             digest=hashlib.sha256(b"folder-a").hexdigest(),
         )
+        self._authenticate()
+        self._select_vault()
+
         folder_confirm = self.client.post(
             "/api/confirm-folder-rename",
             json={"old_prefix": "docs", "new_prefix": "archive"},
             headers=self._headers(),
         )
         self.assertIn(folder_confirm.status_code, {200, 202}, folder_confirm.text)
-        self.assertIn(folder_old, folder_confirm.json().get("renamed_ids", [folder_old]))
+        self.assertIn(folder_old, folder_confirm.json()["renamed_ids"])
 
         folder_events = self.client.get("/api/audit-events")
         self.assertEqual(folder_events.status_code, 200, folder_events.text)
