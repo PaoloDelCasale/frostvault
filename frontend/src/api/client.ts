@@ -1,8 +1,8 @@
+import type { AuthMethod } from "./types";
+
 const CSRF_COOKIE_NAME = "frostvault_csrf";
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const SIGN_IN_PATH = "/login";
-
-export type AuthMethod = "oidc" | "local" | string | null | undefined;
 
 export type ApiFetch = (
   input: RequestInfo | URL,
@@ -14,7 +14,7 @@ export type ApiClientConfig = {
   csrfCookieName?: string;
   /** Cached CSRF from /api/me; cookie is used when this is empty. */
   csrfToken?: string | null;
-  getAuthMethod?: () => AuthMethod;
+  getAuthMethod?: () => AuthMethod | undefined;
   /** Break-glass Login password dialog. Return null to cancel. */
   requestPassword?: () => Promise<string | null>;
   /** Navigation for OIDC Reauthentication and 401 → sign-in. */
