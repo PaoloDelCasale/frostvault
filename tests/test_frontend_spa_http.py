@@ -114,3 +114,22 @@ class FrontendSpaHttpTests(unittest.TestCase):
         self.assertIn('id="root"', response.text)
         self.assertIn("spa-shell", response.text)
         self.assertNotIn("data-can-operate=", response.text)
+
+    def test_unknown_route_with_flag_on_falls_back_to_spa(self) -> None:
+        """Seam 3: GET /some/unknown/route with flag on → index.html, 200."""
+        self._enable_spa()
+        response = self.client.get("/some/unknown/route")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("spa-shell", response.text)
+        self.assertIn('id="root"', response.text)
+
+    def test_api_me_not_swallowed_by_spa_fallback(self) -> None:
+        """Seam 4: GET /api/me with flag on → JSON, not the SPA shell."""
+        self._enable_spa()
+        self._authenticate()
+        response = self.client.get("/api/me")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["content-type"].split(";")[0], "application/json")
+        payload = response.json()
+        self.assertEqual(payload["username"], "owner")
+        self.assertNotIn("spa-shell", response.text)

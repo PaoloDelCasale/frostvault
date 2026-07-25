@@ -870,6 +870,9 @@ def build_directory_items(
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
+    spa = _serve_spa_if_enabled()
+    if spa is not None:
+        return spa
     token = _read_session_cookie(request)
     if token:
         with db() as connection:
@@ -1216,6 +1219,9 @@ def _resolve_or_bind_identity(connection: Any, claims: Any) -> int:
 
 @app.get("/vaults/new", response_class=HTMLResponse)
 def vault_create_page(request: Request, response: Response):
+    spa = _serve_spa_if_enabled()
+    if spa is not None:
+        return spa
     try:
         user = current_user(request)
     except HTTPException as exc:
@@ -1252,18 +1258,21 @@ def index(request: Request):
 
 
 @app.get("/vault/access", response_class=HTMLResponse)
-def vault_access_page(
-    request: Request,
-    response: Response,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(owner_vault),
-):
+def vault_access_page(request: Request, response: Response):
+    spa = _serve_spa_if_enabled()
+    if spa is not None:
+        return spa
+    user = current_user(request)
+    vault = owner_vault(current_vault(request, user))
     _set_csrf_cookie(response, request.state.session["csrf_token"])
     return templates.get_template("vault_access.html").render(user=user, vault=vault)
 
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page(request: Request):
+    spa = _serve_spa_if_enabled()
+    if spa is not None:
+        return spa
     try:
         user = current_user(request)
     except HTTPException:
@@ -3543,3 +3552,17 @@ def metrics():
         content=metrics_service.render_prometheus(),
         media_type="text/plain; version=0.0.4; charset=utf-8",
     )
+
+
+_SPA_FALLBACK_EXCLUDED_PREFIXES = frozenset({"api", "auth", "static", "assets"})
+
+
+@app.get("/{full_path:path}", response_class=HTMLResponse)
+def spa_fallback(full_path: str):
+    """SPA client-route fallback; never intercepts API, auth, or static assets."""
+    if not settings.frontend_spa:
+        raise HTTPException(status_code=404, detail="Not Found")
+    head = full_path.split("/", 1)[0]
+    if head in _SPA_FALLBACK_EXCLUDED_PREFIXES:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _spa_index_response()
