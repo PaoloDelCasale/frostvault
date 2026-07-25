@@ -1246,12 +1246,33 @@ def admin_page(request: Request):
 def me(request: Request, response: Response, user: dict[str, Any] = Depends(current_user)):
     csrf_token = request.state.session["csrf_token"]
     _set_csrf_cookie(response, csrf_token)
+    try:
+        vault = current_vault(request, user)
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        vault = None
+    vault_block = None
+    if vault is not None:
+        role = vault["role"]
+        vault_block = {
+            "id": vault["id"],
+            "slug": vault["slug"],
+            "name": vault["name"],
+            "role": role,
+            "can_operate": can_operate(role),
+            "delete_enabled": settings.allow_local_delete and is_owner(role),
+            "cloud_deletion_enabled": bool(vault.get("cloud_deletion_enabled"))
+            and is_owner(role),
+            "is_vault_owner": is_owner(role),
+        }
     return {
         **user,
         "csrf_token": csrf_token,
         "auth_method": request.state.session.get("auth_method"),
         "locale": _request_locale(request),
         "locales": list(available_locales()),
+        "vault": vault_block,
     }
 
 
