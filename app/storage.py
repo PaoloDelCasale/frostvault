@@ -800,6 +800,7 @@ def apply_auto_renames(vault: dict[str, Any], *, requested_by: int | None = None
             )
             audit_log(
                 "vault_file_renamed",
+                connection=connection,
                 vault_id=vault["id"],
                 vault_file_id=candidate["missing_vault_file_id"],
                 old_path=candidate["missing_path"],
