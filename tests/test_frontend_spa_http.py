@@ -148,3 +148,15 @@ class FrontendSpaHttpTests(unittest.TestCase):
             "public, max-age=31536000, immutable",
         )
         self.assertIn("spa", asset.text)
+
+    def test_missing_dist_returns_diagnosable_error(self) -> None:
+        """Seam 6: flag on but dist missing → clear error, not opaque 500."""
+        self._enable_spa()
+        missing = Path(self._tmp.name) / "missing-dist"
+        object.__setattr__(self.test_settings, "frontend_dist_dir", str(missing))
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 503, response.text)
+        detail = response.json()["detail"]
+        self.assertIn("FRONTEND_SPA", detail)
+        self.assertIn("npm run build", detail)
+        self.assertIn("frontend/dist", detail)
