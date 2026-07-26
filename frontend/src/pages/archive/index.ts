@@ -1,6 +1,12 @@
 export { ArchivePage } from "./ArchivePage";
 export type { ArchivePageProps } from "./ArchivePage";
+export { FileBrowser } from "./FileBrowser";
+export type { FileBrowserProps } from "./FileBrowser";
+export { FileList } from "./FileList";
+export type { FileListProps } from "./FileList";
 export { FilesystemHealthBanner } from "./FilesystemHealthBanner";
+export { PathHistoryPanel } from "./PathHistoryPanel";
+export type { PathHistoryPanelProps } from "./PathHistoryPanel";
 export { SafetyFooter } from "./SafetyFooter";
 export { StatsSummary } from "./StatsSummary";
 export { formatBytes, formatCount } from "./format";

@@ -1,5 +1,8 @@
 import { apiRequest, configureApiClient, setCsrfToken } from "./client";
 import type {
+  FileHistoryResponse,
+  FilesQuery,
+  FilesResponse,
   I18nCatalogResponse,
   LocaleUpdateResponse,
   MeResponse,
@@ -7,6 +10,24 @@ import type {
   VaultsResponse,
 } from "./types";
 import { translate } from "@/i18n/translate";
+
+const DEFAULT_PAGE_SIZE = 100;
+
+export function fetchFiles(query: FilesQuery = {}): Promise<FilesResponse> {
+  const params = new URLSearchParams();
+  params.set("q", query.q ?? "");
+  params.set("state", query.state ?? "");
+  params.set("directory", query.directory ?? "");
+  params.set("page", String(query.page ?? 1));
+  params.set("page_size", String(query.page_size ?? DEFAULT_PAGE_SIZE));
+  return apiRequest<FilesResponse>(`/api/files?${params.toString()}`);
+}
+
+export function fetchFileHistory(path: string): Promise<FileHistoryResponse> {
+  return apiRequest<FileHistoryResponse>(
+    `/api/file-history?path=${encodeURIComponent(path)}`,
+  );
+}
 
 export function fetchMe(): Promise<MeResponse> {
   return apiRequest<MeResponse>("/api/me").then((me) => {
@@ -42,6 +63,8 @@ export function updateLocale(locale: string): Promise<LocaleUpdateResponse> {
 export function fetchStats(): Promise<StatsResponse> {
   return apiRequest<StatsResponse>("/api/stats");
 }
+
+export { DEFAULT_PAGE_SIZE };
 
 export function logout(): Promise<{ message: string; message_key: string }> {
   return apiRequest<{ message: string; message_key: string }>("/api/logout", {

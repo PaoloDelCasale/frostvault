@@ -10,6 +10,9 @@ export {
 export type { ApiClientConfig, ApiFetch } from "./client";
 
 export {
+  DEFAULT_PAGE_SIZE,
+  fetchFileHistory,
+  fetchFiles,
   fetchI18nCatalog,
   fetchMe,
   fetchStats,
@@ -32,6 +35,8 @@ export {
   ApiQueryProvider,
   apiQueryKeys,
   createAppQueryClient,
+  fileHistoryQueryOptions,
+  filesQueryOptions,
   i18nCatalogQueryOptions,
   jobsRefetchInterval,
   meQueryOptions,
@@ -40,7 +45,13 @@ export {
 } from "./query";
 
 export type {
+  ArchiveListItem,
+  ArchiveVersionSummary,
   AuthMethod,
+  DirectoryListItem,
+  FileHistoryResponse,
+  FilesQuery,
+  FilesResponse,
   FilesystemCheck,
   FilesystemFinding,
   FilesystemHealth,
@@ -48,7 +59,9 @@ export type {
   LocaleUpdateResponse,
   MeResponse,
   MeVault,
+  PathHistoryEntry,
   StatsResponse,
+  VaultFileListItem,
   VaultListItem,
   VaultRole,
   VaultsResponse,
