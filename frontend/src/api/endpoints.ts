@@ -7,11 +7,19 @@ import type {
   LocaleUpdateResponse,
   MeResponse,
   OperationPolicy,
+  RecoveryConfirmRequest,
+  RecoveryConfirmResponse,
+  RecoveryExportRequest,
+  RecoveryExportResponse,
   StatsResponse,
   UserLookupResult,
+  VaultCreateRequest,
+  VaultCreateResponse,
   VaultMembersResponse,
   VaultQuotaUpdatePayload,
   VaultQuotasResponse,
+  VaultSelectRequest,
+  VaultSelectResponse,
   VaultsResponse,
 } from "./types";
 import { translate } from "@/i18n/translate";
@@ -26,6 +34,42 @@ export function fetchMe(): Promise<MeResponse> {
 
 export function fetchVaults(): Promise<VaultsResponse> {
   return apiRequest<VaultsResponse>("/api/vaults");
+}
+
+export function createVault(
+  payload: VaultCreateRequest,
+): Promise<VaultCreateResponse> {
+  return apiRequest<VaultCreateResponse>("/api/vaults", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function selectVault(
+  payload: VaultSelectRequest,
+): Promise<VaultSelectResponse> {
+  return apiRequest<VaultSelectResponse>("/api/vaults/select", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function confirmRecoveryCustody(
+  payload: RecoveryConfirmRequest = { acknowledged: true },
+): Promise<RecoveryConfirmResponse> {
+  return apiRequest<RecoveryConfirmResponse>("/api/vault/recovery/confirm", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function exportRecoverySecret(
+  payload: RecoveryExportRequest,
+): Promise<RecoveryExportResponse> {
+  return apiRequest<RecoveryExportResponse>("/api/vault/recovery/export", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function fetchI18nCatalog(locale?: string): Promise<I18nCatalogResponse> {
