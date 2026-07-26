@@ -133,6 +133,11 @@ from .services.fs_preflight import (
     check_vault_filesystem,
     resolve_configured_vault_root,
 )
+from .services.storage_classes import (
+    cold_class_warning,
+    normalize_storage_class,
+    validate_manual_target_class,
+)
 from .storage import (
     background_loop,
     cancel_jobs,
@@ -584,6 +589,24 @@ class CloudPurgeRequest(BaseModel):
     generated_phrase: str = Field(min_length=1, max_length=200)
 
 
+class StorageClassChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(default="", max_length=1024)
+    is_directory: bool = False
+    whole_vault: bool = False
+    target_storage_class: str = Field(min_length=1, max_length=32)
+    archive_version_id: str | None = None
+
+
+class LifecyclePinRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=1024)
+    is_directory: bool = False
+    pinned: bool
+
+
 class UserCreate(BaseModel):
     username: str = Field(min_length=2, max_length=80)
     display_name: str = Field(min_length=1, max_length=120)
@@ -775,8 +798,10 @@ def build_directory_items(
                         "free-space": 0,
                         "cloud-archive": 0,
                         "cloud-purge": 0,
+                        "storage-class": 0,
                     },
                     "storage_classes": set(),
+                    "pinned_count": 0,
                     "matches_filter": False,
                 },
             )
@@ -799,10 +824,13 @@ def build_directory_items(
                 "free-space": row.get("cleanup_eligible", row["state"] == "both"),
                 "cloud-archive": has_cloud,
                 "cloud-purge": has_cloud,
+                "storage-class": row.get("storage_class_eligible", has_cloud),
             }
             for action, eligible in action_flags.items():
                 if eligible:
                     folder["action_counts"][action] += 1
+            if row.get("lifecycle_pinned"):
+                folder["pinned_count"] += 1
             if row.get("storage_class"):
                 folder["storage_classes"].add(row["storage_class"])
             if not state_filter or row["state"] == state_filter:
@@ -818,6 +846,7 @@ def build_directory_items(
         states = aggregate["state_counts"]
         state = next(iter(states)) if len(states) == 1 else "mixed"
         storage_classes = sorted(aggregate["storage_classes"])
+        pinned_count = int(aggregate.get("pinned_count") or 0)
         folder_items.append({
             "type": "directory",
             "name": name,
@@ -831,6 +860,10 @@ def build_directory_items(
             "storage_class": storage_classes[0] if len(storage_classes) == 1 else None,
             "storage_class_count": len(storage_classes),
             "available_actions": aggregate["action_counts"],
+            "lifecycle_pinned": pinned_count == aggregate["item_count"] and pinned_count > 0,
+            "lifecycle_pinned_partial": (
+                pinned_count > 0 and pinned_count < aggregate["item_count"]
+            ),
         })
     folder_items.sort(key=lambda item: item["name"].casefold())
     files.sort(key=lambda item: item["name"].casefold())
@@ -2072,24 +2105,47 @@ def queue_jobs(
     archive_version_id: str | None = None,
     restore_tier: str | None = None,
     restore_days: int | None = None,
+    target_storage_class: str | None = None,
+    whole_vault: bool = False,
 ) -> dict[str, Any]:
-    logical_path = safe_relative_path(path).as_posix()
-    if action not in {"upload", "recover", "free-space", "rename"}:
+    if whole_vault:
+        logical_path = ""
+    else:
+        logical_path = safe_relative_path(path).as_posix()
+    if action not in {"upload", "recover", "free-space", "rename", "storage-class"}:
         raise HTTPException(422, "Invalid operation")
-    if archive_version_id and (action != "recover" or is_directory):
+    if archive_version_id and (
+        action not in {"recover", "storage-class"} or is_directory or whole_vault
+    ):
         raise HTTPException(
-            422, "archive_version_id is only valid for single-file recovery"
+            422,
+            "archive_version_id is only valid for single-file recover or storage-class",
         )
     group_id = uuid.uuid4().hex
     estimated_cost_eur = None
     estimated_hours = None
     resolved_tier = None
     resolved_days = None
+    resolved_target_class = None
+    if action == "storage-class":
+        try:
+            resolved_target_class = validate_manual_target_class(
+                target_storage_class or ""
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
     with db() as connection:
         catalog = ArchiveCatalog(connection)
-        if action == "recover" and not is_directory:
+        if action in {"recover", "storage-class"} and not is_directory and not whole_vault:
             versions = catalog.list_versions(vault_id, logical_path)
-            recoverable = [row for row in versions if row["recoverable"]]
+            if action == "recover":
+                selectable = [row for row in versions if row["recoverable"]]
+            else:
+                selectable = [
+                    row
+                    for row in versions
+                    if row.get("availability") == "available"
+                ]
             if archive_version_id:
                 selected = next(
                     (
@@ -2099,20 +2155,40 @@ def queue_jobs(
                     ),
                     None,
                 )
-                if selected is None or not selected["recoverable"]:
+                if selected is None or (
+                    action == "recover" and not selected["recoverable"]
+                ):
                     raise HTTPException(
-                        409, "The selected Archive Version is not recoverable"
+                        409,
+                        (
+                            "The selected Archive Version is not recoverable"
+                            if action == "recover"
+                            else "The selected Archive Version is not available"
+                        ),
                     )
-            elif len(recoverable) == 1:
-                archive_version_id = recoverable[0]["id"]
-                selected = recoverable[0]
-            elif recoverable:
-                selected = recoverable[0]
+                if action == "storage-class" and selected.get("availability") != "available":
+                    raise HTTPException(
+                        409, "The selected Archive Version is not available"
+                    )
+            elif len(selectable) == 1:
+                archive_version_id = selectable[0]["id"]
+                selected = selectable[0]
+            elif selectable:
+                selected = selectable[0]
                 archive_version_id = selected["id"]
             else:
                 selected = None
-            if selected is not None and storage_class_requires_restore(
-                selected.get("storage_class")
+            if action == "storage-class" and selected is not None:
+                current_class = normalize_storage_class(selected.get("storage_class"))
+                if current_class == resolved_target_class:
+                    raise HTTPException(
+                        409,
+                        "Archive Version is already in the requested storage class",
+                    )
+            if (
+                action == "recover"
+                and selected is not None
+                and storage_class_requires_restore(selected.get("storage_class"))
             ):
                 resolved_days = int(
                     restore_days
@@ -2144,13 +2220,21 @@ def queue_jobs(
             restore_days=resolved_days,
             estimated_cost_eur=estimated_cost_eur,
             estimated_hours=estimated_hours,
+            target_storage_class=resolved_target_class,
+            whole_vault=whole_vault,
         )
+        skipped_same_class = int(getattr(catalog, "last_skipped_same_class", 0) or 0)
         if not eligible_count:
+            if action == "storage-class" and skipped_same_class:
+                raise HTTPException(
+                    409,
+                    "All selected Archive Versions are already in the requested storage class",
+                )
             raise HTTPException(409, "No files are eligible for this operation")
         quota = catalog.last_quota_evaluation.as_dict()
     if not job_ids:
         raise HTTPException(409, "An operation is already running on the selected files")
-    return {
+    result = {
         "group_id": group_id,
         "job_ids": job_ids,
         "item_count": len(job_ids),
@@ -2162,6 +2246,13 @@ def queue_jobs(
         "estimated_cost_eur": estimated_cost_eur,
         "estimated_hours": estimated_hours,
     }
+    if action == "storage-class":
+        result["target_storage_class"] = resolved_target_class
+        result["skipped_same_class"] = skipped_same_class
+        warning = cold_class_warning(resolved_target_class or "")
+        if warning:
+            result["cost_warning"] = warning
+    return result
 
 
 @app.get("/api/files/versions")
@@ -2283,6 +2374,7 @@ def cancel_job_group(group_id: str, job_action: str, vault: dict[str, Any]):
         "rename": "job.rename_stopped",
         "cloud-archive": "job.cloud_archive_stopped",
         "cloud-purge": "job.cloud_purge_stopped",
+        "storage-class": "job.storage_class_stopped",
     }
     if job_action not in message_keys:
         raise HTTPException(422, "Invalid operation")
@@ -2493,6 +2585,71 @@ def free_space(
         action.path, "free-space", vault["id"], user["id"], action.is_directory
     )
     return {**queued, **_api_message(request, "api.free_space_started")}
+
+
+@app.post("/api/storage-class", status_code=202)
+def change_storage_class(
+    action: StorageClassChangeRequest,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    vault: dict[str, Any] = Depends(current_vault),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    if action.whole_vault:
+        if not is_owner(vault["role"]):
+            raise HTTPException(
+                403, "Only the Vault owner can change storage class for the whole Vault"
+            )
+    elif not can_operate(vault["role"]):
+        raise HTTPException(403, "Vault is read-only")
+    queued = queue_jobs(
+        action.path,
+        "storage-class",
+        vault["id"],
+        user["id"],
+        action.is_directory,
+        archive_version_id=action.archive_version_id,
+        target_storage_class=action.target_storage_class,
+        whole_vault=action.whole_vault,
+    )
+    return {**queued, **_api_message(request, "api.storage_class_started")}
+
+
+@app.put("/api/lifecycle-pin")
+def update_lifecycle_pin(
+    action: LifecyclePinRequest,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    vault: dict[str, Any] = Depends(current_vault),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    if not can_operate(vault["role"]):
+        raise HTTPException(403, "Vault is read-only")
+    logical_path = safe_relative_path(action.path).as_posix()
+    from .services.lifecycle_pins import clear_lifecycle_pin, set_lifecycle_pin
+    from .services.lifecycle_policies import refresh_desired_policies
+
+    with db() as connection:
+        if action.pinned:
+            set_lifecycle_pin(
+                connection,
+                vault_id=vault["id"],
+                path=logical_path,
+                is_directory=action.is_directory,
+                pinned_by=user["id"],
+                pinned_at=now_iso(),
+            )
+        else:
+            clear_lifecycle_pin(
+                connection, vault_id=vault["id"], path=logical_path
+            )
+        refresh_desired_policies(connection, vault["id"])
+    return {
+        "path": logical_path,
+        "is_directory": action.is_directory,
+        "pinned": action.pinned,
+        **_api_message(request, "api.lifecycle_pin_updated"),
+    }
 
 
 def _cloud_deletion_paths(action: CloudDeletionPreviewRequest | CloudArchiveRequest | CloudPurgeRequest) -> list[str]:

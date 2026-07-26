@@ -120,6 +120,8 @@ def load_policy_assignments(connection: Any, vault_id: int) -> PolicyAssignments
 
 def refresh_desired_policies(connection: Any, vault_id: int) -> int:
     """Recompute desired_policy_id for every Archive Version in a vault."""
+    from .lifecycle_pins import is_path_pinned
+
     assignments = load_policy_assignments(connection, vault_id)
     versions = connection.execute(
         """
@@ -132,7 +134,10 @@ def refresh_desired_policies(connection: Any, vault_id: int) -> int:
         (vault_id,),
     ).fetchall()
     for row in versions:
-        desired = resolve_effective_policy_id(row["path"], assignments)
+        if is_path_pinned(connection, vault_id, row["path"]):
+            desired = None
+        else:
+            desired = resolve_effective_policy_id(row["path"], assignments)
         connection.execute(
             "UPDATE archive_versions SET desired_policy_id=%s WHERE id=%s",
             (desired, row["id"]),

@@ -117,6 +117,7 @@ def validate_lifecycle_profile(profile: LifecycleProfile) -> ProfileValidation:
     errors: list[str] = []
     warnings: list[str] = []
     previous_days = 0
+    previous_depth = -1
 
     for transition in profile.transitions:
         storage_class = transition.storage_class.upper()
@@ -125,6 +126,14 @@ def validate_lifecycle_profile(profile: LifecycleProfile) -> ProfileValidation:
             continue
         if transition.days <= previous_days:
             errors.append("Transition days must strictly increase across the profile")
+        from .storage_classes import storage_class_depth
+
+        depth = storage_class_depth(storage_class)
+        if depth <= previous_depth:
+            errors.append(
+                "Transition storage classes must deepen "
+                f"(got {storage_class} after a class of equal or colder depth)"
+            )
         minimum_days = MIN_TRANSITION_DAYS[storage_class]
         if transition.days < minimum_days:
             errors.append(
@@ -136,6 +145,7 @@ def validate_lifecycle_profile(profile: LifecycleProfile) -> ProfileValidation:
                 "storage-duration billing even if objects are deleted early"
             )
         previous_days = transition.days
+        previous_depth = depth
 
     if profile.expiration_days is not None and profile.expiration_days <= 0:
         errors.append("expiration_days must be positive when set")
