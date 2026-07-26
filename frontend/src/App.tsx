@@ -9,6 +9,8 @@ import { Toast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { AppShell } from "@/layout/AppShell";
 import type { ShellCapabilities } from "@/layout/types";
+import { LoginPage } from "@/pages/login/LoginPage";
+import { NoVaultPage } from "@/pages/no-vault/NoVaultPage";
 
 const demoCapabilities: ShellCapabilities = {
   vaultName: "Test Archive",
@@ -24,7 +26,12 @@ const demoCapabilities: ShellCapabilities = {
   role: "owner",
 };
 
-export default function App() {
+function currentPathname(): string {
+  if (typeof window === "undefined") return "/";
+  return window.location.pathname;
+}
+
+function DesignSystemDemo() {
   const [toastOpen, setToastOpen] = useState(false);
 
   return (
@@ -76,4 +83,19 @@ export default function App() {
       />
     </AppShell>
   );
+}
+
+export default function App() {
+  const pathname = currentPathname();
+
+  if (pathname === "/login") {
+    return <LoginPage />;
+  }
+
+  // Temporary route until the archive shell (#65) owns /api/me-based entry.
+  if (pathname === "/no-vault") {
+    return <NoVaultPage />;
+  }
+
+  return <DesignSystemDemo />;
 }

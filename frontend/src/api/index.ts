@@ -3,12 +3,19 @@ export {
   ReauthenticationRedirectError,
   apiRequest,
   configureApiClient,
+  loginWithPassword,
   resetApiClientForTests,
   setCsrfToken,
 } from "./client";
 export type { ApiClientConfig, ApiFetch } from "./client";
 
-export { fetchI18nCatalog, fetchMe, fetchVaults, updateLocale } from "./endpoints";
+export {
+  fetchI18nCatalog,
+  fetchMe,
+  fetchVaults,
+  logout,
+  updateLocale,
+} from "./endpoints";
 
 export { createLatestRequestScope } from "./latest";
 export type { LatestRequestHandle, LatestRequestScope } from "./latest";

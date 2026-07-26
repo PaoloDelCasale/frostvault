@@ -41,6 +41,7 @@ async function sharedComponentFiles(): Promise<string[]> {
   return [
     ...(await collectTsxFiles(path.join(srcRoot, "components"))),
     ...(await collectTsxFiles(path.join(srcRoot, "i18n"))),
+    ...(await collectTsxFiles(path.join(srcRoot, "pages"))),
   ];
 }
 

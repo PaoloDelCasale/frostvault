@@ -4,17 +4,30 @@ import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import {
   apiQueryKeys,
   configureApiClient,
+  fetchI18nCatalog,
   i18nCatalogQueryOptions,
   updateLocale,
 } from "@/api";
 import type { I18nCatalogResponse } from "@/api";
-import { I18nContext, type I18nContextValue } from "./context";
+import {
+  I18nContext,
+  type I18nContextValue,
+  type SetLocaleOptions,
+} from "./context";
 import { translate } from "./translate";
+
+const LOCALE_COOKIE = "frostvault_locale";
 
 function applyCatalogToApiClient(catalog: I18nCatalogResponse): void {
   configureApiClient({
     translate: (key, params) => translate(catalog.messages, key, params),
   });
+}
+
+function writeLocaleCookie(locale: string): void {
+  if (typeof document === "undefined") return;
+  const value = locale === "it" ? "it" : "en";
+  document.cookie = `${LOCALE_COOKIE}=${encodeURIComponent(value)}; Path=/; Max-Age=31536000; SameSite=Lax`;
 }
 
 export function I18nProvider({
@@ -40,20 +53,36 @@ export function I18nProvider({
     }
   }, [catalogQuery.data?.locale]);
 
+  const cacheCatalog = useCallback(
+    (catalog: I18nCatalogResponse) => {
+      applyCatalogToApiClient(catalog);
+      queryClient.setQueryData(apiQueryKeys.i18nCatalog(initialLocale), catalog);
+      queryClient.setQueryData(apiQueryKeys.i18nCatalog(catalog.locale), catalog);
+      queryClient.setQueryData(apiQueryKeys.i18nCatalog(undefined), catalog);
+      if (typeof document !== "undefined") {
+        document.documentElement.lang = catalog.locale;
+      }
+    },
+    [initialLocale, queryClient],
+  );
+
   const setLocale = useCallback(
-    async (locale: string) => {
+    async (locale: string, options?: SetLocaleOptions) => {
+      if (options?.mode === "guest") {
+        writeLocaleCookie(locale);
+        const catalog = await fetchI18nCatalog(locale);
+        cacheCatalog(catalog);
+        return;
+      }
       const updated = await updateLocale(locale);
       const catalog: I18nCatalogResponse = {
         locale: updated.locale,
         locales: catalogQuery.data?.locales ?? [updated.locale],
         messages: updated.messages,
       };
-      applyCatalogToApiClient(catalog);
-      queryClient.setQueryData(apiQueryKeys.i18nCatalog(initialLocale), catalog);
-      queryClient.setQueryData(apiQueryKeys.i18nCatalog(updated.locale), catalog);
-      queryClient.setQueryData(apiQueryKeys.i18nCatalog(undefined), catalog);
+      cacheCatalog(catalog);
     },
-    [catalogQuery.data?.locales, initialLocale, queryClient],
+    [cacheCatalog, catalogQuery.data?.locales],
   );
 
   const value = useMemo<I18nContextValue>(() => {
