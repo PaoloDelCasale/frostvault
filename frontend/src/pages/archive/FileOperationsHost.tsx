@@ -36,6 +36,7 @@ import type {
 import { BottomSheet, type BottomSheetAction } from "@/components/BottomSheet";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Toast } from "@/components/Toast";
+import { ensurePushSubscription } from "@/pwa";
 
 import {
   actionLabel,
@@ -169,6 +170,16 @@ export function FileOperationsHost({
       isDir: boolean,
       extra?: Record<string, unknown>,
     ) => {
+      // Long-running Jobs: request push at this moment, never on first load.
+      if (
+        action === "upload" ||
+        action === "recover" ||
+        action === "free-space" ||
+        action === "cloud-archive" ||
+        action === "cloud-purge"
+      ) {
+        void ensurePushSubscription();
+      }
       const payload = { path, is_directory: isDir, ...extra };
       let result: { message?: string };
       switch (action) {

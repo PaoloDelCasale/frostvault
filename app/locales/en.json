@@ -39,6 +39,8 @@
   "ui.empty_list": "No items found. Select “Refresh list” to update the archive.",
   "ui.empty_no_files": "This folder is empty.",
   "ui.empty_no_matches": "No Vault Files match your search.",
+  "ui.offline_shell": "You are offline. Reconnect to refresh the archive.",
+  "ui.offline_stale_listing": "Showing the last known file listing. It may be out of date.",
   "ui.folder_item_count": "{count} files in this folder",
   "ui.file_total": "File total",
   "ui.cloud_classes": "{count} cloud classes",
