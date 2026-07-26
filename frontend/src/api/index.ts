@@ -13,6 +13,7 @@ export {
   DEFAULT_PAGE_SIZE,
   addAdminVaultMember,
   addVaultMember,
+  accelerateCloudPurge,
   approveRecover,
   cancelJob,
   cancelUpload,

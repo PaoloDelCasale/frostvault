@@ -5,6 +5,7 @@ Seams under test:
 - Operators/viewers cannot enable setting, archive, or purge.
 - Preview, archive, and purge endpoints enforce confirmation/delay gates.
 - Cancel during pending_delay is exposed through the jobs cancel API.
+- Accelerate skips pending_delay and queues purge for immediate execution.
 """
 
 from __future__ import annotations
@@ -257,6 +258,90 @@ class CloudDeletionHttpTests(unittest.TestCase):
         )
         self.assertEqual(cancel.status_code, 200, cancel.text)
         self.assertEqual(cancel.json()["cancelled_count"], 1)
+
+    def test_owner_can_accelerate_pending_purge_delay(self) -> None:
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                "UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=%s",
+                (self.vault_id,),
+            )
+        self._authenticate(self.owner_id)
+        self._select_vault()
+        scheduled = self.client.post(
+            "/api/cloud-purge",
+            json={
+                "path": "report.txt",
+                "is_directory": False,
+                "confirmation": "Docs Archive",
+                "reason": "cleanup obsolete copies",
+                "generated_phrase": "amber-birch-10",
+            },
+            headers=self._headers(),
+        )
+        self.assertEqual(scheduled.status_code, 202, scheduled.text)
+        group_id = scheduled.json()["group_id"]
+
+        self._authenticate(self.operator_id)
+        self._select_vault()
+        forbidden = self.client.post(
+            "/api/cloud-purge/accelerate",
+            json={"group_id": group_id},
+            headers=self._headers(),
+        )
+        self.assertEqual(forbidden.status_code, 403, forbidden.text)
+
+        self._authenticate(self.owner_id)
+        self._select_vault()
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                "UPDATE sessions SET reauth_at=%s WHERE user_id=%s",
+                ("2000-01-01T00:00:00+00:00", self.owner_id),
+            )
+        needs_reauth = self.client.post(
+            "/api/cloud-purge/accelerate",
+            json={"group_id": group_id},
+            headers=self._headers(),
+        )
+        self.assertEqual(needs_reauth.status_code, 403, needs_reauth.text)
+        self.assertEqual(needs_reauth.json()["error"], "reauth_required")
+
+        self._authenticate(self.owner_id)
+        self._select_vault()
+        accelerated = self.client.post(
+            "/api/cloud-purge/accelerate",
+            json={"group_id": group_id},
+            headers=self._headers(),
+        )
+        self.assertEqual(accelerated.status_code, 202, accelerated.text)
+        body = accelerated.json()
+        self.assertEqual(body["status"], "queued")
+        self.assertEqual(body["accelerated_count"], 1)
+        self.assertEqual(body["message_key"], "api.cloud_purge_accelerated")
+
+        with SQLiteConnection(str(self.path)) as connection:
+            job = connection.execute(
+                "SELECT status, pending_until, message_key FROM jobs WHERE group_id=%s",
+                (group_id,),
+            ).fetchone()
+            self.assertEqual(job["status"], "queued")
+            self.assertEqual(job["message_key"], "job.cloud_purge_accelerated")
+            self.assertIsNotNone(job["pending_until"])
+            audit = connection.execute(
+                """
+                SELECT event, outcome FROM audit_events
+                WHERE event='cloud_deletion.purge_accelerated'
+                ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+            self.assertIsNotNone(audit)
+            self.assertEqual(audit["outcome"], "accelerated")
+
+        again = self.client.post(
+            "/api/cloud-purge/accelerate",
+            json={"group_id": group_id},
+            headers=self._headers(),
+        )
+        self.assertEqual(again.status_code, 409, again.text)
 
 
 if __name__ == "__main__":

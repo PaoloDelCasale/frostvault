@@ -380,8 +380,10 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
               onDesktopAction,
               onCancelJob,
               onApproveJob,
+              onAcceleratePurge,
               cancelBusyId,
               approveBusyId,
+              accelerateBusyId,
             }) => (
               <FileList
                 items={data.items}
@@ -394,8 +396,10 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
                 jobsByPath={jobsByPath}
                 onCancelJob={onCancelJob}
                 onApproveJob={onApproveJob}
+                onAcceleratePurge={onAcceleratePurge}
                 cancelBusyId={cancelBusyId}
                 approveBusyId={approveBusyId}
+                accelerateBusyId={accelerateBusyId}
               />
             )}
           </FileOperationsHost>

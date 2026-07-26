@@ -475,6 +475,15 @@ export function startCloudPurge(
   });
 }
 
+export function accelerateCloudPurge(
+  groupId: string,
+): Promise<FileOperationResponse> {
+  return apiRequest<FileOperationResponse>("/api/cloud-purge/accelerate", {
+    method: "POST",
+    body: JSON.stringify({ group_id: groupId }),
+  });
+}
+
 export function cancelJob(
   payload: JobCancelPayload,
 ): Promise<JobCancelResponse> {
