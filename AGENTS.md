@@ -27,9 +27,11 @@ any other issue cannot enrol it. The loop is:
    `ready-for-agent` once nothing blocks it.
 2. The same workflow that labelled it calls the private webhook of the
    `FrostVault Epic 56 TDD Pipeline` Cursor Automation. The repo-backed
-   automation opens a pull request whose body says `Closes #N`.
+   automation opens a **ready-for-review** (not draft) pull request whose body
+   says `Closes #N`.
 3. `.github/workflows/agent-automerge.yml` squash-merges that pull request once
-   every check run for its head commit is finished and green. Merging closes the
+   every check run for its head commit is finished and green **and** the closed
+   issue has no remaining open `blocked by` dependencies. Merging closes the
    issue.
 4. `.github/workflows/agent-unblock.yml` reacts to the closure: for every issue
    the closed one was blocking, it adds `ready-for-agent` if all of that issue's

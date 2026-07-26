@@ -280,6 +280,17 @@ class MergeGateTests(unittest.TestCase):
             )
             self.assertEqual(reason, expected, verdict)
 
+    def test_open_issue_blockers_block_the_merge(self) -> None:
+        # Parallel agents may open PRs before a sibling blocker lands; merging
+        # would close the issue and falsely unblock the rest of the chain.
+        reason = pipeline.merge_reason_to_skip(
+            _pull_request(body="Closes #61"),
+            {"agent-pipeline"},
+            "green",
+            open_blockers=[58],
+        )
+        self.assertEqual(reason, "issue still blocked by #58")
+
 
 class MergeSweepTests(unittest.TestCase):
     def test_merges_the_pull_request_that_is_ready(self) -> None:
@@ -290,6 +301,16 @@ class MergeSweepTests(unittest.TestCase):
         )
         self.assertEqual(pipeline.merge_ready(client), [500])
         self.assertEqual(client.merged, [500])
+
+    def test_does_not_merge_while_issue_blockers_are_open(self) -> None:
+        client = FakeGitHub(
+            pull_requests=[_pull_request(body="Closes #61", number=591)],
+            labels={61: {"agent-pipeline", "ready-for-agent"}},
+            blocked_by={61: [_issue(58, state="open")]},
+            checks={"abc123": [_check("Unit and migration tests")]},
+        )
+        self.assertEqual(pipeline.merge_ready(client), [])
+        self.assertEqual(client.merged, [])
 
     def test_does_not_merge_while_a_check_is_running(self) -> None:
         client = FakeGitHub(
@@ -383,6 +404,11 @@ class AgentPromptTests(unittest.TestCase):
         prompt = pipeline.agent_prompt("o/r", 57, "x")
         self.assertIn("unittest discover -s tests", prompt)
         self.assertIn("node --test", prompt)
+
+    def test_the_prompt_requires_a_ready_for_review_pull_request(self) -> None:
+        prompt = pipeline.agent_prompt("o/r", 57, "x")
+        self.assertIn("not draft", prompt)
+        self.assertIn("drafts are never auto-merged", prompt)
 
 
 class AutomationPayloadTests(unittest.TestCase):
