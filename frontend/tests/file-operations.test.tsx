@@ -52,6 +52,9 @@ const messages: Record<string, string> = {
   "ui.row_action_free_space": "Free local space",
   "ui.row_action_cloud_archive": "Hide in cloud",
   "ui.row_action_cloud_purge": "Purge permanently",
+  "ui.row_action_free_space_hint": "Local only; cloud stays.",
+  "ui.row_action_cloud_archive_hint": "Hide current cloud key.",
+  "ui.row_action_cloud_purge_hint": "Delete cloud versions; local stays.",
   "ui.action_directory_count": "{action} {count} files",
   "ui.row_actions_title": "Actions for {name}",
   "ui.confirm_free_space_title": "Free local space?",
@@ -74,6 +77,7 @@ const messages: Record<string, string> = {
   "ui.recover_continue": "Recover",
   "ui.cloud_purge_title": "Purge permanently?",
   "ui.cloud_purge_intro": "Permanent purge deletes every selected Archive Version.",
+  "ui.cloud_purge_local_note": "Local files remain.",
   "ui.cloud_purge_preview": "Selection: {objects} object(s), {versions} version(s), {markers} marker(s), {bytes} bytes.",
   "ui.cloud_purge_delay": "A {seconds}-second cancellable delay applies.",
   "ui.cloud_purge_reason": "Reason for this permanent purge",
@@ -148,7 +152,13 @@ const browsePayload: FilesResponse = {
       item_count: 3,
       total_size: 1536,
       state: "mixed",
-      available_actions: { upload: 2, recover: 1, "free-space": 1 },
+      available_actions: {
+        upload: 2,
+        recover: 1,
+        "free-space": 1,
+        "cloud-archive": 2,
+        "cloud-purge": 2,
+      },
     },
     {
       type: "file",
@@ -582,6 +592,59 @@ describe("File operations — seams 1–10", () => {
       reason: "cleanup obsolete",
       confirmation: "PURGE-PHRASE",
       generated_phrase: "PURGE-PHRASE",
+    });
+  });
+
+  it("seam 6b: directory cloud purge passes is_directory and shows scope hints", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ url: string; body: unknown }> = [];
+    mockRoutes({
+      onMutation: (url, body) => {
+        calls.push({ url, body });
+        if (url.includes("/api/cloud-purge")) {
+          return jsonResponse({ group_id: "g1", message: "purge scheduled" });
+        }
+        return undefined;
+      },
+    });
+    renderBrowser();
+    await screen.findByTestId("file-list-cards");
+    const moreButtons = within(screen.getByTestId("file-list-cards")).getAllByRole(
+      "button",
+      { name: "More actions" },
+    );
+    // First card is the reports directory.
+    await user.click(moreButtons[0]!);
+    const sheet = await screen.findByRole("dialog");
+    expect(
+      within(sheet).getByRole("button", { name: /Hide in cloud 2 files/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(sheet).getByText("Delete cloud versions; local stays."),
+    ).toBeInTheDocument();
+    await user.click(
+      within(sheet).getByRole("button", {
+        name: /Purge permanently 2 files/i,
+      }),
+    );
+    await screen.findByTestId("cloud-purge-form");
+    expect(screen.getByTestId("cloud-purge-local-note")).toHaveTextContent(
+      "Local files remain.",
+    );
+    expect(calls.find((c) => c.url === "/api/cloud-deletion/preview")?.body).toMatchObject({
+      path: "reports",
+      is_directory: true,
+    });
+    await user.type(screen.getByTestId("cloud-purge-reason"), "folder cleanup");
+    await user.type(screen.getByTestId("cloud-purge-confirmation"), "PURGE-PHRASE");
+    await user.click(screen.getByTestId("cloud-purge-submit"));
+    await waitFor(() => {
+      expect(calls.some((c) => c.url === "/api/cloud-purge")).toBe(true);
+    });
+    expect(calls.find((c) => c.url === "/api/cloud-purge")?.body).toMatchObject({
+      path: "reports",
+      is_directory: true,
+      reason: "folder cleanup",
     });
   });
 

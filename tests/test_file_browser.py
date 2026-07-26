@@ -82,7 +82,13 @@ class FileBrowserTests(unittest.TestCase):
         self.assertEqual(folder["state_counts"], {"local_only": 1, "cloud_only": 1, "both": 1})
         self.assertEqual(
             folder["available_actions"],
-            {"upload": 1, "recover": 1, "free-space": 1},
+            {
+                "upload": 1,
+                "recover": 1,
+                "free-space": 1,
+                "cloud-archive": 2,
+                "cloud-purge": 2,
+            },
         )
 
     def test_state_filter_keeps_real_directory_aggregates(self) -> None:

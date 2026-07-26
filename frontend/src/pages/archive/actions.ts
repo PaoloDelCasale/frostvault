@@ -58,6 +58,21 @@ function fileHasCloudContent(item: ArchiveListItem): boolean {
   );
 }
 
+function directoryCloudDeletionCount(item: ArchiveListItem): number {
+  if (!isDirectory(item)) return 0;
+  const available = item.available_actions || {};
+  const counted = available["cloud-purge"] ?? available["cloud-archive"];
+  if (typeof counted === "number" && counted > 0) return counted;
+  // Fallback when older API payloads omit cloud deletion counts: any
+  // cloud-bearing state under the folder means at least one target.
+  const states = item.state_counts || {};
+  const cloudBearing =
+    (states.both || 0) + (states.cloud_only || 0) + (states.restoring || 0);
+  if (cloudBearing > 0) return cloudBearing;
+  if ((item.cloud_size || 0) > 0) return item.item_count || 1;
+  return 0;
+}
+
 /**
  * Actions offered for a Vault File / directory, gated by /api/me capabilities
  * and the same eligibility rules as the legacy archive action renderer.
@@ -86,10 +101,11 @@ export function availableActions(
         });
       }
       if (available["free-space"] && caps.delete_enabled) {
+        // Not danger: Local Copy only; cloud Archive Versions stay recoverable.
         actions.push({
           id: "free-space",
           count: available["free-space"],
-          tone: "danger",
+          tone: "default",
         });
       }
     } else {
@@ -100,19 +116,26 @@ export function availableActions(
         actions.push({ id: "recover", count: 1, tone: "default" });
       }
       if (item.cleanup_eligible && caps.delete_enabled) {
-        actions.push({ id: "free-space", count: 1, tone: "danger" });
+        actions.push({ id: "free-space", count: 1, tone: "default" });
       }
     }
   }
 
-  if (
-    caps.cloud_deletion_enabled &&
-    caps.is_vault_owner &&
-    isVaultFile(item) &&
-    fileHasCloudContent(item)
-  ) {
-    actions.push({ id: "cloud-archive", count: 1, tone: "default" });
-    actions.push({ id: "cloud-purge", count: 1, tone: "danger" });
+  if (caps.cloud_deletion_enabled && caps.is_vault_owner) {
+    if (isVaultFile(item) && fileHasCloudContent(item)) {
+      actions.push({ id: "cloud-archive", count: 1, tone: "default" });
+      actions.push({ id: "cloud-purge", count: 1, tone: "danger" });
+    } else if (isDirectory(item)) {
+      const cloudCount = directoryCloudDeletionCount(item);
+      if (cloudCount > 0) {
+        actions.push({
+          id: "cloud-archive",
+          count: cloudCount,
+          tone: "default",
+        });
+        actions.push({ id: "cloud-purge", count: cloudCount, tone: "danger" });
+      }
+    }
   }
 
   return actions;
@@ -126,6 +149,14 @@ const ROW_ACTION_LABEL_KEYS: Record<RowActionId, string> = {
   "free-space": "ui.row_action_free_space",
   "cloud-archive": "ui.row_action_cloud_archive",
   "cloud-purge": "ui.row_action_cloud_purge",
+};
+
+const ROW_ACTION_HINT_KEYS: Record<RowActionId, string> = {
+  upload: "ui.row_action_upload_hint",
+  recover: "ui.row_action_recover_hint",
+  "free-space": "ui.row_action_free_space_hint",
+  "cloud-archive": "ui.row_action_cloud_archive_hint",
+  "cloud-purge": "ui.row_action_cloud_purge_hint",
 };
 
 export function actionLabel(
@@ -149,6 +180,17 @@ export function actionLabel(
     });
   }
   return label;
+}
+
+/** Short scope hint shown under each row action in the mobile sheet. */
+export function actionHint(
+  action: RowActionId | string,
+  t: Translate,
+): string | undefined {
+  const key = ROW_ACTION_HINT_KEYS[action as RowActionId];
+  if (!key) return undefined;
+  const hint = t(key);
+  return hint === key ? undefined : hint;
 }
 
 export function operationStatusLabel(

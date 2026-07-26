@@ -11,6 +11,7 @@ export type CloudPurgeDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   path: string;
+  isDirectory?: boolean;
   vaultName: string;
   settings: CloudDeletionSettings | null;
   preview: CloudDeletionPreview | null;
@@ -26,6 +27,7 @@ export function CloudPurgeDialog({
   open,
   onOpenChange,
   path,
+  isDirectory = false,
   vaultName,
   settings,
   preview,
@@ -60,10 +62,13 @@ export function CloudPurgeDialog({
       open={open}
       onOpenChange={onOpenChange}
       title={t("ui.cloud_purge_title")}
-      description={`${t("ui.cloud_purge_intro")} (${path})`}
+      description={`${t("ui.cloud_purge_intro")} (${path}${isDirectory ? "/" : ""})`}
       className="w-[min(28rem,calc(100%-1.75rem))]"
     >
       <form className="grid gap-3" onSubmit={handleSubmit} data-testid="cloud-purge-form">
+        <p className="text-sm text-muted" data-testid="cloud-purge-local-note">
+          {t("ui.cloud_purge_local_note")}
+        </p>
         {settings?.delete_marker_explanation ? (
           <p className="text-sm text-muted">{settings.delete_marker_explanation}</p>
         ) : null}
