@@ -2,15 +2,35 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { applySession, breakGlassLogin, openMobileDrawer } from "../helpers/auth";
 
-async function openDirectory(page: Page, name: string) {
-  // Cards and table both render; prefer the visible card/table row button.
-  const target = page
+function visibleFileButton(page: Page, name: string) {
+  return page
     .locator(
       `[data-testid="file-list-cards"] button:has-text("${name}"), [data-testid="file-list-table"] button:has-text("${name}")`,
     )
+    .locator("visible=true")
     .first();
+}
+
+async function openDirectory(page: Page, name: string) {
+  const target = visibleFileButton(page, name);
   await expect(target).toBeVisible();
   await target.click();
+}
+
+async function vaultSelect(page: Page) {
+  const drawer = page.getByRole("dialog");
+  if (await drawer.isVisible()) {
+    return drawer.getByLabel(/^vault$/i);
+  }
+  return page.getByLabel(/^vault$/i).locator("visible=true").first();
+}
+
+async function languageSelect(page: Page) {
+  const drawer = page.getByRole("dialog");
+  if (await drawer.isVisible()) {
+    return drawer.getByLabel(/^language$/i);
+  }
+  return page.getByLabel(/^language$/i).locator("visible=true").first();
 }
 
 test.describe("archive flows", () => {
@@ -20,12 +40,12 @@ test.describe("archive flows", () => {
     await breakGlassLogin(page);
     await openDirectory(page, "reports");
     await expect(page).toHaveURL(/directory=reports/);
-    await expect(page.getByText("readme.txt").first()).toBeVisible();
+    await expect(page.getByText("readme.txt").locator("visible=true").first()).toBeVisible();
 
     await expect(page.getByTestId("breadcrumbs")).toBeVisible();
     await page.getByTestId("up-directory").click();
     await expect(page).not.toHaveURL(/directory=reports/);
-    await expect(page.getByText("reports").first()).toBeVisible();
+    await expect(page.getByText("reports").locator("visible=true").first()).toBeVisible();
 
     await openDirectory(page, "reports");
     await page.goBack();
@@ -36,7 +56,7 @@ test.describe("archive flows", () => {
     await breakGlassLogin(page);
     await page.getByTestId("file-search").fill("readme");
     await expect(page).toHaveURL(/q=readme/, { timeout: 5_000 });
-    await expect(page.getByText("readme.txt").first()).toBeVisible();
+    await expect(page.getByText("readme.txt").locator("visible=true").first()).toBeVisible();
 
     await page.getByTestId("state-filter").selectOption("both");
     await expect(page).toHaveURL(/state=both/);
@@ -45,12 +65,7 @@ test.describe("archive flows", () => {
   test("flow 4 — open a Vault File and read Path History", async ({ page }) => {
     await breakGlassLogin(page);
     await openDirectory(page, "reports");
-    const file = page
-      .locator(
-        '[data-testid="file-list-cards"] button:has-text("readme.txt"), [data-testid="file-list-table"] button:has-text("readme.txt")',
-      )
-      .first();
-    await file.click();
+    await visibleFileButton(page, "readme.txt").click();
     await expect(page.getByTestId("path-history")).toBeVisible();
     await expect(page.getByTestId("path-history-timeline")).toContainText(
       "old-readme.txt",
@@ -59,47 +74,52 @@ test.describe("archive flows", () => {
 
   test("flow 5 — cancel a destructive confirmation without side effects", async ({
     page,
-  }) => {
+  }, testInfo) => {
     await breakGlassLogin(page);
-    const more = page
-      .locator(
-        '[data-testid="more-actions-note.txt"], [data-testid="desktop-actions-note.txt"] button',
-      )
-      .first();
-    await more.click();
-
-    // Mobile opens a bottom sheet; desktop may have inline actions.
-    const freeSpace = page
-      .getByRole("button", { name: /free local space|libera spazio/i })
-      .first();
-    await expect(freeSpace).toBeVisible();
-    await freeSpace.click();
+    if (testInfo.project.name === "mobile-375") {
+      await page
+        .locator('[data-testid="more-actions-note.txt"]')
+        .locator("visible=true")
+        .click();
+      await page
+        .getByRole("button", { name: /free local space|libera spazio/i })
+        .click();
+    } else {
+      await page
+        .locator('[data-testid="desktop-actions-note.txt"] button[data-action="free-space"]')
+        .click();
+    }
 
     const dialog = page.getByRole("alertdialog");
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: /cancel|annulla/i }).click();
     await expect(dialog).toBeHidden();
-    await expect(page.getByText("note.txt").first()).toBeVisible();
+    await expect(page.getByText("note.txt").locator("visible=true").first()).toBeVisible();
   });
 
-  test("flow 6 — switch vault from the drawer/nav", async ({ page }) => {
+  test("flow 6 — switch vault from the drawer/nav", async ({ page }, testInfo) => {
     await breakGlassLogin(page);
-    await openMobileDrawer(page);
-    const vaultSelect = page.getByLabel(/^vault$/i).first();
-    await expect(vaultSelect).toBeVisible();
-    await vaultSelect.selectOption({ label: "Secondary Archive" });
+    if (testInfo.project.name === "mobile-375") {
+      await openMobileDrawer(page);
+    }
+    const select = await vaultSelect(page);
+    await expect(select).toBeVisible();
+    await select.selectOption({ label: "Secondary Archive" });
     await expect(page.getByRole("heading", { name: /secondary archive/i })).toBeVisible();
-    await expect(page.getByText("hello.txt").first()).toBeVisible();
+    await expect(page.getByText("hello.txt").locator("visible=true").first()).toBeVisible();
   });
 
-  test("flow 7 — switch locale to Italian", async ({ page }) => {
+  test("flow 7 — switch locale to Italian", async ({ page }, testInfo) => {
     await breakGlassLogin(page);
-    await openMobileDrawer(page);
-    const language = page.getByLabel(/^language$/i).first();
+    if (testInfo.project.name === "mobile-375") {
+      await openMobileDrawer(page);
+    }
+    const language = await languageSelect(page);
     await language.selectOption("it");
-    // Close the drawer on mobile so the archive search field is visible.
-    const close = page.getByRole("button", { name: /close navigation/i });
-    if (await close.isVisible()) await close.click();
+    if (testInfo.project.name === "mobile-375") {
+      const close = page.getByRole("button", { name: /close navigation/i });
+      if (await close.isVisible()) await close.click();
+    }
     await expect(page.getByTestId("file-search")).toHaveAttribute(
       "placeholder",
       /cerca per nome/i,
@@ -108,10 +128,20 @@ test.describe("archive flows", () => {
 
   test("flow 8 — owner reaches /vault/access and edits a quota", async ({
     page,
-  }) => {
+  }, testInfo) => {
     await breakGlassLogin(page);
-    await openMobileDrawer(page);
-    await page.getByRole("button", { name: /manage access|gestisci accesso/i }).click();
+    if (testInfo.project.name === "mobile-375") {
+      await openMobileDrawer(page);
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: /manage access|gestisci accesso/i })
+        .click();
+    } else {
+      await page
+        .getByRole("navigation", { name: /vault navigation/i })
+        .getByRole("button", { name: /manage access|gestisci accesso/i })
+        .click();
+    }
     await expect(page).toHaveURL(/\/vault\/access/);
     await expect(page.locator('[data-panel="quotas"]')).toBeVisible();
 
@@ -123,19 +153,36 @@ test.describe("archive flows", () => {
 
   test("flow 9 — admin opens /admin members dialog and closes it", async ({
     page,
-  }) => {
+  }, testInfo) => {
     await breakGlassLogin(page);
-    await openMobileDrawer(page);
-    await page.getByRole("button", { name: /administration|amministrazione/i }).click();
+    if (testInfo.project.name === "mobile-375") {
+      await openMobileDrawer(page);
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: /administration|amministrazione/i })
+        .click();
+    } else {
+      await page
+        .getByRole("navigation", { name: /vault navigation/i })
+        .getByRole("button", { name: /administration|amministrazione/i })
+        .click();
+    }
     await expect(page).toHaveURL(/\/admin/);
+    await expect(page.getByText("Family Archive").first()).toBeVisible();
 
-    const manage = page.getByRole("button", { name: /manage access|gestisci accesso/i }).first();
-    // On mobile the members entry may be behind a row ⋯ sheet.
-    if (!(await manage.isVisible())) {
-      await page.getByRole("button", { name: /row actions|azioni/i }).first().click();
+    if (testInfo.project.name === "mobile-375") {
+      await page
+        .getByRole("listitem")
+        .filter({ hasText: "Family Archive" })
+        .getByRole("button", { name: /^actions$|^azioni$/i })
+        .click();
       await page.getByRole("button", { name: /manage access|gestisci accesso/i }).click();
     } else {
-      await manage.click();
+      await page
+        .getByRole("button", { name: /manage access|gestisci accesso/i })
+        .locator("visible=true")
+        .first()
+        .click();
     }
     await expect(page.getByRole("dialog")).toBeVisible();
     await page.keyboard.press("Escape");
@@ -146,19 +193,25 @@ test.describe("archive flows", () => {
     await applySession(context, "viewer");
     await page.goto("/");
     await expect(page.getByTestId("file-browser")).toBeVisible();
-    await expect(page.getByText("note.txt").first()).toBeVisible();
-    await expect(
-      page.locator('[data-testid="more-actions-note.txt"]'),
-    ).toHaveCount(0);
-    await expect(
-      page.locator('[data-testid="desktop-actions-note.txt"]'),
-    ).toHaveCount(0);
+    await expect(page.getByText("note.txt").locator("visible=true").first()).toBeVisible();
+    await expect(page.locator('[data-testid="more-actions-note.txt"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="desktop-actions-note.txt"]')).toHaveCount(0);
   });
 
-  test("flow 11 — sign out", async ({ page }) => {
+  test("flow 11 — sign out", async ({ page }, testInfo) => {
     await breakGlassLogin(page);
-    await openMobileDrawer(page);
-    await page.getByRole("button", { name: /^sign out$|^esci$/i }).click();
+    if (testInfo.project.name === "mobile-375") {
+      await openMobileDrawer(page);
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: /^sign out$|^esci$/i })
+        .click();
+    } else {
+      await page
+        .getByRole("navigation", { name: /vault navigation/i })
+        .getByRole("button", { name: /^sign out$|^esci$/i })
+        .click();
+    }
     await expect(page).toHaveURL(/\/login/);
     await expect(page.getByLabel(/username/i)).toBeVisible();
   });

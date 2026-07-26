@@ -5,6 +5,7 @@ import { expect, type BrowserContext, type Page } from "@playwright/test";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const credentialsPath = path.join(root, "..", ".runtime", "credentials.json");
+const baseURL = process.env.E2E_BASE_URL || "http://127.0.0.1:8080";
 
 export type E2ECredentials = {
   password: string;
@@ -32,11 +33,12 @@ export async function applySession(
 ): Promise<E2ECredentials> {
   const credentials = loadCredentials();
   const entry = credentials[role];
+  const url = baseURL.endsWith("/") ? baseURL : `${baseURL}/`;
   await context.addCookies([
     {
       name: "frostvault_session",
       value: entry.session,
-      url: "http://127.0.0.1:8080/",
+      url,
       httpOnly: true,
       sameSite: "Lax",
     },
@@ -45,7 +47,7 @@ export async function applySession(
           {
             name: "frostvault_csrf",
             value: entry.csrf,
-            url: "http://127.0.0.1:8080/",
+            url,
             sameSite: "Lax" as const,
           },
         ]
@@ -59,7 +61,7 @@ export async function breakGlassLogin(page: Page): Promise<E2ECredentials> {
   await page.goto("/login");
   await page.getByLabel(/username/i).fill(credentials.admin.username);
   await page.getByLabel(/password/i).fill(credentials.admin.password);
-  await page.locator('form').getByRole("button", { name: /^sign in$|^accedi$/i }).click();
+  await page.locator("form").getByRole("button", { name: /^sign in$|^accedi$/i }).click();
   await expect(page.getByRole("heading", { name: /family archive/i })).toBeVisible({
     timeout: 20_000,
   });

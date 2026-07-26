@@ -329,7 +329,7 @@ export function FileList({
                   </div>
                 ) : null}
               </div>
-              {!jobs.length ? (
+              {!jobs.length && availableActions(item, capabilities).length ? (
                 <MoreActionsButton
                   path={item.path}
                   t={t}
