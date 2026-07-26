@@ -10,16 +10,25 @@ import type {
   AdminVaultCreatePayload,
   AdminVaultMembersResponse,
   AdminVaultsResponse,
+  CloudDeletionPreview,
   CloudDeletionSettings,
+  CloudPurgePayload,
   FileHistoryResponse,
+  FileOperationPayload,
+  FileOperationResponse,
   FilesQuery,
   FilesResponse,
+  FileVersionsResponse,
   GlobPreviewResponse,
   I18nCatalogResponse,
+  JobCancelPayload,
+  JobCancelResponse,
+  JobsResponse,
   LifecycleResponse,
   LocaleUpdateResponse,
   MeResponse,
   OperationPolicy,
+  RecoverEstimateResponse,
   RecoveryConfirmRequest,
   RecoveryConfirmResponse,
   RecoveryExportRequest,
@@ -346,6 +355,109 @@ export function exportAdminVaultRecovery(
 
 export function fetchStats(): Promise<StatsResponse> {
   return apiRequest<StatsResponse>("/api/stats");
+}
+
+export function fetchJobs(): Promise<JobsResponse> {
+  return apiRequest<JobsResponse>("/api/jobs");
+}
+
+export function fetchFileVersions(path: string): Promise<FileVersionsResponse> {
+  return apiRequest<FileVersionsResponse>(
+    `/api/files/versions?path=${encodeURIComponent(path)}`,
+  );
+}
+
+export function estimateRecover(payload: {
+  path: string;
+  archive_version_id?: string;
+  restore_tier?: string;
+  restore_days?: number;
+}): Promise<RecoverEstimateResponse> {
+  return apiRequest<RecoverEstimateResponse>("/api/recover/estimate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function startUpload(
+  payload: FileOperationPayload,
+): Promise<FileOperationResponse> {
+  return apiRequest<FileOperationResponse>("/api/upload", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function startRecover(
+  payload: FileOperationPayload,
+): Promise<FileOperationResponse> {
+  return apiRequest<FileOperationResponse>("/api/recover", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function approveRecover(
+  groupId: string,
+): Promise<FileOperationResponse> {
+  return apiRequest<FileOperationResponse>("/api/recover/approve", {
+    method: "POST",
+    body: JSON.stringify({ group_id: groupId }),
+  });
+}
+
+export function startFreeSpace(
+  payload: FileOperationPayload,
+): Promise<FileOperationResponse> {
+  return apiRequest<FileOperationResponse>("/api/free-space", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function startCloudArchive(
+  payload: FileOperationPayload,
+): Promise<FileOperationResponse> {
+  return apiRequest<FileOperationResponse>("/api/cloud-archive", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function previewCloudDeletion(payload: {
+  path: string;
+  is_directory?: boolean;
+}): Promise<CloudDeletionPreview> {
+  return apiRequest<CloudDeletionPreview>("/api/cloud-deletion/preview", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function startCloudPurge(
+  payload: CloudPurgePayload,
+): Promise<FileOperationResponse> {
+  return apiRequest<FileOperationResponse>("/api/cloud-purge", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function cancelJob(
+  payload: JobCancelPayload,
+): Promise<JobCancelResponse> {
+  return apiRequest<JobCancelResponse>("/api/jobs/cancel", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Legacy upload-cancel route — prefer cancelJob for all actions. */
+export function cancelUpload(groupId: string): Promise<JobCancelResponse> {
+  return apiRequest<JobCancelResponse>("/api/upload/cancel", {
+    method: "POST",
+    body: JSON.stringify({ group_id: groupId }),
+  });
 }
 
 export { DEFAULT_PAGE_SIZE };

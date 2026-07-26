@@ -8,19 +8,22 @@ import { createElement } from "react";
 
 import {
   fetchFileHistory,
+  fetchFileVersions,
   fetchFiles,
   fetchI18nCatalog,
+  fetchJobs,
   fetchMe,
   fetchStats,
   fetchVaults,
 } from "./endpoints";
-import type { FilesQuery } from "./types";
+import type { FilesQuery, JobsResponse } from "./types";
 import { jobAwareRefetchInterval } from "./polling";
 
 export const apiQueryKeys = {
   me: ["me"] as const,
   vaults: ["vaults"] as const,
   stats: ["stats"] as const,
+  jobs: ["jobs"] as const,
   i18nCatalog: (locale?: string) => ["i18n", "catalog", locale ?? "default"] as const,
   files: (query: FilesQuery) =>
     [
@@ -32,6 +35,7 @@ export const apiQueryKeys = {
       query.page_size ?? 100,
     ] as const,
   fileHistory: (path: string) => ["file-history", path] as const,
+  fileVersions: (path: string) => ["file-versions", path] as const,
 };
 
 export function createAppQueryClient(
@@ -97,12 +101,30 @@ export function fileHistoryQueryOptions(path: string) {
   };
 }
 
-/** Example jobs query refetch interval: 1s while active, 10s when idle. */
-export const jobsRefetchInterval = jobAwareRefetchInterval<{
-  active_count?: number;
-  items?: unknown[];
-}>((data) => {
-  if (!data) return 0;
-  if (typeof data.active_count === "number") return data.active_count;
-  return Array.isArray(data.items) ? data.items.length : 0;
-});
+export function fileVersionsQueryOptions(path: string) {
+  return {
+    queryKey: apiQueryKeys.fileVersions(path),
+    queryFn: () => fetchFileVersions(path),
+    enabled: Boolean(path),
+  };
+}
+
+function countActiveJobGroups(data: JobsResponse | undefined): number {
+  if (!data?.groups) return 0;
+  return data.groups.filter(
+    (group) => !["completed", "failed", "cancelled"].includes(group.status),
+  ).length;
+}
+
+/** Jobs query: 1s while any group is active, 10s when idle (app.js cadence). */
+export const jobsRefetchInterval = jobAwareRefetchInterval<JobsResponse>(
+  countActiveJobGroups,
+);
+
+export function jobsQueryOptions() {
+  return {
+    queryKey: apiQueryKeys.jobs,
+    queryFn: fetchJobs,
+    refetchInterval: jobsRefetchInterval,
+  };
+}

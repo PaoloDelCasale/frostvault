@@ -157,7 +157,20 @@ export default function App() {
         displayName={me?.display_name ?? "Local Admin"}
         stats={demoStats}
         t={demoTranslate}
-        fileList={<FileBrowser t={demoTranslate} />}
+        fileList={
+          <FileBrowser
+            t={demoTranslate}
+            vaultName={capabilities.vaultName}
+            capabilities={{
+              role: capabilities.role ?? "owner",
+              can_operate: capabilities.canOperate,
+              delete_enabled: me?.vault?.delete_enabled ?? true,
+              cloud_deletion_enabled:
+                me?.vault?.cloud_deletion_enabled ?? false,
+              is_vault_owner: capabilities.isVaultOwner,
+            }}
+          />
+        }
       />
     </AppShell>
   );

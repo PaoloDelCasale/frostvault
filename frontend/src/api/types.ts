@@ -344,6 +344,176 @@ export type FilesQuery = {
   page_size?: number;
 };
 
+/** Job / file-operation types (issue #67). */
+
+export type FileOperationAction =
+  | "upload"
+  | "recover"
+  | "free-space"
+  | "cloud-archive"
+  | "cloud-purge"
+  | "rename";
+
+export type JobStatus =
+  | "queued"
+  | "uploading"
+  | "verifying"
+  | "retrying"
+  | "downloading"
+  | "restoring"
+  | "cleaning"
+  | "pending_approval"
+  | "pending_delay"
+  | "failed"
+  | "cancelled"
+  | "completed"
+  | string;
+
+export type JobRecord = {
+  id: number;
+  path: string;
+  action: FileOperationAction | string;
+  status: JobStatus;
+  message?: string | null;
+  message_key?: string | null;
+  message_params?: unknown;
+  group_id?: string | null;
+  group_path?: string | null;
+  total_bytes?: number | null;
+  transferred_bytes?: number | null;
+  pending_until?: string | null;
+  estimated_cost_eur?: number | null;
+  estimated_hours?: number | null;
+  restore_tier?: string | null;
+  restore_days?: number | null;
+  approved_at?: string | null;
+  requested_at?: string;
+  updated_at?: string;
+};
+
+export type JobGroup = {
+  id: string;
+  path: string;
+  action: FileOperationAction | string;
+  status: JobStatus;
+  message?: string | null;
+  message_key?: string | null;
+  total_bytes: number;
+  transferred_bytes: number;
+  item_count: number;
+  completed_count: number;
+  failed_count: number;
+  cancelled_count: number;
+  percent: number;
+  updated_at?: string;
+  pending_until?: string | null;
+  estimated_cost_eur?: number | null;
+  estimated_hours?: number | null;
+  restore_tier?: string | null;
+  restore_days?: number | null;
+};
+
+export type JobsResponse = {
+  items: JobRecord[];
+  groups: JobGroup[];
+  locale?: string;
+};
+
+export type ArchiveVersionItem = {
+  id: string;
+  version_number: number;
+  storage_class?: string | null;
+  size?: number | null;
+  recoverable: boolean;
+  object_key?: string | null;
+  created_at?: string | null;
+  [key: string]: unknown;
+};
+
+export type FileVersionsResponse = {
+  path: string;
+  items: ArchiveVersionItem[];
+  recoverable_count: number;
+  default_archive_version_id: string | null;
+  supported_restore_tiers: string[];
+  default_restore_tier: string;
+  default_restore_days: number;
+};
+
+export type RestoreEstimate = {
+  tier: string;
+  days: number;
+  estimated_cost_eur: number;
+  estimated_hours: number;
+  pricing_note?: string;
+  pricing_effective_at?: string | null;
+  assumptions?: Record<string, unknown>;
+  restore_object_irreversible?: boolean;
+};
+
+export type RecoverEstimateResponse = {
+  path: string;
+  archive_version_id: string;
+  storage_class?: string | null;
+  requires_restore: boolean;
+  restore_object_irreversible: boolean;
+  high_impact: boolean;
+  estimate: RestoreEstimate | null;
+};
+
+export type FileOperationPayload = {
+  path: string;
+  is_directory?: boolean;
+  archive_version_id?: string;
+  restore_tier?: string;
+  restore_days?: number;
+};
+
+export type FileOperationResponse = {
+  group_id: string;
+  job_ids?: number[];
+  item_count?: number;
+  total_bytes?: number;
+  message?: string;
+  message_key?: string;
+  archive_version_id?: string | null;
+  restore_tier?: string | null;
+  restore_days?: number | null;
+  estimated_cost_eur?: number | null;
+  estimated_hours?: number | null;
+  quota?: unknown;
+  preview?: CloudDeletionPreview;
+  [key: string]: unknown;
+};
+
+export type CloudDeletionPreview = {
+  object_count: number;
+  version_count: number;
+  delete_marker_count: number;
+  byte_count: number;
+  delete_marker_explanation?: string;
+  [key: string]: unknown;
+};
+
+export type CloudPurgePayload = {
+  path: string;
+  is_directory?: boolean;
+  confirmation: string;
+  reason: string;
+  generated_phrase: string;
+};
+
+export type JobCancelPayload = {
+  group_id: string;
+  action: string;
+};
+
+export type JobCancelResponse = {
+  message: string;
+  cancelled_count: number;
+  message_key?: string;
+};
+
 /** Global administration endpoints (issue #69). */
 
 export type AdminUser = {
