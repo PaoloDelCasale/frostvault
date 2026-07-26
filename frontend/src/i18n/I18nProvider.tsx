@@ -1,12 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 
 import {
   apiQueryKeys,
@@ -15,17 +8,8 @@ import {
   updateLocale,
 } from "@/api";
 import type { I18nCatalogResponse } from "@/api";
-import { translate, type MessageParams } from "./translate";
-
-export type I18nContextValue = {
-  locale: string;
-  locales: string[];
-  ready: boolean;
-  t: (key: string, params?: MessageParams) => string;
-  setLocale: (locale: string) => Promise<void>;
-};
-
-const I18nContext = createContext<I18nContextValue | null>(null);
+import { I18nContext, type I18nContextValue } from "./context";
+import { translate } from "./translate";
 
 function applyCatalogToApiClient(catalog: I18nCatalogResponse): void {
   configureApiClient({
@@ -87,12 +71,4 @@ export function I18nProvider({
   return (
     <I18nContext.Provider value={value}>{children}</I18nContext.Provider>
   );
-}
-
-export function useI18n(): I18nContextValue {
-  const ctx = useContext(I18nContext);
-  if (!ctx) {
-    throw new Error("useI18n must be used within I18nProvider");
-  }
-  return ctx;
 }

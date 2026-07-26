@@ -10,11 +10,12 @@ import {
   createAppQueryClient,
   resetApiClientForTests,
 } from "@/api";
-import { I18nProvider, useI18n } from "./I18nProvider";
+import { I18nProvider } from "@/i18n/I18nProvider";
+import { useI18n } from "@/i18n/useI18n";
 
 const localesDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../../../app/locales",
+  "../../app/locales",
 );
 
 function loadCatalog(locale: "en" | "it"): Record<string, string> {
