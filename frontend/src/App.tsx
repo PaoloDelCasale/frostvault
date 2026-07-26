@@ -9,6 +9,8 @@ import { demoStats, demoTranslate } from "@/pages/archive/demoData";
 import { LoginPage } from "@/pages/login/LoginPage";
 import { NoVaultPage } from "@/pages/no-vault/NoVaultPage";
 import { VaultAccessPage } from "@/pages/vault-access";
+import { VaultCreatePage } from "@/pages/vault-create";
+import { VaultCreateScreenshotFixture } from "@/pages/vault-create/VaultCreateScreenshotFixture";
 
 function pathIsVaultAccess(pathname: string): boolean {
   return pathname === "/vault/access" || pathname.startsWith("/vault/access/");
@@ -61,6 +63,14 @@ const fallbackCapabilities: ShellCapabilities = {
   role: "owner",
 };
 
+function isVaultCreateRecoveryDemo(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    new URLSearchParams(window.location.search).get("demo") ===
+    "vault-create-recovery"
+  );
+}
+
 function currentPathname(): string {
   if (typeof window === "undefined") return "/";
   return window.location.pathname;
@@ -97,12 +107,25 @@ export default function App() {
     setPathname(path);
   };
 
+  if (isVaultCreateRecoveryDemo()) {
+    return <VaultCreateScreenshotFixture />;
+  }
+
   if (pathname === "/login") {
     return <LoginPage />;
   }
 
   if (pathname === "/no-vault") {
     return <NoVaultPage />;
+  }
+
+  if (pathname === "/vaults/new") {
+    return (
+      <VaultCreatePage
+        displayName={me?.display_name ?? "Local Admin"}
+        onNavigate={navigate}
+      />
+    );
   }
 
   if (pathIsAdmin(pathname)) {
@@ -131,6 +154,7 @@ export default function App() {
       handlers={{
         onManageAccess: () => navigate("/vault/access"),
         onAdministration: () => navigate("/admin"),
+        onNewVault: () => navigate("/vaults/new"),
       }}
     >
       <ArchivePage

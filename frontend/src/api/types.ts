@@ -53,6 +53,51 @@ export type LocaleUpdateResponse = {
   messages: Record<string, string>;
 };
 
+export type EncryptionMode = "plain" | "crypt";
+
+export type VaultCreateRequest = {
+  name: string;
+  slug?: string;
+  encryption_mode: EncryptionMode;
+};
+
+export type VaultCreateResponse = {
+  id: number;
+  uuid: string;
+  slug: string;
+  name: string;
+  role: VaultRole;
+  encryption_mode: EncryptionMode;
+  recovery_custody_confirmed: boolean;
+  recovery_export?: string;
+};
+
+export type VaultSelectRequest = {
+  vault_id: number;
+};
+
+export type VaultSelectResponse = {
+  vault_id: number;
+};
+
+export type RecoveryConfirmRequest = {
+  acknowledged: boolean;
+};
+
+export type RecoveryConfirmResponse = {
+  vault_id: number;
+  recovery_custody_confirmed: boolean;
+  recovery_custody_confirmed_at: string;
+};
+
+export type RecoveryExportRequest = {
+  reason: string;
+};
+
+export type RecoveryExportResponse = {
+  recovery_export: string;
+};
+
 /** Vault access / governance types (issue #68). */
 
 export type VaultMember = {
@@ -298,6 +343,3 @@ export type AdminOwnerTransferPayload = {
   reason: string;
 };
 
-export type RecoveryExportResponse = {
-  recovery_export: string;
-};
