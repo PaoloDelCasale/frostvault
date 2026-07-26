@@ -23,7 +23,12 @@ export const demoRootListing: FilesResponse = {
       state_counts: { both: 2, local_only: 1 },
       storage_class: null,
       storage_class_count: 2,
-      available_actions: { upload: 1, recover: 0, "free-space": 2 },
+      available_actions: {
+        upload: 1,
+        recover: 0,
+        "free-space": 2,
+        "storage-class": 2,
+      },
     },
     {
       type: "file",
@@ -40,6 +45,7 @@ export const demoRootListing: FilesResponse = {
       recover_eligible: false,
       cleanup_eligible: true,
       recoverable_version_count: 1,
+      lifecycle_pinned: true,
     },
     {
       type: "file",
@@ -156,6 +162,19 @@ function json(data: unknown, status = 200): Response {
 
 export function installDemoFilesFetch(): void {
   const realFetch = window.fetch.bind(window);
+  let catalogPromise: Promise<Record<string, string>> | null = null;
+
+  async function englishCatalog(): Promise<Record<string, string>> {
+    if (!catalogPromise) {
+      catalogPromise = realFetch("/demo-en-catalog.json")
+        .then(async (response) => {
+          if (!response.ok) return {};
+          return (await response.json()) as Record<string, string>;
+        })
+        .catch(() => ({}));
+    }
+    return catalogPromise;
+  }
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(
@@ -167,10 +186,30 @@ export function installDemoFilesFetch(): void {
     );
     const method = (init?.method ?? "GET").toUpperCase();
     const showJob =
-      new URLSearchParams(window.location.search).get("job") === "1";
+      new URLSearchParams(window.location.search).get("job") === "1" ||
+      new URLSearchParams(window.location.search).get("job") === "storage-class";
+    const jobAction =
+      new URLSearchParams(window.location.search).get("job") === "storage-class"
+        ? "storage-class"
+        : "upload";
 
     if (url.includes("/api/jobs") && method === "GET") {
-      return json(showJob ? demoActiveJobs : { items: [], groups: [] });
+      if (!showJob) return json({ items: [], groups: [] });
+      return json({
+        items: [],
+        groups: [
+          {
+            ...demoActiveJobs.groups[0],
+            action: jobAction,
+            path: jobAction === "storage-class" ? "archive.pdf" : "reports",
+            status: "uploading",
+            message_key:
+              jobAction === "storage-class"
+                ? "job.storage_class_changing"
+                : undefined,
+          },
+        ],
+      });
     }
     if (url.includes("/api/files/versions")) {
       return json({
@@ -245,10 +284,11 @@ export function installDemoFilesFetch(): void {
       return json(body);
     }
     if (url.includes("/api/i18n")) {
+      const messages = await englishCatalog();
       return json({
         locale: "en",
         locales: ["en", "it"],
-        messages: {},
+        messages,
       });
     }
     if (url.includes("/api/me")) {

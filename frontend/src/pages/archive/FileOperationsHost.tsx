@@ -499,6 +499,29 @@ export function FileOperationsHost({
       });
       return;
     }
+    if (demoConfirm?.action === "storage-class") {
+      demoBootstrapped.current = true;
+      setStorageClassTarget({
+        path: demoConfirm.path,
+        isDirectory: false,
+        count: 1,
+        totalBytes: 2048,
+        currentClass: "STANDARD",
+      });
+      return;
+    }
+    if (
+      demoConfirm?.action === "lifecycle-pin" ||
+      demoConfirm?.action === "lifecycle-unpin"
+    ) {
+      demoBootstrapped.current = true;
+      setPinAction({
+        path: demoConfirm.path,
+        isDirectory: false,
+        pinned: demoConfirm.action === "lifecycle-pin",
+      });
+      return;
+    }
     if (demoVersionsPath) {
       demoBootstrapped.current = true;
       void beginRecover(demoVersionsPath, false).catch(showError);
