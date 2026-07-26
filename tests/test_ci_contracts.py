@@ -222,3 +222,17 @@ class ContributorCiDocsTests(unittest.TestCase):
     def test_readme_mentions_published_image(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("ghcr.io/paolodelcasale/frostvault", readme)
+
+
+class Epic56AgentPipelineRemovalTests(unittest.TestCase):
+    """Issue #86: temporary epic #56 agent pipeline leaves no active artifacts."""
+
+    def test_no_agent_workflow_files_remain(self) -> None:
+        """Seam 2: no path matching .github/workflows/agent-*.yml remains."""
+        leftovers = sorted(p.name for p in WORKFLOWS.glob("agent-*.yml"))
+        self.assertEqual(leftovers, [], f"agent workflow files still present: {leftovers}")
+
+    def test_pipeline_script_and_tests_do_not_remain(self) -> None:
+        """Seam 3: agent_pipeline.py and tests/test_agent_pipeline.py are gone."""
+        self.assertFalse((ROOT / ".github" / "scripts" / "agent_pipeline.py").exists())
+        self.assertFalse((ROOT / "tests" / "test_agent_pipeline.py").exists())
