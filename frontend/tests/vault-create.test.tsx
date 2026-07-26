@@ -339,4 +339,96 @@ describe("VaultCreatePage", () => {
     expect(anchorClick).toHaveBeenCalled();
     createElSpy.mockRestore();
   });
+
+  it("confirms recovery custody only after an irreversibility dialog", async () => {
+    const user = userEvent.setup();
+    const recoveryExport = "keep-offline";
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/i18n/catalog")) {
+        return Promise.resolve(mockCatalog(en));
+      }
+      if (url === "/api/vaults" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              id: 9,
+              uuid: "crypt-uuid",
+              slug: "secret",
+              name: "Secret",
+              role: "owner",
+              encryption_mode: "crypt",
+              recovery_custody_confirmed: false,
+              recovery_export: recoveryExport,
+            },
+            201,
+          ),
+        );
+      }
+      if (url === "/api/vaults/select" && init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ vault_id: 9 }));
+      }
+      if (url === "/api/vault/recovery/confirm" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse({
+            vault_id: 9,
+            recovery_custody_confirmed: true,
+            recovery_custody_confirmed_at: "2026-07-26T10:00:00Z",
+          }),
+        );
+      }
+      return Promise.reject(new Error(`unexpected request ${url}`));
+    });
+
+    renderPage();
+    await screen.findByRole("heading", { name: en["ui.vault_create.title"] });
+    await user.type(
+      screen.getByRole("textbox", { name: en["ui.vault_create.name"] }),
+      "Secret",
+    );
+    await user.click(
+      screen.getByRole("radio", { name: en["ui.vault_create.encryption_crypt"] }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: en["ui.vault_create.submit"] }),
+    );
+    await screen.findByRole("heading", { name: en["ui.recovery.title"] });
+
+    await user.click(screen.getByRole("button", { name: en["ui.recovery.confirm"] }));
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent(
+      en["ui.recovery.confirm_description"],
+    );
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url) === "/api/vault/recovery/confirm"),
+    ).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: en["ui.vault_create.cancel"] }));
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    });
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url) === "/api/vault/recovery/confirm"),
+    ).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: en["ui.recovery.confirm"] }));
+    await screen.findByRole("alertdialog");
+    await user.click(
+      screen.getByRole("button", { name: en["ui.recovery.confirm_action"] }),
+    );
+
+    await waitFor(() => {
+      const confirmCall = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === "/api/vault/recovery/confirm" &&
+          (init as RequestInit | undefined)?.method === "POST",
+      );
+      expect(confirmCall).toBeDefined();
+      expect(JSON.parse(String((confirmCall![1] as RequestInit).body))).toEqual({
+        acknowledged: true,
+      });
+    });
+    await waitFor(() => {
+      expect(navigateMock).toHaveBeenCalledWith("/");
+    });
+  });
 });

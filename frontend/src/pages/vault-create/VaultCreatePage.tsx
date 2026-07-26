@@ -1,8 +1,14 @@
 import { FormEvent, useState } from "react";
 
-import { ApiError, createVault, selectVault } from "@/api";
+import {
+  ApiError,
+  confirmRecoveryCustody,
+  createVault,
+  selectVault,
+} from "@/api";
 import type { EncryptionMode, VaultCreateResponse } from "@/api";
 import { AuthCard } from "@/components/AuthCard";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FormField, FormInput } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
@@ -29,8 +35,12 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
   const [slug, setSlug] = useState("");
   const [encryptionMode, setEncryptionMode] = useState<EncryptionMode>("plain");
   const [error, setError] = useState<string | null>(null);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [createdVault, setCreatedVault] = useState<VaultCreateResponse | null>(null);
+  const [custodyConfirmed, setCustodyConfirmed] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -51,6 +61,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
       const vault = await createVault(payload);
       if (vault.encryption_mode === "crypt" && vault.recovery_export) {
         setCreatedVault(vault);
+        setCustodyConfirmed(false);
         return;
       }
       await selectVault({ vault_id: vault.id });
@@ -65,6 +76,29 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
       setError(message || t("ui.vault_create.failed"));
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleConfirmCustody() {
+    if (!createdVault) return;
+    setRecoveryError(null);
+    setConfirming(true);
+    try {
+      await selectVault({ vault_id: createdVault.id });
+      await confirmRecoveryCustody({ acknowledged: true });
+      setCustodyConfirmed(true);
+      navigateTo("/", onNavigate);
+    } catch (err) {
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : t("ui.recovery.confirm_failed");
+      setRecoveryError(message || t("ui.recovery.confirm_failed"));
+    } finally {
+      setConfirming(false);
+      setConfirmOpen(false);
     }
   }
 
@@ -93,7 +127,29 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
               warning={t("ui.recovery.warning")}
               copyLabel={t("ui.recovery.copy")}
               downloadLabel={t("ui.recovery.download")}
-            />
+            >
+              {recoveryError ? (
+                <div
+                  className="rounded-[10px] bg-red-soft px-3.5 py-3 text-sm text-ink"
+                  role="alert"
+                  aria-live="assertive"
+                >
+                  {recoveryError}
+                </div>
+              ) : null}
+              {!custodyConfirmed ? (
+                <div className="flex flex-wrap gap-2.5">
+                  <Button
+                    type="button"
+                    variant="primary"
+                    disabled={confirming}
+                    onClick={() => setConfirmOpen(true)}
+                  >
+                    {t("ui.recovery.confirm")}
+                  </Button>
+                </div>
+              ) : null}
+            </RecoveryExportPanel>
           ) : (
             <form className="mt-6 grid gap-3.5" onSubmit={(e) => void handleSubmit(e)}>
               <FormField label={t("ui.vault_create.name")} htmlFor="vault-name">
@@ -180,6 +236,19 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
           )}
         </AuthCard>
       </div>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={t("ui.recovery.confirm_title")}
+        description={t("ui.recovery.confirm_description")}
+        confirmLabel={t("ui.recovery.confirm_action")}
+        cancelLabel={t("ui.vault_create.cancel")}
+        tone="danger"
+        onConfirm={() => {
+          void handleConfirmCustody();
+        }}
+      />
     </main>
   );
 }
