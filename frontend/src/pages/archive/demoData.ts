@@ -44,6 +44,7 @@ export const demoMessages: Record<string, string> = {
   "state.filter.cloud_only": "Cloud only",
   "state.filter.restoring": "Recovery in progress",
   "storage.STANDARD": "Standard",
+  "storage.GLACIER": "Glacier Flexible",
   "storage.DEEP_ARCHIVE": "Deep Archive",
   "ui.server_space": "Server space",
   "ui.cloud_space": "Cloud space",
