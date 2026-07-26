@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -89,5 +90,94 @@ describe("LoginPage Break-glass Login submit", () => {
     await waitFor(() => {
       expect(navigate).toHaveBeenCalledWith("/");
     });
+  });
+
+  it("shows a localized error and does not redirect when credentials are wrong", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ detail: "Incorrect username or password" }, 401),
+    );
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText(en["login.username"]), {
+      target: { value: "admin" },
+    });
+    fireEvent.change(screen.getByLabelText(en["login.password"]), {
+      target: { value: "wrong" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: en["login.submit"] }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(en["login.failed"]);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("explains Break-glass network gating when the backend refuses with 403", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        { detail: "Break-glass login is not allowed from this network" },
+        403,
+      ),
+    );
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText(en["login.username"]), {
+      target: { value: "admin" },
+    });
+    fireEvent.change(screen.getByLabelText(en["login.password"]), {
+      target: { value: "secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: en["login.submit"] }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      en["login.local_unavailable"],
+    );
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("navigates to /auth/oidc/login when the OIDC button is used", () => {
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: en["login.oidc"] }));
+    expect(navigate).toHaveBeenCalledWith("/auth/oidc/login");
+  });
+
+  it("changes language via the locale switcher without losing typed input", async () => {
+    const it = loadCatalog("it");
+
+    function LocaleHarness() {
+      const [locale, setLocaleState] = useState<"en" | "it">("en");
+      const messages = locale === "it" ? it : en;
+      const value: I18nContextValue = {
+        locale,
+        locales: ["en", "it"],
+        ready: true,
+        t: (key, params) => translate(messages, key, params),
+        setLocale: async (next) => {
+          setLocaleState(next as "en" | "it");
+        },
+      };
+      return (
+        <I18nContext.Provider value={value}>
+          <LoginPage onNavigate={navigate} />
+        </I18nContext.Provider>
+      );
+    }
+
+    render(<LocaleHarness />);
+
+    fireEvent.change(screen.getByLabelText(en["login.username"]), {
+      target: { value: "typed-user" },
+    });
+    fireEvent.change(screen.getByLabelText(en["login.password"]), {
+      target: { value: "typed-pass" },
+    });
+
+    fireEvent.change(screen.getByLabelText(en["ui.language"]), {
+      target: { value: "it" },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: it["login.submit"] })).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText(it["login.username"])).toHaveValue("typed-user");
+    expect(screen.getByLabelText(it["login.password"])).toHaveValue("typed-pass");
   });
 });

@@ -104,7 +104,7 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
               aria-label={t("ui.language")}
               value={locale}
               onChange={(event) => {
-                void setLocale(event.target.value);
+                void setLocale(event.target.value, { mode: "guest" });
               }}
             >
               {locales.map((code) => (
