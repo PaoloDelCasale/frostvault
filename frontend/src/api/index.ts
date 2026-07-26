@@ -3,6 +3,7 @@ export {
   ReauthenticationRedirectError,
   apiRequest,
   configureApiClient,
+  loginWithPassword,
   resetApiClientForTests,
   setCsrfToken,
 } from "./client";
@@ -19,7 +20,9 @@ export {
   fetchAdminVaults,
   fetchI18nCatalog,
   fetchMe,
+  fetchStats,
   fetchVaults,
+  logout,
   removeAdminVaultMember,
   transferAdminVaultOwner,
   updateAdminUser,
@@ -44,6 +47,7 @@ export {
   i18nCatalogQueryOptions,
   jobsRefetchInterval,
   meQueryOptions,
+  statsQueryOptions,
   vaultsQueryOptions,
 } from "./query";
 
@@ -60,6 +64,9 @@ export type {
   AdminVaultMembersResponse,
   AdminVaultsResponse,
   AuthMethod,
+  FilesystemCheck,
+  FilesystemFinding,
+  FilesystemHealth,
   I18nCatalogResponse,
   LocaleUpdateResponse,
   MeResponse,
@@ -69,6 +76,7 @@ export type {
   QuotaLimits,
   QuotaUsage,
   RecoveryExportResponse,
+  StatsResponse,
   VaultListItem,
   VaultQuotaUpdatePayload,
   VaultQuotasResponse,

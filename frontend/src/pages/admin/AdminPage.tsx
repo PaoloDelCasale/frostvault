@@ -204,7 +204,7 @@ export function AdminPage() {
         <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-xs font-extrabold tracking-[0.16em] text-green uppercase">
-              FrostVault
+              {t("ui.product_name")}
             </p>
             <h1 className="text-2xl font-bold tracking-tight md:text-[27px]">
               {t("admin.heading")}

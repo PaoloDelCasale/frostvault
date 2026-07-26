@@ -14,6 +14,7 @@ import type {
   LocaleUpdateResponse,
   MeResponse,
   RecoveryExportResponse,
+  StatsResponse,
   VaultQuotaUpdatePayload,
   VaultQuotasResponse,
   VaultsResponse,
@@ -159,4 +160,15 @@ export function exportAdminVaultRecovery(
       body: JSON.stringify({ reason }),
     },
   );
+}
+
+export function fetchStats(): Promise<StatsResponse> {
+  return apiRequest<StatsResponse>("/api/stats");
+}
+
+export function logout(): Promise<{ message: string; message_key: string }> {
+  return apiRequest<{ message: string; message_key: string }>("/api/logout", {
+    method: "POST",
+    body: "{}",
+  });
 }
