@@ -12,6 +12,7 @@ from .services.vault_quotas import (
     lock_vault,
 )
 from .services.vault_recovery import require_upload_custody
+from .services.lifecycle_pins import is_path_pinned
 
 
 class ArchiveCatalog:
@@ -20,6 +21,7 @@ class ArchiveCatalog:
     def __init__(self, connection: Any):
         self.connection = connection
         self.last_quota_evaluation = QuotaEvaluation(allowed=True)
+        self.last_skipped_same_class = 0
 
     def _get_or_create_file(self, vault_id: int, path: str, created_at: str) -> str:
         # Serialize identity creation per Vault across scanner and worker transactions.
@@ -317,6 +319,39 @@ class ArchiveCatalog:
             WHERE id=%s
             """,
             (state, expiry, checked_at, storage_class, archive_version_id),
+        )
+
+    def update_version_storage_placement(
+        self,
+        archive_version_id: str,
+        *,
+        provider_version_id: str,
+        storage_class: str,
+        etag: str | None = None,
+        observed_at: str,
+    ) -> None:
+        """Preserve Archive Version identity while recording a class/placement change."""
+        self.connection.execute(
+            """
+            UPDATE archive_versions
+            SET provider_version_id=%s,
+                storage_class=%s,
+                etag=COALESCE(%s, etag),
+                availability='available',
+                availability_checked_at=%s,
+                restore_state=NULL,
+                restore_expiry=NULL,
+                restore_checked_at=%s
+            WHERE id=%s
+            """,
+            (
+                provider_version_id,
+                storage_class,
+                etag,
+                observed_at,
+                observed_at,
+                archive_version_id,
+            ),
         )
 
     def mark_local_copy_missing(
@@ -1006,6 +1041,14 @@ class ArchiveCatalog:
                 and row["local_sha256"] is not None
                 and row["local_sha256"] == row["version_sha256"]
             )
+            lifecycle_pinned = is_path_pinned(
+                self.connection, vault_id, row["path"]
+            )
+            storage_class_eligible = (
+                cloud_exists
+                and row["availability"] == "available"
+                and row["restore_state"] != "restoring"
+            )
             result.append(
                 {
                     "path": row["path"],
@@ -1024,6 +1067,8 @@ class ArchiveCatalog:
                     "recover_eligible": recover_eligible,
                     "recoverable_version_count": recoverable_count,
                     "cleanup_eligible": cleanup_eligible,
+                    "lifecycle_pinned": lifecycle_pinned,
+                    "storage_class_eligible": storage_class_eligible,
                 }
             )
         return result
@@ -1074,12 +1119,15 @@ class ArchiveCatalog:
         initial_status: str = "queued",
         pending_until: str | None = None,
         origin: str = "manual",
+        target_storage_class: str | None = None,
+        whole_vault: bool = False,
     ) -> tuple[list[int], int, int]:
         # This write is deliberately first: PostgreSQL takes a row lock and
         # SQLite takes its write lock before the usage snapshot and inserts.
         # Every manual upload/recovery/free-space admission therefore observes
         # one serialized Vault state.
         lock_vault(self.connection, vault_id)
+        self.last_skipped_same_class = 0
         if action == "upload":
             vault = self.connection.execute(
                 """
@@ -1102,7 +1150,9 @@ class ArchiveCatalog:
             """
         )
         params.extend(TERMINAL_JOB_STATUSES)
-        if is_directory:
+        if whole_vault:
+            pass
+        elif is_directory:
             escaped = (
                 path.replace("\\", "\\\\")
                 .replace("%", "\\%")
@@ -1113,7 +1163,8 @@ class ArchiveCatalog:
         else:
             clauses.append("fp.path=%s")
             params.append(path)
-        if action == "recover" and archive_version_id and not is_directory:
+        version_select_actions = {"recover", "storage-class"}
+        if action in version_select_actions and archive_version_id and not is_directory and not whole_vault:
             candidates = self.connection.execute(
                 f"""
                 SELECT
@@ -1129,7 +1180,8 @@ class ArchiveCatalog:
                     av.plaintext_sha256 AS version_sha256,
                     av.integrity,
                     av.availability,
-                    av.storage_class
+                    av.storage_class,
+                    av.restore_state
                 FROM vault_files vf
                 JOIN file_paths fp
                   ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
@@ -1156,7 +1208,8 @@ class ArchiveCatalog:
                     av.plaintext_sha256 AS version_sha256,
                     av.integrity,
                     av.availability,
-                    av.storage_class
+                    av.storage_class,
+                    av.restore_state
                 FROM vault_files vf
                 JOIN file_paths fp
                   ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
@@ -1168,10 +1221,13 @@ class ArchiveCatalog:
                       WHERE latest.vault_file_id=vf.id
                         AND latest.availability NOT IN ('missing', 'purged')
                         AND (
-                            %s <> 'recover'
+                            %s NOT IN ('recover', 'storage-class')
                             OR (
-                                latest.integrity='verified'
-                                AND latest.availability='available'
+                                latest.availability='available'
+                                AND (
+                                    %s <> 'recover'
+                                    OR latest.integrity='verified'
+                                )
                             )
                         )
                       ORDER BY latest.version_number DESC
@@ -1180,9 +1236,11 @@ class ArchiveCatalog:
                 WHERE {" AND ".join(clauses)}
                 ORDER BY lower(fp.path)
                 """,
-                [action, *params],
+                [action, action, *params],
             ).fetchall()
         eligible = []
+        skipped_same = 0
+        target_class = (target_storage_class or "").upper() or None
         for row in candidates:
             if action == "upload":
                 allowed = (
@@ -1220,10 +1278,22 @@ class ArchiveCatalog:
                     and row["integrity"] == "verified"
                     and row["availability"] == "available"
                 )
+            elif action == "storage-class":
+                allowed = (
+                    row["archive_version_id"] is not None
+                    and row["availability"] == "available"
+                    and row["restore_state"] != "restoring"
+                )
+                if allowed and target_class:
+                    current = (row["storage_class"] or "STANDARD").upper()
+                    if current == target_class:
+                        skipped_same += 1
+                        allowed = False
             else:
                 raise ValueError(f"Unsupported job action: {action}")
             if allowed:
                 eligible.append(row)
+        self.last_skipped_same_class = skipped_same
 
         storage_unknown = action == "upload" and any(
             row["local_size"] is None for row in eligible
@@ -1280,7 +1350,7 @@ class ArchiveCatalog:
         for row in eligible:
             size = int(
                 row["cloud_size"]
-                if action == "recover"
+                if action in {"recover", "storage-class"}
                 else row["local_size"] or 0
             )
             job = self.connection.execute(
@@ -1290,11 +1360,11 @@ class ArchiveCatalog:
                     action, status, requested_by, requested_at, updated_at,
                     group_id, group_path, total_bytes, transferred_bytes,
                     restore_tier, restore_days, estimated_cost_eur,
-                    estimated_hours, pending_until, origin
+                    estimated_hours, pending_until, origin, target_storage_class
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, 0,
-                    %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT DO NOTHING
                 RETURNING id
@@ -1314,7 +1384,7 @@ class ArchiveCatalog:
                     requested_at,
                     requested_at,
                     group_id,
-                    path,
+                    path if path else (row["path"] if not whole_vault else ""),
                     size,
                     restore_tier if action == "recover" else None,
                     restore_days if action == "recover" else None,
@@ -1322,6 +1392,7 @@ class ArchiveCatalog:
                     estimated_hours if action == "recover" else None,
                     pending_until if action == "recover" else None,
                     origin,
+                    target_class if action == "storage-class" else None,
                 ),
             ).fetchone()
             if job is None:

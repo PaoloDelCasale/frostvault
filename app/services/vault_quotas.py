@@ -246,7 +246,13 @@ def evaluate_quota(
     lock: bool = True,
 ) -> QuotaEvaluation:
     """Evaluate a projected admission using the stable quota contract."""
-    if action not in {"upload", "recover", "free-space", "rename"}:
+    if action not in {
+        "upload",
+        "recover",
+        "free-space",
+        "rename",
+        "storage-class",
+    }:
         raise ValueError(f"unsupported quota action: {action}")
     if candidate_count < 0:
         raise ValueError("candidate_count must be nonnegative")

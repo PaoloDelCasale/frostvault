@@ -79,6 +79,7 @@ const directory: ArchiveListItem = {
     "free-space": 3,
     "cloud-archive": 2,
     "cloud-purge": 2,
+    "storage-class": 2,
   },
 };
 
@@ -94,16 +95,20 @@ const localOnlyDirectory: ArchiveListItem = {
 };
 
 describe("availableActions — capability gating (seam 2)", () => {
-  it("owner sees operate + cloud deletion actions when enabled", () => {
+  it("owner sees operate + storage-class/pin + cloud deletion actions when enabled", () => {
     expect(availableActions(eligibleFile, ownerCaps).map((a) => a.id)).toEqual([
       "upload",
       "recover",
       "free-space",
+      "storage-class",
+      "lifecycle-pin",
       "cloud-archive",
       "cloud-purge",
     ]);
     expect(availableActions(cloudOnlyFile, ownerCaps).map((a) => a.id)).toEqual([
       "recover",
+      "storage-class",
+      "lifecycle-pin",
       "cloud-archive",
       "cloud-purge",
     ]);
@@ -116,15 +121,17 @@ describe("availableActions — capability gating (seam 2)", () => {
     expect(actions.find((a) => a.id === "cloud-purge")?.tone).toBe("danger");
   });
 
-  it("operator sees upload/recover/free-space but never cloud deletion", () => {
+  it("operator sees upload/recover/free-space/storage-class/pin but never cloud deletion", () => {
     expect(availableActions(eligibleFile, operatorCaps).map((a) => a.id)).toEqual([
       "upload",
       "recover",
       "free-space",
+      "storage-class",
+      "lifecycle-pin",
     ]);
   });
 
-  it("viewer sees no row actions", () => {
+  it("viewer sees no row actions including storage-class", () => {
     expect(availableActions(eligibleFile, viewerCaps)).toEqual([]);
     expect(availableActions(cloudOnlyFile, viewerCaps)).toEqual([]);
   });
@@ -134,6 +141,8 @@ describe("availableActions — capability gating (seam 2)", () => {
       "upload",
       "recover",
       "free-space",
+      "storage-class",
+      "lifecycle-pin",
       "cloud-archive",
       "cloud-purge",
     ]);
@@ -144,6 +153,8 @@ describe("availableActions — capability gating (seam 2)", () => {
     expect(availableActions(eligibleFile, caps).map((a) => a.id)).toEqual([
       "upload",
       "recover",
+      "storage-class",
+      "lifecycle-pin",
       "cloud-archive",
       "cloud-purge",
     ]);
@@ -161,25 +172,41 @@ describe("availableActions — capability gating (seam 2)", () => {
       "upload",
       "recover",
       "free-space",
+      "storage-class",
+      "lifecycle-pin",
     ]);
     expect(availableActions(directory, caps).map((a) => a.id)).toEqual([
       "upload",
       "recover",
       "free-space",
+      "storage-class",
+      "lifecycle-pin",
     ]);
   });
 
-  it("offers cloud deletion on directories with cloud-bearing children", () => {
+  it("offers cloud deletion and storage-class on directories with cloud-bearing children", () => {
     expect(availableActions(directory, ownerCaps).map((a) => a.id)).toEqual([
       "upload",
       "recover",
       "free-space",
+      "storage-class",
+      "lifecycle-pin",
       "cloud-archive",
       "cloud-purge",
     ]);
     expect(
       availableActions(directory, ownerCaps).find((a) => a.id === "cloud-purge"),
     ).toMatchObject({ count: 2, tone: "danger" });
+  });
+
+  it("shows unpin when a path is already lifecycle-pinned", () => {
+    const pinned: ArchiveListItem = { ...eligibleFile, lifecycle_pinned: true };
+    expect(availableActions(pinned, operatorCaps).map((a) => a.id)).toContain(
+      "lifecycle-unpin",
+    );
+    expect(availableActions(pinned, operatorCaps).map((a) => a.id)).not.toContain(
+      "lifecycle-pin",
+    );
   });
 
   it("hides cloud deletion on local-only directories", () => {
@@ -207,16 +234,18 @@ describe("availableActions — capability gating (seam 2)", () => {
 });
 
 describe("actionHint — scope copy", () => {
-  it("returns translated hints for deletion actions", () => {
+  it("returns translated hints for deletion and storage-class actions", () => {
     const t = (key: string) =>
       ({
         "ui.row_action_free_space_hint": "local only",
         "ui.row_action_cloud_archive_hint": "hide cloud",
         "ui.row_action_cloud_purge_hint": "purge cloud",
+        "ui.row_action_storage_class_hint": "change class",
       })[key] ?? key;
     expect(actionHint("free-space", t)).toBe("local only");
     expect(actionHint("cloud-archive", t)).toBe("hide cloud");
     expect(actionHint("cloud-purge", t)).toBe("purge cloud");
+    expect(actionHint("storage-class", t)).toBe("change class");
   });
 });
 
@@ -225,6 +254,8 @@ describe("endpointForAction — route mapping (seam 1 foundation)", () => {
     expect(endpointForAction("upload")).toBe("/api/upload");
     expect(endpointForAction("recover")).toBe("/api/recover");
     expect(endpointForAction("free-space")).toBe("/api/free-space");
+    expect(endpointForAction("storage-class")).toBe("/api/storage-class");
+    expect(endpointForAction("lifecycle-pin")).toBe("/api/lifecycle-pin");
     expect(endpointForAction("cloud-archive")).toBe("/api/cloud-archive");
     expect(endpointForAction("cloud-purge")).toBe("/api/cloud-purge");
   });

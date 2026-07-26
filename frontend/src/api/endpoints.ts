@@ -424,6 +424,30 @@ export function startCloudArchive(
   });
 }
 
+export function startStorageClass(payload: {
+  path: string;
+  is_directory?: boolean;
+  whole_vault?: boolean;
+  target_storage_class: string;
+  archive_version_id?: string | null;
+}): Promise<FileOperationResponse> {
+  return apiRequest<FileOperationResponse>("/api/storage-class", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateLifecyclePin(payload: {
+  path: string;
+  is_directory?: boolean;
+  pinned: boolean;
+}): Promise<{ message?: string; pinned: boolean; path: string }> {
+  return apiRequest("/api/lifecycle-pin", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function previewCloudDeletion(payload: {
   path: string;
   is_directory?: boolean;

@@ -24,6 +24,20 @@ def apply_version_policy_tag(
     )
 
 
+def clear_version_policy_tag(
+    client: Any,
+    *,
+    bucket: str,
+    key: str,
+    version_id: str,
+) -> None:
+    client.delete_object_tagging(
+        Bucket=bucket,
+        Key=key,
+        VersionId=version_id,
+    )
+
+
 def read_version_policy_tag(
     client: Any,
     *,

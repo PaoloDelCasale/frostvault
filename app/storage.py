@@ -663,8 +663,15 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
     with db() as connection:
         catalog = ArchiveCatalog(connection)
         assignments = load_policy_assignments(connection, vault["id"])
+        from .services.lifecycle_pins import is_path_pinned
+
         for logical_path, version_id, item in versions:
-            desired_policy_id = resolve_effective_policy_id(logical_path, assignments)
+            if is_path_pinned(connection, vault["id"], logical_path):
+                desired_policy_id = None
+            else:
+                desired_policy_id = resolve_effective_policy_id(
+                    logical_path, assignments
+                )
             applied_policy_id = None
             try:
                 applied_policy_id = read_version_policy_tag(
@@ -1988,6 +1995,119 @@ def process_free_space(job: dict[str, Any]) -> None:
     )
 
 
+def process_storage_class(job: dict[str, Any]) -> None:
+    """Copy an Archive Version onto a new storage class, preserving catalog identity."""
+    ensure_job_active(job["id"], "Storage class change stopped")
+    validate_cloud_vault(job)
+    target_class = (job.get("target_storage_class") or "").upper()
+    if not target_class:
+        raise RuntimeError("Target storage class is missing")
+    with db() as connection:
+        target = ArchiveCatalog(connection).get_job_target(job["id"])
+    if (
+        not target
+        or not target.get("archive_version_id")
+        or not target.get("object_key")
+        or not target.get("provider_version_id")
+        or target.get("availability") != "available"
+    ):
+        raise RuntimeError("No available Archive Version for storage class change")
+
+    set_job(
+        job["id"],
+        "uploading",
+        message_key="job.storage_class_changing",
+        message_params={"storage_class": target_class},
+    )
+    client = s3_client()
+    head = client.head_object(
+        Bucket=job["s3_bucket"],
+        Key=target["object_key"],
+        VersionId=target["provider_version_id"],
+    )
+    head_class = (head.get("StorageClass") or target.get("storage_class") or "STANDARD").upper()
+    if storage_class_requires_restore(head_class):
+        restore_state, _expiry = restore_header_state(head.get("Restore"))
+        if restore_state != "available":
+            set_job(
+                job["id"],
+                "failed",
+                message_key="job.storage_class_needs_restore",
+                message_params={"storage_class": head_class},
+            )
+            return
+    if head_class == target_class:
+        set_job(
+            job["id"],
+            "completed",
+            message_key="job.storage_class_skipped_same",
+            message_params={"storage_class": target_class},
+        )
+        return
+
+    ensure_job_active(job["id"], "Storage class change stopped")
+    copy_source = {
+        "Bucket": job["s3_bucket"],
+        "Key": target["object_key"],
+        "VersionId": target["provider_version_id"],
+    }
+    copy_result = client.copy_object(
+        Bucket=job["s3_bucket"],
+        Key=target["object_key"],
+        CopySource=copy_source,
+        StorageClass=target_class,
+        MetadataDirective="COPY",
+        TaggingDirective="COPY",
+    )
+    new_version_id = copy_result.get("VersionId")
+    if not new_version_id:
+        # Unversioned buckets keep the same logical object; fall back to head.
+        new_head = client.head_object(
+            Bucket=job["s3_bucket"],
+            Key=target["object_key"],
+        )
+        new_version_id = new_head.get("VersionId") or target["provider_version_id"]
+        etag = (new_head.get("ETag") or "").strip('"') or None
+        recorded_class = (new_head.get("StorageClass") or target_class).upper()
+    else:
+        etag = None
+        copy_etag = (copy_result.get("CopyObjectResult") or {}).get("ETag")
+        if copy_etag:
+            etag = str(copy_etag).strip('"')
+        recorded_class = target_class
+
+    ensure_job_active(job["id"], "Storage class change stopped")
+    timestamp = now_iso()
+    with db() as connection:
+        ArchiveCatalog(connection).update_version_storage_placement(
+            target["archive_version_id"],
+            provider_version_id=str(new_version_id),
+            storage_class=recorded_class,
+            etag=etag,
+            observed_at=timestamp,
+        )
+
+    # Drop the previous provider version when copy created a new VersionId so the
+    # catalog keeps one recoverable identity without orphaning billed versions.
+    if str(new_version_id) != str(target["provider_version_id"]):
+        try:
+            client.delete_object(
+                Bucket=job["s3_bucket"],
+                Key=target["object_key"],
+                VersionId=target["provider_version_id"],
+            )
+        except Exception:
+            # Catalog already points at the new version; orphan cleanup is best-effort.
+            pass
+
+    set_job(
+        job["id"],
+        "completed",
+        message_key="job.storage_class_completed",
+        message_params={"storage_class": recorded_class},
+    )
+
+
 def restore_header_state(value: str | None) -> tuple[str, str | None]:
     if not value:
         return "not_requested", None
@@ -2456,6 +2576,8 @@ def process_job(job: dict[str, Any]) -> bool:
             process_recover(job)
         elif job["action"] == "free-space" and job["status"] == "queued":
             process_free_space(job)
+        elif job["action"] == "storage-class" and job["status"] == "queued":
+            process_storage_class(job)
         elif job["action"] == "cloud-archive" and job["status"] == "queued":
             process_cloud_archive(job)
         elif job["action"] == "cloud-purge" and job["status"] in {
@@ -2474,6 +2596,7 @@ def process_job(job: dict[str, Any]) -> bool:
             "rename": "job.rename_stopped",
             "cloud-archive": "job.cloud_archive_stopped",
             "cloud-purge": "job.cloud_purge_stopped",
+            "storage-class": "job.storage_class_stopped",
         }
         set_job(
             job["id"],
