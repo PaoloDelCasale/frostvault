@@ -3,6 +3,7 @@ export {
   ReauthenticationRedirectError,
   apiRequest,
   configureApiClient,
+  loginWithPassword,
   resetApiClientForTests,
   setCsrfToken,
 } from "./client";
@@ -13,6 +14,7 @@ export {
   fetchMe,
   fetchStats,
   fetchVaults,
+  logout,
   updateLocale,
 } from "./endpoints";
 

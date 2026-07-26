@@ -2,6 +2,8 @@ import { AppShell } from "@/layout/AppShell";
 import type { ShellCapabilities } from "@/layout/types";
 import { ArchivePage } from "@/pages/archive";
 import { demoStats, demoTranslate } from "@/pages/archive/demoData";
+import { LoginPage } from "@/pages/login/LoginPage";
+import { NoVaultPage } from "@/pages/no-vault/NoVaultPage";
 
 const demoCapabilities: ShellCapabilities = {
   vaultName: "Test Archive",
@@ -23,7 +25,12 @@ const demoFiles = [
   "docs/contracts/lease.pdf",
 ];
 
-export default function App() {
+function currentPathname(): string {
+  if (typeof window === "undefined") return "/";
+  return window.location.pathname;
+}
+
+function ArchiveDemo() {
   return (
     <AppShell capabilities={demoCapabilities}>
       <ArchivePage
@@ -46,4 +53,18 @@ export default function App() {
       />
     </AppShell>
   );
+}
+
+export default function App() {
+  const pathname = currentPathname();
+
+  if (pathname === "/login") {
+    return <LoginPage />;
+  }
+
+  if (pathname === "/no-vault") {
+    return <NoVaultPage />;
+  }
+
+  return <ArchiveDemo />;
 }

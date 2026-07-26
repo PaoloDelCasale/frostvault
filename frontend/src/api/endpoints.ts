@@ -42,3 +42,10 @@ export function updateLocale(locale: string): Promise<LocaleUpdateResponse> {
 export function fetchStats(): Promise<StatsResponse> {
   return apiRequest<StatsResponse>("/api/stats");
 }
+
+export function logout(): Promise<{ message: string; message_key: string }> {
+  return apiRequest<{ message: string; message_key: string }>("/api/logout", {
+    method: "POST",
+    body: "{}",
+  });
+}
