@@ -12,11 +12,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
-from jinja2 import Environment, FileSystemLoader, select_autoescape
-from jinja2.utils import htmlsafe_json_dumps
-from markupsafe import Markup
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .branding import PRODUCT_NAME
@@ -151,10 +147,6 @@ from .storage import (
 )
 
 
-TEMPLATE_DIR = Path(__file__).parent / "templates"
-STATIC_DIR = Path(__file__).parent / "static"
-
-
 def _spa_dist_dir() -> Path:
     return Path(settings.frontend_dist_dir)
 
@@ -165,7 +157,7 @@ def _spa_index_response() -> FileResponse:
         raise HTTPException(
             status_code=503,
             detail=(
-                "FRONTEND_SPA is enabled but frontend/dist/index.html is missing. "
+                "frontend/dist/index.html is missing. "
                 "Build the SPA with: cd frontend && npm ci && npm run build"
             ),
         )
@@ -174,12 +166,6 @@ def _spa_index_response() -> FileResponse:
         media_type="text/html; charset=utf-8",
         headers={"Cache-Control": "no-store"},
     )
-
-
-def _serve_spa_if_enabled() -> FileResponse | None:
-    if not settings.frontend_spa:
-        return None
-    return _spa_index_response()
 
 
 @asynccontextmanager
@@ -198,23 +184,6 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=PRODUCT_NAME, lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-templates = Environment(
-    loader=FileSystemLoader(TEMPLATE_DIR),
-    autoescape=select_autoescape(["html", "xml"]),
-)
-templates.globals["available_locales"] = available_locales
-templates.globals["product_name"] = PRODUCT_NAME
-
-
-def _tojson_filter(value: Any) -> Markup:
-    rendered = htmlsafe_json_dumps(value, dumps=json.dumps, ensure_ascii=False)
-    return Markup(
-        str(rendered).replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
-    )
-
-
-templates.filters["tojson"] = _tojson_filter
 
 
 def _request_locale(request: Any | None = None) -> str:
@@ -251,20 +220,6 @@ def _api_message(request: Request, key: str, **params: Any) -> dict[str, Any]:
         "message": translate(key, locale=locale, **params),
         "message_key": key,
     }
-
-
-def _render(template_name: str, request: Request, **context: Any) -> str:
-    locale = context.pop("locale", None) or _request_locale(request)
-
-    def t(key: str, **params: Any) -> str:
-        return translate(key, locale=locale, **params)
-
-    return templates.get_template(template_name).render(
-        locale=locale,
-        t=t,
-        catalog=locale_catalog(locale),
-        **context,
-    )
 
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
@@ -869,18 +824,9 @@ def build_directory_items(
     return [*folder_items, *files]
 
 
-@app.get("/login", response_class=HTMLResponse)
-def login_page(request: Request):
-    spa = _serve_spa_if_enabled()
-    if spa is not None:
-        return spa
-    token = _read_session_cookie(request)
-    if token:
-        with db() as connection:
-            if resolve_session(connection, token):
-                return RedirectResponse("/", status_code=303)
-    local_login = is_break_glass_allowed(_client_ip(request))
-    return _render("login.html", request, local_login=local_login)
+@app.get("/login")
+def login_page():
+    return _spa_index_response()
 
 
 @app.post("/api/login")
@@ -1218,69 +1164,24 @@ def _resolve_or_bind_identity(connection: Any, claims: Any) -> int:
         raise HTTPException(403, f"Invite cannot be used: {error.reason}")
 
 
-@app.get("/vaults/new", response_class=HTMLResponse)
-def vault_create_page(request: Request, response: Response):
-    spa = _serve_spa_if_enabled()
-    if spa is not None:
-        return spa
-    try:
-        user = current_user(request)
-    except HTTPException as exc:
-        if exc.status_code == 401:
-            return RedirectResponse("/login", status_code=303)
-        raise
-    _set_csrf_cookie(response, request.state.session["csrf_token"])
-    return templates.get_template("vault_create.html").render(user=user)
+@app.get("/vaults/new")
+def vault_create_page():
+    return _spa_index_response()
 
 
-@app.get("/", response_class=HTMLResponse)
-def index(request: Request):
-    spa = _serve_spa_if_enabled()
-    if spa is not None:
-        return spa
-    try:
-        user = current_user(request)
-        vault = current_vault(request, user)
-    except HTTPException as exc:
-        if exc.status_code == 401:
-            return RedirectResponse("/login", status_code=303)
-        return _render("no_vault.html", request)
-    return _render(
-        "index.html",
-        request,
-        user=user,
-        vault=vault,
-        can_operate=can_operate(vault["role"]),
-        delete_enabled=settings.allow_local_delete and is_owner(vault["role"]),
-        cloud_deletion_enabled=bool(vault.get("cloud_deletion_enabled"))
-        and is_owner(vault["role"]),
-        is_vault_owner=is_owner(vault["role"]),
-    )
+@app.get("/")
+def index():
+    return _spa_index_response()
 
 
-@app.get("/vault/access", response_class=HTMLResponse)
-def vault_access_page(request: Request, response: Response):
-    spa = _serve_spa_if_enabled()
-    if spa is not None:
-        return spa
-    user = current_user(request)
-    vault = owner_vault(current_vault(request, user))
-    _set_csrf_cookie(response, request.state.session["csrf_token"])
-    return templates.get_template("vault_access.html").render(user=user, vault=vault)
+@app.get("/vault/access")
+def vault_access_page():
+    return _spa_index_response()
 
 
-@app.get("/admin", response_class=HTMLResponse)
-def admin_page(request: Request):
-    spa = _serve_spa_if_enabled()
-    if spa is not None:
-        return spa
-    try:
-        user = current_user(request)
-    except HTTPException:
-        return RedirectResponse("/login", status_code=303)
-    if not user["is_admin"]:
-        return RedirectResponse("/", status_code=303)
-    return templates.get_template("admin.html").render(user=user)
+@app.get("/admin")
+def admin_page():
+    return _spa_index_response()
 
 
 @app.get("/api/me")
@@ -3561,8 +3462,6 @@ _SPA_FALLBACK_EXCLUDED_PREFIXES = frozenset({"api", "auth", "static", "assets"})
 @app.get("/assets/{asset_path:path}")
 def spa_asset(asset_path: str):
     """Serve hashed Vite build assets with long-lived immutable caching."""
-    if not settings.frontend_spa:
-        raise HTTPException(status_code=404, detail="Not Found")
     assets_root = (_spa_dist_dir() / "assets").resolve()
     if not assets_root.is_dir():
         raise HTTPException(status_code=404, detail="Not Found")
@@ -3580,11 +3479,9 @@ def spa_asset(asset_path: str):
     )
 
 
-@app.get("/{full_path:path}", response_class=HTMLResponse)
+@app.get("/{full_path:path}")
 def spa_fallback(full_path: str):
     """SPA client-route fallback; never intercepts API, auth, or static assets."""
-    if not settings.frontend_spa:
-        raise HTTPException(status_code=404, detail="Not Found")
     head = full_path.split("/", 1)[0]
     if head in _SPA_FALLBACK_EXCLUDED_PREFIXES:
         raise HTTPException(status_code=404, detail="Not Found")

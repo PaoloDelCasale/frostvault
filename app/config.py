@@ -153,10 +153,7 @@ class Settings:
         int(os.getenv("METADATA_BACKUP_VERIFY_INTERVAL_SECONDS", str(7 * 24 * 60 * 60))),
     )
 
-    # When true, HTML routes serve the React SPA from frontend_dist_dir
-    # instead of Jinja templates (epic #56 / issue #58). Default off keeps
-    # today's Jinja behaviour unchanged.
-    frontend_spa: bool = as_bool("FRONTEND_SPA", False)
+    # Built React SPA (Vite) directory served for all HTML routes.
     frontend_dist_dir: str = os.getenv("FRONTEND_DIST_DIR", _DEFAULT_FRONTEND_DIST)
 
 
