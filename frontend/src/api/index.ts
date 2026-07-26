@@ -10,12 +10,28 @@ export {
 export type { ApiClientConfig, ApiFetch } from "./client";
 
 export {
+  addVaultMember,
+  deleteLifecycleFolderOverride,
+  fetchCloudDeletion,
   fetchI18nCatalog,
+  fetchLifecycle,
   fetchMe,
+  fetchOperationPolicy,
   fetchStats,
+  fetchVaultMembers,
+  fetchVaultQuotas,
   fetchVaults,
+  lookupVaultUser,
   logout,
+  previewOperationGlobs,
+  removeVaultMember,
+  transferVaultOwner,
+  updateAdminVaultQuotas,
+  updateCloudDeletion,
+  updateLifecycleDefault,
   updateLocale,
+  updateOperationPolicy,
+  upsertLifecycleFolderOverride,
 } from "./endpoints";
 
 export { createLatestRequestScope } from "./latest";
@@ -41,15 +57,26 @@ export {
 
 export type {
   AuthMethod,
+  CloudDeletionSettings,
   FilesystemCheck,
   FilesystemFinding,
   FilesystemHealth,
+  GlobPreviewResponse,
   I18nCatalogResponse,
+  LifecycleGuidedProfile,
+  LifecycleResponse,
   LocaleUpdateResponse,
   MeResponse,
   MeVault,
+  OperationPolicy,
+  QuotaEvaluation,
   StatsResponse,
+  UserLookupResult,
   VaultListItem,
+  VaultMember,
+  VaultMembersResponse,
+  VaultQuotaUpdatePayload,
+  VaultQuotasResponse,
   VaultRole,
   VaultsResponse,
 } from "./types";
