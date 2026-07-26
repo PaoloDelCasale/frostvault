@@ -28,7 +28,7 @@ function capabilitiesFromMe(me: MeResponse): ShellCapabilities {
           },
         ]
       : [],
-    role: vault?.role ?? null,
+    role: vault?.role,
   };
 }
 
