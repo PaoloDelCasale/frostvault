@@ -38,7 +38,7 @@ const catalog: Record<string, string> = {
   "ui.stopping": "Stopping…",
 };
 
-function t(key: string, params?: Record<string, unknown>): string {
+function t(key: string, params?: Record<string, string | number>): string {
   let value = catalog[key] ?? key;
   if (params) {
     for (const [name, raw] of Object.entries(params)) {

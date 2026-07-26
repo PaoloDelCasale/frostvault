@@ -12,7 +12,7 @@ export type StorageClassOption = {
   restore_rate_eur_per_gib_standard?: number;
 };
 
-type Translate = (key: string, params?: Record<string, unknown>) => string;
+type Translate = (key: string, params?: Record<string, string | number>) => string;
 
 const RESTORE_REQUIRED_CLASSES = new Set(["GLACIER", "DEEP_ARCHIVE"]);
 

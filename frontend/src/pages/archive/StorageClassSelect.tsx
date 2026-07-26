@@ -10,7 +10,7 @@ import {
   type StorageClassOption,
 } from "./storageClassOptions";
 
-type Translate = (key: string, params?: Record<string, unknown>) => string;
+type Translate = (key: string, params?: Record<string, string | number>) => string;
 
 export type StorageClassSelectProps = {
   id?: string;
