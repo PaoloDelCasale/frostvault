@@ -23,6 +23,14 @@ const EXPECTED_TOKENS: Record<string, string> = {
   "--violet-soft": "#eee9fb",
 };
 
+/** Radii from style.css shapes — independent literals. */
+const EXPECTED_RADII: Record<string, string> = {
+  "--radius-card": "14px",
+  "--radius-panel": "18px",
+  "--radius-auth": "22px",
+  "--radius-badge": "999px",
+};
+
 describe("FrostVault palette in @theme", () => {
   it("keeps every migrated token hex value from style.css", () => {
     const css = readFileSync(cssPath, "utf8");
@@ -30,6 +38,17 @@ describe("FrostVault palette in @theme", () => {
     for (const [token, hex] of Object.entries(EXPECTED_TOKENS)) {
       const pattern = new RegExp(`${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:\\s*${hex}`, "i");
       expect(css, `${token} must be ${hex}`).toMatch(pattern);
+    }
+  });
+
+  it("keeps card/panel/auth/badge radii from style.css", () => {
+    const css = readFileSync(cssPath, "utf8");
+    for (const [token, value] of Object.entries(EXPECTED_RADII)) {
+      const pattern = new RegExp(
+        `${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:\\s*${value}`,
+        "i",
+      );
+      expect(css, `${token} must be ${value}`).toMatch(pattern);
     }
   });
 });
