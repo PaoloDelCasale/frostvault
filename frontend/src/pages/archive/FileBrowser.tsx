@@ -1,7 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { DEFAULT_PAGE_SIZE, filesQueryOptions } from "@/api";
+import {
+  DEFAULT_PAGE_SIZE,
+  countActiveJobGroups,
+  filesQueryOptions,
+  filesRefetchIntervalFromJobs,
+  jobsQueryOptions,
+} from "@/api";
 import type { FilesResponse } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import {
@@ -109,7 +115,24 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
     [q, state, directory, page],
   );
 
-  const filesQuery = useQuery(filesQueryOptions(query));
+  const queryClient = useQueryClient();
+  // Share the jobs cache with FileOperationsHost so the list can poll while
+  // Jobs are active and refresh as soon as active count drops (issue #128).
+  const jobsQuery = useQuery(jobsQueryOptions());
+  const activeJobCount = countActiveJobGroups(jobsQuery.data);
+  const prevActiveJobCount = useRef<number | null>(null);
+  useEffect(() => {
+    const prev = prevActiveJobCount.current;
+    prevActiveJobCount.current = activeJobCount;
+    if (prev !== null && activeJobCount < prev) {
+      void queryClient.invalidateQueries({ queryKey: ["files"] });
+    }
+  }, [activeJobCount, queryClient]);
+
+  const filesQuery = useQuery({
+    ...filesQueryOptions(query),
+    refetchInterval: filesRefetchIntervalFromJobs(jobsQuery.data),
+  });
   const forceOfflineDemo =
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).get("offline") === "1";

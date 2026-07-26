@@ -81,9 +81,11 @@ export {
 export {
   ApiQueryProvider,
   apiQueryKeys,
+  countActiveJobGroups,
   createAppQueryClient,
   fileHistoryQueryOptions,
   filesQueryOptions,
+  filesRefetchIntervalFromJobs,
   i18nCatalogQueryOptions,
   jobsQueryOptions,
   jobsRefetchInterval,
