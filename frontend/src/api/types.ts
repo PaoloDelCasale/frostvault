@@ -45,3 +45,10 @@ export type I18nCatalogResponse = {
   locales: string[];
   messages: Record<string, string>;
 };
+
+export type LocaleUpdateResponse = {
+  locale: string;
+  message: string;
+  message_key: string;
+  messages: Record<string, string>;
+};

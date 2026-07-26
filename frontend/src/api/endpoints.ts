@@ -1,5 +1,11 @@
 import { apiRequest, configureApiClient, setCsrfToken } from "./client";
-import type { I18nCatalogResponse, MeResponse, VaultsResponse } from "./types";
+import type {
+  I18nCatalogResponse,
+  LocaleUpdateResponse,
+  MeResponse,
+  VaultsResponse,
+} from "./types";
+import { translate } from "@/i18n/translate";
 
 export function fetchMe(): Promise<MeResponse> {
   return apiRequest<MeResponse>("/api/me").then((me) => {
@@ -18,17 +24,16 @@ export function fetchI18nCatalog(locale?: string): Promise<I18nCatalogResponse> 
   return apiRequest<I18nCatalogResponse>(`/api/i18n/catalog${query}`).then(
     (catalog) => {
       configureApiClient({
-        translate: (key, params) => {
-          let message = catalog.messages[key] ?? key;
-          if (params) {
-            for (const [name, value] of Object.entries(params)) {
-              message = message.replaceAll(`{${name}}`, String(value));
-            }
-          }
-          return message;
-        },
+        translate: (key, params) => translate(catalog.messages, key, params),
       });
       return catalog;
     },
   );
+}
+
+export function updateLocale(locale: string): Promise<LocaleUpdateResponse> {
+  return apiRequest<LocaleUpdateResponse>("/api/locale", {
+    method: "PUT",
+    body: JSON.stringify({ locale }),
+  });
 }
