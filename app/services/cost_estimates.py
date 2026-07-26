@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from .restore_estimates import (
+    DEFAULT_INSTANT_RETRIEVAL_EUR_PER_GIB,
     DEFAULT_RESTORE_HOURS,
     DEFAULT_RESTORE_PRICING_EUR_PER_GIB,
     normalize_restore_tier,
@@ -22,7 +23,10 @@ from .restore_estimates import (
 BUILTIN_EFFECTIVE_AT = "2026-01-01T00:00:00+00:00"
 BUILTIN_ASSUMPTIONS = {
     "region": "eu-south-1",
-    "unit": "EUR per GiB-month for storage; EUR per GiB restored for Glacier",
+    "unit": (
+        "EUR per GiB-month for storage; EUR per GiB for Glacier restore tiers "
+        "and Instant/IA GET retrieval"
+    ),
     "disclaimer": (
         "Internal estimate from configured price data; not an AWS Billing quote."
     ),
@@ -95,16 +99,22 @@ class CostEstimate:
 
 
 def builtin_price_book() -> PriceBook:
+    restore_rates = {
+        storage_class: dict(tiers)
+        for storage_class, tiers in DEFAULT_RESTORE_PRICING_EUR_PER_GIB.items()
+    }
+    for storage_class, rate in DEFAULT_INSTANT_RETRIEVAL_EUR_PER_GIB.items():
+        restore_rates[storage_class] = {
+            **restore_rates.get(storage_class, {}),
+            "Instant": float(rate),
+        }
     return PriceBook(
         name="builtin-defaults",
         currency="EUR",
         effective_at=BUILTIN_EFFECTIVE_AT,
         assumptions=dict(BUILTIN_ASSUMPTIONS),
         storage_rates=dict(BUILTIN_STORAGE_RATES_EUR_PER_GIB_MONTH),
-        restore_rates={
-            storage_class: dict(tiers)
-            for storage_class, tiers in DEFAULT_RESTORE_PRICING_EUR_PER_GIB.items()
-        },
+        restore_rates=restore_rates,
         is_active=True,
     )
 
