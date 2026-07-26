@@ -199,3 +199,541 @@ describe("FileBrowser — cards and table from /api/files", () => {
     );
   });
 });
+
+describe("FileBrowser — directory navigation", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    resetApiClientForTests();
+    fetchMock.mockReset();
+    configureApiClient({ fetch: fetchMock });
+    window.history.replaceState({}, "", "/");
+  });
+
+  afterEach(() => {
+    cleanup();
+    resetApiClientForTests();
+  });
+
+  function renderBrowser() {
+    const client = createAppQueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    return render(
+      <ApiQueryProvider client={client}>
+        <FileBrowser t={t} />
+      </ApiQueryProvider>,
+    );
+  }
+
+  function filesUrlDirectory(callIndex: number): string {
+    const url = String(fetchMock.mock.calls[callIndex]?.[0] ?? "");
+    return new URL(url, "http://localhost").searchParams.get("directory") || "";
+  }
+
+  it("navigates into a directory: the request carries the new directory and the URL is updated", async () => {
+    const { userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup();
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(realisticBrowse))
+      .mockResolvedValue(
+        jsonResponse({
+          items: [
+            {
+              type: "file",
+              name: "q1.pdf",
+              path: "reports/q1.pdf",
+              local_size: 512,
+              cloud_size: 512,
+              state: "both",
+              storage_class: "STANDARD",
+              cloud_exists: 1,
+              local_exists: 1,
+            },
+          ],
+          total: 1,
+          page: 1,
+          directory: "reports",
+          mode: "browse",
+        }),
+      );
+
+    renderBrowser();
+    await waitFor(() => {
+      expect(screen.getByTestId("file-list-cards")).toBeInTheDocument();
+    });
+
+    const folderButtons = screen.getAllByRole("button", { name: /reports/i });
+    await user.click(folderButtons[0]!);
+
+    await waitFor(() => {
+      expect(filesUrlDirectory(fetchMock.mock.calls.length - 1)).toBe("reports");
+    });
+    expect(new URLSearchParams(window.location.search).get("directory")).toBe(
+      "reports",
+    );
+    await waitFor(() => {
+      expect(screen.getAllByText("q1.pdf").length).toBeGreaterThan(0);
+    });
+  });
+
+  it("navigates via Up and breadcrumbs, and the browser back button returns to the previous directory", async () => {
+    const { userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup();
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://localhost");
+      const directory = url.searchParams.get("directory") || "";
+      if (directory === "reports/2024") {
+        return jsonResponse({
+          items: [],
+          total: 0,
+          page: 1,
+          directory: "reports/2024",
+          mode: "browse",
+        });
+      }
+      if (directory === "reports") {
+        return jsonResponse({
+          items: [
+            {
+              type: "directory",
+              name: "2024",
+              path: "reports/2024",
+              item_count: 1,
+              total_size: 100,
+              state: "both",
+              storage_class: "STANDARD",
+              storage_class_count: 1,
+            },
+          ],
+          total: 1,
+          page: 1,
+          directory: "reports",
+          mode: "browse",
+        });
+      }
+      return jsonResponse(realisticBrowse);
+    });
+
+    // Start already nested so breadcrumbs have ancestors.
+    window.history.replaceState(
+      { directory: "reports/2024", q: "", state: "", page: 1 },
+      "",
+      "/?directory=reports%2F2024",
+    );
+    renderBrowser();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("up-directory")).not.toBeDisabled();
+    });
+
+    // Breadcrumb to "reports"
+    const reportsCrumbs = screen
+      .getAllByRole("button")
+      .filter((el) => el.getAttribute("data-directory") === "reports");
+    expect(reportsCrumbs.length).toBeGreaterThan(0);
+    await user.click(reportsCrumbs[0]!);
+
+    await waitFor(() => {
+      expect(new URLSearchParams(window.location.search).get("directory")).toBe(
+        "reports",
+      );
+    });
+
+    // Up to archive root
+    await user.click(screen.getByTestId("up-directory"));
+    await waitFor(() => {
+      expect(
+        new URLSearchParams(window.location.search).get("directory"),
+      ).toBeNull();
+    });
+
+    // Push into reports again, then use browser back
+    const folderButtons = screen.getAllByRole("button", { name: /reports/i });
+    await user.click(folderButtons[0]!);
+    await waitFor(() => {
+      expect(new URLSearchParams(window.location.search).get("directory")).toBe(
+        "reports",
+      );
+    });
+
+    window.history.back();
+    await waitFor(() => {
+      expect(
+        new URLSearchParams(window.location.search).get("directory"),
+      ).toBeNull();
+    });
+    // Root listing should reload
+    await waitFor(() => {
+      expect(screen.getAllByText("readme.txt").length).toBeGreaterThan(0);
+    });
+  });
+
+  it("collapses deep breadcrumbs on the narrow trail instead of overflowing", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        items: [],
+        total: 0,
+        page: 1,
+        directory: "a/b/c/d/e/f",
+        mode: "browse",
+      }),
+    );
+    window.history.replaceState(
+      {},
+      "",
+      "/?directory=a%2Fb%2Fc%2Fd%2Fe%2Ff",
+    );
+    renderBrowser();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("breadcrumbs-narrow")).toBeInTheDocument();
+    });
+
+    const narrow = screen.getByTestId("breadcrumbs-narrow");
+    expect(narrow.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["md:hidden"]),
+    );
+    // Ellipsis present; intermediate segments like "b" and "c" omitted
+    expect(within(narrow).getByText("…")).toBeInTheDocument();
+    expect(within(narrow).queryByText("b")).not.toBeInTheDocument();
+    expect(within(narrow).queryByText("c")).not.toBeInTheDocument();
+    // Root and last segments remain
+    expect(within(narrow).getByText("Archive")).toBeInTheDocument();
+    expect(within(narrow).getByText("f")).toBeInTheDocument();
+    // No overflow scroll class — trail wraps/truncates
+    expect(narrow.className).not.toMatch(/overflow-x-auto/);
+  });
+});
+
+describe("FileBrowser — search, filter, pagination", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    resetApiClientForTests();
+    fetchMock.mockReset();
+    configureApiClient({ fetch: fetchMock });
+    window.history.replaceState({}, "", "/");
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    cleanup();
+    resetApiClientForTests();
+    vi.useRealTimers();
+  });
+
+  function renderBrowser() {
+    const client = createAppQueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    return render(
+      <ApiQueryProvider client={client}>
+        <FileBrowser t={t} />
+      </ApiQueryProvider>,
+    );
+  }
+
+  function lastFilesParams(): URLSearchParams {
+    const url = String(fetchMock.mock.calls.at(-1)?.[0] ?? "");
+    return new URL(url, "http://localhost").searchParams;
+  }
+
+  it("debounces search typing and issues a single request with the right q", async () => {
+    const { userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        items: [],
+        total: 0,
+        page: 1,
+        directory: "",
+        mode: "search",
+      }),
+    );
+
+    renderBrowser();
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+    });
+    const callsBeforeTyping = fetchMock.mock.calls.length;
+
+    await user.type(screen.getByTestId("file-search"), "lease");
+    // Before debounce fires, no extra request
+    expect(fetchMock.mock.calls.length).toBe(callsBeforeTyping);
+
+    await vi.advanceTimersByTimeAsync(250);
+
+    await waitFor(() => {
+      expect(lastFilesParams().get("q")).toBe("lease");
+    });
+    // One debounced search request (not one per keystroke)
+    const searchCalls = fetchMock.mock.calls.filter((call) =>
+      String(call[0]).includes("q=lease"),
+    );
+    expect(searchCalls).toHaveLength(1);
+    expect(new URLSearchParams(window.location.search).get("q")).toBe("lease");
+  });
+
+  it("passes the selected state filter and keeps it when combined with search", async () => {
+    const { userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        items: [],
+        total: 0,
+        page: 1,
+        directory: "",
+        mode: "browse",
+      }),
+    );
+
+    renderBrowser();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    await user.selectOptions(screen.getByTestId("state-filter"), "cloud_only");
+    await waitFor(() => {
+      expect(lastFilesParams().get("state")).toBe("cloud_only");
+    });
+    expect(new URLSearchParams(window.location.search).get("state")).toBe(
+      "cloud_only",
+    );
+
+    await user.type(screen.getByTestId("file-search"), "pdf");
+    await vi.advanceTimersByTimeAsync(250);
+
+    await waitFor(() => {
+      expect(lastFilesParams().get("q")).toBe("pdf");
+    });
+    expect(lastFilesParams().get("state")).toBe("cloud_only");
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get("q")).toBe("pdf");
+    expect(params.get("state")).toBe("cloud_only");
+  });
+
+  it("requests the right page and disables pagination controls at the boundaries", async () => {
+    const { userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const page = Number(
+        new URL(String(input), "http://localhost").searchParams.get("page") ||
+          "1",
+      );
+      return jsonResponse({
+        items: [
+          {
+            type: "file",
+            name: `file-p${page}.txt`,
+            path: `file-p${page}.txt`,
+            local_size: 10,
+            state: "local_only",
+            cloud_exists: 0,
+            local_exists: 1,
+          },
+        ],
+        total: 250,
+        page,
+        directory: "",
+        mode: "browse",
+      });
+    });
+
+    renderBrowser();
+    await waitFor(() => {
+      expect(screen.getByTestId("page-previous")).toBeDisabled();
+    });
+    expect(screen.getByTestId("page-next")).not.toBeDisabled();
+    expect(lastFilesParams().get("page")).toBe("1");
+
+    await user.click(screen.getByTestId("page-next"));
+    await waitFor(() => {
+      expect(lastFilesParams().get("page")).toBe("2");
+    });
+    expect(screen.getByTestId("page-previous")).not.toBeDisabled();
+    expect(screen.getByTestId("page-next")).not.toBeDisabled();
+
+    await user.click(screen.getByTestId("page-next"));
+    await waitFor(() => {
+      expect(lastFilesParams().get("page")).toBe("3");
+    });
+    // 250 items / 100 = 3 pages → next disabled on last page
+    expect(screen.getByTestId("page-next")).toBeDisabled();
+    expect(screen.getByTestId("page-previous")).not.toBeDisabled();
+  });
+});
+
+describe("FileBrowser — Path History, empty states, HTML safety", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    resetApiClientForTests();
+    fetchMock.mockReset();
+    configureApiClient({ fetch: fetchMock });
+    window.history.replaceState({}, "", "/");
+  });
+
+  afterEach(() => {
+    cleanup();
+    resetApiClientForTests();
+  });
+
+  function renderBrowser() {
+    const client = createAppQueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    return render(
+      <ApiQueryProvider client={client}>
+        <FileBrowser t={t} />
+      </ApiQueryProvider>,
+    );
+  }
+
+  it("loads and displays Path History when a Vault File is tapped", async () => {
+    const { userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup();
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/file-history")) {
+        return jsonResponse({
+          vault_file_id: "vf-1",
+          path: "readme.txt",
+          path_history: [
+            { path: "docs/old-readme.txt", valid_from: "2024-01-01" },
+            { path: "readme.txt", valid_from: "2024-06-01" },
+          ],
+          versions: [
+            { object_key: "bucket/readme.txt" },
+            { object_key: "bucket/docs/old-readme.txt" },
+          ],
+        });
+      }
+      return jsonResponse(realisticBrowse);
+    });
+
+    renderBrowser();
+    await waitFor(() => {
+      expect(screen.getAllByText("readme.txt").length).toBeGreaterThan(0);
+    });
+
+    const fileButtons = screen
+      .getAllByRole("button")
+      .filter((el) => el.getAttribute("data-file-path") === "readme.txt");
+    await user.click(fileButtons[0]!);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("path-history")).toBeInTheDocument();
+    });
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/api/file-history"))).toBe(
+      true,
+    );
+    const timeline = screen.getByTestId("path-history-timeline");
+    expect(within(timeline).getByText("docs/old-readme.txt")).toBeInTheDocument();
+    expect(within(timeline).getByText("readme.txt")).toBeInTheDocument();
+    expect(screen.getByTestId("path-history-versions")).toHaveTextContent(
+      "2 Archive Versions",
+    );
+  });
+
+  it("renders distinguishable empty states for no files vs no matches", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        items: [],
+        total: 0,
+        page: 1,
+        directory: "",
+        mode: "browse",
+      }),
+    );
+
+    const { rerender } = (() => {
+      const client = createAppQueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const view = render(
+        <ApiQueryProvider client={client}>
+          <FileBrowser t={t} />
+        </ApiQueryProvider>,
+      );
+      return view;
+    })();
+    void rerender;
+
+    await waitFor(() => {
+      expect(screen.getByTestId("file-list-empty")).toHaveAttribute(
+        "data-empty",
+        "no-files",
+      );
+    });
+    expect(screen.getByTestId("file-list-empty")).toHaveTextContent(
+      "This folder is empty.",
+    );
+
+    cleanup();
+    window.history.replaceState({}, "", "/?q=zzzz");
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        items: [],
+        total: 0,
+        page: 1,
+        directory: "",
+        mode: "search",
+      }),
+    );
+    renderBrowser();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("file-list-empty")).toHaveAttribute(
+        "data-empty",
+        "no-matches",
+      );
+    });
+    expect(screen.getByTestId("file-list-empty")).toHaveTextContent(
+      "No Vault Files match your search.",
+    );
+  });
+
+  it("renders a file name containing HTML as text, not as markup", async () => {
+    const evilName = "<img src=x onerror=alert(1)>";
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        items: [
+          {
+            type: "file",
+            name: evilName,
+            path: evilName,
+            local_size: 1,
+            state: "local_only",
+            cloud_exists: 0,
+            local_exists: 1,
+          },
+        ],
+        total: 1,
+        page: 1,
+        directory: "",
+        mode: "browse",
+      }),
+    );
+
+    renderBrowser();
+    await waitFor(() => {
+      expect(screen.getAllByText(evilName).length).toBeGreaterThan(0);
+    });
+    // React text nodes — never interpreted as HTML elements
+    expect(document.querySelector("img")).toBeNull();
+    const nameNodes = screen.getAllByText(evilName);
+    for (const node of nameNodes) {
+      expect(node.tagName).toBe("SPAN");
+      expect(node.textContent).toBe(evilName);
+      // Serialized child HTML escapes the angle brackets
+      expect(node.innerHTML).toBe(
+        "&lt;img src=x onerror=alert(1)&gt;",
+      );
+    }
+  });
+});
