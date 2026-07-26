@@ -2,9 +2,16 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import { DEFAULT_PAGE_SIZE, filesQueryOptions } from "@/api";
+import type { FilesResponse } from "@/api/types";
 import { Button } from "@/components/ui/button";
+import {
+  isBrowserOffline,
+  loadCachedFilesListing,
+  saveCachedFilesListing,
+} from "@/pwa";
 
 import type { VaultCapabilities } from "./actions";
+import { demoRootListing } from "./demoFiles";
 import { FileList } from "./FileList";
 import { FileOperationsHost } from "./FileOperationsHost";
 import {
@@ -103,6 +110,40 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
   );
 
   const filesQuery = useQuery(filesQueryOptions(query));
+  const forceOfflineDemo =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("offline") === "1";
+
+  useEffect(() => {
+    if (forceOfflineDemo) {
+      saveCachedFilesListing(query, demoRootListing);
+    }
+  }, [forceOfflineDemo, query]);
+
+  useEffect(() => {
+    if (filesQuery.isSuccess && filesQuery.data) {
+      saveCachedFilesListing(query, filesQuery.data);
+    }
+  }, [filesQuery.isSuccess, filesQuery.data, query]);
+
+  const offlineCached = useMemo(() => {
+    if (forceOfflineDemo) {
+      return loadCachedFilesListing(query) ?? {
+        data: demoRootListing,
+        savedAt: new Date().toISOString(),
+      };
+    }
+    if (filesQuery.isSuccess) return null;
+    if (!(filesQuery.isError || isBrowserOffline())) return null;
+    return loadCachedFilesListing(query);
+  }, [filesQuery.isSuccess, filesQuery.isError, query, forceOfflineDemo]);
+
+  const displayData: FilesResponse | undefined = forceOfflineDemo
+    ? offlineCached?.data
+    : (filesQuery.data ?? offlineCached?.data);
+  const showingStale = Boolean(
+    forceOfflineDemo || (offlineCached && !filesQuery.data),
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -153,7 +194,7 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
 
   const crumbs = buildBreadcrumbs(directory, t("ui.breadcrumb_archive"));
   const narrowCrumbs = collapseBreadcrumbs(crumbs);
-  const data = filesQuery.data;
+  const data = displayData;
   const total = data?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / DEFAULT_PAGE_SIZE));
   const unit =
@@ -165,6 +206,24 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
 
   return (
     <div className="min-w-0" data-testid="file-browser">
+      {showingStale ? (
+        <div
+          role="status"
+          data-testid="offline-stale-banner"
+          className="mb-3 rounded-lg border border-amber-soft bg-amber-soft px-3 py-2 text-sm text-ink"
+        >
+          {t("ui.offline_stale_listing")}
+        </div>
+      ) : null}
+      {!displayData && (filesQuery.isError || isBrowserOffline()) ? (
+        <div
+          role="status"
+          data-testid="offline-shell"
+          className="mb-3 rounded-lg border border-line bg-canvas px-3 py-6 text-center text-sm text-muted"
+        >
+          {t("ui.offline_shell")}
+        </div>
+      ) : null}
       <div
         data-testid="file-browser-sticky"
         className="sticky top-0 z-10 border-b border-line bg-surface py-3"
@@ -284,13 +343,13 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
       </div>
 
       <div className="min-w-0 overflow-x-hidden pt-4">
-        {filesQuery.isLoading ? (
+        {filesQuery.isLoading && !displayData ? (
           <p className="text-sm text-muted" data-testid="file-list-loading">
             {t("ui.file_list_placeholder")}
           </p>
         ) : null}
 
-        {filesQuery.isSuccess && data && data.items.length === 0 ? (
+        {data && data.items.length === 0 ? (
           <p
             className="py-8 text-center text-sm text-muted"
             data-testid="file-list-empty"
@@ -300,7 +359,7 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
           </p>
         ) : null}
 
-        {filesQuery.isSuccess && data && data.items.length > 0 ? (
+        {data && data.items.length > 0 ? (
           <FileOperationsHost
             items={data.items}
             capabilities={capabilities}

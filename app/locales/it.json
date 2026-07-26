@@ -39,6 +39,8 @@
   "ui.empty_list": "Nessun elemento trovato. Seleziona “Aggiorna elenco” per aggiornare l’archivio.",
   "ui.empty_no_files": "Questa cartella è vuota.",
   "ui.empty_no_matches": "Nessun Vault File corrisponde alla ricerca.",
+  "ui.offline_shell": "Sei offline. Riconnettiti per aggiornare l'archivio.",
+  "ui.offline_stale_listing": "Elenco file dell'ultima sessione. Potrebbe non essere aggiornato.",
   "ui.folder_item_count": "{count} file in questa cartella",
   "ui.file_total": "Totale file",
   "ui.cloud_classes": "{count} classi cloud",

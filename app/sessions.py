@@ -168,6 +168,10 @@ def revoke_session(connection: Any, session_id: str) -> None:
         "UPDATE sessions SET revoked_at=%s WHERE id=%s AND revoked_at IS NULL",
         (_now().isoformat(), session_id),
     )
+    # Device push subscriptions must not outlive the Session (issue #72 seam 6).
+    from .services.notifications import delete_push_subscriptions_for_session
+
+    delete_push_subscriptions_for_session(connection, session_id)
 
 
 def rotate_session(connection: Any, session_id: str) -> str:

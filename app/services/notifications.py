@@ -3,12 +3,17 @@
 Owners choose per-vault events and channels; global administrators manage
 shared SMTP/webhook endpoints. Delivery retries are bounded and never mutate
 the Job that triggered the notification.
+
+Web Push (issue #72) reuses the same delivery table with channel ``push`` and
+subscription rows bound to a Session/device.
 """
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 from typing import Any, Protocol
+
+from ..config import push_configured, settings
 
 
 def now_iso() -> str:
@@ -21,6 +26,15 @@ class WebhookClient(Protocol):
 
 class SmtpClient(Protocol):
     def send(self, message: dict[str, Any]) -> None: ...
+
+
+class PushClient(Protocol):
+    def send(
+        self,
+        *,
+        subscription: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None: ...
 
 
 def _row_notification(row: dict[str, Any]) -> dict[str, Any]:
@@ -198,7 +212,7 @@ def enqueue_notification(
     for channel in channels:
         if channel == "in_app":
             continue
-        if channel not in {"webhook", "email"}:
+        if channel not in {"webhook", "email", "push"}:
             raise ValueError(f"invalid delivery channel: {channel}")
         connection.execute(
             """
@@ -210,6 +224,148 @@ def enqueue_notification(
             (notification["id"], channel, stamp, stamp),
         )
     return notification
+
+
+def upsert_push_subscription(
+    connection: Any,
+    *,
+    user_id: int,
+    session_id: str,
+    endpoint: str,
+    p256dh: str,
+    auth: str,
+) -> dict[str, Any]:
+    """Persist a Web Push subscription against the current User and Session."""
+    stamp = now_iso()
+    existing = connection.execute(
+        "SELECT id FROM push_subscriptions WHERE endpoint=%s",
+        (endpoint,),
+    ).fetchone()
+    if existing:
+        connection.execute(
+            """
+            UPDATE push_subscriptions
+            SET user_id=%s, session_id=%s, p256dh=%s, auth=%s, updated_at=%s
+            WHERE id=%s
+            """,
+            (user_id, session_id, p256dh, auth, stamp, existing["id"]),
+        )
+        subscription_id = existing["id"]
+    else:
+        subscription_id = connection.execute(
+            """
+            INSERT INTO push_subscriptions(
+                user_id, session_id, endpoint, p256dh, auth, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (user_id, session_id, endpoint, p256dh, auth, stamp, stamp),
+        ).fetchone()["id"]
+    return {
+        "id": subscription_id,
+        "user_id": user_id,
+        "session_id": session_id,
+        "endpoint": endpoint,
+    }
+
+
+def delete_push_subscriptions_for_session(connection: Any, session_id: str) -> int:
+    result = connection.execute(
+        "DELETE FROM push_subscriptions WHERE session_id=%s",
+        (session_id,),
+    )
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
+def list_deliverable_push_subscriptions(
+    connection: Any,
+    *,
+    user_id: int,
+    vault_id: int | None,
+) -> list[dict[str, Any]]:
+    """Subscriptions whose Session is live and User can still see the Vault."""
+    stamp = now_iso()
+    if vault_id is None:
+        rows = connection.execute(
+            """
+            SELECT ps.endpoint, ps.p256dh, ps.auth
+            FROM push_subscriptions ps
+            JOIN sessions s ON s.id = ps.session_id
+            WHERE ps.user_id=%s
+              AND s.revoked_at IS NULL
+              AND s.absolute_expires_at > %s
+              AND s.idle_expires_at > %s
+            """,
+            (user_id, stamp, stamp),
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            """
+            SELECT ps.endpoint, ps.p256dh, ps.auth
+            FROM push_subscriptions ps
+            JOIN sessions s ON s.id = ps.session_id
+            JOIN vault_members vm
+              ON vm.user_id = ps.user_id AND vm.vault_id = %s
+            WHERE ps.user_id=%s
+              AND s.revoked_at IS NULL
+              AND s.absolute_expires_at > %s
+              AND s.idle_expires_at > %s
+            """,
+            (vault_id, user_id, stamp, stamp),
+        ).fetchall()
+    return [
+        {
+            "endpoint": row["endpoint"],
+            "keys": {"p256dh": row["p256dh"], "auth": row["auth"]},
+        }
+        for row in rows
+    ]
+
+
+def enqueue_job_terminal_push(connection: Any, *, job_id: int) -> int:
+    """Enqueue push deliveries for vault members when a Job completes or fails.
+
+    No-ops when VAPID is unconfigured (seam 7).
+    """
+    if not push_configured():
+        return 0
+    job = connection.execute(
+        "SELECT id, vault_id, path, action, status FROM jobs WHERE id=%s",
+        (job_id,),
+    ).fetchone()
+    if not job or job["status"] not in {"completed", "failed"}:
+        return 0
+    members = connection.execute(
+        "SELECT user_id FROM vault_members WHERE vault_id=%s",
+        (job["vault_id"],),
+    ).fetchall()
+    event = "job_completed" if job["status"] == "completed" else "job_failed"
+    title = (
+        "Job completed"
+        if job["status"] == "completed"
+        else "Job failed"
+    )
+    body = f"{job['action']}: {job['path']}"
+    enqueued = 0
+    for member in members:
+        user_id = int(member["user_id"])
+        subs = list_deliverable_push_subscriptions(
+            connection, user_id=user_id, vault_id=int(job["vault_id"])
+        )
+        if not subs:
+            continue
+        enqueue_notification(
+            connection,
+            user_id=user_id,
+            vault_id=int(job["vault_id"]),
+            job_id=int(job["id"]),
+            event=event,
+            title=title,
+            body=body,
+            channels=("push",),
+        )
+        enqueued += 1
+    return enqueued
 
 
 def list_in_app_notifications(
@@ -270,9 +426,10 @@ def deliver_pending_notifications(
     *,
     webhook_client: WebhookClient | None = None,
     smtp_client: SmtpClient | None = None,
+    push_client: PushClient | None = None,
     max_attempts: int = 3,
 ) -> dict[str, int]:
-    """Attempt pending webhook/email deliveries without touching Job rows."""
+    """Attempt pending webhook/email/push deliveries without touching Job rows."""
     stamp = now_iso()
     pending = connection.execute(
         """
@@ -331,6 +488,33 @@ def deliver_pending_notifications(
                         "host": smtp_config.get("host"),
                     }
                 )
+            elif row["channel"] == "push":
+                if not push_configured() or push_client is None:
+                    raise RuntimeError("push endpoint unavailable")
+                subscriptions = list_deliverable_push_subscriptions(
+                    connection,
+                    user_id=int(row["n_user_id"]),
+                    vault_id=row["n_vault_id"],
+                )
+                if not subscriptions:
+                    # Security: revoked Session / removed membership → no delivery.
+                    pass
+                else:
+                    payload = {
+                        "title": row["n_title"],
+                        "body": row["n_body"],
+                        "data": {
+                            "event": row["n_event"],
+                            "job_id": row["n_job_id"],
+                            "vault_id": row["n_vault_id"],
+                            "url": "/",
+                        },
+                    }
+                    for subscription in subscriptions:
+                        push_client.send(
+                            subscription=subscription,
+                            payload=payload,
+                        )
             else:
                 raise RuntimeError(f"unsupported channel: {row['channel']}")
         except Exception as exc:  # system boundary failure
@@ -372,3 +556,22 @@ def deliver_pending_notifications(
             )
             stats["requeued"] += 1
     return stats
+
+
+class PyWebPushClient:
+    """Production PushClient backed by pywebpush when the package is installed."""
+
+    def send(
+        self,
+        *,
+        subscription: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        from pywebpush import webpush
+
+        webpush(
+            subscription_info=subscription,
+            data=json.dumps(payload),
+            vapid_private_key=settings.vapid_private_key.strip(),
+            vapid_claims={"sub": settings.vapid_subject.strip() or "mailto:admin@localhost"},
+        )

@@ -265,9 +265,51 @@ must be replaced before the corresponding integration is used. Important groups:
 | Authentication | `BOOTSTRAP_ADMIN_*`, `OIDC_*`, `BREAK_GLASS_ALLOWED_CIDRS` |
 | Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES` |
 | Frontend | `FRONTEND_DIST_DIR` (Vite build output; required for HTML routes) |
+| Web Push | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (optional; see below) |
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `VAULT_RCLONE_*`, `RCLONE_CONFIG` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
 | Operations | `OPERATION_CONCURRENCY`, `RESTORE_*`, `ALLOW_LOCAL_DELETE` |
+
+### Progressive Web App and Web Push
+
+The SPA is an installable PWA (`vite-plugin-pwa`): offline shell, cached last file
+listing, and optional push notifications when a Job completes or fails.
+
+**HTTPS precondition.** Web Push and installability require a secure origin.
+Behind Traefik that is already true (see [docs/traefik.md](docs/traefik.md)).
+Plain HTTP on a LAN will not deliver push; `localhost` / `127.0.0.1` remain
+exempt for development. Document this as an operator precondition, not a bug.
+
+**VAPID keys.** Generate a key pair once and set the public/private values:
+
+```bash
+.venv/bin/python - <<'PY'
+from py_vapid import Vapid
+from cryptography.hazmat.primitives import serialization
+import base64
+v = Vapid()
+v.generate_keys()
+raw = v.public_key.public_bytes(
+    encoding=serialization.Encoding.X962,
+    format=serialization.PublicFormat.UncompressedPoint,
+)
+print(base64.urlsafe_b64encode(raw).decode().rstrip("="))
+print(v.private_pem().decode())
+PY
+```
+
+- `VAPID_PUBLIC_KEY` — URL-safe base64 application server key
+- `VAPID_PRIVATE_KEY` — matching private key
+- `VAPID_SUBJECT` — contact URI, e.g. `mailto:ops@example.com`
+
+When these are unset or still placeholders, the app works normally: the push
+config endpoint reports `configured: false`, subscription POSTs are accepted
+without error but not stored as active push, and no delivery attempts run —
+the same degrade pattern as placeholder AWS credentials.
+
+Revoking a Session deletes that device’s push subscription. Deliveries also
+re-check live Session and Vault membership at send time so a removed member
+never receives Job notifications for that Vault.
 
 Do not commit `.env`, `config/rclone.conf`, recovery exports, database files, or
 cloud credentials.

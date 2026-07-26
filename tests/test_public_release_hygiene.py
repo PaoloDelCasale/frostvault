@@ -44,7 +44,12 @@ class PublicReleaseHygieneTests(unittest.TestCase):
         )
         findings: list[str] = []
         for path, text in tracked_text().items():
+            # Lockfiles embed upstream npm "deprecated" notices (maintainer
+            # contacts), which are not FrostVault configuration secrets.
+            skip_email = path.name in {"package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
             for match in email.finditer(text):
+                if skip_email:
+                    continue
                 if match.group(1).lower() != "example.com":
                     findings.append(f"{path}:{match.group(0)}")
             for pattern in (aws_account, *home_paths):

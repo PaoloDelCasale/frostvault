@@ -156,8 +156,25 @@ class Settings:
     # Built React SPA (Vite) directory served for all HTML routes.
     frontend_dist_dir: str = os.getenv("FRONTEND_DIST_DIR", _DEFAULT_FRONTEND_DIST)
 
+    # Web Push (VAPID). When unset, push degrades cleanly like placeholder AWS.
+    vapid_public_key: str = os.getenv("VAPID_PUBLIC_KEY", "")
+    vapid_private_key: str = os.getenv("VAPID_PRIVATE_KEY", "")
+    vapid_subject: str = os.getenv("VAPID_SUBJECT", "mailto:admin@localhost")
+
 
 settings = Settings()
+
+
+def push_configured(settings_obj: Settings | None = None) -> bool:
+    """Whether VAPID keys are present and usable for Web Push."""
+    cfg = settings_obj or settings
+    public = cfg.vapid_public_key.strip()
+    private = cfg.vapid_private_key.strip()
+    if not public or not private:
+        return False
+    if is_placeholder(public) or is_placeholder(private):
+        return False
+    return True
 
 
 def validate_settings() -> None:

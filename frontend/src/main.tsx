@@ -5,8 +5,11 @@ import { ApiQueryProvider } from "@/api";
 import { I18nProvider } from "@/i18n";
 import { installDemoFilesFetch } from "@/pages/archive/demoFiles";
 import { ReauthPasswordGate } from "@/pages/archive/ReauthPasswordGate";
+import { registerFrostVaultServiceWorker } from "@/pwa";
 import App from "./App";
 import "./index.css";
+
+registerFrostVaultServiceWorker();
 
 if (new URLSearchParams(window.location.search).get("demo") === "files") {
   installDemoFilesFetch();

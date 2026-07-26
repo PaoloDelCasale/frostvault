@@ -937,6 +937,14 @@ def set_job(
                 job_id,
             ),
         )
+        if status in {"completed", "failed"}:
+            try:
+                notification_service.enqueue_job_terminal_push(
+                    connection, job_id=job_id
+                )
+            except Exception:
+                # Push enqueue must never fail the Job status transition.
+                pass
 
 
 def schedule_upload_retry(
@@ -2622,7 +2630,15 @@ def _deliver_notifications_once() -> None:
     """Best-effort outbound notification delivery pass."""
     try:
         with db() as connection:
-            stats = notification_service.deliver_pending_notifications(connection)
+            push_client = None
+            from .config import push_configured
+
+            if push_configured():
+                push_client = notification_service.PyWebPushClient()
+            stats = notification_service.deliver_pending_notifications(
+                connection,
+                push_client=push_client,
+            )
         for _ in range(int(stats.get("delivered", 0))):
             metrics_service.inc(
                 "notification_deliveries_total",

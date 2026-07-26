@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 import re
 import secrets
 import uuid
@@ -1645,6 +1646,53 @@ def mark_notification_read(
     if item is None:
         raise HTTPException(404, "Notification not found")
     return item
+
+
+class PushSubscribeAction(BaseModel):
+    endpoint: str = Field(min_length=8, max_length=2000)
+    keys: dict[str, str]
+
+
+@app.get("/api/push/config")
+def push_config():
+    """Public VAPID config; degrades cleanly when push is unconfigured."""
+    from .config import push_configured
+
+    if not push_configured():
+        return {"configured": False, "vapid_public_key": None}
+    return {
+        "configured": True,
+        "vapid_public_key": settings.vapid_public_key.strip(),
+    }
+
+
+@app.post("/api/push/subscriptions")
+def subscribe_push(
+    action: PushSubscribeAction,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Persist a Web Push subscription for the current Session/device."""
+    from .config import push_configured
+
+    p256dh = (action.keys.get("p256dh") or "").strip()
+    auth = (action.keys.get("auth") or "").strip()
+    if not p256dh or not auth:
+        raise HTTPException(400, "Push subscription keys are required")
+    if not push_configured():
+        # Seam 7: unconfigured push must not surface errors to the user.
+        return {"configured": False, "accepted": False}
+    session = request.state.session
+    with db() as connection:
+        saved = notification_service.upsert_push_subscription(
+            connection,
+            user_id=user["id"],
+            session_id=session["id"],
+            endpoint=action.endpoint.strip(),
+            p256dh=p256dh,
+            auth=auth,
+        )
+    return saved
 
 
 class WebhookEndpointAction(BaseModel):
@@ -3479,10 +3527,36 @@ def spa_asset(asset_path: str):
     )
 
 
+def _spa_dist_file_response(full_path: str) -> FileResponse | None:
+    """Serve a built file from frontend/dist when it exists (manifest, SW, icons)."""
+    if not full_path or full_path.endswith("/"):
+        return None
+    dist_root = _spa_dist_dir().resolve()
+    try:
+        target = safe_local_path(str(dist_root), full_path)
+    except ValueError:
+        return None
+    if not target.is_file() or target.name == "index.html":
+        return None
+    media_type, _ = mimetypes.guess_type(target.name)
+    if target.suffix == ".webmanifest":
+        media_type = "application/manifest+json"
+    elif target.suffix == ".js":
+        media_type = "application/javascript; charset=utf-8"
+    return FileResponse(
+        target,
+        media_type=media_type or "application/octet-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str):
     """SPA client-route fallback; never intercepts API, auth, or static assets."""
     head = full_path.split("/", 1)[0]
     if head in _SPA_FALLBACK_EXCLUDED_PREFIXES:
         raise HTTPException(status_code=404, detail="Not Found")
+    built = _spa_dist_file_response(full_path)
+    if built is not None:
+        return built
     return _spa_index_response()
