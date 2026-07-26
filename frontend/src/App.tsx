@@ -9,6 +9,7 @@ import { Toast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { AppShell } from "@/layout/AppShell";
 import type { ShellCapabilities } from "@/layout/types";
+import { VaultCreateScreenshotFixture } from "@/pages/vault-create/VaultCreateScreenshotFixture";
 
 const demoCapabilities: ShellCapabilities = {
   vaultName: "Test Archive",
@@ -24,8 +25,20 @@ const demoCapabilities: ShellCapabilities = {
   role: "owner",
 };
 
+function isVaultCreateRecoveryDemo(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    new URLSearchParams(window.location.search).get("demo") ===
+    "vault-create-recovery"
+  );
+}
+
 export default function App() {
   const [toastOpen, setToastOpen] = useState(false);
+
+  if (isVaultCreateRecoveryDemo()) {
+    return <VaultCreateScreenshotFixture />;
+  }
 
   return (
     <AppShell capabilities={demoCapabilities}>

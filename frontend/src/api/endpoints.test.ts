@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { configureApiClient, resetApiClientForTests } from "./client";
-import { fetchI18nCatalog, fetchMe, fetchVaults } from "./endpoints";
+import {
+  confirmRecoveryCustody,
+  createVault,
+  exportRecoverySecret,
+  fetchI18nCatalog,
+  fetchMe,
+  fetchVaults,
+  selectVault,
+} from "./endpoints";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -68,5 +76,51 @@ describe("foundation endpoint helpers", () => {
     expect(catalog.messages["api.locale_updated"]).toBe("Locale updated.");
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/vaults");
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/i18n/catalog?locale=en");
+  });
+
+  it("vault create and recovery helpers hit the agreed routes", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            id: 3,
+            uuid: "u",
+            slug: "docs",
+            name: "Docs",
+            role: "owner",
+            encryption_mode: "crypt",
+            recovery_custody_confirmed: false,
+            recovery_export: "export-body",
+          },
+          201,
+        ),
+      )
+      .mockResolvedValueOnce(jsonResponse({ vault_id: 3 }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          vault_id: 3,
+          recovery_custody_confirmed: true,
+          recovery_custody_confirmed_at: "2026-07-26T10:00:00Z",
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ recovery_export: "re-export" }));
+
+    await expect(
+      createVault({ name: "Docs", encryption_mode: "crypt" }),
+    ).resolves.toMatchObject({ recovery_export: "export-body" });
+    await expect(selectVault({ vault_id: 3 })).resolves.toEqual({ vault_id: 3 });
+    await expect(confirmRecoveryCustody({ acknowledged: true })).resolves.toMatchObject({
+      recovery_custody_confirmed: true,
+    });
+    await expect(
+      exportRecoverySecret({ reason: "offline backup copy" }),
+    ).resolves.toEqual({ recovery_export: "re-export" });
+
+    expect(fetchMock.mock.calls.map((call) => [call[0], (call[1] as RequestInit).method])).toEqual([
+      ["/api/vaults", "POST"],
+      ["/api/vaults/select", "POST"],
+      ["/api/vault/recovery/confirm", "POST"],
+      ["/api/vault/recovery/export", "POST"],
+    ]);
   });
 });
