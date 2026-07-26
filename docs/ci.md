@@ -90,10 +90,12 @@ API key.
 
 Auto-merge gates, all required: a same-repo `cursor/*` branch, not a draft, a body
 that closes an issue, that issue carrying `agent-pipeline`, **no open
-`blocked by` dependencies on that issue**, a mergeable state, and **every** check
-run on the head commit finished and green. A commit with no checks at all is
-never merged. `neutral` counts as passing, since `Cursor Bugbot` reports findings
-that way.
+`blocked by` dependencies on that issue**, a mergeable state with
+`mergeStateStatus` of `CLEAN` (or `HAS_HOOKS`), and **every** check run on the
+head commit finished and green. A commit with no checks at all is never merged.
+`neutral` counts as passing, since `Cursor Bugbot` reports findings that way. A
+failed `gh pr merge` for one pull request no longer aborts the rest of the
+sweep.
 
 This does **not** change how human or Dependabot pull requests are handled: a pull
 request that does not close an `agent-pipeline` issue is left alone.

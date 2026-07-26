@@ -94,7 +94,8 @@ class GitHubCli:
 
     def open_pull_requests(self) -> list[dict[str, Any]]:
         fields = (
-            "number,isDraft,isCrossRepository,body,headRefName,headRefOid,mergeable"
+            "number,isDraft,isCrossRepository,body,headRefName,headRefOid,"
+            "mergeable,mergeStateStatus"
         )
         return json.loads(
             self._gh(
@@ -355,6 +356,13 @@ def merge_reason_to_skip(
         return f"issue still blocked by {listed}"
     if pull_request.get("mergeable") != "MERGEABLE":
         return f"not mergeable ({pull_request.get('mergeable')})"
+    # GitHub reports MERGEABLE while the branch is still behind required checks'
+    # base; squash then fails with "head branch is not up to date". Only CLEAN
+    # (and HAS_HOOKS) are safe to attempt. UNSTABLE means a non-required check
+    # failed; leave those alone so humans can decide.
+    merge_state = pull_request.get("mergeStateStatus")
+    if merge_state and merge_state not in {"CLEAN", "HAS_HOOKS"}:
+        return f"merge state is {merge_state}"
     if verdict == "none":
         return "no checks have reported"
     if verdict == "pending":
@@ -393,7 +401,11 @@ def merge_ready(client: GitHubCli) -> list[int]:
         if reason:
             print(f"#{number}: {reason}, leaving it alone.")
             continue
-        client.merge(number)
+        try:
+            client.merge(number)
+        except Exception as error:  # noqa: BLE001 - keep sweeping other PRs
+            print(f"#{number}: merge failed ({error}), leaving it alone.")
+            continue
         merged.append(number)
         print(f"#{number}: merged, closing #{issue}.")
         if issue == CLEANUP_ISSUE:

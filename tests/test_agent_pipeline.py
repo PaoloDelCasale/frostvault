@@ -54,6 +54,7 @@ def _pull_request(**overrides: Any) -> dict:
         "headRefName": "cursor/frontend-toolchain-1",
         "headRefOid": "abc123",
         "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
     }
     pull_request.update(overrides)
     return pull_request
@@ -70,6 +71,7 @@ class FakeGitHub:
         pull_requests: list[dict] | None = None,
         checks: dict[str, list[dict]] | None = None,
         titles: dict[int, str] | None = None,
+        fail_merge: set[int] | None = None,
     ) -> None:
         self._blocking = blocking or {}
         self._blocked_by = blocked_by or {}
@@ -77,6 +79,7 @@ class FakeGitHub:
         self._pull_requests = pull_requests or []
         self._checks = checks or {}
         self._titles = titles or {}
+        self._fail_merge = fail_merge or set()
         self.added_labels: list[tuple[int, str]] = []
         self.merged: list[int] = []
         self.closed_issues: list[int] = []
@@ -104,6 +107,8 @@ class FakeGitHub:
         return self._checks.get(sha, [])
 
     def merge(self, number: int) -> None:
+        if number in self._fail_merge:
+            raise RuntimeError(f"merge of #{number} refused")
         self.merged.append(number)
 
     def close_issue(self, number: int) -> None:
@@ -259,6 +264,12 @@ class MergeGateTests(unittest.TestCase):
         reason = self._skip_reason(mergeable="CONFLICTING")
         self.assertIn("not mergeable", reason or "")
 
+    def test_a_behind_pull_request_is_left_alone(self) -> None:
+        # MERGEABLE alone is not enough when branch protection requires an
+        # up-to-date head; gh pr merge then fails mid-sweep.
+        reason = self._skip_reason(mergeStateStatus="BEHIND")
+        self.assertEqual(reason, "merge state is BEHIND")
+
     def test_an_issue_outside_the_pipeline_is_left_alone(self) -> None:
         reason = pipeline.merge_reason_to_skip(_pull_request(), {"enhancement"}, "green")
         self.assertEqual(reason, "the issue it closes is not in the pipeline")
@@ -311,6 +322,25 @@ class MergeSweepTests(unittest.TestCase):
         )
         self.assertEqual(pipeline.merge_ready(client), [])
         self.assertEqual(client.merged, [])
+
+    def test_continues_sweeping_after_one_merge_fails(self) -> None:
+        client = FakeGitHub(
+            pull_requests=[
+                _pull_request(number=500, body="Closes #57", headRefOid="aaa"),
+                _pull_request(number=501, body="Closes #58", headRefOid="bbb"),
+            ],
+            labels={
+                57: {"agent-pipeline", "ready-for-agent"},
+                58: {"agent-pipeline", "ready-for-agent"},
+            },
+            checks={
+                "aaa": [_check("Unit and migration tests")],
+                "bbb": [_check("Unit and migration tests")],
+            },
+            fail_merge={500},
+        )
+        self.assertEqual(pipeline.merge_ready(client), [501])
+        self.assertEqual(client.merged, [501])
 
     def test_does_not_merge_while_a_check_is_running(self) -> None:
         client = FakeGitHub(
