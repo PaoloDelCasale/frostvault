@@ -39,6 +39,7 @@ import { Toast } from "@/components/Toast";
 import { ensurePushSubscription } from "@/pwa";
 
 import {
+  actionHint,
   actionLabel,
   availableActions,
   endpointForAction,
@@ -118,6 +119,7 @@ export function FileOperationsHost({
   >(null);
   const [purge, setPurge] = useState<{
     path: string;
+    isDirectory: boolean;
     settings: CloudDeletionSettings;
     preview: CloudDeletionPreview;
   } | null>(null);
@@ -315,12 +317,12 @@ export function FileOperationsHost({
   );
 
   const beginCloudPurge = useCallback(
-    async (path: string) => {
+    async (path: string, isDir: boolean) => {
       const [settings, preview] = await Promise.all([
         fetchCloudDeletion(),
-        previewCloudDeletion({ path, is_directory: false }),
+        previewCloudDeletion({ path, is_directory: isDir }),
       ]);
-      setPurge({ path, settings, preview });
+      setPurge({ path, isDirectory: isDir, settings, preview });
     },
     [],
   );
@@ -341,7 +343,7 @@ export function FileOperationsHost({
           return;
         }
         if (action === "cloud-purge") {
-          await beginCloudPurge(path);
+          await beginCloudPurge(path, isDir);
           return;
         }
         if (isDestructiveAction(action)) {
@@ -372,6 +374,7 @@ export function FileOperationsHost({
           count: action.count,
           isDirectory: isDirectory(sheetItem),
         }),
+        description: actionHint(action.id, t),
         tone: action.tone,
       }))
     : [];
@@ -515,7 +518,9 @@ export function FileOperationsHost({
             : t("ui.confirm_action")
         }
         cancelLabel={t("ui.cancel")}
-        tone="danger"
+        tone={
+          confirmAction?.action === "cloud-archive" ? "default" : "danger"
+        }
         onConfirm={() => {
           if (!confirmAction) return;
           const { action, path, isDirectory: isDir } = confirmAction;
@@ -577,6 +582,7 @@ export function FileOperationsHost({
           if (!open) setPurge(null);
         }}
         path={purge?.path ?? ""}
+        isDirectory={purge?.isDirectory ?? false}
         vaultName={vaultName}
         settings={purge?.settings ?? null}
         preview={purge?.preview ?? null}
@@ -584,8 +590,9 @@ export function FileOperationsHost({
         onConfirm={(payload) => {
           if (!purge) return;
           const path = purge.path;
+          const isDir = purge.isDirectory;
           setPurge(null);
-          void dispatchAction("cloud-purge", path, false, payload).catch(
+          void dispatchAction("cloud-purge", path, isDir, payload).catch(
             showError,
           );
         }}

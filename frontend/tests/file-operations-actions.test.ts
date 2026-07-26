@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ArchiveListItem, MeVault } from "@/api/types";
 import {
+  actionHint,
   availableActions,
   endpointForAction,
   type VaultCapabilities,
@@ -72,7 +73,24 @@ const directory: ArchiveListItem = {
   item_count: 3,
   total_size: 1000,
   state: "mixed",
-  available_actions: { upload: 2, recover: 1, "free-space": 3 },
+  available_actions: {
+    upload: 2,
+    recover: 1,
+    "free-space": 3,
+    "cloud-archive": 2,
+    "cloud-purge": 2,
+  },
+};
+
+const localOnlyDirectory: ArchiveListItem = {
+  type: "directory",
+  name: "drafts",
+  path: "drafts",
+  item_count: 2,
+  total_size: 100,
+  state: "local_only",
+  state_counts: { local_only: 2 },
+  available_actions: { upload: 2, recover: 0, "free-space": 0 },
 };
 
 describe("availableActions — capability gating (seam 2)", () => {
@@ -89,6 +107,13 @@ describe("availableActions — capability gating (seam 2)", () => {
       "cloud-archive",
       "cloud-purge",
     ]);
+  });
+
+  it("marks only permanent purge as danger; free-space stays default", () => {
+    const actions = availableActions(eligibleFile, ownerCaps);
+    expect(actions.find((a) => a.id === "free-space")?.tone).toBe("default");
+    expect(actions.find((a) => a.id === "cloud-archive")?.tone).toBe("default");
+    expect(actions.find((a) => a.id === "cloud-purge")?.tone).toBe("danger");
   });
 
   it("operator sees upload/recover/free-space but never cloud deletion", () => {
@@ -137,6 +162,61 @@ describe("availableActions — capability gating (seam 2)", () => {
       "recover",
       "free-space",
     ]);
+    expect(availableActions(directory, caps).map((a) => a.id)).toEqual([
+      "upload",
+      "recover",
+      "free-space",
+    ]);
+  });
+
+  it("offers cloud deletion on directories with cloud-bearing children", () => {
+    expect(availableActions(directory, ownerCaps).map((a) => a.id)).toEqual([
+      "upload",
+      "recover",
+      "free-space",
+      "cloud-archive",
+      "cloud-purge",
+    ]);
+    expect(
+      availableActions(directory, ownerCaps).find((a) => a.id === "cloud-purge"),
+    ).toMatchObject({ count: 2, tone: "danger" });
+  });
+
+  it("hides cloud deletion on local-only directories", () => {
+    expect(availableActions(localOnlyDirectory, ownerCaps).map((a) => a.id)).toEqual([
+      "upload",
+    ]);
+  });
+
+  it("falls back to state_counts when directory omits cloud action counts", () => {
+    const legacyDir: ArchiveListItem = {
+      type: "directory",
+      name: "legacy",
+      path: "legacy",
+      item_count: 4,
+      total_size: 10,
+      state: "mixed",
+      state_counts: { both: 1, cloud_only: 2, local_only: 1 },
+      available_actions: { upload: 1, recover: 2, "free-space": 1 },
+    };
+    const purge = availableActions(legacyDir, ownerCaps).find(
+      (a) => a.id === "cloud-purge",
+    );
+    expect(purge?.count).toBe(3);
+  });
+});
+
+describe("actionHint — scope copy", () => {
+  it("returns translated hints for deletion actions", () => {
+    const t = (key: string) =>
+      ({
+        "ui.row_action_free_space_hint": "local only",
+        "ui.row_action_cloud_archive_hint": "hide cloud",
+        "ui.row_action_cloud_purge_hint": "purge cloud",
+      })[key] ?? key;
+    expect(actionHint("free-space", t)).toBe("local only");
+    expect(actionHint("cloud-archive", t)).toBe("hide cloud");
+    expect(actionHint("cloud-purge", t)).toBe("purge cloud");
   });
 });
 

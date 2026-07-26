@@ -17,14 +17,20 @@ describe("BottomSheet", () => {
         title="Row actions"
         actions={[
           { id: "upload", label: "Upload to cloud" },
-          { id: "delete-local", label: "Delete local copy", tone: "danger" },
+          {
+            id: "delete-local",
+            label: "Delete local copy",
+            description: "Cloud stays recoverable",
+            tone: "danger",
+          },
         ]}
         onAction={onAction}
       />,
     );
 
     await screen.findByRole("dialog");
-    await user.click(screen.getByRole("button", { name: "Delete local copy" }));
+    expect(screen.getByText("Cloud stays recoverable")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Delete local copy/i }));
 
     expect(onAction).toHaveBeenCalledTimes(1);
     expect(onAction).toHaveBeenCalledWith("delete-local");

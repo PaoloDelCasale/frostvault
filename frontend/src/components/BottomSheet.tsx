@@ -6,6 +6,8 @@ import { cn } from "@/lib/utils";
 export type BottomSheetAction = {
   id: string;
   label: string;
+  /** Optional scope hint under the label (e.g. cloud vs local). */
+  description?: string;
   tone?: "danger" | "default";
 };
 
@@ -43,13 +45,28 @@ export function BottomSheet({
                 key={action.id}
                 type="button"
                 variant={action.tone === "danger" ? "danger" : "secondary"}
-                className="min-h-11 w-full justify-start px-4"
+                className={cn(
+                  "min-h-11 w-full justify-start px-4",
+                  action.description && "h-auto min-h-11 flex-col items-start gap-0.5 py-2.5",
+                )}
                 onClick={() => {
                   onAction(action.id);
                   onOpenChange(false);
                 }}
               >
-                {action.label}
+                <span className="w-full text-left font-semibold">{action.label}</span>
+                {action.description ? (
+                  <span
+                    className={cn(
+                      "w-full text-left text-xs font-normal leading-snug",
+                      action.tone === "danger"
+                        ? "text-white/85"
+                        : "text-muted",
+                    )}
+                  >
+                    {action.description}
+                  </span>
+                ) : null}
               </Button>
             ))}
           </div>

@@ -176,6 +176,89 @@ class DeletionPreviewTests(_CloudDeletionTestCase):
             self.assertEqual(preview.byte_count, 21)
             self.assertEqual(preview.delete_marker_count, 0)
 
+    def test_directory_preview_and_archive_select_nested_files_only(self) -> None:
+        """Folder selection uses path prefix matching without touching siblings."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database_path = root / "catalog.db"
+            self.assertEqual(run_alembic(database_path).returncode, 0)
+            source = root / "source"
+            source.mkdir()
+            with SQLiteConnection(str(database_path)) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO users(id, username, display_name, password_hash, is_admin)
+                    VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO vaults(
+                        id, slug, name, source_root, s3_bucket, s3_prefix,
+                        rclone_remote, cloud_deletion_enabled
+                    ) VALUES (
+                        2, 'docs', 'Docs Archive', %s, 'bucket', 'docs', 'remote', TRUE
+                    )
+                    """,
+                    (str(source),),
+                )
+                catalog = ArchiveCatalog(connection)
+                for path, key in (
+                    ("reports/a.txt", "docs/reports/a.txt"),
+                    ("reports/nested/b.txt", "docs/reports/nested/b.txt"),
+                    ("sibling.txt", "docs/sibling.txt"),
+                ):
+                    catalog.observe_local_copy(
+                        vault_id=2,
+                        path=path,
+                        file_type="regular",
+                        size=10,
+                        mtime_ns=1_700_000_000_000_000_000,
+                        observed_at="2026-07-21T10:00:00+00:00",
+                    )
+                    version_id = catalog.record_archive_version(
+                        vault_id=2,
+                        path=path,
+                        object_key=key,
+                        provider_version_id=f"s3-{path}",
+                        size=10,
+                        storage_class="STANDARD",
+                        etag=f"etag-{path}",
+                        uploaded_at="2026-07-21T10:00:00+00:00",
+                        observed_at="2026-07-21T10:00:00+00:00",
+                        scan_id="scan-1",
+                        origin="upload",
+                    )
+                    catalog.mark_version_verified(
+                        version_id,
+                        plaintext_sha256="b" * 64,
+                        verified_at="2026-07-21T10:00:30+00:00",
+                    )
+                preview = cloud_deletion.preview_selection(
+                    connection,
+                    vault_id=2,
+                    paths=["reports"],
+                    is_directory=True,
+                )
+                self.assertEqual(preview.object_count, 2)
+                scheduled = cloud_deletion.schedule_cloud_archive(
+                    connection,
+                    vault_id=2,
+                    paths=["reports"],
+                    is_directory=True,
+                    actor_user_id=1,
+                    requested_at=_iso(_now()),
+                )
+                paths = {
+                    row["path"]
+                    for row in connection.execute(
+                        "SELECT path FROM jobs WHERE group_id=%s",
+                        (scheduled.group_id,),
+                    ).fetchall()
+                }
+            self.assertEqual(paths, {"reports/a.txt", "reports/nested/b.txt"})
+            self.assertNotIn("sibling.txt", paths)
+
 
 class ConfirmationPhraseTests(_CloudDeletionTestCase):
     def test_vault_name_or_generated_phrase_is_accepted(self) -> None:

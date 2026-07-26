@@ -773,6 +773,8 @@ def build_directory_items(
                         "upload": 0,
                         "recover": 0,
                         "free-space": 0,
+                        "cloud-archive": 0,
+                        "cloud-purge": 0,
                     },
                     "storage_classes": set(),
                     "matches_filter": False,
@@ -785,10 +787,18 @@ def build_directory_items(
             folder["local_size"] += local_size or 0
             folder["cloud_size"] += cloud_size or 0
             folder["state_counts"][row["state"]] = folder["state_counts"].get(row["state"], 0) + 1
+            # Cloud deletion eligibility mirrors fileHasCloudContent in the SPA:
+            # any Vault File with a non-purged Archive Version under this prefix.
+            has_cloud = bool(
+                row.get("cloud_exists")
+                or row["state"] in {"both", "cloud_only", "restoring"}
+            )
             action_flags = {
                 "upload": row.get("upload_eligible", row["state"] == "local_only"),
                 "recover": row.get("recover_eligible", row["state"] == "cloud_only"),
                 "free-space": row.get("cleanup_eligible", row["state"] == "both"),
+                "cloud-archive": has_cloud,
+                "cloud-purge": has_cloud,
             }
             for action, eligible in action_flags.items():
                 if eligible:
