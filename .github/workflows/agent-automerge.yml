@@ -14,7 +14,9 @@ name: Agent pipeline auto-merge
 #
 # The gates live in .github/scripts/agent_pipeline.py and are covered by
 # tests/test_agent_pipeline.py. In short: same-repo cursor/* branch, not a draft,
-# closes an agent-pipeline issue, mergeable, and every check run green.
+# closes an agent-pipeline issue, mergeable, and every check run green. The same
+# job also re-dispatches repair agents when checks failed after the Cursor run
+# went idle (idle ≠ done).
 
 on:
   schedule:

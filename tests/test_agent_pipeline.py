@@ -82,6 +82,7 @@ class FakeGitHub:
         self._fail_merge = fail_merge or set()
         self.repo = "o/r"
         self.added_labels: list[tuple[int, str]] = []
+        self.removed_labels: list[tuple[int, str]] = []
         self.merged: list[int] = []
         self.closed_issues: list[int] = []
         self.deleted_labels: list[str] = []
@@ -101,6 +102,10 @@ class FakeGitHub:
     def add_label(self, issue: int, label: str) -> None:
         self.added_labels.append((issue, label))
         self._labels.setdefault(issue, set()).add(label)
+
+    def remove_label(self, issue: int, label: str) -> None:
+        self.removed_labels.append((issue, label))
+        self._labels.setdefault(issue, set()).discard(label)
 
     def open_pull_requests(self) -> list[dict]:
         return self._pull_requests
@@ -450,6 +455,93 @@ class MergeSweepTests(unittest.TestCase):
         self.assertEqual(sender.payloads[0]["issue"]["number"], 70)
 
 
+class RepairFailedTests(unittest.TestCase):
+    def test_dispatches_a_repair_when_checks_failed(self) -> None:
+        sender = RecordingSender()
+        client = FakeGitHub(
+            pull_requests=[
+                _pull_request(
+                    number=103,
+                    body="Closes #70",
+                    headRefName="cursor/playwright-1",
+                    headRefOid="deadbeef01",
+                    mergeStateStatus="BLOCKED",
+                )
+            ],
+            labels={70: {"agent-pipeline", "ready-for-agent", "agent-dispatched"}},
+            titles={70: "Playwright e2e"},
+            checks={
+                "deadbeef01": [
+                    _check("Unit and migration tests"),
+                    _check("Playwright e2e", conclusion="failure"),
+                ]
+            },
+        )
+        self.assertEqual(
+            pipeline.repair_failed(client, _automation(sender)), [103]
+        )
+        self.assertIn((70, "agent-dispatched"), client.removed_labels)
+        self.assertIn((70, "agent-dispatched"), client.added_labels)
+        self.assertIn((70, "agent-repair-deadbee"), client.added_labels)
+        self.assertEqual(
+            sender.payloads[0]["idempotency_key"], "o/r#70:repair:deadbeef01"
+        )
+        self.assertIn(
+            "Do **not** open a new pull request",
+            sender.payloads[0]["instructions"],
+        )
+
+    def test_does_not_repair_twice_for_the_same_sha(self) -> None:
+        sender = RecordingSender()
+        client = FakeGitHub(
+            pull_requests=[
+                _pull_request(
+                    number=103,
+                    body="Closes #70",
+                    headRefOid="deadbeef01",
+                    mergeStateStatus="BLOCKED",
+                )
+            ],
+            labels={
+                70: {
+                    "agent-pipeline",
+                    "agent-dispatched",
+                    "agent-repair-deadbee",
+                }
+            },
+            checks={
+                "deadbeef01": [_check("Playwright e2e", conclusion="failure")]
+            },
+        )
+        self.assertEqual(pipeline.repair_failed(client, _automation(sender)), [])
+        self.assertEqual(sender.payloads, [])
+
+    def test_ignores_green_and_pending_pull_requests(self) -> None:
+        sender = RecordingSender()
+        client = FakeGitHub(
+            pull_requests=[
+                _pull_request(number=500, headRefOid="aaa"),
+                _pull_request(number=501, body="Closes #58", headRefOid="bbb"),
+            ],
+            labels={
+                57: {"agent-pipeline", "agent-dispatched"},
+                58: {"agent-pipeline", "agent-dispatched"},
+            },
+            checks={
+                "aaa": [_check("Unit and migration tests")],
+                "bbb": [
+                    _check(
+                        "Unit and migration tests",
+                        status="in_progress",
+                        conclusion=None,
+                    )
+                ],
+            },
+        )
+        self.assertEqual(pipeline.repair_failed(client, _automation(sender)), [])
+        self.assertEqual(sender.payloads, [])
+
+
 class RecordingSender:
     """Stands in for the Automation webhook so payloads can be asserted."""
 
@@ -493,6 +585,21 @@ class AgentPromptTests(unittest.TestCase):
         prompt = pipeline.agent_prompt("o/r", 57, "x")
         self.assertIn("not draft", prompt)
         self.assertIn("drafts are never auto-merged", prompt)
+
+    def test_the_prompt_requires_waiting_for_ci_green(self) -> None:
+        prompt = pipeline.agent_prompt("o/r", 57, "x")
+        self.assertIn("gh pr checks", prompt)
+        self.assertIn("not the end of the job", prompt)
+        self.assertIn("every check is green", prompt)
+
+    def test_repair_prompt_forbids_a_second_pull_request(self) -> None:
+        prompt = pipeline.repair_prompt(
+            "o/r", 70, "Playwright", 103, "cursor/x", "Playwright e2e (failure)"
+        )
+        self.assertIn("Do **not** open a new pull request", prompt)
+        self.assertIn("#103", prompt)
+        self.assertIn("cursor/x", prompt)
+        self.assertIn("gh pr checks 103", prompt)
 
 
 class AutomationPayloadTests(unittest.TestCase):
