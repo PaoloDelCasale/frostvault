@@ -13,11 +13,13 @@ notion of "blocked". This module is the missing link, in three commands:
     chain, and by ``unblock`` for each issue it just released.
 
 ``merge``
-    Sweep the open pull requests and squash-merge the ones that are finished.
-    After each merge, run ``unblock`` (and dispatch) in-process: a merge done
-    with ``GITHUB_TOKEN`` closes the linked issue, but GitHub does not re-fire
-    ``issues: closed`` workflows for that token, so relying on
-    ``agent-unblock.yml`` alone would stall the chain.
+    Sweep the open pull requests: squash-merge the ones that are finished, and
+    re-dispatch a repair agent for agent PRs whose checks have failed (Cursor
+    marking a run IDLE is not the same as CI green). After each merge, run
+    ``unblock`` (and dispatch) in-process: a merge done with ``GITHUB_TOKEN``
+    closes the linked issue, but GitHub does not re-fire ``issues: closed``
+    workflows for that token, so relying on ``agent-unblock.yml`` alone would
+    stall the chain.
 
 The target issue must both carry ``agent-pipeline`` and be one of the explicitly
 enumerated sub-issues of epic #56. The allowlist is deliberately not reusable:
@@ -49,6 +51,7 @@ from typing import Any, Callable, Iterable, Sequence
 PIPELINE_LABEL = "agent-pipeline"
 READY_LABEL = "ready-for-agent"
 DISPATCHED_LABEL = "agent-dispatched"
+REPAIR_LABEL_PREFIX = "agent-repair-"
 AGENT_BRANCH_PREFIX = "cursor/"
 EPIC_ISSUE = 56
 BOOTSTRAP_ISSUE = 84
@@ -94,6 +97,11 @@ class GitHubCli:
 
     def add_label(self, issue: int, label: str) -> None:
         self._gh(["issue", "edit", str(issue), "--repo", self.repo, "--add-label", label])
+
+    def remove_label(self, issue: int, label: str) -> None:
+        self._gh(
+            ["issue", "edit", str(issue), "--repo", self.repo, "--remove-label", label]
+        )
 
     def open_pull_requests(self) -> list[dict[str, Any]]:
         fields = (
@@ -155,11 +163,16 @@ class CursorAutomation:
         self._sender = sender or self._post
 
     def payload(
-        self, repo: str, issue: int, title: str, instructions: str
+        self,
+        repo: str,
+        issue: int,
+        title: str,
+        instructions: str,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         return {
             "event": "frostvault_epic_56_issue_ready",
-            "idempotency_key": f"{repo}#{issue}",
+            "idempotency_key": idempotency_key or f"{repo}#{issue}",
             "repository": repo,
             "issue": {
                 "number": issue,
@@ -190,9 +203,23 @@ class CursorAutomation:
             ) from error
 
     def start(
-        self, repo: str, issue: int, title: str, instructions: str
+        self,
+        repo: str,
+        issue: int,
+        title: str,
+        instructions: str,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        return self._sender(self.payload(repo, issue, title, instructions))
+        return self._sender(
+            self.payload(
+                repo, issue, title, instructions, idempotency_key=idempotency_key
+            )
+        )
+
+
+def repair_marker(sha: str) -> str:
+    """Label that records a repair dispatch already launched for this head SHA."""
+    return f"{REPAIR_LABEL_PREFIX}{sha[:7]}"
 
 
 def agent_prompt(repo: str, issue: int, title: str) -> str:
@@ -217,10 +244,47 @@ Run the whole suite before opening a pull request, not only your own tests:
 
 Open a **ready-for-review** (not draft) pull request whose body contains
 "Closes #{issue}", states what you tested and how, and attaches a 375px
-screenshot for any UI change. Auto-merge is enabled: the pull request merges as
-soon as every check is green and the issue's blockers are closed, so nothing
-else reviews it. Do not open it with tests you have not run. Do not leave the
-pull request as a draft — drafts are never auto-merged."""
+screenshot for any UI change. Do not leave the pull request as a draft —
+drafts are never auto-merged.
+
+Opening the PR is not the end of the job. Cursor may show the run as idle; that
+does **not** mean the work is done. After the PR exists, poll GitHub Checks until
+every check on the head commit has completed:
+
+  gh pr checks <pr-number> --watch
+
+If any check fails, read the logs (`gh run view <run-id> --log-failed`), fix the
+cause, push to the same branch, and wait again. Repeat until every check is green
+(or `mergeStateStatus` is CLEAN/HAS_HOOKS). Auto-merge then squash-merges; you
+are finished only when the PR can merge, not when the first PR URL appears."""
+
+
+def repair_prompt(
+    repo: str,
+    issue: int,
+    title: str,
+    pull_request: int,
+    branch: str,
+    failed_summary: str,
+) -> str:
+    """Instructions for a follow-up agent when CI failed and the prior run went idle."""
+    return f"""Repair open pull request #{pull_request} for GitHub issue #{issue} in {repo}: {title}
+
+The previous agent stopped while GitHub Checks were still failing ({failed_summary}).
+An idle Cursor run is not a finished pipeline issue.
+
+Do **not** open a new pull request. Check out branch `{branch}` (PR #{pull_request}),
+fix the failures, push to that same branch, and keep going until every check on
+the head commit is green.
+
+Read failures with:
+
+  gh pr checks {pull_request}
+  gh run view <run-id> --log-failed
+
+You are finished only when `gh pr checks {pull_request}` shows every check
+passing (or mergeStateStatus is CLEAN/HAS_HOOKS). Auto-merge will then squash-
+merge the PR."""
 
 
 def dispatch(
@@ -228,6 +292,10 @@ def dispatch(
     automation: CursorAutomation | None,
     issue: int,
     repo: str,
+    *,
+    force: bool = False,
+    instructions: str | None = None,
+    idempotency_key: str | None = None,
 ) -> str:
     """Start the automation on ``issue``. Returns what happened, for logging."""
     if issue not in PIPELINE_ISSUES:
@@ -237,8 +305,10 @@ def dispatch(
         )
         return "outside-epic"
     if DISPATCHED_LABEL in client.labels(issue):
-        print(f"#{issue}: already dispatched.")
-        return "already-dispatched"
+        if not force:
+            print(f"#{issue}: already dispatched.")
+            return "already-dispatched"
+        client.remove_label(issue, DISPATCHED_LABEL)
     if automation is None:
         print(
             f"#{issue}: Cursor Automation webhook secrets are missing; leaving "
@@ -246,7 +316,13 @@ def dispatch(
         )
         return "skipped"
     title = client.title(issue)
-    automation.start(repo, issue, title, agent_prompt(repo, issue, title))
+    automation.start(
+        repo,
+        issue,
+        title,
+        instructions or agent_prompt(repo, issue, title),
+        idempotency_key=idempotency_key,
+    )
     client.add_label(issue, DISPATCHED_LABEL)
     print(f"#{issue}: dispatched through the temporary Cursor Automation.")
     return "dispatched"
@@ -440,6 +516,74 @@ def merge_ready(
     return merged
 
 
+def repair_failed(
+    client: GitHubCli,
+    automation: CursorAutomation | None = None,
+) -> list[int]:
+    """Re-dispatch when an agent PR's checks failed and the prior run went idle.
+
+    Cursor marks automations IDLE when the conversation ends; that is not the
+    same as CI green. One repair attempt is allowed per failing head SHA
+    (``agent-repair-<sha7>``). The repair agent is told to fix the existing PR
+    branch, not open a new one.
+    """
+    repaired: list[int] = []
+    for pull_request in client.open_pull_requests():
+        if pull_request.get("isDraft") or pull_request.get("isCrossRepository"):
+            continue
+        branch = pull_request.get("headRefName", "")
+        if not branch.startswith(AGENT_BRANCH_PREFIX):
+            continue
+        issue = closing_issue_number(pull_request.get("body"))
+        if issue is None or issue not in PIPELINE_ISSUES:
+            continue
+        labels = client.labels(issue)
+        if PIPELINE_LABEL not in labels:
+            continue
+        sha = str(pull_request.get("headRefOid") or "")
+        if not sha:
+            continue
+        marker = repair_marker(sha)
+        if marker in labels:
+            print(
+                f"#{pull_request['number']}: already repaired for {sha[:7]}, "
+                "leaving it alone."
+            )
+            continue
+        check_runs = client.check_runs(sha)
+        if checks_verdict(check_runs) != "failed":
+            continue
+        failed = ", ".join(failed_check_names(check_runs)) or "failed checks"
+        number = int(pull_request["number"])
+        if automation is None:
+            print(
+                f"#{number}: checks failed ({failed}); webhook secrets missing, "
+                "cannot dispatch a repair."
+            )
+            continue
+        title = client.title(issue)
+        result = dispatch(
+            client,
+            automation,
+            issue,
+            client.repo,
+            force=True,
+            instructions=repair_prompt(
+                client.repo, issue, title, number, branch, failed
+            ),
+            idempotency_key=f"{client.repo}#{issue}:repair:{sha[:12]}",
+        )
+        if result != "dispatched":
+            print(f"#{number}: repair dispatch returned {result}.")
+            continue
+        client.add_label(issue, marker)
+        repaired.append(number)
+        print(f"#{number}: dispatched repair agent for failed checks ({failed}).")
+    if not repaired:
+        print("Nothing to repair.")
+    return repaired
+
+
 def automation_from_environment() -> CursorAutomation | None:
     """Build the webhook client from workflow secrets, or ``None`` if unset."""
     import os
@@ -494,7 +638,9 @@ def main(argv: Sequence[str]) -> int:
         dispatch(client, automation_from_environment(), issue, repo)
         return 0
     if command == "merge":
-        merge_ready(client, automation_from_environment())
+        automation = automation_from_environment()
+        merge_ready(client, automation)
+        repair_failed(client, automation)
         return 0
     print(f"unknown command {command!r}", file=sys.stderr)
     return 2
