@@ -1,5 +1,10 @@
 import { apiRequest, configureApiClient, setCsrfToken } from "./client";
-import type { I18nCatalogResponse, MeResponse, VaultsResponse } from "./types";
+import type {
+  I18nCatalogResponse,
+  LocaleUpdateResponse,
+  MeResponse,
+  VaultsResponse,
+} from "./types";
 
 export function fetchMe(): Promise<MeResponse> {
   return apiRequest<MeResponse>("/api/me").then((me) => {
@@ -31,4 +36,11 @@ export function fetchI18nCatalog(locale?: string): Promise<I18nCatalogResponse> 
       return catalog;
     },
   );
+}
+
+export function updateLocale(locale: string): Promise<LocaleUpdateResponse> {
+  return apiRequest<LocaleUpdateResponse>("/api/locale", {
+    method: "PUT",
+    body: JSON.stringify({ locale }),
+  });
 }
