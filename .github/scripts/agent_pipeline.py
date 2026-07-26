@@ -211,10 +211,12 @@ Run the whole suite before opening a pull request, not only your own tests:
   node --test tests/*.mjs
   cd frontend && npm ci && npm run lint && npm run test   # only if frontend/ exists
 
-Open a pull request whose body contains "Closes #{issue}", states what you tested
-and how, and attaches a 375px screenshot for any UI change. Auto-merge is enabled:
-the pull request merges as soon as every check is green, so nothing else reviews
-it. Do not open it with tests you have not run."""
+Open a **ready-for-review** (not draft) pull request whose body contains
+"Closes #{issue}", states what you tested and how, and attaches a 375px
+screenshot for any UI change. Auto-merge is enabled: the pull request merges as
+soon as every check is green and the issue's blockers are closed, so nothing
+else reviews it. Do not open it with tests you have not run. Do not leave the
+pull request as a draft — drafts are never auto-merged."""
 
 
 def dispatch(
@@ -325,7 +327,10 @@ def unblock(client: GitHubCli, closed_issue: int) -> list[int]:
 
 
 def merge_reason_to_skip(
-    pull_request: dict[str, Any], issue_labels: set[str] | None, verdict: str
+    pull_request: dict[str, Any],
+    issue_labels: set[str] | None,
+    verdict: str,
+    open_blockers: Sequence[int] | None = None,
 ) -> str | None:
     """Why this pull request must not be merged, or ``None`` if it may be.
 
@@ -345,6 +350,9 @@ def merge_reason_to_skip(
         return f"issue #{issue} is not part of temporary epic #{EPIC_ISSUE}"
     if issue_labels is None or PIPELINE_LABEL not in issue_labels:
         return "the issue it closes is not in the pipeline"
+    if open_blockers:
+        listed = ", ".join(f"#{blocker}" for blocker in open_blockers)
+        return f"issue still blocked by {listed}"
     if pull_request.get("mergeable") != "MERGEABLE":
         return f"not mergeable ({pull_request.get('mergeable')})"
     if verdict == "none":
@@ -367,12 +375,21 @@ def merge_ready(client: GitHubCli) -> list[int]:
             if issue is not None and issue in PIPELINE_ISSUES
             else None
         )
+        open_blockers: list[int] | None = None
+        if issue is not None and labels and PIPELINE_LABEL in labels:
+            open_blockers = [
+                int(blocker["number"])
+                for blocker in client.blocked_by(issue)
+                if blocker.get("state") == "open"
+            ]
         verdict = (
             checks_verdict(client.check_runs(pull_request["headRefOid"]))
             if labels and PIPELINE_LABEL in labels
             else "none"
         )
-        reason = merge_reason_to_skip(pull_request, labels, verdict)
+        reason = merge_reason_to_skip(
+            pull_request, labels, verdict, open_blockers=open_blockers
+        )
         if reason:
             print(f"#{number}: {reason}, leaving it alone.")
             continue
