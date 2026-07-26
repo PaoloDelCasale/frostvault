@@ -27,4 +27,11 @@ describe("translate (real catalogs)", () => {
       "Protected archive · Family",
     );
   });
+
+  it("returns a visible fallback for a missing key, never an empty string", () => {
+    const messages = loadCatalog("en");
+    const result = translate(messages, "missing.not_defined");
+    expect(result).toBe("missing.not_defined");
+    expect(result.length).toBeGreaterThan(0);
+  });
 });
