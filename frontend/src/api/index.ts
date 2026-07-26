@@ -51,7 +51,6 @@ export {
   selectVault,
   startCloudArchive,
   startCloudPurge,
-  accelerateCloudPurge,
   startFreeSpace,
   startRecover,
   startStorageClass,
