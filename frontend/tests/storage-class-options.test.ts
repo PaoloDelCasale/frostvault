@@ -71,6 +71,31 @@ describe("storage class option labels (seam 6)", () => {
     expect(label).not.toContain("180");
   });
 
+  it("includes instant retrieval fee for GLACIER_IR", () => {
+    const glacierIr: StorageClassOption = {
+      id: "GLACIER_IR",
+      currency: "EUR",
+      storage_rate_eur_per_gib_month: 0.004,
+      retrieval: "instant",
+      min_duration_days: 90,
+      requires_restore: false,
+      availability_zones: "multi",
+      retrieval_rate_eur_per_gib: 0.03,
+    };
+    expect(
+      formatStorageClassRecovery(glacierIr, (key, params) =>
+        key === "ui.storage_class_recovery_price"
+          ? `Recovery €${params?.restore_rate}/GiB`
+          : key,
+      ),
+    ).toBe("Recovery €0.03/GiB");
+    expect(
+      formatStorageClassRetrieval(glacierIr, (key) =>
+        key === "ui.storage_class_retrieval_instant" ? "Instant retrieval" : key,
+      ),
+    ).toBe("Instant retrieval");
+  });
+
   it("formats recovery price separately from retrieval", () => {
     expect(
       formatStorageClassRetrieval(standard, (key) =>

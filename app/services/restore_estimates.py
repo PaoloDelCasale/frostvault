@@ -11,6 +11,14 @@ DEFAULT_RESTORE_PRICING_EUR_PER_GIB: dict[str, dict[str, float]] = {
     "DEEP_ARCHIVE": {"Standard": 0.02, "Bulk": 0.0025},
 }
 
+# Per-GiB GET retrieval fees for classes that return bytes without a RestoreObject job.
+# Approximate published list prices (same EUR-as-list-USD convention as storage rates).
+DEFAULT_INSTANT_RETRIEVAL_EUR_PER_GIB: dict[str, float] = {
+    "STANDARD_IA": 0.01,
+    "ONEZONE_IA": 0.01,
+    "GLACIER_IR": 0.03,
+}
+
 DEFAULT_RESTORE_HOURS: dict[str, dict[str, float]] = {
     "GLACIER": {"Expedited": 5 / 60, "Standard": 5.0, "Bulk": 12.0},
     "DEEP_ARCHIVE": {"Standard": 12.0, "Bulk": 48.0},

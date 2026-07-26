@@ -10,6 +10,8 @@ export type StorageClassOption = {
   restore_hours_standard?: number;
   restore_rate_eur_per_gib_bulk?: number;
   restore_rate_eur_per_gib_standard?: number;
+  /** Per-GiB GET retrieval fee for Instant/IA classes (no RestoreObject job). */
+  retrieval_rate_eur_per_gib?: number;
 };
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
@@ -53,6 +55,14 @@ export function formatStorageClassRecovery(
   if (storageClassNeedsRestore(option)) {
     return t("ui.storage_class_recovery_price", {
       restore_rate: formatRate(option.restore_rate_eur_per_gib_bulk ?? 0),
+    });
+  }
+  if (
+    option.retrieval_rate_eur_per_gib != null &&
+    option.retrieval_rate_eur_per_gib > 0
+  ) {
+    return t("ui.storage_class_recovery_price", {
+      restore_rate: formatRate(option.retrieval_rate_eur_per_gib),
     });
   }
   return t("ui.storage_class_recovery_none");
