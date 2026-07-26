@@ -20,4 +20,11 @@ describe("translate (real catalogs)", () => {
     const messages = loadCatalog("en");
     expect(translate(messages, "ui.sign_out")).toBe("Sign out");
   });
+
+  it("interpolates named parameters for ui.protected_archive", () => {
+    const messages = loadCatalog("en");
+    expect(translate(messages, "ui.protected_archive", { name: "Family" })).toBe(
+      "Protected archive · Family",
+    );
+  });
 });

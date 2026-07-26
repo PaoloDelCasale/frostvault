@@ -7,9 +7,11 @@ export function translate(
   key: string,
   params: MessageParams = {},
 ): string {
-  const message = messages[key];
-  if (message === undefined || message === null) {
-    return key;
-  }
-  return String(message);
+  const raw = messages[key];
+  const message = raw === undefined || raw === null ? key : String(raw);
+  return message.replace(/\{(\w+)\}/g, (match, name: string) =>
+    Object.prototype.hasOwnProperty.call(params, name)
+      ? String(params[name])
+      : match,
+  );
 }
