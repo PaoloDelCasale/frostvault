@@ -1,0 +1,26 @@
+/**
+ * FrostVault design-token documentation (issue #62).
+ *
+ * Palette and radii live in `src/index.css` `@theme`, migrated from
+ * `app/static/style.css`:
+ *
+ * | Token / shape | style.css | @theme |
+ * | --- | --- | --- |
+ * | --ink | #18221d | #18221d |
+ * | --muted | #65716a | #65716a |
+ * | --line | #dce4de | #dce4de |
+ * | --surface | #ffffff | #ffffff |
+ * | --canvas | #f4f7f4 | #f4f7f4 |
+ * | --green | #257a4b | #257a4b |
+ * | --green-soft | #e2f3e9 | #e2f3e9 |
+ * | --blue-soft | #e5effb | #e5effb |
+ * | --amber-soft | #fff1cc | #fff1cc |
+ * | --red-soft | #fde8e5 | #fde8e5 |
+ * | --violet-soft | #eee9fb | #eee9fb |
+ * | card radius | 14px (.card) | --radius-card |
+ * | panel radius | 18px (.panel) | --radius-panel |
+ * | auth card radius | 22px (.auth-card) | --radius-auth |
+ * | badge radius | 999px (.badge) | --radius-badge |
+ */
+
+export {};
