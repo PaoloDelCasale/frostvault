@@ -105,7 +105,8 @@ export type QuotaEvaluation = {
 };
 
 export type VaultQuotasResponse = {
-  limits: QuotaLimits;
+  vault_id?: number;
+  limits: QuotaLimits | Partial<QuotaLimits>;
   usage: QuotaUsage;
   evaluation?: QuotaEvaluation;
 };
@@ -294,45 +295,6 @@ export type AdminMembershipCreatePayload = {
 
 export type AdminOwnerTransferPayload = {
   new_owner_user_id: number;
-  reason: string;
-};
-
-export type QuotaLimits = {
-  storage_soft_limit_bytes: number | null;
-  storage_hard_limit_bytes: number | null;
-  concurrency_soft_limit: number | null;
-  concurrency_hard_limit: number | null;
-  restore_30d_soft_limit_bytes: number | null;
-  restore_30d_hard_limit_bytes: number | null;
-};
-
-export type QuotaUsage = {
-  storage_bytes?: number | null;
-  concurrency?: number | null;
-  restore_30d_bytes?: number | null;
-};
-
-export type QuotaDecision = {
-  code?: string;
-  severity?: string;
-  projected?: number;
-  limit?: number;
-};
-
-export type QuotaEvaluation = {
-  state?: string;
-  allowed?: boolean;
-  decisions?: QuotaDecision[];
-};
-
-export type VaultQuotasResponse = {
-  vault_id?: number;
-  limits: Partial<QuotaLimits>;
-  usage: QuotaUsage;
-  evaluation?: QuotaEvaluation;
-};
-
-export type VaultQuotaUpdatePayload = QuotaLimits & {
   reason: string;
 };
 
