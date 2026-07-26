@@ -49,17 +49,21 @@ describe("VaultCreatePage", () => {
     resetApiClientForTests();
   });
 
-  function renderPage() {
+  function renderPage(displayName = "Ada Lovelace") {
     const client = createAppQueryClient({
       defaultOptions: { queries: { retry: false } },
     });
     return render(
       <ApiQueryProvider client={client}>
         <I18nProvider>
-          <VaultCreatePage displayName="Ada Lovelace" onNavigate={navigateMock} />
+          <VaultCreatePage displayName={displayName} onNavigate={navigateMock} />
         </I18nProvider>
       </ApiQueryProvider>,
     );
+  }
+
+  function mockCatalog(messages: Record<string, string>, locale = "en") {
+    return jsonResponse({ locale, locales: ["en", "it"], messages });
   }
 
   it("posts a valid creation payload then navigates to the new vault archive", async () => {
@@ -67,9 +71,7 @@ describe("VaultCreatePage", () => {
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/api/i18n/catalog")) {
-        return Promise.resolve(
-          jsonResponse({ locale: "en", locales: ["en", "it"], messages: en }),
-        );
+        return Promise.resolve(mockCatalog(en));
       }
       if (url === "/api/vaults" && init?.method === "POST") {
         return Promise.resolve(
@@ -137,5 +139,50 @@ describe("VaultCreatePage", () => {
     await waitFor(() => {
       expect(navigateMock).toHaveBeenCalledWith("/");
     });
+  });
+
+  it("shows a localized validation error and preserves form contents", async () => {
+    const user = userEvent.setup();
+    const it = loadCatalog("it");
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/i18n/catalog")) {
+        return Promise.resolve(mockCatalog(it, "it"));
+      }
+      if (url === "/api/vaults" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              message_key: "ui.vault_create.failed",
+              detail: "Slug is already taken",
+            },
+            422,
+          ),
+        );
+      }
+      return Promise.reject(new Error(`unexpected request ${url}`));
+    });
+
+    renderPage();
+    await screen.findByRole("heading", { name: it["ui.vault_create.title"] });
+
+    const nameInput = screen.getByRole("textbox", {
+      name: it["ui.vault_create.name"],
+    });
+    const slugInput = screen.getByRole("textbox", {
+      name: new RegExp(it["ui.vault_create.slug"], "i"),
+    });
+    await user.type(nameInput, "Documents");
+    await user.type(slugInput, "taken-slug");
+    await user.click(
+      screen.getByRole("button", { name: it["ui.vault_create.submit"] }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      it["ui.vault_create.failed"],
+    );
+    expect(nameInput).toHaveValue("Documents");
+    expect(slugInput).toHaveValue("taken-slug");
+    expect(navigateMock).not.toHaveBeenCalled();
   });
 });
