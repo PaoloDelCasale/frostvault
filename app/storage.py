@@ -9,6 +9,7 @@ import re
 import stat
 import subprocess
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from watchfiles import Change, awatch
 
 from .config import is_placeholder, settings
@@ -171,6 +173,84 @@ def job_bwlimit(job: dict[str, Any] | None) -> str | None:
     value = job.get("bwlimit")
     return str(value) if value else None
 
+
+def job_bandwidth_bytes_per_sec(job: dict[str, Any] | None) -> int | None:
+    """Parse the job bwlimit (rclone ``Nk`` form) into bytes/sec for boto3."""
+    raw = job_bwlimit(job)
+    if not raw:
+        return None
+    text = raw.strip().lower()
+    if text.endswith("k"):
+        text = text[:-1]
+    try:
+        kibps = int(text)
+    except ValueError:
+        return None
+    if kibps <= 0:
+        return None
+    return kibps * 1024
+
+
+def rclone_download_perf_args() -> list[str]:
+    """Rclone flags that parallelize single-file downloads above the cutoff."""
+    streams = int(getattr(settings, "rclone_multi_thread_streams", 8) or 8)
+    cutoff = int(getattr(settings, "rclone_multi_thread_cutoff_mib", 64) or 64)
+    return [
+        f"--multi-thread-streams={max(1, streams)}",
+        f"--multi-thread-cutoff={max(1, cutoff)}M",
+    ]
+
+
+def s3_download_transfer_config(job: dict[str, Any] | None = None) -> TransferConfig:
+    """TransferManager config for plain-vault Archive Version downloads."""
+    threshold_mib = int(
+        getattr(settings, "s3_download_multipart_threshold_mib", 8) or 8
+    )
+    chunk_mib = int(
+        getattr(settings, "s3_download_multipart_chunksize_mib", 8) or 8
+    )
+    concurrency = int(getattr(settings, "s3_download_max_concurrency", 10) or 10)
+    return TransferConfig(
+        multipart_threshold=max(5, threshold_mib) * 1024 * 1024,
+        multipart_chunksize=max(5, chunk_mib) * 1024 * 1024,
+        max_concurrency=max(1, min(32, concurrency)),
+        max_bandwidth=job_bandwidth_bytes_per_sec(job),
+        use_threads=True,
+    )
+
+
+class _ThrottledByteProgress:
+    """Batch transferred-byte updates so progress does not thrash the database."""
+
+    def __init__(self, job_id: int) -> None:
+        self.job_id = job_id
+        self.transferred = 0
+        self._lock = threading.Lock()
+        self._last_report = 0.0
+        interval_ms = int(
+            getattr(settings, "job_progress_min_interval_ms", 500) or 500
+        )
+        self._min_interval = max(0.05, interval_ms / 1000.0)
+
+    def add(self, amount: int) -> None:
+        if amount <= 0:
+            return
+        should_report = False
+        with self._lock:
+            self.transferred += amount
+            now = time.monotonic()
+            if now - self._last_report >= self._min_interval:
+                self._last_report = now
+                should_report = True
+                value = self.transferred
+        if should_report:
+            set_job_progress(self.job_id, value)
+
+    def flush(self) -> None:
+        with self._lock:
+            value = self.transferred
+            self._last_report = time.monotonic()
+        set_job_progress(self.job_id, value)
 
 
 def safe_relative_path(value: str) -> PurePosixPath:
@@ -1202,10 +1282,26 @@ def reconcile_interrupted_jobs() -> dict[str, int]:
 
 def job_progress_callback(job: dict[str, Any]) -> Callable[[int, int | None], None]:
     total_bytes = int(job.get("total_bytes") or 0)
+    interval_ms = int(getattr(settings, "job_progress_min_interval_ms", 500) or 500)
+    min_interval = max(0.05, interval_ms / 1000.0)
+    state = {"last_at": 0.0, "last_value": -1}
+    lock = threading.Lock()
 
     def update(transferred_bytes: int, _: int | None = None) -> None:
+        # Rclone reports absolute transferred counters.
         value = min(transferred_bytes, total_bytes) if total_bytes else transferred_bytes
-        set_job_progress(job["id"], value)
+        should_report = False
+        with lock:
+            if value == state["last_value"]:
+                return
+            now = time.monotonic()
+            complete = bool(total_bytes) and value >= total_bytes
+            if complete or now - state["last_at"] >= min_interval:
+                state["last_at"] = now
+                state["last_value"] = value
+                should_report = True
+        if should_report:
+            set_job_progress(job["id"], value)
 
     return update
 
@@ -1231,6 +1327,7 @@ def download_with_rclone(job: dict[str, Any]) -> None:
                     "copyto",
                     f"{runtime.remote_name}:{job['path']}",
                     str(temporary),
+                    *rclone_download_perf_args(),
                     job_progress_callback(job),
                     job_id=job["id"],
                     config_path=str(runtime.path),
@@ -1241,6 +1338,7 @@ def download_with_rclone(job: dict[str, Any]) -> None:
                 "copyto",
                 configured_rclone_destination(job, job["path"]),
                 str(temporary),
+                *rclone_download_perf_args(),
                 job_progress_callback(job),
                 job_id=job["id"],
                 bwlimit=job_bwlimit(job),
@@ -1342,6 +1440,7 @@ def _download_plaintext_for_verification(
                 "copyto",
                 f"{runtime.remote_name}:{job['path']}",
                 str(temporary),
+                *rclone_download_perf_args(),
                 job_progress_callback(job),
                 job_id=job["id"],
                 config_path=str(runtime.path),
@@ -1352,6 +1451,7 @@ def _download_plaintext_for_verification(
             "copyto",
             configured_rclone_destination(job, job["path"]),
             str(temporary),
+            *rclone_download_perf_args(),
             job_progress_callback(job),
             job_id=job["id"],
             bwlimit=job_bwlimit(job),
@@ -1915,6 +2015,10 @@ def download_exact_version_plaintext(
 
     Always pins the S3 ``VersionId``. Path-only current-object downloads are
     forbidden because they can return a different object version.
+
+    Plain vaults use boto3 TransferManager (parallel range GETs for large
+    objects). Crypt vaults keep Rclone so content/name decryption stays on the
+    crypt remote, with multi-thread download flags for large objects.
     """
     if not provider_version_id:
         raise RuntimeError("Exact S3 VersionId is required for recovery")
@@ -1936,6 +2040,7 @@ def download_exact_version_plaintext(
                     f"{runtime.remote_name}:{logical_path}",
                     str(temporary),
                     version_flag,
+                    *rclone_download_perf_args(),
                     job_progress_callback(job),
                     job_id=job["id"],
                     config_path=str(runtime.path),
@@ -1952,6 +2057,7 @@ def download_exact_version_plaintext(
                 configured_rclone_destination(job, logical_path),
                 str(temporary),
                 version_flag,
+                *rclone_download_perf_args(),
                 job_progress_callback(job),
                 job_id=job["id"],
                 bwlimit=job_bwlimit(job),
@@ -1961,30 +2067,31 @@ def download_exact_version_plaintext(
             raise RuntimeError("Rclone did not create the recovered file")
         return
 
-    response = s3_client().get_object(
-        Bucket=job["s3_bucket"],
-        Key=object_key,
-        VersionId=provider_version_id,
-    )
-    body = response["Body"]
-    transferred = 0
+    client = s3_client()
+    reporter = _ThrottledByteProgress(job["id"])
+
+    def on_bytes(amount: int) -> None:
+        ensure_job_active(job["id"], "Recovery stopped")
+        reporter.add(amount)
+
     try:
-        with temporary.open("wb") as destination:
-            chunks = getattr(body, "iter_chunks", None)
-            if callable(chunks):
-                for chunk in chunks():
-                    ensure_job_active(job["id"], "Recovery stopped")
-                    destination.write(chunk)
-                    transferred += len(chunk)
-                    set_job_progress(job["id"], transferred)
-            else:
-                payload = body.read()
-                ensure_job_active(job["id"], "Recovery stopped")
-                destination.write(payload)
-                set_job_progress(job["id"], len(payload))
+        # TransferManager issues parallel ranged GetObject calls above the
+        # multipart threshold while still pinning VersionId via ExtraArgs.
+        client.download_file(
+            Bucket=job["s3_bucket"],
+            Key=object_key,
+            Filename=str(temporary),
+            ExtraArgs={"VersionId": provider_version_id},
+            Callback=on_bytes,
+            Config=s3_download_transfer_config(job),
+        )
+        reporter.flush()
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
+    ensure_job_active(job["id"], "Recovery stopped")
+    if not temporary.is_file():
+        raise RuntimeError("S3 download did not create the recovered file")
 
 
 def process_recover(job: dict[str, Any]) -> None:

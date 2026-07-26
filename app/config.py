@@ -94,6 +94,27 @@ class Settings:
         if not os.getenv("BANDWIDTH_LIMIT_KIBPS", "").strip()
         else max(0, int(os.getenv("BANDWIDTH_LIMIT_KIBPS", "0")))
     )
+    # Plain-vault recovery uses boto3 TransferManager parallel range GETs above
+    # the multipart threshold. Crypt recoveries use rclone multi-thread streams.
+    s3_download_max_concurrency: int = max(
+        1, min(32, int(os.getenv("S3_DOWNLOAD_MAX_CONCURRENCY", "10")))
+    )
+    s3_download_multipart_threshold_mib: int = max(
+        5, int(os.getenv("S3_DOWNLOAD_MULTIPART_THRESHOLD_MIB", "8"))
+    )
+    s3_download_multipart_chunksize_mib: int = max(
+        5, int(os.getenv("S3_DOWNLOAD_MULTIPART_CHUNKSIZE_MIB", "8"))
+    )
+    rclone_multi_thread_streams: int = max(
+        1, min(32, int(os.getenv("RCLONE_MULTI_THREAD_STREAMS", "8")))
+    )
+    rclone_multi_thread_cutoff_mib: int = max(
+        1, int(os.getenv("RCLONE_MULTI_THREAD_CUTOFF_MIB", "64"))
+    )
+    # Cap Job progress DB writes during transfers (ms between updates).
+    job_progress_min_interval_ms: int = max(
+        50, int(os.getenv("JOB_PROGRESS_MIN_INTERVAL_MS", "500"))
+    )
 
     break_glass_allowed_cidrs: str = os.getenv("BREAK_GLASS_ALLOWED_CIDRS", "")
 

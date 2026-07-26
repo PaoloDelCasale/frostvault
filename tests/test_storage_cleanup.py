@@ -1461,6 +1461,27 @@ class StorageCleanupTests(unittest.TestCase):
                 }
             )
             client.restore_object = Mock()
+
+            def download_file(
+                Bucket,
+                Key,
+                Filename,
+                ExtraArgs=None,
+                Callback=None,
+                Config=None,
+            ):
+                kwargs = {"Bucket": Bucket, "Key": Key}
+                if ExtraArgs:
+                    kwargs.update(ExtraArgs)
+                response = client.get_object(**kwargs)
+                body = response["Body"]
+                with open(Filename, "wb") as destination:
+                    for chunk in body.iter_chunks():
+                        destination.write(chunk)
+                        if Callback is not None:
+                            Callback(len(chunk))
+
+            client.download_file = Mock(side_effect=download_file)
             with (
                 patch("app.database.settings", database_settings),
                 patch("app.storage.settings", worker_settings),
@@ -1473,7 +1494,12 @@ class StorageCleanupTests(unittest.TestCase):
                 process_jobs_once()
 
             client.head_object.assert_called()
+            client.download_file.assert_called()
             client.get_object.assert_called()
+            self.assertEqual(
+                client.download_file.call_args.kwargs["ExtraArgs"]["VersionId"],
+                "s3-version-1",
+            )
             self.assertEqual(
                 client.get_object.call_args.kwargs["VersionId"],
                 "s3-version-1",
