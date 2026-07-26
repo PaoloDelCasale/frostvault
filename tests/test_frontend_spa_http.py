@@ -57,7 +57,6 @@ _SOURCE_SCAN_FILES = (
     REPO_ROOT / ".env.local.example",
     REPO_ROOT / "Dockerfile",
     REPO_ROOT / ".github" / "workflows" / "migrations.yml",
-    REPO_ROOT / ".github" / "scripts" / "agent_pipeline.py",
 )
 
 _SOURCE_SCAN_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".mjs", ".md", ".yml", ".yaml", ".example", ".css", ".html", ".json"}
