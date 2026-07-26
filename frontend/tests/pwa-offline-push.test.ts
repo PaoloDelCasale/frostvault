@@ -37,31 +37,17 @@ function memoryStorage(): Storage {
 const sampleListing: FilesResponse = {
   mode: "browse",
   directory: "",
-  q: "",
-  state: "",
   page: 1,
-  page_size: 100,
   total: 1,
   items: [
     {
+      type: "file",
       path: "readme.txt",
       name: "readme.txt",
-      is_directory: false,
-      size: 12,
       state: "both",
-      cloud_storage_class: "STANDARD",
-      local_presence: "present",
-      integrity: "verified",
-      availability: "available",
-      vault_file_id: "vf-1",
-      upload_eligible: false,
-      recover_eligible: false,
-      cleanup_eligible: true,
-      cloud_archive_eligible: false,
-      cloud_purge_eligible: false,
+      local_size: 12,
     },
   ],
-  directories: [],
 };
 
 describe("offline file listing cache (seam 3)", () => {

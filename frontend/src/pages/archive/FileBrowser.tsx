@@ -11,6 +11,7 @@ import {
 } from "@/pwa";
 
 import type { VaultCapabilities } from "./actions";
+import { demoRootListing } from "./demoFiles";
 import { FileList } from "./FileList";
 import { FileOperationsHost } from "./FileOperationsHost";
 import {
@@ -109,6 +110,15 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
   );
 
   const filesQuery = useQuery(filesQueryOptions(query));
+  const forceOfflineDemo =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("offline") === "1";
+
+  useEffect(() => {
+    if (forceOfflineDemo) {
+      saveCachedFilesListing(query, demoRootListing);
+    }
+  }, [forceOfflineDemo, query]);
 
   useEffect(() => {
     if (filesQuery.isSuccess && filesQuery.data) {
@@ -117,14 +127,23 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
   }, [filesQuery.isSuccess, filesQuery.data, query]);
 
   const offlineCached = useMemo(() => {
+    if (forceOfflineDemo) {
+      return loadCachedFilesListing(query) ?? {
+        data: demoRootListing,
+        savedAt: new Date().toISOString(),
+      };
+    }
     if (filesQuery.isSuccess) return null;
     if (!(filesQuery.isError || isBrowserOffline())) return null;
     return loadCachedFilesListing(query);
-  }, [filesQuery.isSuccess, filesQuery.isError, query]);
+  }, [filesQuery.isSuccess, filesQuery.isError, query, forceOfflineDemo]);
 
-  const displayData: FilesResponse | undefined =
-    filesQuery.data ?? offlineCached?.data;
-  const showingStale = Boolean(offlineCached && !filesQuery.data);
+  const displayData: FilesResponse | undefined = forceOfflineDemo
+    ? offlineCached?.data
+    : (filesQuery.data ?? offlineCached?.data);
+  const showingStale = Boolean(
+    forceOfflineDemo || (offlineCached && !filesQuery.data),
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(() => {

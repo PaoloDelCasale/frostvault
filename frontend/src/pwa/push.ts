@@ -54,9 +54,6 @@ export async function ensurePushSubscription(options?: {
 }): Promise<"subscribed" | "skipped" | "denied" | "unavailable"> {
   const storage = options?.storage ?? localStorage;
   if (typeof window === "undefined") return "unavailable";
-  if (!("Notification" in window) || !("serviceWorker" in navigator)) {
-    return "unavailable";
-  }
   if (wasPushPermissionDenied(storage)) {
     return "denied";
   }
@@ -72,6 +69,10 @@ export async function ensurePushSubscription(options?: {
   }
   if (!config.configured || !config.vapid_public_key) {
     return "skipped";
+  }
+
+  if (!("Notification" in window) || !("serviceWorker" in navigator)) {
+    return "unavailable";
   }
 
   let permission = Notification.permission;
