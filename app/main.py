@@ -38,6 +38,7 @@ from .backoff import (
 from .breakglass import is_break_glass_allowed
 from .catalog import ArchiveCatalog
 from .database import INTEGRITY_ERRORS, db, initialize_database
+from .migrate_on_start import ensure_schema_current
 from .oidc import OidcError, begin_login, complete_login
 from .proxy import parse_networks, resolve_client_ip
 from .invites import (
@@ -172,6 +173,7 @@ def _spa_index_response() -> FileResponse:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_settings()
+    ensure_schema_current()
     initialize_database()
     cleanup_abandoned_restore_files()
     reconcile_interrupted_jobs()

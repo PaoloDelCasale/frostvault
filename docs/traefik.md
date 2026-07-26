@@ -23,9 +23,12 @@ export ALLOWED_HOSTS=frostvault.example.com
 export TRUSTED_PROXIES=172.16.0.0/12
 export SOURCES_ROOT=/srv/frostvault/sources
 docker compose -f compose.traefik.yaml pull
-docker compose -f compose.traefik.yaml run --rm frostvault alembic upgrade head
 docker compose -f compose.traefik.yaml up -d
 ```
+
+Schema migrations run on start when `AUTO_MIGRATE=1` (default). Set
+`AUTO_MIGRATE=0` and run `python -m app.backup_upgrade` before `up` for a fully
+manual upgrade gate.
 
 Confirm there is no `ports:` mapping on `frostvault`. Reach the panel only
 through Traefik. Local development can keep using `compose.yaml`, which binds

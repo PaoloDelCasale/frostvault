@@ -46,7 +46,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             with patch("app.database.settings", test_settings):
                 with self.assertRaisesRegex(
                     DatabaseSchemaError,
-                    "alembic upgrade head",
+                    "AUTO_MIGRATE|alembic upgrade head|backup_upgrade",
                 ):
                     initialize_database()
 

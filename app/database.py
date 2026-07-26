@@ -74,33 +74,40 @@ def db() -> Any:
     return psycopg.connect(row_factory=dict_row, connect_timeout=10)
 
 
+def read_schema_revision(connection: Any) -> str | None:
+    """Return the recorded Alembic revision, or None when unversioned."""
+    if settings.db_backend == "sqlite":
+        version_table = connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='alembic_version'"
+        ).fetchone()
+    else:
+        version_table = connection.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema='public' AND table_name='alembic_version'
+            ) AS present
+            """
+        ).fetchone()
+        version_table = version_table if version_table["present"] else None
+    if not version_table:
+        return None
+    revision_row = connection.execute(
+        "SELECT version_num FROM alembic_version"
+    ).fetchone()
+    return revision_row["version_num"] if revision_row else None
+
+
 def initialize_database() -> None:
     with db() as connection:
-        if settings.db_backend == "sqlite":
-            version_table = connection.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='alembic_version'"
-            ).fetchone()
-        else:
-            version_table = connection.execute(
-                """
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.tables
-                    WHERE table_schema='public' AND table_name='alembic_version'
-                ) AS present
-                """
-            ).fetchone()
-            version_table = version_table if version_table["present"] else None
-        revision = None
-        if version_table:
-            revision_row = connection.execute(
-                "SELECT version_num FROM alembic_version"
-            ).fetchone()
-            revision = revision_row["version_num"] if revision_row else None
+        revision = read_schema_revision(connection)
         if revision != HEAD_SCHEMA_REVISION:
             raise DatabaseSchemaError(
-                "Database schema is not current. Run `alembic upgrade head` "
-                f"before starting the application (found {revision or 'unversioned'}, "
+                "Database schema is not current. With AUTO_MIGRATE enabled "
+                "(default), the container upgrades on start; otherwise run "
+                "`python -m app.backup_upgrade` or `alembic upgrade head` "
+                f"(found {revision or 'unversioned'}, "
                 f"expected {HEAD_SCHEMA_REVISION})."
             )
         _bootstrap_first_admin(connection)
