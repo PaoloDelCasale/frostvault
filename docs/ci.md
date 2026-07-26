@@ -89,10 +89,11 @@ request capability are fixed in Cursor, so GitHub never holds a personal Cursor
 API key.
 
 Auto-merge gates, all required: a same-repo `cursor/*` branch, not a draft, a body
-that closes an issue, that issue carrying `agent-pipeline`, a mergeable state, and
-**every** check run on the head commit finished and green. A commit with no checks
-at all is never merged. `neutral` counts as passing, since `Cursor Bugbot` reports
-findings that way.
+that closes an issue, that issue carrying `agent-pipeline`, **no open
+`blocked by` dependencies on that issue**, a mergeable state, and **every** check
+run on the head commit finished and green. A commit with no checks at all is
+never merged. `neutral` counts as passing, since `Cursor Bugbot` reports findings
+that way.
 
 This does **not** change how human or Dependabot pull requests are handled: a pull
 request that does not close an `agent-pipeline` issue is left alone.
