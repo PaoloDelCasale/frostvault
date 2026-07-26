@@ -19,7 +19,12 @@ export function AppShell({ capabilities, handlers, children }: AppShellProps) {
     <div className="min-h-svh bg-canvas text-ink">
       <a
         href="#main-content"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-[60] focus:rounded-[10px] focus:bg-surface focus:px-4 focus:py-3 focus:font-bold focus:shadow"
+        className="skip-link"
+        onClick={(event) => {
+          event.preventDefault();
+          const main = document.getElementById("main-content");
+          main?.focus();
+        }}
       >
         Skip to main content
       </a>
