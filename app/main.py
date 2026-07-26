@@ -2853,6 +2853,39 @@ def cloud_purge(
     }
 
 
+@app.post("/api/cloud-purge/accelerate", status_code=202)
+def accelerate_cloud_purge(
+    action: GroupCancelAction,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    vault: dict[str, Any] = Depends(current_vault),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    """Skip the cancellable delay and queue permanent purge immediately."""
+    if not is_owner(vault["role"]):
+        raise HTTPException(
+            403,
+            "Only the primary owner can accelerate permanent purge",
+        )
+    try:
+        with db() as connection:
+            accelerated = cloud_deletion_service.accelerate_cloud_purge(
+                connection,
+                vault_id=vault["id"],
+                group_id=action.group_id,
+                actor_user_id=user["id"],
+                accelerated_at=now_iso(),
+            )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {
+        "group_id": accelerated.group_id,
+        "accelerated_count": accelerated.accelerated_count,
+        "status": "queued",
+        **_api_message(request, "api.cloud_purge_accelerated"),
+    }
+
+
 @app.get("/api/admin/users")
 def admin_users(_: dict[str, Any] = Depends(admin_user)):
     with db() as connection:

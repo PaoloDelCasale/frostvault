@@ -92,6 +92,8 @@ const messages: Record<string, string> = {
   "ui.starting": "Starting…",
   "ui.approve_restore": "Approve restore",
   "ui.approving": "Approving…",
+  "ui.purge_now": "Delete now",
+  "ui.purging_now": "Deleting…",
   "ui.reauth_failed": "Reauthentication failed.",
   "operation.uploading": "Uploading",
   "operation.queued": "Waiting",

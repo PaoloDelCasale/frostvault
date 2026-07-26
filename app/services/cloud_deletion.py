@@ -1,9 +1,9 @@
 """Reversible cloud archival and permanent purge gates (issue #10).
 
 Public seam for vault cloud-deletion settings, selection preview,
-confirmation phrases, scheduling, cancellation, and catalog side-effects.
-Workers call into this module for item expansion and post-delete bookkeeping;
-S3 calls stay in ``app.storage``.
+confirmation phrases, scheduling, cancellation, delay acceleration, and
+catalog side-effects. Workers call into this module for item expansion and
+post-delete bookkeeping; S3 calls stay in ``app.storage``.
 """
 from __future__ import annotations
 
@@ -61,6 +61,12 @@ class ScheduledDeletion:
 @dataclass(frozen=True)
 class CancelledDeletion:
     cancelled_count: int
+    group_id: str
+
+
+@dataclass(frozen=True)
+class AcceleratedDeletion:
+    accelerated_count: int
     group_id: str
 
 
@@ -647,6 +653,79 @@ def _expand_purge_items(
                 updated_at,
             ),
         )
+
+
+def accelerate_cloud_purge(
+    connection: Any,
+    *,
+    vault_id: int,
+    group_id: str,
+    actor_user_id: int,
+    accelerated_at: str,
+) -> AcceleratedDeletion:
+    """Skip the cancellable delay and queue permanent purge for immediate work."""
+    rows = connection.execute(
+        """
+        SELECT id, status, path FROM jobs
+        WHERE vault_id=%s AND group_id=%s
+          AND action='cloud-purge'
+          AND status='pending_delay'
+        """,
+        (vault_id, group_id),
+    ).fetchall()
+    if not rows:
+        raise ValueError("No delayed permanent purge jobs in this group")
+    job_ids = [int(row["id"]) for row in rows]
+    placeholders = ", ".join(["%s"] * len(job_ids))
+    connection.execute(
+        f"""
+        UPDATE jobs
+        SET status='queued',
+            pending_until=%s,
+            message=%s,
+            message_key=%s,
+            message_params=%s,
+            updated_at=%s
+        WHERE id IN ({placeholders})
+          AND status='pending_delay'
+        """,
+        [
+            accelerated_at,
+            "Purge delay skipped; starting permanent deletion",
+            "job.cloud_purge_accelerated",
+            "{}",
+            accelerated_at,
+            *job_ids,
+        ],
+    )
+    for row in rows:
+        record_audit_event(
+            connection,
+            event="cloud_deletion.purge_accelerated",
+            actor_user_id=actor_user_id,
+            vault_id=vault_id,
+            job_id=int(row["id"]),
+            outcome="accelerated",
+            path=row["path"],
+            previous_status=row["status"],
+            group_id=group_id,
+        )
+    _notify_vault_owners(
+        connection,
+        vault_id=vault_id,
+        event="cloud_deletion.purge_accelerated",
+        title="Permanent cloud purge accelerated",
+        body=(
+            "The cancellable purge delay was skipped; permanent deletion "
+            "calls will start as soon as a worker picks up the Job."
+        ),
+        actor_user_id=actor_user_id,
+        job_id=job_ids[0],
+    )
+    return AcceleratedDeletion(
+        accelerated_count=len(job_ids),
+        group_id=group_id,
+    )
 
 
 def cancel_cloud_deletion(

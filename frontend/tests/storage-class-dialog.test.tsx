@@ -35,6 +35,8 @@ const catalog: Record<string, string> = {
   "operation.restoring": "Restoring",
   "ui.approving": "Approving…",
   "ui.approve_restore": "Approve",
+  "ui.purge_now": "Delete now",
+  "ui.purging_now": "Deleting…",
   "ui.stopping": "Stopping…",
 };
 
@@ -149,14 +151,13 @@ describe("JobProgress message visibility (seam 7)", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows job.message while storage-class is restoring", () => {
+  it("shows accelerate button for delayed cloud purge", () => {
     const job: JobGroup = {
-      id: "g2",
+      id: "g-purge",
       path: "report.txt",
-      action: "storage-class",
-      status: "restoring",
-      message: "Waiting for DEEP_ARCHIVE restore before changing storage class",
-      message_key: "job.storage_class_restoring",
+      action: "cloud-purge",
+      status: "pending_delay",
+      message: "Waiting for delay",
       total_bytes: 12,
       transferred_bytes: 0,
       item_count: 1,
@@ -164,20 +165,24 @@ describe("JobProgress message visibility (seam 7)", () => {
       failed_count: 0,
       cancelled_count: 0,
       percent: 0,
-      estimated_hours: 48,
     };
+    const onAccelerate = vi.fn();
     render(
       <JobProgress
         job={job}
         t={t}
         canCancel
         canApprove={false}
+        canAcceleratePurge
         onCancel={() => {}}
         onApprove={() => {}}
+        onAcceleratePurge={onAccelerate}
       />,
     );
-    expect(
-      screen.getByText(/Waiting for DEEP_ARCHIVE restore/),
-    ).toBeInTheDocument();
+    const button = screen.getByTestId("accelerate-purge");
+    expect(button).toHaveTextContent("Delete now");
+    expect(screen.getByTestId("cancel-job")).toBeInTheDocument();
+    button.click();
+    expect(onAccelerate).toHaveBeenCalledWith(job);
   });
 });

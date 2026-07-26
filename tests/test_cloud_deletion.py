@@ -367,6 +367,52 @@ class PermanentPurgeGateTests(_CloudDeletionTestCase):
             pending = datetime.fromisoformat(job["pending_until"])
             self.assertEqual(pending, _now() + timedelta(seconds=86400))
 
+    def test_accelerate_skips_delay_and_queues_purge(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path, vault_id, _file_id = _prepare_vault_with_versions(
+                Path(directory), cloud_deletion_enabled=True
+            )
+            with SQLiteConnection(str(database_path)) as connection:
+                scheduled = cloud_deletion.schedule_cloud_purge(
+                    connection,
+                    vault_id=vault_id,
+                    paths=["report.txt"],
+                    is_directory=False,
+                    actor_user_id=1,
+                    requested_at=_iso(_now()),
+                    confirmation="Docs Archive",
+                    reason="cleanup",
+                    generated_phrase="x",
+                    delay_seconds=86400,
+                )
+                accelerated_at = _iso(_now())
+                accelerated = cloud_deletion.accelerate_cloud_purge(
+                    connection,
+                    vault_id=vault_id,
+                    group_id=scheduled.group_id,
+                    actor_user_id=1,
+                    accelerated_at=accelerated_at,
+                )
+                job = connection.execute(
+                    """
+                    SELECT status, pending_until, message_key
+                    FROM jobs WHERE id=%s
+                    """,
+                    (scheduled.job_ids[0],),
+                ).fetchone()
+                with self.assertRaises(ValueError):
+                    cloud_deletion.accelerate_cloud_purge(
+                        connection,
+                        vault_id=vault_id,
+                        group_id=scheduled.group_id,
+                        actor_user_id=1,
+                        accelerated_at=accelerated_at,
+                    )
+            self.assertEqual(accelerated.accelerated_count, 1)
+            self.assertEqual(job["status"], "queued")
+            self.assertEqual(job["pending_until"], accelerated_at)
+            self.assertEqual(job["message_key"], "job.cloud_purge_accelerated")
+
     def test_cancel_during_delay_prevents_all_deletion_calls(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path, vault_id, _file_id = _prepare_vault_with_versions(
