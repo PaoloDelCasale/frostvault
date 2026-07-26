@@ -380,9 +380,10 @@ export function MembersDialog({
         onOpenChange={onOpenChange}
         title={t("admin.members_title", { name: vaultName })}
         className={
-          "max-md:inset-0 max-md:top-0 max-md:left-0 max-md:h-dvh max-md:w-full " +
-          "max-md:max-w-none max-md:translate-x-0 max-md:translate-y-0 " +
-          "max-md:rounded-none max-md:overflow-y-auto max-md:p-4 " +
+          "max-md:!inset-0 max-md:!top-0 max-md:!left-0 max-md:!right-0 max-md:!bottom-0 " +
+          "max-md:!h-dvh max-md:!w-full max-md:!max-w-none " +
+          "max-md:!translate-x-0 max-md:!translate-y-0 max-md:!rounded-none " +
+          "max-md:overflow-y-auto max-md:!p-4 " +
           "md:max-h-[min(90vh,900px)] md:overflow-y-auto"
         }
       >
