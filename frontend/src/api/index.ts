@@ -8,7 +8,16 @@ export {
 } from "./client";
 export type { ApiClientConfig, ApiFetch } from "./client";
 
-export { fetchI18nCatalog, fetchMe, fetchVaults, updateLocale } from "./endpoints";
+export {
+  confirmRecoveryCustody,
+  createVault,
+  exportRecoverySecret,
+  fetchI18nCatalog,
+  fetchMe,
+  fetchVaults,
+  selectVault,
+  updateLocale,
+} from "./endpoints";
 
 export { createLatestRequestScope } from "./latest";
 export type { LatestRequestHandle, LatestRequestScope } from "./latest";
@@ -32,11 +41,20 @@ export {
 
 export type {
   AuthMethod,
+  EncryptionMode,
   I18nCatalogResponse,
   LocaleUpdateResponse,
   MeResponse,
   MeVault,
+  RecoveryConfirmRequest,
+  RecoveryConfirmResponse,
+  RecoveryExportRequest,
+  RecoveryExportResponse,
+  VaultCreateRequest,
+  VaultCreateResponse,
   VaultListItem,
   VaultRole,
+  VaultSelectRequest,
+  VaultSelectResponse,
   VaultsResponse,
 } from "./types";
