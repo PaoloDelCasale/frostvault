@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import { Badge } from "@/components/Badge";
 import { Card } from "@/components/Card";
 import { Panel } from "@/components/Panel";
@@ -23,6 +25,8 @@ const demoCapabilities: ShellCapabilities = {
 };
 
 export default function App() {
+  const [toastOpen, setToastOpen] = useState(false);
+
   return (
     <AppShell capabilities={demoCapabilities}>
       <div className="grid gap-4">
@@ -43,6 +47,9 @@ export default function App() {
             <Button type="button" variant="danger">
               Danger
             </Button>
+            <Button type="button" variant="secondary" onClick={() => setToastOpen(true)}>
+              Show toast
+            </Button>
           </div>
         </Card>
 
@@ -62,10 +69,10 @@ export default function App() {
       </div>
 
       <Toast
-        open
+        open={toastOpen}
         message="Design system ready"
         variant="success"
-        onClose={() => undefined}
+        onClose={() => setToastOpen(false)}
       />
     </AppShell>
   );
