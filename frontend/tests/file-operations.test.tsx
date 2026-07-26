@@ -78,8 +78,11 @@ const messages: Record<string, string> = {
   "ui.cloud_purge_title": "Purge permanently?",
   "ui.cloud_purge_intro": "Permanent purge deletes every selected Archive Version.",
   "ui.cloud_purge_local_note": "Local files remain.",
-  "ui.cloud_purge_preview": "Selection: {objects} object(s), {versions} version(s), {markers} marker(s), {bytes} bytes.",
-  "ui.cloud_purge_delay": "A {seconds}-second cancellable delay applies.",
+  "ui.cloud_purge_preview": "Selection: {objects} object(s), {versions} version(s), {markers} marker(s), {bytes}.",
+  "ui.cloud_purge_delay": "A {delay} cancellable delay applies.",
+  "ui.duration_seconds": "{n}-second",
+  "ui.duration_minutes": "{n}-minute",
+  "ui.duration_hours": "{n}-hour",
   "ui.cloud_purge_reason": "Reason for this permanent purge",
   "ui.cloud_purge_confirm_label": "Type the vault name ({vault}) or this phrase to confirm",
   "ui.cloud_purge_phrase": "Confirmation phrase",
@@ -580,7 +583,10 @@ describe("File operations — seams 1–10", () => {
     );
     await screen.findByRole("dialog");
     expect(screen.getByTestId("cloud-purge-preview")).toHaveTextContent(
-      /1 object\(s\).*2 version\(s\).*1 marker\(s\).*2048 bytes/,
+      /1 object\(s\).*2 version\(s\).*1 marker\(s\).*2\.0 KB/,
+    );
+    expect(screen.getByTestId("cloud-purge-delay")).toHaveTextContent(
+      /A 1-minute cancellable delay applies/,
     );
     await user.type(screen.getByTestId("cloud-purge-reason"), "cleanup obsolete");
     await user.type(screen.getByTestId("cloud-purge-confirmation"), "PURGE-PHRASE");

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatBytes, formatCount } from "@/pages/archive/format";
+import { formatBytes, formatCount, pickDurationUnit } from "@/pages/archive/format";
 
 describe("formatBytes", () => {
   // Independent expected values (not recomputed via /1024 loops).
@@ -20,6 +20,21 @@ describe("formatBytes", () => {
   it("renders an em dash for nullish values", () => {
     expect(formatBytes(null)).toBe("—");
     expect(formatBytes(undefined)).toBe("—");
+  });
+});
+
+describe("pickDurationUnit", () => {
+  it.each([
+    [0, { value: 0, unit: "seconds" }],
+    [1, { value: 1, unit: "seconds" }],
+    [59, { value: 59, unit: "seconds" }],
+    [60, { value: 1, unit: "minutes" }],
+    [90, { value: 1.5, unit: "minutes" }],
+    [3600, { value: 1, unit: "hours" }],
+    [5400, { value: 1.5, unit: "hours" }],
+    [86400, { value: 24, unit: "hours" }],
+  ] as const)("maps %s seconds to %j", (seconds, expected) => {
+    expect(pickDurationUnit(seconds)).toEqual(expected);
   });
 });
 

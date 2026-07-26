@@ -5,7 +5,14 @@ import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 
+import { formatBytes, pickDurationUnit } from "./format";
+
 type Translate = (key: string, params?: Record<string, string | number>) => string;
+
+function formatDelay(seconds: number, t: Translate): string {
+  const { value, unit } = pickDurationUnit(seconds);
+  return t(`ui.duration_${unit}`, { n: value });
+}
 
 export type CloudPurgeDialogProps = {
   open: boolean;
@@ -78,14 +85,14 @@ export function CloudPurgeDialog({
               objects: preview.object_count,
               versions: preview.version_count,
               markers: preview.delete_marker_count,
-              bytes: preview.byte_count,
+              bytes: formatBytes(preview.byte_count),
             })}
           </p>
         ) : null}
         {settings?.purge_delay_seconds != null ? (
-          <p className="text-sm text-muted">
+          <p className="text-sm text-muted" data-testid="cloud-purge-delay">
             {t("ui.cloud_purge_delay", {
-              seconds: settings.purge_delay_seconds,
+              delay: formatDelay(settings.purge_delay_seconds, t),
             })}
           </p>
         ) : null}
