@@ -7,11 +7,12 @@ import secrets
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from jinja2.utils import htmlsafe_json_dumps
@@ -142,6 +143,7 @@ from .storage import (
     now_iso,
     reconcile_interrupted_jobs,
     runtime_status,
+    safe_local_path,
     safe_relative_path,
     scan_vault,
     s3_client,
@@ -149,8 +151,35 @@ from .storage import (
 )
 
 
-TEMPLATE_DIR = __import__("pathlib").Path(__file__).parent / "templates"
-STATIC_DIR = __import__("pathlib").Path(__file__).parent / "static"
+TEMPLATE_DIR = Path(__file__).parent / "templates"
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _spa_dist_dir() -> Path:
+    return Path(settings.frontend_dist_dir)
+
+
+def _spa_index_response() -> FileResponse:
+    index_path = _spa_dist_dir() / "index.html"
+    if not index_path.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "FRONTEND_SPA is enabled but frontend/dist/index.html is missing. "
+                "Build the SPA with: cd frontend && npm ci && npm run build"
+            ),
+        )
+    return FileResponse(
+        index_path,
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _serve_spa_if_enabled() -> FileResponse | None:
+    if not settings.frontend_spa:
+        return None
+    return _spa_index_response()
 
 
 @asynccontextmanager
@@ -842,6 +871,9 @@ def build_directory_items(
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
+    spa = _serve_spa_if_enabled()
+    if spa is not None:
+        return spa
     token = _read_session_cookie(request)
     if token:
         with db() as connection:
@@ -1188,6 +1220,9 @@ def _resolve_or_bind_identity(connection: Any, claims: Any) -> int:
 
 @app.get("/vaults/new", response_class=HTMLResponse)
 def vault_create_page(request: Request, response: Response):
+    spa = _serve_spa_if_enabled()
+    if spa is not None:
+        return spa
     try:
         user = current_user(request)
     except HTTPException as exc:
@@ -1200,6 +1235,9 @@ def vault_create_page(request: Request, response: Response):
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
+    spa = _serve_spa_if_enabled()
+    if spa is not None:
+        return spa
     try:
         user = current_user(request)
         vault = current_vault(request, user)
@@ -1221,18 +1259,21 @@ def index(request: Request):
 
 
 @app.get("/vault/access", response_class=HTMLResponse)
-def vault_access_page(
-    request: Request,
-    response: Response,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(owner_vault),
-):
+def vault_access_page(request: Request, response: Response):
+    spa = _serve_spa_if_enabled()
+    if spa is not None:
+        return spa
+    user = current_user(request)
+    vault = owner_vault(current_vault(request, user))
     _set_csrf_cookie(response, request.state.session["csrf_token"])
     return templates.get_template("vault_access.html").render(user=user, vault=vault)
 
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page(request: Request):
+    spa = _serve_spa_if_enabled()
+    if spa is not None:
+        return spa
     try:
         user = current_user(request)
     except HTTPException:
@@ -3512,3 +3553,39 @@ def metrics():
         content=metrics_service.render_prometheus(),
         media_type="text/plain; version=0.0.4; charset=utf-8",
     )
+
+
+_SPA_FALLBACK_EXCLUDED_PREFIXES = frozenset({"api", "auth", "static", "assets"})
+
+
+@app.get("/assets/{asset_path:path}")
+def spa_asset(asset_path: str):
+    """Serve hashed Vite build assets with long-lived immutable caching."""
+    if not settings.frontend_spa:
+        raise HTTPException(status_code=404, detail="Not Found")
+    assets_root = (_spa_dist_dir() / "assets").resolve()
+    if not assets_root.is_dir():
+        raise HTTPException(status_code=404, detail="Not Found")
+    # Sanitize before joining so user-controlled path segments never reach the
+    # filesystem APIs unchecked (CodeQL path-injection / directory traversal).
+    try:
+        target = safe_local_path(str(assets_root), asset_path)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not Found") from None
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(
+        target,
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+@app.get("/{full_path:path}", response_class=HTMLResponse)
+def spa_fallback(full_path: str):
+    """SPA client-route fallback; never intercepts API, auth, or static assets."""
+    if not settings.frontend_spa:
+        raise HTTPException(status_code=404, detail="Not Found")
+    head = full_path.split("/", 1)[0]
+    if head in _SPA_FALLBACK_EXCLUDED_PREFIXES:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _spa_index_response()

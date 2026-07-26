@@ -1,3 +1,10 @@
+FROM node:22-bookworm-slim AS frontend
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
 FROM rclone/rclone:1.74.4 AS rclone
 
 FROM python:3.14-slim
@@ -38,12 +45,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY alembic.ini .
 COPY migrations ./migrations
+COPY --from=frontend /frontend/dist ./frontend/dist
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod 755 /entrypoint.sh
 
 ENV PYTHONUNBUFFERED=1 \
     PUID=99 \
-    PGID=100
+    PGID=100 \
+    FRONTEND_DIST_DIR=/app/frontend/dist
 EXPOSE 8080
 
 ENTRYPOINT ["/entrypoint.sh"]
