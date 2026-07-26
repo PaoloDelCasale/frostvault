@@ -1,13 +1,37 @@
 import type { ReactNode } from "react";
 
+import { Button } from "@/components/ui/button";
+
 type RecoveryExportPanelProps = {
   recoveryExport: string;
   title: string;
   subtitle: string;
   exportLabel: string;
   warning: string;
+  copyLabel: string;
+  downloadLabel: string;
+  downloadFilename?: string;
   children?: ReactNode;
+  onCopy?: (material: string) => void | Promise<void>;
+  onDownload?: (material: string) => void;
 };
+
+async function copyToClipboard(material: string): Promise<void> {
+  await navigator.clipboard.writeText(material);
+}
+
+function downloadTextFile(material: string, filename: string): void {
+  const blob = new Blob([material], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
 
 /** Read-only recovery material — no textarea; mobile-legible pre block. */
 export function RecoveryExportPanel({
@@ -16,7 +40,12 @@ export function RecoveryExportPanel({
   subtitle,
   exportLabel,
   warning,
+  copyLabel,
+  downloadLabel,
+  downloadFilename = "frostvault-recovery-export.conf",
   children,
+  onCopy,
+  onDownload,
 }: RecoveryExportPanelProps) {
   return (
     <div className="mt-6 grid gap-3.5">
@@ -38,6 +67,28 @@ export function RecoveryExportPanel({
         >
           {recoveryExport}
         </pre>
+      </div>
+      <div className="flex flex-wrap gap-2.5">
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={() => {
+            void (onCopy ?? copyToClipboard)(recoveryExport);
+          }}
+        >
+          {copyLabel}
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={() => {
+            (onDownload ?? ((material) => downloadTextFile(material, downloadFilename)))(
+              recoveryExport,
+            );
+          }}
+        >
+          {downloadLabel}
+        </Button>
       </div>
       {children}
     </div>

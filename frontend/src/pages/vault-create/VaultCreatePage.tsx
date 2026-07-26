@@ -91,6 +91,8 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
               subtitle={t("ui.recovery.subtitle")}
               exportLabel={t("ui.recovery.export_label")}
               warning={t("ui.recovery.warning")}
+              copyLabel={t("ui.recovery.copy")}
+              downloadLabel={t("ui.recovery.download")}
             />
           ) : (
             <form className="mt-6 grid gap-3.5" onSubmit={(e) => void handleSubmit(e)}>

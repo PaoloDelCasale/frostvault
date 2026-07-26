@@ -47,6 +47,8 @@ describe("VaultCreatePage", () => {
   afterEach(() => {
     cleanup();
     resetApiClientForTests();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   function renderPage(displayName = "Ada Lovelace") {
@@ -246,5 +248,95 @@ describe("VaultCreatePage", () => {
     expect(material.textContent).toBe(recoveryExport);
     expect(document.querySelector("textarea")).toBeNull();
     expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("copies recovery material to the clipboard and downloads the complete file", async () => {
+    const user = userEvent.setup();
+    const recoveryExport = "line-one\nline-two\npassword = keep-me-whole";
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/i18n/catalog")) {
+        return Promise.resolve(mockCatalog(en));
+      }
+      if (url === "/api/vaults" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              id: 7,
+              uuid: "crypt-uuid",
+              slug: "secret",
+              name: "Secret",
+              role: "owner",
+              encryption_mode: "crypt",
+              recovery_custody_confirmed: false,
+              recovery_export: recoveryExport,
+            },
+            201,
+          ),
+        );
+      }
+      return Promise.reject(new Error(`unexpected request ${url}`));
+    });
+
+    renderPage();
+    await screen.findByRole("heading", { name: en["ui.vault_create.title"] });
+    await user.type(
+      screen.getByRole("textbox", { name: en["ui.vault_create.name"] }),
+      "Secret",
+    );
+    await user.click(
+      screen.getByRole("radio", { name: en["ui.vault_create.encryption_crypt"] }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: en["ui.vault_create.submit"] }),
+    );
+    await screen.findByRole("heading", { name: en["ui.recovery.title"] });
+
+    await user.click(screen.getByRole("button", { name: en["ui.recovery.copy"] }));
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(recoveryExport);
+    });
+
+    const createObjectURL = vi.fn(() => "blob:recovery-export");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", {
+      ...URL,
+      createObjectURL,
+      revokeObjectURL,
+    });
+
+    const anchorClick = vi.fn();
+    const realCreateElement = document.createElement.bind(document);
+    const createElSpy = vi
+      .spyOn(document, "createElement")
+      .mockImplementation((tagName: string, options?: ElementCreationOptions) => {
+        const el = realCreateElement(tagName, options);
+        if (tagName.toLowerCase() === "a") {
+          el.click = anchorClick;
+        }
+        return el;
+      });
+
+    await user.click(screen.getByRole("button", { name: en["ui.recovery.download"] }));
+    await waitFor(() => {
+      expect(createObjectURL).toHaveBeenCalled();
+    });
+    const blob = createObjectURL.mock.calls[0][0] as Blob;
+    expect(blob).toBeInstanceOf(Blob);
+    const downloaded = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(blob);
+    });
+    expect(downloaded).toBe(recoveryExport);
+    expect(anchorClick).toHaveBeenCalled();
+    createElSpy.mockRestore();
   });
 });
