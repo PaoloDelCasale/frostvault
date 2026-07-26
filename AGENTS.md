@@ -101,20 +101,46 @@ a virtualenv at `.venv/` and installs `requirements.txt` into it. Use `.venv/bin
 ### Running the app locally (no Docker)
 Docker is not installed; run natively with the SQLite backend instead of `docker compose`.
 - The app does NOT auto-load `.env` (`app/config.py` reads `os.getenv` at import), so export
- the vars yourself. A local `.env` (gitignored) is used for this; load it with
- `set -a && . ./.env && set +a`. If it is missing, recreate it from `.env.local.example`,
- and quote values containing spaces (e.g. `BOOTSTRAP_ADMIN_DISPLAY_NAME="Local Admin"`,
- `BOOTSTRAP_VAULT_NAME="Test Archive"`) or `source` will fail.
+  the vars yourself. A local `.env` (gitignored) is used for this; load it with
+  `set -a && . ./.env && set +a`. If it is missing, recreate it from `.env.local.example`,
+  and quote values containing spaces (e.g. `BOOTSTRAP_ADMIN_DISPLAY_NAME="Local Admin"`,
+  `BOOTSTRAP_VAULT_NAME="Test Archive"`) or `source` will fail.
 - `.env.local.example` uses container-style paths (`/data/...`, `/sources/...`,
- `/config/rclone/rclone.conf`). For a native run, repoint them at real writable paths under
- the repo and create the dirs first, e.g. `SQLITE_PATH=/workspace/data/frostvault.db`,
- `BOOTSTRAP_VAULT_SOURCE_ROOT=/workspace/local-data/sources/test` (the vault source folder
- must exist for scan/browse to work), and `BOOTSTRAP_ADMIN_PASSWORD` needs >= 12 chars.
+  `/config/rclone/rclone.conf`). For a native run, repoint them at real writable paths under
+  the repo and create the dirs first, e.g. `SQLITE_PATH=/workspace/data/frostvault.db`,
+  `BOOTSTRAP_VAULT_SOURCE_ROOT=/workspace/local-data/sources/test` (the vault source folder
+  must exist for scan/browse to work), and `BOOTSTRAP_ADMIN_PASSWORD` needs >= 12 chars.
 - You MUST run migrations before starting: `.venv/bin/python -m alembic upgrade head`.
   The app refuses to start on a stale/unversioned schema (see `HEAD_SCHEMA_REVISION`).
-- Start: `.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080`.
+- Start (Jinja UI, default): `.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080`.
 - Local break-glass admin login is configured through `BOOTSTRAP_ADMIN_*` in the
   Git-ignored `.env`; never commit real credentials.
+
+### Frontend SPA (`FRONTEND_SPA`)
+`FRONTEND_SPA` defaults to `0` (Jinja). Set `FRONTEND_SPA=1` only after
+`frontend/dist` exists (image builds produce it; locally run
+`cd frontend && npm ci && npm run build`).
+
+**Production / flag on:** uvicorn serves `frontend/dist` with SPA fallback.
+Hashed `/assets/*` get `Cache-Control: public, max-age=31536000, immutable`;
+`index.html` is `no-store`. Missing `dist` returns HTTP 503 with build instructions.
+
+**Local SPA development (Vite + uvicorn):** keep Jinja off the hot path by
+running the API and the Vite dev server together:
+
+```bash
+# terminal 1 — API (Host validation: leave ALLOWED_HOSTS empty locally, or
+# include 127.0.0.1; the Vite proxy uses changeOrigin so FastAPI sees Host
+# 127.0.0.1:8080 — a misconfigured proxy yields "Host not allowed" on login)
+set -a && . ./.env && set +a
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+
+# terminal 2 — SPA with /api, /auth, /login proxied to uvicorn
+cd frontend && npm ci && npm run dev
+```
+
+Open the Vite URL (default `http://127.0.0.1:5173`). Do not point the browser
+at `:8080` for SPA work unless `FRONTEND_SPA=1` and `frontend/dist` is built.
 
 ### Non-obvious gotchas
 - AWS/rclone are placeholders locally. Local file cataloging (scan + browse) works without

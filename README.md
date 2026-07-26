@@ -264,6 +264,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Database | `DB_BACKEND`, `SQLITE_PATH`, `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
 | Authentication | `BOOTSTRAP_ADMIN_*`, `OIDC_*`, `BREAK_GLASS_ALLOWED_CIDRS` |
 | Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES` |
+| Frontend | `FRONTEND_SPA` (default `0` = Jinja), `FRONTEND_DIST_DIR` |
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `VAULT_RCLONE_*`, `RCLONE_CONFIG` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
 | Operations | `OPERATION_CONCURRENCY`, `RESTORE_*`, `ALLOW_LOCAL_DELETE` |
@@ -297,6 +298,32 @@ DB_BACKEND=sqlite SQLITE_PATH=./data/frostvault.db \
 
 On Windows PowerShell, use `.venv\Scripts\python.exe` and set environment
 variables with `$env:NAME = "value"`.
+
+### Frontend SPA
+
+`FRONTEND_SPA` defaults to off, so the Jinja UI is unchanged. The container
+image builds `frontend/dist` in a Node stage; set `FRONTEND_SPA=1` in production
+when you want FastAPI to serve that SPA (hashed assets are cached immutably;
+`index.html` is `no-store`).
+
+For day-to-day SPA work, run uvicorn and the Vite dev server together. The Vite
+proxy forwards `/api`, `/auth`, and `/login` to `http://127.0.0.1:8080` with
+`changeOrigin: true` so the Host FastAPI sees is `127.0.0.1` (see ADR-0005).
+Leave `ALLOWED_HOSTS` empty locally, or list `127.0.0.1`; a wrong Host yields
+hard-to-diagnose login failures.
+
+```bash
+# terminal 1
+DB_BACKEND=sqlite SQLITE_PATH=./data/frostvault.db \
+  .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+
+# terminal 2
+cd frontend && npm ci && npm run dev
+```
+
+Open the Vite URL (default `http://127.0.0.1:5173`). To exercise the production
+serving path without Docker: `cd frontend && npm run build`, then start uvicorn
+with `FRONTEND_SPA=1`.
 
 Run the same portable suites used by pull-request CI:
 
