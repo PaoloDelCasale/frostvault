@@ -286,6 +286,8 @@ export type VaultFileListItem = {
   recover_eligible?: boolean;
   recoverable_version_count?: number;
   cleanup_eligible?: boolean;
+  lifecycle_pinned?: boolean;
+  storage_class_eligible?: boolean;
 };
 
 /** Directory aggregate as returned by /api/files browse mode. */
@@ -302,6 +304,8 @@ export type DirectoryListItem = {
   storage_class?: string | null;
   storage_class_count?: number;
   available_actions?: Record<string, number>;
+  lifecycle_pinned?: boolean;
+  lifecycle_pinned_partial?: boolean;
 };
 
 export type ArchiveListItem = VaultFileListItem | DirectoryListItem;
@@ -350,6 +354,7 @@ export type FileOperationAction =
   | "upload"
   | "recover"
   | "free-space"
+  | "storage-class"
   | "cloud-archive"
   | "cloud-purge"
   | "rename";

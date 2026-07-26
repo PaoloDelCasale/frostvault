@@ -23,7 +23,9 @@ import {
   startCloudPurge,
   startFreeSpace,
   startRecover,
+  startStorageClass,
   startUpload,
+  updateLifecyclePin,
 } from "@/api";
 import type {
   ArchiveListItem,
@@ -44,12 +46,14 @@ import {
   availableActions,
   endpointForAction,
   isDestructiveAction,
+  type ManualStorageClass,
   type RowActionId,
   type VaultCapabilities,
 } from "./actions";
 import { CloudPurgeDialog } from "./CloudPurgeDialog";
 import { isDirectory } from "./fileLabels";
 import { RecoverConfirmDialog } from "./RecoverConfirmDialog";
+import { StorageClassDialog } from "./StorageClassDialog";
 import { VersionSelectDialog } from "./VersionSelectDialog";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
@@ -123,6 +127,19 @@ export function FileOperationsHost({
     settings: CloudDeletionSettings;
     preview: CloudDeletionPreview;
   } | null>(null);
+  const [storageClassTarget, setStorageClassTarget] = useState<{
+    path: string;
+    isDirectory: boolean;
+    wholeVault?: boolean;
+    count: number;
+    totalBytes: number;
+    currentClass?: string | null;
+  } | null>(null);
+  const [pinAction, setPinAction] = useState<{
+    path: string;
+    isDirectory: boolean;
+    pinned: boolean;
+  } | null>(null);
   const [cancelBusyId, setCancelBusyId] = useState<string | null>(null);
   const [approveBusyId, setApproveBusyId] = useState<string | null>(null);
   const itemsByPath = useMemo(() => {
@@ -177,25 +194,45 @@ export function FileOperationsHost({
         action === "upload" ||
         action === "recover" ||
         action === "free-space" ||
+        action === "storage-class" ||
         action === "cloud-archive" ||
         action === "cloud-purge"
       ) {
         void ensurePushSubscription();
       }
-      const payload = { path, is_directory: isDir, ...extra };
       let result: { message?: string };
       switch (action) {
         case "upload":
-          result = await startUpload(payload);
+          result = await startUpload({ path, is_directory: isDir, ...extra });
           break;
         case "recover":
-          result = await startRecover(payload);
+          result = await startRecover({ path, is_directory: isDir, ...extra });
           break;
         case "free-space":
-          result = await startFreeSpace(payload);
+          result = await startFreeSpace({ path, is_directory: isDir, ...extra });
+          break;
+        case "storage-class":
+          result = await startStorageClass({
+            path,
+            is_directory: isDir,
+            whole_vault: Boolean(extra?.whole_vault),
+            target_storage_class: String(extra?.target_storage_class ?? ""),
+            archive_version_id:
+              typeof extra?.archive_version_id === "string"
+                ? extra.archive_version_id
+                : undefined,
+          });
+          break;
+        case "lifecycle-pin":
+        case "lifecycle-unpin":
+          result = await updateLifecyclePin({
+            path,
+            is_directory: isDir,
+            pinned: action === "lifecycle-pin",
+          });
           break;
         case "cloud-archive":
-          result = await startCloudArchive(payload);
+          result = await startCloudArchive({ path, is_directory: isDir, ...extra });
           break;
         case "cloud-purge":
           result = await startCloudPurge({
@@ -346,6 +383,30 @@ export function FileOperationsHost({
           await beginCloudPurge(path, isDir);
           return;
         }
+        if (action === "storage-class") {
+          const actions = availableActions(item, capabilities);
+          const storageAction = actions.find((entry) => entry.id === "storage-class");
+          setStorageClassTarget({
+            path,
+            isDirectory: isDir,
+            count: storageAction?.count ?? 1,
+            totalBytes: Number(
+              isDir
+                ? item.cloud_size || item.total_size || 0
+                : item.cloud_size || item.local_size || 0,
+            ),
+            currentClass: item.storage_class,
+          });
+          return;
+        }
+        if (action === "lifecycle-pin" || action === "lifecycle-unpin") {
+          setPinAction({
+            path,
+            isDirectory: isDir,
+            pinned: action === "lifecycle-pin",
+          });
+          return;
+        }
         if (isDestructiveAction(action)) {
           setConfirmAction({ action, path, isDirectory: isDir });
           return;
@@ -359,6 +420,7 @@ export function FileOperationsHost({
       beginCloudArchive,
       beginCloudPurge,
       beginRecover,
+      capabilities,
       dispatchAction,
       itemsByPath,
       onSheetPathChange,
@@ -451,6 +513,8 @@ export function FileOperationsHost({
         upload: endpointForAction("upload"),
         recover: endpointForAction("recover"),
         "free-space": endpointForAction("free-space"),
+        "storage-class": endpointForAction("storage-class"),
+        "lifecycle-pin": endpointForAction("lifecycle-pin"),
         "cloud-archive": endpointForAction("cloud-archive"),
         "cloud-purge": endpointForAction("cloud-purge"),
       });
@@ -526,6 +590,61 @@ export function FileOperationsHost({
           const { action, path, isDirectory: isDir } = confirmAction;
           setConfirmAction(null);
           void dispatchAction(action, path, isDir).catch(showError);
+        }}
+      />
+
+      <StorageClassDialog
+        open={Boolean(storageClassTarget)}
+        onOpenChange={(open) => {
+          if (!open) setStorageClassTarget(null);
+        }}
+        path={storageClassTarget?.path ?? ""}
+        count={storageClassTarget?.count ?? 1}
+        totalBytes={storageClassTarget?.totalBytes ?? 0}
+        currentClass={storageClassTarget?.currentClass}
+        t={t}
+        onConfirm={(target: ManualStorageClass) => {
+          if (!storageClassTarget) return;
+          const pending = storageClassTarget;
+          setStorageClassTarget(null);
+          void dispatchAction("storage-class", pending.path, pending.isDirectory, {
+            target_storage_class: target,
+            whole_vault: pending.wholeVault,
+          }).catch(showError);
+        }}
+      />
+
+      <ConfirmDialog
+        open={Boolean(pinAction)}
+        onOpenChange={(open) => {
+          if (!open) setPinAction(null);
+        }}
+        title={
+          pinAction?.pinned
+            ? t("ui.lifecycle_pin_confirm_title")
+            : t("ui.lifecycle_unpin_confirm_title")
+        }
+        description={
+          pinAction?.pinned
+            ? t("ui.lifecycle_pin_confirm_body")
+            : t("ui.lifecycle_unpin_confirm_body")
+        }
+        confirmLabel={
+          pinAction?.pinned
+            ? t("ui.row_action_lifecycle_pin")
+            : t("ui.row_action_lifecycle_unpin")
+        }
+        cancelLabel={t("ui.cancel")}
+        tone="default"
+        onConfirm={() => {
+          if (!pinAction) return;
+          const pending = pinAction;
+          setPinAction(null);
+          void dispatchAction(
+            pending.pinned ? "lifecycle-pin" : "lifecycle-unpin",
+            pending.path,
+            pending.isDirectory,
+          ).catch(showError);
         }}
       />
 

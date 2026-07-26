@@ -3,15 +3,22 @@ import { useEffect, useState } from "react";
 import {
   deleteLifecycleFolderOverride,
   fetchLifecycle,
+  startStorageClass,
   updateLifecycleDefault,
   upsertLifecycleFolderOverride,
   type LifecycleGuidedProfile,
   type LifecycleResponse,
 } from "@/api";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
+import {
+  COLD_STORAGE_CLASSES,
+  STORAGE_CLASS_OPTIONS,
+  type ManualStorageClass,
+} from "@/pages/archive/actions";
 
 type LifecyclePanelProps = {
   onNotice: (message: string, error?: boolean) => void;
@@ -58,6 +65,8 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
   const [folderProfile, setFolderProfile] = useState("archive_tiered");
   const [warnings, setWarnings] = useState("");
   const [busy, setBusy] = useState(false);
+  const [vaultClassOpen, setVaultClassOpen] = useState(false);
+  const [vaultTarget, setVaultTarget] = useState<ManualStorageClass>("DEEP_ARCHIVE");
 
   function applyLifecycle(next: LifecycleResponse) {
     setData(next);
@@ -191,6 +200,40 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
           </Button>
         </form>
 
+        <div className="mt-6 grid gap-3 border-t border-line pt-4">
+          <h3 className="text-sm font-bold">{t("ui.vault_storage_class_action")}</h3>
+          <p className="text-sm text-muted">{t("ui.vault_storage_class_hint")}</p>
+          <FormField
+            label={t("ui.storage_class_picker_label")}
+            htmlFor="vault-storage-class-target"
+          >
+            <FormSelect
+              id="vault-storage-class-target"
+              value={vaultTarget}
+              onChange={(event) =>
+                setVaultTarget(event.target.value as ManualStorageClass)
+              }
+            >
+              {STORAGE_CLASS_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </FormSelect>
+          </FormField>
+          {COLD_STORAGE_CLASSES.has(vaultTarget) ? (
+            <p className="text-sm text-amber-800">{t("ui.storage_class_confirm_warning")}</p>
+          ) : null}
+          <Button
+            type="button"
+            className="min-h-11 w-full sm:w-auto"
+            disabled={busy}
+            onClick={() => setVaultClassOpen(true)}
+          >
+            {t("ui.vault_storage_class_action")}
+          </Button>
+        </div>
+
         <div className="mt-4 grid gap-2">
           {(data?.folder_overrides ?? []).length === 0 ? (
             <p className="text-sm text-muted">{t("access.lifecycle_no_overrides")}</p>
@@ -229,6 +272,33 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
           </p>
         ) : null}
       </Panel>
+      <ConfirmDialog
+        open={vaultClassOpen}
+        onOpenChange={setVaultClassOpen}
+        title={t("ui.storage_class_confirm_title")}
+        description={`${t("ui.storage_class_confirm_body", {
+          count: "all",
+          bytes: "—",
+          target: vaultTarget,
+        })}\n${t("ui.storage_class_policy_note")}`}
+        confirmLabel={t("ui.vault_storage_class_action")}
+        cancelLabel={t("ui.cancel")}
+        tone="default"
+        onConfirm={() => {
+          setVaultClassOpen(false);
+          setBusy(true);
+          void startStorageClass({
+            path: "",
+            whole_vault: true,
+            target_storage_class: vaultTarget,
+          })
+            .then((result) => onNotice(result.message || t("api.storage_class_started")))
+            .catch((error: unknown) =>
+              onNotice(error instanceof Error ? error.message : String(error), true),
+            )
+            .finally(() => setBusy(false));
+        }}
+      />
     </section>
   );
 }

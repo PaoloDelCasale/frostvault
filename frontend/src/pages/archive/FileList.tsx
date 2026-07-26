@@ -312,6 +312,15 @@ export function FileList({
                     <span className="text-xs text-muted">{t("ui.file_total")}</span>
                   ) : null}
                   <CloudStorageCell item={item} t={t} />
+                  {item.lifecycle_pinned || item.lifecycle_pinned_partial ? (
+                    <span
+                      className="rounded border border-line px-1.5 py-0.5 text-xs text-muted"
+                      data-testid="lifecycle-pinned-badge"
+                    >
+                      {t("ui.lifecycle_pinned_badge")}
+                      {item.lifecycle_pinned_partial ? "…" : ""}
+                    </span>
+                  ) : null}
                 </div>
                 {jobs.length ? (
                   <div className="mt-2">
@@ -390,7 +399,18 @@ export function FileList({
                     <StateCell item={item} t={t} />
                   </td>
                   <td className="py-2 pr-3 align-middle">
-                    <CloudStorageCell item={item} t={t} />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <CloudStorageCell item={item} t={t} />
+                      {item.lifecycle_pinned || item.lifecycle_pinned_partial ? (
+                        <span
+                          className="rounded border border-line px-1.5 py-0.5 text-xs text-muted"
+                          data-testid="lifecycle-pinned-badge"
+                        >
+                          {t("ui.lifecycle_pinned_badge")}
+                          {item.lifecycle_pinned_partial ? "…" : ""}
+                        </span>
+                      ) : null}
+                    </div>
                   </td>
                   <td className="py-2 align-middle">
                     <RowJobOrActions
