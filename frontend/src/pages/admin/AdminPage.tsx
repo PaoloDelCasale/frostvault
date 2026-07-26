@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
 
 import type { AdminUser, AdminVault } from "@/api";
 import {
@@ -65,9 +65,9 @@ export function AdminPage() {
     null,
   );
 
-  function showNotice(message: string, error = false) {
+  const showNotice = useCallback((message: string, error = false) => {
     setNotice({ open: true, message, error });
-  }
+  }, []);
 
   async function loadUsers() {
     const data = await fetchAdminUsers();
@@ -372,7 +372,7 @@ export function AdminPage() {
                         : ""}
                     </small>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                     <Badge
                       state={user.active ? "both" : "missing"}
                       label={
@@ -391,24 +391,24 @@ export function AdminPage() {
                     >
                       ⋯
                     </Button>
-                    <div className="hidden gap-2 md:flex">
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        onClick={() => setResetUserId(user.id)}
-                      >
-                        {t("admin.new_password")}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        onClick={() => void toggleUser(user)}
-                      >
-                        {user.active
-                          ? t("admin.deactivate")
-                          : t("admin.reactivate")}
-                      </Button>
-                    </div>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="max-md:hidden"
+                      onClick={() => setResetUserId(user.id)}
+                    >
+                      {t("admin.new_password")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="max-md:hidden"
+                      onClick={() => void toggleUser(user)}
+                    >
+                      {user.active
+                        ? t("admin.deactivate")
+                        : t("admin.reactivate")}
+                    </Button>
                   </div>
                 </li>
               ))}
@@ -457,7 +457,7 @@ export function AdminPage() {
                     <Button
                       type="button"
                       variant="secondary"
-                      className="hidden md:inline-flex"
+                      className="max-md:hidden"
                       onClick={() => {
                         setMembersVault(vault);
                         setMembersOpen(true);

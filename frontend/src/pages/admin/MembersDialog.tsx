@@ -17,7 +17,6 @@ import {
   updateAdminVaultQuotas,
 } from "@/api";
 import { BottomSheet } from "@/components/BottomSheet";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
@@ -153,7 +152,10 @@ export function MembersDialog({
           error instanceof Error ? error.message : String(error),
         );
       });
-  }, [open, vault, vaultId, onNotice, t]);
+    // Intentionally depend on vault identity only — onNotice/t are stable enough
+    // via refs below; recreating on every parent render would wipe in-progress forms.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, vaultId, vault?.id, vault?.name]);
 
   const eligibleTransferTargets = members.filter(
     (m) => m.active && m.role !== "owner",
@@ -427,7 +429,7 @@ export function MembersDialog({
                       <Button
                         type="button"
                         variant="secondary"
-                        className="hidden md:inline-flex"
+                        className="max-md:hidden"
                         onClick={() => {
                           setMemberActionsTarget(member);
                           setRemoveReason("");
@@ -679,8 +681,7 @@ export function MembersDialog({
                 variant="danger"
                 disabled={
                   transferBusy ||
-                  eligibleTransferTargets.length === 0 ||
-                  !membersLoaded
+                  (membersLoaded && eligibleTransferTargets.length === 0)
                 }
               >
                 {t("admin.transfer_submit")}
@@ -767,36 +768,47 @@ export function MembersDialog({
         }}
       />
 
-      <ConfirmDialog
+      <Dialog
         open={removeConfirmOpen}
         onOpenChange={setRemoveConfirmOpen}
         title={t("admin.remove_member_confirm_title")}
         description={t("admin.remove_member_confirm")}
-        confirmLabel={t("admin.remove_member")}
-        cancelLabel={t("admin.cancel")}
-        onConfirm={() => {
-          if (!removeReason.trim()) {
-            // Require reason via a second prompt field embedded below — ConfirmDialog
-            // fires immediately; we keep reason in state and call confirmRemove when set.
+        className="w-[min(28rem,calc(100%-1.75rem))]"
+      >
+        <form
+          className="grid gap-4"
+          onSubmit={(event) => {
+            event.preventDefault();
             void confirmRemoveMember();
-          } else {
-            void confirmRemoveMember();
-          }
-        }}
-      />
-
-      {removeConfirmOpen ? (
-        <div className="sr-only">
-          <label htmlFor={`${id}-remove-reason`}>
-            {t("admin.remove_member_reason")}
-          </label>
-          <input
-            id={`${id}-remove-reason`}
-            value={removeReason}
-            onChange={(event) => setRemoveReason(event.target.value)}
-          />
-        </div>
-      ) : null}
+          }}
+        >
+          <FormField
+            label={t("admin.remove_member_reason")}
+            htmlFor={`${id}-remove-reason`}
+          >
+            <FormInput
+              id={`${id}-remove-reason`}
+              required
+              minLength={3}
+              maxLength={500}
+              value={removeReason}
+              onChange={(event) => setRemoveReason(event.target.value)}
+            />
+          </FormField>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setRemoveConfirmOpen(false)}
+            >
+              {t("admin.cancel")}
+            </Button>
+            <Button type="submit" variant="danger">
+              {t("admin.remove_member")}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
     </>
   );
 }
