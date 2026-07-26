@@ -8,6 +8,7 @@ import { FileList } from "./FileList";
 import {
   buildBreadcrumbs,
   collapseBreadcrumbs,
+  isBreadcrumbEllipsis,
   parentDirectory,
 } from "./fileLabels";
 import { PathHistoryPanel } from "./PathHistoryPanel";
@@ -209,7 +210,7 @@ export function FileBrowser({ t }: FileBrowserProps) {
               data-testid="breadcrumbs-narrow"
             >
               {narrowCrumbs.map((crumb, index) => {
-                if ("ellipsis" in crumb && crumb.ellipsis) {
+                if (isBreadcrumbEllipsis(crumb)) {
                   return (
                     <li key={`ellipsis-${index}`} className="px-1 text-muted" aria-hidden="true">
                       …

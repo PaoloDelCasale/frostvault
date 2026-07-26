@@ -146,11 +146,70 @@ export function installDemoFilesFetch(): void {
         headers: { "Content-Type": "application/json" },
       });
     }
-    if (url.includes("/api/me") || url.includes("/api/i18n") || url.includes("/api/vaults") || url.includes("/api/stats")) {
-      return new Response(JSON.stringify({}), {
+    if (url.includes("/api/i18n")) {
+      return new Response(
+        JSON.stringify({
+          locale: "en",
+          locales: ["en", "it"],
+          messages: {},
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+    if (url.includes("/api/me")) {
+      return new Response(
+        JSON.stringify({
+          id: 1,
+          username: "admin",
+          display_name: "Local Admin",
+          is_admin: true,
+          active: true,
+          session_version: 1,
+          csrf_token: "demo",
+          auth_method: "local",
+          locale: "en",
+          locales: ["en", "it"],
+          vault: {
+            id: 1,
+            slug: "test",
+            name: "Test Archive",
+            role: "owner",
+            can_operate: true,
+            delete_enabled: true,
+            cloud_deletion_enabled: false,
+            is_vault_owner: true,
+          },
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+    if (url.includes("/api/vaults")) {
+      return new Response(JSON.stringify({ items: [] }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
+    }
+    if (url.includes("/api/stats")) {
+      return new Response(
+        JSON.stringify({
+          states: {},
+          storage: { local_bytes: 0, cloud_bytes: 0 },
+          active_jobs: 0,
+          runtime: {},
+          filesystem: null,
+          delete_enabled: true,
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
     }
     return realFetch(input, init);
   };

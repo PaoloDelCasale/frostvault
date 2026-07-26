@@ -136,6 +136,12 @@ export function collapseBreadcrumbs<T extends { name: string; path: string }>(
   return [head, { name: "…" as const, path: null, ellipsis: true as const }, ...tail];
 }
 
+export function isBreadcrumbEllipsis(
+  crumb: { name: string; path: string | null; ellipsis?: boolean },
+): crumb is { name: "…"; path: null; ellipsis: true } {
+  return crumb.ellipsis === true;
+}
+
 export function parentDirectory(directory: string): string {
   if (!directory) return "";
   const parts = directory.split("/");
