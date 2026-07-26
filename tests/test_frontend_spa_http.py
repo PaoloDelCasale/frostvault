@@ -285,6 +285,15 @@ class FrontendSpaHttpTests(unittest.TestCase):
                     hits.append(f"{path.relative_to(REPO_ROOT)}:{fragment}")
         self.assertEqual(hits, [], f"Deleted paths still referenced in: {hits}")
 
+    def test_jinja_template_and_static_trees_are_gone(self) -> None:
+        """Acceptance: image COPY app/ no longer ships Jinja templates or legacy JS."""
+        self.assertFalse((REPO_ROOT / "app" / "templates").exists())
+        self.assertFalse((REPO_ROOT / "app" / "static").exists())
+        dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        self.assertNotIn("jinja", dockerfile.lower())
+        forbidden = "FRONTEND" + "_SPA"
+        self.assertNotIn(forbidden, dockerfile)
+
 
 if __name__ == "__main__":
     unittest.main()
