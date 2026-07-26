@@ -14,7 +14,6 @@ import type { ShellCapabilities } from "@/layout/types";
 import { AdminPage } from "@/pages/admin";
 import { ArchivePage } from "@/pages/archive";
 import { FileBrowser } from "@/pages/archive/FileBrowser";
-import { demoStats } from "@/pages/archive/demoData";
 import { LoginPage } from "@/pages/login/LoginPage";
 import { NoVaultPage } from "@/pages/no-vault/NoVaultPage";
 import { VaultAccessPage } from "@/pages/vault-access";
@@ -181,20 +180,6 @@ export default function App() {
   }
 
   const capabilities = capabilitiesFromMe(me, vaults);
-  const jobDemo = new URLSearchParams(window.location.search).get("job") === "1";
-  const statsForPage = jobDemo
-    ? {
-        ...demoStats,
-        active_jobs: 1,
-        filesystem: {
-          ok: true,
-          uid: 1000,
-          gid: 1000,
-          checks: [],
-          findings: [],
-        },
-      }
-    : demoStats;
 
   return (
     <AppShell
@@ -228,7 +213,6 @@ export default function App() {
       <ArchivePage
         vaultName={capabilities.vaultName}
         displayName={me.display_name}
-        stats={statsForPage}
         t={t}
         fileList={
           <FileBrowser
