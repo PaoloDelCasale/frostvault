@@ -38,7 +38,9 @@ export function BottomSheet({
           )}
           aria-describedby={undefined}
         >
-          <Dialog.Title className="mb-3 text-base font-bold text-ink">{title}</Dialog.Title>
+          <Dialog.Title className="mb-3 break-words text-base font-bold leading-snug text-ink">
+            {title}
+          </Dialog.Title>
           <div className="flex flex-col gap-2">
             {actions.map((action) => (
               <Button
@@ -47,21 +49,22 @@ export function BottomSheet({
                 variant={action.tone === "danger" ? "danger" : "secondary"}
                 className={cn(
                   "min-h-11 w-full justify-start px-4",
-                  action.description && "h-auto min-h-11 flex-col items-start gap-0.5 py-2.5",
+                  action.description &&
+                    "h-auto min-h-11 flex-col items-start gap-1 whitespace-normal py-3",
                 )}
                 onClick={() => {
                   onAction(action.id);
                   onOpenChange(false);
                 }}
               >
-                <span className="w-full text-left font-semibold">{action.label}</span>
+                <span className="w-full text-left font-semibold text-wrap">
+                  {action.label}
+                </span>
                 {action.description ? (
                   <span
                     className={cn(
-                      "w-full text-left text-xs font-normal leading-snug",
-                      action.tone === "danger"
-                        ? "text-white/85"
-                        : "text-muted",
+                      "w-full text-left text-sm font-normal leading-snug text-pretty",
+                      action.tone === "danger" ? "text-white" : "text-ink",
                     )}
                   >
                     {action.description}

@@ -38,4 +38,55 @@ describe("BottomSheet", () => {
       expect(onOpenChange).toHaveBeenCalledWith(false);
     });
   });
+
+  it("wraps long action descriptions instead of clipping them", async () => {
+    const longHint =
+      "Deletes every Archive Version and Delete Marker in the cloud. Local files on the server are not deleted.";
+
+    render(
+      <BottomSheet
+        open
+        onOpenChange={vi.fn()}
+        title="Actions for .FP002933.JPG.verify-very-long-filename-example"
+        actions={[
+          {
+            id: "cloud-purge",
+            label: "Purge from cloud permanently",
+            description: longHint,
+            tone: "danger",
+          },
+          {
+            id: "free-space",
+            label: "Free local space",
+            description:
+              "Removes only the Local Copy. Cloud Archive Versions stay recoverable.",
+          },
+        ]}
+        onAction={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole("dialog");
+
+    const title = screen.getByRole("heading", {
+      name: /Actions for \.FP002933\.JPG\.verify-very-long-filename-example/,
+    });
+    expect(title.className).toMatch(/break-words/);
+
+    const purge = screen.getByRole("button", {
+      name: /Purge from cloud permanently/i,
+    });
+    expect(purge.className).toMatch(/whitespace-normal/);
+    expect(purge).toHaveTextContent(longHint);
+
+    const hint = screen.getByText(longHint);
+    expect(hint.className).toMatch(/text-sm/);
+    expect(hint.className).toMatch(/text-white/);
+
+    const freeHint = screen.getByText(
+      "Removes only the Local Copy. Cloud Archive Versions stay recoverable.",
+    );
+    expect(freeHint.className).toMatch(/text-ink/);
+    expect(freeHint.className).not.toMatch(/text-muted/);
+  });
 });
