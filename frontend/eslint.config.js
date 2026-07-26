@@ -44,4 +44,11 @@ export default tseslint.config(
       "react-refresh/only-export-components": "off",
     },
   },
+  {
+    files: ["src/components/Badge.tsx", "src/components/StorageBadge.tsx"],
+    rules: {
+      // State/label maps are part of the public component module API.
+      "react-refresh/only-export-components": "off",
+    },
+  },
 );

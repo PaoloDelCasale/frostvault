@@ -20,9 +20,9 @@ export function FormField({ label, htmlFor, help, children, className }: FormFie
   );
 }
 
-type TextInputProps = InputHTMLAttributes<HTMLInputElement>;
+type FormInputProps = InputHTMLAttributes<HTMLInputElement>;
 
-export function TextInput({ className, ...props }: TextInputProps) {
+export function FormInput({ className, ...props }: FormInputProps) {
   return (
     <input
       className={cn(
@@ -34,9 +34,9 @@ export function TextInput({ className, ...props }: TextInputProps) {
   );
 }
 
-type TextSelectProps = SelectHTMLAttributes<HTMLSelectElement>;
+type FormSelectProps = SelectHTMLAttributes<HTMLSelectElement>;
 
-export function TextSelect({ className, ...props }: FormSelectProps) {
+export function FormSelect({ className, ...props }: FormSelectProps) {
   return (
     <select
       className={cn(
