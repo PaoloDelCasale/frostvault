@@ -8,6 +8,8 @@ export type ShellCapabilities = {
   locale: string;
   locales: string[];
   vaults: VaultListItem[];
+  /** Currently selected vault; defaults to the first list entry when omitted. */
+  currentVaultId?: number;
   /** Optional role label for tests / future UI; filtering uses the flags above. */
   role?: VaultRole;
 };

@@ -236,6 +236,7 @@ function RowJobOrActions({
     );
   }
   if (layout === "card") {
+    if (!availableActions(item, capabilities).length) return null;
     return (
       <MoreActionsButton path={item.path} t={t} onOpenActions={onOpenActions} />
     );

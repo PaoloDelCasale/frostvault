@@ -25,7 +25,9 @@ export function ShellNavItems({
     locale,
     locales,
     vaults,
+    currentVaultId,
   } = capabilities;
+  const selectedVaultId = currentVaultId ?? vaults[0]?.id ?? "";
 
   return (
     <div className={className ?? "flex flex-col gap-2"}>
@@ -34,7 +36,7 @@ export function ShellNavItems({
         <select
           aria-label="Vault"
           className="min-h-11 rounded-[10px] border border-input bg-white px-3 text-ink"
-          value={vaults[0]?.id ?? ""}
+          value={selectedVaultId}
           onChange={(event) => {
             const id = Number(event.target.value);
             if (!Number.isNaN(id)) handlers?.onVaultChange?.(id);

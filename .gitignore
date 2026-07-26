@@ -23,3 +23,8 @@ __pycache__/
 .venv/
 frontend/node_modules/
 frontend/dist/
+frontend/e2e/.runtime/
+frontend/e2e/test-results/
+frontend/e2e-report/
+frontend/playwright-report/
+frontend/e2e/e2e-report/
