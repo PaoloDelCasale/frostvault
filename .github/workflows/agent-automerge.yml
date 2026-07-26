@@ -8,6 +8,10 @@ name: Agent pipeline auto-merge
 # activity. A schedule keeps this half of the pipeline running from the default
 # branch only, at the cost of up to ten minutes of latency.
 #
+# After each merge, the script unblocks dependents and dispatches agents itself:
+# merges with GITHUB_TOKEN close linked issues without re-firing issues:closed
+# workflows, so agent-unblock.yml alone would stall the chain.
+#
 # The gates live in .github/scripts/agent_pipeline.py and are covered by
 # tests/test_agent_pipeline.py. In short: same-repo cursor/* branch, not a draft,
 # closes an agent-pipeline issue, mergeable, and every check run green.
@@ -34,4 +38,6 @@ jobs:
       - name: Merge pull requests that are fully green
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURSOR_EPIC_56_WEBHOOK_URL: ${{ secrets.CURSOR_EPIC_56_WEBHOOK_URL }}
+          CURSOR_EPIC_56_WEBHOOK_KEY: ${{ secrets.CURSOR_EPIC_56_WEBHOOK_KEY }}
         run: python .github/scripts/agent_pipeline.py "${{ github.repository }}" merge

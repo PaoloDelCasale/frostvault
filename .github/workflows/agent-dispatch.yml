@@ -1,10 +1,15 @@
 name: Agent pipeline dispatch
 
-# Manual entry point: start a cloud agent on one issue.
+# Start a cloud agent on one pipeline issue.
 #
-# Needed to kick off the first issue of a chain, since nothing closes before it,
-# and useful to restart an issue whose agent died. Refuses any issue that does not
-# carry agent-pipeline.
+# Triggers:
+# - workflow_dispatch: kick off the first issue of a chain, or restart one whose
+#   agent died.
+# - issues labeled ready-for-agent: covers the case where a human (or a process
+#   that is not GITHUB_TOKEN) adds the label without going through unblock.
+#
+# Refuses any issue that does not carry agent-pipeline. Idempotent via
+# agent-dispatched.
 
 on:
   workflow_dispatch:
@@ -13,6 +18,8 @@ on:
         description: Issue number to hand to an agent
         required: true
         type: string
+  issues:
+    types: [labeled]
 
 permissions:
   contents: read
@@ -21,6 +28,9 @@ permissions:
 jobs:
   dispatch:
     name: Dispatch one issue
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.label.name == 'ready-for-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -32,6 +42,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CURSOR_EPIC_56_WEBHOOK_URL: ${{ secrets.CURSOR_EPIC_56_WEBHOOK_URL }}
           CURSOR_EPIC_56_WEBHOOK_KEY: ${{ secrets.CURSOR_EPIC_56_WEBHOOK_KEY }}
+          ISSUE_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.issue || github.event.issue.number }}
         run: |
           python .github/scripts/agent_pipeline.py \
-            "${{ github.repository }}" dispatch "${{ inputs.issue }}"
+            "${{ github.repository }}" dispatch "${ISSUE_NUMBER}"

@@ -80,6 +80,7 @@ class FakeGitHub:
         self._checks = checks or {}
         self._titles = titles or {}
         self._fail_merge = fail_merge or set()
+        self.repo = "o/r"
         self.added_labels: list[tuple[int, str]] = []
         self.merged: list[int] = []
         self.closed_issues: list[int] = []
@@ -95,10 +96,11 @@ class FakeGitHub:
         return self._blocked_by.get(issue, [])
 
     def labels(self, issue: int) -> set[str]:
-        return self._labels.get(issue, set())
+        return set(self._labels.get(issue, set()))
 
     def add_label(self, issue: int, label: str) -> None:
         self.added_labels.append((issue, label))
+        self._labels.setdefault(issue, set()).add(label)
 
     def open_pull_requests(self) -> list[dict]:
         return self._pull_requests
@@ -203,14 +205,30 @@ class UnblockTests(unittest.TestCase):
         self.assertEqual(pipeline.unblock(client, 4), [])
         self.assertEqual(client.added_labels, [])
 
-    def test_does_not_relabel_an_already_ready_issue(self) -> None:
+    def test_already_ready_issue_is_still_queued_for_dispatch(self) -> None:
+        # A human may have added ready-for-agent before unblock ran; still dispatch.
         client = FakeGitHub(
             blocking={84: [_issue(57, labels=("agent-pipeline", "ready-for-agent"))]},
             blocked_by={57: []},
         )
-        self.assertEqual(pipeline.unblock(client, 84), [])
+        self.assertEqual(pipeline.unblock(client, 84), [57])
         self.assertEqual(client.added_labels, [])
 
+    def test_already_dispatched_issue_is_not_queued_again(self) -> None:
+        client = FakeGitHub(
+            blocking={
+                84: [
+                    _issue(
+                        57,
+                        labels=("agent-pipeline", "ready-for-agent", "agent-dispatched"),
+                    )
+                ]
+            },
+            blocked_by={57: []},
+            labels={57: {"agent-pipeline", "ready-for-agent", "agent-dispatched"}},
+        )
+        self.assertEqual(pipeline.unblock(client, 84), [])
+        self.assertEqual(client.added_labels, [])
     def test_skips_a_dependent_that_is_already_closed(self) -> None:
         client = FakeGitHub(
             blocking={84: [_issue(57, state="closed", labels=("agent-pipeline",))]}
@@ -395,6 +413,42 @@ class MergeSweepTests(unittest.TestCase):
         self.assertEqual(client.closed_issues, [])
         self.assertEqual(client.deleted_labels, [])
 
+    def test_merge_unblocks_and_dispatches_dependents(self) -> None:
+        # GITHUB_TOKEN merges do not re-fire issues:closed; merge must continue
+        # the chain in-process or the pipeline stalls after the first auto-merge.
+        sender = RecordingSender()
+        client = FakeGitHub(
+            pull_requests=[_pull_request(body="Closes #67", number=101)],
+            labels={67: {"agent-pipeline", "ready-for-agent"}},
+            blocking={
+                67: [
+                    _issue(
+                        70,
+                        labels=("agent-pipeline",),
+                    )
+                ]
+            },
+            blocked_by={
+                70: [
+                    _issue(63, state="closed"),
+                    _issue(64, state="closed"),
+                    _issue(67, state="closed"),
+                    _issue(68, state="closed"),
+                    _issue(69, state="closed"),
+                ]
+            },
+            titles={70: "Playwright end-to-end tests"},
+            checks={"abc123": [_check("Unit and migration tests")]},
+        )
+        self.assertEqual(
+            pipeline.merge_ready(client, _automation(sender)), [101]
+        )
+        self.assertEqual(client.merged, [101])
+        self.assertIn((70, "ready-for-agent"), client.added_labels)
+        self.assertIn((70, "agent-dispatched"), client.added_labels)
+        self.assertEqual(len(sender.payloads), 1)
+        self.assertEqual(sender.payloads[0]["issue"]["number"], 70)
+
 
 class RecordingSender:
     """Stands in for the Automation webhook so payloads can be asserted."""
@@ -553,18 +607,31 @@ class PipelineWorkflowContractTests(unittest.TestCase):
             text = (WORKFLOWS / name).read_text(encoding="utf-8")
             self.assertIn(".github/scripts/agent_pipeline.py", text, name)
 
-    def test_dispatch_is_manual_only_and_takes_an_issue_number(self) -> None:
+    def test_dispatch_is_manual_or_ready_label_and_takes_an_issue_number(self) -> None:
         workflow = self._workflow("agent-dispatch.yml")
         triggers = self._triggers(workflow)
-        self.assertEqual(list(triggers), ["workflow_dispatch"])
+        self.assertEqual(set(triggers), {"workflow_dispatch", "issues"})
         self.assertIn("issue", triggers["workflow_dispatch"]["inputs"])
+        self.assertEqual(triggers["issues"]["types"], ["labeled"])
+        text = (WORKFLOWS / "agent-dispatch.yml").read_text(encoding="utf-8")
+        self.assertIn("ready-for-agent", text)
 
     def test_dispatching_workflows_pass_only_the_narrow_webhook_secrets(self) -> None:
-        for name in ("agent-unblock.yml", "agent-dispatch.yml"):
+        for name in (
+            "agent-unblock.yml",
+            "agent-dispatch.yml",
+            "agent-automerge.yml",
+        ):
             text = (WORKFLOWS / name).read_text(encoding="utf-8")
             self.assertIn("secrets.CURSOR_EPIC_56_WEBHOOK_URL", text, name)
             self.assertIn("secrets.CURSOR_EPIC_56_WEBHOOK_KEY", text, name)
             self.assertNotIn("CURSOR_API_KEY", text, name)
+
+    def test_automerge_continues_the_chain_after_merge(self) -> None:
+        text = (WORKFLOWS / "agent-automerge.yml").read_text(encoding="utf-8")
+        self.assertIn("GITHUB_TOKEN", text)
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("unblocks and dispatches the next issues in the same job", agents)
 
     def test_pipeline_is_documented_for_the_next_agent(self) -> None:
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
