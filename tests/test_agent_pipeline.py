@@ -743,9 +743,13 @@ class PipelineWorkflowContractTests(unittest.TestCase):
     def test_automerge_continues_the_chain_after_merge(self) -> None:
         text = (WORKFLOWS / "agent-automerge.yml").read_text(encoding="utf-8")
         self.assertIn("GITHUB_TOKEN", text)
+        self.assertIn("check_suite", text)
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-        self.assertIn("unblocks and dispatches the next issues in the same job", agents)
-
+        collapsed = " ".join(agents.split())
+        self.assertIn(
+            "unblocks and dispatches the next issues in the same job", collapsed
+        )
+        self.assertIn("check_suite", collapsed)
     def test_pipeline_is_documented_for_the_next_agent(self) -> None:
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         self.assertIn("Temporary agent pipeline for epic #56", agents)
