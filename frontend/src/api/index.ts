@@ -85,6 +85,7 @@ export {
   jobsRefetchInterval,
   meQueryOptions,
   statsQueryOptions,
+  statsRefetchInterval,
   vaultsQueryOptions,
 } from "./query";
 

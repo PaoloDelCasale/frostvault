@@ -16,7 +16,7 @@ import {
   fetchStats,
   fetchVaults,
 } from "./endpoints";
-import type { FilesQuery, JobsResponse } from "./types";
+import type { FilesQuery, JobsResponse, StatsResponse } from "./types";
 import { jobAwareRefetchInterval } from "./polling";
 
 export const apiQueryKeys = {
@@ -81,9 +81,15 @@ export function i18nCatalogQueryOptions(locale?: string) {
   };
 }
 
+/** Stats query: 1s while any Job is active, 10s when idle (same cadence as jobs). */
+export const statsRefetchInterval = jobAwareRefetchInterval<StatsResponse>(
+  (data) => data?.active_jobs ?? 0,
+);
+
 export const statsQueryOptions = {
   queryKey: apiQueryKeys.stats,
   queryFn: fetchStats,
+  refetchInterval: statsRefetchInterval,
 };
 
 export function filesQueryOptions(query: FilesQuery) {
