@@ -54,6 +54,43 @@ class _FakeBody:
         return self._payload
 
 
+def _attach_download_file(client: Mock) -> None:
+    """Make ``client.download_file`` write bytes via ``client.get_object``.
+
+    Production recovery uses boto3 TransferManager (``download_file``) for
+    plain vaults. Unit tests still stub ``get_object``; this adapter keeps
+    VersionId assertions on the GetObject kwargs while exercising the new path.
+    """
+
+    def download_file(
+        Bucket: str,
+        Key: str,
+        Filename: str,
+        ExtraArgs: dict | None = None,
+        Callback=None,
+        Config=None,
+    ) -> None:
+        kwargs: dict = {"Bucket": Bucket, "Key": Key}
+        if ExtraArgs:
+            kwargs.update(ExtraArgs)
+        response = client.get_object(**kwargs)
+        body = response["Body"]
+        with open(Filename, "wb") as destination:
+            chunks = getattr(body, "iter_chunks", None)
+            if callable(chunks):
+                for chunk in chunks():
+                    destination.write(chunk)
+                    if Callback is not None:
+                        Callback(len(chunk))
+            else:
+                payload = body.read()
+                destination.write(payload)
+                if Callback is not None:
+                    Callback(len(payload))
+
+    client.download_file = Mock(side_effect=download_file)
+
+
 def _prepare_cloud_only_version(
     root: Path,
     *,
@@ -159,6 +196,7 @@ def _run_plain_recover(
     client.head_object = Mock(side_effect=head_object)
     client.get_object = Mock(side_effect=get_object)
     client.restore_object = Mock()
+    _attach_download_file(client)
     client.get_calls = get_calls
     client.head_calls = head_calls
 
@@ -214,6 +252,12 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             self.assertTrue(client.get_calls)
             self.assertEqual(client.get_calls[0]["VersionId"], "s3-version-1")
             self.assertEqual(client.get_calls[0]["Key"], "docs/report.txt")
+            client.download_file.assert_called()
+            download_kwargs = client.download_file.call_args.kwargs
+            self.assertEqual(
+                download_kwargs["ExtraArgs"]["VersionId"],
+                "s3-version-1",
+            )
             client.run_rclone.assert_not_called()
 
             with SQLiteConnection(str(database_path)) as connection:
@@ -284,10 +328,21 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
                 downloaded_bytes=payload,
             )
             client.run_rclone.assert_not_called()
+            self.assertTrue(
+                client.download_file.called,
+                msg="Recovery must use TransferManager download_file",
+            )
             self.assertTrue(client.get_calls, msg="Recovery must call GetObject")
             self.assertTrue(
                 all("VersionId" in call for call in client.get_calls),
                 msg="Recovery must pin VersionId on GetObject",
+            )
+            self.assertTrue(
+                all(
+                    call.kwargs.get("ExtraArgs", {}).get("VersionId")
+                    for call in client.download_file.call_args_list
+                ),
+                msg="Recovery must pin VersionId on download_file ExtraArgs",
             )
 
     def test_bug_012_recover_refuses_existing_destination(self) -> None:
@@ -630,6 +685,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
                 return_value={"Body": _FakeBody(payload), "ContentLength": len(payload)}
             )
             client.restore_object = Mock()
+            _attach_download_file(client)
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
                 restore_poll_interval=1,
@@ -647,6 +703,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
                 process_jobs_once()
 
             client.restore_object.assert_not_called()
+            client.download_file.assert_called_once()
             client.get_object.assert_called_once()
             self.assertEqual((source / "cold.txt").read_bytes(), payload)
             with SQLiteConnection(str(database_path)) as connection:

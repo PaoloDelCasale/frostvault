@@ -45,7 +45,9 @@ explicitly assigned like any other user before they can browse files.
   SHA-256 digest, then atomically replaces the local file. Glacier/Deep Archive
   versions request a restore first (Bulk by default); high-impact restores are
   held for one-hour primary-owner reauthentication before any `RestoreObject`
-  call. An accepted S3 restore request cannot be cancelled.
+  call. An accepted S3 restore request cannot be cancelled. Large plain recovers
+  use parallel S3 range downloads (`S3_DOWNLOAD_*`); crypt recovers use rclone
+  multi-thread streams (`RCLONE_MULTI_THREAD_*`).
 - The panel requires a username and password.
 
 ## Requirements
@@ -278,7 +280,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Web Push | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (optional; see below) |
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `VAULT_RCLONE_*`, `RCLONE_CONFIG` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
-| Operations | `OPERATION_CONCURRENCY`, `RESTORE_*`, `ALLOW_LOCAL_DELETE` |
+| Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RCLONE_MULTI_THREAD_*`, `RESTORE_*`, `ALLOW_LOCAL_DELETE` |
 
 ### Progressive Web App and Web Push
 
