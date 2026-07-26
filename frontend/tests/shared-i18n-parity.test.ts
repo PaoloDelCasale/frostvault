@@ -44,13 +44,19 @@ async function sharedComponentFiles(): Promise<string[]> {
   ];
 }
 
-/** Same-line JSX text: <tag>Visible copy</tag> */
+/** Same-line JSX text: <tag>Visible copy</tag> (not an expression). */
 const SAME_LINE_JSX_TEXT =
   /<[A-Za-z][A-Za-z0-9]*(?:\s[^>]*)?>\s*([^<{]+?)\s*<\/[A-Za-z]/g;
 
-/** Multiline JSX text child sitting alone between tags. */
+/**
+ * Multiline JSX text child sitting alone between tags.
+ *
+ * The capture must start with a non-whitespace, non-`{` character so that
+ * `\s+` cannot backtrack and leave a leading space that would admit
+ * `{children}` / `{label}` as a false positive.
+ */
 const MULTILINE_JSX_TEXT =
-  /<[A-Za-z][A-Za-z0-9]*(?:\s[^>]*)?>\s*\n\s+([^<{\n][^\n]*[A-Za-z][^\n]*)\s*\n\s*<\//g;
+  /<[A-Za-z][A-Za-z0-9]*(?:\s[^>]*)?>\s*\n[ \t]+([^<{}\s\n][^<\n]*[A-Za-zÀ-ÿ][^<\n]*)\n[ \t]*<\//g;
 
 const T_KEY_CALL = /\bt\(\s*["']([^"']+)["']/g;
 
@@ -59,7 +65,11 @@ function findHardcodedStrings(source: string): string[] {
   for (const pattern of [SAME_LINE_JSX_TEXT, MULTILINE_JSX_TEXT]) {
     for (const match of source.matchAll(pattern)) {
       const text = match[1].trim();
-      if (text && /[A-Za-z]{2,}/.test(text)) {
+      // Expressions and interpolation must never count as copy.
+      if (!text || text.includes("{") || text.includes("}")) {
+        continue;
+      }
+      if (/[A-Za-zÀ-ÿ]{2,}/.test(text)) {
         found.push(text);
       }
     }
