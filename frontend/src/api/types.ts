@@ -150,7 +150,8 @@ export type QuotaEvaluation = {
 };
 
 export type VaultQuotasResponse = {
-  limits: QuotaLimits;
+  vault_id?: number;
+  limits: QuotaLimits | Partial<QuotaLimits>;
   usage: QuotaUsage;
   evaluation?: QuotaEvaluation;
 };
@@ -264,3 +265,81 @@ export type StatsResponse = {
   filesystem: FilesystemHealth | null;
   delete_enabled: boolean;
 };
+
+/** Global administration endpoints (issue #69). */
+
+export type AdminUser = {
+  id: number;
+  username: string;
+  display_name: string;
+  is_admin: boolean;
+  active: boolean;
+  vault_count: number;
+  created_at?: string;
+};
+
+export type AdminUsersResponse = {
+  items: AdminUser[];
+};
+
+export type AdminUserCreatePayload = {
+  display_name: string;
+  username: string;
+  password: string;
+  is_admin: boolean;
+};
+
+export type AdminUserUpdatePayload = {
+  active?: boolean;
+  display_name?: string;
+  password?: string;
+};
+
+export type AdminVault = {
+  id: number;
+  slug: string;
+  name: string;
+  source_root: string;
+  s3_bucket?: string;
+  s3_prefix: string;
+  enabled: boolean;
+  member_count: number;
+  encryption_mode?: string;
+  uuid?: string;
+};
+
+export type AdminVaultsResponse = {
+  items: AdminVault[];
+};
+
+export type AdminVaultCreatePayload = {
+  name: string;
+  slug: string;
+  owner_user_id: number;
+  reason: string;
+  encryption_mode?: "plain" | "crypt";
+};
+
+export type AdminVaultMember = {
+  id: number;
+  username: string;
+  display_name: string;
+  active: boolean;
+  role: string;
+};
+
+export type AdminVaultMembersResponse = {
+  items: AdminVaultMember[];
+};
+
+export type AdminMembershipCreatePayload = {
+  user_id: number;
+  role: "operator" | "viewer";
+  reason: string;
+};
+
+export type AdminOwnerTransferPayload = {
+  new_owner_user_id: number;
+  reason: string;
+};
+

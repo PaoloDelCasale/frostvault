@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { fetchMe, type MeResponse } from "@/api";
 import { AppShell } from "@/layout/AppShell";
 import type { ShellCapabilities } from "@/layout/types";
+import { AdminPage } from "@/pages/admin";
 import { ArchivePage } from "@/pages/archive";
 import { demoStats, demoTranslate } from "@/pages/archive/demoData";
 import { LoginPage } from "@/pages/login/LoginPage";
@@ -13,6 +14,10 @@ import { VaultCreateScreenshotFixture } from "@/pages/vault-create/VaultCreateSc
 
 function pathIsVaultAccess(pathname: string): boolean {
   return pathname === "/vault/access" || pathname.startsWith("/vault/access/");
+}
+
+function pathIsAdmin(pathname: string): boolean {
+  return pathname === "/admin" || pathname.startsWith("/admin/");
 }
 
 function capabilitiesFromMe(me: MeResponse): ShellCapabilities {
@@ -123,6 +128,10 @@ export default function App() {
     );
   }
 
+  if (pathIsAdmin(pathname)) {
+    return <AdminPage />;
+  }
+
   if (pathIsVaultAccess(pathname)) {
     const vaultId = me?.vault?.id ?? 1;
     const vaultName = me?.vault?.name ?? fallbackCapabilities.vaultName;
@@ -144,6 +153,8 @@ export default function App() {
       capabilities={capabilities}
       handlers={{
         onManageAccess: () => navigate("/vault/access"),
+        onAdministration: () => navigate("/admin"),
+        onNewVault: () => navigate("/vaults/new"),
       }}
     >
       <ArchivePage
