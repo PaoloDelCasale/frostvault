@@ -32,6 +32,14 @@ const messages: Record<string, string> = {
   "ui.file_total": "File total",
   "ui.cloud_classes": "{count} cloud classes",
   "ui.more_actions": "More actions",
+  "ui.row_action_upload": "Upload",
+  "ui.row_action_recover": "Recover",
+  "ui.row_action_free_space": "Free local space",
+  "ui.row_action_cloud_archive": "Hide in cloud",
+  "ui.row_action_cloud_purge": "Purge permanently",
+  "ui.action_directory_count": "{action} {count} files",
+  "ui.row_actions_title": "Actions for {name}",
+  "ui.cancel": "Cancel",
   "ui.path_history": "Path History",
   "ui.path_history_versions": "{count} Archive Versions",
   "ui.path_history_no_versions": "No Archive Versions",
@@ -53,6 +61,15 @@ const messages: Record<string, string> = {
   "storage.DEEP_ARCHIVE": "Deep Archive",
   "ui.symlink_rejected": "Symbolic link (rejected)",
   "ui.unsupported_local_entry": "Unsupported local entry",
+};
+
+
+const testCapabilities = {
+  role: "owner" as const,
+  can_operate: true,
+  delete_enabled: true,
+  cloud_deletion_enabled: false,
+  is_vault_owner: true,
 };
 
 function t(key: string, params?: Record<string, string | number>): string {
@@ -148,13 +165,18 @@ describe("FileBrowser — cards and table from /api/files", () => {
     });
     return render(
       <ApiQueryProvider client={client}>
-        <FileBrowser t={t} />
+        <FileBrowser t={t} capabilities={testCapabilities} vaultName="Test Archive" />
       </ApiQueryProvider>,
     );
   }
 
   it("renders a realistic /api/files payload as cards below md and as a table from md up, with the same information in both", async () => {
-    fetchMock.mockResolvedValue(jsonResponse(realisticBrowse));
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) {
+        return jsonResponse({ items: [], groups: [] });
+      }
+      return jsonResponse(realisticBrowse);
+    });
     renderBrowser();
 
     await waitFor(() => {
@@ -189,9 +211,18 @@ describe("FileBrowser — cards and table from /api/files", () => {
     expect(within(cards).getAllByText("2 cloud classes").length).toBeGreaterThan(0);
     expect(within(table).getAllByText("2 cloud classes").length).toBeGreaterThan(0);
 
-    // Actions column home: ⋯ more-actions control present per row in both
+    // Actions: ⋯ on cards (bottom sheet in #67); inline buttons on the table
     expect(within(cards).getAllByRole("button", { name: "More actions" })).toHaveLength(3);
-    expect(within(table).getAllByRole("button", { name: "More actions" })).toHaveLength(3);
+    expect(within(table).queryAllByRole("button", { name: "More actions" })).toHaveLength(0);
+    expect(
+      within(table).getByTestId("desktop-actions-readme.txt"),
+    ).toBeInTheDocument();
+    expect(
+      within(table).getByRole("button", { name: "Free local space" }),
+    ).toBeInTheDocument();
+    expect(
+      within(table).getByRole("button", { name: "Recover" }),
+    ).toBeInTheDocument();
 
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringMatching(/^\/api\/files\?/),
@@ -221,13 +252,19 @@ describe("FileBrowser — directory navigation", () => {
     });
     return render(
       <ApiQueryProvider client={client}>
-        <FileBrowser t={t} />
+        <FileBrowser t={t} capabilities={testCapabilities} vaultName="Test Archive" />
       </ApiQueryProvider>,
     );
   }
 
-  function filesUrlDirectory(callIndex: number): string {
-    const url = String(fetchMock.mock.calls[callIndex]?.[0] ?? "");
+  function filesUrlDirectory(callIndex?: number): string {
+    const calls = fetchMock.mock.calls
+      .map((call) => String(call[0] ?? ""))
+      .filter((url) => url.includes("/api/files"));
+    const url =
+      callIndex == null
+        ? (calls.at(-1) ?? "")
+        : String(fetchMock.mock.calls[callIndex]?.[0] ?? "");
     return new URL(url, "http://localhost").searchParams.get("directory") || "";
   }
 
@@ -235,10 +272,15 @@ describe("FileBrowser — directory navigation", () => {
     const { userEvent } = await import("@testing-library/user-event");
     const user = userEvent.setup();
 
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse(realisticBrowse))
-      .mockResolvedValue(
-        jsonResponse({
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const raw = String(input);
+      if (raw.includes("/api/jobs")) {
+        return jsonResponse({ items: [], groups: [] });
+      }
+      const url = new URL(raw, "http://localhost");
+      const directory = url.searchParams.get("directory") || "";
+      if (directory === "reports") {
+        return jsonResponse({
           items: [
             {
               type: "file",
@@ -256,8 +298,10 @@ describe("FileBrowser — directory navigation", () => {
           page: 1,
           directory: "reports",
           mode: "browse",
-        }),
-      );
+        });
+      }
+      return jsonResponse(realisticBrowse);
+    });
 
     renderBrowser();
     await waitFor(() => {
@@ -268,7 +312,7 @@ describe("FileBrowser — directory navigation", () => {
     await user.click(folderButtons[0]!);
 
     await waitFor(() => {
-      expect(filesUrlDirectory(fetchMock.mock.calls.length - 1)).toBe("reports");
+      expect(filesUrlDirectory()).toBe("reports");
     });
     expect(new URLSearchParams(window.location.search).get("directory")).toBe(
       "reports",
@@ -283,6 +327,7 @@ describe("FileBrowser — directory navigation", () => {
     const user = userEvent.setup();
 
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) return jsonResponse({ items: [], groups: [] });
       const url = new URL(String(input), "http://localhost");
       const directory = url.searchParams.get("directory") || "";
       if (directory === "reports/2024") {
@@ -431,13 +476,17 @@ describe("FileBrowser — search, filter, pagination", () => {
     });
     return render(
       <ApiQueryProvider client={client}>
-        <FileBrowser t={t} />
+        <FileBrowser t={t} capabilities={testCapabilities} vaultName="Test Archive" />
       </ApiQueryProvider>,
     );
   }
 
   function lastFilesParams(): URLSearchParams {
-    const url = String(fetchMock.mock.calls.at(-1)?.[0] ?? "");
+    const url =
+      fetchMock.mock.calls
+        .map((call) => String(call[0] ?? ""))
+        .filter((value) => value.includes("/api/files"))
+        .at(-1) ?? "";
     return new URL(url, "http://localhost").searchParams;
   }
 
@@ -520,6 +569,7 @@ describe("FileBrowser — search, filter, pagination", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) return jsonResponse({ items: [], groups: [] });
       const page = Number(
         new URL(String(input), "http://localhost").searchParams.get("page") ||
           "1",
@@ -588,7 +638,7 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
     });
     return render(
       <ApiQueryProvider client={client}>
-        <FileBrowser t={t} />
+        <FileBrowser t={t} capabilities={testCapabilities} vaultName="Test Archive" />
       </ApiQueryProvider>,
     );
   }
@@ -598,6 +648,7 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
     const user = userEvent.setup();
 
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) return jsonResponse({ items: [], groups: [] });
       const url = String(input);
       if (url.startsWith("/api/file-history")) {
         return jsonResponse({
@@ -657,7 +708,7 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
       });
       const view = render(
         <ApiQueryProvider client={client}>
-          <FileBrowser t={t} />
+          <FileBrowser t={t} capabilities={testCapabilities} vaultName="Test Archive" />
         </ApiQueryProvider>,
       );
       return view;

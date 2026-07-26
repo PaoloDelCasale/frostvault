@@ -1,7 +1,14 @@
 import { Badge } from "@/components/Badge";
 import { StorageBadge } from "@/components/StorageBadge";
 import { Button } from "@/components/ui/button";
-import type { ArchiveListItem } from "@/api/types";
+import type { ArchiveListItem, JobGroup } from "@/api/types";
+
+import {
+  actionLabel,
+  availableActions,
+  type RowActionId,
+  type VaultCapabilities,
+} from "./actions";
 import { formatBytes, formatCount } from "./format";
 import {
   cloudStorageDisplay,
@@ -9,17 +16,34 @@ import {
   itemSizeBytes,
   itemStateBadge,
 } from "./fileLabels";
+import { JobProgress } from "./JobProgress";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
 export type FileListProps = {
   items: ArchiveListItem[];
   t: Translate;
+  capabilities: VaultCapabilities;
   onOpenDirectory: (path: string) => void;
   onOpenFile: (path: string) => void;
-  /** Placeholder for #67 — opens the actions sheet. */
+  /** Mobile: opens the bottom sheet of row actions. */
   onOpenActions?: (path: string) => void;
+  /** Desktop: run an action inline. */
+  onDesktopAction?: (path: string, action: RowActionId) => void;
+  jobsByPath?: Map<string, JobGroup[]>;
+  onCancelJob?: (job: JobGroup) => void;
+  onApproveJob?: (job: JobGroup) => void;
+  cancelBusyId?: string | null;
+  approveBusyId?: string | null;
 };
+
+function isDeepArchiveRow(item: ArchiveListItem): boolean {
+  return (
+    item.type === "file" &&
+    Boolean(item.cloud_exists) &&
+    item.storage_class === "DEEP_ARCHIVE"
+  );
+}
 
 function CloudStorageCell({
   item,
@@ -54,6 +78,7 @@ function MoreActionsButton({
       size="icon"
       className="min-h-11 min-w-11 shrink-0"
       aria-label={t("ui.more_actions")}
+      data-testid={`more-actions-${path}`}
       onClick={(event) => {
         event.stopPropagation();
         onOpenActions?.(path);
@@ -63,6 +88,45 @@ function MoreActionsButton({
         ⋯
       </span>
     </Button>
+  );
+}
+
+function DesktopActions({
+  item,
+  t,
+  capabilities,
+  onDesktopAction,
+}: {
+  item: ArchiveListItem;
+  t: Translate;
+  capabilities: VaultCapabilities;
+  onDesktopAction?: (path: string, action: RowActionId) => void;
+}) {
+  const actions = availableActions(item, capabilities);
+  if (!actions.length) return null;
+  return (
+    <div
+      className="row-actions compact flex flex-wrap gap-1"
+      data-testid={`desktop-actions-${item.path}`}
+    >
+      {actions.map((action) => (
+        <Button
+          key={action.id}
+          type="button"
+          variant={action.tone === "danger" ? "danger" : "secondary"}
+          className="min-h-11 min-w-11 px-3"
+          data-action={action.id}
+          data-path={item.path}
+          data-is-directory={isDirectory(item) ? "true" : "false"}
+          onClick={() => onDesktopAction?.(item.path, action.id)}
+        >
+          {actionLabel(action.id, t, {
+            count: action.count,
+            isDirectory: isDirectory(item),
+          })}
+        </Button>
+      ))}
+    </div>
   );
 }
 
@@ -127,6 +191,65 @@ function StateCell({ item, t }: { item: ArchiveListItem; t: Translate }) {
   return <Badge state={badge.state} label={badge.label} />;
 }
 
+function RowJobOrActions({
+  item,
+  t,
+  capabilities,
+  jobs,
+  onOpenActions,
+  onDesktopAction,
+  onCancelJob,
+  onApproveJob,
+  cancelBusyId,
+  approveBusyId,
+  layout,
+}: {
+  item: ArchiveListItem;
+  t: Translate;
+  capabilities: VaultCapabilities;
+  jobs: JobGroup[];
+  onOpenActions?: (path: string) => void;
+  onDesktopAction?: (path: string, action: RowActionId) => void;
+  onCancelJob?: (job: JobGroup) => void;
+  onApproveJob?: (job: JobGroup) => void;
+  cancelBusyId?: string | null;
+  approveBusyId?: string | null;
+  layout: "card" | "table";
+}) {
+  if (jobs.length) {
+    return (
+      <div className="progress-stack flex min-w-[190px] flex-col gap-2">
+        {jobs.map((job) => (
+          <JobProgress
+            key={job.id}
+            job={job}
+            t={t}
+            canCancel={capabilities.can_operate}
+            canApprove={capabilities.is_vault_owner}
+            onCancel={(j) => onCancelJob?.(j)}
+            onApprove={(j) => onApproveJob?.(j)}
+            cancelBusy={cancelBusyId === job.id}
+            approveBusy={approveBusyId === job.id}
+          />
+        ))}
+      </div>
+    );
+  }
+  if (layout === "card") {
+    return (
+      <MoreActionsButton path={item.path} t={t} onOpenActions={onOpenActions} />
+    );
+  }
+  return (
+    <DesktopActions
+      item={item}
+      t={t}
+      capabilities={capabilities}
+      onDesktopAction={onDesktopAction}
+    />
+  );
+}
+
 /**
  * Dual rendering: cards below `md`, table from `md` up.
  *
@@ -135,14 +258,21 @@ function StateCell({ item, t }: { item: ArchiveListItem; t: Translate }) {
  * - Size → size line
  * - State → Badge (+ directory state detail)
  * - Cloud storage → StorageBadge / class summary
- * - Actions → ⋯ (sheet in #67)
+ * - Actions → ⋯ bottom sheet (mobile) / inline buttons (desktop)
  */
 export function FileList({
   items,
   t,
+  capabilities,
   onOpenDirectory,
   onOpenFile,
   onOpenActions,
+  onDesktopAction,
+  jobsByPath,
+  onCancelJob,
+  onApproveJob,
+  cancelBusyId,
+  approveBusyId,
 }: FileListProps) {
   return (
     <>
@@ -152,11 +282,18 @@ export function FileList({
       >
         {items.map((item) => {
           const size = itemSizeBytes(item);
+          const deep = isDeepArchiveRow(item);
+          const jobs = jobsByPath?.get(item.path) ?? [];
           return (
             <li
               key={`${item.type}:${item.path}`}
-              className="flex items-start gap-2 py-3 first:pt-0 last:pb-0"
+              className={
+                deep
+                  ? "deep-archive-row flex items-start gap-2 border-l-4 border-[#8062ad] bg-[#fcfaff] py-3 pl-2 first:pt-0 last:pb-0"
+                  : "flex items-start gap-2 py-3 first:pt-0 last:pb-0"
+              }
               data-path={item.path}
+              data-deep-archive={deep ? "true" : undefined}
             >
               <div className="min-w-0 flex-1">
                 <ItemName
@@ -175,12 +312,29 @@ export function FileList({
                   ) : null}
                   <CloudStorageCell item={item} t={t} />
                 </div>
+                {jobs.length ? (
+                  <div className="mt-2">
+                    <RowJobOrActions
+                      item={item}
+                      t={t}
+                      capabilities={capabilities}
+                      jobs={jobs}
+                      onCancelJob={onCancelJob}
+                      onApproveJob={onApproveJob}
+                      cancelBusyId={cancelBusyId}
+                      approveBusyId={approveBusyId}
+                      layout="card"
+                    />
+                  </div>
+                ) : null}
               </div>
-              <MoreActionsButton
-                path={item.path}
-                t={t}
-                onOpenActions={onOpenActions}
-              />
+              {!jobs.length ? (
+                <MoreActionsButton
+                  path={item.path}
+                  t={t}
+                  onOpenActions={onOpenActions}
+                />
+              ) : null}
             </li>
           );
         })}
@@ -202,11 +356,18 @@ export function FileList({
           <tbody>
             {items.map((item) => {
               const size = itemSizeBytes(item);
+              const deep = isDeepArchiveRow(item);
+              const jobs = jobsByPath?.get(item.path) ?? [];
               return (
                 <tr
                   key={`${item.type}:${item.path}`}
-                  className="border-b border-line last:border-b-0"
+                  className={
+                    deep
+                      ? "deep-archive-row border-b border-line bg-[#fcfaff] last:border-b-0 [&>td:first-child]:shadow-[inset_4px_0_#8062ad]"
+                      : "border-b border-line last:border-b-0"
+                  }
                   data-path={item.path}
+                  data-deep-archive={deep ? "true" : undefined}
                 >
                   <td className="max-w-[16rem] py-2 pr-3 align-middle">
                     <ItemName
@@ -231,10 +392,18 @@ export function FileList({
                     <CloudStorageCell item={item} t={t} />
                   </td>
                   <td className="py-2 align-middle">
-                    <MoreActionsButton
-                      path={item.path}
+                    <RowJobOrActions
+                      item={item}
                       t={t}
+                      capabilities={capabilities}
+                      jobs={jobs}
                       onOpenActions={onOpenActions}
+                      onDesktopAction={onDesktopAction}
+                      onCancelJob={onCancelJob}
+                      onApproveJob={onApproveJob}
+                      cancelBusyId={cancelBusyId}
+                      approveBusyId={approveBusyId}
+                      layout="table"
                     />
                   </td>
                 </tr>

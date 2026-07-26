@@ -4,7 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import { DEFAULT_PAGE_SIZE, filesQueryOptions } from "@/api";
 import { Button } from "@/components/ui/button";
 
+import type { VaultCapabilities } from "./actions";
 import { FileList } from "./FileList";
+import { FileOperationsHost } from "./FileOperationsHost";
 import {
   buildBreadcrumbs,
   collapseBreadcrumbs,
@@ -17,6 +19,8 @@ type Translate = (key: string, params?: Record<string, string | number>) => stri
 
 export type FileBrowserProps = {
   t: Translate;
+  capabilities: VaultCapabilities;
+  vaultName: string;
 };
 
 export const SEARCH_DEBOUNCE_MS = 250;
@@ -67,17 +71,25 @@ function writeSearchParams(
  * Responsive archive listing: sticky search/breadcrumbs, cards below md,
  * table from md up, Path History on file tap.
  */
-export function FileBrowser({ t }: FileBrowserProps) {
+export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
   const initial = readSearchParams();
   const [directory, setDirectory] = useState(initial.directory);
   const [qInput, setQInput] = useState(initial.q);
   const [q, setQ] = useState(initial.q);
   const [state, setState] = useState(initial.state);
   const [page, setPage] = useState(initial.page);
+  const [sheetPath, setSheetPath] = useState<string | null>(() => {
+    // Screenshot helper: ?sheet=<path> opens the actions bottom sheet.
+    return new URLSearchParams(window.location.search).get("sheet");
+  });
   const [historyPath, setHistoryPath] = useState<string | null>(() => {
     // Screenshot / deep-link helper: ?history=<path> opens Path History.
     return new URLSearchParams(window.location.search).get("history");
   });
+  const demoConfirm = new URLSearchParams(window.location.search).get("confirm");
+  const demoConfirmTarget =
+    new URLSearchParams(window.location.search).get("target") || "readme.txt";
+  const demoVersions = new URLSearchParams(window.location.search).get("versions");
 
   const query = useMemo(
     () => ({
@@ -289,12 +301,45 @@ export function FileBrowser({ t }: FileBrowserProps) {
         ) : null}
 
         {filesQuery.isSuccess && data && data.items.length > 0 ? (
-          <FileList
+          <FileOperationsHost
             items={data.items}
+            capabilities={capabilities}
+            vaultName={vaultName}
             t={t}
-            onOpenDirectory={(path) => navigateDirectory(path)}
-            onOpenFile={(path) => setHistoryPath(path)}
-          />
+            sheetPath={sheetPath}
+            onSheetPathChange={setSheetPath}
+            demoConfirm={
+              demoConfirm
+                ? { action: demoConfirm, path: demoConfirmTarget }
+                : null
+            }
+            demoVersionsPath={demoVersions}
+          >
+            {({
+              jobsByPath,
+              onOpenActions,
+              onDesktopAction,
+              onCancelJob,
+              onApproveJob,
+              cancelBusyId,
+              approveBusyId,
+            }) => (
+              <FileList
+                items={data.items}
+                t={t}
+                capabilities={capabilities}
+                onOpenDirectory={(path) => navigateDirectory(path)}
+                onOpenFile={(path) => setHistoryPath(path)}
+                onOpenActions={onOpenActions}
+                onDesktopAction={onDesktopAction}
+                jobsByPath={jobsByPath}
+                onCancelJob={onCancelJob}
+                onApproveJob={onApproveJob}
+                cancelBusyId={cancelBusyId}
+                approveBusyId={approveBusyId}
+              />
+            )}
+          </FileOperationsHost>
         ) : null}
 
         {historyPath ? (

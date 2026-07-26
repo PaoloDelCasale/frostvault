@@ -1,9 +1,13 @@
 /**
- * Dev-only mock of /api/files and /api/file-history for 375px screenshots.
- * Activated when window.__FV_DEMO_FILES__ is set before React mounts,
- * or when ?demo=files is present (patched in at screenshot time via evaluate).
+ * Dev-only mock of /api/files, /api/file-history, /api/jobs and operation
+ * endpoints for 375px screenshots.
+ * Activated when ?demo=files is present (patched in at screenshot time).
  */
-import type { FileHistoryResponse, FilesResponse } from "@/api/types";
+import type {
+  FileHistoryResponse,
+  FilesResponse,
+  JobsResponse,
+} from "@/api/types";
 
 export const demoRootListing: FilesResponse = {
   items: [
@@ -51,7 +55,7 @@ export const demoRootListing: FilesResponse = {
       upload_eligible: false,
       recover_eligible: true,
       cleanup_eligible: false,
-      recoverable_version_count: 1,
+      recoverable_version_count: 2,
     },
   ],
   total: 3,
@@ -124,92 +128,168 @@ export const demoFileHistory: FileHistoryResponse = {
   ],
 };
 
+export const demoActiveJobs: JobsResponse = {
+  items: [],
+  groups: [
+    {
+      id: "demo-job-1",
+      path: "reports",
+      action: "upload",
+      status: "uploading",
+      percent: 42,
+      total_bytes: 1024,
+      transferred_bytes: 430,
+      item_count: 1,
+      completed_count: 0,
+      failed_count: 0,
+      cancelled_count: 0,
+    },
+  ],
+};
+
+function json(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 export function installDemoFilesFetch(): void {
   const realFetch = window.fetch.bind(window);
+
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-    if (url.includes("/api/file-history")) {
-      return new Response(JSON.stringify(demoFileHistory), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
+    const url = String(
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url,
+    );
+    const method = (init?.method ?? "GET").toUpperCase();
+    const showJob =
+      new URLSearchParams(window.location.search).get("job") === "1";
+
+    if (url.includes("/api/jobs") && method === "GET") {
+      return json(showJob ? demoActiveJobs : { items: [], groups: [] });
+    }
+    if (url.includes("/api/files/versions")) {
+      return json({
+        path: "archive.pdf",
+        items: [
+          {
+            id: "ver-old",
+            version_number: 1,
+            storage_class: "STANDARD",
+            size: 100,
+            recoverable: true,
+            created_at: "2024-01-01T00:00:00Z",
+          },
+          {
+            id: "ver-new",
+            version_number: 2,
+            storage_class: "DEEP_ARCHIVE",
+            size: 2048,
+            recoverable: true,
+            created_at: "2025-06-01T12:00:00Z",
+          },
+        ],
+        recoverable_count: 2,
+        default_archive_version_id: "ver-new",
+        supported_restore_tiers: ["Standard", "Bulk"],
+        default_restore_tier: "Standard",
+        default_restore_days: 7,
       });
     }
+    if (url.includes("/api/recover/estimate")) {
+      return json({
+        path: "archive.pdf",
+        archive_version_id: "ver-new",
+        storage_class: "DEEP_ARCHIVE",
+        requires_restore: true,
+        restore_object_irreversible: true,
+        high_impact: false,
+        estimate: {
+          tier: "Standard",
+          days: 7,
+          estimated_cost_eur: 1.25,
+          estimated_hours: 12,
+        },
+      });
+    }
+    if (url.includes("/api/vault/cloud-deletion")) {
+      return json({
+        enabled: true,
+        purge_delay_seconds: 60,
+        delete_marker_explanation: "Delete markers hide the current key.",
+        generated_phrase: "PURGE-PHRASE",
+      });
+    }
+    if (url.includes("/api/cloud-deletion/preview")) {
+      return json({
+        object_count: 1,
+        version_count: 2,
+        delete_marker_count: 1,
+        byte_count: 2048,
+      });
+    }
+    if (url.includes("/api/file-history")) {
+      return json(demoFileHistory);
+    }
     if (url.includes("/api/files")) {
-      const params = new URL(url, window.location.origin).searchParams;
-      const q = params.get("q") || "";
-      const directory = params.get("directory") || "";
+      const search = new URL(url, window.location.origin).searchParams;
+      const q = search.get("q") || "";
+      const directory = search.get("directory") || "";
       let body: FilesResponse = demoRootListing;
       if (q) body = demoSearchListing;
       else if (directory.startsWith("reports")) body = demoNestedListing;
-      return new Response(JSON.stringify(body), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      return json(body);
     }
     if (url.includes("/api/i18n")) {
-      return new Response(
-        JSON.stringify({
-          locale: "en",
-          locales: ["en", "it"],
-          messages: {},
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
-    }
-    if (url.includes("/api/me")) {
-      return new Response(
-        JSON.stringify({
-          id: 1,
-          username: "admin",
-          display_name: "Local Admin",
-          is_admin: true,
-          active: true,
-          session_version: 1,
-          csrf_token: "demo",
-          auth_method: "local",
-          locale: "en",
-          locales: ["en", "it"],
-          vault: {
-            id: 1,
-            slug: "test",
-            name: "Test Archive",
-            role: "owner",
-            can_operate: true,
-            delete_enabled: true,
-            cloud_deletion_enabled: false,
-            is_vault_owner: true,
-          },
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
-    }
-    if (url.includes("/api/vaults")) {
-      return new Response(JSON.stringify({ items: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
+      return json({
+        locale: "en",
+        locales: ["en", "it"],
+        messages: {},
       });
     }
-    if (url.includes("/api/stats")) {
-      return new Response(
-        JSON.stringify({
-          states: {},
-          storage: { local_bytes: 0, cloud_bytes: 0 },
-          active_jobs: 0,
-          runtime: {},
-          filesystem: null,
+    if (url.includes("/api/me")) {
+      return json({
+        id: 1,
+        username: "admin",
+        display_name: "Local Admin",
+        is_admin: true,
+        active: true,
+        session_version: 1,
+        csrf_token: "demo",
+        auth_method: "local",
+        locale: "en",
+        locales: ["en", "it"],
+        vault: {
+          id: 1,
+          slug: "test",
+          name: "Test Archive",
+          role: "owner",
+          can_operate: true,
           delete_enabled: true,
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
+          cloud_deletion_enabled: true,
+          is_vault_owner: true,
         },
-      );
+      });
+    }
+    if (url.includes("/api/vaults")) {
+      return json({ items: [] });
+    }
+    if (url.includes("/api/stats")) {
+      return json({
+        states: {},
+        storage: { local_bytes: 0, cloud_bytes: 0 },
+        active_jobs: new URLSearchParams(window.location.search).get("job") === "1" ? 1 : 0,
+        runtime: {},
+        filesystem: null,
+        delete_enabled: true,
+      });
+    }
+    if (method === "POST") {
+      return json({ group_id: "demo", message: "started", job_ids: [1] });
     }
     return realFetch(input, init);
   };
