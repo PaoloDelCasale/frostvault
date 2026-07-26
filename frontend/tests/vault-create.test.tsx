@@ -185,4 +185,66 @@ describe("VaultCreatePage", () => {
     expect(slugInput).toHaveValue("taken-slug");
     expect(navigateMock).not.toHaveBeenCalled();
   });
+
+  it("displays the full recovery export returned by the API without altering it", async () => {
+    const user = userEvent.setup();
+    const recoveryExport = [
+      "# FrostVault recovery export — keep offline",
+      "[fv-crypt]",
+      "type = crypt",
+      "remote = frostvault:bucket/prefix",
+      "password = very-long-obscured-password-token-aaaaaaaaaaaaaaaa",
+      "password2 = very-long-obscured-salt-token-bbbbbbbbbbbbbbbb",
+      "filename_encryption = standard",
+      "directory_name_encryption = true",
+    ].join("\n");
+
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/i18n/catalog")) {
+        return Promise.resolve(mockCatalog(en));
+      }
+      if (url === "/api/vaults" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              id: 7,
+              uuid: "crypt-uuid",
+              slug: "secret",
+              name: "Secret",
+              role: "owner",
+              encryption_mode: "crypt",
+              recovery_custody_confirmed: false,
+              recovery_export: recoveryExport,
+            },
+            201,
+          ),
+        );
+      }
+      return Promise.reject(new Error(`unexpected request ${url}`));
+    });
+
+    renderPage();
+    await screen.findByRole("heading", { name: en["ui.vault_create.title"] });
+
+    await user.type(
+      screen.getByRole("textbox", { name: en["ui.vault_create.name"] }),
+      "Secret",
+    );
+    await user.click(
+      screen.getByRole("radio", { name: en["ui.vault_create.encryption_crypt"] }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: en["ui.vault_create.submit"] }),
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: en["ui.recovery.title"] }),
+    ).toBeInTheDocument();
+    const material = screen.getByTestId("recovery-export-material");
+    expect(material).toHaveTextContent(recoveryExport.replace(/\n/g, " "));
+    expect(material.textContent).toBe(recoveryExport);
+    expect(document.querySelector("textarea")).toBeNull();
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
 });

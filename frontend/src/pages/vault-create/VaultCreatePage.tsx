@@ -1,11 +1,13 @@
 import { FormEvent, useState } from "react";
 
 import { ApiError, createVault, selectVault } from "@/api";
-import type { EncryptionMode } from "@/api";
+import type { EncryptionMode, VaultCreateResponse } from "@/api";
 import { AuthCard } from "@/components/AuthCard";
 import { FormField, FormInput } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
+
+import { RecoveryExportPanel } from "./RecoveryExportPanel";
 
 export type VaultCreatePageProps = {
   displayName: string;
@@ -28,6 +30,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
   const [encryptionMode, setEncryptionMode] = useState<EncryptionMode>("plain");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [createdVault, setCreatedVault] = useState<VaultCreateResponse | null>(null);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -47,7 +50,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
 
       const vault = await createVault(payload);
       if (vault.encryption_mode === "crypt" && vault.recovery_export) {
-        // Recovery panel lands in a later seam.
+        setCreatedVault(vault);
         return;
       }
       await selectVault({ vault_id: vault.id });
@@ -65,6 +68,8 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
     }
   }
 
+  const recoveryExport = createdVault?.recovery_export;
+
   return (
     <main className="grid min-h-screen place-items-center bg-canvas px-4 py-[30px]">
       <div className="w-full max-w-[min(440px,100%)]">
@@ -79,88 +84,98 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
             {t("ui.vault_create.subtitle", { name: displayName })}
           </p>
 
-          <form className="mt-6 grid gap-3.5" onSubmit={(e) => void handleSubmit(e)}>
-            <FormField label={t("ui.vault_create.name")} htmlFor="vault-name">
-              <FormInput
-                id="vault-name"
-                name="name"
-                maxLength={120}
-                autoComplete="off"
-                required
-                autoFocus
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-              />
-            </FormField>
-
-            <FormField
-              label={`${t("ui.vault_create.slug")} ${t("ui.vault_create.slug_optional")}`}
-              htmlFor="vault-slug"
-              help={t("ui.vault_create.slug_placeholder")}
-            >
-              <FormInput
-                id="vault-slug"
-                name="slug"
-                maxLength={60}
-                pattern="[a-z0-9-]+"
-                autoComplete="off"
-                placeholder={t("ui.vault_create.slug_placeholder")}
-                value={slug}
-                onChange={(e) => setSlug(e.target.value)}
-              />
-            </FormField>
-
-            <fieldset className="grid gap-2 border-0 p-0">
-              <legend className="text-[13px] font-bold text-muted">
-                {t("ui.vault_create.encryption")}
-              </legend>
-              <label className="flex min-h-11 items-center gap-3 text-sm text-ink">
-                <input
-                  type="radio"
-                  name="encryption_mode"
-                  value="plain"
-                  checked={encryptionMode === "plain"}
-                  onChange={() => setEncryptionMode("plain")}
-                  className="size-4 accent-green"
+          {recoveryExport ? (
+            <RecoveryExportPanel
+              recoveryExport={recoveryExport}
+              title={t("ui.recovery.title")}
+              subtitle={t("ui.recovery.subtitle")}
+              exportLabel={t("ui.recovery.export_label")}
+              warning={t("ui.recovery.warning")}
+            />
+          ) : (
+            <form className="mt-6 grid gap-3.5" onSubmit={(e) => void handleSubmit(e)}>
+              <FormField label={t("ui.vault_create.name")} htmlFor="vault-name">
+                <FormInput
+                  id="vault-name"
+                  name="name"
+                  maxLength={120}
+                  autoComplete="off"
+                  required
+                  autoFocus
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
                 />
-                {t("ui.vault_create.encryption_plain")}
-              </label>
-              <label className="flex min-h-11 items-center gap-3 text-sm text-ink">
-                <input
-                  type="radio"
-                  name="encryption_mode"
-                  value="crypt"
-                  checked={encryptionMode === "crypt"}
-                  onChange={() => setEncryptionMode("crypt")}
-                  className="size-4 accent-green"
-                />
-                {t("ui.vault_create.encryption_crypt")}
-              </label>
-            </fieldset>
+              </FormField>
 
-            {error ? (
-              <div
-                className="rounded-[10px] bg-red-soft px-3.5 py-3 text-sm text-ink"
-                role="alert"
-                aria-live="assertive"
+              <FormField
+                label={`${t("ui.vault_create.slug")} ${t("ui.vault_create.slug_optional")}`}
+                htmlFor="vault-slug"
+                help={t("ui.vault_create.slug_placeholder")}
               >
-                {error}
+                <FormInput
+                  id="vault-slug"
+                  name="slug"
+                  maxLength={60}
+                  pattern="[a-z0-9-]+"
+                  autoComplete="off"
+                  placeholder={t("ui.vault_create.slug_placeholder")}
+                  value={slug}
+                  onChange={(e) => setSlug(e.target.value)}
+                />
+              </FormField>
+
+              <fieldset className="grid gap-2 border-0 p-0">
+                <legend className="text-[13px] font-bold text-muted">
+                  {t("ui.vault_create.encryption")}
+                </legend>
+                <label className="flex min-h-11 items-center gap-3 text-sm text-ink">
+                  <input
+                    type="radio"
+                    name="encryption_mode"
+                    value="plain"
+                    checked={encryptionMode === "plain"}
+                    onChange={() => setEncryptionMode("plain")}
+                    className="size-4 accent-green"
+                  />
+                  {t("ui.vault_create.encryption_plain")}
+                </label>
+                <label className="flex min-h-11 items-center gap-3 text-sm text-ink">
+                  <input
+                    type="radio"
+                    name="encryption_mode"
+                    value="crypt"
+                    checked={encryptionMode === "crypt"}
+                    onChange={() => setEncryptionMode("crypt")}
+                    className="size-4 accent-green"
+                  />
+                  {t("ui.vault_create.encryption_crypt")}
+                </label>
+              </fieldset>
+
+              {error ? (
+                <div
+                  className="rounded-[10px] bg-red-soft px-3.5 py-3 text-sm text-ink"
+                  role="alert"
+                  aria-live="assertive"
+                >
+                  {error}
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap items-center gap-2.5">
+                <Button type="submit" variant="primary" disabled={submitting}>
+                  {t("ui.vault_create.submit")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => navigateTo("/", onNavigate)}
+                >
+                  {t("ui.vault_create.cancel")}
+                </Button>
               </div>
-            ) : null}
-
-            <div className="flex flex-wrap items-center gap-2.5">
-              <Button type="submit" variant="primary" disabled={submitting}>
-                {t("ui.vault_create.submit")}
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => navigateTo("/", onNavigate)}
-              >
-                {t("ui.vault_create.cancel")}
-              </Button>
-            </div>
-          </form>
+            </form>
+          )}
         </AuthCard>
       </div>
     </main>
