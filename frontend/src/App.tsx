@@ -5,6 +5,7 @@ import { AppShell } from "@/layout/AppShell";
 import type { ShellCapabilities } from "@/layout/types";
 import { AdminPage } from "@/pages/admin";
 import { ArchivePage } from "@/pages/archive";
+import { FileBrowser } from "@/pages/archive/FileBrowser";
 import { demoStats, demoTranslate } from "@/pages/archive/demoData";
 import { LoginPage } from "@/pages/login/LoginPage";
 import { NoVaultPage } from "@/pages/no-vault/NoVaultPage";
@@ -42,12 +43,6 @@ function capabilitiesFromMe(me: MeResponse): ShellCapabilities {
     role: vault?.role,
   };
 }
-
-const demoFiles = [
-  "reports/q1-summary.pdf",
-  "photos/family-2024/IMG_001.jpg",
-  "docs/contracts/lease.pdf",
-];
 
 const fallbackCapabilities: ShellCapabilities = {
   vaultName: "Test Archive",
@@ -162,18 +157,7 @@ export default function App() {
         displayName={me?.display_name ?? "Local Admin"}
         stats={demoStats}
         t={demoTranslate}
-        fileList={
-          <ul className="divide-y divide-line">
-            {demoFiles.map((path) => (
-              <li
-                key={path}
-                className="flex min-h-11 items-center py-2 text-sm first:pt-0"
-              >
-                <span className="truncate font-medium">{path}</span>
-              </li>
-            ))}
-          </ul>
-        }
+        fileList={<FileBrowser t={demoTranslate} />}
       />
     </AppShell>
   );

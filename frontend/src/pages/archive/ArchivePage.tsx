@@ -41,10 +41,10 @@ export function ArchivePage({
       <StatsSummary stats={stats} t={t} />
       <FilesystemHealthBanner filesystem={stats.filesystem} t={t} />
 
-      <Panel>
-        <div data-testid="archive-file-list" className="min-h-[12rem] p-4">
+      <Panel className="min-w-0">
+        <div data-testid="archive-file-list" className="min-h-[12rem] min-w-0 px-4 pb-4">
           {fileList ?? (
-            <p className="text-sm text-muted">{t("ui.file_list_placeholder")}</p>
+            <p className="p-4 text-sm text-muted">{t("ui.file_list_placeholder")}</p>
           )}
         </div>
       </Panel>

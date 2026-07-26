@@ -266,6 +266,84 @@ export type StatsResponse = {
   delete_enabled: boolean;
 };
 
+/** Vault File row as returned by /api/files (browse or search). */
+export type VaultFileListItem = {
+  type: "file";
+  name: string;
+  path: string;
+  local_exists?: number | boolean;
+  local_size?: number | null;
+  local_file_type?: string | null;
+  cloud_exists?: number | boolean;
+  cloud_size?: number | null;
+  storage_class?: string | null;
+  integrity?: string | null;
+  availability?: string | null;
+  restore_state?: string | null;
+  restore_expiry?: string | null;
+  state: string;
+  upload_eligible?: boolean;
+  recover_eligible?: boolean;
+  recoverable_version_count?: number;
+  cleanup_eligible?: boolean;
+};
+
+/** Directory aggregate as returned by /api/files browse mode. */
+export type DirectoryListItem = {
+  type: "directory";
+  name: string;
+  path: string;
+  item_count: number;
+  total_size: number;
+  local_size?: number;
+  cloud_size?: number;
+  state: string;
+  state_counts?: Record<string, number>;
+  storage_class?: string | null;
+  storage_class_count?: number;
+  available_actions?: Record<string, number>;
+};
+
+export type ArchiveListItem = VaultFileListItem | DirectoryListItem;
+
+export type FilesResponse = {
+  items: ArchiveListItem[];
+  total: number;
+  page: number;
+  directory: string;
+  mode: "browse" | "search" | string;
+};
+
+export type PathHistoryEntry = {
+  path: string;
+  valid_from?: string | null;
+  valid_to?: string | null;
+};
+
+export type ArchiveVersionSummary = {
+  object_key?: string | null;
+  version_number?: number;
+  storage_class?: string | null;
+  size?: number | null;
+  [key: string]: unknown;
+};
+
+/** Path History + Archive Versions for one Vault File (/api/file-history). */
+export type FileHistoryResponse = {
+  vault_file_id: string;
+  path: string;
+  path_history: PathHistoryEntry[];
+  versions: ArchiveVersionSummary[];
+};
+
+export type FilesQuery = {
+  q?: string;
+  state?: string;
+  directory?: string;
+  page?: number;
+  page_size?: number;
+};
+
 /** Global administration endpoints (issue #69). */
 
 export type AdminUser = {
