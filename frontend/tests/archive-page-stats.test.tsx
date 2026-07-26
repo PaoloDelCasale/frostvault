@@ -2,10 +2,13 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ACTIVE_JOB_POLL_MS,
   ApiQueryProvider,
+  IDLE_POLL_MS,
   configureApiClient,
   createAppQueryClient,
   resetApiClientForTests,
+  statsRefetchInterval,
 } from "@/api";
 import type { StatsResponse } from "@/api/types";
 import { ArchivePage } from "@/pages/archive/ArchivePage";
@@ -91,6 +94,7 @@ describe("ArchivePage from /api/stats", () => {
   afterEach(() => {
     cleanup();
     resetApiClientForTests();
+    vi.useRealTimers();
   });
 
   function renderArchive() {
@@ -151,5 +155,57 @@ describe("ArchivePage from /api/stats", () => {
     expect(screen.getAllByText("2.0 KB").length).toBeGreaterThan(0);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.queryByText(/alias\.txt/i)).not.toBeInTheDocument();
+  });
+
+  it("polls /api/stats every 1s while Jobs are active and refreshes the cards", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const busyStats: StatsResponse = {
+      ...liveVaultStats,
+      states: { both: 4, local_only: 0, cloud_only: 3 },
+      active_jobs: 3,
+    };
+    const afterProgress: StatsResponse = {
+      ...busyStats,
+      states: { both: 5, local_only: 0, cloud_only: 2 },
+      active_jobs: 2,
+    };
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(busyStats))
+      .mockResolvedValueOnce(jsonResponse(afterProgress));
+
+    renderArchive();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("3").length).toBeGreaterThan(0);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(ACTIVE_JOB_POLL_MS);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(screen.getAllByText("5").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("2").length).toBeGreaterThan(0);
+    });
+
+    vi.useRealTimers();
+  });
+});
+
+describe("statsRefetchInterval", () => {
+  it("matches the jobs 1s ↔ 10s cadence from active_jobs", () => {
+    expect(
+      statsRefetchInterval({ state: { data: undefined } }),
+    ).toBe(IDLE_POLL_MS);
+    expect(
+      statsRefetchInterval({
+        state: { data: { ...liveVaultStats, active_jobs: 0 } },
+      }),
+    ).toBe(IDLE_POLL_MS);
+    expect(
+      statsRefetchInterval({
+        state: { data: { ...liveVaultStats, active_jobs: 2 } },
+      }),
+    ).toBe(ACTIVE_JOB_POLL_MS);
   });
 });
