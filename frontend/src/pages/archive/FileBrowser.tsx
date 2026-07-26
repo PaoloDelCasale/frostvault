@@ -86,6 +86,10 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
     // Screenshot / deep-link helper: ?history=<path> opens Path History.
     return new URLSearchParams(window.location.search).get("history");
   });
+  const demoConfirm = new URLSearchParams(window.location.search).get("confirm");
+  const demoConfirmTarget =
+    new URLSearchParams(window.location.search).get("target") || "readme.txt";
+  const demoVersions = new URLSearchParams(window.location.search).get("versions");
 
   const query = useMemo(
     () => ({
@@ -304,6 +308,12 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
             t={t}
             sheetPath={sheetPath}
             onSheetPathChange={setSheetPath}
+            demoConfirm={
+              demoConfirm
+                ? { action: demoConfirm, path: demoConfirmTarget }
+                : null
+            }
+            demoVersionsPath={demoVersions}
           >
             {({
               jobsByPath,

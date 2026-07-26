@@ -142,6 +142,20 @@ export default function App() {
   }
 
   const capabilities = me ? capabilitiesFromMe(me) : fallbackCapabilities;
+  const jobDemo = new URLSearchParams(window.location.search).get("job") === "1";
+  const statsForPage = jobDemo
+    ? {
+        ...demoStats,
+        active_jobs: 1,
+        filesystem: {
+          ok: true,
+          uid: 1000,
+          gid: 1000,
+          checks: [],
+          findings: [],
+        },
+      }
+    : demoStats;
 
   return (
     <AppShell
@@ -155,7 +169,7 @@ export default function App() {
       <ArchivePage
         vaultName={capabilities.vaultName}
         displayName={me?.display_name ?? "Local Admin"}
-        stats={demoStats}
+        stats={statsForPage}
         t={demoTranslate}
         fileList={
           <FileBrowser
@@ -166,7 +180,7 @@ export default function App() {
               can_operate: capabilities.canOperate,
               delete_enabled: me?.vault?.delete_enabled ?? true,
               cloud_deletion_enabled:
-                me?.vault?.cloud_deletion_enabled ?? false,
+                me?.vault?.cloud_deletion_enabled ?? true,
               is_vault_owner: capabilities.isVaultOwner,
             }}
           />

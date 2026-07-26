@@ -59,6 +59,10 @@ export type FileOperationsHostProps = {
   t: Translate;
   sheetPath: string | null;
   onSheetPathChange: (path: string | null) => void;
+  /** Screenshot helper: open a destructive ConfirmDialog immediately. */
+  demoConfirm?: { action: string; path: string } | null;
+  /** Screenshot helper: open the Archive Version picker for this path. */
+  demoVersionsPath?: string | null;
   children: (ctx: {
     jobsByPath: Map<string, JobGroup[]>;
     onOpenActions: (path: string) => void;
@@ -91,6 +95,8 @@ export function FileOperationsHost({
   t,
   sheetPath,
   onSheetPathChange,
+  demoConfirm = null,
+  demoVersionsPath = null,
   children,
 }: FileOperationsHostProps) {
   const queryClient = useQueryClient();
@@ -399,6 +405,29 @@ export function FileOperationsHost({
     },
     [refreshAfterMutation, showError, showSuccess, t],
   );
+
+  // Screenshot / demo deep-links: open confirm or version dialogs once.
+  const demoBootstrapped = useRef(false);
+  useEffect(() => {
+    if (demoBootstrapped.current) return;
+    if (demoConfirm?.action === "free-space" || demoConfirm?.action === "cloud-archive") {
+      demoBootstrapped.current = true;
+      setConfirmAction({
+        action: demoConfirm.action as RowActionId,
+        path: demoConfirm.path,
+        isDirectory: false,
+        explanation:
+          demoConfirm.action === "cloud-archive"
+            ? "Delete markers hide the current key."
+            : undefined,
+      });
+      return;
+    }
+    if (demoVersionsPath) {
+      demoBootstrapped.current = true;
+      void beginRecover(demoVersionsPath, false).catch(showError);
+    }
+  }, [beginRecover, demoConfirm, demoVersionsPath, showError]);
 
   // Expose endpoint mapping for tests via data attribute on host.
   const hostRef = useRef<HTMLDivElement>(null);

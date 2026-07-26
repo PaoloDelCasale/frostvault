@@ -566,7 +566,7 @@ describe("File operations — seams 1–10", () => {
         { name: "Purge permanently" },
       ),
     );
-    const dialog = await screen.findByRole("dialog");
+    await screen.findByRole("dialog");
     expect(screen.getByTestId("cloud-purge-preview")).toHaveTextContent(
       /1 object\(s\).*2 version\(s\).*1 marker\(s\).*2048 bytes/,
     );
@@ -589,29 +589,25 @@ describe("File operations — seams 1–10", () => {
     expect(jobPollIntervalMs(1)).toBe(ACTIVE_JOB_POLL_MS);
     expect(jobPollIntervalMs(0)).toBe(IDLE_POLL_MS);
 
-    let active = true;
     mockRoutes({
-      jobs: () =>
-        active
-          ? {
-              items: [],
-              groups: [
-                {
-                  id: "job-1",
-                  path: "readme.txt",
-                  action: "upload",
-                  status: "uploading",
-                  percent: 42,
-                  total_bytes: 1000,
-                  transferred_bytes: 420,
-                  item_count: 1,
-                  completed_count: 0,
-                  failed_count: 0,
-                  cancelled_count: 0,
-                },
-              ],
-            }
-          : emptyJobs,
+      jobs: {
+        items: [],
+        groups: [
+          {
+            id: "job-1",
+            path: "readme.txt",
+            action: "upload",
+            status: "uploading",
+            percent: 42,
+            total_bytes: 1000,
+            transferred_bytes: 420,
+            item_count: 1,
+            completed_count: 0,
+            failed_count: 0,
+            cancelled_count: 0,
+          },
+        ],
+      },
     });
     renderBrowser();
     const progress = (await screen.findAllByTestId("job-progress"))[0]!;
