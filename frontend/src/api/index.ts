@@ -12,6 +12,7 @@ export type { ApiClientConfig, ApiFetch } from "./client";
 export {
   fetchI18nCatalog,
   fetchMe,
+  fetchStats,
   fetchVaults,
   logout,
   updateLocale,
@@ -34,15 +35,20 @@ export {
   i18nCatalogQueryOptions,
   jobsRefetchInterval,
   meQueryOptions,
+  statsQueryOptions,
   vaultsQueryOptions,
 } from "./query";
 
 export type {
   AuthMethod,
+  FilesystemCheck,
+  FilesystemFinding,
+  FilesystemHealth,
   I18nCatalogResponse,
   LocaleUpdateResponse,
   MeResponse,
   MeVault,
+  StatsResponse,
   VaultListItem,
   VaultRole,
   VaultsResponse,

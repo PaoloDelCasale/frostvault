@@ -6,12 +6,13 @@ import {
 import type { ReactNode } from "react";
 import { createElement } from "react";
 
-import { fetchI18nCatalog, fetchMe, fetchVaults } from "./endpoints";
+import { fetchI18nCatalog, fetchMe, fetchStats, fetchVaults } from "./endpoints";
 import { jobAwareRefetchInterval } from "./polling";
 
 export const apiQueryKeys = {
   me: ["me"] as const,
   vaults: ["vaults"] as const,
+  stats: ["stats"] as const,
   i18nCatalog: (locale?: string) => ["i18n", "catalog", locale ?? "default"] as const,
 };
 
@@ -57,6 +58,11 @@ export function i18nCatalogQueryOptions(locale?: string) {
     queryFn: () => fetchI18nCatalog(locale),
   };
 }
+
+export const statsQueryOptions = {
+  queryKey: apiQueryKeys.stats,
+  queryFn: fetchStats,
+};
 
 /** Example jobs query refetch interval: 1s while active, 10s when idle. */
 export const jobsRefetchInterval = jobAwareRefetchInterval<{
