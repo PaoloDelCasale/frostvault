@@ -9,7 +9,6 @@ import {
   upsertLifecycleFolderOverride,
   type LifecycleGuidedProfile,
   type LifecycleResponse,
-  type StorageClassOptionItem,
 } from "@/api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
@@ -21,7 +20,8 @@ import {
   STORAGE_CLASS_OPTIONS,
   type ManualStorageClass,
 } from "@/pages/archive/actions";
-import { formatStorageClassOptionLabel } from "@/pages/archive/storageClassOptions";
+import { StorageClassSelect } from "@/pages/archive/StorageClassSelect";
+import type { StorageClassOption } from "@/pages/archive/storageClassOptions";
 
 type LifecyclePanelProps = {
   onNotice: (message: string, error?: boolean) => void;
@@ -70,11 +70,11 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
   const [busy, setBusy] = useState(false);
   const [vaultClassOpen, setVaultClassOpen] = useState(false);
   const [vaultTarget, setVaultTarget] = useState<ManualStorageClass>("DEEP_ARCHIVE");
-  const [classOptions, setClassOptions] = useState<StorageClassOptionItem[]>([]);
+  const [classOptions, setClassOptions] = useState<StorageClassOption[]>([]);
 
   useEffect(() => {
     void fetchStorageClasses()
-      .then((payload) => setClassOptions(payload.items))
+      .then((payload) => setClassOptions(payload.items as StorageClassOption[]))
       .catch(() => setClassOptions([]));
   }, []);
 
@@ -217,24 +217,32 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
             label={t("ui.storage_class_picker_label")}
             htmlFor="vault-storage-class-target"
           >
-            <FormSelect
+            <StorageClassSelect
               id="vault-storage-class-target"
               value={vaultTarget}
-              onChange={(event) =>
-                setVaultTarget(event.target.value as ManualStorageClass)
+              options={
+                classOptions.length
+                  ? classOptions
+                  : STORAGE_CLASS_OPTIONS.map(
+                      (id): StorageClassOption => ({
+                        id,
+                        currency: "EUR",
+                        storage_rate_eur_per_gib_month: 0,
+                        retrieval:
+                          COLD_STORAGE_CLASSES.has(id) && id !== "GLACIER_IR"
+                            ? "restore"
+                            : "instant",
+                        min_duration_days: 0,
+                        requires_restore:
+                          id === "GLACIER" || id === "DEEP_ARCHIVE",
+                        availability_zones:
+                          id === "ONEZONE_IA" ? "single" : "multi",
+                      }),
+                    )
               }
-            >
-              {STORAGE_CLASS_OPTIONS.map((option) => {
-                const details = classOptions.find((item) => item.id === option);
-                return (
-                  <option key={option} value={option}>
-                    {details
-                      ? formatStorageClassOptionLabel(details, t)
-                      : option}
-                  </option>
-                );
-              })}
-            </FormSelect>
+              onValueChange={(next) => setVaultTarget(next as ManualStorageClass)}
+              t={t}
+            />
           </FormField>
           {COLD_STORAGE_CLASSES.has(vaultTarget) ? (
             <p className="text-sm text-amber-800">{t("ui.storage_class_confirm_warning")}</p>

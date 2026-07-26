@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { JobProgress } from "@/pages/archive/JobProgress";
@@ -18,9 +18,14 @@ const catalog: Record<string, string> = {
     "Current class needs S3 restore (~{hours}h, ~€{cost}) before the change. RestoreObject cannot be cancelled.",
   "ui.storage_class_pin_after": "Pin path from lifecycle after change",
   "ui.storage_class_option_instant":
-    "{id} — €{rate}/GiB·mo · Instant · Min {min_days}d",
+    "{id} — €{rate}/GiB·mo · Instant retrieval · Recovery —",
   "ui.storage_class_option_restore":
-    "{id} — €{rate}/GiB·mo · Restore ~{hours}h · €{restore_rate}/GiB · Min {min_days}d",
+    "{id} — €{rate}/GiB·mo · Restore ~{hours}h · Recovery €{restore_rate}/GiB",
+  "ui.storage_class_rate": "€{rate}/GiB·mo",
+  "ui.storage_class_retrieval_instant": "Instant retrieval",
+  "ui.storage_class_retrieval_restore": "Restore ~{hours}h",
+  "ui.storage_class_recovery_price": "Recovery €{restore_rate}/GiB",
+  "ui.storage_class_recovery_none": "Recovery —",
   "ui.row_action_storage_class": "Change storage class…",
   "ui.cancel": "Cancel",
   "ui.job_bytes_progress": "{transferred} of {total}",
@@ -33,7 +38,7 @@ const catalog: Record<string, string> = {
   "ui.stopping": "Stopping…",
 };
 
-function t(key: string, params?: Record<string, string | number>): string {
+function t(key: string, params?: Record<string, unknown>): string {
   let value = catalog[key] ?? key;
   if (params) {
     for (const [name, raw] of Object.entries(params)) {
@@ -67,7 +72,7 @@ const options: StorageClassOption[] = [
 ];
 
 describe("StorageClassDialog descriptions (seam 6)", () => {
-  it("shows class cost/retrieval descriptions and restore warning for Deep Archive source", async () => {
+  it("shows a browser dropdown with rate, retrieval, and recovery price", async () => {
     const user = userEvent.setup();
     const onConfirm = vi.fn();
     render(
@@ -87,9 +92,21 @@ describe("StorageClassDialog descriptions (seam 6)", () => {
     );
 
     const picker = screen.getByTestId("storage-class-picker");
+    expect(picker.tagName).toBe("BUTTON");
     expect(picker).toHaveTextContent(/€0.023\/GiB/);
-    expect(picker).toHaveTextContent(/DEEP_ARCHIVE/);
-    expect(picker).toHaveTextContent(/48/);
+    expect(picker).toHaveTextContent(/Instant retrieval/);
+    expect(picker).toHaveTextContent(/Recovery —/);
+    expect(picker).not.toHaveTextContent(/Min\s+\d/);
+
+    await user.click(picker);
+    const menu = await screen.findByTestId("storage-class-picker-menu");
+    expect(within(menu).getByText("DEEP_ARCHIVE")).toBeInTheDocument();
+    expect(within(menu).getByText(/€0.00099\/GiB/)).toBeInTheDocument();
+    expect(within(menu).getByText(/Restore ~48h/)).toBeInTheDocument();
+    expect(within(menu).getByText(/Recovery €0.0025\/GiB/)).toBeInTheDocument();
+    expect(menu).not.toHaveTextContent(/Min\s+\d/);
+    expect(menu).not.toHaveTextContent(/180/);
+
     expect(screen.getByTestId("storage-class-restore-warning")).toHaveTextContent(
       /48h/,
     );
