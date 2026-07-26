@@ -73,7 +73,10 @@ export function FileBrowser({ t }: FileBrowserProps) {
   const [q, setQ] = useState(initial.q);
   const [state, setState] = useState(initial.state);
   const [page, setPage] = useState(initial.page);
-  const [historyPath, setHistoryPath] = useState<string | null>(null);
+  const [historyPath, setHistoryPath] = useState<string | null>(() => {
+    // Screenshot / deep-link helper: ?history=<path> opens Path History.
+    return new URLSearchParams(window.location.search).get("history");
+  });
 
   const query = useMemo(
     () => ({
