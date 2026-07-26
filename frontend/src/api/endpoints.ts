@@ -7,6 +7,7 @@ import type {
   RecoveryConfirmResponse,
   RecoveryExportRequest,
   RecoveryExportResponse,
+  StatsResponse,
   VaultCreateRequest,
   VaultCreateResponse,
   VaultSelectRequest,
@@ -79,5 +80,16 @@ export function updateLocale(locale: string): Promise<LocaleUpdateResponse> {
   return apiRequest<LocaleUpdateResponse>("/api/locale", {
     method: "PUT",
     body: JSON.stringify({ locale }),
+  });
+}
+
+export function fetchStats(): Promise<StatsResponse> {
+  return apiRequest<StatsResponse>("/api/stats");
+}
+
+export function logout(): Promise<{ message: string; message_key: string }> {
+  return apiRequest<{ message: string; message_key: string }>("/api/logout", {
+    method: "POST",
+    body: "{}",
   });
 }

@@ -3,6 +3,7 @@ export {
   ReauthenticationRedirectError,
   apiRequest,
   configureApiClient,
+  loginWithPassword,
   resetApiClientForTests,
   setCsrfToken,
 } from "./client";
@@ -14,7 +15,9 @@ export {
   exportRecoverySecret,
   fetchI18nCatalog,
   fetchMe,
+  fetchStats,
   fetchVaults,
+  logout,
   selectVault,
   updateLocale,
 } from "./endpoints";
@@ -36,12 +39,16 @@ export {
   i18nCatalogQueryOptions,
   jobsRefetchInterval,
   meQueryOptions,
+  statsQueryOptions,
   vaultsQueryOptions,
 } from "./query";
 
 export type {
   AuthMethod,
   EncryptionMode,
+  FilesystemCheck,
+  FilesystemFinding,
+  FilesystemHealth,
   I18nCatalogResponse,
   LocaleUpdateResponse,
   MeResponse,
@@ -50,6 +57,7 @@ export type {
   RecoveryConfirmResponse,
   RecoveryExportRequest,
   RecoveryExportResponse,
+  StatsResponse,
   VaultCreateRequest,
   VaultCreateResponse,
   VaultListItem,

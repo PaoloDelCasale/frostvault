@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { AuthCard } from "@/components/AuthCard";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/i18n/useI18n";
 
 import { RecoveryExportPanel } from "./RecoveryExportPanel";
 
@@ -22,6 +23,7 @@ const SAMPLE_EXPORT = [
  * Activated from App via ?demo=vault-create-recovery.
  */
 export function VaultCreateScreenshotFixture() {
+  const { t } = useI18n();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [custodyConfirmed, setCustodyConfirmed] = useState(false);
   const material = useMemo(() => SAMPLE_EXPORT, []);
@@ -31,22 +33,22 @@ export function VaultCreateScreenshotFixture() {
       <div className="w-full max-w-[min(440px,100%)]">
         <AuthCard>
           <p className="m-0 mb-1.5 text-[12px] font-extrabold tracking-[0.16em] text-green">
-            FROSTVAULT
+            {t("ui.private_archive")}
           </p>
           <h1 className="m-0 text-[clamp(1.75rem,5vw,2.25rem)] font-bold tracking-[-0.04em] text-ink">
-            New vault
+            {t("ui.vault_create.title")}
           </h1>
           <p className="mt-2 text-sm text-muted">
-            Create a private archive for Ada Lovelace.
+            {t("ui.vault_create.subtitle", { name: "Ada Lovelace" })}
           </p>
           <RecoveryExportPanel
             recoveryExport={material}
-            title="Save your recovery export"
-            subtitle="Store this Rclone configuration offline. Uploads stay blocked until you confirm custody of the recovery secret."
-            exportLabel="Recovery export"
-            warning="Uploads stay blocked until you confirm custody of the recovery secret. Save the export before confirming — confirmation is irreversible."
-            copyLabel="Copy"
-            downloadLabel="Download"
+            title={t("ui.recovery.title")}
+            subtitle={t("ui.recovery.subtitle")}
+            exportLabel={t("ui.recovery.export_label")}
+            warning={t("ui.recovery.warning")}
+            copyLabel={t("ui.recovery.copy")}
+            downloadLabel={t("ui.recovery.download")}
             showWarning={!custodyConfirmed}
           >
             {!custodyConfirmed ? (
@@ -56,7 +58,7 @@ export function VaultCreateScreenshotFixture() {
                   variant="primary"
                   onClick={() => setConfirmOpen(true)}
                 >
-                  I saved it — confirm custody
+                  {t("ui.recovery.confirm")}
                 </Button>
               </div>
             ) : null}
@@ -66,10 +68,10 @@ export function VaultCreateScreenshotFixture() {
       <ConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
-        title="Confirm recovery custody?"
-        description="This cannot be undone. If you have not saved the recovery export offline, the vault material is unrecoverable."
-        confirmLabel="Confirm custody"
-        cancelLabel="Cancel"
+        title={t("ui.recovery.confirm_title")}
+        description={t("ui.recovery.confirm_description")}
+        confirmLabel={t("ui.recovery.confirm_action")}
+        cancelLabel={t("ui.vault_create.cancel")}
         tone="danger"
         onConfirm={() => {
           setCustodyConfirmed(true);
