@@ -177,3 +177,45 @@ export type CloudDeletionSettings = {
   generated_phrase?: string;
   accepted_single_identity_risk?: string;
 };
+
+export type FilesystemFinding = {
+  path: string;
+  code: string;
+  message: string;
+  /** Present when the backend or a scan attaches remediation advice. */
+  remediation?: string | null;
+};
+
+export type FilesystemCheck = {
+  code: string;
+  status: string;
+  message: string;
+  remediation?: string | null;
+};
+
+export type FilesystemHealth = {
+  ok: boolean;
+  uid: number | null;
+  gid: number | null;
+  root?: string;
+  checks: FilesystemCheck[];
+  findings: FilesystemFinding[];
+};
+
+export type StatsResponse = {
+  states: Record<string, number>;
+  storage: {
+    local_bytes: number;
+    cloud_bytes: number;
+  };
+  active_jobs: number;
+  runtime: {
+    last_error?: string | null;
+    filesystem?: {
+      findings?: FilesystemFinding[];
+    };
+    [key: string]: unknown;
+  };
+  filesystem: FilesystemHealth | null;
+  delete_enabled: boolean;
+};

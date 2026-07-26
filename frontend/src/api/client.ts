@@ -251,3 +251,33 @@ export async function apiRequest<T = unknown>(
 
   return data as T;
 }
+
+/**
+ * Break-glass Login via POST /api/login.
+ *
+ * Does not use apiRequest: a 401 for wrong credentials must not navigate away
+ * from the sign-in screen (apiRequest sends every 401 to /login).
+ */
+export async function loginWithPassword(
+  username: string,
+  password: string,
+): Promise<void> {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const response = await resolveFetch()("/api/login", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ username, password }),
+  });
+  const data = await parseBody(response);
+  if (!response.ok) {
+    let detail: string | undefined;
+    if (data && typeof data === "object" && "detail" in data) {
+      const raw = (data as { detail: unknown }).detail;
+      if (typeof raw === "string") detail = raw;
+    }
+    throw new ApiError(detail ?? `Sign-in failed (HTTP ${response.status})`, {
+      status: response.status,
+      body: data,
+    });
+  }
+}

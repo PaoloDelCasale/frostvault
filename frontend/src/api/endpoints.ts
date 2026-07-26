@@ -7,6 +7,7 @@ import type {
   LocaleUpdateResponse,
   MeResponse,
   OperationPolicy,
+  StatsResponse,
   UserLookupResult,
   VaultMembersResponse,
   VaultQuotaUpdatePayload,
@@ -168,5 +169,16 @@ export function updateCloudDeletion(
   return apiRequest<CloudDeletionSettings>("/api/vault/cloud-deletion", {
     method: "PUT",
     body: JSON.stringify({ enabled }),
+  });
+}
+
+export function fetchStats(): Promise<StatsResponse> {
+  return apiRequest<StatsResponse>("/api/stats");
+}
+
+export function logout(): Promise<{ message: string; message_key: string }> {
+  return apiRequest<{ message: string; message_key: string }>("/api/logout", {
+    method: "POST",
+    body: "{}",
   });
 }
