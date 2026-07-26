@@ -58,4 +58,20 @@ describe("StatsSummary from /api/stats", () => {
     expect(screen.getAllByText("Active operations").length).toBeGreaterThan(0);
     expect(screen.getAllByText("2").length).toBeGreaterThan(0);
   });
+
+  it("activates the compact form below md and the expanded form from md up", () => {
+    render(<StatsSummary stats={realisticStats} t={t} />);
+
+    const compact = screen.getByTestId("stats-compact");
+    const expanded = screen.getByTestId("stats-expanded");
+
+    // Tailwind responsive utilities: compact visible by default, hidden at md+;
+    // expanded hidden by default, grid from md+.
+    expect(compact.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["md:hidden"]),
+    );
+    expect(expanded.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["hidden", "md:grid"]),
+    );
+  });
 });
