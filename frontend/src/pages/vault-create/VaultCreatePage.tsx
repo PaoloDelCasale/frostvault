@@ -127,6 +127,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
               warning={t("ui.recovery.warning")}
               copyLabel={t("ui.recovery.copy")}
               downloadLabel={t("ui.recovery.download")}
+              showWarning={!custodyConfirmed}
             >
               {recoveryError ? (
                 <div

@@ -11,6 +11,7 @@ type RecoveryExportPanelProps = {
   copyLabel: string;
   downloadLabel: string;
   downloadFilename?: string;
+  showWarning?: boolean;
   children?: ReactNode;
   onCopy?: (material: string) => void | Promise<void>;
   onDownload?: (material: string) => void;
@@ -43,6 +44,7 @@ export function RecoveryExportPanel({
   copyLabel,
   downloadLabel,
   downloadFilename = "frostvault-recovery-export.conf",
+  showWarning = true,
   children,
   onCopy,
   onDownload,
@@ -51,13 +53,15 @@ export function RecoveryExportPanel({
     <div className="mt-6 grid gap-3.5">
       <h2 className="m-0 text-xl font-bold text-ink">{title}</h2>
       <p className="m-0 text-sm text-muted">{subtitle}</p>
-      <p
-        className="m-0 rounded-[10px] bg-amber-soft px-3.5 py-3 text-sm text-ink"
-        role="status"
-        data-testid="recovery-custody-warning"
-      >
-        {warning}
-      </p>
+      {showWarning ? (
+        <p
+          className="m-0 rounded-[10px] bg-amber-soft px-3.5 py-3 text-sm text-ink"
+          role="status"
+          data-testid="recovery-custody-warning"
+        >
+          {warning}
+        </p>
+      ) : null}
       <div className="grid gap-1.5">
         <span className="text-[13px] font-bold text-muted">{exportLabel}</span>
         <pre

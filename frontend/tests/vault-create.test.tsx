@@ -431,4 +431,80 @@ describe("VaultCreatePage", () => {
       expect(navigateMock).toHaveBeenCalledWith("/");
     });
   });
+
+  it("keeps the custody warning visible until custody is confirmed", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/i18n/catalog")) {
+        return Promise.resolve(mockCatalog(en));
+      }
+      if (url === "/api/vaults" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              id: 11,
+              uuid: "crypt-uuid",
+              slug: "secret",
+              name: "Secret",
+              role: "owner",
+              encryption_mode: "crypt",
+              recovery_custody_confirmed: false,
+              recovery_export: "material",
+            },
+            201,
+          ),
+        );
+      }
+      if (url === "/api/vaults/select" && init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ vault_id: 11 }));
+      }
+      if (url === "/api/vault/recovery/confirm" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse({
+            vault_id: 11,
+            recovery_custody_confirmed: true,
+            recovery_custody_confirmed_at: "2026-07-26T10:00:00Z",
+          }),
+        );
+      }
+      return Promise.reject(new Error(`unexpected request ${url}`));
+    });
+
+    renderPage();
+    await screen.findByRole("heading", { name: en["ui.vault_create.title"] });
+    await user.type(
+      screen.getByRole("textbox", { name: en["ui.vault_create.name"] }),
+      "Secret",
+    );
+    await user.click(
+      screen.getByRole("radio", { name: en["ui.vault_create.encryption_crypt"] }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: en["ui.vault_create.submit"] }),
+    );
+    await screen.findByRole("heading", { name: en["ui.recovery.title"] });
+
+    expect(screen.getByTestId("recovery-custody-warning")).toHaveTextContent(
+      en["ui.recovery.warning"],
+    );
+
+    await user.click(screen.getByRole("button", { name: en["ui.recovery.confirm"] }));
+    await screen.findByRole("alertdialog");
+    await user.click(screen.getByRole("button", { name: en["ui.vault_create.cancel"] }));
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId("recovery-custody-warning")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: en["ui.recovery.confirm"] }));
+    await screen.findByRole("alertdialog");
+    await user.click(
+      screen.getByRole("button", { name: en["ui.recovery.confirm_action"] }),
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("recovery-custody-warning")).not.toBeInTheDocument();
+    });
+  });
 });
