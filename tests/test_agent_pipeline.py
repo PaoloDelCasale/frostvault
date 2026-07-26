@@ -706,11 +706,15 @@ class PipelineWorkflowContractTests(unittest.TestCase):
         workflow = self._workflow("agent-automerge.yml")
         triggers = self._triggers(workflow)
         self.assertIn("schedule", triggers)
+        self.assertIn("check_suite", triggers)
+        self.assertEqual(triggers["check_suite"]["types"], ["completed"])
         self.assertNotIn("pull_request", triggers)
         self.assertNotIn("pull_request_target", triggers)
         self.assertNotIn("workflow_run", triggers)
         self.assertEqual(workflow["permissions"]["issues"], "write")
-
+        text = (WORKFLOWS / "agent-automerge.yml").read_text(encoding="utf-8")
+        self.assertIn("cursor/", text)
+        self.assertIn("check_suite", text)
     def test_all_pipeline_workflows_call_the_tested_script(self) -> None:
         for name in ("agent-unblock.yml", "agent-automerge.yml", "agent-dispatch.yml"):
             text = (WORKFLOWS / name).read_text(encoding="utf-8")

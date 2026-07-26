@@ -32,14 +32,16 @@ any other issue cannot enrol it. The loop is:
    Adding `ready-for-agent` by hand also triggers **Agent pipeline dispatch**.
 3. `.github/workflows/agent-automerge.yml` squash-merges that pull request once
    every check run for its head commit is finished and green **and** the closed
-   issue has no remaining open `blocked by` dependencies. Merging closes the
-   issue, then **unblocks and dispatches the next issues in the same job**.
-   (A `GITHUB_TOKEN` merge does not re-fire `issues: closed` workflows, so the
-   merge job must continue the chain itself; `agent-unblock.yml` remains as a
-   backup when a human closes an issue.) The same sweep also **repairs** agent
-   PRs whose checks failed while the Cursor run went idle: it starts a follow-up
-   agent told to fix that PR branch (not open a new one). An idle Cursor run is
-   not “done”; CI green is.
+   issue has no remaining open `blocked by` dependencies. It runs when a
+   `check_suite` completes on a `cursor/*` branch (so a green PR does not wait
+   for GitHub's unreliable cron), with `*/10` schedule and `workflow_dispatch`
+   as backups. Merging closes the issue, then **unblocks and dispatches the next
+   issues in the same job**. (A `GITHUB_TOKEN` merge does not re-fire
+   `issues: closed` workflows, so the merge job must continue the chain itself;
+   `agent-unblock.yml` remains as a backup when a human closes an issue.) The
+   same sweep also **repairs** agent PRs whose checks failed while the Cursor
+   run went idle: it starts a follow-up agent told to fix that PR branch (not
+   open a new one). An idle Cursor run is not “done”; CI green is.
 4. `.github/workflows/agent-unblock.yml` still reacts to human closures: for
    every issue the closed one was blocking, it adds `ready-for-agent` if all of
    that issue's blockers are now closed — and dispatches an agent for it.
