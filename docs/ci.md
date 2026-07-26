@@ -77,9 +77,9 @@ Three workflows, all driven by
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| [Agent pipeline unblock](../.github/workflows/agent-unblock.yml) | `issues: closed` | Labels `ready-for-agent` on every dependent whose blockers are now all closed — only if it carries `agent-pipeline` — and starts a cloud agent on each |
-| [Agent pipeline dispatch](../.github/workflows/agent-dispatch.yml) | `workflow_dispatch` | Starts a cloud agent on one issue. Needed for the first issue of a chain |
-| [Agent pipeline auto-merge](../.github/workflows/agent-automerge.yml) | Every 10 minutes, plus `workflow_dispatch` | Squash-merges open pull requests that pass every gate below |
+| [Agent pipeline unblock](../.github/workflows/agent-unblock.yml) | `issues: closed` | Labels `ready-for-agent` on every dependent whose blockers are now all closed — only if it carries `agent-pipeline` — and starts a cloud agent on each. Backup for human closures; auto-merge continues the chain itself because `GITHUB_TOKEN` merges do not re-fire this workflow |
+| [Agent pipeline dispatch](../.github/workflows/agent-dispatch.yml) | `workflow_dispatch`, or `ready-for-agent` label | Starts a cloud agent on one issue. Needed for the first issue of a chain, and when a human adds `ready-for-agent` |
+| [Agent pipeline auto-merge](../.github/workflows/agent-automerge.yml) | Every 10 minutes, plus `workflow_dispatch` | Squash-merges open pull requests that pass every gate below, then unblocks and dispatches their dependents |
 
 Agents are started through the private webhook of the repo-backed
 `FrostVault Epic 56 TDD Pipeline` Cursor Automation. The endpoint and Bearer value

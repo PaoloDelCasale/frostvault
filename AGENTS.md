@@ -25,21 +25,26 @@ any other issue cannot enrol it. The loop is:
 
 1. An issue carries `agent-pipeline` (it belongs to an automated epic) and gets
    `ready-for-agent` once nothing blocks it.
-2. The same workflow that labelled it calls the private webhook of the
-   `FrostVault Epic 56 TDD Pipeline` Cursor Automation. The repo-backed
-   automation opens a **ready-for-review** (not draft) pull request whose body
-   says `Closes #N`.
+2. The same workflow that labelled it — or auto-merge after it closes a
+   predecessor — calls the private webhook of the `FrostVault Epic 56 TDD
+   Pipeline` Cursor Automation. The repo-backed automation opens a
+   **ready-for-review** (not draft) pull request whose body says `Closes #N`.
+   Adding `ready-for-agent` by hand also triggers **Agent pipeline dispatch**.
 3. `.github/workflows/agent-automerge.yml` squash-merges that pull request once
    every check run for its head commit is finished and green **and** the closed
    issue has no remaining open `blocked by` dependencies. Merging closes the
-   issue.
-4. `.github/workflows/agent-unblock.yml` reacts to the closure: for every issue
-   the closed one was blocking, it adds `ready-for-agent` if all of that issue's
-   blockers are now closed — and dispatches an agent for it.
+   issue, then **unblocks and dispatches the next issues in the same job**.
+   (A `GITHUB_TOKEN` merge does not re-fire `issues: closed` workflows, so the
+   merge job must continue the chain itself; `agent-unblock.yml` remains as a
+   backup when a human closes an issue.)
+4. `.github/workflows/agent-unblock.yml` still reacts to human closures: for
+   every issue the closed one was blocking, it adds `ready-for-agent` if all of
+   that issue's blockers are now closed — and dispatches an agent for it.
 
 Start the first issue of a chain with the **Agent pipeline dispatch** workflow
-(`workflow_dispatch`, takes an issue number): nothing closes before it, so no
-unblock event exists to start it.
+(`workflow_dispatch`, takes an issue number), or by labelling it
+`ready-for-agent`: nothing closes before it, so no unblock event exists to start
+it.
 
 After #72 closes, #86 removes all three workflows, the script, its tests and
 these documentation sections. The running pre-merge copy then closes epic #56

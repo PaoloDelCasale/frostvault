@@ -14,7 +14,10 @@ notion of "blocked". This module is the missing link, in three commands:
 
 ``merge``
     Sweep the open pull requests and squash-merge the ones that are finished.
-    Merging closes the issue, which triggers ``unblock`` in turn.
+    After each merge, run ``unblock`` (and dispatch) in-process: a merge done
+    with ``GITHUB_TOKEN`` closes the linked issue, but GitHub does not re-fire
+    ``issues: closed`` workflows for that token, so relying on
+    ``agent-unblock.yml`` alone would stall the chain.
 
 The target issue must both carry ``agent-pipeline`` and be one of the explicitly
 enumerated sub-issues of epic #56. The allowlist is deliberately not reusable:
@@ -307,9 +310,6 @@ def unblock(client: GitHubCli, closed_issue: int) -> list[int]:
         if PIPELINE_LABEL not in labels:
             print(f"#{number}: not in the pipeline, skipping.")
             continue
-        if READY_LABEL in labels:
-            print(f"#{number}: already ready, skipping.")
-            continue
         open_blockers = [
             blocker["number"]
             for blocker in client.blocked_by(number)
@@ -319,9 +319,16 @@ def unblock(client: GitHubCli, closed_issue: int) -> list[int]:
             listed = ", ".join(f"#{blocker}" for blocker in open_blockers)
             print(f"#{number}: still blocked by {listed}.")
             continue
-        client.add_label(number, READY_LABEL)
+        live_labels = client.labels(number) | labels
+        if DISPATCHED_LABEL in live_labels:
+            print(f"#{number}: already dispatched, skipping.")
+            continue
+        if READY_LABEL not in live_labels:
+            client.add_label(number, READY_LABEL)
+            print(f"#{number}: unblocked, labelled {READY_LABEL}.")
+        else:
+            print(f"#{number}: already ready, queueing dispatch.")
         labelled.append(number)
-        print(f"#{number}: unblocked, labelled {READY_LABEL}.")
     if not labelled:
         print(f"#{closed_issue}: nothing to unblock.")
     return labelled
@@ -372,8 +379,16 @@ def merge_reason_to_skip(
     return None
 
 
-def merge_ready(client: GitHubCli) -> list[int]:
-    """Squash-merge every open pull request that has finished cleanly."""
+def merge_ready(
+    client: GitHubCli,
+    automation: CursorAutomation | None = None,
+) -> list[int]:
+    """Squash-merge every open pull request that has finished cleanly.
+
+    After each successful merge, unblock dependents and dispatch agents in the
+    same process. ``GITHUB_TOKEN`` merges close linked issues without firing
+    ``agent-unblock.yml``, so the chain would stop without this step.
+    """
     merged: list[int] = []
     for pull_request in client.open_pull_requests():
         number = int(pull_request["number"])
@@ -408,6 +423,9 @@ def merge_ready(client: GitHubCli) -> list[int]:
             continue
         merged.append(number)
         print(f"#{number}: merged, closing #{issue}.")
+        if issue is not None:
+            for next_issue in unblock(client, issue):
+                dispatch(client, automation, next_issue, client.repo)
         if issue == CLEANUP_ISSUE:
             # This process is running the pre-merge copy of the script, so it can
             # finish after the cleanup PR has removed the checked-in automation.
@@ -476,7 +494,7 @@ def main(argv: Sequence[str]) -> int:
         dispatch(client, automation_from_environment(), issue, repo)
         return 0
     if command == "merge":
-        merge_ready(client)
+        merge_ready(client, automation_from_environment())
         return 0
     print(f"unknown command {command!r}", file=sys.stderr)
     return 2
