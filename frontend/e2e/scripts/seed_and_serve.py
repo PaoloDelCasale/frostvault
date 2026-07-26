@@ -3,7 +3,7 @@
 
 Creates users for the role matrix (admin/owner via Break-glass Login; operator
 and viewer via pre-minted Session cookies), two vaults, and a small catalog
-tree with Path History. Then runs uvicorn with FRONTEND_SPA=1.
+tree with Path History. Then runs uvicorn serving the built SPA.
 """
 
 from __future__ import annotations
@@ -261,7 +261,6 @@ def _apply_env(paths: dict[str, Path]) -> None:
         "DB_BACKEND": "sqlite",
         "SQLITE_PATH": str(paths["db"]),
         "COOKIE_SECURE": "false",
-        "FRONTEND_SPA": "1",
         "FRONTEND_DIST_DIR": str(REPO_ROOT / "frontend" / "dist"),
         "ALLOW_LOCAL_DELETE": "true",
         "BREAK_GLASS_ALLOWED_CIDRS": "",

@@ -264,7 +264,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Database | `DB_BACKEND`, `SQLITE_PATH`, `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
 | Authentication | `BOOTSTRAP_ADMIN_*`, `OIDC_*`, `BREAK_GLASS_ALLOWED_CIDRS` |
 | Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES` |
-| Frontend | `FRONTEND_SPA` (default `0` = Jinja), `FRONTEND_DIST_DIR` |
+| Frontend | `FRONTEND_DIST_DIR` (Vite build output; required for HTML routes) |
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `VAULT_RCLONE_*`, `RCLONE_CONFIG` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
 | Operations | `OPERATION_CONCURRENCY`, `RESTORE_*`, `ALLOW_LOCAL_DELETE` |
@@ -299,12 +299,12 @@ DB_BACKEND=sqlite SQLITE_PATH=./data/frostvault.db \
 On Windows PowerShell, use `.venv\Scripts\python.exe` and set environment
 variables with `$env:NAME = "value"`.
 
-### Frontend SPA
+### Frontend
 
-`FRONTEND_SPA` defaults to off, so the Jinja UI is unchanged. The container
-image builds `frontend/dist` in a Node stage; set `FRONTEND_SPA=1` in production
-when you want FastAPI to serve that SPA (hashed assets are cached immutably;
-`index.html` is `no-store`).
+The UI is a React SPA. The container image builds `frontend/dist` in a Node
+stage; uvicorn always serves it for HTML routes (hashed assets are cached
+immutably; `index.html` is `no-store`). For a native run, build first:
+`cd frontend && npm ci && npm run build`.
 
 For day-to-day SPA work, run uvicorn and the Vite dev server together. The Vite
 proxy forwards `/api`, `/auth`, and `/login` to `http://127.0.0.1:8080` with
@@ -323,13 +323,13 @@ cd frontend && npm ci && npm run dev
 
 Open the Vite URL (default `http://127.0.0.1:5173`). To exercise the production
 serving path without Docker: `cd frontend && npm run build`, then start uvicorn
-with `FRONTEND_SPA=1`.
+and open `http://127.0.0.1:8080`.
 
 Run the same portable suites used by pull-request CI:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
-node --test tests/*.mjs
+cd frontend && npm ci && npm run lint && npm run test
 ```
 
 PostgreSQL migration tests require `TEST_POSTGRES_URL`; S3-compatible integrity

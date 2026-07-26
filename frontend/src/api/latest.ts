@@ -18,7 +18,7 @@ export type LatestRequestScope = {
 
 /**
  * Generation token helper ported from the admin UI race guards in
- * `app/static/admin.js` / `tests/test_admin_ui.mjs`.
+ * the legacy admin race-condition cases.
  */
 export function createLatestRequestScope(): LatestRequestScope {
   let generation = 0;

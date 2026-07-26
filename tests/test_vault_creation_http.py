@@ -88,25 +88,25 @@ class VaultCreationHttpTestCase(unittest.TestCase):
 
 
 class SelfServiceVaultCreationTests(VaultCreationHttpTestCase):
-    def test_unauthenticated_vault_create_page_redirects_to_login(self) -> None:
+    def test_unauthenticated_vault_create_page_serves_spa(self) -> None:
+        """HTML is the SPA shell; auth is enforced by the JSON create API."""
         response = self.client.get("/vaults/new", follow_redirects=False)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn('id="root"', response.text)
 
-        self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["location"], "/login")
+        denied = self._create("My Archive")
+        self.assertEqual(denied.status_code, 401, denied.text)
 
-    def test_vault_create_page_is_linked_from_no_vault_and_archive_pages(self) -> None:
+    def test_vault_create_api_works_without_html_form_markup(self) -> None:
         self._login()
 
         no_vault = self.client.get("/")
         self.assertEqual(no_vault.status_code, 200)
-        self.assertIn('href="/vaults/new"', no_vault.text)
+        self.assertIn('id="root"', no_vault.text)
 
         create_page = self.client.get("/vaults/new")
         self.assertEqual(create_page.status_code, 200)
-        self.assertIn('name="name"', create_page.text)
-        self.assertIn('name="slug"', create_page.text)
-        for storage_field in ("source_root", "s3_bucket", "s3_prefix", "rclone_remote"):
-            self.assertNotIn(storage_field, create_page.text)
+        self.assertIn('id="root"', create_page.text)
 
         created = self._create("My Archive")
         self.assertEqual(created.status_code, 201, created.text)
@@ -119,7 +119,7 @@ class SelfServiceVaultCreationTests(VaultCreationHttpTestCase):
 
         archive = self.client.get("/")
         self.assertEqual(archive.status_code, 200)
-        self.assertIn('href="/vaults/new"', archive.text)
+        self.assertIn('id="root"', archive.text)
 
     def test_create_and_select_flow_opens_the_new_archive(self) -> None:
         self._login()

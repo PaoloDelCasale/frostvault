@@ -1,8 +1,9 @@
 """GET /api/me vault capability seams (issue #59).
 
-Exposes the archive capability flags that today live only as Jinja
-``data-*`` attributes on ``index.html``, so the SPA can read them without
-calling the expensive ``/api/stats`` endpoint.
+Exposes the archive capability flags that the SPA reads from /api/me
+(can_operate, delete_enabled, cloud_deletion_enabled, is_vault_owner)
+so the client can gate actions without calling the expensive ``/api/stats``
+endpoint.
 """
 
 from __future__ import annotations
@@ -181,8 +182,8 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         self.assertEqual(payload["locale"], "en")
         self.assertEqual(payload["locales"], ["en", "it"])
 
-    def test_me_capabilities_match_jinja_archive_data_attributes(self) -> None:
-        """Seam 8: /api/me values match what the Jinja template computes."""
+    def test_me_capabilities_match_role_formulas(self) -> None:
+        """Seam 8: /api/me capability formulas match vault role gates."""
         cases = (
             ("owner", True),
             ("operator", True),

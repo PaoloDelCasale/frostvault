@@ -239,8 +239,7 @@ not write all the tests up front.
 Run the whole suite before opening a pull request, not only your own tests:
 
   .venv/bin/python -m unittest discover -s tests
-  node --test tests/*.mjs
-  cd frontend && npm ci && npm run lint && npm run test   # only if frontend/ exists
+  cd frontend && npm ci && npm run lint && npm run test
 
 Open a **ready-for-review** (not draft) pull request whose body contains
 "Closes #{issue}", states what you tested and how, and attaches a 375px

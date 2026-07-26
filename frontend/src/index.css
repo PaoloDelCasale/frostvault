@@ -3,7 +3,7 @@
 @import "shadcn/tailwind.css";
 
 @theme {
-  /* FrostVault palette — migrated from app/static/style.css */
+  /* FrostVault palette — migrated from the legacy CSS tokens */
   --ink: #18221d;
   --muted: #65716a;
   --line: #dce4de;
@@ -48,7 +48,7 @@
 
   --radius-sm: 0.375rem;
   --radius-md: 0.625rem;
-  /* FrostVault shapes from style.css */
+  /* FrostVault shape radii */
   --radius-card: 14px;
   --radius-panel: 18px;
   --radius-auth: 22px;

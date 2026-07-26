@@ -1,4 +1,4 @@
-/** Polling cadence preserved from the Jinja archive UI (`app/static/app.js`). */
+/** Polling cadence preserved from the legacy archive UI. */
 export const ACTIVE_JOB_POLL_MS = 1_000;
 export const IDLE_POLL_MS = 10_000;
 

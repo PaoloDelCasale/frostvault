@@ -103,10 +103,18 @@ class BreakGlassHttpTests(unittest.TestCase):
         self.assertIsNone(client.cookies.get(self.cookie_name))
 
     def test_login_page_hides_local_form_outside_network(self) -> None:
-        outside = self._client(OUTSIDE).get("/login")
-        self.assertNotIn("login-form", outside.text)
-        loopback = self._client(LOOPBACK).get("/login")
-        self.assertIn("login-form", loopback.text)
+        # Break-glass availability is enforced on POST /api/login (ADR-0004),
+        # not by omitting fields from the SPA shell HTML.
+        outside = self._client(OUTSIDE)
+        denied = outside.post(
+            "/api/login", json={"username": "admin", "password": ADMIN_PASSWORD}
+        )
+        self.assertEqual(denied.status_code, 403, denied.text)
+
+        loopback = self._client(LOOPBACK)
+        page = loopback.get("/login")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn('id="root"', page.text)
 
     # --- admin-only -------------------------------------------------------
 

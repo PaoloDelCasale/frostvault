@@ -261,12 +261,16 @@ class FrontendSpaHttpTests(unittest.TestCase):
 
     def test_no_frontend_spa_references_in_sources(self) -> None:
         """Seam 4: no reference to FRONTEND_SPA remains in the sources."""
+        forbidden = "FRONTEND" + "_SPA"
+        forbidden_attr = "frontend" + "_spa"
         hits: list[str] = []
         for path in _iter_source_files():
+            if path.resolve() == Path(__file__).resolve():
+                continue
             text = path.read_text(encoding="utf-8", errors="replace")
-            if "FRONTEND_SPA" in text or "frontend_spa" in text:
+            if forbidden in text or forbidden_attr in text:
                 hits.append(str(path.relative_to(REPO_ROOT)))
-        self.assertEqual(hits, [], f"FRONTEND_SPA still referenced in: {hits}")
+        self.assertEqual(hits, [], f"{forbidden} still referenced in: {hits}")
 
     def test_no_deleted_jinja_or_static_paths_in_sources(self) -> None:
         """Seam 5: no reference to deleted templates or static files remains."""

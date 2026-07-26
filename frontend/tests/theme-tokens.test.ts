@@ -8,7 +8,7 @@ const cssPath = path.resolve(
   "../src/index.css",
 );
 
-/** Hex values from app/static/style.css — independent source of truth for the migration. */
+/** FrostVault palette hex literals — independent source of truth for the migration. */
 const EXPECTED_TOKENS: Record<string, string> = {
   "--ink": "#18221d",
   "--muted": "#65716a",
@@ -23,7 +23,7 @@ const EXPECTED_TOKENS: Record<string, string> = {
   "--violet-soft": "#eee9fb",
 };
 
-/** Radii from style.css shapes — independent literals. */
+/** Radii from the FrostVault shape tokens — independent literals. */
 const EXPECTED_RADII: Record<string, string> = {
   "--radius-card": "14px",
   "--radius-panel": "18px",
@@ -32,7 +32,7 @@ const EXPECTED_RADII: Record<string, string> = {
 };
 
 describe("FrostVault palette in @theme", () => {
-  it("keeps every migrated token hex value from style.css", () => {
+  it("keeps every migrated token hex value", () => {
     const css = readFileSync(cssPath, "utf8");
     expect(css).toMatch(/@theme\b/);
     for (const [token, hex] of Object.entries(EXPECTED_TOKENS)) {
@@ -41,7 +41,7 @@ describe("FrostVault palette in @theme", () => {
     }
   });
 
-  it("keeps card/panel/auth/badge radii from style.css", () => {
+  it("keeps card/panel/auth/badge radii", () => {
     const css = readFileSync(cssPath, "utf8");
     for (const [token, value] of Object.entries(EXPECTED_RADII)) {
       const pattern = new RegExp(

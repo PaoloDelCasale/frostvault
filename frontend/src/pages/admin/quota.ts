@@ -62,7 +62,7 @@ export type QuotaBuildResult =
   | { ok: false; error: string };
 
 /**
- * Client-side quota validation ported from `app/static/admin.js`.
+ * Client-side quota validation for admin quota forms.
  * Blank fields become null (unlimited). Soft cannot exceed hard.
  */
 export function buildQuotaUpdatePayload(

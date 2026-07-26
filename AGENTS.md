@@ -99,7 +99,8 @@ a virtualenv at `.venv/` and installs `requirements.txt` into it. Use `.venv/bin
 
 ### Tests
 - Python: `.venv/bin/python -m unittest discover -s tests -v` (this is what CI runs).
-- Frontend JS: `node --test tests/*.mjs` (Node's built-in runner, no npm install needed).
+- Frontend: `cd frontend && npm ci && npm run lint && npm run test` (Vitest).
+  Playwright e2e: `cd frontend && npm run test:e2e` (requires `npm run build` and Chromium).
 - The `*_postgresql` migration tests are skipped unless `TEST_POSTGRES_URL` points at a
   Postgres 16 server (see `.github/workflows/migrations.yml`); everything else runs on SQLite.
 - S3-compatible integrity tests run only when `TEST_S3_ENDPOINT` is set (MinIO job in CI).
@@ -120,21 +121,21 @@ Docker is not installed; run natively with the SQLite backend instead of `docker
   must exist for scan/browse to work), and `BOOTSTRAP_ADMIN_PASSWORD` needs >= 12 chars.
 - You MUST run migrations before starting: `.venv/bin/python -m alembic upgrade head`.
   The app refuses to start on a stale/unversioned schema (see `HEAD_SCHEMA_REVISION`).
-- Start (Jinja UI, default): `.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080`.
+- Build the SPA first: `cd frontend && npm ci && npm run build`.
+- Start: `.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080`
+  (serves `frontend/dist`; missing dist returns HTTP 503 with build instructions).
 - Local break-glass admin login is configured through `BOOTSTRAP_ADMIN_*` in the
   Git-ignored `.env`; never commit real credentials.
 
-### Frontend SPA (`FRONTEND_SPA`)
-`FRONTEND_SPA` defaults to `0` (Jinja). Set `FRONTEND_SPA=1` only after
-`frontend/dist` exists (image builds produce it; locally run
-`cd frontend && npm ci && npm run build`).
+### Frontend (React SPA)
 
-**Production / flag on:** uvicorn serves `frontend/dist` with SPA fallback.
-Hashed `/assets/*` get `Cache-Control: public, max-age=31536000, immutable`;
-`index.html` is `no-store`. Missing `dist` returns HTTP 503 with build instructions.
+The UI is a Vite + React SPA. uvicorn always serves `frontend/dist` for HTML
+routes (hashed `/assets/*` → `Cache-Control: public, max-age=31536000, immutable`;
+`index.html` → `no-store`). Missing `dist` returns HTTP 503 with build
+instructions. Image builds produce `dist`; locally run
+`cd frontend && npm ci && npm run build` before pointing a browser at uvicorn.
 
-**Local SPA development (Vite + uvicorn):** keep Jinja off the hot path by
-running the API and the Vite dev server together:
+**Local SPA development (Vite + uvicorn):**
 
 ```bash
 # terminal 1 — API (Host validation: leave ALLOWED_HOSTS empty locally, or
@@ -147,8 +148,8 @@ set -a && . ./.env && set +a
 cd frontend && npm ci && npm run dev
 ```
 
-Open the Vite URL (default `http://127.0.0.1:5173`). Do not point the browser
-at `:8080` for SPA work unless `FRONTEND_SPA=1` and `frontend/dist` is built.
+Open the Vite URL (default `http://127.0.0.1:5173`). For the production serving
+path without Docker: build `frontend/dist`, then open `http://127.0.0.1:8080`.
 
 ### Non-obvious gotchas
 - AWS/rclone are placeholders locally. Local file cataloging (scan + browse) works without

@@ -23,13 +23,12 @@ prose.
    cancel/stop, or email subject/body), add the key to `CRITICAL_KEYS`.
 5. Reference the key from code:
    - Python/API: `translate("…", locale=…)` or `set_job(..., message_key="…")`
-   - Jinja: `{{ t('…') }}`
-   - Static JS: `t('…')` after the page embeds `#i18n-catalog`
+   - React SPA: `t('…')` via the i18n provider (catalog from `/api/i18n/catalog`)
 6. Run:
 
    ```bash
-   .venv/bin/python -m unittest tests.test_i18n tests.test_html_safety -v
-   node --test tests/test_upload_operation_ui.mjs
+   .venv/bin/python -m unittest tests.test_i18n tests.test_locale_http -v
+   cd frontend && npm run test
    ```
 
    `tests.test_i18n.CatalogIntegrityTests` fails on missing/unused critical keys
