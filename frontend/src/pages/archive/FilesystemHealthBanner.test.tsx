@@ -91,4 +91,47 @@ describe("FilesystemHealthBanner", () => {
       "Grant read permission on secret.bin for the archive user",
     );
   });
+
+  it("still displays a scan finding that is absent from the live preflight checks", () => {
+    // Backend merges scan-time findings into filesystem.findings (see app/main.py
+    // stats()). The UI must render the full array and must not drop entries that
+    // are not also represented among live preflight checks.
+    const merged: FilesystemHealth = {
+      ok: false,
+      uid: 1000,
+      gid: 1000,
+      root: "/sources/test",
+      checks: [
+        {
+          code: "fs.entries",
+          status: "fail",
+          message: "1 filesystem problem(s) under the vault root",
+          remediation:
+            "Fix host permissions for the reported paths or remove symbolic links",
+        },
+      ],
+      findings: [
+        {
+          path: "link.txt",
+          code: "fs.symlink",
+          message: "Symbolic link rejected: link.txt",
+        },
+        {
+          // Produced by scan_tree, not by live check_vault_filesystem.
+          path: "secret.bin",
+          code: "fs.unreadable_file",
+          message: "Permission denied while reading secret.bin",
+        },
+      ],
+    };
+
+    render(<FilesystemHealthBanner filesystem={merged} t={t} />);
+
+    const alarm = screen.getByRole("alert");
+    expect(alarm).toHaveTextContent("link.txt");
+    expect(alarm).toHaveTextContent("secret.bin");
+    expect(alarm).toHaveTextContent(
+      "Permission denied while reading secret.bin",
+    );
+  });
 });
