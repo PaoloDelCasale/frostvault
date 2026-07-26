@@ -7,7 +7,7 @@ type ProgressBarProps = {
   className?: string;
 };
 
-/** Progress track matching style.css `.progress-track` / `.operation-progress`. */
+/** Progress track matching `.progress-track` / `.operation-progress`. */
 export function ProgressBar({ value, label, detail, className }: ProgressBarProps) {
   const clamped = Math.max(0, Math.min(100, value));
   return (

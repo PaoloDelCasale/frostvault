@@ -15,6 +15,7 @@ from app.config import settings
 from app.database import SQLiteConnection
 from app.main import app
 from app.sessions import create_session
+from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
 
 
@@ -66,6 +67,7 @@ class VaultEncryptionHttpTests(unittest.TestCase):
             archive_master_key=self.master_key,
             rclone_config=str(self.rclone_config),
             reauth_window_seconds=600,
+            frontend_dist_dir=str(write_spa_dist(Path(self._tmp.name))),
         )
         for target in (
             "app.main.settings",
@@ -115,13 +117,27 @@ class VaultEncryptionHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
 
-    def test_create_form_offers_encryption_mode(self) -> None:
+    def test_create_page_serves_spa_and_api_accepts_encryption_mode(self) -> None:
         self._authenticate(self.owner_id)
         page = self.client.get("/vaults/new")
         self.assertEqual(page.status_code, 200)
-        self.assertIn('name="encryption_mode"', page.text)
-        self.assertIn("crypt", page.text)
-        self.assertIn("plain", page.text)
+        self.assertIn('id="root"', page.text)
+
+        crypt = self.client.post(
+            "/api/vaults",
+            json={"name": "Secret", "slug": "secret", "encryption_mode": "crypt"},
+            headers={"X-CSRF-Token": self._csrf()},
+        )
+        self.assertEqual(crypt.status_code, 201, crypt.text)
+        self.assertEqual(crypt.json()["encryption_mode"], "crypt")
+
+        plain = self.client.post(
+            "/api/vaults",
+            json={"name": "Plain", "slug": "plain", "encryption_mode": "plain"},
+            headers={"X-CSRF-Token": self._csrf()},
+        )
+        self.assertEqual(plain.status_code, 201, plain.text)
+        self.assertEqual(plain.json()["encryption_mode"], "plain")
 
     def test_create_crypt_vault_returns_one_time_recovery_material(self) -> None:
         body = self._create_crypt()

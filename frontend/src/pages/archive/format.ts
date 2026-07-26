@@ -1,4 +1,4 @@
-/** Byte and count formatting for archive statistics (ported from app/static/app.js). */
+/** Byte and count formatting for archive statistics. */
 
 export function formatBytes(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";

@@ -7,7 +7,7 @@ type CardProps = {
   className?: string;
 };
 
-/** Surface card — 14px radius from style.css `.card`. */
+/** Surface card — 14px radius (`.card`). */
 export function Card({ children, className }: CardProps) {
   return (
     <div

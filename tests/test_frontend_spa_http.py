@@ -1,11 +1,12 @@
-"""FRONTEND_SPA serving seams (issue #58).
+"""SPA is the only frontend (issue #71 cut-over).
 
-With the flag off the Jinja UI is unchanged; with the flag on FastAPI serves
-``frontend/dist`` and falls back to ``index.html`` for non-API routes.
+No FRONTEND_SPA flag: HTML routes always serve frontend/dist; API routes stay
+JSON.
 """
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from dataclasses import replace
@@ -20,6 +21,79 @@ from app.main import app
 from app.security import hash_password
 from app.sessions import create_session
 from tests.test_database import run_alembic
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Paths the cut-over deletes; source must not keep referencing them.
+_DELETED_PATH_FRAGMENTS = (
+    "app/templates/",
+    "app/templates\\",
+    "app/static/app.js",
+    "app/static/admin.js",
+    "app/static/vault_access.js",
+    "app/static/vault_create.js",
+    "app/static/style.css",
+    "templates/index.html",
+    "templates/login.html",
+    "templates/no_vault.html",
+    "templates/vault_access.html",
+    "templates/vault_create.html",
+    "templates/admin.html",
+)
+
+_SOURCE_SCAN_ROOTS = (
+    REPO_ROOT / "app",
+    REPO_ROOT / "frontend" / "src",
+    REPO_ROOT / "frontend" / "tests",
+    REPO_ROOT / "frontend" / "e2e",
+    REPO_ROOT / "tests",
+    REPO_ROOT / "docs",
+)
+
+_SOURCE_SCAN_FILES = (
+    REPO_ROOT / "AGENTS.md",
+    REPO_ROOT / "README.md",
+    REPO_ROOT / ".env.example",
+    REPO_ROOT / ".env.local.example",
+    REPO_ROOT / "Dockerfile",
+    REPO_ROOT / ".github" / "workflows" / "migrations.yml",
+    REPO_ROOT / ".github" / "scripts" / "agent_pipeline.py",
+)
+
+_SOURCE_SCAN_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".mjs", ".md", ".yml", ".yaml", ".example", ".css", ".html", ".json"}
+
+# Historical ADRs before the cut-over may still describe Jinja; exclude them.
+_SKIP_PATH_PARTS = {
+    "node_modules",
+    "dist",
+    "__pycache__",
+    ".venv",
+    "package-lock.json",
+}
+
+
+def _iter_source_files():
+    for root in _SOURCE_SCAN_ROOTS:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            if any(part in _SKIP_PATH_PARTS for part in path.parts):
+                continue
+            # Pre-cut-over ADRs keep historical Jinja wording.
+            if path.parent.name == "adr" and path.name.startswith("000") and path.name < "0007":
+                continue
+            if path.suffix.lower() not in _SOURCE_SCAN_SUFFIXES and path.name not in {
+                "AGENTS.md",
+                "README.md",
+            }:
+                if ".env" not in path.name:
+                    continue
+            yield path
+    for path in _SOURCE_SCAN_FILES:
+        if path.is_file():
+            yield path
 
 
 class FrontendSpaHttpTests(unittest.TestCase):
@@ -55,6 +129,13 @@ class FrontendSpaHttpTests(unittest.TestCase):
                 """,
                 (hash_password(self.PASSWORD),),
             ).fetchone()["id"]
+            self.operator_id = connection.execute(
+                """
+                INSERT INTO users(username, display_name, password_hash, is_admin)
+                VALUES ('operator', 'Operator', %s, FALSE) RETURNING id
+                """,
+                (hash_password(self.PASSWORD),),
+            ).fetchone()["id"]
             self.vault_id = connection.execute(
                 """
                 INSERT INTO vaults(
@@ -68,13 +149,17 @@ class FrontendSpaHttpTests(unittest.TestCase):
                 "VALUES (%s, %s, 'owner')",
                 (self.vault_id, self.user_id),
             )
+            connection.execute(
+                "INSERT INTO vault_members(vault_id, user_id, role) "
+                "VALUES (%s, %s, 'operator')",
+                (self.vault_id, self.operator_id),
+            )
 
         self.test_settings = replace(
             settings,
             db_backend="sqlite",
             sqlite_path=str(self.database_path),
             cookie_secure=False,
-            frontend_spa=False,
             frontend_dist_dir=str(self.dist_dir),
         )
         for target in (
@@ -87,45 +172,46 @@ class FrontendSpaHttpTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
         self.client = TestClient(app, client=("127.0.0.1", 50000))
 
-    def _authenticate(self) -> None:
+    def _authenticate(self, user_id: int | None = None) -> None:
         with SQLiteConnection(str(self.database_path)) as connection:
             raw_token = create_session(
-                connection, user_id=self.user_id, auth_method="oidc"
+                connection,
+                user_id=user_id if user_id is not None else self.user_id,
+                auth_method="oidc",
             )
         self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
 
-    def _enable_spa(self) -> None:
-        object.__setattr__(self.test_settings, "frontend_spa", True)
-
-    def test_root_with_flag_off_serves_jinja(self) -> None:
-        """Seam 1: GET / with FRONTEND_SPA=0 → Jinja HTML markers."""
-        self._authenticate()
-        response = self.client.get("/")
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertIn("data-can-operate=", response.text)
-        self.assertIn("/static/style.css", response.text)
-        self.assertNotIn('id="root"', response.text)
-
-    def test_root_with_flag_on_serves_spa_index(self) -> None:
-        """Seam 2: GET / with FRONTEND_SPA=1 → the SPA index.html."""
-        self._enable_spa()
+    def test_root_serves_spa_with_no_flag(self) -> None:
+        """Seam 1: GET / returns the SPA with no flag set anywhere."""
+        self.assertFalse(hasattr(self.test_settings, "frontend_spa"))
+        self.assertNotIn("FRONTEND_SPA", os.environ)
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn('id="root"', response.text)
         self.assertIn("spa-shell", response.text)
         self.assertNotIn("data-can-operate=", response.text)
+        self.assertNotIn("/static/style.css", response.text)
 
-    def test_unknown_route_with_flag_on_falls_back_to_spa(self) -> None:
-        """Seam 3: GET /some/unknown/route with flag on → index.html, 200."""
-        self._enable_spa()
-        response = self.client.get("/some/unknown/route")
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertIn("spa-shell", response.text)
-        self.assertIn('id="root"', response.text)
+    def test_html_routes_serve_spa(self) -> None:
+        """Seam 2: login / vaults/new / vault/access / admin serve the SPA."""
+        for path in ("/login", "/vaults/new", "/vault/access", "/admin"):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200, f"{path}: {response.text}")
+            self.assertIn("spa-shell", response.text, path)
+            self.assertIn('id="root"', response.text, path)
+
+    def test_role_gating_still_enforced_on_api(self) -> None:
+        """Seam 2: role gating still redirects/forbids correctly on the API."""
+        self._authenticate(self.operator_id)
+        denied = self.client.get("/api/vault/quotas")
+        self.assertEqual(denied.status_code, 403, denied.text)
+
+        self._authenticate(self.user_id)
+        allowed = self.client.get("/api/vault/quotas")
+        self.assertEqual(allowed.status_code, 200, allowed.text)
 
     def test_api_me_not_swallowed_by_spa_fallback(self) -> None:
-        """Seam 4: GET /api/me with flag on → JSON, not the SPA shell."""
-        self._enable_spa()
+        """Seam 3: GET /api/* unaffected — JSON, not the SPA shell."""
         self._authenticate()
         response = self.client.get("/api/me")
         self.assertEqual(response.status_code, 200, response.text)
@@ -134,9 +220,12 @@ class FrontendSpaHttpTests(unittest.TestCase):
         self.assertEqual(payload["username"], "owner")
         self.assertNotIn("spa-shell", response.text)
 
+    def test_unknown_route_falls_back_to_spa(self) -> None:
+        response = self.client.get("/some/unknown/route")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("spa-shell", response.text)
+
     def test_spa_cache_headers_for_assets_and_index(self) -> None:
-        """Seam 5: hashed asset → immutable; index.html → no-store."""
-        self._enable_spa()
         index = self.client.get("/")
         self.assertEqual(index.status_code, 200, index.text)
         self.assertEqual(index.headers.get("cache-control"), "no-store")
@@ -147,15 +236,10 @@ class FrontendSpaHttpTests(unittest.TestCase):
             asset.headers.get("cache-control"),
             "public, max-age=31536000, immutable",
         )
-        self.assertIn("spa", asset.text)
 
     def test_spa_asset_rejects_path_traversal(self) -> None:
-        """Hashed asset routes must not escape frontend/dist/assets."""
-        self._enable_spa()
         outside = self.dist_dir / "secret.txt"
         outside.write_text("do-not-leak\n", encoding="utf-8")
-        # Starlette normalizes bare /assets/../… before routing; encoded
-        # segments still reach spa_asset and must be rejected.
         for url in (
             "/assets/%2e%2e/secret.txt",
             "/assets/..%2Fsecret.txt",
@@ -166,13 +250,50 @@ class FrontendSpaHttpTests(unittest.TestCase):
             self.assertNotIn("do-not-leak", response.text)
 
     def test_missing_dist_returns_diagnosable_error(self) -> None:
-        """Seam 6: flag on but dist missing → clear error, not opaque 500."""
-        self._enable_spa()
         missing = Path(self._tmp.name) / "missing-dist"
         object.__setattr__(self.test_settings, "frontend_dist_dir", str(missing))
         response = self.client.get("/")
         self.assertEqual(response.status_code, 503, response.text)
         detail = response.json()["detail"]
-        self.assertIn("FRONTEND_SPA", detail)
+        self.assertNotIn("FRONTEND_SPA", detail)
         self.assertIn("npm run build", detail)
         self.assertIn("frontend/dist", detail)
+
+    def test_no_frontend_spa_references_in_sources(self) -> None:
+        """Seam 4: no reference to FRONTEND_SPA remains in the sources."""
+        forbidden = "FRONTEND" + "_SPA"
+        forbidden_attr = "frontend" + "_spa"
+        hits: list[str] = []
+        for path in _iter_source_files():
+            if path.resolve() == Path(__file__).resolve():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if forbidden in text or forbidden_attr in text:
+                hits.append(str(path.relative_to(REPO_ROOT)))
+        self.assertEqual(hits, [], f"{forbidden} still referenced in: {hits}")
+
+    def test_no_deleted_jinja_or_static_paths_in_sources(self) -> None:
+        """Seam 5: no reference to deleted templates or static files remains."""
+        hits: list[str] = []
+        for path in _iter_source_files():
+            # This test file names the deleted paths on purpose.
+            if path.resolve() == Path(__file__).resolve():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for fragment in _DELETED_PATH_FRAGMENTS:
+                if fragment in text:
+                    hits.append(f"{path.relative_to(REPO_ROOT)}:{fragment}")
+        self.assertEqual(hits, [], f"Deleted paths still referenced in: {hits}")
+
+    def test_jinja_template_and_static_trees_are_gone(self) -> None:
+        """Acceptance: image COPY app/ no longer ships Jinja templates or legacy JS."""
+        self.assertFalse((REPO_ROOT / "app" / "templates").exists())
+        self.assertFalse((REPO_ROOT / "app" / "static").exists())
+        dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        self.assertNotIn("jinja", dockerfile.lower())
+        forbidden = "FRONTEND" + "_SPA"
+        self.assertNotIn(forbidden, dockerfile)
+
+
+if __name__ == "__main__":
+    unittest.main()

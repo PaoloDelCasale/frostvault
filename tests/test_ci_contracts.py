@@ -39,11 +39,14 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertIn("s3-compatible-integrity", job_names)
         self.assertIn("playwright-e2e", job_names)
 
-    def test_pr_unit_job_runs_js_tests(self) -> None:
+    def test_pr_unit_job_runs_frontend_vitest_lint_and_build(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
         steps = workflow["jobs"]["sqlite-and-postgresql"]["steps"]
         run_blocks = [step.get("run", "") for step in steps]
-        self.assertTrue(any("node --test" in block for block in run_blocks))
+        self.assertTrue(any("npm run test" in block for block in run_blocks))
+        self.assertTrue(any("npm run lint" in block for block in run_blocks))
+        self.assertTrue(any("npm run build" in block for block in run_blocks))
+        self.assertFalse(any("node --test" in block for block in run_blocks))
 
     def test_playwright_e2e_job_installs_chromium_and_uploads_failures(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))

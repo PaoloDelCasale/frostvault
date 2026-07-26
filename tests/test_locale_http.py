@@ -13,6 +13,7 @@ from app.database import SQLiteConnection
 from app.i18n import LOCALE_COOKIE_NAME
 from app.main import app
 from app.security import hash_password
+from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
 
 
@@ -40,6 +41,7 @@ class LocaleHttpTests(unittest.TestCase):
             db_backend="sqlite",
             sqlite_path=str(database_path),
             cookie_secure=False,
+            frontend_dist_dir=str(write_spa_dist(Path(self._tmp.name))),
         )
         for target in (
             "app.main.settings",
@@ -107,12 +109,16 @@ class LocaleHttpTests(unittest.TestCase):
         )
         self.assertNotIn("it-IT", set_cookie)
 
-    def test_login_page_uses_locale_cookie_for_html_lang(self) -> None:
+    def test_login_page_serves_spa_shell(self) -> None:
+        """HTML shell is the SPA; locale copy comes from /api/i18n/catalog."""
         self.client.cookies.set(LOCALE_COOKIE_NAME, "it")
         response = self.client.get("/login")
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertIn('lang="it"', response.text)
-        self.assertIn("Accedi", response.text)
+        self.assertIn('id="root"', response.text)
+
+        catalog = self.client.get("/api/i18n/catalog", params={"locale": "it"})
+        self.assertEqual(catalog.status_code, 200, catalog.text)
+        self.assertEqual(catalog.json()["messages"]["login.submit"], "Accedi")
 
 
 if __name__ == "__main__":

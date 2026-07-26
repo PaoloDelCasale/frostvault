@@ -12,6 +12,7 @@ from app import main
 from app.config import settings
 from app.database import SQLiteConnection
 from app.security import hash_password
+from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
 
 
@@ -60,6 +61,7 @@ class BreakGlassHttpTests(unittest.TestCase):
             oidc_client_id="client",
             oidc_client_secret="top-secret",
             break_glass_allowed_cidrs="",
+            frontend_dist_dir=str(write_spa_dist(Path(self._tmp.name))),
         )
         for target in (
             "app.main.settings",
@@ -103,10 +105,18 @@ class BreakGlassHttpTests(unittest.TestCase):
         self.assertIsNone(client.cookies.get(self.cookie_name))
 
     def test_login_page_hides_local_form_outside_network(self) -> None:
-        outside = self._client(OUTSIDE).get("/login")
-        self.assertNotIn("login-form", outside.text)
-        loopback = self._client(LOOPBACK).get("/login")
-        self.assertIn("login-form", loopback.text)
+        # Break-glass availability is enforced on POST /api/login (ADR-0004),
+        # not by omitting fields from the SPA shell HTML.
+        outside = self._client(OUTSIDE)
+        denied = outside.post(
+            "/api/login", json={"username": "admin", "password": ADMIN_PASSWORD}
+        )
+        self.assertEqual(denied.status_code, 403, denied.text)
+
+        loopback = self._client(LOOPBACK)
+        page = loopback.get("/login")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn('id="root"', page.text)
 
     # --- admin-only -------------------------------------------------------
 

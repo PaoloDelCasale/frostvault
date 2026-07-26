@@ -60,7 +60,7 @@ function fileHasCloudContent(item: ArchiveListItem): boolean {
 
 /**
  * Actions offered for a Vault File / directory, gated by /api/me capabilities
- * and the same eligibility rules as `app/static/app.js` `renderActions`.
+ * and the same eligibility rules as the legacy archive action renderer.
  */
 export function availableActions(
   item: ArchiveListItem,

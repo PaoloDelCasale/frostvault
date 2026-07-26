@@ -7,7 +7,7 @@ type AuthCardProps = {
   className?: string;
 };
 
-/** Auth surface — 22px radius from style.css `.auth-card`. */
+/** Auth surface — 22px radius (`.auth-card`). */
 export function AuthCard({ children, className }: AuthCardProps) {
   return (
     <section

@@ -7,7 +7,7 @@ type PanelProps = {
   className?: string;
 };
 
-/** Panel container — 18px radius from style.css `.panel`. */
+/** Panel container — 18px radius (`.panel`). */
 export function Panel({ children, className }: PanelProps) {
   return (
     <div

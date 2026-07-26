@@ -579,7 +579,9 @@ class AgentPromptTests(unittest.TestCase):
     def test_the_prompt_requires_the_whole_suite(self) -> None:
         prompt = pipeline.agent_prompt("o/r", 57, "x")
         self.assertIn("unittest discover -s tests", prompt)
-        self.assertIn("node --test", prompt)
+        self.assertIn("npm run lint", prompt)
+        self.assertIn("npm run test", prompt)
+        self.assertNotIn("node --test", prompt)
 
     def test_the_prompt_requires_a_ready_for_review_pull_request(self) -> None:
         prompt = pipeline.agent_prompt("o/r", 57, "x")

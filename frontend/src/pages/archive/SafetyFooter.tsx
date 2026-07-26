@@ -5,7 +5,7 @@ type SafetyFooterProps = {
   t: Translate;
 };
 
-/** Safety note at the bottom of the archive page (Jinja `.safety`). */
+/** Safety note at the bottom of the archive page (`.safety`). */
 export function SafetyFooter({ displayName, t }: SafetyFooterProps) {
   return (
     <section
