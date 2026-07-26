@@ -17,7 +17,7 @@ import {
   fetchVaults,
 } from "./endpoints";
 import type { FilesQuery, JobsResponse, StatsResponse } from "./types";
-import { jobAwareRefetchInterval } from "./polling";
+import { jobAwareRefetchInterval, jobPollIntervalMs } from "./polling";
 
 export const apiQueryKeys = {
   me: ["me"] as const,
@@ -115,11 +115,22 @@ export function fileVersionsQueryOptions(path: string) {
   };
 }
 
-function countActiveJobGroups(data: JobsResponse | undefined): number {
+/** Count Job groups that are not yet terminal (completed/failed/cancelled). */
+export function countActiveJobGroups(data: JobsResponse | undefined): number {
   if (!data?.groups) return 0;
   return data.groups.filter(
     (group) => !["completed", "failed", "cancelled"].includes(group.status),
   ).length;
+}
+
+/**
+ * Files list cadence mirrors jobs/stats: 1s while any Job group is active,
+ * 10s when idle. Driven by the shared jobs query cache, not the files payload.
+ */
+export function filesRefetchIntervalFromJobs(
+  jobs: JobsResponse | undefined,
+): number {
+  return jobPollIntervalMs(countActiveJobGroups(jobs));
 }
 
 /** Jobs query: 1s while any group is active, 10s when idle (app.js cadence). */

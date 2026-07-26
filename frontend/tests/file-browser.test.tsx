@@ -417,15 +417,18 @@ describe("FileBrowser — directory navigation", () => {
   });
 
   it("collapses deep breadcrumbs on the narrow trail instead of overflowing", async () => {
-    fetchMock.mockResolvedValue(
-      jsonResponse({
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) {
+        return jsonResponse({ items: [], groups: [] });
+      }
+      return jsonResponse({
         items: [],
         total: 0,
         page: 1,
         directory: "a/b/c/d/e/f",
         mode: "browse",
-      }),
-    );
+      });
+    });
     window.history.replaceState(
       {},
       "",
@@ -494,15 +497,18 @@ describe("FileBrowser — search, filter, pagination", () => {
     const { userEvent } = await import("@testing-library/user-event");
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    fetchMock.mockResolvedValue(
-      jsonResponse({
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) {
+        return jsonResponse({ items: [], groups: [] });
+      }
+      return jsonResponse({
         items: [],
         total: 0,
         page: 1,
         directory: "",
         mode: "search",
-      }),
-    );
+      });
+    });
 
     renderBrowser();
     await waitFor(() => {
@@ -531,15 +537,18 @@ describe("FileBrowser — search, filter, pagination", () => {
     const { userEvent } = await import("@testing-library/user-event");
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    fetchMock.mockResolvedValue(
-      jsonResponse({
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) {
+        return jsonResponse({ items: [], groups: [] });
+      }
+      return jsonResponse({
         items: [],
         total: 0,
         page: 1,
         directory: "",
         mode: "browse",
-      }),
-    );
+      });
+    });
 
     renderBrowser();
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
@@ -692,15 +701,18 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
   });
 
   it("renders distinguishable empty states for no files vs no matches", async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) {
+        return jsonResponse({ items: [], groups: [] });
+      }
+      return jsonResponse({
         items: [],
         total: 0,
         page: 1,
         directory: "",
         mode: "browse",
-      }),
-    );
+      });
+    });
 
     const { rerender } = (() => {
       const client = createAppQueryClient({
@@ -727,15 +739,18 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
 
     cleanup();
     window.history.replaceState({}, "", "/?q=zzzz");
-    fetchMock.mockResolvedValue(
-      jsonResponse({
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) {
+        return jsonResponse({ items: [], groups: [] });
+      }
+      return jsonResponse({
         items: [],
         total: 0,
         page: 1,
         directory: "",
         mode: "search",
-      }),
-    );
+      });
+    });
     renderBrowser();
 
     await waitFor(() => {
@@ -751,8 +766,11 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
 
   it("renders a file name containing HTML as text, not as markup", async () => {
     const evilName = "<img src=x onerror=alert(1)>";
-    fetchMock.mockResolvedValue(
-      jsonResponse({
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) {
+        return jsonResponse({ items: [], groups: [] });
+      }
+      return jsonResponse({
         items: [
           {
             type: "file",
@@ -768,8 +786,8 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
         page: 1,
         directory: "",
         mode: "browse",
-      }),
-    );
+      });
+    });
 
     renderBrowser();
     await waitFor(() => {
