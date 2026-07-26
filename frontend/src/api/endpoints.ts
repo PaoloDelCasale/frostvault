@@ -34,6 +34,7 @@ import type {
   RecoveryExportRequest,
   RecoveryExportResponse,
   StatsResponse,
+  StorageClassesResponse,
   UserLookupResult,
   VaultCreateRequest,
   VaultCreateResponse,
@@ -430,11 +431,18 @@ export function startStorageClass(payload: {
   whole_vault?: boolean;
   target_storage_class: string;
   archive_version_id?: string | null;
+  restore_tier?: string;
+  restore_days?: number;
+  pin_after?: boolean;
 }): Promise<FileOperationResponse> {
   return apiRequest<FileOperationResponse>("/api/storage-class", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function fetchStorageClasses(): Promise<StorageClassesResponse> {
+  return apiRequest<StorageClassesResponse>("/api/storage-classes");
 }
 
 export function updateLifecyclePin(payload: {

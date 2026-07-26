@@ -17,6 +17,7 @@ import {
   estimateRecover,
   fetchCloudDeletion,
   fetchFileVersions,
+  fetchStorageClasses,
   jobsQueryOptions,
   previewCloudDeletion,
   startCloudArchive,
@@ -54,6 +55,10 @@ import { CloudPurgeDialog } from "./CloudPurgeDialog";
 import { isDirectory } from "./fileLabels";
 import { RecoverConfirmDialog } from "./RecoverConfirmDialog";
 import { StorageClassDialog } from "./StorageClassDialog";
+import {
+  sourceNeedsRestoreForClassChange,
+  type StorageClassOption,
+} from "./storageClassOptions";
 import { VersionSelectDialog } from "./VersionSelectDialog";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
@@ -134,7 +139,40 @@ export function FileOperationsHost({
     count: number;
     totalBytes: number;
     currentClass?: string | null;
+    restoreState?: string | null;
   } | null>(null);
+  const storageClassesQuery = useQuery({
+    queryKey: ["storage-classes"],
+    queryFn: fetchStorageClasses,
+    enabled: Boolean(storageClassTarget),
+    staleTime: 60_000,
+  });
+  const classOptions: StorageClassOption[] = useMemo(
+    () =>
+      (storageClassesQuery.data?.items ?? []).map((item) => ({
+        ...item,
+      })),
+    [storageClassesQuery.data?.items],
+  );
+  const restoreEstimate = useMemo(() => {
+    if (!storageClassTarget) return null;
+    if (
+      !sourceNeedsRestoreForClassChange({
+        currentClass: storageClassTarget.currentClass,
+        restoreState: storageClassTarget.restoreState,
+      })
+    ) {
+      return null;
+    }
+    const current = (storageClassTarget.currentClass || "").toUpperCase();
+    const option = classOptions.find((item) => item.id === current);
+    if (!option) return null;
+    const gib = storageClassTarget.totalBytes / 1024 ** 3;
+    return {
+      hours: option.restore_hours_bulk ?? 0,
+      costEur: gib * (option.restore_rate_eur_per_gib_bulk ?? 0),
+    };
+  }, [storageClassTarget, classOptions]);
   const [pinAction, setPinAction] = useState<{
     path: string;
     isDirectory: boolean;
@@ -221,6 +259,7 @@ export function FileOperationsHost({
               typeof extra?.archive_version_id === "string"
                 ? extra.archive_version_id
                 : undefined,
+            pin_after: Boolean(extra?.pin_after),
           });
           break;
         case "lifecycle-pin":
@@ -396,6 +435,7 @@ export function FileOperationsHost({
                 : item.cloud_size || item.local_size || 0,
             ),
             currentClass: item.storage_class,
+            restoreState: isDir ? null : item.restore_state,
           });
           return;
         }
@@ -625,14 +665,18 @@ export function FileOperationsHost({
         count={storageClassTarget?.count ?? 1}
         totalBytes={storageClassTarget?.totalBytes ?? 0}
         currentClass={storageClassTarget?.currentClass}
+        restoreState={storageClassTarget?.restoreState}
+        classOptions={classOptions}
+        restoreEstimate={restoreEstimate}
         t={t}
-        onConfirm={(target: ManualStorageClass) => {
+        onConfirm={(target: ManualStorageClass, options) => {
           if (!storageClassTarget) return;
           const pending = storageClassTarget;
           setStorageClassTarget(null);
           void dispatchAction("storage-class", pending.path, pending.isDirectory, {
             target_storage_class: target,
             whole_vault: pending.wholeVault,
+            pin_after: options.pinAfter,
           }).catch(showError);
         }}
       />

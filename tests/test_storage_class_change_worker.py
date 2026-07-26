@@ -1,9 +1,12 @@
-"""Worker seams for manual storage-class change (issue #110).
+"""Worker seams for manual storage-class change (issue #110 / warm-restore).
 
 Seams under test:
 6. Successful class-change completion refreshes catalog storage_class.
-7. Objects already at the target class are skipped, not errored, in multi-object jobs.
-8. Ineligible cold-state objects (need restore first) are reported clearly.
+1. Unrestored GLACIER/DEEP_ARCHIVE storage-class Job calls RestoreObject and
+   enters restoring (does not fail with needs_restore).
+2. When restore is available, Job copies to target class and updates catalog
+   even if a Local Copy is already present.
+3. process_job accepts storage-class while status=restoring.
 """
 
 from __future__ import annotations
@@ -150,28 +153,35 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         self.assertEqual(copy_kwargs["StorageClass"], "STANDARD_IA")
         self.assertEqual(copy_kwargs["Key"], "docs/report.txt")
 
-    def test_glacier_without_restore_fails_with_clear_message(self) -> None:
+    def test_unrestored_deep_archive_requests_restore_and_enters_restoring(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 UPDATE archive_versions
-                SET storage_class='GLACIER', restore_state='not_requested'
+                SET storage_class='DEEP_ARCHIVE', restore_state='not_requested'
                 WHERE id=%s
                 """,
                 (self.version_id,),
             )
             connection.execute(
-                "UPDATE jobs SET target_storage_class='DEEP_ARCHIVE' WHERE id=%s",
+                """
+                UPDATE jobs
+                SET target_storage_class='STANDARD',
+                    restore_tier='Bulk',
+                    restore_days=7
+                WHERE id=%s
+                """,
                 (self.job_id,),
             )
         client = Mock()
         client.head_object = Mock(
             return_value={
-                "StorageClass": "GLACIER",
+                "StorageClass": "DEEP_ARCHIVE",
                 "VersionId": "s3-v1",
                 "ContentLength": 12,
             }
         )
+        client.restore_object = Mock(return_value={})
         client.copy_object = Mock()
         database_settings = SimpleNamespace(
             db_backend="sqlite",
@@ -192,14 +202,98 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
                 (self.job_id,),
             ).fetchone()
             version = connection.execute(
-                "SELECT storage_class, provider_version_id FROM archive_versions WHERE id=%s",
+                """
+                SELECT storage_class, provider_version_id, restore_state
+                FROM archive_versions WHERE id=%s
+                """,
                 (self.version_id,),
             ).fetchone()
-        self.assertEqual(job["status"], "failed")
-        self.assertEqual(job["message_key"], "job.storage_class_needs_restore")
-        self.assertEqual(version["storage_class"], "GLACIER")
-        self.assertEqual(version["provider_version_id"], "s3-v1")
+        self.assertEqual(job["status"], "restoring")
+        self.assertEqual(job["message_key"], "job.storage_class_restoring")
+        self.assertEqual(version["storage_class"], "DEEP_ARCHIVE")
+        self.assertEqual(version["restore_state"], "restoring")
+        client.restore_object.assert_called_once()
+        restore_kwargs = client.restore_object.call_args.kwargs
+        self.assertEqual(restore_kwargs["VersionId"], "s3-v1")
+        self.assertEqual(
+            restore_kwargs["RestoreRequest"]["GlacierJobParameters"]["Tier"],
+            "Bulk",
+        )
         client.copy_object.assert_not_called()
+
+    def test_restored_deep_archive_warms_to_standard_with_local_copy_present(
+        self,
+    ) -> None:
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                """
+                UPDATE archive_versions
+                SET storage_class='DEEP_ARCHIVE', restore_state='available'
+                WHERE id=%s
+                """,
+                (self.version_id,),
+            )
+            connection.execute(
+                "UPDATE jobs SET target_storage_class='STANDARD', status='restoring' WHERE id=%s",
+                (self.job_id,),
+            )
+        client = Mock()
+        client.head_object = Mock(
+            return_value={
+                "StorageClass": "DEEP_ARCHIVE",
+                "VersionId": "s3-v1",
+                "ContentLength": 12,
+                "Restore": (
+                    'ongoing-request="false", '
+                    'expiry-date="Wed, 01 Apr 2026 00:00:00 GMT"'
+                ),
+            }
+        )
+        client.copy_object = Mock(
+            return_value={"VersionId": "s3-v2", "CopyObjectResult": {"ETag": '"etag2"'}}
+        )
+        client.delete_object = Mock(return_value={})
+        client.restore_object = Mock()
+        database_settings = SimpleNamespace(
+            db_backend="sqlite",
+            sqlite_path=str(self.path),
+            restore_poll_interval=0,
+        )
+        with (
+            patch("app.database.settings", database_settings),
+            patch("app.storage.settings", database_settings),
+            patch("app.storage.validate_cloud_vault"),
+            patch("app.storage.s3_client", return_value=client),
+        ):
+            job = dict(self._job_row())
+            processed = storage_module.process_job(job)
+
+        self.assertTrue(processed)
+        with SQLiteConnection(str(self.path)) as connection:
+            version = connection.execute(
+                """
+                SELECT storage_class, provider_version_id, restore_state
+                FROM archive_versions WHERE id=%s
+                """,
+                (self.version_id,),
+            ).fetchone()
+            job = connection.execute(
+                "SELECT status, message_key FROM jobs WHERE id=%s",
+                (self.job_id,),
+            ).fetchone()
+            local = connection.execute(
+                "SELECT presence FROM local_copies WHERE vault_file_id=%s",
+                (self.vault_file_id,),
+            ).fetchone()
+        self.assertEqual(local["presence"], "present")
+        self.assertEqual(version["storage_class"], "STANDARD")
+        self.assertEqual(version["provider_version_id"], "s3-v2")
+        self.assertIsNone(version["restore_state"])
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["message_key"], "job.storage_class_completed")
+        client.restore_object.assert_not_called()
+        client.copy_object.assert_called_once()
+        self.assertEqual(client.copy_object.call_args.kwargs["StorageClass"], "STANDARD")
 
 
 if __name__ == "__main__":
