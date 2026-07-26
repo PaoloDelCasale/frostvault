@@ -5,7 +5,10 @@ from typing import Any, Mapping
 
 from .cost_estimates import PriceBook, builtin_price_book
 from .lifecycle_profiles import COST_WARNING_CLASSES, SUPPORTED_STORAGE_CLASSES
-from .restore_estimates import DEFAULT_RESTORE_HOURS
+from .restore_estimates import (
+    DEFAULT_INSTANT_RETRIEVAL_EUR_PER_GIB,
+    DEFAULT_RESTORE_HOURS,
+)
 
 # Manual Jobs may also warm back to STANDARD; lifecycle never uses STANDARD as a target.
 MANUAL_STORAGE_CLASSES = ("STANDARD",) + SUPPORTED_STORAGE_CLASSES
@@ -131,6 +134,12 @@ def list_storage_class_options(
             item["restore_rate_eur_per_gib_standard"] = float(
                 restore_rates.get("Standard", 0.0)
             )
+        else:
+            instant_rate = restore_rates.get("Instant")
+            if instant_rate is None:
+                instant_rate = DEFAULT_INSTANT_RETRIEVAL_EUR_PER_GIB.get(class_id)
+            if instant_rate is not None and float(instant_rate) > 0:
+                item["retrieval_rate_eur_per_gib"] = float(instant_rate)
         items.append(item)
     return {
         "items": items,

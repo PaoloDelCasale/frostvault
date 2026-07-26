@@ -468,6 +468,7 @@ export type StorageClassOptionItem = {
   restore_hours_standard?: number;
   restore_rate_eur_per_gib_bulk?: number;
   restore_rate_eur_per_gib_standard?: number;
+  retrieval_rate_eur_per_gib?: number;
 };
 
 export type StorageClassesResponse = {

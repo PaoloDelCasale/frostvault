@@ -190,6 +190,11 @@ class StorageClassChangeHttpTests(unittest.TestCase):
         self.assertTrue(deep["requires_restore"])
         self.assertEqual(deep["restore_hours_bulk"], 48.0)
         self.assertEqual(deep["restore_rate_eur_per_gib_bulk"], 0.0025)
+        glacier_ir = items["GLACIER_IR"]
+        self.assertEqual(glacier_ir["retrieval"], "instant")
+        self.assertFalse(glacier_ir["requires_restore"])
+        self.assertEqual(glacier_ir["retrieval_rate_eur_per_gib"], 0.03)
+        self.assertNotIn("retrieval_rate_eur_per_gib", standard)
         self.assertIn("disclaimer", payload["assumptions"])
 
     def test_deep_archive_warm_enqueue_attaches_restore_estimate(self) -> None:
