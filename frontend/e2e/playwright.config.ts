@@ -1,11 +1,21 @@
-import { defineConfig } from "@playwright/test";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { defineConfig } from "@playwright/test";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(root, "../..");
 const port = Number(process.env.E2E_PORT || "8080");
 const baseURL = process.env.E2E_BASE_URL || `http://127.0.0.1:${port}`;
+
+/** Prefer the repo venv locally; CI uses setup-python on PATH (no .venv). */
+function resolvePython(): string {
+  if (process.env.E2E_PYTHON) return process.env.E2E_PYTHON;
+  const venvPython = path.join(repoRoot, ".venv", "bin", "python");
+  if (existsSync(venvPython)) return venvPython;
+  return "python3";
+}
 
 export default defineConfig({
   testDir: path.join(root, "tests"),
@@ -44,7 +54,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `${path.join(repoRoot, ".venv/bin/python")} ${path.join(root, "scripts/seed_and_serve.py")}`,
+    command: `${resolvePython()} ${path.join(root, "scripts/seed_and_serve.py")}`,
     url: `${baseURL}/login`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

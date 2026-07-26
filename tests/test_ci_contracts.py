@@ -57,6 +57,7 @@ class PullRequestCiContractTests(unittest.TestCase):
         serialized = yaml.safe_dump(job)
         self.assertIn("playwright-e2e-failures", serialized)
         self.assertIn("~/.cache/ms-playwright", serialized)
+        self.assertIn("E2E_PYTHON", serialized)
 
 class WorkflowHardeningContractTests(unittest.TestCase):
     def test_external_actions_are_pinned_and_checkouts_drop_credentials(self) -> None:

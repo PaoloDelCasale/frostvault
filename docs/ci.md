@@ -10,7 +10,7 @@ Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.y
 | Job | What it proves | Credentials |
 | --- | --- | --- |
 | Unit and migration tests | Python `unittest` suite (SQLite + PostgreSQL migrations) and frontend `node --test` | None. Live AWS/MinIO env vars are intentionally unset so S3 integration cases skip. |
-| Playwright e2e (375px + desktop) | Chromium Playwright against uvicorn + SQLite with seeded fixtures: eleven archive/admin flows plus touch/a11y checks at 375×667 and 1280×800 | None. Placeholder AWS env only; no live cloud calls. Browsers cached under `~/.cache/ms-playwright`. Failure screenshots upload as `playwright-e2e-failures`; successful 375px shots as `playwright-e2e-375px`. |
+| Playwright e2e (375px + desktop) | Chromium Playwright against uvicorn + SQLite with seeded fixtures: eleven archive/admin flows plus touch/a11y checks at 375×667 and 1280×800 | None. Placeholder AWS env only; no live cloud calls. Browsers cached under `~/.cache/ms-playwright`. Uses `E2E_PYTHON=python` (setup-python on PATH; no repo `.venv` in CI). Failure screenshots upload as `playwright-e2e-failures`; successful 375px shots as `playwright-e2e-375px`. |
 | Production image PostgreSQL backup | Builds the production Docker image, checks `pg_dump`/`pg_restore`/`createdb`/`dropdb`/`psql`, then runs Alembic + `backup_upgrade --skip-upgrade` + isolated restore verification against `postgres:16` | Ephemeral Postgres service only. |
 | S3-compatible integrity (MinIO) | Real Rclone + MinIO upload/recovery SHA-256 proofs (plain, crypt, empty, Unicode, multipart cutoff) plus prefix cleanup | Ephemeral MinIO only (`minioadmin`). No AWS account. |
 

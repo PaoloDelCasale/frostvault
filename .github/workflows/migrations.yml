@@ -279,6 +279,8 @@ jobs:
         working-directory: frontend
         env:
           CI: "1"
+          # setup-python puts the interpreter on PATH; there is no repo .venv in CI.
+          E2E_PYTHON: python
         run: npm run test:e2e
       - name: Upload Playwright failure artifacts
         if: failure()
