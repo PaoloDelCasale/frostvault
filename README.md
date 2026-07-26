@@ -89,16 +89,19 @@ Local setup:
    `s3:DeleteObject`. Never use account root credentials.
 5. Copy `config/rclone.local.conf.example` to `config/rclone.conf`, enter the
    same bucket, and generate the obscured Rclone password.
-6. Pull the published image, migrate the database, and start the application:
+6. Pull the published image and start the application (schema migrations run
+   automatically on start when `AUTO_MIGRATE=1`, the default):
 
    ```bash
    docker compose pull
-   docker compose run --rm frostvault alembic upgrade head
    docker compose up -d
    ```
 
    Compose uses `ghcr.io/paolodelcasale/frostvault:latest`. Developers who need
    to change the image can still build from the `Dockerfile` locally.
+   Set `AUTO_MIGRATE=0` to keep upgrades manual (then run
+   `docker compose run --rm frostvault python -m app.backup_upgrade` before
+   `up`).
 While `REPLACE...` placeholder values remain, the application blocks AWS calls
 instead of trying other credentials available on the computer.
 
@@ -137,12 +140,16 @@ CREATE USER frostvault WITH PASSWORD 'A-LONG-PASSWORD';
 CREATE DATABASE frostvault OWNER frostvault;
 ```
 
-Schema changes are explicit Alembic migrations. Create an encrypted metadata
-backup first (see [docs/metadata-backups.md](docs/metadata-backups.md)), then run
+Schema changes are Alembic migrations. On container/app start, `AUTO_MIGRATE=1`
+(the default) brings the database to the expected revision: fresh databases run
+`alembic upgrade head`; existing databases that are behind take an encrypted
+pre-upgrade metadata backup first (see
+[docs/metadata-backups.md](docs/metadata-backups.md)), then upgrade. A failed
+backup with real backup configuration blocks startup. Set `AUTO_MIGRATE=0` for
+CI or fully manual release procedures, then run
 `docker compose run --rm frostvault python -m app.backup_upgrade` before
-starting a new application release. The wrapper blocks the upgrade when the
-backup fails. The application validates the current revision and fails with an
-actionable error instead of changing schema at startup.
+starting a new application release. The application still validates the current
+revision after any automatic upgrade and refuses to serve on a stale schema.
 
 The first Alembic revision adopts only a database that exactly matches the
 current multi-user release; unknown or historical single-user schemas stop
@@ -183,10 +190,13 @@ modes at the same time.
 
 ```bash
 docker compose pull
-docker compose run --rm frostvault alembic upgrade head
 docker compose up -d
 docker compose logs -f frostvault
 ```
+
+Schema migrations run automatically on start (`AUTO_MIGRATE=1` by default). Set
+`AUTO_MIGRATE=0` and run `python -m app.backup_upgrade` yourself when you want
+an explicit pre-upgrade gate outside the container entrypoint.
 
 The service listens on `127.0.0.1:8080` by default. Use an HTTPS reverse proxy or
 Tailscale to make it reachable. Set `COOKIE_SECURE=true` when using HTTPS.

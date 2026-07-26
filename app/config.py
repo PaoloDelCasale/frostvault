@@ -135,6 +135,11 @@ class Settings:
     # secrets at rest. Required to create or operate crypt vaults.
     archive_master_key: str = os.getenv("ARCHIVE_MASTER_KEY", "")
 
+    # When true (default), bring the DB schema to HEAD on application start
+    # (fresh → alembic; existing behind HEAD → pre-upgrade backup + alembic).
+    # Set AUTO_MIGRATE=0 for CI/manual upgrade workflows.
+    auto_migrate: bool = as_bool("AUTO_MIGRATE", True)
+
     # Encrypted metadata database backups (issue #15). Artifacts land on a
     # dedicated local volume and under the encrypted system/backups/ S3 prefix.
     # The master key seals artifacts but is never written into them.

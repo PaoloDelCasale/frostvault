@@ -53,7 +53,8 @@ errors / metrics.
 
 ## Pre-upgrade gate
 
-Application-managed schema upgrades must not run without a successful backup:
+Application-managed schema upgrades must not run without a successful backup
+when backup secrets are configured:
 
 ```bash
 # Creates a pre_upgrade backup (local + S3 when configured), then alembic upgrade.
@@ -65,6 +66,11 @@ python -m app.backup_upgrade --skip-upgrade
 
 A failed backup exits non-zero and **does not** run Alembic. Prefer this wrapper
 over a bare `alembic upgrade head` in production release procedures.
+
+With `AUTO_MIGRATE=1` (default), container and native app starts call the same
+gate automatically for databases that are behind `HEAD_SCHEMA_REVISION`. Fresh /
+unversioned databases skip the backup and run `alembic upgrade head` only. Set
+`AUTO_MIGRATE=0` to keep upgrades fully manual.
 
 ## Restore flow — SQLite
 

@@ -44,8 +44,12 @@ Docker is not installed; run natively with the SQLite backend instead of `docker
   the repo and create the dirs first, e.g. `SQLITE_PATH=/workspace/data/frostvault.db`,
   `BOOTSTRAP_VAULT_SOURCE_ROOT=/workspace/local-data/sources/test` (the vault source folder
   must exist for scan/browse to work), and `BOOTSTRAP_ADMIN_PASSWORD` needs >= 12 chars.
-- You MUST run migrations before starting: `.venv/bin/python -m alembic upgrade head`.
-  The app refuses to start on a stale/unversioned schema (see `HEAD_SCHEMA_REVISION`).
+- With `AUTO_MIGRATE=1` (default), schema upgrades run on app start (fresh →
+  `alembic upgrade head`; existing behind HEAD → pre-upgrade backup then
+  alembic). Set `AUTO_MIGRATE=0` for manual control, then:
+  `.venv/bin/python -m app.backup_upgrade` (or `alembic upgrade head` for empty
+  local DBs). The app still refuses to serve on a stale schema
+  (`HEAD_SCHEMA_REVISION`).
 - Build the SPA first: `cd frontend && npm ci && npm run build`.
 - Start: `.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080`
   (serves `frontend/dist`; missing dist returns HTTP 503 with build instructions).
