@@ -37,6 +37,7 @@ class PullRequestCiContractTests(unittest.TestCase):
         job_names = set(workflow["jobs"])
         self.assertIn("sqlite-and-postgresql", job_names)
         self.assertIn("s3-compatible-integrity", job_names)
+        self.assertIn("playwright-e2e", job_names)
 
     def test_pr_unit_job_runs_js_tests(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
@@ -44,6 +45,19 @@ class PullRequestCiContractTests(unittest.TestCase):
         run_blocks = [step.get("run", "") for step in steps]
         self.assertTrue(any("node --test" in block for block in run_blocks))
 
+    def test_playwright_e2e_job_installs_chromium_and_uploads_failures(self) -> None:
+        workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
+        job = workflow["jobs"]["playwright-e2e"]
+        runs = [step.get("run", "") for step in job["steps"]]
+        self.assertTrue(any("playwright install" in block for block in runs))
+        self.assertTrue(any("test:e2e" in block for block in runs))
+        uses = [step.get("uses", "") for step in job["steps"]]
+        self.assertTrue(any(u.startswith("actions/cache@") for u in uses))
+        self.assertTrue(any(u.startswith("actions/upload-artifact@") for u in uses))
+        serialized = yaml.safe_dump(job)
+        self.assertIn("playwright-e2e-failures", serialized)
+        self.assertIn("~/.cache/ms-playwright", serialized)
+        self.assertIn("E2E_PYTHON", serialized)
 
 class WorkflowHardeningContractTests(unittest.TestCase):
     def test_external_actions_are_pinned_and_checkouts_drop_credentials(self) -> None:

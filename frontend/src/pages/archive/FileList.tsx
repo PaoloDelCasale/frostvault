@@ -236,6 +236,7 @@ function RowJobOrActions({
     );
   }
   if (layout === "card") {
+    if (!availableActions(item, capabilities).length) return null;
     return (
       <MoreActionsButton path={item.path} t={t} onOpenActions={onOpenActions} />
     );
@@ -328,7 +329,7 @@ export function FileList({
                   </div>
                 ) : null}
               </div>
-              {!jobs.length ? (
+              {!jobs.length && availableActions(item, capabilities).length ? (
                 <MoreActionsButton
                   path={item.path}
                   t={t}
