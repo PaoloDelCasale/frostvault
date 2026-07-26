@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { FilesystemHealth } from "@/api/types";
-import { FilesystemHealthBanner } from "./FilesystemHealthBanner";
+import { FilesystemHealthBanner } from "@/pages/archive/FilesystemHealthBanner";
 
 const messages: Record<string, string> = {
   "ui.filesystem_healthy": "Vault filesystem healthy",

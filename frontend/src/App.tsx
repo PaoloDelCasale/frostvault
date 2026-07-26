@@ -1,14 +1,7 @@
-import { useState } from "react";
-
-import { Badge } from "@/components/Badge";
-import { Card } from "@/components/Card";
-import { Panel } from "@/components/Panel";
-import { ProgressBar } from "@/components/ProgressBar";
-import { StorageBadge } from "@/components/StorageBadge";
-import { Toast } from "@/components/Toast";
-import { Button } from "@/components/ui/button";
 import { AppShell } from "@/layout/AppShell";
 import type { ShellCapabilities } from "@/layout/types";
+import { ArchivePage } from "@/pages/archive";
+import { demoStats, demoTranslate } from "@/pages/archive/demoData";
 
 const demoCapabilities: ShellCapabilities = {
   vaultName: "Test Archive",
@@ -24,55 +17,32 @@ const demoCapabilities: ShellCapabilities = {
   role: "owner",
 };
 
-export default function App() {
-  const [toastOpen, setToastOpen] = useState(false);
+const demoFiles = [
+  "reports/q1-summary.pdf",
+  "photos/family-2024/IMG_001.jpg",
+  "docs/contracts/lease.pdf",
+];
 
+export default function App() {
   return (
     <AppShell capabilities={demoCapabilities}>
-      <div className="grid gap-4">
-        <Card>
-          <span className="text-[13px] text-muted">Design system shell</span>
-          <strong className="mt-1 block text-[27px]">Responsive base</strong>
-          <p className="mt-2 text-sm text-muted">
-            Drawer navigation below md; horizontal controls from md up. Tap targets
-            are at least 44×44px.
-          </p>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Button type="button" variant="primary">
-              Primary
-            </Button>
-            <Button type="button" variant="secondary">
-              Secondary
-            </Button>
-            <Button type="button" variant="danger">
-              Danger
-            </Button>
-            <Button type="button" variant="secondary" onClick={() => setToastOpen(true)}>
-              Show toast
-            </Button>
-          </div>
-        </Card>
-
-        <Panel>
-          <div className="flex flex-wrap gap-2 border-b border-line p-4">
-            <Badge state="both" />
-            <Badge state="local_only" />
-            <Badge state="cloud_only" />
-            <StorageBadge storage="standard" />
-            <StorageBadge storage="glacier" />
-            <StorageBadge storage="deep-archive" />
-          </div>
-          <div className="p-4">
-            <ProgressBar value={62} label="Upload" detail="1.2 GB of 2.0 GB" />
-          </div>
-        </Panel>
-      </div>
-
-      <Toast
-        open={toastOpen}
-        message="Design system ready"
-        variant="success"
-        onClose={() => setToastOpen(false)}
+      <ArchivePage
+        vaultName={demoCapabilities.vaultName}
+        displayName="Local Admin"
+        stats={demoStats}
+        t={demoTranslate}
+        fileList={
+          <ul className="divide-y divide-line">
+            {demoFiles.map((path) => (
+              <li
+                key={path}
+                className="flex min-h-11 items-center py-2 text-sm first:pt-0"
+              >
+                <span className="truncate font-medium">{path}</span>
+              </li>
+            ))}
+          </ul>
+        }
       />
     </AppShell>
   );

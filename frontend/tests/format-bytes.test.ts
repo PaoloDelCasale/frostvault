@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatBytes, formatCount } from "./format";
+import { formatBytes, formatCount } from "@/pages/archive/format";
 
 describe("formatBytes", () => {
   // Independent expected values (not recomputed via /1024 loops).

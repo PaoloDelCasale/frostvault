@@ -17,7 +17,7 @@ type StatCard = {
   value: string;
 };
 
-function buildCards(stats: StatsResponse, t: Translate): StatCard[] {
+function buildCards(stats: StatsResponse): StatCard[] {
   const states = stats.states || {};
   const storage = stats.storage || { local_bytes: 0, cloud_bytes: 0 };
   return [
@@ -49,7 +49,7 @@ function StatCardView({ label, value }: { label: string; value: string }) {
  * Compact denser strip below `md`; expanded card grid from `md` up.
  */
 export function StatsSummary({ stats, t, className }: StatsSummaryProps) {
-  const cards = buildCards(stats, t);
+  const cards = buildCards(stats);
 
   return (
     <section

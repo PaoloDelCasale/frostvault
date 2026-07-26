@@ -3,6 +3,7 @@ import type {
   I18nCatalogResponse,
   LocaleUpdateResponse,
   MeResponse,
+  StatsResponse,
   VaultsResponse,
 } from "./types";
 import { translate } from "@/i18n/translate";
@@ -36,4 +37,8 @@ export function updateLocale(locale: string): Promise<LocaleUpdateResponse> {
     method: "PUT",
     body: JSON.stringify({ locale }),
   });
+}
+
+export function fetchStats(): Promise<StatsResponse> {
+  return apiRequest<StatsResponse>("/api/stats");
 }

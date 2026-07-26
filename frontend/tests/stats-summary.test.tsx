@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { StatsResponse } from "@/api/types";
-import { StatsSummary } from "./StatsSummary";
+import { StatsSummary } from "@/pages/archive/StatsSummary";
 
 const messages: Record<string, string> = {
   "state.both": "Server + cloud",

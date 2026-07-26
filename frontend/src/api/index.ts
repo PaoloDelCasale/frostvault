@@ -8,7 +8,13 @@ export {
 } from "./client";
 export type { ApiClientConfig, ApiFetch } from "./client";
 
-export { fetchI18nCatalog, fetchMe, fetchVaults, updateLocale } from "./endpoints";
+export {
+  fetchI18nCatalog,
+  fetchMe,
+  fetchStats,
+  fetchVaults,
+  updateLocale,
+} from "./endpoints";
 
 export { createLatestRequestScope } from "./latest";
 export type { LatestRequestHandle, LatestRequestScope } from "./latest";
@@ -27,15 +33,20 @@ export {
   i18nCatalogQueryOptions,
   jobsRefetchInterval,
   meQueryOptions,
+  statsQueryOptions,
   vaultsQueryOptions,
 } from "./query";
 
 export type {
   AuthMethod,
+  FilesystemCheck,
+  FilesystemFinding,
+  FilesystemHealth,
   I18nCatalogResponse,
   LocaleUpdateResponse,
   MeResponse,
   MeVault,
+  StatsResponse,
   VaultListItem,
   VaultRole,
   VaultsResponse,
