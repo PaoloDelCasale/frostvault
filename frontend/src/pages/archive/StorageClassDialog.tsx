@@ -9,8 +9,8 @@ import {
   STORAGE_CLASS_OPTIONS,
   type ManualStorageClass,
 } from "./actions";
+import { StorageClassSelect } from "./StorageClassSelect";
 import {
-  formatStorageClassOptionLabel,
   sourceNeedsRestoreForClassChange,
   type StorageClassOption,
 } from "./storageClassOptions";
@@ -116,23 +116,21 @@ export function StorageClassDialog({
               path,
             })}
           </AlertDialog.Description>
-          <label className="mt-4 block text-sm font-medium text-ink">
-            {t("ui.storage_class_picker_label")}
-            <select
-              className="mt-1 w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm"
-              value={target}
-              onChange={(event) =>
-                setTarget(event.target.value as ManualStorageClass)
-              }
-              data-testid="storage-class-picker"
+          <div className="mt-4">
+            <label
+              htmlFor="storage-class-target"
+              className="block text-sm font-medium text-ink"
             >
-              {options.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {formatStorageClassOptionLabel(option, t)}
-                </option>
-              ))}
-            </select>
-          </label>
+              {t("ui.storage_class_picker_label")}
+            </label>
+            <StorageClassSelect
+              id="storage-class-target"
+              value={target}
+              options={options}
+              onValueChange={(next) => setTarget(next as ManualStorageClass)}
+              t={t}
+            />
+          </div>
           {needsRestore ? (
             <p
               className="mt-3 text-sm text-amber-800"

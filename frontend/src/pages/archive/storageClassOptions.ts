@@ -16,29 +16,73 @@ type Translate = (key: string, params?: Record<string, string | number>) => stri
 
 const RESTORE_REQUIRED_CLASSES = new Set(["GLACIER", "DEEP_ARCHIVE"]);
 
-function formatRate(value: number): string {
+export function formatRate(value: number): string {
   if (value >= 0.01) return value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
   return value.toFixed(5).replace(/0+$/, "").replace(/\.$/, "");
 }
 
+export function storageClassNeedsRestore(option: StorageClassOption): boolean {
+  return option.retrieval === "restore" || option.requires_restore;
+}
+
+export function formatStorageClassRate(
+  option: StorageClassOption,
+  t: Translate,
+): string {
+  return t("ui.storage_class_rate", {
+    rate: formatRate(option.storage_rate_eur_per_gib_month),
+  });
+}
+
+export function formatStorageClassRetrieval(
+  option: StorageClassOption,
+  t: Translate,
+): string {
+  if (storageClassNeedsRestore(option)) {
+    return t("ui.storage_class_retrieval_restore", {
+      hours: option.restore_hours_bulk ?? 0,
+    });
+  }
+  return t("ui.storage_class_retrieval_instant");
+}
+
+export function formatStorageClassRecovery(
+  option: StorageClassOption,
+  t: Translate,
+): string {
+  if (storageClassNeedsRestore(option)) {
+    return t("ui.storage_class_recovery_price", {
+      restore_rate: formatRate(option.restore_rate_eur_per_gib_bulk ?? 0),
+    });
+  }
+  return t("ui.storage_class_recovery_none");
+}
+
+/** Compact single-line label for native `<option>` fallbacks (e.g. vault panel). */
 export function formatStorageClassOptionLabel(
   option: StorageClassOption,
   t: Translate,
 ): string {
-  const rate = formatRate(option.storage_rate_eur_per_gib_month);
-  if (option.retrieval === "restore" || option.requires_restore) {
+  const rate = formatStorageClassRate(option, t);
+  const retrieval = formatStorageClassRetrieval(option, t);
+  const recovery = formatStorageClassRecovery(option, t);
+  if (storageClassNeedsRestore(option)) {
     return t("ui.storage_class_option_restore", {
       id: option.id,
-      rate,
+      rate: formatRate(option.storage_rate_eur_per_gib_month),
       hours: option.restore_hours_bulk ?? 0,
       restore_rate: formatRate(option.restore_rate_eur_per_gib_bulk ?? 0),
-      min_days: option.min_duration_days,
+      retrieval,
+      recovery,
+      rate_label: rate,
     });
   }
   return t("ui.storage_class_option_instant", {
     id: option.id,
-    rate,
-    min_days: option.min_duration_days,
+    rate: formatRate(option.storage_rate_eur_per_gib_month),
+    retrieval,
+    recovery,
+    rate_label: rate,
   });
 }
 
