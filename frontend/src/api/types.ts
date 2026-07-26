@@ -52,3 +52,123 @@ export type LocaleUpdateResponse = {
   message_key: string;
   messages: Record<string, string>;
 };
+
+/** Global administration endpoints (issue #69). */
+
+export type AdminUser = {
+  id: number;
+  username: string;
+  display_name: string;
+  is_admin: boolean;
+  active: boolean;
+  vault_count: number;
+  created_at?: string;
+};
+
+export type AdminUsersResponse = {
+  items: AdminUser[];
+};
+
+export type AdminUserCreatePayload = {
+  display_name: string;
+  username: string;
+  password: string;
+  is_admin: boolean;
+};
+
+export type AdminUserUpdatePayload = {
+  active?: boolean;
+  display_name?: string;
+  password?: string;
+};
+
+export type AdminVault = {
+  id: number;
+  slug: string;
+  name: string;
+  source_root: string;
+  s3_bucket?: string;
+  s3_prefix: string;
+  enabled: boolean;
+  member_count: number;
+  encryption_mode?: string;
+  uuid?: string;
+};
+
+export type AdminVaultsResponse = {
+  items: AdminVault[];
+};
+
+export type AdminVaultCreatePayload = {
+  name: string;
+  slug: string;
+  owner_user_id: number;
+  reason: string;
+  encryption_mode?: "plain" | "crypt";
+};
+
+export type AdminVaultMember = {
+  id: number;
+  username: string;
+  display_name: string;
+  active: boolean;
+  role: string;
+};
+
+export type AdminVaultMembersResponse = {
+  items: AdminVaultMember[];
+};
+
+export type AdminMembershipCreatePayload = {
+  user_id: number;
+  role: "operator" | "viewer";
+  reason: string;
+};
+
+export type AdminOwnerTransferPayload = {
+  new_owner_user_id: number;
+  reason: string;
+};
+
+export type QuotaLimits = {
+  storage_soft_limit_bytes: number | null;
+  storage_hard_limit_bytes: number | null;
+  concurrency_soft_limit: number | null;
+  concurrency_hard_limit: number | null;
+  restore_30d_soft_limit_bytes: number | null;
+  restore_30d_hard_limit_bytes: number | null;
+};
+
+export type QuotaUsage = {
+  storage_bytes?: number | null;
+  concurrency?: number | null;
+  restore_30d_bytes?: number | null;
+};
+
+export type QuotaDecision = {
+  code?: string;
+  severity?: string;
+  projected?: number;
+  limit?: number;
+};
+
+export type QuotaEvaluation = {
+  state?: string;
+  allowed?: boolean;
+  decisions?: QuotaDecision[];
+};
+
+export type VaultQuotasResponse = {
+  vault_id?: number;
+  limits: Partial<QuotaLimits>;
+  usage: QuotaUsage;
+  evaluation?: QuotaEvaluation;
+};
+
+export type VaultQuotaUpdatePayload = QuotaLimits & {
+  reason: string;
+};
+
+export type RecoveryExportResponse = {
+  recovery_export: string;
+};

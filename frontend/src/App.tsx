@@ -9,6 +9,7 @@ import { Toast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { AppShell } from "@/layout/AppShell";
 import type { ShellCapabilities } from "@/layout/types";
+import { AdminPage } from "@/pages/admin";
 
 const demoCapabilities: ShellCapabilities = {
   vaultName: "Test Archive",
@@ -24,7 +25,7 @@ const demoCapabilities: ShellCapabilities = {
   role: "owner",
 };
 
-export default function App() {
+function DesignSystemDemo() {
   const [toastOpen, setToastOpen] = useState(false);
 
   return (
@@ -76,4 +77,13 @@ export default function App() {
       />
     </AppShell>
   );
+}
+
+export default function App() {
+  const path =
+    typeof window !== "undefined" ? window.location.pathname : "/";
+  if (path === "/admin" || path.startsWith("/admin/")) {
+    return <AdminPage />;
+  }
+  return <DesignSystemDemo />;
 }
