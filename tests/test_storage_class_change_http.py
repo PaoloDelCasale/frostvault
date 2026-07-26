@@ -168,6 +168,73 @@ class StorageClassChangeHttpTests(unittest.TestCase):
         self.assertEqual(job["target_storage_class"], "DEEP_ARCHIVE")
         self.assertEqual(job["status"], "queued")
 
+    def test_storage_class_options_include_rates_and_retrieval_traits(self) -> None:
+        self._authenticate(self.operator_id)
+        self._select_vault()
+        response = self.client.get("/api/storage-classes", headers=self._headers())
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        items = {item["id"]: item for item in payload["items"]}
+        self.assertIn("STANDARD", items)
+        self.assertIn("DEEP_ARCHIVE", items)
+        standard = items["STANDARD"]
+        deep = items["DEEP_ARCHIVE"]
+        self.assertEqual(standard["currency"], "EUR")
+        self.assertEqual(standard["storage_rate_eur_per_gib_month"], 0.023)
+        self.assertEqual(standard["retrieval"], "instant")
+        self.assertEqual(standard["min_duration_days"], 0)
+        self.assertFalse(standard["requires_restore"])
+        self.assertEqual(deep["storage_rate_eur_per_gib_month"], 0.00099)
+        self.assertEqual(deep["retrieval"], "restore")
+        self.assertEqual(deep["min_duration_days"], 180)
+        self.assertTrue(deep["requires_restore"])
+        self.assertEqual(deep["restore_hours_bulk"], 48.0)
+        self.assertEqual(deep["restore_rate_eur_per_gib_bulk"], 0.0025)
+        self.assertIn("disclaimer", payload["assumptions"])
+
+    def test_deep_archive_warm_enqueue_attaches_restore_estimate(self) -> None:
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                """
+                UPDATE archive_versions
+                SET storage_class='DEEP_ARCHIVE', restore_state='not_requested', size=%s
+                WHERE id=%s
+                """,
+                (1024**3, self.version_id),  # 1 GiB
+            )
+        self._authenticate(self.operator_id)
+        self._select_vault()
+        response = self.client.post(
+            "/api/storage-class",
+            json={
+                "path": "report.txt",
+                "is_directory": False,
+                "target_storage_class": "STANDARD",
+                "archive_version_id": self.version_id,
+            },
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status_code, 202, response.text)
+        payload = response.json()
+        self.assertEqual(payload["target_storage_class"], "STANDARD")
+        self.assertTrue(payload["requires_restore"])
+        self.assertEqual(payload["restore_tier"], "Bulk")
+        self.assertEqual(payload["estimated_hours"], 48.0)
+        self.assertAlmostEqual(payload["estimated_cost_eur"], 0.0025, places=6)
+        with SQLiteConnection(str(self.path)) as connection:
+            job = connection.execute(
+                """
+                SELECT restore_tier, restore_days, estimated_cost_eur, estimated_hours,
+                       target_storage_class
+                FROM jobs WHERE id=%s
+                """,
+                (payload["job_ids"][0],),
+            ).fetchone()
+        self.assertEqual(job["target_storage_class"], "STANDARD")
+        self.assertEqual(job["restore_tier"], "Bulk")
+        self.assertAlmostEqual(float(job["estimated_cost_eur"]), 0.0025, places=6)
+        self.assertEqual(float(job["estimated_hours"]), 48.0)
+
     def test_single_file_noop_target_class_is_rejected(self) -> None:
         self._authenticate(self.operator_id)
         self._select_vault()

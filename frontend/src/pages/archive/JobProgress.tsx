@@ -65,6 +65,14 @@ export function JobProgress({
         detail={detail}
         className="min-w-[190px]"
       />
+      {job.message ? (
+        <p
+          className="mt-1 text-[11px] text-muted"
+          data-testid="job-progress-message"
+        >
+          {job.message}
+        </p>
+      ) : null}
       {estimateBits.length ? (
         <p className="mt-1 text-[10px] text-muted">{estimateBits.join(" · ")}</p>
       ) : null}

@@ -1996,7 +1996,11 @@ def process_free_space(job: dict[str, Any]) -> None:
 
 
 def process_storage_class(job: dict[str, Any]) -> None:
-    """Copy an Archive Version onto a new storage class, preserving catalog identity."""
+    """Restore if needed, then copy an Archive Version onto a new storage class.
+
+    Warming from GLACIER / DEEP_ARCHIVE chains RestoreObject inside this Job so
+    operators are not forced through Recover (which requires an absent Local Copy).
+    """
     ensure_job_active(job["id"], "Storage class change stopped")
     validate_cloud_vault(job)
     target_class = (job.get("target_storage_class") or "").upper()
@@ -2013,29 +2017,62 @@ def process_storage_class(job: dict[str, Any]) -> None:
     ):
         raise RuntimeError("No available Archive Version for storage class change")
 
-    set_job(
-        job["id"],
-        "uploading",
-        message_key="job.storage_class_changing",
-        message_params={"storage_class": target_class},
-    )
     client = s3_client()
     head = client.head_object(
         Bucket=job["s3_bucket"],
         Key=target["object_key"],
         VersionId=target["provider_version_id"],
     )
-    head_class = (head.get("StorageClass") or target.get("storage_class") or "STANDARD").upper()
+    # AWS omits StorageClass on STANDARD; never prefer a stale colder catalog class.
+    head_class = (head.get("StorageClass") or "STANDARD").upper()
     if storage_class_requires_restore(head_class):
-        restore_state, _expiry = restore_header_state(head.get("Restore"))
+        restore_state, restore_expiry = restore_header_state(head.get("Restore"))
         if restore_state != "available":
+            tier = (
+                job.get("restore_tier")
+                or getattr(settings, "restore_tier", "Bulk")
+                or "Bulk"
+            )
+            days = int(
+                job.get("restore_days")
+                or getattr(settings, "restore_days", 3)
+                or 3
+            )
+            estimate = estimate_restore(
+                size_bytes=int(target.get("cloud_size") or job.get("total_bytes") or 0),
+                storage_class=str(head_class),
+                tier=str(tier),
+                days=days,
+            )
+            if job["status"] != "restoring" and restore_state == "not_requested":
+                client.restore_object(
+                    Bucket=job["s3_bucket"],
+                    Key=target["object_key"],
+                    VersionId=target["provider_version_id"],
+                    RestoreRequest={
+                        "Days": estimate.days,
+                        "GlacierJobParameters": {"Tier": estimate.tier},
+                    },
+                )
+                restore_state = "restoring"
+                restore_expiry = None
+            checked_at = now_iso()
+            with db() as connection:
+                ArchiveCatalog(connection).update_restore_state(
+                    target["archive_version_id"],
+                    state=restore_state,
+                    expiry=restore_expiry,
+                    checked_at=checked_at,
+                    storage_class=head_class,
+                )
             set_job(
                 job["id"],
-                "failed",
-                message_key="job.storage_class_needs_restore",
+                "restoring",
+                message_key="job.storage_class_restoring",
                 message_params={"storage_class": head_class},
             )
             return
+
     if head_class == target_class:
         set_job(
             job["id"],
@@ -2045,6 +2082,12 @@ def process_storage_class(job: dict[str, Any]) -> None:
         )
         return
 
+    set_job(
+        job["id"],
+        "uploading",
+        message_key="job.storage_class_changing",
+        message_params={"storage_class": target_class},
+    )
     ensure_job_active(job["id"], "Storage class change stopped")
     copy_source = {
         "Bucket": job["s3_bucket"],
@@ -2576,7 +2619,10 @@ def process_job(job: dict[str, Any]) -> bool:
             process_recover(job)
         elif job["action"] == "free-space" and job["status"] == "queued":
             process_free_space(job)
-        elif job["action"] == "storage-class" and job["status"] == "queued":
+        elif job["action"] == "storage-class" and job["status"] in {
+            "queued",
+            "restoring",
+        }:
             process_storage_class(job)
         elif job["action"] == "cloud-archive" and job["status"] == "queued":
             process_cloud_archive(job)

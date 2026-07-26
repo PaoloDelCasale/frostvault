@@ -3,11 +3,13 @@ import { useEffect, useState } from "react";
 import {
   deleteLifecycleFolderOverride,
   fetchLifecycle,
+  fetchStorageClasses,
   startStorageClass,
   updateLifecycleDefault,
   upsertLifecycleFolderOverride,
   type LifecycleGuidedProfile,
   type LifecycleResponse,
+  type StorageClassOptionItem,
 } from "@/api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
@@ -19,6 +21,7 @@ import {
   STORAGE_CLASS_OPTIONS,
   type ManualStorageClass,
 } from "@/pages/archive/actions";
+import { formatStorageClassOptionLabel } from "@/pages/archive/storageClassOptions";
 
 type LifecyclePanelProps = {
   onNotice: (message: string, error?: boolean) => void;
@@ -67,6 +70,13 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
   const [busy, setBusy] = useState(false);
   const [vaultClassOpen, setVaultClassOpen] = useState(false);
   const [vaultTarget, setVaultTarget] = useState<ManualStorageClass>("DEEP_ARCHIVE");
+  const [classOptions, setClassOptions] = useState<StorageClassOptionItem[]>([]);
+
+  useEffect(() => {
+    void fetchStorageClasses()
+      .then((payload) => setClassOptions(payload.items))
+      .catch(() => setClassOptions([]));
+  }, []);
 
   function applyLifecycle(next: LifecycleResponse) {
     setData(next);
@@ -214,11 +224,16 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
                 setVaultTarget(event.target.value as ManualStorageClass)
               }
             >
-              {STORAGE_CLASS_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
+              {STORAGE_CLASS_OPTIONS.map((option) => {
+                const details = classOptions.find((item) => item.id === option);
+                return (
+                  <option key={option} value={option}>
+                    {details
+                      ? formatStorageClassOptionLabel(details, t)
+                      : option}
+                  </option>
+                );
+              })}
             </FormSelect>
           </FormField>
           {COLD_STORAGE_CLASSES.has(vaultTarget) ? (

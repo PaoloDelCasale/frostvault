@@ -135,7 +135,9 @@ from .services.fs_preflight import (
 )
 from .services.storage_classes import (
     cold_class_warning,
+    list_storage_class_options,
     normalize_storage_class,
+    source_requires_restore_for_class_change,
     validate_manual_target_class,
 )
 from .storage import (
@@ -597,6 +599,9 @@ class StorageClassChangeRequest(BaseModel):
     whole_vault: bool = False
     target_storage_class: str = Field(min_length=1, max_length=32)
     archive_version_id: str | None = None
+    restore_tier: str | None = None
+    restore_days: int | None = Field(default=None, ge=1, le=30)
+    pin_after: bool = False
 
 
 class LifecyclePinRequest(BaseModel):
@@ -2186,9 +2191,23 @@ def queue_jobs(
                         "Archive Version is already in the requested storage class",
                     )
             if (
-                action == "recover"
+                action in {"recover", "storage-class"}
                 and selected is not None
-                and storage_class_requires_restore(selected.get("storage_class"))
+                and (
+                    (
+                        action == "recover"
+                        and storage_class_requires_restore(
+                            selected.get("storage_class")
+                        )
+                    )
+                    or (
+                        action == "storage-class"
+                        and source_requires_restore_for_class_change(
+                            selected.get("storage_class"),
+                            restore_state=selected.get("restore_state"),
+                        )
+                    )
+                )
             ):
                 resolved_days = int(
                     restore_days
@@ -2252,6 +2271,12 @@ def queue_jobs(
         warning = cold_class_warning(resolved_target_class or "")
         if warning:
             result["cost_warning"] = warning
+        result["requires_restore"] = bool(resolved_tier)
+        if resolved_tier:
+            result["restore_tier"] = resolved_tier
+            result["restore_days"] = resolved_days
+            result["estimated_cost_eur"] = estimated_cost_eur
+            result["estimated_hours"] = estimated_hours
     return result
 
 
@@ -2587,6 +2612,16 @@ def free_space(
     return {**queued, **_api_message(request, "api.free_space_started")}
 
 
+@app.get("/api/storage-classes")
+def get_storage_classes(
+    _: dict[str, Any] = Depends(current_user),
+    __: dict[str, Any] = Depends(current_vault),
+):
+    with db() as connection:
+        book = get_active_price_book(connection)
+    return list_storage_class_options(book)
+
+
 @app.post("/api/storage-class", status_code=202)
 def change_storage_class(
     action: StorageClassChangeRequest,
@@ -2611,7 +2646,30 @@ def change_storage_class(
         archive_version_id=action.archive_version_id,
         target_storage_class=action.target_storage_class,
         whole_vault=action.whole_vault,
+        restore_tier=action.restore_tier,
+        restore_days=action.restore_days,
     )
+    if action.pin_after and not action.whole_vault:
+        from .services.lifecycle_pins import set_lifecycle_pin
+        from .services.lifecycle_policies import refresh_desired_policies
+
+        logical_path = (
+            ""
+            if action.whole_vault
+            else safe_relative_path(action.path).as_posix()
+        )
+        if logical_path:
+            with db() as connection:
+                set_lifecycle_pin(
+                    connection,
+                    vault_id=vault["id"],
+                    path=logical_path,
+                    is_directory=action.is_directory,
+                    pinned_by=user["id"],
+                    pinned_at=now_iso(),
+                )
+                refresh_desired_policies(connection, vault["id"])
+            queued["pin_after"] = True
     return {**queued, **_api_message(request, "api.storage_class_started")}
 
 

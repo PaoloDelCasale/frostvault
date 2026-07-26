@@ -456,6 +456,27 @@ export type RestoreEstimate = {
   restore_object_irreversible?: boolean;
 };
 
+export type StorageClassOptionItem = {
+  id: string;
+  currency: string;
+  storage_rate_eur_per_gib_month: number;
+  retrieval: string;
+  min_duration_days: number;
+  requires_restore: boolean;
+  availability_zones: string;
+  restore_hours_bulk?: number;
+  restore_hours_standard?: number;
+  restore_rate_eur_per_gib_bulk?: number;
+  restore_rate_eur_per_gib_standard?: number;
+};
+
+export type StorageClassesResponse = {
+  items: StorageClassOptionItem[];
+  pricing_effective_at?: string;
+  assumptions?: Record<string, unknown>;
+  currency?: string;
+};
+
 export type RecoverEstimateResponse = {
   path: string;
   archive_version_id: string;
