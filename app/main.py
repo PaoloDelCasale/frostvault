@@ -143,6 +143,7 @@ from .storage import (
     now_iso,
     reconcile_interrupted_jobs,
     runtime_status,
+    safe_local_path,
     safe_relative_path,
     scan_vault,
     s3_client,
@@ -3565,8 +3566,13 @@ def spa_asset(asset_path: str):
     assets_root = (_spa_dist_dir() / "assets").resolve()
     if not assets_root.is_dir():
         raise HTTPException(status_code=404, detail="Not Found")
-    target = (assets_root / asset_path).resolve()
-    if not target.is_relative_to(assets_root) or not target.is_file():
+    # Sanitize before joining so user-controlled path segments never reach the
+    # filesystem APIs unchecked (CodeQL path-injection / directory traversal).
+    try:
+        target = safe_local_path(str(assets_root), asset_path)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not Found") from None
+    if not target.is_file():
         raise HTTPException(status_code=404, detail="Not Found")
     return FileResponse(
         target,

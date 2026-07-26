@@ -149,6 +149,22 @@ class FrontendSpaHttpTests(unittest.TestCase):
         )
         self.assertIn("spa", asset.text)
 
+    def test_spa_asset_rejects_path_traversal(self) -> None:
+        """Hashed asset routes must not escape frontend/dist/assets."""
+        self._enable_spa()
+        outside = self.dist_dir / "secret.txt"
+        outside.write_text("do-not-leak\n", encoding="utf-8")
+        # Starlette normalizes bare /assets/../… before routing; encoded
+        # segments still reach spa_asset and must be rejected.
+        for url in (
+            "/assets/%2e%2e/secret.txt",
+            "/assets/..%2Fsecret.txt",
+            "/assets/foo/%2e%2e/%2e%2e/secret.txt",
+        ):
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 404, f"{url}: {response.text}")
+            self.assertNotIn("do-not-leak", response.text)
+
     def test_missing_dist_returns_diagnosable_error(self) -> None:
         """Seam 6: flag on but dist missing → clear error, not opaque 500."""
         self._enable_spa()
