@@ -8,7 +8,6 @@ endpoint.
 
 from __future__ import annotations
 
-import re
 import tempfile
 import unittest
 from dataclasses import replace
@@ -22,6 +21,7 @@ from app.database import SQLiteConnection
 from app.main import app
 from app.security import hash_password
 from app.sessions import create_session
+from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
 
 
@@ -34,6 +34,7 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         self.database_path = Path(self._tmp.name) / "app.db"
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        self.dist_dir = write_spa_dist(Path(self._tmp.name))
 
         with SQLiteConnection(str(self.database_path)) as connection:
             self.user_ids = {
@@ -65,6 +66,7 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
             sqlite_path=str(self.database_path),
             cookie_secure=False,
             allow_local_delete=True,
+            frontend_dist_dir=str(self.dist_dir),
         )
         for target in (
             "app.main.settings",
@@ -184,50 +186,48 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
 
     def test_me_capabilities_match_role_formulas(self) -> None:
         """Seam 8: /api/me capability formulas match vault role gates."""
-        cases = (
-            ("owner", True),
-            ("operator", True),
-            ("viewer", True),
-            ("owner", False),  # allow_local_delete off
-        )
-        for username, allow_local_delete in cases:
+        # Independent expected values (same formulas the SPA consumes).
+        expected = {
+            ("owner", True): {
+                "role": "owner",
+                "can_operate": True,
+                "delete_enabled": True,
+                "is_vault_owner": True,
+            },
+            ("operator", True): {
+                "role": "operator",
+                "can_operate": True,
+                "delete_enabled": False,
+                "is_vault_owner": False,
+            },
+            ("viewer", True): {
+                "role": "viewer",
+                "can_operate": False,
+                "delete_enabled": False,
+                "is_vault_owner": False,
+            },
+            ("owner", False): {
+                "role": "owner",
+                "can_operate": True,
+                "delete_enabled": False,
+                "is_vault_owner": True,
+            },
+        }
+        for (username, allow_local_delete), want in expected.items():
             with self.subTest(username=username, allow_local_delete=allow_local_delete):
                 settings_override = replace(
                     self.test_settings, allow_local_delete=allow_local_delete
                 )
                 with patch("app.main.settings", settings_override):
                     self._authenticate(username)
-                    page = self.client.get("/")
-                    self.assertEqual(page.status_code, 200, page.text)
                     me = self.client.get("/api/me")
                     self.assertEqual(me.status_code, 200, me.text)
+                    vault = me.json()["vault"]
+                self.assertEqual(vault["role"], want["role"])
+                self.assertEqual(vault["can_operate"], want["can_operate"])
+                self.assertEqual(vault["delete_enabled"], want["delete_enabled"])
+                self.assertEqual(vault["is_vault_owner"], want["is_vault_owner"])
 
-                html = page.text
-                vault = me.json()["vault"]
-                self.assertEqual(
-                    self._data_attr(html, "role"),
-                    vault["role"],
-                )
-                self.assertEqual(
-                    self._data_attr(html, "can-operate") == "true",
-                    vault["can_operate"],
-                )
-                self.assertEqual(
-                    self._data_attr(html, "delete-enabled") == "true",
-                    vault["delete_enabled"],
-                )
-                self.assertEqual(
-                    self._data_attr(html, "cloud-deletion-enabled") == "true",
-                    vault["cloud_deletion_enabled"],
-                )
-                self.assertEqual(
-                    self._data_attr(html, "is-vault-owner") == "true",
-                    vault["is_vault_owner"],
-                )
 
-    @staticmethod
-    def _data_attr(html: str, name: str) -> str:
-        match = re.search(rf'data-{name}="([^"]*)"', html)
-        if match is None:
-            raise AssertionError(f"missing data-{name} in archive HTML")
-        return match.group(1)
+if __name__ == "__main__":
+    unittest.main()

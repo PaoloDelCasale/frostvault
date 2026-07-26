@@ -13,6 +13,7 @@ from app.database import SQLiteConnection
 from app.i18n import LOCALE_COOKIE_NAME
 from app.main import app
 from app.security import hash_password
+from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
 
 
@@ -40,6 +41,7 @@ class LocaleHttpTests(unittest.TestCase):
             db_backend="sqlite",
             sqlite_path=str(database_path),
             cookie_secure=False,
+            frontend_dist_dir=str(write_spa_dist(Path(self._tmp.name))),
         )
         for target in (
             "app.main.settings",

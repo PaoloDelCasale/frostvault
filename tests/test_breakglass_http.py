@@ -12,6 +12,7 @@ from app import main
 from app.config import settings
 from app.database import SQLiteConnection
 from app.security import hash_password
+from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
 
 
@@ -60,6 +61,7 @@ class BreakGlassHttpTests(unittest.TestCase):
             oidc_client_id="client",
             oidc_client_secret="top-secret",
             break_glass_allowed_cidrs="",
+            frontend_dist_dir=str(write_spa_dist(Path(self._tmp.name))),
         )
         for target in (
             "app.main.settings",

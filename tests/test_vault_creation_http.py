@@ -13,6 +13,7 @@ from app.config import settings
 from app.database import SQLiteConnection
 from app.main import app
 from app.sessions import create_session
+from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
 
 
@@ -51,6 +52,7 @@ class VaultCreationHttpTestCase(unittest.TestCase):
             "vault_sources_root": str(self.sources_root),
             "vault_s3_bucket": "test-bucket",
             "vault_rclone_remote": "test-remote",
+            "frontend_dist_dir": str(write_spa_dist(Path(self._tmp.name))),
         }
         overrides.update(self.settings_overrides)
         self.settings = replace(settings, **overrides)
@@ -94,7 +96,11 @@ class SelfServiceVaultCreationTests(VaultCreationHttpTestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn('id="root"', response.text)
 
-        denied = self._create("My Archive")
+        denied = self.client.post(
+            "/api/vaults",
+            json={"name": "My Archive"},
+            headers={"X-CSRF-Token": "missing"},
+        )
         self.assertEqual(denied.status_code, 401, denied.text)
 
     def test_vault_create_api_works_without_html_form_markup(self) -> None:
@@ -134,7 +140,11 @@ class SelfServiceVaultCreationTests(VaultCreationHttpTestCase):
         self.assertEqual(selected.status_code, 200, selected.text)
         archive = self.client.get("/")
         self.assertEqual(archive.status_code, 200)
-        self.assertIn("My Archive · FrostVault", archive.text)
+        self.assertIn('id="root"', archive.text)
+        me = self.client.get("/api/me")
+        self.assertEqual(me.status_code, 200, me.text)
+        self.assertEqual(me.json()["vault"]["name"], "My Archive")
+        self.assertEqual(me.json()["vault"]["slug"], "my-archive")
 
     def test_an_authenticated_user_can_create_their_own_vault(self) -> None:
         self._login()
