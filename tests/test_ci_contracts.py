@@ -236,3 +236,76 @@ class Epic56AgentPipelineRemovalTests(unittest.TestCase):
         """Seam 3: agent_pipeline.py and tests/test_agent_pipeline.py are gone."""
         self.assertFalse((ROOT / ".github" / "scripts" / "agent_pipeline.py").exists())
         self.assertFalse((ROOT / "tests" / "test_agent_pipeline.py").exists())
+
+    def test_no_pipeline_label_or_webhook_secret_references(self) -> None:
+        """Seam 4: source and docs do not mention agent-pipeline or webhook secrets."""
+        # Split literals so this test file is not a self-hit.
+        forbidden = (
+            "agent" + "-pipeline",
+            "CURSOR_EPIC_56_WEBHOOK_",
+        )
+        skip_parts = {
+            "node_modules",
+            "dist",
+            "__pycache__",
+            ".venv",
+            ".git",
+        }
+        scan_roots = (
+            ROOT / "app",
+            ROOT / "frontend" / "src",
+            ROOT / "tests",
+            ROOT / "docs",
+            ROOT / ".github",
+        )
+        scan_files = (
+            ROOT / "AGENTS.md",
+            ROOT / "README.md",
+            ROOT / "CONTEXT.md",
+            ROOT / ".env.example",
+            ROOT / ".env.local.example",
+            ROOT / "Dockerfile",
+        )
+        suffixes = {
+            ".py",
+            ".ts",
+            ".tsx",
+            ".js",
+            ".mjs",
+            ".md",
+            ".yml",
+            ".yaml",
+            ".example",
+            ".css",
+            ".html",
+            ".json",
+        }
+        hits: list[str] = []
+        self_path = Path(__file__).resolve()
+
+        def _consider(path: Path) -> None:
+            if path.resolve() == self_path:
+                return
+            if not path.is_file():
+                return
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for fragment in forbidden:
+                if fragment in text:
+                    hits.append(f"{path.relative_to(ROOT)}:{fragment}")
+
+        for root in scan_roots:
+            if not root.exists():
+                continue
+            for path in root.rglob("*"):
+                if any(part in skip_parts for part in path.parts):
+                    continue
+                if path.suffix.lower() not in suffixes and path.name not in {
+                    "AGENTS.md",
+                    "README.md",
+                    "CONTEXT.md",
+                }:
+                    continue
+                _consider(path)
+        for path in scan_files:
+            _consider(path)
+        self.assertEqual(hits, [], f"pipeline references remain in: {hits}")
