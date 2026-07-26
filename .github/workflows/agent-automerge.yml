@@ -2,11 +2,14 @@ name: Agent pipeline auto-merge
 
 # Squash-merge agent pull requests whose checks have all passed.
 #
-# A schedule rather than a reaction to CI finishing: this repository forbids
-# workflow_run and pull_request_target triggers (tests/test_ci_contracts.py),
-# since both hand a privileged token to a workflow chosen by pull-request
-# activity. A schedule keeps this half of the pipeline running from the default
-# branch only, at the cost of up to ten minutes of latency.
+# GitHub's schedule trigger is unreliable (often delayed by hours), so this also
+# runs when a check_suite completes on a cursor/* branch — that is when a PR
+# actually becomes mergeable. schedule remains as a backup; workflow_dispatch
+# remains for recovery.
+#
+# workflow_run and pull_request_target stay forbidden (tests/test_ci_contracts.py):
+# both hand a privileged token to a workflow chosen by pull-request activity.
+# check_suite runs the workflow from the default branch, same as schedule.
 #
 # After each merge, the script unblocks dependents and dispatches agents itself:
 # merges with GITHUB_TOKEN close linked issues without re-firing issues:closed
@@ -22,6 +25,8 @@ on:
   schedule:
     - cron: "*/10 * * * *"
   workflow_dispatch:
+  check_suite:
+    types: [completed]
 
 permissions:
   contents: write
@@ -31,6 +36,10 @@ permissions:
 jobs:
   merge:
     name: Merge finished agent work
+    # Ignore check suites on non-agent branches so human PRs do not wake the sweep.
+    if: >-
+      github.event_name != 'check_suite' ||
+      startsWith(github.event.check_suite.head_branch, 'cursor/')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
