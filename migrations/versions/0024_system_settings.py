@@ -75,7 +75,7 @@ def upgrade() -> None:
         bool_types = "'boolean'"
         integer_check = (
             f"{json_type} = 'number' AND "
-            "(value #>> '{}')::numeric = trunc((value #>> '{}')::numeric)"
+            "((value #>> '{}')::numeric % 1) = 0"
         )
     else:
         json_type = "json_type(value)"

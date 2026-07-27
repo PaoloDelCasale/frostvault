@@ -25,6 +25,7 @@ class SettingDefinition:
     secret: bool = False
     settings_attribute: str | None = None
     environment_aliases: tuple[str, ...] = ()
+    environment_fallbacks: tuple[str, ...] = ()
     nullable: bool = False
 
 
@@ -33,6 +34,9 @@ class ResolvedSystemSetting:
     definition: SettingDefinition
     value: Any
     source: str
+
+
+_DEFAULT_ATTRIBUTE = object()
 
 
 def _setting(
@@ -45,10 +49,14 @@ def _setting(
     *,
     restart: bool = False,
     secret: bool = False,
-    attribute: str | None = None,
+    attribute: str | None | object = _DEFAULT_ATTRIBUTE,
     aliases: tuple[str, ...] = (),
+    fallbacks: tuple[str, ...] = (),
     nullable: bool = False,
 ) -> SettingDefinition:
+    settings_attribute = key if attribute is _DEFAULT_ATTRIBUTE else attribute
+    if settings_attribute is not None and not isinstance(settings_attribute, str):
+        raise TypeError("settings attribute must be a string or None")
     return SettingDefinition(
         key=key,
         environment_variable=env,
@@ -58,8 +66,9 @@ def _setting(
         mutability=mutability,
         restart_required=restart,
         secret=secret,
-        settings_attribute=attribute if attribute is not None else key,
+        settings_attribute=settings_attribute,
         environment_aliases=aliases,
+        environment_fallbacks=fallbacks,
         nullable=nullable,
     )
 
@@ -71,8 +80,8 @@ _R = "restart_required"
 SETTING_DEFINITIONS = (
     _setting("db_backend", "DB_BACKEND", "operations", str, "postgresql", _D, restart=True),
     _setting("sqlite_path", "SQLITE_PATH", "operations", str, "/data/frostvault.db", _D, restart=True),
-    _setting("database_host", "PGHOST", "operations", str, "localhost", _D, restart=True, attribute=""),
-    _setting("database_port", "PGPORT", "operations", int, 5432, _D, restart=True, attribute=""),
+    _setting("database_host", "PGHOST", "operations", str, "localhost", _D, restart=True, attribute=None),
+    _setting("database_port", "PGPORT", "operations", int, 5432, _D, restart=True, attribute=None),
     _setting(
         "database_name",
         "PGDATABASE",
@@ -81,11 +90,11 @@ SETTING_DEFINITIONS = (
         "postgres",
         _D,
         restart=True,
-        attribute="",
-        aliases=("PGUSER",),
+        attribute=None,
+        fallbacks=("PGUSER",),
     ),
-    _setting("database_user", "PGUSER", "operations", str, "postgres", _D, restart=True, attribute=""),
-    _setting("database_password", "PGPASSWORD", "operations", str, "", _D, restart=True, secret=True, attribute=""),
+    _setting("database_user", "PGUSER", "operations", str, "postgres", _D, restart=True, attribute=None),
+    _setting("database_password", "PGPASSWORD", "operations", str, "", _D, restart=True, secret=True, attribute=None),
     _setting("session_cookie_name", "SESSION_COOKIE_NAME", "security", str, "frostvault_session", _D, restart=True),
     _setting("csrf_cookie_name", "CSRF_COOKIE_NAME", "security", str, "frostvault_csrf", _D, restart=True),
     _setting("session_idle_seconds", "SESSION_IDLE_SECONDS", "security", int, 43200, _R, restart=True),
@@ -97,9 +106,9 @@ SETTING_DEFINITIONS = (
     _setting("break_glass_allowed_cidrs", "BREAK_GLASS_ALLOWED_CIDRS", "security", str, "", _D, restart=True),
     _setting("rclone_config", "RCLONE_CONFIG", "operations", str, "/config/rclone/rclone.conf", _D, restart=True),
     _setting("aws_region", "AWS_DEFAULT_REGION", "operations", str, "eu-south-1", _D, restart=True),
-    _setting("aws_access_key_id", "AWS_ACCESS_KEY_ID", "operations", str, "", _D, restart=True, secret=True, attribute=""),
-    _setting("aws_secret_access_key", "AWS_SECRET_ACCESS_KEY", "operations", str, "", _D, restart=True, secret=True, attribute=""),
-    _setting("aws_session_token", "AWS_SESSION_TOKEN", "operations", str, "", _D, restart=True, secret=True, attribute=""),
+    _setting("aws_access_key_id", "AWS_ACCESS_KEY_ID", "operations", str, "", _D, restart=True, secret=True, attribute=None),
+    _setting("aws_secret_access_key", "AWS_SECRET_ACCESS_KEY", "operations", str, "", _D, restart=True, secret=True, attribute=None),
+    _setting("aws_session_token", "AWS_SESSION_TOKEN", "operations", str, "", _D, restart=True, secret=True, attribute=None),
     _setting("scan_interval", "SCAN_INTERVAL_SECONDS", "operations", int, 21600, _M),
     _setting("audit_interval", "AUDIT_INTERVAL_SECONDS", "operations", int, 604800, _M),
     _setting("filesystem_watch_enabled", "FILESYSTEM_WATCH_ENABLED", "operations", bool, True, _R, restart=True),
@@ -187,7 +196,10 @@ def _environment_value(
         raw = next(
             (
                 environ[alias]
-                for alias in definition.environment_aliases
+                for alias in (
+                    *definition.environment_aliases,
+                    *definition.environment_fallbacks,
+                )
                 if alias in environ
             ),
             None,
@@ -242,6 +254,7 @@ def resolve_system_settings(
             env_names = (
                 definition.environment_variable,
                 *definition.environment_aliases,
+                *definition.environment_fallbacks,
             )
             source = (
                 "environment_default"
