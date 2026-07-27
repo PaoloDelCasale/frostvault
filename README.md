@@ -287,7 +287,10 @@ credentials, proxy/host/cookie trust, bootstrap values, automatic migration,
 and the frontend distribution path are deployment-only. They cannot be edited
 at runtime because they define process and deployment trust boundaries.
 Administrators can inspect the effective, structurally redacted inventory at
-`GET /api/admin/settings`. See
+`GET /api/admin/settings`. Recently reauthenticated administrators can atomically
+apply bounded runtime overrides, or remove them to restore environment/default
+precedence, with `PATCH /api/admin/settings`. Mutations use the `revision`
+returned by `GET` to reject stale writes. See
 [ADR-0009](docs/adr/0009-effective-system-configuration.md) for the exhaustive
 classification and precedence model.
 

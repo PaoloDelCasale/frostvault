@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .branding import PRODUCT_NAME
-from .config import settings, validate_settings
+from .config import Settings, settings, validate_settings
 from .audit import audit_log
 from .i18n import (
     DEFAULT_LOCALE,
@@ -79,7 +79,14 @@ from .services import metadata_backups as metadata_backup_service
 from .services import metrics as metrics_service
 from .services import notifications as notification_service
 from .services import worker_errors as worker_error_store
-from .system_settings import system_settings_response
+from .system_settings import (
+    InvalidSystemSetting,
+    StaleSystemSettings,
+    apply_system_settings,
+    effective_settings,
+    effective_system_setting,
+    system_settings_response,
+)
 from .services.restore_estimates import (
     SUPPORTED_RESTORE_TIERS,
     estimate_restore,
@@ -360,6 +367,13 @@ def admin_user(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     return user
 
 
+def _runtime_settings():
+    if not isinstance(settings, Settings):
+        return effective_settings(None, settings_obj=settings)
+    with db() as connection:
+        return effective_settings(connection, settings_obj=settings)
+
+
 class ReauthRequired(HTTPException):
     """Signals the frontend that a fresh Reauthentication is needed."""
 
@@ -371,6 +385,26 @@ class ReauthRequired(HTTPException):
 async def _reauth_required_handler(_: Request, __: ReauthRequired) -> JSONResponse:
     # Stable marker the frontend keys on to trigger a step-up.
     return JSONResponse({"error": "reauth_required"}, status_code=403)
+
+
+@app.exception_handler(InvalidSystemSetting)
+async def _invalid_system_setting_handler(
+    _: Request, error: InvalidSystemSetting
+) -> JSONResponse:
+    return JSONResponse({"detail": str(error)}, status_code=422)
+
+
+@app.exception_handler(StaleSystemSettings)
+async def _stale_system_settings_handler(
+    _: Request, error: StaleSystemSettings
+) -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": "stale_system_settings",
+            "current_revision": error.current_revision,
+        },
+        status_code=409,
+    )
 
 
 @app.exception_handler(QuotaBlocked)
@@ -398,10 +432,16 @@ def require_recent_reauth(
     request: Request, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
     session = request.state.session
+    with db() as connection:
+        reauth_window_seconds = effective_system_setting(
+            connection,
+            "reauth_window_seconds",
+            settings_obj=settings,
+        )
     if not is_reauth_recent(
         session.get("reauth_at"),
         now=datetime.now(timezone.utc),
-        window_seconds=settings.reauth_window_seconds,
+        window_seconds=reauth_window_seconds,
     ):
         raise ReauthRequired()
     return user
@@ -691,6 +731,14 @@ class VaultQuotaUpdate(BaseModel):
                     "soft quota limits must be less than or equal to hard limits"
                 )
         return self
+
+
+class SystemSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revision: int = Field(ge=0)
+    overrides: dict[str, Any] = Field(default_factory=dict)
+    removals: list[str] = Field(default_factory=list)
 
 
 class LifecycleDefaultUpdate(BaseModel):
@@ -1255,7 +1303,7 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
             "name": vault["name"],
             "role": role,
             "can_operate": can_operate(role),
-            "delete_enabled": settings.allow_local_delete and is_owner(role),
+            "delete_enabled": _runtime_settings().allow_local_delete and is_owner(role),
             "cloud_deletion_enabled": bool(vault.get("cloud_deletion_enabled"))
             and is_owner(role),
             "is_vault_owner": is_owner(role),
@@ -1649,7 +1697,7 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
         **summary,
         "runtime": runtime,
         "filesystem": filesystem_payload,
-        "delete_enabled": settings.allow_local_delete and is_owner(vault["role"]),
+        "delete_enabled": _runtime_settings().allow_local_delete and is_owner(vault["role"]),
     }
 
 
@@ -1673,6 +1721,23 @@ def admin_audit_events(_: dict[str, Any] = Depends(admin_user)):
 def admin_system_settings(_: dict[str, Any] = Depends(admin_user)):
     with db() as connection:
         return system_settings_response(connection, settings_obj=settings)
+
+
+@app.patch("/api/admin/settings")
+def update_admin_system_settings(
+    action: SystemSettingsUpdate,
+    user: dict[str, Any] = Depends(admin_user),
+    _: dict[str, Any] = Depends(require_recent_reauth),
+):
+    with db() as connection:
+        return apply_system_settings(
+            connection,
+            expected_revision=action.revision,
+            overrides=action.overrides,
+            removals=action.removals,
+            updated_by=user["id"],
+            settings_obj=settings,
+        )
 
 
 @app.get("/api/notifications")
@@ -1882,8 +1947,8 @@ def admin_run_metadata_backup(
                 reason="manual",
                 backup_dir=settings.metadata_backup_dir,
                 object_store=metadata_backup_service.default_object_store(),
-                retention=settings.metadata_backup_retention,
-                s3_prefix=settings.metadata_backup_s3_prefix,
+                retention=_runtime_settings().metadata_backup_retention,
+                s3_prefix=_runtime_settings().metadata_backup_s3_prefix,
             )
         except metadata_backup_service.BackupError as exc:
             audit_event_store.record_audit_event(
@@ -2219,10 +2284,10 @@ def queue_jobs(
                 resolved_days = int(
                     restore_days
                     if restore_days is not None
-                    else settings.restore_days
+                    else _runtime_settings().restore_days
                 )
                 resolved_tier = normalize_restore_tier(
-                    restore_tier or settings.restore_tier,
+                    restore_tier or _runtime_settings().restore_tier,
                     storage_class=str(selected.get("storage_class") or ""),
                 )
                 estimate = estimate_restore(
@@ -2303,8 +2368,8 @@ def file_versions(
         "recoverable_count": len(recoverable),
         "default_archive_version_id": default_version_id,
         "supported_restore_tiers": list(SUPPORTED_RESTORE_TIERS),
-        "default_restore_tier": settings.restore_tier,
-        "default_restore_days": settings.restore_days,
+        "default_restore_tier": _runtime_settings().restore_tier,
+        "default_restore_days": _runtime_settings().restore_days,
     }
 
 
@@ -2331,10 +2396,10 @@ def recover_estimate(
     days = int(
         action.restore_days
         if action.restore_days is not None
-        else settings.restore_days
+        else _runtime_settings().restore_days
     )
     tier = normalize_restore_tier(
-        action.restore_tier or settings.restore_tier,
+        action.restore_tier or _runtime_settings().restore_tier,
         storage_class=str(selected.get("storage_class") or ""),
     )
     estimate_payload = None
@@ -2354,8 +2419,8 @@ def recover_estimate(
         high_impact = is_high_impact_restore(
             size_bytes=priced.size_bytes,
             estimated_cost_eur=priced.estimated_cost_eur,
-            size_threshold_gib=settings.restore_high_impact_gib,
-            cost_threshold_eur=settings.restore_high_impact_eur,
+            size_threshold_gib=_runtime_settings().restore_high_impact_gib,
+            cost_threshold_eur=_runtime_settings().restore_high_impact_eur,
         )
         estimate_payload = {
             "tier": priced.tier,
@@ -2611,7 +2676,7 @@ def free_space(
 ):
     if not is_owner(vault["role"]):
         raise HTTPException(403, "Vault is read-only")
-    if not settings.allow_local_delete:
+    if not _runtime_settings().allow_local_delete:
         raise HTTPException(403, "Freeing local space is disabled")
     queued = queue_jobs(
         action.path, "free-space", vault["id"], user["id"], action.is_directory
@@ -2731,7 +2796,7 @@ def get_cloud_deletion_setting(vault: dict[str, Any] = Depends(current_vault)):
         )
     return {
         "enabled": enabled,
-        "purge_delay_seconds": settings.cloud_purge_delay_seconds,
+        "purge_delay_seconds": _runtime_settings().cloud_purge_delay_seconds,
         "delete_marker_explanation": cloud_deletion_service.delete_marker_explanation(),
         "generated_phrase": cloud_deletion_service.generate_confirmation_phrase(),
         "accepted_single_identity_risk": (
@@ -2840,7 +2905,7 @@ def cloud_purge(
                 confirmation=action.confirmation,
                 reason=action.reason,
                 generated_phrase=action.generated_phrase,
-                delay_seconds=settings.cloud_purge_delay_seconds,
+                delay_seconds=_runtime_settings().cloud_purge_delay_seconds,
             )
     except cloud_deletion_service.CloudDeletionDisabled as exc:
         raise HTTPException(403, str(exc)) from exc

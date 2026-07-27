@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .config import settings
+from .system_settings import effective_settings
 from .database import INTEGRITY_ERRORS
 
 
@@ -50,7 +51,11 @@ def create_invite(
         raise ValueError("Cannot invite an unknown user")
     raw_token = secrets.token_urlsafe(TOKEN_BYTES)
     now = _now()
-    ttl = settings.invite_ttl_seconds if ttl_seconds is None else ttl_seconds
+    ttl = (
+        effective_settings(connection, settings_obj=settings).invite_ttl_seconds
+        if ttl_seconds is None
+        else ttl_seconds
+    )
     connection.execute(
         """
         INSERT INTO invites(

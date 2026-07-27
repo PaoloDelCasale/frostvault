@@ -21,7 +21,7 @@ from typing import Any, Protocol
 from cryptography.fernet import Fernet, InvalidToken
 
 from ..config import Settings, settings
-from ..system_settings import SETTINGS_BY_KEY, resolve_system_settings
+from ..system_settings import SETTINGS_BY_KEY, effective_settings, resolve_system_settings
 from .vault_crypto import MasterKeyError
 
 
@@ -658,7 +658,10 @@ def run_metadata_backup(
     keep = (
         retention
         if retention is not None
-        else int(getattr(settings, "metadata_backup_retention", 14))
+        else effective_settings(
+            connection,
+            settings_obj=settings,
+        ).metadata_backup_retention
     )
     if config_snapshot is None:
         config_snapshot = build_config_snapshot(connection=connection)

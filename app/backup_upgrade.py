@@ -16,6 +16,7 @@ from pathlib import Path
 from .config import settings
 from .database import db
 from .services import metadata_backups
+from .system_settings import effective_settings
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,10 +38,11 @@ def main(argv: list[str] | None = None) -> int:
     backup_dir = Path(settings.metadata_backup_dir)
     try:
         with db() as connection:
+            runtime = effective_settings(connection, settings_obj=settings)
             result = metadata_backups.run_pre_upgrade_backup(
                 backup_dir=backup_dir,
                 object_store=metadata_backups.default_object_store(),
-                retention=settings.metadata_backup_retention,
+                retention=runtime.metadata_backup_retention,
                 connection=connection,
             )
     except metadata_backups.BackupError as exc:

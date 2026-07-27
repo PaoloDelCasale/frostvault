@@ -19,6 +19,7 @@ from pathlib import Path
 from .config import is_placeholder, settings
 from .database import HEAD_SCHEMA_REVISION, DatabaseSchemaError, db, read_schema_revision
 from .services import metadata_backups
+from .system_settings import effective_settings
 
 
 class SchemaMigrationError(RuntimeError):
@@ -69,10 +70,11 @@ def _upgrade_existing_with_backup() -> None:
     backup_dir = Path(settings.metadata_backup_dir)
     try:
         with db() as connection:
+            runtime = effective_settings(connection, settings_obj=settings)
             result = metadata_backups.run_pre_upgrade_backup(
                 backup_dir=backup_dir,
                 object_store=_object_store_for_upgrade(),
-                retention=settings.metadata_backup_retention,
+                retention=runtime.metadata_backup_retention,
                 connection=connection,
             )
     except metadata_backups.BackupError as exc:
