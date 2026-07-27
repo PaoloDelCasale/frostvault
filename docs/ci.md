@@ -9,7 +9,7 @@ Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.y
 
 | Job | What it proves | Credentials |
 | --- | --- | --- |
-| Unit and migration tests | Python `unittest` suite against SQLite. PostgreSQL-only cases skip here and run in the parallel job below. | None. Live AWS/MinIO env vars are intentionally unset so S3 integration cases skip. |
+| Unit and migration tests | Python `unittest` suite against SQLite, partitioned deterministically by test module across four parallel shards and reported through one stable aggregate check. PostgreSQL-only cases skip here and run in the parallel job below. | None. Live AWS/MinIO env vars are intentionally unset so S3 integration cases skip. |
 | PostgreSQL migration and concurrency tests | PostgreSQL-specific migration and shared rate-limit concurrency cases against `postgres:16`. | Ephemeral Postgres service only. |
 | Frontend lint, unit tests, and build | ESLint, Vitest, TypeScript and the production Vite/PWA build. Runs in parallel with both Python jobs. | None. |
 | Playwright e2e (375px + desktop) | Chromium Playwright against uvicorn + SQLite with seeded fixtures: eleven archive/admin flows plus touch/a11y checks at 375×667 and 1280×800 | None. Placeholder AWS env only; no live cloud calls. Browsers cached under `~/.cache/ms-playwright`. Uses `E2E_PYTHON=python` (setup-python on PATH; no repo `.venv` in CI). Failure screenshots upload as `playwright-e2e-failures`; successful 375px shots as `playwright-e2e-375px`. |
