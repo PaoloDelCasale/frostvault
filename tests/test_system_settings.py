@@ -100,6 +100,9 @@ class SystemSettingsResolverTests(unittest.TestCase):
         configured = replace(
             settings,
             archive_master_key="archive-secret-that-must-not-leak",
+            oidc_settings_encryption_key=(
+                "oidc-settings-key-that-must-not-leak"
+            ),
         )
         with SQLiteConnection(str(self.database_path)) as connection:
             set_system_setting(
@@ -116,6 +119,11 @@ class SystemSettingsResolverTests(unittest.TestCase):
         self.assertEqual(snapshot["scan_interval"], 1800)
         self.assertNotIn("archive_master_key", snapshot)
         self.assertNotIn("archive-secret-that-must-not-leak", str(snapshot))
+        self.assertNotIn("oidc_settings_encryption_key", snapshot)
+        self.assertNotIn(
+            "oidc-settings-key-that-must-not-leak",
+            str(snapshot),
+        )
 
 
 class SystemSettingsHttpTests(unittest.TestCase):
@@ -135,6 +143,9 @@ class SystemSettingsHttpTests(unittest.TestCase):
             sqlite_path=str(self.database_path),
             archive_master_key="archive-secret-that-must-not-leak",
             oidc_client_secret="oidc-secret-that-must-not-leak",
+            oidc_settings_encryption_key=(
+                "oidc-settings-key-that-must-not-leak"
+            ),
         )
         for target in (
             "app.main.settings",
@@ -176,6 +187,10 @@ class SystemSettingsHttpTests(unittest.TestCase):
         )
         self.assertNotIn("archive-secret-that-must-not-leak", response.text)
         self.assertNotIn("oidc-secret-that-must-not-leak", response.text)
+        self.assertNotIn(
+            "oidc-settings-key-that-must-not-leak",
+            response.text,
+        )
         archive_key = next(
             item for item in groups["security"] if item["key"] == "archive_master_key"
         )

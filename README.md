@@ -121,8 +121,10 @@ instead of trying other credentials available on the computer.
    the bootstrap administrator. For a network deployment set `COOKIE_SECURE=true`
    and provide `ALLOWED_HOSTS` (the hostnames the panel answers to) and
    `TRUSTED_PROXIES` (CIDRs of your reverse proxies); the app refuses to start
-   in production without them. Configure `OIDC_ISSUER`/`OIDC_CLIENT_ID`/
-   `OIDC_CLIENT_SECRET` to enable single sign-on.
+   in production without them. Set `OIDC_ENABLED=true` and configure
+   `OIDC_ISSUER`/`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET` for the initial
+   environment-defined single sign-on configuration. Set a separate
+   `OIDC_SETTINGS_ENCRYPTION_KEY` before managing OIDC through the admin API.
 
 4. Create `config/rclone.conf` from `config/rclone.conf.example`.
 5. Generate a distinct encryption password for each vault:
@@ -274,7 +276,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Area | Variables |
 | --- | --- |
 | Database | `DB_BACKEND`, `SQLITE_PATH`, `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
-| Authentication | `BOOTSTRAP_ADMIN_*`, `OIDC_*`, `BREAK_GLASS_ALLOWED_CIDRS` |
+| Authentication | `BOOTSTRAP_ADMIN_*`, `OIDC_*` (including the dedicated `OIDC_SETTINGS_ENCRYPTION_KEY`), `BREAK_GLASS_ALLOWED_CIDRS` |
 | Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES` |
 | Frontend | `FRONTEND_DIST_DIR` (Vite build output; required for HTML routes) |
 | Web Push | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (optional; see below) |

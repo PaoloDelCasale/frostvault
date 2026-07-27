@@ -40,6 +40,17 @@ from .catalog import ArchiveCatalog
 from .database import INTEGRITY_ERRORS, db, initialize_database
 from .migrate_on_start import ensure_schema_current
 from .oidc import OidcError, begin_login, complete_login
+from .oidc_configuration import (
+    OidcConfigurationConflict,
+    OidcConfigurationError,
+    activate_oidc_draft,
+    disable_oidc,
+    oidc_host_addresses,
+    oidc_configuration_response,
+    rotate_oidc_secret,
+    save_oidc_draft,
+    validate_oidc_draft,
+)
 from .proxy import parse_networks, resolve_client_ip
 from .invites import (
     InviteError,
@@ -526,6 +537,43 @@ class LocaleUpdate(BaseModel):
 
 class ReauthRequest(BaseModel):
     password: str
+
+
+class OidcDraftAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    issuer: str = Field(min_length=1, max_length=2048)
+    client_id: str = Field(min_length=1, max_length=512)
+    client_secret: str = Field(min_length=1, max_length=8192)
+    scopes: list[str] = Field(min_length=1, max_length=32)
+    login_transaction_ttl_seconds: int = Field(ge=60, le=3600)
+
+    @model_validator(mode="after")
+    def validate_oidc_values(self) -> "OidcDraftAction":
+        self.issuer = self.issuer.strip()
+        self.client_id = self.client_id.strip()
+        normalized_scopes = list(
+            dict.fromkeys(scope.strip() for scope in self.scopes)
+        )
+        if not self.issuer or not self.client_id:
+            raise ValueError("issuer and client_id must not be blank")
+        if any(
+            not scope
+            or len(scope) > 128
+            or any(character.isspace() for character in scope)
+            for scope in normalized_scopes
+        ):
+            raise ValueError("scopes must contain valid OAuth scope tokens")
+        if "openid" not in normalized_scopes:
+            raise ValueError("scopes must include openid")
+        self.scopes = normalized_scopes
+        return self
+
+
+class OidcSecretRotationAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_secret: str = Field(min_length=1, max_length=8192)
 
 
 class VaultSelection(BaseModel):
@@ -1055,17 +1103,19 @@ def oidc_reauth(
     user: dict[str, Any] = Depends(current_user),
 ):
     """OIDC step-up: force a fresh provider login with ``prompt=login``."""
-    if not settings.oidc_enabled:
-        raise HTTPException(404, "OIDC login is not enabled")
     redirect_uri = str(request.url_for("oidc_callback"))
     with db() as connection:
-        authorization_url = begin_login(
-            connection,
-            redirect_uri=redirect_uri,
-            return_to=_safe_return_to(return_to),
-            prompt="login",
-            http_client=_oidc_client(),
-        )
+        try:
+            authorization_url = begin_login(
+                connection,
+                redirect_uri=redirect_uri,
+                return_to=_safe_return_to(return_to),
+                prompt="login",
+                http_client=_oidc_client(),
+                host_addresses=_oidc_host_addresses,
+            )
+        except OidcError as error:
+            _raise_oidc_start_error(error)
     return RedirectResponse(authorization_url, status_code=303)
 
 
@@ -1073,6 +1123,16 @@ def _oidc_client():
     # Seam for tests to inject a fake provider transport; production uses the
     # OIDC module's own HTTP client.
     return None
+
+
+def _oidc_host_addresses(hostname: str) -> list[str]:
+    return oidc_host_addresses(hostname)
+
+
+def _raise_oidc_start_error(error: OidcError) -> None:
+    if error.reason == "disabled":
+        raise HTTPException(404, "OIDC login is not enabled") from error
+    raise HTTPException(400, f"OIDC login failed: {error.reason}") from error
 
 
 def _safe_return_to(candidate: str | None) -> str:
@@ -1093,8 +1153,6 @@ def oidc_login(
     return_to: str | None = Query(default=None),
     invite: str | None = Query(default=None),
 ):
-    if not settings.oidc_enabled:
-        raise HTTPException(404, "OIDC login is not enabled")
     redirect_uri = str(request.url_for("oidc_callback"))
     client_ip = _client_ip(request)
     # Throttle counters must survive the request, so record them and let the
@@ -1128,13 +1186,17 @@ def oidc_login(
                     if client_ip:
                         record_success(connection, scope="ip", key=client_ip)
             if invite_error is None:
-                authorization_url = begin_login(
-                    connection,
-                    redirect_uri=redirect_uri,
-                    return_to=_safe_return_to(return_to),
-                    invite_id=invite_id,
-                    http_client=_oidc_client(),
-                )
+                try:
+                    authorization_url = begin_login(
+                        connection,
+                        redirect_uri=redirect_uri,
+                        return_to=_safe_return_to(return_to),
+                        invite_id=invite_id,
+                        http_client=_oidc_client(),
+                        host_addresses=_oidc_host_addresses,
+                    )
+                except OidcError as error:
+                    _raise_oidc_start_error(error)
     if retry_after is not None:
         with db() as connection:
             audit_log(
@@ -1160,22 +1222,24 @@ def oidc_link(
     user: dict[str, Any] = Depends(current_user),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
-    if not settings.oidc_enabled:
-        raise HTTPException(404, "OIDC login is not enabled")
     redirect_uri = str(request.url_for("oidc_callback"))
     with db() as connection:
         token = create_invite(
             connection, target_user_id=user["id"], created_by=user["id"]
         )
         invite_id = _resolve_invite_id(connection, token)
-        authorization_url = begin_login(
-            connection,
-            redirect_uri=redirect_uri,
-            return_to="/",
-            invite_id=invite_id,
-            prompt="login",
-            http_client=_oidc_client(),
-        )
+        try:
+            authorization_url = begin_login(
+                connection,
+                redirect_uri=redirect_uri,
+                return_to="/",
+                invite_id=invite_id,
+                prompt="login",
+                http_client=_oidc_client(),
+                host_addresses=_oidc_host_addresses,
+            )
+        except OidcError as error:
+            _raise_oidc_start_error(error)
     return RedirectResponse(authorization_url, status_code=303)
 
 
@@ -1195,8 +1259,6 @@ def oidc_callback(
     state: str = Query(...),
     code: str = Query(...),
 ):
-    if not settings.oidc_enabled:
-        raise HTTPException(404, "OIDC login is not enabled")
     redirect_uri = str(request.url_for("oidc_callback"))
     with db() as connection:
         try:
@@ -1206,6 +1268,7 @@ def oidc_callback(
                 code=code,
                 redirect_uri=redirect_uri,
                 http_client=_oidc_client(),
+                host_addresses=_oidc_host_addresses,
             )
         except OidcError as error:
             raise HTTPException(400, f"OIDC login failed: {error.reason}")
@@ -1728,7 +1791,7 @@ def update_admin_system_settings(
     action: SystemSettingsUpdate,
     user: dict[str, Any] = Depends(admin_user),
     _: dict[str, Any] = Depends(require_recent_reauth),
-):
+) -> dict[str, Any]:
     with db() as connection:
         return apply_system_settings(
             connection,
@@ -1737,6 +1800,191 @@ def update_admin_system_settings(
             removals=action.removals,
             updated_by=user["id"],
             settings_obj=settings,
+        )
+
+
+@app.get("/api/admin/oidc-configuration")
+def admin_oidc_configuration(
+    request: Request,
+    _: dict[str, Any] = Depends(admin_user),
+):
+    with db() as connection:
+        return oidc_configuration_response(
+            connection,
+            settings_obj=settings,
+            callback_url=str(request.url_for("oidc_callback")),
+        )
+
+
+@app.put("/api/admin/oidc-configuration/draft")
+def save_admin_oidc_draft(
+    request: Request,
+    action: OidcDraftAction,
+    user: dict[str, Any] = Depends(admin_user),
+    _: dict[str, Any] = Depends(require_recent_reauth),
+):
+    with db() as connection:
+        try:
+            save_oidc_draft(
+                connection,
+                issuer=action.issuer,
+                client_id=action.client_id,
+                client_secret=action.client_secret,
+                scopes=action.scopes,
+                login_transaction_ttl_seconds=(
+                    action.login_transaction_ttl_seconds
+                ),
+                updated_by=user["id"],
+                settings_obj=settings,
+            )
+        except OidcConfigurationError as error:
+            raise HTTPException(503, str(error)) from error
+        audit_event_store.record_audit_event(
+            connection,
+            event="oidc_configuration_draft_saved",
+            actor_user_id=user["id"],
+            outcome="success",
+            visibility="admin",
+            issuer=action.issuer,
+            client_id=action.client_id,
+            scopes=action.scopes,
+            login_transaction_ttl_seconds=(
+                action.login_transaction_ttl_seconds
+            ),
+            client_secret_replaced=True,
+        )
+        return oidc_configuration_response(
+            connection,
+            settings_obj=settings,
+            callback_url=str(request.url_for("oidc_callback")),
+        )
+
+
+@app.post("/api/admin/oidc-configuration/draft/validate")
+def validate_admin_oidc_draft(
+    request: Request,
+    user: dict[str, Any] = Depends(admin_user),
+    _: dict[str, Any] = Depends(require_recent_reauth),
+):
+    with db() as connection:
+        try:
+            status = validate_oidc_draft(
+                connection,
+                http_client=_oidc_client(),
+                host_addresses=_oidc_host_addresses,
+            )
+        except OidcConfigurationError as error:
+            raise HTTPException(409, str(error)) from error
+        audit_event_store.record_audit_event(
+            connection,
+            event="oidc_configuration_draft_validated",
+            actor_user_id=user["id"],
+            outcome="success" if status == "valid" else "failure",
+            visibility="admin",
+            validation_status=status,
+        )
+        response = oidc_configuration_response(
+            connection,
+            settings_obj=settings,
+            callback_url=str(request.url_for("oidc_callback")),
+        )
+        if status == "invalid":
+            return JSONResponse(response, status_code=422)
+        return response
+
+
+@app.post("/api/admin/oidc-configuration/activate")
+def activate_admin_oidc_configuration(
+    request: Request,
+    user: dict[str, Any] = Depends(admin_user),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    with db() as connection:
+        try:
+            version = activate_oidc_draft(
+                connection,
+                updated_by=user["id"],
+                settings_obj=settings,
+            )
+        except OidcConfigurationError as error:
+            raise HTTPException(409, str(error)) from error
+        audit_event_store.record_audit_event(
+            connection,
+            event="oidc_configuration_activated",
+            actor_user_id=user["id"],
+            outcome="success",
+            visibility="admin",
+            version=version,
+        )
+        return oidc_configuration_response(
+            connection,
+            settings_obj=settings,
+            callback_url=str(request.url_for("oidc_callback")),
+        )
+
+
+@app.post("/api/admin/oidc-configuration/disable")
+def disable_admin_oidc_configuration(
+    request: Request,
+    user: dict[str, Any] = Depends(admin_user),
+    _: dict[str, Any] = Depends(require_recent_reauth),
+):
+    with db() as connection:
+        try:
+            version = disable_oidc(
+                connection,
+                updated_by=user["id"],
+                settings_obj=settings,
+            )
+        except OidcConfigurationError as error:
+            raise HTTPException(503, str(error)) from error
+        audit_event_store.record_audit_event(
+            connection,
+            event="oidc_configuration_disabled",
+            actor_user_id=user["id"],
+            outcome="success",
+            visibility="admin",
+            version=version,
+        )
+        return oidc_configuration_response(
+            connection,
+            settings_obj=settings,
+            callback_url=str(request.url_for("oidc_callback")),
+        )
+
+
+@app.post("/api/admin/oidc-configuration/rotate-secret")
+def rotate_admin_oidc_secret(
+    request: Request,
+    action: OidcSecretRotationAction,
+    user: dict[str, Any] = Depends(admin_user),
+    _: dict[str, Any] = Depends(require_recent_reauth),
+):
+    with db() as connection:
+        try:
+            version = rotate_oidc_secret(
+                connection,
+                client_secret=action.client_secret,
+                updated_by=user["id"],
+                settings_obj=settings,
+            )
+        except OidcConfigurationConflict as error:
+            raise HTTPException(409, str(error)) from error
+        except OidcConfigurationError as error:
+            raise HTTPException(503, str(error)) from error
+        audit_event_store.record_audit_event(
+            connection,
+            event="oidc_client_secret_rotated",
+            actor_user_id=user["id"],
+            outcome="success",
+            visibility="admin",
+            version=version,
+            client_secret_replaced=True,
+        )
+        return oidc_configuration_response(
+            connection,
+            settings_obj=settings,
+            callback_url=str(request.url_for("oidc_callback")),
         )
 
 

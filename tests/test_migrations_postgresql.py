@@ -62,6 +62,12 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             column["name"]
             for column in sa.inspect(self.engine).get_columns("system_settings")
         }
+        oidc_configuration_columns = {
+            column["name"]
+            for column in sa.inspect(self.engine).get_columns(
+                "oidc_configuration"
+            )
+        }
         self.assertEqual(
             quota_columns,
             {
@@ -77,6 +83,31 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertEqual(
             system_setting_columns,
             {"key", "value", "updated_by", "updated_at"},
+        )
+        self.assertEqual(
+            oidc_configuration_columns,
+            {
+                "id",
+                "active_enabled",
+                "active_version",
+                "active_issuer",
+                "active_client_id",
+                "active_secret_ciphertext",
+                "active_scopes",
+                "active_login_ttl_seconds",
+                "draft_version",
+                "draft_issuer",
+                "draft_client_id",
+                "draft_secret_ciphertext",
+                "draft_scopes",
+                "draft_login_ttl_seconds",
+                "validated_draft_version",
+                "validation_status",
+                "validation_error",
+                "validated_at",
+                "updated_by",
+                "updated_at",
+            },
         )
         connect_url = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
         with psycopg.connect(connect_url, row_factory=dict_row) as connection:
