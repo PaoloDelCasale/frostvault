@@ -39,14 +39,32 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertIn("s3-compatible-integrity", job_names)
         self.assertIn("playwright-e2e", job_names)
 
-    def test_pr_unit_job_runs_frontend_vitest_lint_and_build(self) -> None:
+    def test_pr_runs_frontend_quality_in_a_dedicated_parallel_job(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
-        steps = workflow["jobs"]["sqlite-and-postgresql"]["steps"]
-        run_blocks = [step.get("run", "") for step in steps]
+        jobs = workflow["jobs"]
+        self.assertIn("frontend-quality", jobs)
+        run_blocks = [
+            step.get("run", "") for step in jobs["frontend-quality"]["steps"]
+        ]
+        self.assertTrue(any("npm ci" in block for block in run_blocks))
         self.assertTrue(any("npm run test" in block for block in run_blocks))
         self.assertTrue(any("npm run lint" in block for block in run_blocks))
         self.assertTrue(any("npm run build" in block for block in run_blocks))
         self.assertFalse(any("node --test" in block for block in run_blocks))
+
+    def test_pr_isolates_postgresql_tests_from_the_sqlite_unit_job(self) -> None:
+        workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
+        jobs = workflow["jobs"]
+        sqlite_job = jobs["sqlite-and-postgresql"]
+        postgres_job = jobs["postgresql-tests"]
+        self.assertNotIn("postgres", sqlite_job.get("services") or {})
+        self.assertNotIn("TEST_POSTGRES_URL", sqlite_job.get("env") or {})
+        self.assertIn("postgres", postgres_job.get("services") or {})
+        postgres_runs = "\n".join(
+            step.get("run", "") for step in postgres_job["steps"]
+        )
+        self.assertIn("PostgreSQLMigrationTests", postgres_runs)
+        self.assertIn("PostgreSQLSharedLookupRateLimitTests", postgres_runs)
 
     def test_playwright_e2e_job_installs_chromium_and_uploads_failures(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
