@@ -20,10 +20,11 @@ import boto3
 from boto3.s3.transfer import TransferConfig
 from watchfiles import Change, awatch
 
-from .config import is_placeholder, settings
+from .config import Settings, is_placeholder, settings
 from .catalog import ArchiveCatalog
 from .database import db
 from .i18n import DEFAULT_LOCALE, format_message_params, translate
+from .system_settings import effective_settings
 from .services.rclone_runtime import (
     decode_object_relative_path,
     encode_object_relative_path,
@@ -43,6 +44,23 @@ from .services.s3_object_tags import apply_version_policy_tag, read_version_poli
 from .services import health as health_service
 from .services import metadata_backups as metadata_backup_service
 from .services import metrics as metrics_service
+
+
+_runtime_snapshot = None
+_runtime_snapshot_source = None
+
+
+def _runtime_settings(connection=None):
+    global _runtime_snapshot, _runtime_snapshot_source
+    if not isinstance(settings, Settings):
+        return effective_settings(None, settings_obj=settings)
+    if connection is not None:
+        _runtime_snapshot = effective_settings(connection, settings_obj=settings)
+        _runtime_snapshot_source = settings
+        return _runtime_snapshot
+    if _runtime_snapshot is not None and _runtime_snapshot_source is settings:
+        return _runtime_snapshot
+    return effective_settings(None, settings_obj=settings)
 from .services import worker_errors as worker_error_store
 from .services import notifications as notification_service
 from .services import cloud_deletion as cloud_deletion_service
@@ -193,8 +211,9 @@ def job_bandwidth_bytes_per_sec(job: dict[str, Any] | None) -> int | None:
 
 def rclone_download_perf_args() -> list[str]:
     """Rclone flags that parallelize single-file downloads above the cutoff."""
-    streams = int(getattr(settings, "rclone_multi_thread_streams", 8) or 8)
-    cutoff = int(getattr(settings, "rclone_multi_thread_cutoff_mib", 64) or 64)
+    runtime = _runtime_settings()
+    streams = int(runtime.rclone_multi_thread_streams or 8)
+    cutoff = int(runtime.rclone_multi_thread_cutoff_mib or 64)
     return [
         f"--multi-thread-streams={max(1, streams)}",
         f"--multi-thread-cutoff={max(1, cutoff)}M",
@@ -203,13 +222,10 @@ def rclone_download_perf_args() -> list[str]:
 
 def s3_download_transfer_config(job: dict[str, Any] | None = None) -> TransferConfig:
     """TransferManager config for plain-vault Archive Version downloads."""
-    threshold_mib = int(
-        getattr(settings, "s3_download_multipart_threshold_mib", 8) or 8
-    )
-    chunk_mib = int(
-        getattr(settings, "s3_download_multipart_chunksize_mib", 8) or 8
-    )
-    concurrency = int(getattr(settings, "s3_download_max_concurrency", 10) or 10)
+    runtime = _runtime_settings()
+    threshold_mib = int(runtime.s3_download_multipart_threshold_mib or 8)
+    chunk_mib = int(runtime.s3_download_multipart_chunksize_mib or 8)
+    concurrency = int(runtime.s3_download_max_concurrency or 10)
     return TransferConfig(
         multipart_threshold=max(5, threshold_mib) * 1024 * 1024,
         multipart_chunksize=max(5, chunk_mib) * 1024 * 1024,
@@ -227,9 +243,7 @@ class _ThrottledByteProgress:
         self.transferred = 0
         self._lock = threading.Lock()
         self._last_report = 0.0
-        interval_ms = int(
-            getattr(settings, "job_progress_min_interval_ms", 500) or 500
-        )
+        interval_ms = int(_runtime_settings().job_progress_min_interval_ms or 500)
         self._min_interval = max(0.05, interval_ms / 1000.0)
 
     def add(self, amount: int) -> None:
@@ -790,7 +804,9 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                         connection,
                         vault_id=int(vault["id"]),
                         requested_by=int(owner["user_id"]),
-                        local_delete_enabled=settings.allow_local_delete,
+                        local_delete_enabled=_runtime_settings(
+                            connection
+                        ).allow_local_delete,
                     )
         except Exception as exc:
             status["last_error"] = f"Policy tag reconciliation: {exc}"
@@ -1289,7 +1305,7 @@ def reconcile_interrupted_jobs() -> dict[str, int]:
 
 def job_progress_callback(job: dict[str, Any]) -> Callable[[int, int | None], None]:
     total_bytes = int(job.get("total_bytes") or 0)
-    interval_ms = int(getattr(settings, "job_progress_min_interval_ms", 500) or 500)
+    interval_ms = int(_runtime_settings().job_progress_min_interval_ms or 500)
     min_interval = max(0.05, interval_ms / 1000.0)
     state = {"last_at": 0.0, "last_value": -1}
     lock = threading.Lock()
@@ -1900,7 +1916,7 @@ def record_automatic_cleanup_outcome(
 
 def process_free_space(job: dict[str, Any]) -> None:
     ensure_job_active(job["id"], "Freeing local space stopped")
-    if not settings.allow_local_delete:
+    if not _runtime_settings().allow_local_delete:
         raise RuntimeError("Freeing local space is disabled")
     validate_cloud_vault(job)
     with db() as connection:
@@ -2030,12 +2046,12 @@ def process_storage_class(job: dict[str, Any]) -> None:
         if restore_state != "available":
             tier = (
                 job.get("restore_tier")
-                or getattr(settings, "restore_tier", "Bulk")
+                or _runtime_settings().restore_tier
                 or "Bulk"
             )
             days = int(
                 job.get("restore_days")
-                or getattr(settings, "restore_days", 3)
+                or _runtime_settings().restore_days
                 or 3
             )
             estimate = estimate_restore(
@@ -2288,20 +2304,13 @@ def process_recover(job: dict[str, Any]) -> None:
         and target.get("restore_state") != "available"
         and job.get("approved_at") is None
     ):
-        tier = (
-            job.get("restore_tier")
-            or getattr(settings, "restore_tier", "Bulk")
-            or "Bulk"
-        )
-        days = int(
-            job.get("restore_days")
-            or getattr(settings, "restore_days", 3)
-            or 3
-        )
         with db() as connection:
             from .services.cost_estimates import get_active_price_book
 
+            runtime = _runtime_settings(connection)
             book = get_active_price_book(connection)
+        tier = job.get("restore_tier") or runtime.restore_tier or "Bulk"
+        days = int(job.get("restore_days") or runtime.restore_days or 3)
         estimate = estimate_restore(
             size_bytes=size_bytes,
             storage_class=str(storage_class),
@@ -2312,12 +2321,10 @@ def process_recover(job: dict[str, Any]) -> None:
         if is_high_impact_restore(
             size_bytes=size_bytes,
             estimated_cost_eur=estimate.estimated_cost_eur,
-            size_threshold_gib=getattr(settings, "restore_high_impact_gib", 100),
-            cost_threshold_eur=getattr(settings, "restore_high_impact_eur", 10.0),
+            size_threshold_gib=runtime.restore_high_impact_gib,
+            cost_threshold_eur=runtime.restore_high_impact_eur,
         ):
-            hold_seconds = int(
-                getattr(settings, "restore_approval_hold_seconds", 3600)
-            )
+            hold_seconds = int(runtime.restore_approval_hold_seconds)
             pending_until = (
                 datetime.now(timezone.utc) + timedelta(seconds=hold_seconds)
             ).isoformat()
@@ -2359,12 +2366,12 @@ def process_recover(job: dict[str, Any]) -> None:
     if storage_class_requires_restore(head_class) and restore_state != "available":
         tier = (
             job.get("restore_tier")
-            or getattr(settings, "restore_tier", "Bulk")
+            or _runtime_settings().restore_tier
             or "Bulk"
         )
         days = int(
             job.get("restore_days")
-            or getattr(settings, "restore_days", 3)
+            or _runtime_settings().restore_days
             or 3
         )
         estimate = estimate_restore(
@@ -2588,6 +2595,7 @@ def process_job(job: dict[str, Any]) -> bool:
     """Process one queue item and persist its terminal error state."""
     try:
         with db() as connection:
+            runtime = _runtime_settings(connection)
             current = connection.execute(
                 "SELECT status FROM jobs WHERE id=%s",
                 (job["id"],),
@@ -2605,7 +2613,7 @@ def process_job(job: dict[str, Any]) -> bool:
         if job["status"] == "restoring":
             last_check = datetime.fromisoformat(job["updated_at"])
             age = (datetime.now(timezone.utc) - last_check).total_seconds()
-            if age < settings.restore_poll_interval:
+            if age < runtime.restore_poll_interval:
                 return False
         if job["action"] == "upload" and job["status"] in {"queued", "retrying"}:
             process_upload(job)
@@ -2705,12 +2713,13 @@ def process_job(job: dict[str, Any]) -> bool:
 
 
 def process_jobs_once() -> int:
-    # Over-fetch candidates so fair interleave can still fill the concurrency
-    # budget when one Vault dominates the oldest requested_at values.
-    batch_size = max(10, settings.operation_concurrency * 10)
     now = now_iso()
     current = datetime.now(timezone.utc)
     with db() as connection:
+        runtime = _runtime_settings(connection)
+        # Over-fetch candidates so fair interleave can still fill the concurrency
+        # budget when one Vault dominates the oldest requested_at values.
+        batch_size = max(10, runtime.operation_concurrency * 10)
         queued_candidates = connection.execute(
             f"""
             SELECT j.*, v.source_root, v.s3_bucket,
@@ -2764,7 +2773,7 @@ def process_jobs_once() -> int:
             if not policy_allows_transfer_now(policy, now=current):
                 continue
             limit = effective_bandwidth_kibps(
-                global_limit=getattr(settings, "bandwidth_limit_kibps", None),
+                global_limit=runtime.bandwidth_limit_kibps,
                 vault_limit=policy.bandwidth_limit_kibps,
             )
             job["bwlimit"] = rclone_bwlimit_arg(limit)
@@ -2777,7 +2786,7 @@ def process_jobs_once() -> int:
                 policy_cache[vault_id] = get_policy(connection, vault_id)
             policy = policy_cache[vault_id]
             limit = effective_bandwidth_kibps(
-                global_limit=getattr(settings, "bandwidth_limit_kibps", None),
+                global_limit=runtime.bandwidth_limit_kibps,
                 vault_limit=policy.bandwidth_limit_kibps,
             )
             job["bwlimit"] = rclone_bwlimit_arg(limit)
@@ -2785,11 +2794,11 @@ def process_jobs_once() -> int:
 
     queued_jobs = select_fair_jobs(
         eligible_candidates,
-        limit=settings.operation_concurrency,
+        limit=runtime.operation_concurrency,
     )
     jobs = [*queued_jobs, *restoring]
     if jobs:
-        worker_count = min(settings.operation_concurrency, len(jobs))
+        worker_count = min(runtime.operation_concurrency, len(jobs))
         with ThreadPoolExecutor(
             max_workers=worker_count, thread_name_prefix="operation"
         ) as executor:
@@ -2815,12 +2824,13 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
             await asyncio.sleep(5)
             continue
         try:
+            runtime = await asyncio.to_thread(_runtime_settings)
             async for changes in awatch(
                 root,
                 watch_filter=_filesystem_watch_filter,
-                debounce=settings.filesystem_watch_debounce_ms,
+                debounce=runtime.filesystem_watch_debounce_ms,
                 force_polling=settings.filesystem_watch_force_polling,
-                poll_delay_ms=settings.filesystem_watch_poll_ms,
+                poll_delay_ms=runtime.filesystem_watch_poll_ms,
                 recursive=True,
                 ignore_permission_denied=True,
             ):
@@ -2941,17 +2951,18 @@ def _deliver_notifications_once() -> None:
 
 def _run_scheduled_metadata_backup_once() -> None:
     """Create a scheduled encrypted metadata backup when configured."""
-    if settings.metadata_backup_interval_seconds <= 0:
-        return
     try:
         with db() as connection:
+            runtime = _runtime_settings(connection)
+            if runtime.metadata_backup_interval_seconds <= 0:
+                return
             result = metadata_backup_service.run_metadata_backup(
                 connection,
                 reason="scheduled",
                 backup_dir=settings.metadata_backup_dir,
                 object_store=metadata_backup_service.default_object_store(),
-                retention=settings.metadata_backup_retention,
-                s3_prefix=settings.metadata_backup_s3_prefix,
+                retention=runtime.metadata_backup_retention,
+                s3_prefix=runtime.metadata_backup_s3_prefix,
             )
         metrics_service.inc("metadata_backups_total", result="succeeded")
         if result.get("path"):
@@ -2971,7 +2982,8 @@ def _run_scheduled_metadata_backup_once() -> None:
 
 def _verify_latest_metadata_backup_once() -> None:
     """Periodically restore-verify the newest succeeded backup run's bound artifact."""
-    if settings.metadata_backup_verify_interval_seconds <= 0:
+    runtime = _runtime_settings()
+    if runtime.metadata_backup_verify_interval_seconds <= 0:
         return
     backup_dir = Path(settings.metadata_backup_dir)
     work_dir = backup_dir / "verify-scratch"
@@ -3052,28 +3064,30 @@ async def background_loop() -> None:
     loop = asyncio.get_running_loop()
     while True:
         queued_count = 0
+        runtime = settings
         health_service.mark_worker_heartbeat()
         metrics_service.set_gauge("worker_up", 1)
         try:
+            runtime = await asyncio.to_thread(_runtime_settings)
             queued_count = await asyncio.to_thread(process_jobs_once)
             metrics_service.set_gauge("queue_depth", float(queued_count))
             current = loop.time()
-            if current - last_scan >= settings.scan_interval:
+            if current - last_scan >= runtime.scan_interval:
                 await asyncio.to_thread(scan_all_vaults)
                 last_scan = current
-            if current - last_audit >= settings.audit_interval:
+            if current - last_audit >= runtime.audit_interval:
                 await asyncio.to_thread(audit_all_vaults)
                 last_audit = current
             if (
-                settings.metadata_backup_interval_seconds > 0
-                and current - last_backup >= settings.metadata_backup_interval_seconds
+                runtime.metadata_backup_interval_seconds > 0
+                and current - last_backup >= runtime.metadata_backup_interval_seconds
             ):
                 await asyncio.to_thread(_run_scheduled_metadata_backup_once)
                 last_backup = current
             if (
-                settings.metadata_backup_verify_interval_seconds > 0
+                runtime.metadata_backup_verify_interval_seconds > 0
                 and current - last_backup_verify
-                >= settings.metadata_backup_verify_interval_seconds
+                >= runtime.metadata_backup_verify_interval_seconds
             ):
                 await asyncio.to_thread(_verify_latest_metadata_backup_once)
                 last_backup_verify = current
@@ -3095,6 +3109,6 @@ async def background_loop() -> None:
                 # Last-resort: never let error accounting crash the loop.
                 pass
             metrics_service.set_gauge("worker_up", 0)
-        batch_size = max(10, settings.operation_concurrency * 10)
-        delay = 0.1 if queued_count >= batch_size else max(2, settings.queue_poll_interval)
+        batch_size = max(10, runtime.operation_concurrency * 10)
+        delay = 0.1 if queued_count >= batch_size else max(2, runtime.queue_poll_interval)
         await asyncio.sleep(delay)

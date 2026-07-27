@@ -25,9 +25,10 @@ than reproduce this precedence.
 - `deployment_only`: owned by the operator because it establishes a trust,
   storage, credential, bootstrap, or process boundary. It is read-only in the
   administration API.
-- `runtime_managed`: may be stored as typed JSON. A subsequent API may add
-  bounded mutation; the database and resolver already reject unknown keys and
-  wrong JSON types.
+- `runtime_managed`: may be stored as typed JSON through the bounded mutation
+  interface, which rejects unknown keys, wrong JSON
+  types, out-of-range values, invalid choices, and cross-field conflicts before
+  persistence.
 - `restart_required`: visible but read-only until a lifecycle-specific change
   mechanism exists; changing the deployment environment takes effect after
   restart.
@@ -67,7 +68,32 @@ write, so an invalid value changes nothing; any application or transaction
 failure rolls back to the previous row. Removing an override deletes its row
 and therefore falls back to the environment and then the built-in default.
 Concurrent mutation and bounded-value semantics are defined by the follow-up
-runtime-management API.
+runtime-management interface.
+
+### Runtime mutation interface
+
+`GET /api/admin/settings` returns the grouped effective catalog and a global
+integer `revision`. `PATCH /api/admin/settings` accepts that revision plus an
+`overrides` object and a separate `removals` list. Keeping removals separate
+preserves `null` as a legitimate value for nullable settings.
+
+The mutation requires an administrator, CSRF protection, and recent
+Reauthentication. SQLite obtains an immediate write lock; PostgreSQL obtains a
+transaction-scoped advisory lock. The server compares the submitted revision
+after taking the lock and returns `409 stale_system_settings` when another
+mutation committed first.
+
+Validation of the complete candidate configuration finishes before any row is
+written. Setting rows and the append-only `system_settings.updated` audit event
+share one transaction. The audit detail records each key's old and new value
+and source. The count of committed settings audit events is the durable global
+revision, so rollback leaves both the effective configuration and revision
+unchanged.
+
+Runtime consumers resolve one effective snapshot at their natural lifecycle
+point: each HTTP request, Invite creation, Job batch or Job execution, watcher
+start, and background scheduler iteration. This avoids process restart while
+keeping a coherent set of values throughout one operation.
 
 Metadata snapshots contain only effective, non-secret catalog entries. Secret
 entries are structurally absent even when a caller supplies a custom snapshot.
