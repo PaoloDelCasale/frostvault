@@ -455,6 +455,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                         "redeemed_at",
                         "redeemed_issuer",
                         "redeemed_subject",
+                        "revoked_at",
+                        "revoked_by",
                     },
                 )
                 password = {

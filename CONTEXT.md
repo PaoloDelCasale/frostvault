@@ -58,7 +58,7 @@ _Avoid_: Email, Login, Account
 
 **Invite**:
 A single-use, expiring grant that binds the next external Identity to an existing
-User.
+User; it can be revoked before it is redeemed.
 _Avoid_: Registration, Signup, Token
 
 **Session**:
