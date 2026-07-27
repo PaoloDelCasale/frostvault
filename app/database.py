@@ -13,7 +13,7 @@ from .security import hash_password
 
 
 INTEGRITY_ERRORS = (UniqueViolation, sqlite3.IntegrityError)
-HEAD_SCHEMA_REVISION = "0025_oidc_configuration"
+HEAD_SCHEMA_REVISION = "0026_invite_revocation"
 
 
 class DatabaseSchemaError(RuntimeError):

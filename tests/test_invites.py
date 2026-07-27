@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -297,6 +298,107 @@ class LinkIdentityTests(InviteTestBase):
                     connection, user_id=self.admin_id, issuer=ISSUER, subject="sub-1"
                 )
         self.assertEqual(error.exception.reason, "identity_taken")
+
+
+class RevokeInviteTests(InviteTestBase):
+    def _create(self) -> tuple[str, int]:
+        with self.connect() as connection:
+            token = invites.create_invite(
+                connection,
+                target_user_id=self.target_id,
+                created_by=self.admin_id,
+            )
+            invite_id = connection.execute(
+                "SELECT id FROM invites ORDER BY id DESC LIMIT 1"
+            ).fetchone()["id"]
+        return token, invite_id
+
+    def test_revoked_invite_can_no_longer_be_resolved_or_redeemed(self) -> None:
+        token, invite_id = self._create()
+        with self.connect() as connection:
+            invites.revoke_invite(
+                connection, invite_id=invite_id, actor_user_id=self.admin_id
+            )
+
+        with self.connect() as connection:
+            with self.assertRaises(invites.InviteError) as resolving:
+                invites.resolve_invite(connection, token)
+        self.assertEqual(resolving.exception.reason, "revoked")
+
+        with self.connect() as connection:
+            with self.assertRaises(invites.InviteError) as redeeming:
+                invites.redeem_invite(
+                    connection, invite_id=invite_id, issuer=ISSUER, subject="sub-1"
+                )
+        self.assertEqual(redeeming.exception.reason, "revoked")
+        self.assertEqual(self._identities(), [])
+
+    def test_revoking_a_redeemed_invite_is_refused(self) -> None:
+        _, invite_id = self._create()
+        with self.connect() as connection:
+            invites.redeem_invite(
+                connection, invite_id=invite_id, issuer=ISSUER, subject="sub-1"
+            )
+
+        with self.connect() as connection:
+            with self.assertRaises(invites.InviteError) as error:
+                invites.revoke_invite(
+                    connection, invite_id=invite_id, actor_user_id=self.admin_id
+                )
+        self.assertEqual(error.exception.reason, "already_redeemed")
+
+    def test_revocation_and_redemption_race_leaves_exactly_one_winner(self) -> None:
+        _, invite_id = self._create()
+        start = threading.Barrier(2)
+        outcomes: list[str] = []
+        lock = threading.Lock()
+
+        def run(name: str, action) -> None:
+            start.wait(timeout=10)
+            try:
+                with self.connect() as connection:
+                    action(connection)
+                outcome = f"{name}:applied"
+            except invites.InviteError as error:
+                outcome = f"{name}:{error.reason}"
+            with lock:
+                outcomes.append(outcome)
+
+        threads = [
+            threading.Thread(
+                target=run,
+                args=(
+                    "revoke",
+                    lambda connection: invites.revoke_invite(
+                        connection, invite_id=invite_id, actor_user_id=self.admin_id
+                    ),
+                ),
+            ),
+            threading.Thread(
+                target=run,
+                args=(
+                    "redeem",
+                    lambda connection: invites.redeem_invite(
+                        connection, invite_id=invite_id, issuer=ISSUER, subject="sub-1"
+                    ),
+                ),
+            ),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+
+        applied = [outcome for outcome in outcomes if outcome.endswith(":applied")]
+        self.assertEqual(len(applied), 1, outcomes)
+        row = self._invite_row(invite_id)
+        self.assertNotEqual(
+            bool(row["revoked_at"]),
+            bool(row["redeemed_at"]),
+            "an Invite must end up either revoked or redeemed, never both",
+        )
+        if row["revoked_at"]:
+            self.assertEqual(self._identities(), [])
 
 
 if __name__ == "__main__":

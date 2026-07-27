@@ -73,6 +73,74 @@ def create_invite(
     return raw_token
 
 
+def list_pending_invites(connection: Any) -> list[dict[str, Any]]:
+    """Return Invites that can still be redeemed, newest first.
+
+    Never exposes ``token_hash`` or any raw token: the token is shown once at
+    creation and is unrecoverable afterwards (ADR-0003). Administrators only
+    see who an Invite targets, who issued it and when it expires.
+    """
+    rows = connection.execute(
+        """
+        SELECT i.id, i.target_user_id, u.username AS target_username,
+               i.created_by, i.created_at, i.expires_at
+        FROM invites i JOIN users u ON u.id=i.target_user_id
+        WHERE i.redeemed_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > %s
+        ORDER BY i.id DESC
+        """,
+        (_now().isoformat(),),
+    ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "target_user_id": row["target_user_id"],
+            "target_username": row["target_username"],
+            "created_by": row["created_by"],
+            "created_at": row["created_at"],
+            "expires_at": row["expires_at"],
+        }
+        for row in rows
+    ]
+
+
+def revoke_invite(
+    connection: Any, *, invite_id: int, actor_user_id: int
+) -> dict[str, Any]:
+    """Withdraw a pending Invite so it can never be redeemed.
+
+    The Invite row is kept and marked instead of deleted, so the trail
+    survives. The conditional UPDATE is the whole race strategy: a redemption
+    committing first leaves no matching row here, and a revocation committing
+    first makes the redeemer's own conditional UPDATE match nothing.
+    """
+    revoked = connection.execute(
+        """
+        UPDATE invites SET revoked_at=%s, revoked_by=%s
+        WHERE id=%s AND redeemed_at IS NULL AND revoked_at IS NULL
+        RETURNING id, target_user_id, created_by, created_at, expires_at,
+                  revoked_at
+        """,
+        (_now().isoformat(), actor_user_id, invite_id),
+    ).fetchone()
+    if revoked:
+        return {
+            "id": revoked["id"],
+            "target_user_id": revoked["target_user_id"],
+            "created_by": revoked["created_by"],
+            "created_at": revoked["created_at"],
+            "expires_at": revoked["expires_at"],
+            "revoked_at": revoked["revoked_at"],
+        }
+    invite = connection.execute(
+        "SELECT redeemed_at, revoked_at FROM invites WHERE id=%s", (invite_id,)
+    ).fetchone()
+    if not invite:
+        raise InviteError("unknown")
+    if invite["redeemed_at"]:
+        raise InviteError("already_redeemed")
+    raise InviteError("already_revoked")
+
+
 def _bind_identity(connection: Any, *, user_id: int, issuer: str, subject: str) -> None:
     try:
         connection.execute(
@@ -96,6 +164,8 @@ def redeem_invite(
         raise InviteError("unknown")
     if invite["redeemed_at"]:
         raise InviteError("already_redeemed")
+    if invite["revoked_at"]:
+        raise InviteError("revoked")
     if _now() >= _parse(invite["expires_at"]):
         raise InviteError("expired")
     _bind_identity(
@@ -105,14 +175,15 @@ def redeem_invite(
         """
         UPDATE invites
         SET redeemed_at=%s, redeemed_issuer=%s, redeemed_subject=%s
-        WHERE id=%s AND redeemed_at IS NULL
+        WHERE id=%s AND redeemed_at IS NULL AND revoked_at IS NULL
         """,
         (_now().isoformat(), issuer, subject, invite_id),
     )
     # Concurrent redeemers: second UPDATE matches 0 rows (ADR-0003 single-use).
+    # A concurrent revocation removes the match the same way.
     rowcount = getattr(updated, "rowcount", None)
     if rowcount == 0:
-        raise InviteError("already_redeemed")
+        raise InviteError(_lost_redemption_reason(connection, invite_id))
     if rowcount is None:
         # Drivers that omit rowcount: re-read and confirm our redeem stuck.
         row = connection.execute(
@@ -124,8 +195,18 @@ def redeem_invite(
             or row["redeemed_issuer"] != issuer
             or row["redeemed_subject"] != subject
         ):
-            raise InviteError("already_redeemed")
+            raise InviteError(_lost_redemption_reason(connection, invite_id))
     return int(invite["target_user_id"])
+
+
+def _lost_redemption_reason(connection: Any, invite_id: int) -> str:
+    """Explain why a conditional redeem UPDATE matched nothing."""
+    row = connection.execute(
+        "SELECT revoked_at FROM invites WHERE id=%s", (invite_id,)
+    ).fetchone()
+    if row and row["revoked_at"]:
+        return "revoked"
+    return "already_redeemed"
 
 
 def resolve_invite(connection: Any, raw_token: str) -> dict[str, Any]:
@@ -136,6 +217,8 @@ def resolve_invite(connection: Any, raw_token: str) -> dict[str, Any]:
         raise InviteError("unknown")
     if invite["redeemed_at"]:
         raise InviteError("already_redeemed")
+    if invite["revoked_at"]:
+        raise InviteError("revoked")
     if _now() >= _parse(invite["expires_at"]):
         raise InviteError("expired")
     return invite

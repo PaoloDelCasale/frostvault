@@ -4,7 +4,9 @@ import os
 import subprocess
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import sqlalchemy as sa
 import psycopg
@@ -12,6 +14,14 @@ from psycopg.rows import dict_row
 
 from app.catalog import ArchiveCatalog
 from app.config import settings
+from app.invites import (
+    InviteError,
+    create_invite,
+    list_pending_invites,
+    resolve_invite,
+    revoke_invite,
+)
+from app.services import user_administration
 from app.system_settings import resolve_system_settings, set_system_setting
 
 
@@ -109,6 +119,10 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 "updated_at",
             },
         )
+        invite_columns = {
+            column["name"] for column in sa.inspect(self.engine).get_columns("invites")
+        }
+        self.assertLessEqual({"revoked_at", "revoked_by"}, invite_columns)
         connect_url = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
         with psycopg.connect(connect_url, row_factory=dict_row) as connection:
             admin_id = connection.execute(
@@ -411,3 +425,55 @@ class PostgreSQLMigrationTests(unittest.TestCase):
 
         self.assertEqual(len(first), 1)
         self.assertEqual(duplicate, [])
+
+    def test_invite_revocation_and_last_administrator_hold_on_postgresql(self) -> None:
+        upgraded = run_alembic()
+        self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+
+        connect_url = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
+        with psycopg.connect(connect_url, row_factory=dict_row) as connection:
+            admin_id = connection.execute(
+                """
+                INSERT INTO users(username, display_name, password_hash, is_admin)
+                VALUES ('only-admin', 'Only Admin', 'hash', TRUE)
+                RETURNING id
+                """
+            ).fetchone()["id"]
+            member_id = connection.execute(
+                """
+                INSERT INTO users(username, display_name, password_hash, is_admin)
+                VALUES ('member', 'Member', 'hash', FALSE)
+                RETURNING id
+                """
+            ).fetchone()["id"]
+
+            raw_token = create_invite(
+                connection, target_user_id=member_id, created_by=admin_id
+            )
+            invite_id = list_pending_invites(connection)[0]["id"]
+            revoke_invite(connection, invite_id=invite_id, actor_user_id=admin_id)
+
+            self.assertEqual(list_pending_invites(connection), [])
+            with self.assertRaises(InviteError) as revoked:
+                resolve_invite(connection, raw_token=raw_token)
+            self.assertEqual(revoked.exception.reason, "revoked")
+
+            postgresql_settings = replace(settings, db_backend="postgresql")
+            with patch(
+                "app.services.user_administration.settings", postgresql_settings
+            ):
+                with self.assertRaises(
+                    user_administration.AdministrationError
+                ) as demoted:
+                    user_administration.update_user(
+                        connection,
+                        user_id=admin_id,
+                        actor_user_id=member_id,
+                        is_admin=False,
+                    )
+            self.assertEqual(demoted.exception.reason, "last_admin")
+
+            still_admin = connection.execute(
+                "SELECT is_admin FROM users WHERE id=%s", (admin_id,)
+            ).fetchone()
+            self.assertTrue(still_admin["is_admin"])

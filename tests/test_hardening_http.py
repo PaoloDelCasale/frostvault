@@ -296,40 +296,41 @@ class AdminUserLastAdminGuardTests(unittest.TestCase):
     def test_bug_020_last_admin_guard_is_atomic_with_update(self) -> None:
         """[BUG-020][Req: REQ-032] last-admin invariant must not be check-then-act.
 
-        Seam: update_user (PATCH /api/admin/users/{id}) handler source contract —
-        the same public admin-update boundary exercised by BUG-014 and by the
-        audited Quality Playbook regression. Asserts the last-admin guard is
-        encoded atomically with the mutating UPDATE (conditional COUNT /
-        FOR UPDATE in the same locked transaction), not as a separate
-        check-then-act across two ``with db()`` blocks.
-        Desired: deactivating an admin uses a single transaction and/or a
-        conditional UPDATE that refuses to leave zero active admins.
+        Seam: ``app.services.user_administration.update_user``, the single
+        place PATCH /api/admin/users/{id} now delegates to (the same public
+        admin-update boundary exercised by BUG-014 and by the audited Quality
+        Playbook regression). Asserts the last-admin guard is encoded
+        atomically with the mutating UPDATE (conditional predicate plus the
+        lock taken in the same transaction), not as a separate check-then-act
+        across two ``with db()`` blocks.
+        Desired: deactivating or demoting an administrator uses a single
+        transaction and a conditional UPDATE that refuses to leave zero active
+        admins.
         Previously: COUNT in one ``with db()`` then UPDATE in another with no
         last-admin predicate on UPDATE.
         """
-        main_py = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(
-            encoding="utf-8"
-        )
-        start = main_py.index("def update_user")
-        end = main_py.index("\ndef admin_vaults", start)
-        body = main_py[start:end]
+        service = (
+            Path(__file__).resolve().parents[1]
+            / "app"
+            / "services"
+            / "user_administration.py"
+        ).read_text(encoding="utf-8")
+        start = service.index("def update_user")
+        body = service[start:]
 
-        self.assertIn("At least one administrator must remain active", body)
-        # The UPDATE that sets active must itself encode the last-admin guard
-        # (subquery / HAVING / FOR UPDATE in the same with-block as the mutate).
+        self.assertIn("last_admin", body)
+        # The UPDATE that deactivates or demotes must itself encode the guard
+        # (subquery / EXISTS) while holding the lock taken in the same
+        # transaction.
         update_idx = body.find("UPDATE users SET")
         self.assertGreaterEqual(update_idx, 0)
-        update_sql = body[update_idx : update_idx + 400]
+        guard = body[: update_idx + 400]
+        self.assertIn("_lock_active_administrators", guard)
         self.assertTrue(
-            ("COUNT(" in update_sql)
-            or (
-                "active_admins"
-                in body[body.rfind("with db()", 0, update_idx) : update_idx + 50]
-                and "FOR UPDATE" in body
-            )
-            or ("SELECT COUNT" in update_sql),
-            "UPDATE must be conditional on last-admin count or share a locked txn",
+            "EXISTS (" in guard or "COUNT(" in guard,
+            "UPDATE must be conditional on the surviving-administrator predicate",
         )
+        self.assertIn("FOR UPDATE", service)
 
 
 if __name__ == "__main__":
