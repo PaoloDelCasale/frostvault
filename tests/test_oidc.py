@@ -9,7 +9,7 @@ from typing import Any
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
-from app import oidc
+from app import oidc, oidc_configuration
 from app.config import Settings
 from app.database import SQLiteConnection
 from tests.oidc_fake import FakeOidcProvider, at_hash_for
@@ -17,6 +17,48 @@ from tests.test_database import run_alembic
 
 
 REDIRECT_URI = "https://app.example/auth/oidc/callback"
+PUBLIC_OIDC_HOST = lambda _: ["93.184.216.34"]
+
+
+class PinnedNetworkBackendTests(unittest.TestCase):
+    def test_connects_to_the_validated_address_not_the_hostname(self) -> None:
+        connected_hosts: list[str] = []
+
+        class RecordingBackend:
+            def connect_tcp(self, host: str, *args, **kwargs):
+                connected_hosts.append(host)
+                return object()
+
+            def connect_unix_socket(self, *args, **kwargs):
+                raise AssertionError("unexpected Unix socket")
+
+            def sleep(self, seconds: float) -> None:
+                pass
+
+        backend = oidc_configuration._PinnedNetworkBackend(
+            host_addresses=lambda _: ["93.184.216.34"],
+            backend=RecordingBackend(),
+        )
+
+        backend.connect_tcp("identity.example", 443)
+
+        self.assertEqual(connected_hosts, ["93.184.216.34"])
+
+    def test_rejects_an_unsafe_address_before_connecting(self) -> None:
+        class UnexpectedBackend:
+            def connect_tcp(self, *args, **kwargs):
+                raise AssertionError("unsafe address was connected")
+
+        backend = oidc_configuration._PinnedNetworkBackend(
+            host_addresses=lambda _: ["127.0.0.1"],
+            backend=UnexpectedBackend(),
+        )
+
+        with self.assertRaisesRegex(
+            oidc_configuration.OidcValidationError,
+            "ssrf_blocked",
+        ):
+            backend.connect_tcp("identity.example", 443)
 
 
 class OidcTestBase(unittest.TestCase):
@@ -55,6 +97,7 @@ class BeginLoginTests(OidcTestBase):
                 redirect_uri=REDIRECT_URI,
                 return_to="/dashboard",
                 http_client=self.provider.client(),
+                host_addresses=PUBLIC_OIDC_HOST,
             )
 
         parsed = urlparse(url)
@@ -88,6 +131,7 @@ class BeginLoginTests(OidcTestBase):
                 connection,
                 redirect_uri=REDIRECT_URI,
                 http_client=self.provider.client(),
+                host_addresses=PUBLIC_OIDC_HOST,
             )
         query = parse_qs(urlparse(url).query)
         self.assertNotIn("prompt", query)
@@ -99,6 +143,7 @@ class BeginLoginTests(OidcTestBase):
                 redirect_uri=REDIRECT_URI,
                 prompt="login",
                 http_client=self.provider.client(),
+                host_addresses=PUBLIC_OIDC_HOST,
             )
         query = parse_qs(urlparse(url).query)
         self.assertEqual(query["prompt"], ["login"])
@@ -111,6 +156,7 @@ class CompleteLoginTests(OidcTestBase):
                 connection,
                 redirect_uri=REDIRECT_URI,
                 http_client=self.provider.client(),
+                host_addresses=PUBLIC_OIDC_HOST,
                 **kwargs,
             )
             return connection.execute(
@@ -129,6 +175,7 @@ class CompleteLoginTests(OidcTestBase):
                 code=code,
                 redirect_uri=REDIRECT_URI,
                 http_client=self.provider.client(id_token=id_token),
+                host_addresses=PUBLIC_OIDC_HOST,
             )
 
     def test_happy_path_returns_validated_claims_and_consumes_state(self) -> None:

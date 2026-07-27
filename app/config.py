@@ -122,6 +122,10 @@ class Settings:
     oidc_issuer: str = os.getenv("OIDC_ISSUER", "")
     oidc_client_id: str = os.getenv("OIDC_CLIENT_ID", "")
     oidc_client_secret: str = os.getenv("OIDC_CLIENT_SECRET", "")
+    oidc_settings_encryption_key: str = os.getenv(
+        "OIDC_SETTINGS_ENCRYPTION_KEY",
+        "",
+    )
     oidc_scopes: str = os.getenv("OIDC_SCOPES", "openid email profile")
     oidc_login_ttl_seconds: int = max(
         60, int(os.getenv("OIDC_LOGIN_TTL_SECONDS", "600"))

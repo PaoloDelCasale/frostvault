@@ -7,7 +7,7 @@ import uuid
 import warnings
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.parse import urlencode
 
 import httpx
@@ -21,6 +21,15 @@ warnings.filterwarnings(
 from authlib.jose import JsonWebKey, jwt
 
 from .config import settings
+from .oidc_configuration import (
+    ActiveOidcConfiguration,
+    OidcConfigurationError,
+    OidcValidationError,
+    active_oidc_configuration,
+    ensure_safe_oidc_url,
+    oidc_http_client,
+    oidc_host_addresses,
+)
 
 
 STATE_BYTES = 32
@@ -74,16 +83,35 @@ def _s256_challenge(verifier: str) -> str:
 
 
 @contextmanager
-def _http(client: httpx.Client | None) -> Iterator[httpx.Client]:
+def _http(
+    client: httpx.Client | None,
+    *,
+    host_addresses: Callable[[str], list[str]],
+) -> Iterator[httpx.Client]:
     if client is not None:
         yield client
     else:
-        with httpx.Client(timeout=10) as owned:
+        with oidc_http_client(
+            timeout=10,
+            follow_redirects=False,
+            host_addresses=host_addresses,
+        ) as owned:
             yield owned
 
 
-def _discover(client: httpx.Client) -> dict[str, Any]:
-    url = settings.oidc_issuer.rstrip("/") + "/.well-known/openid-configuration"
+def _discover(
+    client: httpx.Client,
+    configuration: ActiveOidcConfiguration,
+    host_addresses: Callable[[str], list[str]],
+) -> dict[str, Any]:
+    url = (
+        configuration.issuer.rstrip("/")
+        + "/.well-known/openid-configuration"
+    )
+    try:
+        ensure_safe_oidc_url(url, host_addresses=host_addresses)
+    except OidcValidationError as error:
+        raise OidcError(str(error)) from error
     response = client.get(url)
     if response.status_code != 200:
         raise OidcError("discovery_failed")
@@ -98,9 +126,19 @@ def begin_login(
     invite_id: int | None = None,
     prompt: str | None = None,
     http_client: httpx.Client | None = None,
+    host_addresses: Callable[[str], list[str]] = oidc_host_addresses,
 ) -> str:
-    with _http(http_client) as client:
-        metadata = _discover(client)
+    try:
+        configuration = active_oidc_configuration(
+            connection,
+            settings_obj=settings,
+        )
+    except OidcConfigurationError as error:
+        raise OidcError("configuration_unavailable") from error
+    if not configuration.enabled:
+        raise OidcError("disabled")
+    with _http(http_client, host_addresses=host_addresses) as client:
+        metadata = _discover(client, configuration, host_addresses)
     state = secrets.token_urlsafe(STATE_BYTES)
     nonce = secrets.token_urlsafe(NONCE_BYTES)
     code_verifier = secrets.token_urlsafe(VERIFIER_BYTES)
@@ -120,15 +158,20 @@ def begin_login(
             return_to,
             invite_id,
             now.isoformat(),
-            (now + timedelta(seconds=settings.oidc_login_ttl_seconds)).isoformat(),
+            (
+                now
+                + timedelta(
+                    seconds=configuration.login_transaction_ttl_seconds
+                )
+            ).isoformat(),
         ),
     )
     query = urlencode(
         {
             "response_type": "code",
-            "client_id": settings.oidc_client_id,
+            "client_id": configuration.client_id,
             "redirect_uri": redirect_uri,
-            "scope": settings.oidc_scopes,
+            "scope": configuration.scopes,
             "state": state,
             "nonce": nonce,
             "code_challenge": _s256_challenge(code_verifier),
@@ -146,15 +189,24 @@ def _exchange_code(
     code_verifier: str,
     redirect_uri: str,
     client: httpx.Client,
+    configuration: ActiveOidcConfiguration,
+    host_addresses: Callable[[str], list[str]],
 ) -> dict[str, Any]:
+    try:
+        ensure_safe_oidc_url(
+            metadata["token_endpoint"],
+            host_addresses=host_addresses,
+        )
+    except (KeyError, OidcValidationError) as error:
+        raise OidcError("unsafe_token_endpoint") from error
     response = client.post(
         metadata["token_endpoint"],
         data={
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": redirect_uri,
-            "client_id": settings.oidc_client_id,
-            "client_secret": settings.oidc_client_secret,
+            "client_id": configuration.client_id,
+            "client_secret": configuration.client_secret,
             "code_verifier": code_verifier,
         },
     )
@@ -170,7 +222,16 @@ def _validate_id_token(
     nonce: str,
     access_token: str | None,
     client: httpx.Client,
+    configuration: ActiveOidcConfiguration,
+    host_addresses: Callable[[str], list[str]],
 ) -> dict[str, Any]:
+    try:
+        ensure_safe_oidc_url(
+            metadata["jwks_uri"],
+            host_addresses=host_addresses,
+        )
+    except (KeyError, OidcValidationError) as error:
+        raise OidcError("unsafe_jwks_uri") from error
     jwks_response = client.get(metadata["jwks_uri"])
     if jwks_response.status_code != 200:
         raise OidcError("jwks_failed")
@@ -181,11 +242,11 @@ def _validate_id_token(
             claims = jwt.decode(id_token, key_set)
         except Exception as error:  # noqa: BLE001 - normalize to a login error
             raise OidcError("bad_signature") from error
-    if claims.get("iss") != settings.oidc_issuer:
+    if claims.get("iss") != configuration.issuer:
         raise OidcError("bad_issuer")
     audience = claims.get("aud")
     allowed = audience if isinstance(audience, list) else [audience]
-    if settings.oidc_client_id not in allowed:
+    if configuration.client_id not in allowed:
         raise OidcError("bad_audience")
     expires = claims.get("exp")
     if expires is None or _now().timestamp() >= float(expires):
@@ -210,7 +271,17 @@ def complete_login(
     code: str,
     redirect_uri: str,
     http_client: httpx.Client | None = None,
+    host_addresses: Callable[[str], list[str]] = oidc_host_addresses,
 ) -> OidcClaims:
+    try:
+        configuration = active_oidc_configuration(
+            connection,
+            settings_obj=settings,
+        )
+    except OidcConfigurationError as error:
+        raise OidcError("configuration_unavailable") from error
+    if not configuration.enabled:
+        raise OidcError("disabled")
     row = connection.execute(
         "SELECT * FROM oidc_login WHERE state=%s",
         (state,),
@@ -221,14 +292,16 @@ def complete_login(
     connection.execute("DELETE FROM oidc_login WHERE id=%s", (row["id"],))
     if _now() >= _parse(row["expires_at"]):
         raise OidcError("expired")
-    with _http(http_client) as client:
-        metadata = _discover(client)
+    with _http(http_client, host_addresses=host_addresses) as client:
+        metadata = _discover(client, configuration, host_addresses)
         tokens = _exchange_code(
             metadata,
             code=code,
             code_verifier=row["code_verifier"],
             redirect_uri=redirect_uri,
             client=client,
+            configuration=configuration,
+            host_addresses=host_addresses,
         )
         id_token = tokens.get("id_token")
         if not id_token:
@@ -239,6 +312,8 @@ def complete_login(
             nonce=row["nonce"],
             access_token=tokens.get("access_token"),
             client=client,
+            configuration=configuration,
+            host_addresses=host_addresses,
         )
     return OidcClaims(
         issuer=claims["iss"],

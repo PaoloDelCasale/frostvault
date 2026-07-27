@@ -143,6 +143,14 @@ def _dump_sqlite_bytes(db_path: str | Path) -> bytes:
             dest = sqlite3.connect(str(temp_path))
             try:
                 source.backup(dest)
+                oidc_table = dest.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='oidc_configuration'"
+                ).fetchone()
+                if oidc_table:
+                    dest.execute("DELETE FROM oidc_configuration")
+                    dest.commit()
+                    dest.execute("VACUUM")
             finally:
                 dest.close()
             return temp_path.read_bytes()
@@ -159,6 +167,7 @@ def _dump_postgres_bytes() -> bytes:
         "--format=custom",
         "--no-owner",
         "--no-acl",
+        "--exclude-table-data=public.oidc_configuration",
     ]
     try:
         completed = subprocess.run(

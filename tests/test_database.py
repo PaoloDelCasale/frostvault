@@ -83,6 +83,12 @@ class DatabaseMigrationTests(unittest.TestCase):
                         "PRAGMA table_info(system_settings)"
                     ).fetchall()
                 }
+                oidc_configuration_columns = {
+                    row["name"]
+                    for row in connection.execute(
+                        "PRAGMA table_info(oidc_configuration)"
+                    ).fetchall()
+                }
             self.assertEqual(
                 columns,
                 {
@@ -98,6 +104,31 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertEqual(
                 system_setting_columns,
                 {"key", "value", "updated_by", "updated_at"},
+            )
+            self.assertEqual(
+                oidc_configuration_columns,
+                {
+                    "id",
+                    "active_enabled",
+                    "active_version",
+                    "active_issuer",
+                    "active_client_id",
+                    "active_secret_ciphertext",
+                    "active_scopes",
+                    "active_login_ttl_seconds",
+                    "draft_version",
+                    "draft_issuer",
+                    "draft_client_id",
+                    "draft_secret_ciphertext",
+                    "draft_scopes",
+                    "draft_login_ttl_seconds",
+                    "validated_draft_version",
+                    "validation_status",
+                    "validation_error",
+                    "validated_at",
+                    "updated_by",
+                    "updated_at",
+                },
             )
 
     def test_current_catalog_migrates_without_losing_file_state(self) -> None:

@@ -71,6 +71,13 @@ class InviteHttpTests(unittest.TestCase):
 
         self.client = TestClient(app=main.app, client=("127.0.0.1", 50000), follow_redirects=False)
         self.cookie_name = self.test_settings.session_cookie_name
+        resolver = patch.object(
+            main,
+            "_oidc_host_addresses",
+            lambda _: ["93.184.216.34"],
+        )
+        resolver.start()
+        self.addCleanup(resolver.stop)
 
     def _use_oidc_client(self, *, id_token: str | None = None) -> None:
         patcher = patch.object(

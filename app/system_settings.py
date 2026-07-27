@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from .config import Settings, is_placeholder, settings
+from .oidc_configuration import managed_oidc_setting_values
 from .services.audit_events import record_audit_event
 
 
@@ -98,6 +99,7 @@ def _setting(
 _D = "deployment_only"
 _M = "runtime_managed"
 _R = "restart_required"
+_O = "oidc_lifecycle"
 
 SETTING_DEFINITIONS = (
     _setting("db_backend", "DB_BACKEND", "operations", str, "postgresql", _D, restart=True),
@@ -165,12 +167,22 @@ SETTING_DEFINITIONS = (
     _setting("restore_high_impact_gib", "RESTORE_HIGH_IMPACT_GIB", "restore", float, 100.0, _M, minimum=0, maximum=1000000000),
     _setting("restore_high_impact_eur", "RESTORE_HIGH_IMPACT_EUR", "restore", float, 10.0, _M, minimum=0, maximum=1000000000),
     _setting("restore_approval_hold_seconds", "RESTORE_APPROVAL_HOLD_SECONDS", "restore", int, 3600, _M, minimum=60, maximum=604800),
-    _setting("oidc_enabled", "OIDC_ENABLED", "oidc", bool, False, _R, restart=True),
-    _setting("oidc_issuer", "OIDC_ISSUER", "oidc", str, "", _R, restart=True),
-    _setting("oidc_client_id", "OIDC_CLIENT_ID", "oidc", str, "", _R, restart=True),
-    _setting("oidc_client_secret", "OIDC_CLIENT_SECRET", "oidc", str, "", _D, restart=True, secret=True),
-    _setting("oidc_scopes", "OIDC_SCOPES", "oidc", str, "openid email profile", _R, restart=True),
-    _setting("oidc_login_ttl_seconds", "OIDC_LOGIN_TTL_SECONDS", "oidc", int, 600, _R, restart=True),
+    _setting("oidc_enabled", "OIDC_ENABLED", "oidc", bool, False, _O),
+    _setting("oidc_issuer", "OIDC_ISSUER", "oidc", str, "", _O),
+    _setting("oidc_client_id", "OIDC_CLIENT_ID", "oidc", str, "", _O),
+    _setting("oidc_client_secret", "OIDC_CLIENT_SECRET", "oidc", str, "", _O, secret=True),
+    _setting(
+        "oidc_settings_encryption_key",
+        "OIDC_SETTINGS_ENCRYPTION_KEY",
+        "oidc",
+        str,
+        "",
+        _D,
+        restart=True,
+        secret=True,
+    ),
+    _setting("oidc_scopes", "OIDC_SCOPES", "oidc", str, "openid email profile", _O),
+    _setting("oidc_login_ttl_seconds", "OIDC_LOGIN_TTL_SECONDS", "oidc", int, 600, _O),
     _setting("invite_ttl_seconds", "INVITE_TTL_SECONDS", "security", int, 604800, _M, minimum=300, maximum=2592000),
     _setting("bootstrap_admin_username", "BOOTSTRAP_ADMIN_USERNAME", "security", str, "", _D, restart=True),
     _setting("bootstrap_admin_password", "BOOTSTRAP_ADMIN_PASSWORD", "security", str, "", _D, restart=True, secret=True),
@@ -413,6 +425,7 @@ def system_settings_response(
         "restore": [],
         "vault_defaults": [],
     }
+    managed_oidc = managed_oidc_setting_values(connection)
     for resolved in resolve_system_settings(
         connection,
         settings_obj=settings_obj,
@@ -436,7 +449,13 @@ def system_settings_response(
             item["maximum_length"] = definition.maximum_length
         if definition.choices:
             item["choices"] = list(definition.choices)
-        if definition.secret:
+        if definition.key in managed_oidc:
+            item["source"] = "database_override"
+            if definition.secret:
+                item["configured"] = bool(managed_oidc[definition.key])
+            else:
+                item["effective_value"] = managed_oidc[definition.key]
+        elif definition.secret:
             value = str(resolved.value or "").strip()
             item["configured"] = bool(value) and not is_placeholder(value)
         else:
