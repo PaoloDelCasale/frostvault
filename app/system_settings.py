@@ -82,6 +82,7 @@ SETTING_DEFINITIONS = (
     _setting("sqlite_path", "SQLITE_PATH", "operations", str, "/data/frostvault.db", _D, restart=True),
     _setting("database_host", "PGHOST", "operations", str, "localhost", _D, restart=True, attribute=None),
     _setting("database_port", "PGPORT", "operations", int, 5432, _D, restart=True, attribute=None),
+    # migrations/env.py defaults PGUSER to postgres, then PGDATABASE to that user.
     _setting(
         "database_name",
         "PGDATABASE",

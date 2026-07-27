@@ -73,7 +73,7 @@ def upgrade() -> None:
         integer_type = "number"
         string_type = "string"
         bool_types = "'boolean'"
-        # PostgreSQL JSON has one number type; modulo distinguishes integers.
+        # PostgreSQL JSON has one number type; modulo 1 detects fractional parts.
         integer_check = (
             f"{json_type} = 'number' AND "
             "((value #>> '{}')::numeric % 1) = 0"
