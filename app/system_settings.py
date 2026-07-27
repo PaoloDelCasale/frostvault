@@ -172,6 +172,7 @@ SETTINGS_BY_KEY = {item.key: item for item in SETTING_DEFINITIONS}
 def _valid_value(definition: SettingDefinition, value: Any) -> bool:
     if value is None:
         return definition.nullable
+    # Exact checks keep booleans from being accepted as integers.
     if definition.value_type is bool:
         return type(value) is bool
     if definition.value_type is int:
@@ -317,6 +318,7 @@ def set_system_setting(
     if not _valid_value(definition, value):
         raise InvalidSystemSetting(f"Invalid value type for system setting: {key}")
     if definition.value_type is float and value is not None:
+        # Canonicalize JSON numbers for stable snapshots across database backends.
         value = float(value)
     connection.execute(
         """

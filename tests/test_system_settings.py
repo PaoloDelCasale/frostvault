@@ -37,7 +37,7 @@ class SystemSettingsResolverTests(unittest.TestCase):
                 """
             ).fetchone()["id"]
 
-    def test_database_override_precedes_environment_and_builtin_defaults(self) -> None:
+    def test_precedence_database_over_environment_and_builtin(self) -> None:
         configured = replace(settings, scan_interval=7200, restore_days=5)
         with SQLiteConnection(str(self.database_path)) as connection:
             set_system_setting(
@@ -67,21 +67,24 @@ class SystemSettingsResolverTests(unittest.TestCase):
         self.assertEqual(resolved["restore_days"].value, 5)
         self.assertEqual(resolved["restore_days"].source, "environment_default")
 
-    def test_unknown_deployment_only_and_incorrectly_typed_values_are_rejected(self) -> None:
+    def _assert_setting_rejected(self, key: str, value: object) -> None:
         with SQLiteConnection(str(self.database_path)) as connection:
-            for key, value in (
-                ("future_environment_key", "unsafe"),
-                ("archive_master_key", "unsafe"),
-                ("scan_interval", "1800"),
-            ):
-                with self.subTest(key=key), self.assertRaises(InvalidSystemSetting):
-                    set_system_setting(
-                        connection,
-                        key=key,
-                        value=value,
-                        updated_by=self.admin_id,
-                    )
+            with self.assertRaises(InvalidSystemSetting):
+                set_system_setting(
+                    connection,
+                    key=key,
+                    value=value,
+                    updated_by=self.admin_id,
+                )
 
+    def test_unknown_keys_are_rejected(self) -> None:
+        self._assert_setting_rejected("future_environment_key", "unsafe")
+
+    def test_deployment_only_keys_are_rejected(self) -> None:
+        self._assert_setting_rejected("archive_master_key", "unsafe")
+
+    def test_incorrectly_typed_values_are_rejected(self) -> None:
+        self._assert_setting_rejected("scan_interval", "1800")
         with SQLiteConnection(str(self.database_path)) as connection:
             with self.assertRaises(sqlite3.IntegrityError):
                 connection.execute(

@@ -230,7 +230,8 @@ def create_metadata_backup(
     config = {
         key: value
         for key, value in config.items()
-        if key in SETTINGS_BY_KEY and not SETTINGS_BY_KEY[key].secret
+        if (definition := SETTINGS_BY_KEY.get(key)) is not None
+        and not definition.secret
     }
 
     if backend == "sqlite":
