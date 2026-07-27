@@ -27,6 +27,11 @@ Search remains global across every file in the selected vault.
   folder.
 - Authenticated users can create their own vaults; administrators retain global
   access with reauthentication for sensitive actions.
+- Administrators can promote or demote other users, review the external
+  identities linked to a user and unlink one of them, and revoke a pending
+  invite before it is redeemed. The application refuses any change that would
+  leave no active administrator, or leave a user with neither a password nor a
+  linked identity.
 - Every vault must retain exactly one primary owner.
 
 Administrators do not automatically enter other users' vaults. They must be

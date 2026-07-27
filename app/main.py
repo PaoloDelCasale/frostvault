@@ -55,8 +55,10 @@ from .proxy import parse_networks, resolve_client_ip
 from .invites import (
     InviteError,
     create_invite,
+    list_pending_invites,
     redeem_invite,
     resolve_invite,
+    revoke_invite,
 )
 from .lookup_rate_limit import check_lookup_rate_limit
 from .security import hash_password, verify_password
@@ -89,6 +91,7 @@ from .services import health as health_service
 from .services import metadata_backups as metadata_backup_service
 from .services import metrics as metrics_service
 from .services import notifications as notification_service
+from .services import user_administration as user_admin_service
 from .services import worker_errors as worker_error_store
 from .system_settings import (
     InvalidSystemSetting,
@@ -477,6 +480,47 @@ def _governance_http_error(exc: GovernanceError) -> HTTPException:
     return HTTPException(status_code, message)
 
 
+_ADMINISTRATION_ERROR_STATUS: dict[str, tuple[int, str]] = {
+    "self_deactivation": (400, "You cannot deactivate your own account"),
+    "self_demotion": (400, "You cannot remove your own administrator role"),
+    "last_admin": (400, "At least one administrator must remain active"),
+    "no_changes": (400, "No changes requested"),
+    "not_found": (404, "User not found"),
+    "identity_not_found": (404, "Linked identity not found"),
+    "confirmation_required": (
+        400,
+        "Confirm the unlink explicitly before removing a linked identity",
+    ),
+    "would_lock_out": (
+        409,
+        "Removing this identity would leave the user without any way to sign in",
+    ),
+}
+
+
+def _administration_http_error(
+    exc: user_admin_service.AdministrationError,
+) -> HTTPException:
+    status_code, message = _ADMINISTRATION_ERROR_STATUS.get(
+        exc.reason, (400, "Request could not be completed")
+    )
+    return HTTPException(status_code, message)
+
+
+_INVITE_REVOCATION_ERROR_STATUS: dict[str, tuple[int, str]] = {
+    "unknown": (404, "Invite not found"),
+    "already_redeemed": (409, "Invite has already been redeemed"),
+    "already_revoked": (409, "Invite has already been revoked"),
+}
+
+
+def _invite_revocation_http_error(exc: InviteError) -> HTTPException:
+    status_code, message = _INVITE_REVOCATION_ERROR_STATUS.get(
+        exc.reason, (400, "Invite could not be revoked")
+    )
+    return HTTPException(status_code, message)
+
+
 def current_vault(
     request: Request, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
@@ -714,6 +758,7 @@ class InviteCreate(BaseModel):
 
 class UserUpdate(BaseModel):
     active: bool | None = None
+    is_admin: bool | None = None
     display_name: str | None = Field(default=None, min_length=1, max_length=120)
     password: str | None = Field(default=None, min_length=12, max_length=200)
 
@@ -3208,41 +3253,41 @@ def accelerate_cloud_purge(
 
 @app.get("/api/admin/users")
 def admin_users(_: dict[str, Any] = Depends(admin_user)):
+    """List every User with vault membership and authentication capabilities."""
     with db() as connection:
-        rows = connection.execute(
-            """
-            SELECT u.id, u.username, u.display_name, u.is_admin, u.active, u.created_at,
-                   COUNT(vm.vault_id) AS vault_count
-            FROM users u LEFT JOIN vault_members vm ON vm.user_id=u.id
-            GROUP BY u.id ORDER BY lower(u.username)
-            """
-        ).fetchall()
-    return {"items": rows}
+        return {"items": user_admin_service.list_users(connection)}
 
 
 @app.post("/api/admin/users", status_code=201)
 def create_user(
     action: UserCreate,
-    _: dict[str, Any] = Depends(admin_user),
+    admin: dict[str, Any] = Depends(admin_user),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
     username = action.username.strip().lower()
     if not re.fullmatch(r"[a-z0-9._-]+", username):
         raise HTTPException(422, "The username can contain letters, numbers, periods, hyphens, and underscores")
-    password_hash = hash_password(action.password) if action.password else None
     try:
         with db() as connection:
-            row = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id, username, display_name, is_admin, active
-                """,
-                (username, action.display_name.strip(), password_hash, action.is_admin),
-            ).fetchone()
+            return user_admin_service.create_user(
+                connection,
+                username=username,
+                display_name=action.display_name.strip(),
+                password_hash=(
+                    None if action.password is None else hash_password(action.password)
+                ),
+                is_admin=action.is_admin,
+                actor_user_id=admin["id"],
+            )
     except INTEGRITY_ERRORS:
         raise HTTPException(409, "Username is already in use")
-    return row
+
+
+@app.get("/api/admin/invites")
+def admin_invites(_: dict[str, Any] = Depends(admin_user)):
+    """List Invites that can still be redeemed, without any token material."""
+    with db() as connection:
+        return {"items": list_pending_invites(connection)}
 
 
 @app.post("/api/admin/invites", status_code=201)
@@ -3263,6 +3308,32 @@ def create_invite_endpoint(
     return {"token": token}
 
 
+@app.post("/api/admin/invites/{invite_id}/revoke")
+def revoke_invite_endpoint(
+    invite_id: int,
+    admin: dict[str, Any] = Depends(admin_user),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    """Withdraw a pending Invite so its token can never be redeemed."""
+    try:
+        with db() as connection:
+            revoked = revoke_invite(
+                connection, invite_id=invite_id, actor_user_id=admin["id"]
+            )
+            audit_event_store.record_audit_event(
+                connection,
+                event="admin_invite_revoked",
+                actor_user_id=admin["id"],
+                outcome="success",
+                visibility="admin",
+                invite_id=revoked["id"],
+                target_user_id=revoked["target_user_id"],
+            )
+    except InviteError as exc:
+        raise _invite_revocation_http_error(exc) from exc
+    return revoked
+
+
 @app.patch("/api/admin/users/{user_id}")
 def update_user(
     user_id: int,
@@ -3270,77 +3341,64 @@ def update_user(
     admin: dict[str, Any] = Depends(admin_user),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
-    if action.active is False and user_id == admin["id"]:
-        raise HTTPException(400, "You cannot deactivate your own account")
-    updates: list[str] = []
-    params: list[Any] = []
-    if action.active is not None:
-        updates.append("active=%s")
-        params.append(action.active)
-        updates.append("session_version=session_version+1")
-    if action.display_name is not None:
-        updates.append("display_name=%s")
-        params.append(action.display_name.strip())
-    if action.password is not None:
-        updates.append("password_hash=%s")
-        params.append(hash_password(action.password))
-        updates.append("session_version=session_version+1")
-    if not updates:
-        raise HTTPException(400, "No changes requested")
-    params.append(user_id)
-    with db() as connection:
-        if action.active is False:
-            # Serialize the last-admin check with the UPDATE (REQ-032).
-            # SQLite takes an immediate write lock; PostgreSQL locks every
-            # active-admin row (FOR UPDATE cannot wrap COUNT(*) aggregates).
-            backend = getattr(connection, "backend", settings.db_backend)
-            if backend == "sqlite":
-                connection.begin_immediate()
-                target = connection.execute(
-                    "SELECT is_admin FROM users WHERE id=%s",
-                    (user_id,),
-                ).fetchone()
-                active_admins = connection.execute(
-                    "SELECT COUNT(*) AS total FROM users "
-                    "WHERE is_admin=TRUE AND active=TRUE"
-                ).fetchone()["total"]
-            else:
-                target = connection.execute(
-                    "SELECT is_admin FROM users WHERE id=%s FOR UPDATE",
-                    (user_id,),
-                ).fetchone()
-                active_admin_rows = connection.execute(
-                    "SELECT id FROM users "
-                    "WHERE is_admin=TRUE AND active=TRUE FOR UPDATE"
-                ).fetchall()
-                active_admins = len(active_admin_rows)
-            if target and target["is_admin"] and active_admins <= 1:
-                raise HTTPException(
-                    400, "At least one administrator must remain active"
-                )
-        where_extra = ""
-        if action.active is False:
-            # Conditional UPDATE refuses concurrent last-admin races (REQ-032).
-            where_extra = (
-                " AND (is_admin=FALSE OR "
-                "(SELECT COUNT(*) FROM users WHERE is_admin=TRUE AND active=TRUE) > 1)"
+    """Change a User's global role, activation, display name or password."""
+    try:
+        with db() as connection:
+            return user_admin_service.update_user(
+                connection,
+                user_id=user_id,
+                actor_user_id=admin["id"],
+                active=action.active,
+                is_admin=action.is_admin,
+                display_name=(
+                    None
+                    if action.display_name is None
+                    else action.display_name.strip()
+                ),
+                password_hash=(
+                    None if action.password is None else hash_password(action.password)
+                ),
             )
-        row = connection.execute(
-            f"UPDATE users SET {', '.join(updates)} WHERE id=%s{where_extra} "
-            "RETURNING id, username, display_name, is_admin, active",
-            params,
-        ).fetchone()
-        if action.active is False and not row:
-            exists = connection.execute(
-                "SELECT id, is_admin FROM users WHERE id=%s", (user_id,)
-            ).fetchone()
-            if exists and exists["is_admin"]:
-                raise HTTPException(
-                    400, "At least one administrator must remain active"
+    except user_admin_service.AdministrationError as exc:
+        raise _administration_http_error(exc) from exc
+
+
+@app.get("/api/admin/users/{user_id}/identities")
+def admin_user_identities(user_id: int, _: dict[str, Any] = Depends(admin_user)):
+    """List the external Identities linked to one User."""
+    try:
+        with db() as connection:
+            return {
+                "items": user_admin_service.list_identities(
+                    connection, user_id=user_id
                 )
-    if not row:
-        raise HTTPException(404, "User not found")
-    return row
+            }
+    except user_admin_service.AdministrationError as exc:
+        raise _administration_http_error(exc) from exc
+
+
+@app.delete("/api/admin/users/{user_id}/identities/{identity_id}")
+def admin_unlink_identity(
+    user_id: int,
+    identity_id: int,
+    confirm: bool = False,
+    admin: dict[str, Any] = Depends(admin_user),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    """Unlink one external Identity after explicit confirmation."""
+    try:
+        with db() as connection:
+            return {
+                "items": user_admin_service.unlink_identity(
+                    connection,
+                    user_id=user_id,
+                    identity_id=identity_id,
+                    actor_user_id=admin["id"],
+                    confirmed=confirm,
+                )
+            }
+    except user_admin_service.AdministrationError as exc:
+        raise _administration_http_error(exc) from exc
 
 
 @app.get("/api/admin/vaults")
