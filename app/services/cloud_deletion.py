@@ -220,10 +220,26 @@ def _selected_files(
     vault_id: int,
     paths: list[str],
     is_directory: bool,
+    require_cloud_items: bool = False,
 ) -> list[dict[str, Any]]:
     path_sql, path_params = _path_filter_clauses(
         paths=paths, is_directory=is_directory
     )
+    cloud_filter = ""
+    if require_cloud_items:
+        cloud_filter = """
+          AND (
+                EXISTS (
+                    SELECT 1 FROM archive_versions av
+                    WHERE av.vault_file_id=vf.id
+                      AND av.availability <> 'purged'
+                )
+             OR EXISTS (
+                    SELECT 1 FROM delete_markers dm
+                    WHERE dm.vault_file_id=vf.id
+                )
+          )
+        """
     return connection.execute(
         f"""
         SELECT vf.id AS vault_file_id, fp.path
@@ -233,6 +249,7 @@ def _selected_files(
         WHERE vf.vault_id=%s
           AND vf.status IN ('active', 'retired')
           AND {path_sql}
+          {cloud_filter}
         ORDER BY lower(fp.path)
         """,
         [vault_id, *path_params],
@@ -474,6 +491,7 @@ def schedule_cloud_purge(
         vault_id=vault_id,
         paths=paths,
         is_directory=is_directory,
+        require_cloud_items=True,
     )
     if not files:
         raise ValueError("No Vault Files matched the selection")
@@ -909,6 +927,67 @@ def mark_items_failed(
             """,
             (*case_params, updated_at, *(item_id for item_id, _ in batch)),
         )
+
+
+def claim_purge_group(
+    connection: Any,
+    *,
+    lead_job_id: int,
+    claimed_at: str,
+    message: str,
+    message_key: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Atomically claim every runnable Job in one permanent-purge group."""
+    lead = connection.execute(
+        """
+        SELECT vault_id, group_id FROM jobs
+        WHERE id=%s AND action='cloud-purge'
+        """,
+        (lead_job_id,),
+    ).fetchone()
+    if lead is None or not lead["group_id"]:
+        return [], []
+    jobs = connection.execute(
+        """
+        UPDATE jobs
+        SET status='cleaning', message=%s, message_key=%s,
+            message_params=NULL, updated_at=%s
+        WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
+          AND (
+                status='queued'
+             OR (
+                    status='pending_delay'
+                AND pending_until IS NOT NULL
+                AND pending_until <= %s
+             )
+          )
+        RETURNING id, vault_file_id, requested_by
+        """,
+        (
+            message,
+            message_key,
+            claimed_at,
+            lead["vault_id"],
+            lead["group_id"],
+            claimed_at,
+        ),
+    ).fetchall()
+    if not jobs:
+        return [], []
+    items = connection.execute(
+        """
+        SELECT cdi.*
+        FROM cloud_deletion_items cdi
+        JOIN jobs j ON j.id=cdi.job_id
+        WHERE j.vault_id=%s AND j.group_id=%s
+          AND j.action='cloud-purge'
+          AND j.status='cleaning' AND j.updated_at=%s
+          AND cdi.status IN ('pending', 'failed')
+        ORDER BY cdi.id
+        """,
+        (lead["vault_id"], lead["group_id"], claimed_at),
+    ).fetchall()
+    return jobs, items
 
 
 def pending_items_for_job(connection: Any, job_id: int) -> list[dict[str, Any]]:
