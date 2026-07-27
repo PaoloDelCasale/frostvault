@@ -2537,20 +2537,22 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
             raise RuntimeError("Permanent purge is missing its delay deadline")
         if datetime.fromisoformat(pending_until) > datetime.now(timezone.utc):
             return
-        set_job(
-            job["id"],
-            "queued",
-            message_key="job.cloud_purge_delay_elapsed",
-        )
-        job = {**job, "status": "queued"}
 
     if not job.get("cloud_deletion_enabled"):
         raise RuntimeError("Cloud deletion is disabled for this vault")
     validate_cloud_vault(job)
-    set_job(job["id"], "cleaning", message_key="job.cloud_purge_deleting")
-    client = s3_client()
+    claimed_at = now_iso()
     with db() as connection:
-        items = cloud_deletion_service.pending_items_for_job(connection, job["id"])
+        purge_jobs, items = cloud_deletion_service.claim_purge_group(
+            connection,
+            lead_job_id=job["id"],
+            claimed_at=claimed_at,
+            message=translate("job.cloud_purge_deleting", locale=DEFAULT_LOCALE),
+            message_key="job.cloud_purge_deleting",
+        )
+    if not purge_jobs:
+        return
+    client = s3_client()
     failures = 0
     for offset in range(0, len(items), 1000):
         batch = items[offset : offset + 1000]
@@ -2606,13 +2608,14 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
             )
     stamp = now_iso()
     with db() as connection:
-        cloud_deletion_service.finalize_purge_job(
-            connection,
-            job_id=job["id"],
-            vault_file_id=job["vault_file_id"],
-            actor_user_id=job.get("requested_by"),
-            updated_at=stamp,
-        )
+        for purge_job in purge_jobs:
+            cloud_deletion_service.finalize_purge_job(
+                connection,
+                job_id=int(purge_job["id"]),
+                vault_file_id=purge_job["vault_file_id"],
+                actor_user_id=purge_job.get("requested_by"),
+                updated_at=stamp,
+            )
     if failures:
         # finalize_purge_job already persisted failed status; avoid double-write
         # through process_job's exception handler.
@@ -2792,6 +2795,7 @@ def process_jobs_once() -> int:
         ).fetchall()
         policy_cache: dict[int, Any] = {}
         eligible_candidates: list[dict[str, Any]] = []
+        seen_purge_groups: set[tuple[int, str]] = set()
         for row in queued_candidates:
             job = dict(row)
             vault_id = int(job["vault_id"])
@@ -2805,6 +2809,11 @@ def process_jobs_once() -> int:
                 vault_limit=policy.bandwidth_limit_kibps,
             )
             job["bwlimit"] = rclone_bwlimit_arg(limit)
+            if job["action"] == "cloud-purge" and job.get("group_id"):
+                purge_group = (vault_id, str(job["group_id"]))
+                if purge_group in seen_purge_groups:
+                    continue
+                seen_purge_groups.add(purge_group)
             eligible_candidates.append(job)
         restoring: list[dict[str, Any]] = []
         for row in restoring_jobs:

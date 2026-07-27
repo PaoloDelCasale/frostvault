@@ -313,6 +313,52 @@ class ReversibleArchiveGateTests(_CloudDeletionTestCase):
 
 
 class PermanentPurgeGateTests(_CloudDeletionTestCase):
+    def test_purge_does_not_schedule_vault_files_without_cloud_items(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path, vault_id, _ = _prepare_vault_with_versions(
+                Path(directory), cloud_deletion_enabled=True, version_count=0
+            )
+            with SQLiteConnection(str(database_path)) as connection:
+                catalog = ArchiveCatalog(connection)
+                catalog.observe_local_copy(
+                    vault_id=vault_id,
+                    path="cloud.txt",
+                    file_type="regular",
+                    size=10,
+                    mtime_ns=1_700_000_000_000_000_001,
+                    observed_at="2026-07-21T10:00:00+00:00",
+                )
+                catalog.record_archive_version(
+                    vault_id=vault_id,
+                    path="cloud.txt",
+                    object_key="docs/cloud.txt",
+                    provider_version_id="cloud-v1",
+                    size=10,
+                    storage_class="STANDARD",
+                    etag="etag-cloud",
+                    uploaded_at="2026-07-21T10:00:00+00:00",
+                    observed_at="2026-07-21T10:00:00+00:00",
+                    scan_id="scan-1",
+                    origin="upload",
+                )
+                scheduled = cloud_deletion.schedule_cloud_purge(
+                    connection,
+                    vault_id=vault_id,
+                    paths=["report.txt", "cloud.txt"],
+                    is_directory=False,
+                    actor_user_id=1,
+                    requested_at=_iso(_now()),
+                    confirmation="Docs Archive",
+                    reason="permanent cleanup",
+                    generated_phrase="x",
+                    delay_seconds=60,
+                )
+                jobs = connection.execute(
+                    "SELECT path FROM jobs WHERE group_id=%s ORDER BY path",
+                    (scheduled.group_id,),
+                ).fetchall()
+            self.assertEqual([job["path"] for job in jobs], ["cloud.txt"])
+
     def test_purge_group_total_bytes_matches_selection_preview(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path, vault_id, _file_id = _prepare_vault_with_versions(
@@ -797,6 +843,84 @@ class ReversibleArchiveExecutionTests(_CloudDeletionTestCase):
 
 
 class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
+    def test_purge_deletes_many_vault_files_in_one_s3_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path, vault_id, _ = _prepare_vault_with_versions(
+                Path(directory), cloud_deletion_enabled=True, version_count=0
+            )
+            paths: list[str] = []
+            with SQLiteConnection(str(database_path)) as connection:
+                catalog = ArchiveCatalog(connection)
+                for index in range(10):
+                    path = f"bulk/file-{index:02}.txt"
+                    paths.append(path)
+                    catalog.observe_local_copy(
+                        vault_id=vault_id,
+                        path=path,
+                        file_type="regular",
+                        size=10,
+                        mtime_ns=1_700_000_000_000_000_000 + index,
+                        observed_at="2026-07-21T10:00:00+00:00",
+                    )
+                    catalog.record_archive_version(
+                        vault_id=vault_id,
+                        path=path,
+                        object_key=f"docs/{path}",
+                        provider_version_id=f"version-{index}",
+                        size=10,
+                        storage_class="STANDARD",
+                        etag=f"etag-{index}",
+                        uploaded_at="2026-07-21T10:00:00+00:00",
+                        observed_at="2026-07-21T10:00:00+00:00",
+                        scan_id="scan-1",
+                        origin="upload",
+                    )
+                scheduled = cloud_deletion.schedule_cloud_purge(
+                    connection,
+                    vault_id=vault_id,
+                    paths=paths,
+                    is_directory=False,
+                    actor_user_id=1,
+                    requested_at=_iso(_now() - timedelta(hours=25)),
+                    confirmation="Docs Archive",
+                    reason="permanent cleanup",
+                    generated_phrase="x",
+                    delay_seconds=86400,
+                )
+                connection.execute(
+                    "UPDATE jobs SET pending_until=%s WHERE group_id=%s",
+                    ("2020-01-01T00:00:00+00:00", scheduled.group_id),
+                )
+
+            client = Mock()
+            client.delete_objects.return_value = {}
+            preflight = Mock()
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            worker_settings = SimpleNamespace(operation_concurrency=16)
+            with (
+                patch("app.database.settings", database_settings),
+                patch("app.storage.settings", worker_settings),
+                patch("app.storage.validate_cloud_vault", preflight),
+                patch("app.storage.s3_client", return_value=client),
+            ):
+                process_jobs_once()
+
+            preflight.assert_called_once()
+            client.delete_objects.assert_called_once()
+            self.assertEqual(
+                len(client.delete_objects.call_args.kwargs["Delete"]["Objects"]),
+                10,
+            )
+            with SQLiteConnection(str(database_path)) as connection:
+                statuses = connection.execute(
+                    "SELECT status FROM jobs WHERE group_id=%s",
+                    (scheduled.group_id,),
+                ).fetchall()
+            self.assertEqual({row["status"] for row in statuses}, {"completed"})
+
     def test_purge_deletes_many_versions_in_one_s3_batch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path, vault_id, file_id = _prepare_vault_with_versions(
