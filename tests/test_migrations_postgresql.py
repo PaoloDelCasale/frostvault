@@ -78,7 +78,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             system_setting_columns,
             {"key", "value", "updated_by", "updated_at"},
         )
-        with psycopg.connect(POSTGRES_URL, row_factory=dict_row) as connection:
+        connect_url = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
+        with psycopg.connect(connect_url, row_factory=dict_row) as connection:
             admin_id = connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash, is_admin)
