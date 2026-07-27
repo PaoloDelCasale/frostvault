@@ -109,14 +109,15 @@ class WorkflowHardeningContractTests(unittest.TestCase):
 
 
 class AwsWorkflowContractTests(unittest.TestCase):
-    def test_aws_workflow_is_manual_or_weekly_not_on_pull_request(self) -> None:
+    def test_aws_workflow_is_manual_without_a_deployment_environment(self) -> None:
         workflow = yaml.safe_load(
             (WORKFLOWS / "aws-s3-integrity.yml").read_text(encoding="utf-8")
         )
         triggers = _workflow_on(workflow)
         self.assertIn("workflow_dispatch", triggers)
-        self.assertIn("schedule", triggers)
+        self.assertNotIn("schedule", triggers)
         self.assertNotIn("pull_request", triggers)
+        self.assertNotIn("environment", workflow["jobs"]["aws-integrity"])
         self.assertEqual(workflow["permissions"]["id-token"], "write")
         serialized = yaml.safe_dump(workflow)
         self.assertIn("aws-actions/configure-aws-credentials", serialized)

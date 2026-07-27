@@ -1,10 +1,8 @@
 name: AWS S3 integrity
 
-# Real AWS proofs (issue #13). Manual or weekly — never on every pull request.
+# Optional real AWS proof. Manual only — never on pull requests.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 4 * * 1"
 
 permissions:
   contents: read
@@ -19,7 +17,6 @@ jobs:
     name: Upload and recovery digests on AWS
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: aws-ci
     env:
       AWS_DEFAULT_REGION: ${{ vars.AWS_CI_REGION || 'eu-south-1' }}
       AWS_EC2_METADATA_DISABLED: "true"
