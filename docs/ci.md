@@ -81,8 +81,8 @@ token to a workflow chosen by pull-request activity.
 
 # PostgreSQL-only suite (requires TEST_POSTGRES_URL)
 .venv/bin/python -m unittest \
-  tests.test_migrations_postgresql.PostgreSQLMigrationTests \
-  tests.test_lookup_rate_limit.PostgreSQLSharedLookupRateLimitTests -v
+  tests.test_lookup_rate_limit.PostgreSQLSharedLookupRateLimitTests \
+  tests.test_migrations_postgresql.PostgreSQLMigrationTests -v
 
 # Frontend SPA (from frontend/)
 npm ci && npm run lint && npm run test && npm run build

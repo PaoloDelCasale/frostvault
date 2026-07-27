@@ -59,9 +59,12 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - name: PostgreSQL-only migration and shared rate-limit tests
         run: |
+          # Keep the discovery-suite ordering: rate-limit fixtures expect a
+          # pristine database, while migration fixtures intentionally leave
+          # historical schemas and rows behind.
           python -m unittest \
-            tests.test_migrations_postgresql.PostgreSQLMigrationTests \
             tests.test_lookup_rate_limit.PostgreSQLSharedLookupRateLimitTests \
+            tests.test_migrations_postgresql.PostgreSQLMigrationTests \
             -v
 
   frontend-quality:

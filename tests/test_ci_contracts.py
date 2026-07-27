@@ -65,6 +65,11 @@ class PullRequestCiContractTests(unittest.TestCase):
         )
         self.assertIn("PostgreSQLMigrationTests", postgres_runs)
         self.assertIn("PostgreSQLSharedLookupRateLimitTests", postgres_runs)
+        self.assertLess(
+            postgres_runs.index("PostgreSQLSharedLookupRateLimitTests"),
+            postgres_runs.index("PostgreSQLMigrationTests"),
+            "shared rate-limit tests must run before migration fixtures mutate the database",
+        )
 
     def test_playwright_e2e_job_installs_chromium_and_uploads_failures(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
