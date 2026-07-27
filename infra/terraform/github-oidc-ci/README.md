@@ -1,7 +1,7 @@
 # GitHub OIDC CI role
 
 Provisions a prefix-scoped IAM role that GitHub Actions assumes through OIDC for
-the weekly/manual AWS integrity workflow (issue #13).
+the optional manual AWS integrity workflow.
 
 ## Usage
 
@@ -17,7 +17,7 @@ terraform apply \
   -var="ci_prefix=ci/github"
 ```
 
-3. Copy `github_actions_vars` into the GitHub Actions environment `aws-ci`
+3. Copy `github_actions_vars` into the repository-level GitHub Actions variables
    (`AWS_CI_ROLE_ARN`, `AWS_CI_TEST_BUCKET`, `AWS_CI_TEST_PREFIX`, `AWS_CI_REGION`).
 
 The attached policy is

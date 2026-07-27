@@ -237,7 +237,7 @@ critical-key checks lives in `docs/translation-workflow.md`.
 
 Pull-request CI is deterministic and does not need AWS credentials: unit tests,
 PostgreSQL migrations, frontend JS tests, and MinIO-backed S3 integrity proofs.
-A separate weekly/manual workflow uses GitHub OIDC against a prefix-scoped IAM
+A separate optional manual workflow uses GitHub OIDC against a prefix-scoped IAM
 role for real AWS digest checks. See [docs/ci.md](docs/ci.md) for job status,
 cleanup reruns, and security scanner severity gates.
 

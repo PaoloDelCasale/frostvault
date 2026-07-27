@@ -26,15 +26,15 @@ python -m app.services.s3_prefix_cleanup_cli \
   --report-path artifacts/s3-cleanup-report.json
 ```
 
-## Weekly / manual AWS proofs
+## Optional manual AWS proofs
 
 Workflow: [`.github/workflows/aws-s3-integrity.yml`](../.github/workflows/aws-s3-integrity.yml)
 
-- Triggers: `workflow_dispatch` and weekly cron (Mondays). **Not** on pull requests.
+- Trigger: manual `workflow_dispatch` only. **Not** on a schedule or pull requests.
 - Auth: GitHub OIDC → IAM role (no static AWS keys in GitHub secrets).
 - Scope: objects under a dedicated prefix only. Provision the role with
   [`infra/terraform/github-oidc-ci/`](../infra/terraform/github-oidc-ci/).
-- Required GitHub Actions variables (environment `aws-ci`):
+- Required repository-level GitHub Actions variables:
   - `AWS_CI_ROLE_ARN`
   - `AWS_CI_TEST_BUCKET`
   - `AWS_CI_TEST_PREFIX` (default `ci/github`)
