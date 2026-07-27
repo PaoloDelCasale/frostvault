@@ -187,6 +187,27 @@ test.describe("archive flows", () => {
     await expect(page.getByRole("dialog")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toBeHidden();
+
+    const sections = page.getByRole("navigation", {
+      name: /administration sections|sezioni di amministrazione/i,
+    });
+    await sections
+      .getByRole("link", { name: /users and identities|utenti e identità/i })
+      .click();
+    await expect(page).toHaveURL(/\/admin\/users/);
+    await expect(page.getByRole("heading", { name: /invites|inviti/i })).toBeVisible();
+
+    await sections
+      .getByRole("link", { name: /^defaults$|^valori predefiniti$/i })
+      .click();
+    await expect(page).toHaveURL(/\/admin\/defaults/);
+    await expect(page.getByRole("heading", { name: /runtime-managed defaults|valori predefiniti gestiti a runtime/i })).toBeVisible();
+
+    await sections
+      .getByRole("link", { name: /deployment configuration|configurazione del deployment/i })
+      .click();
+    await expect(page).toHaveURL(/\/admin\/deployment/);
+    await expect(page.getByRole("heading", { name: /deployment configuration|configurazione del deployment/i })).toBeVisible();
   });
 
   test("flow 10 — viewer has no operational actions", async ({ page, context }) => {

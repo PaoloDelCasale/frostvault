@@ -541,6 +541,70 @@ export type JobCancelResponse = {
   message_key?: string;
 };
 
+/** Administration settings endpoints (issues #132–#136). */
+
+export type SystemSettingValue = string | number | boolean | null;
+
+export type SystemSettingItem = {
+  key: string;
+  environment_variable: string;
+  source: string;
+  mutability: "runtime_managed" | "deployment_only" | "restart_required" | string;
+  restart_required: boolean;
+  configured?: boolean;
+  effective_value?: SystemSettingValue;
+  minimum?: number;
+  maximum?: number;
+  minimum_length?: number;
+  maximum_length?: number;
+  choices?: string[];
+};
+
+export type SystemSettingsResponse = {
+  revision: number;
+  groups: Record<string, SystemSettingItem[]>;
+};
+
+export type SystemSettingsUpdatePayload = {
+  revision: number;
+  overrides: Record<string, SystemSettingValue>;
+  removals: string[];
+};
+
+/** Managed OIDC configuration (issues #134 and #136). */
+
+export type OidcConfigurationValues = {
+  enabled?: boolean;
+  issuer: string;
+  client_id: string;
+  client_secret_configured: boolean;
+  scopes: string[];
+  login_transaction_ttl_seconds: number;
+  callback_url?: string;
+  source?: string;
+  version?: number;
+  validation_status?: string;
+};
+
+export type OidcConfigurationResponse = {
+  active: OidcConfigurationValues;
+  draft: OidcConfigurationValues | null;
+  configuration_status: string;
+  last_validation: {
+    status: string;
+    validated_at?: string;
+    error?: string;
+  } | null;
+};
+
+export type OidcDraftPayload = {
+  issuer: string;
+  client_id: string;
+  client_secret: string;
+  scopes: string[];
+  login_transaction_ttl_seconds: number;
+};
+
 /** Global administration endpoints (issue #69). */
 
 export type AdminUser = {
@@ -550,6 +614,8 @@ export type AdminUser = {
   is_admin: boolean;
   active: boolean;
   vault_count: number;
+  has_password: boolean;
+  identity_count: number;
   created_at?: string;
 };
 
@@ -557,10 +623,34 @@ export type AdminUsersResponse = {
   items: AdminUser[];
 };
 
+export type AdminIdentity = {
+  id: number;
+  issuer: string;
+  subject: string;
+  created_at: string;
+};
+
+export type AdminIdentitiesResponse = {
+  items: AdminIdentity[];
+};
+
+export type AdminInvite = {
+  id: number;
+  target_user_id: number;
+  target_username: string;
+  created_by: number;
+  created_at?: string;
+  expires_at: string;
+};
+
+export type AdminInvitesResponse = {
+  items: AdminInvite[];
+};
+
 export type AdminUserCreatePayload = {
   display_name: string;
   username: string;
-  password: string;
+  password: string | null;
   is_admin: boolean;
 };
 
@@ -568,6 +658,7 @@ export type AdminUserUpdatePayload = {
   active?: boolean;
   display_name?: string;
   password?: string;
+  is_admin?: boolean;
 };
 
 export type AdminVault = {
