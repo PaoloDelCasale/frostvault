@@ -23,6 +23,10 @@ The artifact **never contains** `ARCHIVE_MASTER_KEY`, bootstrap passwords, or
 OIDC client secrets. A SHA-256 digest of the ciphertext is stored alongside the
 file and in `metadata_backup_runs`.
 
+The configuration snapshot uses the effective system-settings resolver, so it
+includes committed non-secret database overrides and their environment or
+built-in fallbacks. Secret and unknown keys are structurally excluded.
+
 ## Where artifacts live
 
 | Location | Purpose |

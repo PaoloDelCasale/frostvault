@@ -14,7 +14,6 @@ import sqlite3
 import subprocess
 import tarfile
 import tempfile
-from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
@@ -22,20 +21,11 @@ from typing import Any, Protocol
 from cryptography.fernet import Fernet, InvalidToken
 
 from ..config import Settings, settings
+from ..system_settings import SETTINGS_BY_KEY, resolve_system_settings
 from .vault_crypto import MasterKeyError
 
 
 S3_BACKUP_PREFIX = "system/backups/"
-
-# Settings fields that must never appear in a config snapshot.
-_EXCLUDED_CONFIG_KEYS = frozenset(
-    {
-        "archive_master_key",
-        "bootstrap_admin_password",
-        "oidc_client_secret",
-    }
-)
-
 
 class ObjectStore(Protocol):
     """System boundary for durable backup object storage (S3 or compatible)."""
@@ -126,25 +116,21 @@ def _fernet(master_key: str) -> Fernet:
         ) from exc
 
 
-def build_config_snapshot(source: Settings | Any | None = None) -> dict[str, Any]:
-    """Return reconstructable settings with secrets excluded."""
+def build_config_snapshot(
+    source: Settings | Any | None = None,
+    *,
+    connection: Any | None = None,
+) -> dict[str, Any]:
+    """Return effective reconstructable settings with secrets excluded."""
     cfg = source if source is not None else settings
-    if is_dataclass(cfg):
-        raw = asdict(cfg)
-    elif hasattr(cfg, "__dict__"):
-        raw = dict(vars(cfg))
-    else:
-        raw = dict(cfg)
-    snapshot: dict[str, Any] = {}
-    for key, value in raw.items():
-        if key in _EXCLUDED_CONFIG_KEYS:
-            continue
-        if isinstance(value, str) and key.endswith(("_password", "_secret", "_key")):
-            # Defense in depth for any future secret-like settings.
-            if key != "session_cookie_name" and key != "csrf_cookie_name":
-                continue
-        snapshot[key] = value
-    return snapshot
+    return {
+        key: item.value
+        for key, item in resolve_system_settings(
+            connection,
+            settings_obj=cfg,
+        ).items()
+        if not item.definition.secret
+    }
 
 
 def _dump_sqlite_bytes(db_path: str | Path) -> bytes:
@@ -241,8 +227,12 @@ def create_metadata_backup(
     key = master_key if master_key is not None else settings.archive_master_key
     fernet = _fernet(key)
     config = config_snapshot if config_snapshot is not None else build_config_snapshot()
-    # Belt-and-suspenders: never allow excluded keys through a caller snapshot.
-    config = {k: v for k, v in config.items() if k not in _EXCLUDED_CONFIG_KEYS}
+    config = {
+        key: value
+        for key, value in config.items()
+        if (definition := SETTINGS_BY_KEY.get(key)) is not None
+        and not definition.secret
+    }
 
     if backend == "sqlite":
         path = sqlite_path or settings.sqlite_path
@@ -670,6 +660,8 @@ def run_metadata_backup(
         if retention is not None
         else int(getattr(settings, "metadata_backup_retention", 14))
     )
+    if config_snapshot is None:
+        config_snapshot = build_config_snapshot(connection=connection)
     try:
         artifact = create_metadata_backup(
             reason=reason,

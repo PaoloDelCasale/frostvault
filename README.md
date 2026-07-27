@@ -282,6 +282,15 @@ must be replaced before the corresponding integration is used. Important groups:
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
 | Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RCLONE_MULTI_THREAD_*`, `RESTORE_*`, `ALLOW_LOCAL_DELETE` |
 
+Database settings and credentials, paths and mount roots, master/storage
+credentials, proxy/host/cookie trust, bootstrap values, automatic migration,
+and the frontend distribution path are deployment-only. They cannot be edited
+at runtime because they define process and deployment trust boundaries.
+Administrators can inspect the effective, structurally redacted inventory at
+`GET /api/admin/settings`. See
+[ADR-0009](docs/adr/0009-effective-system-configuration.md) for the exhaustive
+classification and precedence model.
+
 ### Progressive Web App and Web Push
 
 The SPA is an installable PWA (`vite-plugin-pwa`): offline shell, cached last file
