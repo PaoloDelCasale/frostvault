@@ -66,6 +66,8 @@ const defaultUsers = [
     active: true,
     is_admin: true,
     vault_count: 1,
+    has_password: true,
+    identity_count: 1,
   },
   {
     id: 20,
@@ -74,6 +76,8 @@ const defaultUsers = [
     active: true,
     is_admin: false,
     vault_count: 0,
+    has_password: false,
+    identity_count: 0,
   },
 ];
 
@@ -180,7 +184,7 @@ async function renderAdmin(options: HarnessOptions = {}) {
         const payload = JSON.parse(body) as {
           display_name: string;
           username: string;
-          password: string;
+          password: string | null;
           is_admin: boolean;
         };
         const created = {
@@ -190,6 +194,8 @@ async function renderAdmin(options: HarnessOptions = {}) {
           is_admin: payload.is_admin,
           active: true,
           vault_count: 0,
+          has_password: payload.password !== null,
+          identity_count: 0,
         };
         usersState = [...usersState, created];
         return jsonResponse(created, 201);
@@ -200,6 +206,8 @@ async function renderAdmin(options: HarnessOptions = {}) {
         const payload = JSON.parse(body) as {
           active?: boolean;
           password?: string;
+          is_admin?: boolean;
+          display_name?: string;
         };
         if (
           payload.active === false &&
@@ -216,6 +224,8 @@ async function renderAdmin(options: HarnessOptions = {}) {
             ? {
                 ...u,
                 active: payload.active ?? u.active,
+                is_admin: payload.is_admin ?? u.is_admin,
+                display_name: payload.display_name ?? u.display_name,
               }
             : u,
         );
@@ -427,6 +437,35 @@ afterEach(() => {
   resetApiClientForTests();
 });
 
+describe("AdminPage — administration navigation (issue #136 seam 1)", () => {
+  beforeEach(() => {
+    resetApiClientForTests();
+  });
+
+  it("exposes stable routes for every administration section", async () => {
+    await renderAdmin();
+
+    const navigation = await screen.findByRole("navigation", {
+      name: /administration sections/i,
+    });
+    const expectedRoutes = [
+      ["Overview", "/admin"],
+      ["Users and identities", "/admin/users"],
+      ["Vaults", "/admin/vaults"],
+      ["Defaults", "/admin/defaults"],
+      ["OIDC", "/admin/oidc"],
+      ["Deployment configuration", "/admin/deployment"],
+    ];
+
+    for (const [name, href] of expectedRoutes) {
+      expect(within(navigation).getByRole("link", { name })).toHaveAttribute(
+        "href",
+        href,
+      );
+    }
+  });
+});
+
 describe("AdminPage — create user (seam 1)", () => {
   beforeEach(() => {
     resetApiClientForTests();
@@ -462,6 +501,37 @@ describe("AdminPage — create user (seam 1)", () => {
 
     await waitFor(() => {
       expect(screen.getByText("New Person")).toBeInTheDocument();
+    });
+  });
+});
+
+describe("AdminPage — passwordless user creation (issue #136 seam 2)", () => {
+  beforeEach(() => {
+    resetApiClientForTests();
+  });
+
+  it("creates a passwordless User explicitly and shows authentication status", async () => {
+    const user = userEvent.setup();
+    const harness = await renderAdmin();
+
+    expect(screen.getByText(/1 linked identity/i)).toBeInTheDocument();
+    expect(screen.getByText(/no sign-in method configured/i)).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText(/display name/i), "OIDC Person");
+    await user.type(screen.getByLabelText(/^username$/i), "oidc-person");
+    await user.click(screen.getByLabelText(/create without a password/i));
+    await user.click(screen.getByRole("button", { name: /create user/i }));
+
+    await waitFor(() => {
+      const create = harness.mutatingCalls.find(
+        (call) => call.url === "/api/admin/users" && call.method === "POST",
+      );
+      expect(JSON.parse(create!.body)).toEqual({
+        display_name: "OIDC Person",
+        username: "oidc-person",
+        password: null,
+        is_admin: false,
+      });
     });
   });
 });
@@ -523,6 +593,8 @@ describe("AdminPage — enable/disable user (seam 3)", () => {
     });
     // First user in default fixture is the sole admin (id 10).
     await user.click(deactivateButtons[0]!);
+    let confirmation = await screen.findByRole("alertdialog");
+    await user.click(within(confirmation).getByRole("button", { name: /confirm deactivation/i }));
 
     await waitFor(() => {
       expect(
@@ -533,9 +605,60 @@ describe("AdminPage — enable/disable user (seam 3)", () => {
     // Non-admin user can be deactivated.
     const remaining = screen.getAllByRole("button", { name: /deactivate/i });
     await user.click(remaining[remaining.length - 1]!);
+    confirmation = await screen.findByRole("alertdialog");
+    await user.click(within(confirmation).getByRole("button", { name: /confirm deactivation/i }));
 
     await waitFor(() => {
       expect(screen.getByText(/user deactivated/i)).toBeInTheDocument();
+    });
+  });
+});
+
+describe("AdminPage — User profile editing (issue #136 seam 2)", () => {
+  beforeEach(() => {
+    resetApiClientForTests();
+  });
+
+  it("updates the display name through an accessible dialog", async () => {
+    const user = userEvent.setup();
+    const harness = await renderAdmin();
+
+    await user.click(await screen.findByRole("button", { name: /edit b user/i }));
+    const dialog = await screen.findByRole("dialog");
+    const input = within(dialog).getByLabelText(/display name/i);
+    await user.clear(input);
+    await user.type(input, "Bee User");
+    await user.click(within(dialog).getByRole("button", { name: /save display name/i }));
+
+    await waitFor(() => {
+      const patch = harness.mutatingCalls.find(
+        (call) => call.url === "/api/admin/users/20" && call.body.includes("display_name"),
+      );
+      expect(JSON.parse(patch!.body)).toEqual({ display_name: "Bee User" });
+      expect(screen.getByText("Bee User")).toBeInTheDocument();
+    });
+  });
+});
+
+describe("AdminPage — global role changes (issue #136 seam 2)", () => {
+  beforeEach(() => {
+    resetApiClientForTests();
+  });
+
+  it("requires confirmation before promoting a User", async () => {
+    const user = userEvent.setup();
+    const harness = await renderAdmin();
+
+    const promote = await screen.findByRole("button", { name: /promote b user/i });
+    await user.click(promote);
+    const confirmation = await screen.findByRole("alertdialog");
+    await user.click(within(confirmation).getByRole("button", { name: /confirm promotion/i }));
+
+    await waitFor(() => {
+      const patch = harness.mutatingCalls.find(
+        (call) => call.url === "/api/admin/users/20" && call.body.includes("is_admin"),
+      );
+      expect(JSON.parse(patch!.body)).toEqual({ is_admin: true });
     });
   });
 });

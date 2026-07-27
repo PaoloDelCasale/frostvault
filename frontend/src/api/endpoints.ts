@@ -1,5 +1,7 @@
 import { apiRequest, configureApiClient, setCsrfToken } from "./client";
 import type {
+  AdminIdentitiesResponse,
+  AdminInvitesResponse,
   AdminMembershipCreatePayload,
   AdminOwnerTransferPayload,
   AdminUser,
@@ -27,6 +29,8 @@ import type {
   LifecycleResponse,
   LocaleUpdateResponse,
   MeResponse,
+  OidcConfigurationResponse,
+  OidcDraftPayload,
   OperationPolicy,
   RecoverEstimateResponse,
   RecoveryConfirmRequest,
@@ -35,6 +39,8 @@ import type {
   RecoveryExportResponse,
   StatsResponse,
   StorageClassesResponse,
+  SystemSettingsResponse,
+  SystemSettingsUpdatePayload,
   UserLookupResult,
   VaultCreateRequest,
   VaultCreateResponse,
@@ -257,6 +263,49 @@ export function updateCloudDeletion(
   });
 }
 
+export function fetchOidcConfiguration(): Promise<OidcConfigurationResponse> {
+  return apiRequest<OidcConfigurationResponse>("/api/admin/oidc-configuration");
+}
+
+export function saveOidcDraft(payload: OidcDraftPayload): Promise<OidcConfigurationResponse> {
+  return apiRequest<OidcConfigurationResponse>("/api/admin/oidc-configuration/draft", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function validateOidcDraft(): Promise<OidcConfigurationResponse> {
+  return apiRequest<OidcConfigurationResponse>("/api/admin/oidc-configuration/draft/validate", { method: "POST" });
+}
+
+export function activateOidcConfiguration(): Promise<OidcConfigurationResponse> {
+  return apiRequest<OidcConfigurationResponse>("/api/admin/oidc-configuration/activate", { method: "POST" });
+}
+
+export function disableOidcConfiguration(): Promise<OidcConfigurationResponse> {
+  return apiRequest<OidcConfigurationResponse>("/api/admin/oidc-configuration/disable", { method: "POST" });
+}
+
+export function rotateOidcSecret(clientSecret: string): Promise<OidcConfigurationResponse> {
+  return apiRequest<OidcConfigurationResponse>("/api/admin/oidc-configuration/rotate-secret", {
+    method: "POST",
+    body: JSON.stringify({ client_secret: clientSecret }),
+  });
+}
+
+export function fetchSystemSettings(): Promise<SystemSettingsResponse> {
+  return apiRequest<SystemSettingsResponse>("/api/admin/settings");
+}
+
+export function updateSystemSettings(
+  payload: SystemSettingsUpdatePayload,
+): Promise<SystemSettingsResponse> {
+  return apiRequest<SystemSettingsResponse>("/api/admin/settings", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function fetchAdminUsers(): Promise<AdminUsersResponse> {
   return apiRequest<AdminUsersResponse>("/api/admin/users");
 }
@@ -278,6 +327,39 @@ export function updateAdminUser(
     method: "PATCH",
     body: JSON.stringify(payload),
   });
+}
+
+export function fetchAdminInvites(): Promise<AdminInvitesResponse> {
+  return apiRequest<AdminInvitesResponse>("/api/admin/invites");
+}
+
+export function createAdminInvite(targetUserId: number): Promise<{ token: string }> {
+  return apiRequest<{ token: string }>("/api/admin/invites", {
+    method: "POST",
+    body: JSON.stringify({ target_user_id: targetUserId }),
+  });
+}
+
+export function revokeAdminInvite(inviteId: number): Promise<unknown> {
+  return apiRequest(`/api/admin/invites/${inviteId}/revoke`, { method: "POST" });
+}
+
+export function fetchAdminIdentities(
+  userId: number,
+): Promise<AdminIdentitiesResponse> {
+  return apiRequest<AdminIdentitiesResponse>(
+    `/api/admin/users/${userId}/identities`,
+  );
+}
+
+export function unlinkAdminIdentity(
+  userId: number,
+  identityId: number,
+): Promise<AdminIdentitiesResponse> {
+  return apiRequest<AdminIdentitiesResponse>(
+    `/api/admin/users/${userId}/identities/${identityId}?confirm=true`,
+    { method: "DELETE" },
+  );
 }
 
 export function fetchAdminVaults(): Promise<AdminVaultsResponse> {

@@ -10,8 +10,60 @@ permissions:
   contents: read
 
 jobs:
+  python-unit-tests:
+    name: Python unit tests (SQLite shard ${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Run SQLite unit-test shard
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+          SHARD_COUNT: "4"
+        run: |
+          mapfile -t TEST_MODULES < <(
+            python - <<'PY'
+          import os
+          from pathlib import Path
+
+          shard_index = int(os.environ["SHARD_INDEX"])
+          shard_count = int(os.environ["SHARD_COUNT"])
+          for index, path in enumerate(sorted(Path("tests").glob("test_*.py"))):
+              if index % shard_count == shard_index:
+                  print(f"tests.{path.stem}")
+          PY
+          )
+          printf 'Shard %s/%s modules:\n%s\n' \
+            "${SHARD_INDEX}" "${SHARD_COUNT}" "${TEST_MODULES[*]}"
+          python -m unittest "${TEST_MODULES[@]}" -v
+
+  # Keep this aggregate check name stable for branch protection. It fails when
+  # any matrix shard fails, while allowing all four shards to run concurrently.
   sqlite-and-postgresql:
     name: Unit and migration tests
+    needs: python-unit-tests
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify every SQLite unit-test shard passed
+        env:
+          SHARD_RESULT: ${{ needs.python-unit-tests.result }}
+        run: test "${SHARD_RESULT}" = "success"
+
+  postgresql-tests:
+    name: PostgreSQL migration and concurrency tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -38,18 +90,37 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: PostgreSQL-only migration and shared rate-limit tests
+        run: |
+          # Keep the discovery-suite ordering: rate-limit fixtures expect a
+          # pristine database, while migration fixtures intentionally leave
+          # historical schemas and rows behind.
+          python -m unittest \
+            tests.test_lookup_rate_limit.PostgreSQLSharedLookupRateLimitTests \
+            tests.test_migrations_postgresql.PostgreSQLMigrationTests \
+            -v
+
+  frontend-quality:
+    name: Frontend lint, unit tests, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           # Vite 8 requires Node ^20.19.0 || >=22.12.0; use current Node 22 LTS.
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: python -m pip install -r requirements.txt
-      - name: Python unit tests (no live AWS or MinIO credentials required)
-        run: python -m unittest discover -s tests -v
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
       - name: Frontend SPA lint
         working-directory: frontend
-        run: npm ci && npm run lint
+        run: npm run lint
       - name: Frontend SPA unit tests
         working-directory: frontend
         run: npm run test

@@ -39,14 +39,48 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertIn("s3-compatible-integrity", job_names)
         self.assertIn("playwright-e2e", job_names)
 
-    def test_pr_unit_job_runs_frontend_vitest_lint_and_build(self) -> None:
+    def test_pr_runs_frontend_quality_in_a_dedicated_parallel_job(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
-        steps = workflow["jobs"]["sqlite-and-postgresql"]["steps"]
-        run_blocks = [step.get("run", "") for step in steps]
+        jobs = workflow["jobs"]
+        self.assertIn("frontend-quality", jobs)
+        run_blocks = [
+            step.get("run", "") for step in jobs["frontend-quality"]["steps"]
+        ]
+        self.assertTrue(any("npm ci" in block for block in run_blocks))
         self.assertTrue(any("npm run test" in block for block in run_blocks))
         self.assertTrue(any("npm run lint" in block for block in run_blocks))
         self.assertTrue(any("npm run build" in block for block in run_blocks))
         self.assertFalse(any("node --test" in block for block in run_blocks))
+
+    def test_pr_isolates_postgresql_tests_from_the_sqlite_unit_job(self) -> None:
+        workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
+        jobs = workflow["jobs"]
+        sqlite_job = jobs["sqlite-and-postgresql"]
+        python_job = jobs["python-unit-tests"]
+        postgres_job = jobs["postgresql-tests"]
+        self.assertEqual(
+            python_job["strategy"]["matrix"]["shard"],
+            [0, 1, 2, 3],
+        )
+        self.assertEqual(sqlite_job["needs"], "python-unit-tests")
+        self.assertEqual(sqlite_job["if"], "${{ always() }}")
+        python_runs = "\n".join(
+            step.get("run", "") for step in python_job["steps"]
+        )
+        self.assertIn("index % shard_count == shard_index", python_runs)
+        self.assertNotIn("postgres", python_job.get("services") or {})
+        self.assertNotIn("TEST_POSTGRES_URL", python_job.get("env") or {})
+        self.assertIn("postgres", postgres_job.get("services") or {})
+        postgres_runs = "\n".join(
+            step.get("run", "") for step in postgres_job["steps"]
+        )
+        self.assertIn("PostgreSQLMigrationTests", postgres_runs)
+        self.assertIn("PostgreSQLSharedLookupRateLimitTests", postgres_runs)
+        self.assertLess(
+            postgres_runs.index("PostgreSQLSharedLookupRateLimitTests"),
+            postgres_runs.index("PostgreSQLMigrationTests"),
+            "shared rate-limit tests must run before migration fixtures mutate the database",
+        )
 
     def test_playwright_e2e_job_installs_chromium_and_uploads_failures(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
