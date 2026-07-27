@@ -77,6 +77,12 @@ class DatabaseMigrationTests(unittest.TestCase):
                     row["name"]
                     for row in connection.execute("PRAGMA table_info(vault_quotas)").fetchall()
                 }
+                system_setting_columns = {
+                    row["name"]
+                    for row in connection.execute(
+                        "PRAGMA table_info(system_settings)"
+                    ).fetchall()
+                }
             self.assertEqual(
                 columns,
                 {
@@ -88,6 +94,10 @@ class DatabaseMigrationTests(unittest.TestCase):
                     "restore_30d_soft_limit_bytes",
                     "restore_30d_hard_limit_bytes",
                 },
+            )
+            self.assertEqual(
+                system_setting_columns,
+                {"key", "value", "updated_by", "updated_at"},
             )
 
     def test_current_catalog_migrates_without_losing_file_state(self) -> None:

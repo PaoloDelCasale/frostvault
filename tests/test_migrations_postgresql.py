@@ -11,6 +11,8 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.catalog import ArchiveCatalog
+from app.config import settings
+from app.system_settings import resolve_system_settings, set_system_setting
 
 
 POSTGRES_URL = os.getenv("TEST_POSTGRES_URL", "")
@@ -56,6 +58,10 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             column["name"]
             for column in sa.inspect(self.engine).get_columns("vault_quotas")
         }
+        system_setting_columns = {
+            column["name"]
+            for column in sa.inspect(self.engine).get_columns("system_settings")
+        }
         self.assertEqual(
             quota_columns,
             {
@@ -67,6 +73,34 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 "restore_30d_soft_limit_bytes",
                 "restore_30d_hard_limit_bytes",
             },
+        )
+        self.assertEqual(
+            system_setting_columns,
+            {"key", "value", "updated_by", "updated_at"},
+        )
+        with psycopg.connect(POSTGRES_URL, row_factory=dict_row) as connection:
+            admin_id = connection.execute(
+                """
+                INSERT INTO users(username, display_name, password_hash, is_admin)
+                VALUES ('settings-admin', 'Settings Admin', 'hash', TRUE)
+                RETURNING id
+                """
+            ).fetchone()["id"]
+            set_system_setting(
+                connection,
+                key="restore_tier",
+                value="Standard",
+                updated_by=admin_id,
+            )
+            resolved = resolve_system_settings(
+                connection,
+                settings_obj=settings,
+                environ={},
+            )
+        self.assertEqual(resolved["restore_tier"].value, "Standard")
+        self.assertEqual(
+            resolved["restore_tier"].source,
+            "database_override",
         )
 
         downgraded = run_alembic("0001_current_schema", command="downgrade")

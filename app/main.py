@@ -79,6 +79,7 @@ from .services import metadata_backups as metadata_backup_service
 from .services import metrics as metrics_service
 from .services import notifications as notification_service
 from .services import worker_errors as worker_error_store
+from .system_settings import system_settings_response
 from .services.restore_estimates import (
     SUPPORTED_RESTORE_TIERS,
     estimate_restore,
@@ -1666,6 +1667,12 @@ def admin_audit_events(_: dict[str, Any] = Depends(admin_user)):
     with db() as connection:
         events = audit_event_store.list_admin_audit_events(connection)
     return {"events": events}
+
+
+@app.get("/api/admin/settings")
+def admin_system_settings(_: dict[str, Any] = Depends(admin_user)):
+    with db() as connection:
+        return system_settings_response(connection, settings_obj=settings)
 
 
 @app.get("/api/notifications")
