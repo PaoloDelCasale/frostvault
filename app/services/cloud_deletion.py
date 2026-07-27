@@ -513,7 +513,7 @@ def schedule_cloud_purge(
             ) VALUES (
                 %s, %s, NULL, %s,
                 'cloud-purge', 'pending_delay', %s, %s, %s,
-                %s, %s, %s, 0,
+                %s, %s, 0, 0,
                 %s, %s, %s
             )
             RETURNING id
@@ -527,7 +527,6 @@ def schedule_cloud_purge(
                 requested_at,
                 group_id,
                 group_path,
-                preview.byte_count,
                 pending_until,
                 cleaned_reason,
                 confirmation.strip(),
@@ -535,12 +534,16 @@ def schedule_cloud_purge(
         ).fetchone()
         job_id = int(job["id"])
         job_ids.append(job_id)
-        _expand_purge_items(
+        total_bytes = _expand_purge_items(
             connection,
             job_id=job_id,
             vault_id=vault_id,
             vault_file_id=row["vault_file_id"],
             updated_at=requested_at,
+        )
+        connection.execute(
+            "UPDATE jobs SET total_bytes=%s WHERE id=%s",
+            (total_bytes, job_id),
         )
         record_audit_event(
             connection,
@@ -587,7 +590,7 @@ def _expand_purge_items(
     vault_id: int,
     vault_file_id: str,
     updated_at: str,
-) -> None:
+) -> int:
     versions = connection.execute(
         """
         SELECT id, object_key, provider_version_id, size
@@ -597,7 +600,9 @@ def _expand_purge_items(
         """,
         (vault_file_id,),
     ).fetchall()
+    total_bytes = 0
     for version in versions:
+        total_bytes += int(version["size"] or 0)
         connection.execute(
             """
             INSERT INTO cloud_deletion_items(
@@ -653,6 +658,7 @@ def _expand_purge_items(
                 updated_at,
             ),
         )
+    return total_bytes
 
 
 def accelerate_cloud_purge(

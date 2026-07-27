@@ -54,9 +54,10 @@ def _prepare_vault_with_versions(
     *,
     cloud_deletion_enabled: bool = False,
     version_count: int = 2,
+    revision: str = "head",
 ) -> tuple[Path, int, str]:
     database_path = root / "catalog.db"
-    migrated = run_alembic(database_path)
+    migrated = run_alembic(database_path, revision)
     assert migrated.returncode == 0, migrated.stderr
     source = root / "source"
     source.mkdir()
@@ -312,6 +313,121 @@ class ReversibleArchiveGateTests(_CloudDeletionTestCase):
 
 
 class PermanentPurgeGateTests(_CloudDeletionTestCase):
+    def test_purge_group_total_bytes_matches_selection_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path, vault_id, _file_id = _prepare_vault_with_versions(
+                Path(directory), cloud_deletion_enabled=True
+            )
+            with SQLiteConnection(str(database_path)) as connection:
+                catalog = ArchiveCatalog(connection)
+                catalog.observe_local_copy(
+                    vault_id=vault_id,
+                    path="appendix.txt",
+                    file_type="regular",
+                    size=5,
+                    mtime_ns=1_700_000_000_000_000_000,
+                    observed_at="2026-07-21T10:10:00+00:00",
+                )
+                catalog.record_archive_version(
+                    vault_id=vault_id,
+                    path="appendix.txt",
+                    object_key="docs/appendix.txt",
+                    provider_version_id="s3-appendix",
+                    size=5,
+                    storage_class="STANDARD",
+                    etag="etag-appendix",
+                    uploaded_at="2026-07-21T10:10:00+00:00",
+                    observed_at="2026-07-21T10:10:00+00:00",
+                    scan_id="scan-1",
+                    origin="upload",
+                )
+                scheduled = cloud_deletion.schedule_cloud_purge(
+                    connection,
+                    vault_id=vault_id,
+                    paths=["report.txt", "appendix.txt"],
+                    is_directory=False,
+                    actor_user_id=1,
+                    requested_at=_iso(_now()),
+                    confirmation="Docs Archive",
+                    reason="obsolete duplicates",
+                    generated_phrase="purple-orchid-42",
+                    delay_seconds=86400,
+                )
+                rows = connection.execute(
+                    """
+                    SELECT id, path, action, status, message, message_key,
+                           requested_at, updated_at, group_id, group_path,
+                           total_bytes, transferred_bytes, pending_until,
+                           estimated_cost_eur, estimated_hours, restore_tier,
+                           restore_days
+                    FROM jobs WHERE group_id=%s
+                    """,
+                    (scheduled.group_id,),
+                ).fetchall()
+
+            from app.main import build_job_groups
+
+            group = build_job_groups(rows)[0]
+            self.assertEqual(scheduled.preview.byte_count, 26)
+            self.assertEqual(group["total_bytes"], scheduled.preview.byte_count)
+
+    def test_migration_repairs_existing_purge_job_totals(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path, vault_id, _file_id = _prepare_vault_with_versions(
+                Path(directory),
+                cloud_deletion_enabled=True,
+                revision="0026_invite_revocation",
+            )
+            with SQLiteConnection(str(database_path)) as connection:
+                catalog = ArchiveCatalog(connection)
+                catalog.observe_local_copy(
+                    vault_id=vault_id,
+                    path="appendix.txt",
+                    file_type="regular",
+                    size=5,
+                    mtime_ns=1_700_000_000_000_000_000,
+                    observed_at="2026-07-21T10:10:00+00:00",
+                )
+                catalog.record_archive_version(
+                    vault_id=vault_id,
+                    path="appendix.txt",
+                    object_key="docs/appendix.txt",
+                    provider_version_id="s3-appendix",
+                    size=5,
+                    storage_class="STANDARD",
+                    etag="etag-appendix",
+                    uploaded_at="2026-07-21T10:10:00+00:00",
+                    observed_at="2026-07-21T10:10:00+00:00",
+                    scan_id="scan-1",
+                    origin="upload",
+                )
+                scheduled = cloud_deletion.schedule_cloud_purge(
+                    connection,
+                    vault_id=vault_id,
+                    paths=["report.txt", "appendix.txt"],
+                    is_directory=False,
+                    actor_user_id=1,
+                    requested_at=_iso(_now()),
+                    confirmation="Docs Archive",
+                    reason="obsolete duplicates",
+                    generated_phrase="purple-orchid-42",
+                    delay_seconds=86400,
+                )
+                connection.execute(
+                    "UPDATE jobs SET total_bytes=%s WHERE group_id=%s",
+                    (scheduled.preview.byte_count, scheduled.group_id),
+                )
+
+            migrated = run_alembic(database_path)
+            self.assertEqual(migrated.returncode, 0, migrated.stderr)
+            with SQLiteConnection(str(database_path)) as connection:
+                total = connection.execute(
+                    "SELECT SUM(total_bytes) AS total FROM jobs WHERE group_id=%s",
+                    (scheduled.group_id,),
+                ).fetchone()["total"]
+
+            self.assertEqual(total, scheduled.preview.byte_count)
+
     def test_purge_requires_setting_confirmation_reason_and_delay(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path, vault_id, _file_id = _prepare_vault_with_versions(
