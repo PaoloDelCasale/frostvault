@@ -797,6 +797,65 @@ class ReversibleArchiveExecutionTests(_CloudDeletionTestCase):
 
 
 class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
+    def test_purge_deletes_many_versions_in_one_s3_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path, vault_id, file_id = _prepare_vault_with_versions(
+                Path(directory), cloud_deletion_enabled=True, version_count=100
+            )
+            with SQLiteConnection(str(database_path)) as connection:
+                scheduled = cloud_deletion.schedule_cloud_purge(
+                    connection,
+                    vault_id=vault_id,
+                    paths=["report.txt"],
+                    is_directory=False,
+                    actor_user_id=1,
+                    requested_at=_iso(_now() - timedelta(hours=25)),
+                    confirmation="Docs Archive",
+                    reason="permanent cleanup",
+                    generated_phrase="x",
+                    delay_seconds=86400,
+                )
+                connection.execute(
+                    "UPDATE jobs SET pending_until=%s WHERE id=%s",
+                    ("2020-01-01T00:00:00+00:00", scheduled.job_ids[0]),
+                )
+
+            client = Mock()
+            client.delete_objects.return_value = {}
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            worker_settings = SimpleNamespace(operation_concurrency=1)
+            with (
+                patch("app.database.settings", database_settings),
+                patch("app.storage.settings", worker_settings),
+                patch("app.storage.validate_cloud_vault"),
+                patch("app.storage.s3_client", return_value=client),
+            ):
+                process_jobs_once()
+
+            client.delete_objects.assert_called_once()
+            self.assertEqual(
+                len(client.delete_objects.call_args.kwargs["Delete"]["Objects"]),
+                100,
+            )
+            client.delete_object.assert_not_called()
+            with SQLiteConnection(str(database_path)) as connection:
+                job = connection.execute(
+                    "SELECT status FROM jobs WHERE id=%s",
+                    (scheduled.job_ids[0],),
+                ).fetchone()
+                remaining = connection.execute(
+                    """
+                    SELECT COUNT(*) AS total FROM archive_versions
+                    WHERE vault_file_id=%s AND availability <> 'purged'
+                    """,
+                    (file_id,),
+                ).fetchone()["total"]
+            self.assertEqual(job["status"], "completed")
+            self.assertEqual(remaining, 0)
+
     def test_purge_after_delay_deletes_every_version_and_marker_resumably(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path, vault_id, file_id = _prepare_vault_with_versions(
@@ -833,13 +892,20 @@ class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
             client = Mock()
             deleted: list[dict] = []
 
-            def delete_object(**kwargs):
-                deleted.append(kwargs)
-                if kwargs.get("VersionId") == "s3-v2":
-                    raise RuntimeError("transient version delete failure")
-                return {"VersionId": kwargs.get("VersionId")}
+            def delete_objects(**kwargs):
+                deleted.extend(kwargs["Delete"]["Objects"])
+                return {
+                    "Errors": [
+                        {
+                            "Key": "docs/report.txt",
+                            "VersionId": "s3-v2",
+                            "Code": "InternalError",
+                            "Message": "transient version delete failure",
+                        }
+                    ]
+                }
 
-            client.delete_object = Mock(side_effect=delete_object)
+            client.delete_objects = Mock(side_effect=delete_objects)
             database_settings = SimpleNamespace(
                 db_backend="sqlite",
                 sqlite_path=str(database_path),
@@ -885,9 +951,7 @@ class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
             self.assertIn("purged", {row["availability"] for row in versions})
 
             # Resume: fix the failing version and rerun.
-            client.delete_object = Mock(
-                side_effect=lambda **kwargs: {"VersionId": kwargs.get("VersionId")}
-            )
+            client.delete_objects = Mock(return_value={})
             with SQLiteConnection(str(database_path)) as connection:
                 connection.execute(
                     "UPDATE jobs SET status='queued', message=NULL WHERE id=%s",
