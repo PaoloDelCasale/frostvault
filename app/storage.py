@@ -2552,30 +2552,58 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
     with db() as connection:
         items = cloud_deletion_service.pending_items_for_job(connection, job["id"])
     failures = 0
-    for item in items:
+    for offset in range(0, len(items), 1000):
+        batch = items[offset : offset + 1000]
         ensure_job_active(job["id"], "Cloud purge stopped")
         stamp = now_iso()
+        deleted_ids: list[int] = []
+        failed_items: list[tuple[int, str]] = []
         try:
-            client.delete_object(
+            response = client.delete_objects(
                 Bucket=job["s3_bucket"],
-                Key=item["object_key"],
-                VersionId=item["provider_version_id"],
+                Delete={
+                    "Objects": [
+                        {
+                            "Key": item["object_key"],
+                            "VersionId": item["provider_version_id"],
+                        }
+                        for item in batch
+                    ],
+                    "Quiet": True,
+                },
             )
-            with db() as connection:
-                cloud_deletion_service.mark_item_deleted(
-                    connection,
-                    item_id=int(item["id"]),
-                    updated_at=stamp,
+            errors: dict[tuple[str, str], str] = {}
+            for error in response.get("Errors") or []:
+                key = error.get("Key")
+                version_id = error.get("VersionId")
+                if not key or not version_id:
+                    raise RuntimeError("S3 returned an unidentifiable delete error")
+                code = error.get("Code") or "DeleteError"
+                message = error.get("Message") or "S3 rejected the deletion"
+                errors[(str(key), str(version_id))] = f"{code}: {message}"
+            for item in batch:
+                item_id = int(item["id"])
+                error_message = errors.get(
+                    (str(item["object_key"]), str(item["provider_version_id"]))
                 )
+                if error_message is None:
+                    deleted_ids.append(item_id)
+                else:
+                    failed_items.append((item_id, error_message))
         except Exception as exc:
-            failures += 1
-            with db() as connection:
-                cloud_deletion_service.mark_item_failed(
-                    connection,
-                    item_id=int(item["id"]),
-                    error_message=str(exc),
-                    updated_at=stamp,
-                )
+            failed_items = [(int(item["id"]), str(exc)) for item in batch]
+        failures += len(failed_items)
+        with db() as connection:
+            cloud_deletion_service.mark_items_deleted(
+                connection,
+                item_ids=deleted_ids,
+                updated_at=stamp,
+            )
+            cloud_deletion_service.mark_items_failed(
+                connection,
+                failures=failed_items,
+                updated_at=stamp,
+            )
     stamp = now_iso()
     with db() as connection:
         cloud_deletion_service.finalize_purge_job(

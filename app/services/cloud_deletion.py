@@ -850,6 +850,67 @@ def mark_item_failed(
     )
 
 
+def mark_items_deleted(
+    connection: Any,
+    *,
+    item_ids: list[int],
+    updated_at: str,
+) -> None:
+    """Persist one successful S3 deletion batch without per-item commits."""
+    for offset in range(0, len(item_ids), 500):
+        batch = item_ids[offset : offset + 500]
+        if not batch:
+            continue
+        placeholders = ", ".join(["%s"] * len(batch))
+        connection.execute(
+            f"""
+            UPDATE archive_versions
+            SET availability='purged', availability_checked_at=%s
+            WHERE id IN (
+                SELECT archive_version_id FROM cloud_deletion_items
+                WHERE id IN ({placeholders}) AND kind='version'
+            )
+            """,
+            (updated_at, *batch),
+        )
+        connection.execute(
+            f"""
+            UPDATE cloud_deletion_items
+            SET status='deleted', error_message=NULL, updated_at=%s
+            WHERE id IN ({placeholders})
+            """,
+            (updated_at, *batch),
+        )
+
+
+def mark_items_failed(
+    connection: Any,
+    *,
+    failures: list[tuple[int, str]],
+    updated_at: str,
+) -> None:
+    """Persist per-item errors from one S3 deletion batch in bounded queries."""
+    for offset in range(0, len(failures), 250):
+        batch = failures[offset : offset + 250]
+        if not batch:
+            continue
+        cases = " ".join("WHEN %s THEN %s" for _ in batch)
+        placeholders = ", ".join(["%s"] * len(batch))
+        case_params: list[Any] = []
+        for item_id, message in batch:
+            case_params.extend((item_id, message))
+        connection.execute(
+            f"""
+            UPDATE cloud_deletion_items
+            SET status='failed',
+                error_message=CASE id {cases} ELSE error_message END,
+                updated_at=%s
+            WHERE id IN ({placeholders})
+            """,
+            (*case_params, updated_at, *(item_id for item_id, _ in batch)),
+        )
+
+
 def pending_items_for_job(connection: Any, job_id: int) -> list[dict[str, Any]]:
     return connection.execute(
         """
