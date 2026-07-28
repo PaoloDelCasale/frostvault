@@ -27,15 +27,40 @@ Search remains global across every file in the selected vault.
   folder.
 - Authenticated users can create their own vaults; administrators retain global
   access with reauthentication for sensitive actions.
-- Administrators can promote or demote other users, review the external
-  identities linked to a user and unlink one of them, and revoke a pending
-  invite before it is redeemed. The application refuses any change that would
-  leave no active administrator, or leave a user with neither a password nor a
-  linked identity.
+- New vaults can use an empty managed root or adopt an existing directory from
+  an exclusive Source Area assigned to the user. Source Areas authorize vault
+  creation only; vault membership remains the sole data-access boundary.
+- The Administration hub manages users, external identities, one-time invites,
+  vaults, Source Areas, safe runtime defaults, deployment settings, and OIDC.
+  Administrators can promote or demote users, unlink an external identity, and
+  revoke a pending invite before it is redeemed. The application refuses any
+  change that would leave no active administrator, or leave a user with neither
+  a password nor a linked identity.
 - Every vault must retain exactly one primary owner.
 
 Administrators do not automatically enter other users' vaults. They must be
 explicitly assigned like any other user before they can browse files.
+
+## Archive lifecycle and cloud deletion
+
+- Owners and operators can run a one-shot storage-class change for a file,
+  directory, or whole vault. Moving data out of Glacier or Deep Archive performs
+  the required restore before copying it to the selected class.
+- The storage-class picker shows storage and retrieval rates, expected restore
+  time, and early-deletion warnings. Rates are estimates; AWS billing remains
+  authoritative.
+- A lifecycle pin suspends automatic storage-class transitions for a path until
+  it is unpinned. Automatic lifecycle policies may move data only to deeper
+  classes; they never warm it.
+- **Hide in cloud** creates a reversible Delete Marker and retains noncurrent
+  Archive Versions. **Purge from cloud permanently** deletes every selected
+  Archive Version and Delete Marker after an owner-confirmed, cancellable delay.
+  A recently reauthenticated owner can skip the remaining delay with
+  **Delete now**.
+- Cloud actions work on files and folders. Permanent folder and vault purges
+  batch S3 deletions while preserving per-item failures for safe retries.
+- Archive statistics, file-state badges, and Job progress refresh automatically
+  while background operations are active.
 
 ## Local cleanup safety
 
@@ -93,7 +118,8 @@ Local setup:
 
 3. Never send AWS keys in chat or commit the `.env` file.
 4. Use dedicated IAM credentials restricted to the test bucket/prefix, without
-   `s3:DeleteObject`. Never use account root credentials.
+   delete permissions when cloud deletion is not being tested. Never use account
+   root credentials.
 5. Copy `config/rclone.local.conf.example` to `config/rclone.conf`, enter the
    same bucket, and generate the obscured Rclone password.
 6. Pull the published image and start the application (schema migrations run
@@ -144,7 +170,8 @@ instead of trying other credentials available on the computer.
    in production without them. Set `OIDC_ENABLED=true` and configure
    `OIDC_ISSUER`/`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET` for the initial
    environment-defined single sign-on configuration. Set a separate
-   `OIDC_SETTINGS_ENCRYPTION_KEY` before managing OIDC through the admin API.
+   `OIDC_SETTINGS_ENCRYPTION_KEY` before managing OIDC through the
+   Administration hub.
 
 4. Create `config/rclone.conf` from `config/rclone.conf.example`.
 5. Generate a distinct encryption password for each vault:
@@ -236,10 +263,10 @@ source and data directories for that identity; see
 
 On first startup, the application creates the administrator defined by
 `BOOTSTRAP_ADMIN_*` and, when configured, the first vault. Manage subsequent
-user passwords and vault assignments from the **Administration** page.
-Bootstrap variables never overwrite existing users. After the first successful
-sign-in, remove `BOOTSTRAP_ADMIN_USERNAME` and `BOOTSTRAP_ADMIN_PASSWORD` from
-`.env`.
+users, identities, invites, vault assignments, Source Areas, defaults, and OIDC
+from the **Administration** page. Bootstrap variables never overwrite existing
+users. After the first successful sign-in, remove
+`BOOTSTRAP_ADMIN_USERNAME` and `BOOTSTRAP_ADMIN_PASSWORD` from `.env`.
 
 ## Localization
 
@@ -278,8 +305,9 @@ server, prefer the native watcher with the value `false`.
 ## Indicative minimum AWS permissions
 
 The application role/user must be able to list the bucket and, within the
-configured prefix, read, upload, and request object restores. Do not grant
-`s3:DeleteObject`.
+configured prefix, read, upload, and request object restores. **Hide in cloud**
+and permanent purge additionally require `s3:DeleteObject` and
+`s3:DeleteObjectVersion`; omit them when vault cloud deletion remains disabled.
 
 Use the Terraform baseline in
 [`infra/terraform/archive-bucket/`](infra/terraform/archive-bucket/) or apply
@@ -302,19 +330,24 @@ must be replaced before the corresponding integration is used. Important groups:
 | Web Push | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (optional; see below) |
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `VAULT_RCLONE_*`, `RCLONE_CONFIG` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
-| Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RCLONE_MULTI_THREAD_*`, `RESTORE_*`, `ALLOW_LOCAL_DELETE` |
+| Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RCLONE_MULTI_THREAD_*`, `RESTORE_*`, `CLOUD_PURGE_DELAY_SECONDS`, `ALLOW_LOCAL_DELETE` |
 
 Database settings and credentials, paths and mount roots, master/storage
 credentials, proxy/host/cookie trust, bootstrap values, automatic migration,
 and the frontend distribution path are deployment-only. They cannot be edited
 at runtime because they define process and deployment trust boundaries.
-Administrators can inspect the effective, structurally redacted inventory at
-`GET /api/admin/settings`. Recently reauthenticated administrators can atomically
-apply bounded runtime overrides, or remove them to restore environment/default
-precedence, with `PATCH /api/admin/settings`. Mutations use the `revision`
-returned by `GET` to reject stale writes. See
+The **Administration** page exposes a structurally redacted deployment inventory
+and allows recently reauthenticated administrators to apply or reset bounded
+runtime defaults. The equivalent API is `GET /api/admin/settings` plus
+revision-checked `PATCH /api/admin/settings`; stale writes are rejected. See
 [ADR-0009](docs/adr/0009-effective-system-configuration.md) for the exhaustive
 classification and precedence model.
+
+Managed OIDC configuration uses a staged workflow: save a draft, validate the
+provider discovery document and JWKS, then activate the unchanged validated
+draft. Administrators can also rotate the write-only client secret or disable
+new OIDC sign-ins without deleting existing Sessions or Identity bindings. See
+[ADR-0010](docs/adr/0010-secure-oidc-configuration-lifecycle.md).
 
 ### Progressive Web App and Web Push
 
