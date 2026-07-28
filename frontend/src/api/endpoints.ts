@@ -13,6 +13,10 @@ import type {
   AdminVaultMembersResponse,
   AdminVaultsResponse,
   SourceVolumeInventoryResponse,
+  SourceAreaAssignPayload,
+  SourceAreaGrant,
+  SourceAreaListResponse,
+  SourceDirectoryBrowseResponse,
   CloudDeletionPreview,
   CloudDeletionSettings,
   CloudPurgePayload,
@@ -596,4 +600,63 @@ export function logout(): Promise<{ message: string; message_key: string }> {
 
 export function fetchAdminSourceVolumes(): Promise<SourceVolumeInventoryResponse> {
   return apiRequest<SourceVolumeInventoryResponse>("/api/admin/source-volumes");
+}
+
+export function fetchAdminSourceAreas(params?: {
+  userId?: number;
+  volumeAlias?: string;
+}): Promise<SourceAreaListResponse> {
+  const query = new URLSearchParams();
+  if (params?.userId != null) query.set("user_id", String(params.userId));
+  if (params?.volumeAlias) query.set("volume_alias", params.volumeAlias);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return apiRequest<SourceAreaListResponse>(`/api/admin/source-areas${suffix}`);
+}
+
+export function assignAdminSourceArea(
+  payload: SourceAreaAssignPayload,
+): Promise<SourceAreaGrant> {
+  return apiRequest<SourceAreaGrant>("/api/admin/source-areas", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function revokeAdminSourceArea(
+  sourceAreaId: number,
+  reason: string,
+): Promise<SourceAreaGrant> {
+  const query = new URLSearchParams({ reason });
+  return apiRequest<SourceAreaGrant>(
+    `/api/admin/source-areas/${sourceAreaId}?${query.toString()}`,
+    { method: "DELETE" },
+  );
+}
+
+export function browseAdminSourceVolume(
+  volumeAlias: string,
+  path = "",
+): Promise<SourceDirectoryBrowseResponse> {
+  const query = new URLSearchParams();
+  if (path) query.set("path", path);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return apiRequest<SourceDirectoryBrowseResponse>(
+    `/api/admin/source-volumes/${encodeURIComponent(volumeAlias)}/browse${suffix}`,
+  );
+}
+
+export function fetchMySourceAreas(): Promise<SourceAreaListResponse> {
+  return apiRequest<SourceAreaListResponse>("/api/source-areas");
+}
+
+export function browseMySourceVolume(
+  volumeAlias: string,
+  path = "",
+): Promise<SourceDirectoryBrowseResponse> {
+  const query = new URLSearchParams();
+  if (path) query.set("path", path);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return apiRequest<SourceDirectoryBrowseResponse>(
+    `/api/source-volumes/${encodeURIComponent(volumeAlias)}/browse${suffix}`,
+  );
 }

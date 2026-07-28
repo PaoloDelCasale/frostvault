@@ -730,3 +730,45 @@ export type SourceVolumeInventoryItem = {
 export type SourceVolumeInventoryResponse = {
   items: SourceVolumeInventoryItem[];
 };
+
+export type SourceAreaGrant = {
+  id: number;
+  user_id: number;
+  volume_alias: string;
+  relative_path: string;
+  created_at: string;
+  availability: "available" | "unavailable";
+  usable: boolean;
+};
+
+export type SourceAreaListResponse = {
+  items: SourceAreaGrant[];
+};
+
+export type SourceAreaAssignPayload = {
+  user_id: number;
+  volume_alias: string;
+  relative_path: string;
+  reason: string;
+};
+
+export type SourceDirectoryOccupation = {
+  kind: "vault";
+  label?: string;
+  vault_name?: string;
+  owner_display_name?: string;
+};
+
+export type SourceDirectoryEntry = {
+  name: string;
+  relative_path: string;
+  navigable: boolean;
+  selectable: boolean;
+  occupation: SourceDirectoryOccupation | null;
+};
+
+export type SourceDirectoryBrowseResponse = {
+  volume_alias: string;
+  relative_path: string;
+  items: SourceDirectoryEntry[];
+};
