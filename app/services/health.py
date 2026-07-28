@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from ..config import settings
+from . import source_layout
 from ..database import db
 
 _lock = threading.Lock()
@@ -61,6 +62,7 @@ def readiness_report() -> dict[str, Any]:
         "database": check_database(),
         "worker": worker_is_healthy(),
         "config": check_config(),
+        "sources_layout": source_layout.sources_layout_is_ready(),
     }
     ready = all(checks.values())
     return {

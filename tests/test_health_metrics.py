@@ -20,6 +20,7 @@ from app.config import settings
 from app.database import SQLiteConnection
 from app.security import hash_password
 from app.services import health as health_service
+from app.services import source_layout
 from app.services import metrics as metrics_service
 from tests.test_database import run_alembic
 
@@ -57,6 +58,15 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
             patcher = patch(target, self.test_settings)
             patcher.start()
             self.addCleanup(patcher.stop)
+
+        self.sources_root = Path(self._tmp.name) / "sources"
+        self.sources_root.mkdir()
+        self.addCleanup(source_layout.reset_sources_root_override)
+        source_layout.override_sources_root(self.sources_root)
+        mount_patcher = patch("app.services.source_layout.path_is_mount", return_value=True)
+        mount_patcher.start()
+        self.addCleanup(mount_patcher.stop)
+        source_layout.prepare_sources_layout()
 
         health_service.mark_worker_heartbeat()
         metrics_service.reset_for_tests()

@@ -39,6 +39,12 @@ from .breakglass import is_break_glass_allowed
 from .catalog import ArchiveCatalog
 from .database import INTEGRITY_ERRORS, db, initialize_database
 from .migrate_on_start import ensure_schema_current
+from .services.source_layout import (
+    get_sources_root,
+    prepare_sources_layout,
+    source_volume_inventory,
+    vault_local_access,
+)
 from .oidc import OidcError, begin_login, complete_login
 from .oidc_configuration import (
     OidcConfigurationConflict,
@@ -202,6 +208,7 @@ def _spa_index_response() -> FileResponse:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_settings()
+    prepare_sources_layout()
     ensure_schema_current()
     initialize_database()
     cleanup_abandoned_restore_files()
@@ -1753,7 +1760,7 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
     with db() as connection:
         summary = ArchiveCatalog(connection).summary(vault["id"])
     source_root = vault.get("source_root") or ""
-    allowed_bases = [settings.vault_sources_root]
+    allowed_bases = [str(get_sources_root())]
     bootstrap_root = (settings.bootstrap_vault_source_root or "").strip()
     if bootstrap_root:
         allowed_bases.append(bootstrap_root)
@@ -1763,25 +1770,46 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
     if safe_root is None:
         # Report missing under the configured sources root; never walk raw input.
         filesystem = check_vault_filesystem(
-            f"{settings.vault_sources_root.rstrip('/')}/.missing-vault-root",
+            f"{str(get_sources_root()).rstrip(chr(47))}/.missing-vault-root",
             allowed_bases=allowed_bases,
         )
     else:
         filesystem = check_vault_filesystem(safe_root, allowed_bases=allowed_bases)
+    access = vault_local_access(source_root)
+    checks_payload = [
+        {
+            "code": check.code,
+            "status": check.status,
+            "message": check.message,
+            "remediation": check.remediation,
+        }
+        for check in filesystem.checks
+    ]
+    ok = filesystem.ok
+    if not access.local_operations_allowed:
+        ok = False
+        checks_payload.append(
+            {
+                "code": f"source_volume.{access.volume_health}",
+                "status": "fail",
+                "message": (
+                    f"Local operations suspended for Source Volume "
+                    f"{access.volume_alias or 'unknown'} "
+                    f"({access.volume_health})"
+                ),
+                "remediation": (
+                    "Remount /sources/<alias> as a direct rw sibling, then run a "
+                    "full local scan before local operations resume. Nested mounts "
+                    "are unsupported."
+                ),
+            }
+        )
     filesystem_payload = {
-        "ok": filesystem.ok,
+        "ok": ok,
         "uid": filesystem.uid,
         "gid": filesystem.gid,
         "root": filesystem.root,
-        "checks": [
-            {
-                "code": check.code,
-                "status": check.status,
-                "message": check.message,
-                "remediation": check.remediation,
-            }
-            for check in filesystem.checks
-        ],
+        "checks": checks_payload,
         "findings": [
             {
                 "path": finding.path,
@@ -1790,6 +1818,12 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
             }
             for finding in filesystem.findings
         ],
+        "source_volume": {
+            "alias": access.volume_alias,
+            "health": access.volume_health,
+            "local_operations_allowed": access.local_operations_allowed,
+            "cloud_catalog_allowed": access.cloud_catalog_allowed,
+        },
     }
     runtime = dict(runtime_status.get(vault["id"], {}))
     # Merge any scan-time findings that are not already in the live preflight.
@@ -2484,6 +2518,21 @@ def queue_jobs(
         logical_path = safe_relative_path(path).as_posix()
     if action not in {"upload", "recover", "free-space", "rename", "storage-class"}:
         raise HTTPException(422, "Invalid operation")
+    if action in {"upload", "recover", "free-space", "rename"}:
+        with db() as connection:
+            vault_row = connection.execute(
+                "SELECT source_root FROM vaults WHERE id=%s",
+                (vault_id,),
+            ).fetchone()
+        if vault_row is None:
+            raise HTTPException(404, "Vault not found")
+        access = vault_local_access(vault_row["source_root"])
+        if not access.local_operations_allowed:
+            raise HTTPException(
+                503,
+                "Local storage for this vault is unavailable"
+                + (f" ({access.volume_health})" if access.volume_health else ""),
+            )
     if archive_version_id and (
         action not in {"recover", "storage-class"} or is_directory or whole_vault
     ):
@@ -3399,6 +3448,13 @@ def admin_unlink_identity(
             }
     except user_admin_service.AdministrationError as exc:
         raise _administration_http_error(exc) from exc
+
+
+
+@app.get("/api/admin/source-volumes")
+def admin_source_volumes(user: dict[str, Any] = Depends(admin_user)):
+    """Operator inventory of discovered Source Volumes (issue #148)."""
+    return {"items": source_volume_inventory()}
 
 
 @app.get("/api/admin/vaults")

@@ -15,7 +15,8 @@ from cryptography.fernet import Fernet
 from app.config import Settings
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
-from app.services import rclone_runtime, vault_recovery, vaults as vaults_service
+from app.services import rclone_runtime, source_layout, vault_recovery
+from app.services import vaults as vaults_service
 from app.services.vault_crypto import CryptSecrets, decrypt_vault_secrets
 from tests.test_database import run_alembic
 
@@ -31,6 +32,9 @@ class VaultEncryptionServiceTests(unittest.TestCase):
 
         self.sources_root = self.root / "sources"
         self.sources_root.mkdir()
+        self.addCleanup(source_layout.reset_sources_root_override)
+        source_layout.override_sources_root(self.sources_root)
+        self.managed_root = source_layout.ensure_managed_directory()
         self.base_data = self.root / "cloud-data"
         self.base_data.mkdir()
         self.rclone_config = self.root / "rclone.conf"
@@ -56,7 +60,6 @@ class VaultEncryptionServiceTests(unittest.TestCase):
             Settings(),
             db_backend="sqlite",
             sqlite_path=str(self.database_path),
-            vault_sources_root=str(self.sources_root),
             vault_s3_bucket="test-bucket",
             vault_rclone_remote="plain-remote",
             vault_rclone_base_remote="base",

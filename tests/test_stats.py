@@ -9,12 +9,15 @@ from unittest.mock import patch
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
 from app.main import stats
+from app.services import source_layout
 from tests.test_database import run_alembic
 
 
 class StatsTests(unittest.TestCase):
     def test_stats_read_local_and_cloud_totals_from_versioned_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
+            self.addCleanup(source_layout.reset_sources_root_override)
+            source_layout.override_sources_root("/source")
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
@@ -52,7 +55,6 @@ class StatsTests(unittest.TestCase):
                 db_backend="sqlite",
                 sqlite_path=str(database_path),
                 allow_local_delete=False,
-                vault_sources_root="/source",
                 bootstrap_vault_source_root="",
             )
             with (

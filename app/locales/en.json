@@ -598,5 +598,22 @@
   "ui.lifecycle_unpin_confirm_body": "Lifecycle policy may deepen this object again. It will not warm it back to a shallower class.",
   "ui.lifecycle_pinned_badge": "Pinned",
   "ui.vault_storage_class_action": "Change storage class now…",
-  "ui.vault_storage_class_hint": "One-shot Job for every eligible cloud Archive Version in this Vault. Does not edit the lifecycle profile."
+  "ui.vault_storage_class_hint": "One-shot Job for every eligible cloud Archive Version in this Vault. Does not edit the lifecycle profile.",
+  "admin.section_sources": "Source Volumes",
+  "admin.sources_heading": "Source Volumes",
+  "admin.sources_subtitle": "Operator-mounted filesystems under /sources. Nested mounts are unsupported.",
+  "admin.sources_loading": "Loading Source Volumes…",
+  "admin.sources_empty": "No custom Source Volumes discovered. Mount each filesystem directly as /sources/<alias>.",
+  "admin.sources_nested_mount_help": "Mount every filesystem directly under /sources/<alias> as a sibling. Nested mounts inside a Source Volume are unsupported so one Vault can never cross volumes.",
+  "admin.sources_access": "Access",
+  "admin.sources_vault_count": "Vaults",
+  "admin.sources_source_area_count": "Source Areas",
+  "admin.sources_health_ok": "Healthy",
+  "admin.sources_health_read_only": "Read-only",
+  "admin.sources_health_missing": "Missing",
+  "admin.sources_health_mount_lost": "Mount lost",
+  "admin.sources_health_scan_required": "Full scan required",
+  "admin.sources_health_unavailable": "Unavailable",
+  "ui.source_volume_degraded": "Local storage for this Source Volume is unavailable",
+  "ui.source_volume_degraded_detail": "Catalog and cloud operations remain available. Remount /sources/<alias> as a direct rw volume, then run a full local scan before local operations resume."
 }

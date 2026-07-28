@@ -12,6 +12,7 @@ import type {
   AdminVaultCreatePayload,
   AdminVaultMembersResponse,
   AdminVaultsResponse,
+  SourceVolumeInventoryResponse,
   CloudDeletionPreview,
   CloudDeletionSettings,
   CloudPurgePayload,
@@ -590,4 +591,9 @@ export function logout(): Promise<{ message: string; message_key: string }> {
     method: "POST",
     body: "{}",
   });
+}
+
+
+export function fetchAdminSourceVolumes(): Promise<SourceVolumeInventoryResponse> {
+  return apiRequest<SourceVolumeInventoryResponse>("/api/admin/source-volumes");
 }

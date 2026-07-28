@@ -115,12 +115,20 @@ instead of trying other credentials available on the computer.
 ### Production with PostgreSQL
 
 1. Create the PostgreSQL database and user shown below.
-2. Prepare one subfolder for each vault, for example:
+2. Mount each Source Volume directly under the fixed `/sources` namespace.
+   `managed` is reserved for server-provisioned empty Vault roots. Nested
+   mounts are unsupported — every filesystem must be a sibling under
+   `/sources/<alias>`:
 
    ```text
-   /srv/frostvault/sources/photos
-   /srv/frostvault/sources/documents
+   /srv/frostvault/sources/          # host path bound to /sources
+   ├── managed/                      # created by FrostVault (do not mount over)
+   ├── photos/                       # direct host mount -> /sources/photos
+   └── documents/                    # direct host mount -> /sources/documents
    ```
+
+   Compose may still substitute the host path with `SOURCES_ROOT`; the
+   application no longer accepts `VAULT_SOURCES_ROOT`.
 
 3. Copy `.env.example` to `.env` and configure paths, bucket, credentials, and
    the bootstrap administrator. For a network deployment set `COOKIE_SECURE=true`

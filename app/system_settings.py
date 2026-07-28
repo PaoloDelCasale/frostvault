@@ -193,7 +193,6 @@ SETTING_DEFINITIONS = (
     _setting("bootstrap_vault_s3_bucket", "S3_BUCKET", "vault_defaults", str, "", _D, restart=True),
     _setting("bootstrap_vault_s3_prefix", "BOOTSTRAP_VAULT_S3_PREFIX", "vault_defaults", str, "", _D, restart=True),
     _setting("bootstrap_vault_rclone_remote", "BOOTSTRAP_VAULT_RCLONE_REMOTE", "vault_defaults", str, "", _D, restart=True),
-    _setting("vault_sources_root", "VAULT_SOURCES_ROOT", "vault_defaults", str, "/sources", _D, restart=True),
     _setting("vault_s3_bucket", "VAULT_S3_BUCKET", "vault_defaults", str, "", _D, restart=True, aliases=("S3_BUCKET",)),
     _setting("vault_rclone_remote", "VAULT_RCLONE_REMOTE", "vault_defaults", str, "", _D, restart=True),
     _setting("vault_rclone_base_remote", "VAULT_RCLONE_BASE_REMOTE", "vault_defaults", str, "", _D, restart=True),

@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from app.config import settings
 from app.database import SQLiteConnection
 from app.main import app
+from app.services import source_layout
 from app.sessions import create_session
 from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
@@ -29,6 +30,9 @@ class VaultEncryptionHttpTests(unittest.TestCase):
 
         self.sources_root = Path(self._tmp.name) / "sources"
         self.sources_root.mkdir()
+        self.addCleanup(source_layout.reset_sources_root_override)
+        source_layout.override_sources_root(self.sources_root)
+        self.managed_root = source_layout.ensure_managed_directory()
         self.rclone_config = Path(self._tmp.name) / "rclone.conf"
         self.rclone_config.write_text(
             "[base]\ntype = local\nnounc = true\n", encoding="utf-8"
@@ -60,7 +64,6 @@ class VaultEncryptionHttpTests(unittest.TestCase):
             db_backend="sqlite",
             sqlite_path=str(self.database_path),
             cookie_secure=False,
-            vault_sources_root=str(self.sources_root),
             vault_s3_bucket="test-bucket",
             vault_rclone_remote="plain-remote",
             vault_rclone_base_remote="base",
@@ -156,7 +159,7 @@ class VaultEncryptionHttpTests(unittest.TestCase):
     def test_upload_api_blocks_crypt_vault_before_custody_confirmation(self) -> None:
         body = self._create_crypt()
         self._select(body["id"])
-        source = self.sources_root / body["uuid"]
+        source = self.managed_root / body["uuid"]
         (source / "note.txt").write_text("hi", encoding="utf-8")
         # Catalog the local file through observe via scan tree would be heavy;
         # insert through the catalog API used by the app.

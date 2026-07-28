@@ -17,6 +17,7 @@ from unittest.mock import patch
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
 from app.main import stats
+from app.services import source_layout
 from app.storage import (
     runtime_status,
     safe_local_entry_path,
@@ -142,6 +143,8 @@ class ScanSymlinkAndPermissionTests(unittest.TestCase):
 class VaultFilesystemHealthStatsTests(unittest.TestCase):
     def test_stats_include_filesystem_preflight_for_vault(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
+            self.addCleanup(source_layout.reset_sources_root_override)
+            source_layout.override_sources_root(directory)
             database_path = Path(directory) / "catalog.db"
             source = Path(directory) / "sources"
             source.mkdir()
@@ -168,7 +171,6 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
                 db_backend="sqlite",
                 sqlite_path=str(database_path),
                 allow_local_delete=True,
-                vault_sources_root=str(directory),
                 bootstrap_vault_source_root="",
             )
             from app import main as main_module
