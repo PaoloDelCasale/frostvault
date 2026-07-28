@@ -1,15 +1,23 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import {
   ApiError,
+  browseMySourceVolume,
   confirmRecoveryCustody,
   createVault,
+  fetchMySourceAreas,
   selectVault,
 } from "@/api";
-import type { EncryptionMode, VaultCreateResponse } from "@/api";
+import type {
+  EncryptionMode,
+  SourceAreaGrant,
+  VaultCreateResponse,
+  VaultCreationMode,
+} from "@/api";
 import { AuthCard } from "@/components/AuthCard";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { FormField, FormInput } from "@/components/FormField";
+import { FormField, FormInput, FormSelect } from "@/components/FormField";
+import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 
@@ -34,6 +42,10 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [encryptionMode, setEncryptionMode] = useState<EncryptionMode>("plain");
+  const [creationMode, setCreationMode] = useState<VaultCreationMode>("empty");
+  const [sourceAreas, setSourceAreas] = useState<SourceAreaGrant[]>([]);
+  const [volumeAlias, setVolumeAlias] = useState("");
+  const [relativePath, setRelativePath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -42,21 +54,63 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
   const [createdVault, setCreatedVault] = useState<VaultCreateResponse | null>(null);
   const [custodyConfirmed, setCustodyConfirmed] = useState(false);
 
+  useEffect(() => {
+    let cancelled = false;
+    void fetchMySourceAreas()
+      .then((response) => {
+        if (cancelled) return;
+        const usable = response.items.filter(
+          (item) => item.usable && item.availability === "available",
+        );
+        setSourceAreas(usable);
+        if (usable.length > 0) {
+          setVolumeAlias(usable[0].volume_alias);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSourceAreas([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const volumeOptions = useMemo(() => {
+    const aliases = new Set(sourceAreas.map((area) => area.volume_alias));
+    return Array.from(aliases).sort();
+  }, [sourceAreas]);
+
+  const adoptAvailable = sourceAreas.length > 0;
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
+    if (creationMode === "adopt") {
+      if (!volumeAlias || relativePath === null) {
+        setError(t("ui.vault_create.adopt_path_required"));
+        return;
+      }
+    }
     setSubmitting(true);
     try {
       const payload: {
         name: string;
         encryption_mode: EncryptionMode;
+        creation_mode: VaultCreationMode;
         slug?: string;
+        volume_alias?: string;
+        relative_path?: string;
       } = {
         name: name.trim(),
         encryption_mode: encryptionMode,
+        creation_mode: creationMode,
       };
       const trimmedSlug = slug.trim();
       if (trimmedSlug) payload.slug = trimmedSlug;
+      if (creationMode === "adopt") {
+        payload.volume_alias = volumeAlias;
+        payload.relative_path = relativePath ?? "";
+      }
 
       const vault = await createVault(payload);
       if (vault.encryption_mode === "crypt" && vault.recovery_export) {
@@ -182,6 +236,72 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
                   onChange={(e) => setSlug(e.target.value)}
                 />
               </FormField>
+
+              {adoptAvailable ? (
+                <fieldset className="grid gap-2 border-0 p-0">
+                  <legend className="text-[13px] font-bold text-muted">
+                    {t("ui.vault_create.creation_mode")}
+                  </legend>
+                  <label className="flex min-h-11 items-center gap-3 text-sm text-ink">
+                    <input
+                      type="radio"
+                      name="creation_mode"
+                      value="empty"
+                      checked={creationMode === "empty"}
+                      onChange={() => {
+                        setCreationMode("empty");
+                        setRelativePath(null);
+                      }}
+                      className="size-4 accent-green"
+                    />
+                    {t("ui.vault_create.mode_empty")}
+                  </label>
+                  <label className="flex min-h-11 items-center gap-3 text-sm text-ink">
+                    <input
+                      type="radio"
+                      name="creation_mode"
+                      value="adopt"
+                      checked={creationMode === "adopt"}
+                      onChange={() => setCreationMode("adopt")}
+                      className="size-4 accent-green"
+                    />
+                    {t("ui.vault_create.mode_adopt")}
+                  </label>
+                </fieldset>
+              ) : null}
+
+              {creationMode === "adopt" && adoptAvailable ? (
+                <div className="grid gap-3" data-testid="vault-create-adopt">
+                  <FormField
+                    label={t("ui.vault_create.volume")}
+                    htmlFor="vault-volume"
+                  >
+                    <FormSelect
+                      id="vault-volume"
+                      value={volumeAlias}
+                      onChange={(e) => {
+                        setVolumeAlias(e.target.value);
+                        setRelativePath(null);
+                      }}
+                    >
+                      {volumeOptions.map((alias) => (
+                        <option key={alias} value={alias}>
+                          {alias}
+                        </option>
+                      ))}
+                    </FormSelect>
+                  </FormField>
+                  {volumeAlias ? (
+                    <SourceDirectoryBrowser
+                      volumeAlias={volumeAlias}
+                      browse={browseMySourceVolume}
+                      selectedPath={relativePath}
+                      onSelect={setRelativePath}
+                      viewerIsAdmin={false}
+                    />
+                  ) : null}
+                </div>
+              ) : null}
 
               <fieldset className="grid gap-2 border-0 p-0">
                 <legend className="text-[13px] font-bold text-muted">

@@ -130,6 +130,13 @@ instead of trying other credentials available on the computer.
    Compose may still substitute the host path with `SOURCES_ROOT`; the
    application no longer accepts `VAULT_SOURCES_ROOT`.
 
+   Administrators assign exclusive **Source Areas** under those volumes.
+   When creating a Vault, Users can keep the default empty root
+   (`/sources/managed/<uuid>`) or adopt an existing directory under one of
+   their Source Areas in place. Adoption never moves or rewrites content;
+   the server still mints the Vault UUID and `vaults/<uuid>/` S3 prefix, then
+   starts an asynchronous local scan.
+
 3. Copy `.env.example` to `.env` and configure paths, bucket, credentials, and
    the bootstrap administrator. For a network deployment set `COOKIE_SECURE=true`
    and provide `ALLOWED_HOSTS` (the hostnames the panel answers to) and

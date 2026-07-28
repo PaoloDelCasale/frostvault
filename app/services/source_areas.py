@@ -7,6 +7,7 @@ new Vault roots only; membership remains the sole data-access boundary
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -481,6 +482,120 @@ def _path_allowed_for_user(relative_path: str, grants: list[str]) -> bool:
         ):
             return True
     return False
+
+
+def path_covered_by_grants(relative_path: str, grants: list[str]) -> bool:
+    """True when ``relative_path`` equals or descends from one grant root."""
+    for grant in grants:
+        if relative_path == grant:
+            return True
+        if grant == "":
+            return True
+        if relative_path.startswith(grant + "/"):
+            return True
+    return False
+
+
+def _assert_no_nested_mount(volume: source_layout.SourceVolume, target: Path) -> None:
+    """Reject candidates that cross a mount nested under the Source Volume."""
+    volume_root = Path(volume.path).resolve()
+    current = target.resolve()
+    while current != volume_root:
+        if source_layout.path_is_mount(current):
+            raise SourceAreaError(
+                "nested_mount",
+                "Adoption cannot cross a nested mount point",
+            )
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+
+def _assert_root_access(target: Path) -> None:
+    """Immediate root preflight: list/traverse/write before commit."""
+    if not os.access(target, os.R_OK | os.X_OK):
+        raise SourceAreaError(
+            "unreadable",
+            "Adoption root is not listable or traversable",
+        )
+    if not source_layout.path_is_writable(target):
+        raise SourceAreaError(
+            "unwritable",
+            "Adoption root is not writable",
+        )
+
+
+def _assert_no_vault_overlap(
+    connection: Any,
+    volume: source_layout.SourceVolume,
+    canonical: str,
+) -> None:
+    """Reject exact, candidate-inside-existing, and candidate-contains-existing."""
+    for item in _occupied_vault_roots(connection, volume):
+        if paths_overlap(canonical, item["relative_path"]):
+            raise SourceAreaError(
+                "overlap",
+                "Adoption path overlaps an existing Vault root",
+            )
+
+
+def resolve_adoption_candidate(
+    connection: Any,
+    *,
+    owner_user_id: int,
+    volume_alias: str,
+    relative_path: str,
+    actor_is_admin: bool = False,
+) -> Path:
+    """Resolve a Vault-root candidate for adoption and authorize the owner.
+
+    Serializes against Source Area mutations via the shared advisory lock.
+    A normal User may adopt only under their own Source Areas. An
+    administrator may adopt an unassigned path, or a path covered by a
+    Source Area belonging to ``owner_user_id``.
+    """
+    _lock_source_area_mutations(connection)
+    volume = _volume_or_raise(volume_alias)
+    canonical = canonicalize_relative_path(relative_path)
+    target = _resolve_area_directory(volume, canonical)
+    _assert_no_nested_mount(volume, target)
+    _assert_root_access(target)
+    _assert_no_vault_overlap(connection, volume, canonical)
+
+    grants = _user_visible_relative_paths(
+        connection,
+        user_id=owner_user_id,
+        volume_alias=volume.alias,
+    )
+    covered_by_owner = path_covered_by_grants(canonical, grants)
+
+    if actor_is_admin:
+        if covered_by_owner:
+            return target
+        other = connection.execute(
+            """
+            SELECT user_id, relative_path FROM source_areas
+            WHERE volume_alias=%s
+            """,
+            (volume.alias,),
+        ).fetchall()
+        for row in other:
+            if path_covered_by_grants(canonical, [row["relative_path"]]):
+                if int(row["user_id"]) != int(owner_user_id):
+                    raise SourceAreaError(
+                        "forbidden",
+                        "Path is assigned to another User",
+                    )
+        # Unassigned (or covered by owner, handled above) is allowed for admin.
+        return target
+
+    if not covered_by_owner:
+        raise SourceAreaError(
+            "forbidden",
+            "Path is outside the owner's Source Areas",
+        )
+    return target
 
 
 def browse_source_directories(

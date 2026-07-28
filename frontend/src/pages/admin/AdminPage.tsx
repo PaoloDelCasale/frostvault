@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
 
-import type { AdminUser, AdminVault } from "@/api";
+import type { AdminUser, AdminVault, SourceVolumeInventoryItem } from "@/api";
 import {
+  browseAdminSourceVolume,
   createAdminUser,
   createAdminVault,
+  fetchAdminSourceVolumes,
   fetchAdminUsers,
   fetchAdminVaults,
   fetchMe,
@@ -14,6 +16,7 @@ import { BottomSheet } from "@/components/BottomSheet";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { Panel } from "@/components/Panel";
+import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
 import { Toast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
@@ -59,6 +62,16 @@ export function AdminPage() {
   const [encryptionMode, setEncryptionMode] = useState<"plain" | "crypt">(
     "plain",
   );
+  const [vaultCreationMode, setVaultCreationMode] = useState<"empty" | "adopt">(
+    "empty",
+  );
+  const [sourceVolumes, setSourceVolumes] = useState<SourceVolumeInventoryItem[]>(
+    [],
+  );
+  const [adoptVolumeAlias, setAdoptVolumeAlias] = useState("");
+  const [adoptRelativePath, setAdoptRelativePath] = useState<string | null>(
+    null,
+  );
 
   const [membersVault, setMembersVault] = useState<AdminVault | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
@@ -95,6 +108,17 @@ export function AdminPage() {
     setVaults(data.items);
   }
 
+  async function loadSourceVolumes() {
+    const data = await fetchAdminSourceVolumes();
+    const healthy = data.items.filter(
+      (item) => item.health === "ok" && item.access === "rw",
+    );
+    setSourceVolumes(healthy);
+    if (healthy.length && !healthy.some((item) => item.alias === adoptVolumeAlias)) {
+      setAdoptVolumeAlias(healthy[0]!.alias);
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -107,7 +131,7 @@ export function AdminPage() {
           return;
         }
         setAuthorized(true);
-        await Promise.all([loadUsers(), loadVaults()]);
+        await Promise.all([loadUsers(), loadVaults(), loadSourceVolumes()]);
       } catch (error) {
         if (!cancelled) {
           showNotice(
@@ -151,17 +175,30 @@ export function AdminPage() {
   async function handleCreateVault(event: FormEvent) {
     event.preventDefault();
     try {
+      if (vaultCreationMode === "adopt" && adoptRelativePath === null) {
+        showNotice(t("admin.vault_adopt_path_required"), true);
+        return;
+      }
       await createAdminVault({
         name: vaultName,
         slug: vaultSlug,
         owner_user_id: Number(ownerUserId),
         reason: vaultReason,
         encryption_mode: encryptionMode,
+        creation_mode: vaultCreationMode,
+        ...(vaultCreationMode === "adopt"
+          ? {
+              volume_alias: adoptVolumeAlias,
+              relative_path: adoptRelativePath ?? "",
+            }
+          : {}),
       });
       setVaultName("");
       setVaultSlug("");
       setVaultReason("");
       setEncryptionMode("plain");
+      setVaultCreationMode("empty");
+      setAdoptRelativePath(null);
       showNotice(t("admin.vault_created"));
       await loadVaults();
     } catch (error) {
@@ -427,6 +464,69 @@ export function AdminPage() {
                   <option value="crypt">{t("admin.encryption_crypt")}</option>
                 </FormSelect>
               </FormField>
+              <fieldset className="grid gap-2 border-0 p-0">
+                <legend className="text-[13px] font-bold text-muted">
+                  {t("admin.vault_creation_mode")}
+                </legend>
+                <label className="flex min-h-11 items-center gap-3 text-sm">
+                  <input
+                    type="radio"
+                    name="vault_creation_mode"
+                    value="empty"
+                    checked={vaultCreationMode === "empty"}
+                    onChange={() => {
+                      setVaultCreationMode("empty");
+                      setAdoptRelativePath(null);
+                    }}
+                  />
+                  {t("admin.vault_mode_empty")}
+                </label>
+                <label className="flex min-h-11 items-center gap-3 text-sm">
+                  <input
+                    type="radio"
+                    name="vault_creation_mode"
+                    value="adopt"
+                    checked={vaultCreationMode === "adopt"}
+                    onChange={() => setVaultCreationMode("adopt")}
+                    disabled={sourceVolumes.length === 0}
+                  />
+                  {t("admin.vault_mode_adopt")}
+                </label>
+              </fieldset>
+              {vaultCreationMode === "adopt" ? (
+                <div className="grid gap-3" data-testid="admin-vault-adopt">
+                  <FormField
+                    label={t("admin.vault_volume")}
+                    htmlFor={`${id}-vault-volume`}
+                  >
+                    <FormSelect
+                      id={`${id}-vault-volume`}
+                      value={adoptVolumeAlias}
+                      onChange={(e) => {
+                        setAdoptVolumeAlias(e.target.value);
+                        setAdoptRelativePath(null);
+                      }}
+                    >
+                      {sourceVolumes.map((volume) => (
+                        <option key={volume.alias} value={volume.alias}>
+                          {volume.alias}
+                        </option>
+                      ))}
+                    </FormSelect>
+                  </FormField>
+                  {adoptVolumeAlias ? (
+                    <SourceDirectoryBrowser
+                      volumeAlias={adoptVolumeAlias}
+                      browse={(alias, path) =>
+                        browseAdminSourceVolume(alias, path, "adopt")
+                      }
+                      selectedPath={adoptRelativePath}
+                      onSelect={setAdoptRelativePath}
+                      viewerIsAdmin
+                    />
+                  ) : null}
+                </div>
+              ) : null}
               <FormField
                 label={t("admin.vault_reason")}
                 htmlFor={`${id}-vault-reason`}

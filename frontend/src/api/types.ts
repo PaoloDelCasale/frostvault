@@ -55,10 +55,15 @@ export type LocaleUpdateResponse = {
 
 export type EncryptionMode = "plain" | "crypt";
 
+export type VaultCreationMode = "empty" | "adopt";
+
 export type VaultCreateRequest = {
   name: string;
   slug?: string;
   encryption_mode: EncryptionMode;
+  creation_mode?: VaultCreationMode;
+  volume_alias?: string;
+  relative_path?: string;
 };
 
 export type VaultCreateResponse = {
@@ -70,6 +75,7 @@ export type VaultCreateResponse = {
   encryption_mode: EncryptionMode;
   recovery_custody_confirmed: boolean;
   recovery_export?: string;
+  creation_mode?: VaultCreationMode;
 };
 
 export type VaultSelectRequest = {
@@ -690,6 +696,9 @@ export type AdminVaultCreatePayload = {
   owner_user_id: number;
   reason: string;
   encryption_mode?: "plain" | "crypt";
+  creation_mode?: "empty" | "adopt";
+  volume_alias?: string;
+  relative_path?: string;
 };
 
 export type AdminVaultMember = {

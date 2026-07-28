@@ -68,9 +68,26 @@ describe("VaultCreatePage", () => {
     return jsonResponse({ locale, locales: ["en", "it"], messages });
   }
 
+  function mockEmptySourceAreas() {
+    return jsonResponse({ items: [] });
+  }
+
+  function withSourceAreas(
+    impl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+  ) {
+    return (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/source-areas") {
+        return Promise.resolve(mockEmptySourceAreas());
+      }
+      return impl(input, init);
+    };
+  }
+
   it("posts a valid creation payload then navigates to the new vault archive", async () => {
     const user = userEvent.setup();
-    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+    fetchMock.mockImplementation(
+      withSourceAreas((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/api/i18n/catalog")) {
         return Promise.resolve(mockCatalog(en));
@@ -86,6 +103,7 @@ describe("VaultCreatePage", () => {
               role: "owner",
               encryption_mode: "plain",
               recovery_custody_confirmed: true,
+              creation_mode: "empty",
             },
             201,
           ),
@@ -95,7 +113,8 @@ describe("VaultCreatePage", () => {
         return Promise.resolve(jsonResponse({ vault_id: 42 }));
       }
       return Promise.reject(new Error(`unexpected request ${url}`));
-    });
+    }),
+    );
 
     renderPage();
     await screen.findByRole("heading", { name: en["ui.vault_create.title"] });
@@ -123,6 +142,7 @@ describe("VaultCreatePage", () => {
         name: "Family Photos",
         slug: "family-photos",
         encryption_mode: "plain",
+        creation_mode: "empty",
       });
     });
 
@@ -148,6 +168,9 @@ describe("VaultCreatePage", () => {
     const it = loadCatalog("it");
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url === "/api/source-areas") {
+        return Promise.resolve(mockEmptySourceAreas());
+      }
       if (url.startsWith("/api/i18n/catalog")) {
         return Promise.resolve(mockCatalog(it, "it"));
       }
@@ -203,6 +226,9 @@ describe("VaultCreatePage", () => {
 
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url === "/api/source-areas") {
+        return Promise.resolve(mockEmptySourceAreas());
+      }
       if (url.startsWith("/api/i18n/catalog")) {
         return Promise.resolve(mockCatalog(en));
       }
@@ -261,6 +287,9 @@ describe("VaultCreatePage", () => {
 
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url === "/api/source-areas") {
+        return Promise.resolve(mockEmptySourceAreas());
+      }
       if (url.startsWith("/api/i18n/catalog")) {
         return Promise.resolve(mockCatalog(en));
       }
@@ -345,6 +374,9 @@ describe("VaultCreatePage", () => {
     const recoveryExport = "keep-offline";
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url === "/api/source-areas") {
+        return Promise.resolve(mockEmptySourceAreas());
+      }
       if (url.startsWith("/api/i18n/catalog")) {
         return Promise.resolve(mockCatalog(en));
       }
@@ -436,6 +468,9 @@ describe("VaultCreatePage", () => {
     const user = userEvent.setup();
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url === "/api/source-areas") {
+        return Promise.resolve(mockEmptySourceAreas());
+      }
       if (url.startsWith("/api/i18n/catalog")) {
         return Promise.resolve(mockCatalog(en));
       }
@@ -505,6 +540,125 @@ describe("VaultCreatePage", () => {
 
     await waitFor(() => {
       expect(screen.queryByTestId("recovery-custody-warning")).not.toBeInTheDocument();
+    });
+  });
+
+  it("adopts an existing Source Area directory and stays usable at 375px", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/i18n/catalog")) {
+        return Promise.resolve(mockCatalog(en));
+      }
+      if (url === "/api/source-areas") {
+        return Promise.resolve(
+          jsonResponse({
+            items: [
+              {
+                id: 1,
+                user_id: 1,
+                volume_alias: "photos",
+                relative_path: "albums",
+                created_at: "2026-07-28T00:00:00Z",
+                availability: "available",
+                usable: true,
+              },
+            ],
+          }),
+        );
+      }
+      if (url.startsWith("/api/source-volumes/photos/browse")) {
+        return Promise.resolve(
+          jsonResponse({
+            volume_alias: "photos",
+            relative_path: "albums",
+            items: [
+              {
+                name: "2024",
+                relative_path: "albums/2024",
+                navigable: true,
+                selectable: true,
+                occupation: null,
+              },
+            ],
+          }),
+        );
+      }
+      if (url === "/api/vaults" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              id: 77,
+              uuid: "adopt-uuid",
+              slug: "albums-archive",
+              name: "Albums Archive",
+              role: "owner",
+              encryption_mode: "plain",
+              recovery_custody_confirmed: true,
+              creation_mode: "adopt",
+            },
+            201,
+          ),
+        );
+      }
+      if (url === "/api/vaults/select" && init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ vault_id: 77 }));
+      }
+      return Promise.reject(new Error(`unexpected request ${url}`));
+    });
+
+    const { container } = renderPage();
+    await screen.findByRole("heading", { name: en["ui.vault_create.title"] });
+    await waitFor(() => {
+      expect(
+        screen.getByRole("radio", { name: en["ui.vault_create.mode_adopt"] }),
+      ).toBeInTheDocument();
+    });
+
+    Object.defineProperty(container.firstElementChild, "clientWidth", {
+      configurable: true,
+      value: 375,
+    });
+
+    await user.click(
+      screen.getByRole("radio", { name: en["ui.vault_create.mode_adopt"] }),
+    );
+    await screen.findByTestId("vault-create-adopt");
+    const adoptPanel = screen.getByTestId("vault-create-adopt");
+    expect(adoptPanel.getBoundingClientRect().width).toBeLessThanOrEqual(440);
+
+    await user.type(
+      screen.getByRole("textbox", { name: en["ui.vault_create.name"] }),
+      "Albums Archive",
+    );
+
+    const selectButtons = await screen.findAllByRole("button", {
+      name: en["ui.source_area_browser_select"],
+    });
+    await user.click(selectButtons[0]!);
+
+    await user.click(
+      screen.getByRole("button", { name: en["ui.vault_create.submit"] }),
+    );
+
+    await waitFor(() => {
+      const createCall = fetchMock.mock.calls.find(
+        ([reqUrl, init]) =>
+          String(reqUrl) === "/api/vaults" &&
+          (init as RequestInit | undefined)?.method === "POST",
+      );
+      expect(createCall).toBeDefined();
+      expect(JSON.parse(String((createCall![1] as RequestInit).body))).toEqual({
+        name: "Albums Archive",
+        encryption_mode: "plain",
+        creation_mode: "adopt",
+        volume_alias: "photos",
+        relative_path: "albums/2024",
+      });
+    });
+
+    await waitFor(() => {
+      expect(navigateMock).toHaveBeenCalledWith("/");
     });
   });
 });
