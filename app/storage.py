@@ -23,6 +23,7 @@ from watchfiles import Change, awatch
 from .config import Settings, is_placeholder, settings
 from .catalog import ArchiveCatalog
 from .database import db
+from .services import source_layout
 from .i18n import DEFAULT_LOCALE, format_message_params, translate
 from .system_settings import effective_settings
 from .services.rclone_runtime import (
@@ -520,11 +521,16 @@ def scan_tree(vault: dict[str, Any], scan_id: str) -> int:
             count += 1
             if count % 1000 == 0:
                 connection.commit()
-        catalog.mark_unseen_local_copies_missing(
-            vault_id=vault_id,
-            seen_at=scan_id,
-            observed_at=now_iso(),
-        )
+        access = source_layout.vault_local_access(vault["source_root"])
+        alias = access.volume_alias
+        if alias is None or source_layout.should_emit_local_copy_removals(alias):
+            catalog.mark_unseen_local_copies_missing(
+                vault_id=vault_id,
+                seen_at=scan_id,
+                observed_at=now_iso(),
+            )
+        if alias and source_layout.requires_full_local_scan(alias):
+            source_layout.note_full_local_scan_completed(alias)
     return count
 
 
@@ -602,11 +608,14 @@ def _apply_filesystem_changes(
             if entry.exists():
                 # Directory metadata changes do not alter catalogued files.
                 continue
-            catalog.mark_local_path_missing(
-                vault_id=vault["id"],
-                path=relative,
-                observed_at=now_iso(),
-            )
+            access = source_layout.vault_local_access(vault["source_root"])
+            alias = access.volume_alias
+            if alias is None or source_layout.should_emit_local_copy_removals(alias):
+                catalog.mark_local_path_missing(
+                    vault_id=vault["id"],
+                    path=relative,
+                    observed_at=now_iso(),
+                )
             changed += 1
     return changed
 
@@ -752,7 +761,12 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                     "checks": [],
                     "findings": [],
                 }
-            result["local"] = scan_tree(vault, scan_id)
+            access = source_layout.vault_local_access(vault["source_root"])
+            if access.local_operations_allowed or access.volume_health == "scan_required":
+                result["local"] = scan_tree(vault, scan_id)
+            else:
+                result["local_skipped"] = 1
+                result["local"] = 0
         except Exception as exc:
             status["last_error"] = f"Source scan: {exc}"
             result["local"] = -1
@@ -2897,6 +2911,7 @@ async def filesystem_watch_loop() -> None:
     watchers: dict[int, tuple[str, asyncio.Task[None]]] = {}
     try:
         while True:
+            await asyncio.to_thread(source_layout.verify_mounts_once)
             vaults = await asyncio.to_thread(_enabled_vaults)
             desired = {int(vault["id"]): vault for vault in vaults}
             for vault_id, (source_root, task) in list(watchers.items()):
@@ -2905,6 +2920,13 @@ async def filesystem_watch_loop() -> None:
                     task.cancel()
                     watchers.pop(vault_id)
             for vault_id, vault in desired.items():
+                access = source_layout.vault_local_access(vault["source_root"])
+                if not access.local_operations_allowed:
+                    existing = watchers.get(vault_id)
+                    if existing is not None:
+                        existing[1].cancel()
+                        watchers.pop(vault_id, None)
+                    continue
                 if vault_id not in watchers:
                     watchers[vault_id] = (
                         vault["source_root"],

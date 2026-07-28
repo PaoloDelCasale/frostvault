@@ -273,7 +273,7 @@ def _apply_env(paths: dict[str, Path]) -> None:
         "BOOTSTRAP_ADMIN_USERNAME": "",
         "BOOTSTRAP_ADMIN_PASSWORD": "",
         "SOURCES_ROOT": str(RUNTIME / "sources"),
-        "VAULT_SOURCES_ROOT": str(RUNTIME / "sources"),
+        "FROSTVAULT_TEST_SOURCES_ROOT": str(RUNTIME / "sources"),
         "FILESYSTEM_WATCH_ENABLED": "false",
         "SCAN_INTERVAL_SECONDS": "86400",
         "AUDIT_INTERVAL_SECONDS": "86400",

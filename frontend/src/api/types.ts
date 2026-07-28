@@ -240,6 +240,12 @@ export type FilesystemCheck = {
 };
 
 export type FilesystemHealth = {
+  source_volume?: {
+    alias: string | null;
+    health: string;
+    local_operations_allowed: boolean;
+    cloud_catalog_allowed: boolean;
+  };
   ok: boolean;
   uid: number | null;
   gid: number | null;
@@ -709,3 +715,18 @@ export type AdminOwnerTransferPayload = {
   reason: string;
 };
 
+
+
+export type SourceVolumeInventoryItem = {
+  alias: string;
+  path: string;
+  access: string;
+  health: string;
+  vault_count: number;
+  source_area_count: number;
+  diagnostic: string | null;
+};
+
+export type SourceVolumeInventoryResponse = {
+  items: SourceVolumeInventoryItem[];
+};

@@ -42,8 +42,10 @@ Docker is not installed; run natively with the SQLite backend instead of `docker
 - `.env.local.example` uses container-style paths (`/data/...`, `/sources/...`,
   `/config/rclone/rclone.conf`). For a native run, repoint them at real writable paths under
   the repo and create the dirs first, e.g. `SQLITE_PATH=/workspace/data/frostvault.db`,
-  `BOOTSTRAP_VAULT_SOURCE_ROOT=/workspace/local-data/sources/test` (the vault source folder
-  must exist for scan/browse to work), and `BOOTSTRAP_ADMIN_PASSWORD` needs >= 12 chars.
+  `BOOTSTRAP_VAULT_SOURCE_ROOT` pointing at a directory under the fixed `/sources`
+  layout (or set `FROSTVAULT_TEST_SOURCES_ROOT` for native/test seams). Empty Vaults
+  use `/sources/managed/<uuid>`; custom volumes must be direct mounts under
+  `/sources/<alias>` (nested mounts unsupported), and `BOOTSTRAP_ADMIN_PASSWORD` needs >= 12 chars.
 - With `AUTO_MIGRATE=1` (default), schema upgrades run on app start (fresh →
   `alembic upgrade head`; existing behind HEAD → pre-upgrade backup then
   alembic). Set `AUTO_MIGRATE=0` for manual control, then:

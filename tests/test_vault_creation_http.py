@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from app.config import settings
 from app.database import SQLiteConnection
 from app.main import app
+from app.services import source_layout
 from app.sessions import create_session
 from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
@@ -34,6 +35,9 @@ class VaultCreationHttpTestCase(unittest.TestCase):
 
         self.sources_root = Path(self._tmp.name) / "sources"
         self.sources_root.mkdir()
+        self.addCleanup(source_layout.reset_sources_root_override)
+        source_layout.override_sources_root(self.sources_root)
+        self.managed_root = source_layout.ensure_managed_directory()
 
         self.username = "alice"
         with SQLiteConnection(str(self.database_path)) as connection:
@@ -49,7 +53,6 @@ class VaultCreationHttpTestCase(unittest.TestCase):
             "db_backend": "sqlite",
             "sqlite_path": str(self.database_path),
             "cookie_secure": False,
-            "vault_sources_root": str(self.sources_root),
             "vault_s3_bucket": "test-bucket",
             "vault_rclone_remote": "test-remote",
             "frontend_dist_dir": str(write_spa_dist(Path(self._tmp.name))),
@@ -164,8 +167,8 @@ class SelfServiceVaultCreationTests(VaultCreationHttpTestCase):
         self.assertEqual(listed[0]["id"], body["id"])
         self.assertEqual(listed[0]["role"], "owner")
 
-        # The generated directory exists on disk under the configured root.
-        created_dirs = [p.name for p in self.sources_root.iterdir() if p.is_dir()]
+        # The generated directory exists on disk under managed/<uuid>.
+        created_dirs = [p.name for p in self.managed_root.iterdir() if p.is_dir()]
         self.assertEqual(created_dirs, [body["uuid"]])
 
     def test_creation_requires_authentication(self) -> None:
@@ -324,7 +327,7 @@ class SelfServiceVaultCreationTests(VaultCreationHttpTestCase):
             self.assertEqual(response.status_code, 201, response.text)
         uuids = {response.json()["uuid"] for response in responses}
         self.assertEqual(len(uuids), 6)
-        created_dirs = {p.name for p in self.sources_root.iterdir() if p.is_dir()}
+        created_dirs = {p.name for p in self.managed_root.iterdir() if p.is_dir()}
         self.assertEqual(created_dirs, uuids)
 
 
@@ -337,6 +340,9 @@ class AdminVaultCreationHttpTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         self.sources_root = Path(self._tmp.name) / "sources"
         self.sources_root.mkdir()
+        self.addCleanup(source_layout.reset_sources_root_override)
+        source_layout.override_sources_root(self.sources_root)
+        self.managed_root = source_layout.ensure_managed_directory()
 
         with SQLiteConnection(str(self.database_path)) as connection:
             self.admin_id = connection.execute(
@@ -357,7 +363,6 @@ class AdminVaultCreationHttpTests(unittest.TestCase):
             db_backend="sqlite",
             sqlite_path=str(self.database_path),
             cookie_secure=False,
-            vault_sources_root=str(self.sources_root),
             vault_s3_bucket="server-bucket",
             vault_rclone_remote="server-remote",
         )
@@ -401,7 +406,7 @@ class AdminVaultCreationHttpTests(unittest.TestCase):
         self.assertEqual(vault["rclone_remote"], "server-remote")
         self.assertEqual(vault["s3_prefix"], f"vaults/{vault['uuid']}/")
         self.assertEqual(
-            Path(vault["source_root"]), self.sources_root / vault["uuid"]
+            Path(vault["source_root"]), self.managed_root / vault["uuid"]
         )
         self.assertTrue(Path(vault["source_root"]).is_dir())
 
@@ -433,7 +438,7 @@ class AdminVaultCreationHttpTests(unittest.TestCase):
                 ).fetchone()["total"],
                 0,
             )
-        self.assertEqual(list(self.sources_root.iterdir()), [])
+        self.assertEqual(list(self.managed_root.iterdir()), [])
 
     def test_admin_creation_rejects_caller_storage_identity_fields(self) -> None:
         self._authenticate()

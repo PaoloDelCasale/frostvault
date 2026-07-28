@@ -146,10 +146,9 @@ class Settings:
 
     # Self-service vault creation (issue #7): the server -- never the caller
     # -- derives every vault's storage namespace from a generated UUID.
-    # vault_sources_root is the in-container root new local directories are
-    # created under; vault_s3_bucket/vault_rclone_remote are the shared
+    # Local empty-Vault roots use the fixed /sources/managed/<uuid> contract
+    # (issue #148); vault_s3_bucket/vault_rclone_remote are the shared
     # bucket/remote assigned to self-service plain vaults.
-    vault_sources_root: str = os.getenv("VAULT_SOURCES_ROOT", "/sources")
     vault_s3_bucket: str = os.getenv("VAULT_S3_BUCKET", os.getenv("S3_BUCKET", ""))
     vault_rclone_remote: str = os.getenv("VAULT_RCLONE_REMOTE", "")
     # Underlying S3 (or compatible) remote that per-vault crypt remotes wrap

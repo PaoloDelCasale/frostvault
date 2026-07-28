@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from app.config import Settings
 from app.database import SQLiteConnection
+from app.services import source_layout
 from app.services import vaults as vaults_service
 from tests.test_database import run_alembic
 
@@ -26,6 +27,9 @@ class VaultCreationServiceTestCase(unittest.TestCase):
 
         self.sources_root = Path(self._tmp.name) / "sources"
         self.sources_root.mkdir()
+        self.addCleanup(source_layout.reset_sources_root_override)
+        source_layout.override_sources_root(self.sources_root)
+        self.managed_root = source_layout.ensure_managed_directory()
 
         with SQLiteConnection(str(self.database_path)) as connection:
             connection.execute(
@@ -37,7 +41,6 @@ class VaultCreationServiceTestCase(unittest.TestCase):
             Settings(),
             db_backend="sqlite",
             sqlite_path=str(self.database_path),
-            vault_sources_root=str(self.sources_root),
             vault_s3_bucket="test-bucket",
             vault_rclone_remote="test-remote",
         )
@@ -68,7 +71,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         self.assertEqual(vault["s3_bucket"], "test-bucket")
         self.assertEqual(vault["rclone_remote"], "test-remote")
         self.assertEqual(
-            Path(vault["source_root"]), self.sources_root / vault["uuid"]
+            Path(vault["source_root"]), self.managed_root / vault["uuid"]
         )
         self.assertTrue(Path(vault["source_root"]).is_dir())
 
@@ -103,7 +106,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
             vaults_service.create_vault_for_user(1, "Docs Again", slug="docs")
 
         self.assertEqual(len(self._vaults()), 1)
-        created_dirs = [p for p in self.sources_root.iterdir() if p.is_dir()]
+        created_dirs = [p for p in self.managed_root.iterdir() if p.is_dir()]
         self.assertEqual(len(created_dirs), 1)
 
     def test_blank_name_is_rejected(self) -> None:
@@ -133,7 +136,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
 
         self.assertEqual(self._vaults(), [])
         self.assertEqual(self._all_members(), [])
-        self.assertEqual(list(self.sources_root.iterdir()), [])
+        self.assertEqual(list(self.managed_root.iterdir()), [])
 
     def test_concurrent_creation_never_collides_in_db_or_filesystem(self) -> None:
         def _create(index: int) -> dict:
@@ -149,7 +152,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         self.assertEqual(len(source_roots), 8)
         self.assertEqual(len(s3_prefixes), 8)
 
-        created_dirs = {p.name for p in self.sources_root.iterdir() if p.is_dir()}
+        created_dirs = {p.name for p in self.managed_root.iterdir() if p.is_dir()}
         self.assertEqual(created_dirs, uuids)
         self.assertEqual(len(self._vaults()), 8)
         self.assertEqual(len(self._all_members()), 8)

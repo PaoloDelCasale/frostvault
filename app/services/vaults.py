@@ -8,7 +8,7 @@ a row in ``users`` (enforced by the ``current_user`` dependency in
 The server is the sole authority over storage identity. Every vault gets an
 immutable, randomly generated UUID, and both the S3 namespace
 (``vaults/<uuid>/``) and the local directory
-(``<VAULT_SOURCES_ROOT>/<uuid>``) are derived from that UUID alone. Callers
+(``/sources/managed/<uuid>``) are derived from that UUID alone. Callers
 can never choose, and never influence, those namespaces: ``name``/``slug``
 stay human-readable labels, not storage identities.
 
@@ -32,11 +32,11 @@ import os
 import re
 import shutil
 import uuid
-from pathlib import Path
 from typing import Any
 
 from ..config import settings
 from ..database import INTEGRITY_ERRORS, db
+from .source_layout import ensure_managed_directory, managed_vault_path
 from .vault_crypto import encrypt_vault_secrets, generate_crypt_secrets
 
 
@@ -114,7 +114,8 @@ def create_vault_for_user(
     # vaults.uuid additionally guarantees a collision can never persist even
     # under concurrent creation (see migration 0007_vault_ownership).
     vault_uuid = str(uuid.uuid4())
-    source_root = str(Path(settings.vault_sources_root) / vault_uuid)
+    ensure_managed_directory()
+    source_root = str(managed_vault_path(vault_uuid))
     s3_prefix = f"vaults/{vault_uuid}/"
 
     password_ciphertext = None

@@ -74,3 +74,16 @@ identity only.
 read/write/execute checks, and per-path findings (`fs.unreadable_file`,
 `fs.unwritable_directory`, `fs.symlink`). The vault page surfaces the same
 health summary. Findings never trigger automatic `chown` or `chmod`.
+
+## Fixed Source Volume layout
+
+FrostVault expects a flat container layout under `/sources`:
+
+- `/sources` itself must be a real writable mount;
+- `/sources/managed` is reserved and created at startup (never chown/chmod it);
+- every other direct child must be a real `rw` mount (`/sources/<alias>`);
+- nested mounts inside a Source Volume are unsupported because one Vault must
+  never cross filesystem boundaries.
+
+Host Compose still uses `SOURCES_ROOT` only as the bind source for `/sources`.
+

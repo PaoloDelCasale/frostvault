@@ -598,5 +598,22 @@
   "ui.lifecycle_unpin_confirm_body": "La policy lifecycle potrà approfondire di nuovo questo oggetto. Non lo riporterà a una classe più calda.",
   "ui.lifecycle_pinned_badge": "Bloccato",
   "ui.vault_storage_class_action": "Cambia classe di storage ora…",
-  "ui.vault_storage_class_hint": "Job una tantum per ogni Archive Version cloud idonea in questo Vault. Non modifica il profilo lifecycle."
+  "ui.vault_storage_class_hint": "Job una tantum per ogni Archive Version cloud idonea in questo Vault. Non modifica il profilo lifecycle.",
+  "admin.section_sources": "Source Volume",
+  "admin.sources_heading": "Source Volume",
+  "admin.sources_subtitle": "Filesystem montati dall'operatore sotto /sources. I mount annidati non sono supportati.",
+  "admin.sources_loading": "Caricamento Source Volume…",
+  "admin.sources_empty": "Nessun Source Volume personalizzato trovato. Monta ogni filesystem direttamente come /sources/<alias>.",
+  "admin.sources_nested_mount_help": "Monta ogni filesystem direttamente sotto /sources/<alias> come sibling. I mount annidati dentro un Source Volume non sono supportati così un Vault non può mai attraversare più volumi.",
+  "admin.sources_access": "Accesso",
+  "admin.sources_vault_count": "Vault",
+  "admin.sources_source_area_count": "Source Area",
+  "admin.sources_health_ok": "Integro",
+  "admin.sources_health_read_only": "Sola lettura",
+  "admin.sources_health_missing": "Assente",
+  "admin.sources_health_mount_lost": "Mount perso",
+  "admin.sources_health_scan_required": "Serve scansione completa",
+  "admin.sources_health_unavailable": "Non disponibile",
+  "ui.source_volume_degraded": "Lo storage locale di questo Source Volume non è disponibile",
+  "ui.source_volume_degraded_detail": "Catalogo e operazioni cloud restano disponibili. Rimonta /sources/<alias> come volume rw diretto, poi esegui una scansione locale completa prima di riprendere le operazioni locali."
 }

@@ -25,6 +25,7 @@ import { MembersDialog } from "./MembersDialog";
 import { OidcSection } from "./OidcSection";
 import { PasswordDialog } from "./PasswordDialog";
 import { SettingsSection } from "./SettingsSection";
+import { SourceVolumesSection } from "./SourceVolumesSection";
 
 type NoticeState = {
   open: boolean;
@@ -276,6 +277,7 @@ export function AdminPage() {
               ["admin.section_overview", "/admin"],
               ["admin.section_users", "/admin/users"],
               ["admin.section_vaults", "/admin/vaults"],
+              ["admin.section_sources", "/admin/sources"],
               ["admin.section_defaults", "/admin/defaults"],
               ["admin.section_oidc", "/admin/oidc"],
               ["admin.section_deployment", "/admin/deployment"],
@@ -297,6 +299,8 @@ export function AdminPage() {
           <SettingsSection mode={settingsMode} />
         ) : pathname === "/admin/oidc" ? (
           <OidcSection />
+        ) : pathname === "/admin/sources" ? (
+          <SourceVolumesSection />
         ) : (
           <>
         <div className={pathname === "/admin" ? "grid gap-4 md:grid-cols-2" : "grid gap-4"}>

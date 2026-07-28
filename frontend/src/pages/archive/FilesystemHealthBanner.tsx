@@ -38,10 +38,18 @@ export function FilesystemHealthBanner({
       )}
     >
       <strong className="mb-1 block">
-        {t("ui.filesystem_needs_attention")}
+        {(filesystem.checks || []).some((check) =>
+          check.code.startsWith("source_volume."),
+        )
+          ? t("ui.source_volume_degraded")
+          : t("ui.filesystem_needs_attention")}
       </strong>
       <span className="text-[13px] text-muted">
-        {t("ui.filesystem_attention_detail")}
+        {(filesystem.checks || []).some((check) =>
+          check.code.startsWith("source_volume."),
+        )
+          ? t("ui.source_volume_degraded_detail")
+          : t("ui.filesystem_attention_detail")}
         {filesystem.uid != null && filesystem.gid != null
           ? ` uid=${filesystem.uid} gid=${filesystem.gid}.`
           : null}
