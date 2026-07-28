@@ -84,10 +84,9 @@ class VaultEncryptionServiceTests(unittest.TestCase):
 
     def test_create_accepts_immutable_encryption_mode(self) -> None:
         signature = inspect.signature(vaults_service.create_vault_for_user)
-        self.assertEqual(
-            list(signature.parameters),
-            ["user_id", "name", "slug", "encryption_mode"],
-        )
+        self.assertIn("encryption_mode", signature.parameters)
+        self.assertNotIn("source_root", signature.parameters)
+
 
     def test_plain_vault_has_no_stored_crypt_material(self) -> None:
         vault = vaults_service.create_vault_for_user(1, "Plain Docs")

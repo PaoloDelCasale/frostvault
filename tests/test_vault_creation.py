@@ -89,15 +89,34 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         self.assertNotEqual(first["source_root"], second["source_root"])
         self.assertNotEqual(first["s3_prefix"], second["s3_prefix"])
 
-    def test_the_service_accepts_only_labels_and_encryption_mode(self) -> None:
-        # No parameter exists through which a caller could supply a storage
-        # root, bucket, prefix, rclone remote, or crypt secret: this is
-        # enforced by the function signature itself, not by input filtering.
+    def test_the_service_never_accepts_caller_chosen_storage_identity(self) -> None:
+        # Labels, encryption, and constrained adoption coordinates are allowed.
+        # Absolute source_root, S3 identity, rclone remote, and crypt secrets
+        # are absent from the signature (issue #150 seam 9).
         signature = inspect.signature(vaults_service.create_vault_for_user)
         self.assertEqual(
             list(signature.parameters),
-            ["user_id", "name", "slug", "encryption_mode"],
+            [
+                "user_id",
+                "name",
+                "slug",
+                "encryption_mode",
+                "creation_mode",
+                "volume_alias",
+                "relative_path",
+                "actor_is_admin",
+            ],
         )
+        forbidden = {
+            "source_root",
+            "s3_bucket",
+            "s3_prefix",
+            "rclone_remote",
+            "crypt_password",
+            "password",
+            "password2",
+        }
+        self.assertTrue(forbidden.isdisjoint(signature.parameters))
 
     def test_duplicate_slug_is_rejected_and_leaves_nothing_partial_behind(self) -> None:
         vaults_service.create_vault_for_user(1, "Docs", slug="docs")

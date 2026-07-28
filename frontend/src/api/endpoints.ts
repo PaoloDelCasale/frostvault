@@ -636,9 +636,11 @@ export function revokeAdminSourceArea(
 export function browseAdminSourceVolume(
   volumeAlias: string,
   path = "",
+  purpose: "grant" | "adopt" = "grant",
 ): Promise<SourceDirectoryBrowseResponse> {
   const query = new URLSearchParams();
   if (path) query.set("path", path);
+  if (purpose !== "grant") query.set("purpose", purpose);
   const suffix = query.toString() ? `?${query.toString()}` : "";
   return apiRequest<SourceDirectoryBrowseResponse>(
     `/api/admin/source-volumes/${encodeURIComponent(volumeAlias)}/browse${suffix}`,

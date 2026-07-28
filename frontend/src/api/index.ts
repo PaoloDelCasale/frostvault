@@ -148,6 +148,7 @@ export type {
   CloudPurgePayload,
   DirectoryListItem,
   EncryptionMode,
+  VaultCreationMode,
   FileHistoryResponse,
   FileOperationAction,
   FileOperationPayload,

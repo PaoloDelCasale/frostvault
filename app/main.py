@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -143,6 +143,7 @@ from .services.lifecycle_profiles import GUIDED_PROFILES, guided_profile
 from .services import cloud_deletion as cloud_deletion_service
 from .services.vaults import (
     InvalidVaultName,
+    VaultAdoptionError,
     VaultCreationError,
     VaultProvisioningUnavailable,
     VaultSlugTaken,
@@ -633,14 +634,11 @@ class VaultSelection(BaseModel):
 
 
 class VaultSelfServiceCreate(BaseModel):
-    """Self-service vault creation payload (issues #7 and #6).
+    """Self-service vault creation payload (issues #7, #6, and #150).
 
-    Only a label (``name``), an optional ``slug``, and ``encryption_mode``
-    are accepted. The server alone derives the storage namespace and crypt
-    secrets, so any caller-supplied storage field (e.g. a source root, S3
-    bucket/prefix, rclone remote, or password) is rejected outright rather
-    than silently ignored -- a client must never believe it controls where
-    its vault lives or how it is encrypted.
+    Labels and encryption_mode are always accepted. Adoption adds a constrained
+    ``volume_alias`` + ``relative_path`` pair — never an absolute filesystem
+    path, S3 identity, rclone remote, or crypt secret.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -648,6 +646,9 @@ class VaultSelfServiceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     slug: str | None = Field(default=None, min_length=2, max_length=60)
     encryption_mode: str = Field(default="plain", pattern="^(plain|crypt)$")
+    creation_mode: str = Field(default="empty", pattern="^(empty|adopt)$")
+    volume_alias: str | None = Field(default=None, min_length=1, max_length=120)
+    relative_path: str | None = Field(default=None, max_length=1024)
 
 
 class RecoveryConfirm(BaseModel):
@@ -779,6 +780,9 @@ class VaultCreate(BaseModel):
     owner_user_id: int
     reason: str = Field(min_length=3, max_length=500)
     encryption_mode: str = Field(default="plain", pattern="^(plain|crypt)$")
+    creation_mode: str = Field(default="empty", pattern="^(empty|adopt)$")
+    volume_alias: str | None = Field(default=None, min_length=1, max_length=120)
+    relative_path: str | None = Field(default=None, max_length=1024)
 
 
 class MembershipCreate(BaseModel):
@@ -1498,6 +1502,7 @@ def user_vaults(user: dict[str, Any] = Depends(current_user)):
 @app.post("/api/vaults", status_code=201)
 def create_own_vault(
     action: VaultSelfServiceCreate,
+    background_tasks: BackgroundTasks,
     user: dict[str, Any] = Depends(current_user),
 ):
     """Let an authenticated, already-existing user create their own vault.
@@ -1505,7 +1510,8 @@ def create_own_vault(
     The server generates the storage identity; it never provisions a user
     from identity claims (the caller must already be `current_user`).
     Crypt vaults also receive a one-time recovery export so the owner can
-    confirm custody before uploads are admitted.
+    confirm custody before uploads are admitted. Adoption binds an existing
+    Source Area directory in place and starts an asynchronous local scan.
     """
     try:
         vault = create_vault_for_user(
@@ -1513,6 +1519,10 @@ def create_own_vault(
             action.name,
             action.slug,
             encryption_mode=action.encryption_mode,
+            creation_mode=action.creation_mode,
+            volume_alias=action.volume_alias,
+            relative_path=action.relative_path,
+            actor_is_admin=False,
         )
     except VaultSlugTaken as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -1520,8 +1530,12 @@ def create_own_vault(
         raise HTTPException(503, str(exc)) from exc
     except InvalidVaultName as exc:
         raise HTTPException(422, str(exc)) from exc
+    except VaultAdoptionError as exc:
+        raise HTTPException(422, str(exc)) from exc
     except VaultCreationError as exc:
         raise HTTPException(409, str(exc)) from exc
+    if action.creation_mode == "adopt":
+        background_tasks.add_task(scan_vault, dict(vault))
     payload: dict[str, Any] = {
         "id": vault["id"],
         "uuid": vault["uuid"],
@@ -1532,6 +1546,7 @@ def create_own_vault(
         "recovery_custody_confirmed": bool(
             vault.get("recovery_custody_confirmed_at")
         ),
+        "creation_mode": action.creation_mode,
     }
     if vault["encryption_mode"] == "crypt":
         payload["recovery_export"] = build_recovery_export(vault)
@@ -3622,6 +3637,7 @@ def admin_vaults(_: dict[str, Any] = Depends(admin_user)):
 @app.post("/api/admin/vaults", status_code=201)
 def create_vault(
     action: VaultCreate,
+    background_tasks: BackgroundTasks,
     admin: dict[str, Any] = Depends(admin_user),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
@@ -3639,6 +3655,10 @@ def create_vault(
             action.name,
             action.slug,
             encryption_mode=action.encryption_mode,
+            creation_mode=action.creation_mode,
+            volume_alias=action.volume_alias,
+            relative_path=action.relative_path,
+            actor_is_admin=True,
         )
     except VaultSlugTaken as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -3646,8 +3666,13 @@ def create_vault(
         raise HTTPException(503, str(exc)) from exc
     except InvalidVaultName as exc:
         raise HTTPException(422, str(exc)) from exc
+    except VaultAdoptionError as exc:
+        raise HTTPException(422, str(exc)) from exc
     except VaultCreationError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+    if action.creation_mode == "adopt":
+        background_tasks.add_task(scan_vault, dict(vault))
 
     notify_owner_of_admin_action(
         "vault_created",
