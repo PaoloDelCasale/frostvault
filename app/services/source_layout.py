@@ -342,10 +342,7 @@ def vault_local_access(vault_source_root: str | Path) -> VaultLocalAccess:
 
 
 def source_volume_inventory() -> list[dict[str, object]]:
-    """Admin inventory rows for discovered Source Volumes.
-
-    Source Area counts stay 0 until exclusive grants land (#149).
-    """
+    """Admin inventory rows for discovered Source Volumes."""
     from ..database import db
 
     volumes = discover_source_volumes()
@@ -354,8 +351,13 @@ def source_volume_inventory() -> list[dict[str, object]]:
 
     resolved = [(volume, Path(volume.path).resolve()) for volume in volumes]
     counts: dict[str, int] = {volume.alias: 0 for volume, _ in resolved}
+    area_counts: dict[str, int] = {volume.alias: 0 for volume, _ in resolved}
     with db() as connection:
         rows = connection.execute("SELECT source_root FROM vaults").fetchall()
+        area_rows = connection.execute(
+            "SELECT volume_alias, COUNT(*) AS total FROM source_areas "
+            "GROUP BY volume_alias"
+        ).fetchall()
     for row in rows:
         root = Path(row["source_root"]).resolve()
         for volume, volume_path in resolved:
@@ -365,6 +367,10 @@ def source_volume_inventory() -> list[dict[str, object]]:
                 continue
             counts[volume.alias] += 1
             break
+    for row in area_rows:
+        alias = row["volume_alias"]
+        if alias in area_counts:
+            area_counts[alias] = int(row["total"])
 
     items: list[dict[str, object]] = []
     for volume, _ in resolved:
@@ -387,7 +393,7 @@ def source_volume_inventory() -> list[dict[str, object]]:
                 "access": volume.access,
                 "health": health,
                 "vault_count": counts.get(volume.alias, 0),
-                "source_area_count": 0,
+                "source_area_count": area_counts.get(volume.alias, 0),
                 "diagnostic": diagnostic,
             }
         )

@@ -45,6 +45,7 @@ from .services.source_layout import (
     source_volume_inventory,
     vault_local_access,
 )
+from .services import source_areas as source_areas_service
 from .oidc import OidcError, begin_login, complete_login
 from .oidc_configuration import (
     OidcConfigurationConflict,
@@ -792,6 +793,17 @@ class UserLookup(BaseModel):
 class AdminMembershipCreate(MembershipCreate):
     # Required for every global-admin override of a vault's sharing, per
     # ADR-0005's reauth-then-audit precedent for sensitive actions.
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class AdminSourceAreaAssign(BaseModel):
+    """Admin assignment of an exclusive Source Area (issue #149)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: int
+    volume_alias: str = Field(min_length=1, max_length=120)
+    relative_path: str = Field(default="", max_length=1024)
     reason: str = Field(min_length=3, max_length=500)
 
 
@@ -3455,6 +3467,143 @@ def admin_unlink_identity(
 def admin_source_volumes(user: dict[str, Any] = Depends(admin_user)):
     """Operator inventory of discovered Source Volumes (issue #148)."""
     return {"items": source_volume_inventory()}
+
+
+_SOURCE_AREA_ERROR_STATUS: dict[str, tuple[int, str]] = {
+    "reason_required": (422, "A reason between 3 and 500 characters is required"),
+    "user_not_found": (404, "User not found"),
+    "not_found": (404, "Source Area not found"),
+    "volume_not_found": (404, "Source Volume not found"),
+    "volume_unavailable": (409, "Source Volume is not available for assignment"),
+    "invalid_volume": (422, "Source Volume is not assignable"),
+    "invalid_path": (422, "Source Area path is invalid"),
+    "path_missing": (404, "Source Area directory does not exist"),
+    "overlap": (409, "Source Area overlaps an existing grant"),
+    "occupied": (409, "Occupied Vault roots cannot be browsed"),
+    "forbidden": (403, "Path is outside the viewer's Source Areas"),
+}
+
+
+def _source_area_http_error(exc: source_areas_service.SourceAreaError) -> HTTPException:
+    status_code, message = _SOURCE_AREA_ERROR_STATUS.get(
+        exc.reason, (400, "Request could not be completed")
+    )
+    return HTTPException(status_code, message)
+
+
+@app.post("/api/admin/source-areas", status_code=201)
+def admin_assign_source_area(
+    action: AdminSourceAreaAssign,
+    admin: dict[str, Any] = Depends(admin_user),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    """Assign an exclusive Source Area to one User (issue #149)."""
+    try:
+        with db() as connection:
+            return source_areas_service.assign_source_area(
+                connection,
+                user_id=action.user_id,
+                volume_alias=action.volume_alias,
+                relative_path=action.relative_path,
+                actor_user_id=admin["id"],
+                reason=action.reason,
+            )
+    except source_areas_service.SourceAreaError as exc:
+        raise _source_area_http_error(exc) from exc
+
+
+@app.delete("/api/admin/source-areas/{source_area_id}")
+def admin_revoke_source_area(
+    source_area_id: int,
+    reason: str = Query(min_length=3, max_length=500),
+    admin: dict[str, Any] = Depends(admin_user),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    """Revoke one Source Area without altering existing Vaults (issue #149)."""
+    try:
+        with db() as connection:
+            return source_areas_service.revoke_source_area(
+                connection,
+                source_area_id=source_area_id,
+                actor_user_id=admin["id"],
+                reason=reason,
+            )
+    except source_areas_service.SourceAreaError as exc:
+        raise _source_area_http_error(exc) from exc
+
+
+@app.get("/api/admin/source-areas")
+def admin_list_source_areas(
+    user_id: int | None = None,
+    volume_alias: str | None = None,
+    _: dict[str, Any] = Depends(admin_user),
+):
+    """List Source Areas, optionally filtered by User or Source Volume."""
+    with db() as connection:
+        if user_id is not None:
+            items = source_areas_service.list_source_areas_for_user(
+                connection, user_id=user_id
+            )
+        elif volume_alias is not None:
+            items = source_areas_service.list_source_areas_for_volume(
+                connection, volume_alias=volume_alias
+            )
+        else:
+            items = source_areas_service.list_all_source_areas(connection)
+    return {"items": items}
+
+
+@app.get("/api/admin/source-volumes/{volume_alias}/browse")
+def admin_browse_source_volume(
+    volume_alias: str,
+    path: str = Query(default=""),
+    purpose: str = Query(default="grant", pattern="^(grant|adopt)$"),
+    admin: dict[str, Any] = Depends(admin_user),
+):
+    """Admin lazy directory browser for Source Area assignment."""
+    try:
+        with db() as connection:
+            return source_areas_service.browse_source_directories(
+                connection,
+                volume_alias=volume_alias,
+                relative_path=path,
+                viewer_user_id=admin["id"],
+                viewer_is_admin=True,
+                purpose=purpose,
+            )
+    except source_areas_service.SourceAreaError as exc:
+        raise _source_area_http_error(exc) from exc
+
+
+@app.get("/api/source-areas")
+def list_my_source_areas(user: dict[str, Any] = Depends(current_user)):
+    """Source Areas granted to the authenticated User."""
+    with db() as connection:
+        return {
+            "items": source_areas_service.list_source_areas_for_user(
+                connection, user_id=user["id"]
+            )
+        }
+
+
+@app.get("/api/source-volumes/{volume_alias}/browse")
+def browse_my_source_volume(
+    volume_alias: str,
+    path: str = Query(default=""),
+    user: dict[str, Any] = Depends(current_user),
+):
+    """User lazy directory browser scoped to their Source Areas."""
+    try:
+        with db() as connection:
+            return source_areas_service.browse_source_directories(
+                connection,
+                volume_alias=volume_alias,
+                relative_path=path,
+                viewer_user_id=user["id"],
+                viewer_is_admin=False,
+            )
+    except source_areas_service.SourceAreaError as exc:
+        raise _source_area_http_error(exc) from exc
 
 
 @app.get("/api/admin/vaults")
