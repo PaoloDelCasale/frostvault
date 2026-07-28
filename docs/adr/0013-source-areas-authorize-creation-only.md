@@ -1,0 +1,3 @@
+# Source Areas authorize creation, not Vault access
+
+A Source Area is an exclusive, non-overlapping subtree assigned to one User for discovering and choosing roots of new Vaults. The grant is reusable but has no authority over an existing Vault: membership remains the sole data-access boundary, and revocation, reassignment, deactivation, sharing, or ownership transfer never changes a Vault root or its data. Global administrators may adopt unassigned paths but cannot silently override another User’s Source Area; explicit revoke/reassign, Reauthentication, reason, audit, and notification preserve least privilege without preventing operator provisioning.

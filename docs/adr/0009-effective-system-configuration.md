@@ -39,7 +39,7 @@ The complete classification is:
 
 | Classification | Environment variables |
 | --- | --- |
-| Deployment-only, restart | `DB_BACKEND`, `SQLITE_PATH`, `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `SESSION_COOKIE_NAME`, `CSRF_COOKIE_NAME`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES`, `BREAK_GLASS_ALLOWED_CIDRS`, `RCLONE_CONFIG`, `AWS_DEFAULT_REGION`, `BOOTSTRAP_ADMIN_USERNAME`, `BOOTSTRAP_ADMIN_DISPLAY_NAME`, `BOOTSTRAP_VAULT_NAME`, `BOOTSTRAP_VAULT_SLUG`, `BOOTSTRAP_VAULT_SOURCE_ROOT`, `S3_BUCKET`, `BOOTSTRAP_VAULT_S3_PREFIX`, `BOOTSTRAP_VAULT_RCLONE_REMOTE`, `VAULT_SOURCES_ROOT`, `VAULT_S3_BUCKET`, `VAULT_RCLONE_REMOTE`, `VAULT_RCLONE_BASE_REMOTE`, `AUTO_MIGRATE`, `METADATA_BACKUP_DIR`, `FRONTEND_DIST_DIR`, `VAPID_PUBLIC_KEY`, `VAPID_SUBJECT` |
+| Deployment-only, restart | `DB_BACKEND`, `SQLITE_PATH`, `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `SESSION_COOKIE_NAME`, `CSRF_COOKIE_NAME`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES`, `BREAK_GLASS_ALLOWED_CIDRS`, `RCLONE_CONFIG`, `AWS_DEFAULT_REGION`, `BOOTSTRAP_ADMIN_USERNAME`, `BOOTSTRAP_ADMIN_DISPLAY_NAME`, `BOOTSTRAP_VAULT_NAME`, `BOOTSTRAP_VAULT_SLUG`, `BOOTSTRAP_VAULT_SOURCE_ROOT`, `S3_BUCKET`, `BOOTSTRAP_VAULT_S3_PREFIX`, `BOOTSTRAP_VAULT_RCLONE_REMOTE`, `VAULT_S3_BUCKET`, `VAULT_RCLONE_REMOTE`, `VAULT_RCLONE_BASE_REMOTE`, `AUTO_MIGRATE`, `METADATA_BACKUP_DIR`, `FRONTEND_DIST_DIR`, `VAPID_PUBLIC_KEY`, `VAPID_SUBJECT` |
 | Secret, deployment-only, restart | `PGPASSWORD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `OIDC_SETTINGS_ENCRYPTION_KEY`, `BOOTSTRAP_ADMIN_PASSWORD`, `ARCHIVE_MASTER_KEY`, `VAPID_PRIVATE_KEY` |
 | OIDC lifecycle-managed | `OIDC_ENABLED`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` (secret), `OIDC_SCOPES`, `OIDC_LOGIN_TTL_SECONDS` |
 | Restart-required | `SESSION_IDLE_SECONDS`, `SESSION_ABSOLUTE_SECONDS`, `FILESYSTEM_WATCH_ENABLED`, `FILESYSTEM_WATCH_FORCE_POLLING` |
@@ -49,7 +49,10 @@ The deployment templates also use `SOURCES_ROOT`, `APP_PORT`, `PUID`, `PGID`,
 and (for local placeholder credentials) `AWS_EC2_METADATA_DISABLED`. These are
 deployment-only container/runtime controls, not application settings. They are
 not visible inside the application when Compose substitutes them, so the API
-must not invent an effective value for them.
+must not invent an effective value for them. ADR-0012 supersedes this ADR only
+for `VAULT_SOURCES_ROOT`: the application setting is removed in favor of the
+fixed `/sources` and `/sources/managed` container contract, while the
+host-side `SOURCES_ROOT` Compose substitution remains.
 
 Rclone credentials remain in the operator-owned file referenced by
 `RCLONE_CONFIG`; the application neither imports nor exposes them. Database

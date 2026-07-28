@@ -1,0 +1,3 @@
+# Use a fixed Source Volume namespace
+
+FrostVault treats `/sources` as a fixed container boundary, reserves `/sources/managed` for server-provisioned UUID Vault roots, and recognizes every other direct `rw` child mount as one operator-provided Source Volume. Application environment settings cannot redirect this boundary, nested mounts are rejected, and isolated custom-volume failure degrades only affected Vaults; this rigid positive layout trades deployment flexibility for reliable mount discovery, fail-closed local operations, and freedom from unsafe filesystem denylists or duplicated root configuration.
