@@ -9,6 +9,27 @@ cloud history while local copies can appear, change, or be removed.
 An isolated archive owned and shared as one policy and storage namespace.
 _Avoid_: Bucket, folder, account
 
+**Source Volume**:
+An operator-provided local filesystem whose directory tree may contain Source
+Areas and Vault roots.
+_Avoid_: Compose Volume, Storage Root, Mount
+
+**Source Area**:
+A reusable, non-overlapping local directory tree assigned exclusively to one
+User, including its root and descendants, from which that User may choose roots
+for new Vaults.
+_Avoid_: Visible Path, Volume Grant, Path Permission
+
+**Vault Root Relocation**:
+Reconnecting a Vault to the same local directory after that directory moves
+within its Source Volume.
+_Avoid_: Rebind, Migration
+
+**Vault Root Rebind**:
+Retargeting a Vault to a different local directory rather than relocating the
+same one.
+_Avoid_: Relocation, Rename
+
 **Vault File**:
 A stable logical file in a Vault whose identity survives confirmed renames and
 content changes.
