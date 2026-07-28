@@ -235,6 +235,9 @@ async function renderAdmin(options: HarnessOptions = {}) {
       if (url === "/api/admin/vaults" && method === "GET") {
         return jsonResponse({ items: vaultsState });
       }
+      if (url === "/api/admin/source-volumes" && method === "GET") {
+        return jsonResponse({ items: [] });
+      }
       if (url === "/api/admin/vaults" && method === "POST") {
         mutatingCalls.push({ url, method, body });
         const payload = JSON.parse(body) as {
@@ -567,9 +570,12 @@ describe("AdminPage — create vault (seam 2)", () => {
         owner_user_id: 10,
         reason: "provision for ops",
         encryption_mode: "plain",
+        creation_mode: "empty",
       });
       // Source root is minted by the server — never sent by the client.
       expect(body).not.toHaveProperty("source_root");
+      expect(body).not.toHaveProperty("volume_alias");
+      expect(body).not.toHaveProperty("relative_path");
     });
 
     await waitFor(() => {

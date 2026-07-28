@@ -131,7 +131,14 @@ export function AdminPage() {
           return;
         }
         setAuthorized(true);
-        await Promise.all([loadUsers(), loadVaults(), loadSourceVolumes()]);
+        await Promise.all([loadUsers(), loadVaults()]);
+        try {
+          await loadSourceVolumes();
+        } catch {
+          // Source Volume inventory is optional for the Users/Vaults forms;
+          // adoption mode simply stays unavailable when discovery fails.
+          if (!cancelled) setSourceVolumes([]);
+        }
       } catch (error) {
         if (!cancelled) {
           showNotice(
