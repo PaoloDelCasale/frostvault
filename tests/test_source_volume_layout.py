@@ -231,6 +231,27 @@ class SourceVolumeDiscoveryTests(unittest.TestCase):
         self.assertRegex(str(raised.exception), r"(?i)nested")
 
 
+class LegacyFixtureSourceRootTests(unittest.TestCase):
+    """Historical suites inject private source_root dirs without the layout seam."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(source_layout.reset_sources_root_override)
+        source_layout.reset_sources_root_override()
+
+    def test_private_fixture_source_root_remains_usable_without_layout_seam(self) -> None:
+        root = Path(self._tmp.name) / "vault-root"
+        root.mkdir()
+        access = source_layout.vault_local_access(str(root))
+        self.assertTrue(access.local_operations_allowed)
+        self.assertEqual(access.volume_health, "ok")
+
+        synthetic = source_layout.vault_local_access("/source")
+        self.assertTrue(synthetic.local_operations_allowed)
+        self.assertEqual(synthetic.volume_health, "ok")
+
+
 class FixedProductionNamespaceTests(unittest.TestCase):
     """Seam 7: no production setting/API redirects the fixed namespace."""
 
