@@ -5,3 +5,10 @@
 # remediates when rclone publishes a release built against grpc >= 1.82.1.
 # https://github.com/advisories/GHSA-hrxh-6v49-42gf — review by 2026-10-23
 GHSA-hrxh-6v49-42gf
+
+# CVE-2026-56852 / GHSA-jpjm-c3r5-q96r — golang.org/x/text in vendored rclone
+# 1.74.4 (v0.38.0; fixed in 0.39.0). Infinite loop on invalid UTF-8 in
+# unicode/norm; not exercised by archive crypt/S3 application paths.
+# Remediates when rclone publishes a release built against x/text >= 0.39.0.
+# https://github.com/advisories/GHSA-jpjm-c3r5-q96r — review by 2026-10-30
+CVE-2026-56852
