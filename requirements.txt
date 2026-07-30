@@ -11,4 +11,4 @@ httpx==0.28.1
 authlib==1.7.2
 cryptography==49.0.0
 PyYAML==6.0.3
-pywebpush==2.0.1
+pywebpush==2.3.0
