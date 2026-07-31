@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { logout } from "@/api/endpoints";
 import { AuthCard } from "@/components/AuthCard";
+import { ThemeControl } from "@/components/ThemeControl";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 
@@ -54,6 +55,7 @@ export function NoVaultPage({ onNavigate = defaultNavigate }: NoVaultPageProps) 
               {t("ui.sign_out")}
             </Button>
           </div>
+          <ThemeControl className="mt-5 max-w-[14rem]" />
         </AuthCard>
       </main>
     </div>

@@ -82,7 +82,7 @@ export function PasswordDialog({
           />
         </FormField>
         {error ? (
-          <p role="alert" className="text-sm font-bold text-[#92372f]">
+          <p role="alert" className="text-sm font-bold text-[var(--state-local-fg)]">
             {error}
           </p>
         ) : null}

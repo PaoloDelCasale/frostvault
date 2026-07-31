@@ -26,7 +26,7 @@ export function FormInput({ className, ...props }: FormInputProps) {
   return (
     <input
       className={cn(
-        "min-h-11 w-full rounded-[10px] border border-input bg-white px-3.5 py-[11px] text-ink",
+        "min-h-11 w-full rounded-[10px] border border-input bg-surface px-3.5 py-[11px] text-ink",
         className,
       )}
       {...props}
@@ -40,7 +40,7 @@ export function FormSelect({ className, ...props }: FormSelectProps) {
   return (
     <select
       className={cn(
-        "min-h-11 w-full rounded-[10px] border border-input bg-white px-3.5 py-[11px] text-ink",
+        "min-h-11 w-full rounded-[10px] border border-input bg-surface px-3.5 py-[11px] text-ink",
         className,
       )}
       {...props}

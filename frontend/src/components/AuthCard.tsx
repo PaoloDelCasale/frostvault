@@ -12,8 +12,8 @@ export function AuthCard({ children, className }: AuthCardProps) {
   return (
     <section
       className={cn(
-        "rounded-auth border border-line bg-white p-[30px]",
-        "shadow-[0_18px_50px_rgba(22,45,32,0.08)]",
+        "rounded-auth border border-line bg-surface p-[30px]",
+        "shadow-[0_18px_50px_var(--shadow-color)]",
         className,
       )}
     >

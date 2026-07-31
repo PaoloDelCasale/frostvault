@@ -1,3 +1,5 @@
+import { ThemeControl } from "@/components/ThemeControl";
+
 import type { ShellCapabilities, ShellNavHandlers } from "./types";
 
 type ShellNavItemsProps = {
@@ -28,6 +30,10 @@ export function ShellNavItems({
     currentVaultId,
   } = capabilities;
   const selectedVaultId = currentVaultId ?? vaults[0]?.id ?? "";
+  const actionClass =
+    "min-h-11 rounded-[10px] border border-input bg-surface px-4 text-left font-bold text-ink";
+  const selectClass =
+    "min-h-11 rounded-[10px] border border-input bg-surface px-3 text-ink";
 
   return (
     <div className={className ?? "flex flex-col gap-2"}>
@@ -35,7 +41,7 @@ export function ShellNavItems({
         <span>Vault</span>
         <select
           aria-label="Vault"
-          className="min-h-11 rounded-[10px] border border-input bg-white px-3 text-ink"
+          className={selectClass}
           value={selectedVaultId}
           onChange={(event) => {
             const id = Number(event.target.value);
@@ -52,7 +58,7 @@ export function ShellNavItems({
 
       <button
         type="button"
-        className="min-h-11 rounded-[10px] border border-input bg-white px-4 text-left font-bold text-ink"
+        className={actionClass}
         onClick={() => {
           handlers?.onNewVault?.();
           onNavigate?.();
@@ -64,7 +70,7 @@ export function ShellNavItems({
       {isVaultOwner ? (
         <button
           type="button"
-          className="min-h-11 rounded-[10px] border border-input bg-white px-4 text-left font-bold text-ink"
+          className={actionClass}
           onClick={() => {
             handlers?.onManageAccess?.();
             onNavigate?.();
@@ -77,7 +83,7 @@ export function ShellNavItems({
       {isAdmin ? (
         <button
           type="button"
-          className="min-h-11 rounded-[10px] border border-input bg-white px-4 text-left font-bold text-ink"
+          className={actionClass}
           onClick={() => {
             handlers?.onAdministration?.();
             onNavigate?.();
@@ -90,7 +96,7 @@ export function ShellNavItems({
       {canOperate ? (
         <button
           type="button"
-          className="min-h-11 rounded-[10px] border border-input bg-white px-4 text-left font-bold text-ink"
+          className={actionClass}
           onClick={() => {
             handlers?.onRefreshList?.();
             onNavigate?.();
@@ -104,7 +110,7 @@ export function ShellNavItems({
         <span>Language</span>
         <select
           aria-label="Language"
-          className="min-h-11 rounded-[10px] border border-input bg-white px-3 text-ink"
+          className={selectClass}
           value={locale}
           onChange={(event) => handlers?.onLocaleChange?.(event.target.value)}
         >
@@ -116,9 +122,11 @@ export function ShellNavItems({
         </select>
       </label>
 
+      <ThemeControl />
+
       <button
         type="button"
-        className="min-h-11 rounded-[10px] border border-input bg-white px-4 text-left font-bold text-ink"
+        className={actionClass}
         onClick={() => {
           handlers?.onSignOut?.();
           onNavigate?.();

@@ -306,7 +306,7 @@ export function AdminPage() {
           </div>
           <a
             href="/"
-            className="inline-flex min-h-11 items-center rounded-[10px] border border-input bg-white px-4 font-bold"
+            className="inline-flex min-h-11 items-center rounded-[10px] border border-input bg-surface px-4 font-bold"
           >
             {t("admin.back_to_archive")}
           </a>

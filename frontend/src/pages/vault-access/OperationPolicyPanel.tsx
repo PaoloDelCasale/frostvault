@@ -99,7 +99,7 @@ export function OperationPolicyPanel({ onNotice }: OperationPolicyPanelProps) {
   }
 
   const textareaClass =
-    "min-h-28 w-full rounded-[10px] border border-input bg-white px-3.5 py-[11px] font-mono text-sm text-ink";
+    "min-h-28 w-full rounded-[10px] border border-input bg-surface px-3.5 py-[11px] font-mono text-sm text-ink";
 
   return (
     <section data-panel="operation-policy">

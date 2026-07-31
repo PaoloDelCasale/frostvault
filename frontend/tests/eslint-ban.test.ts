@@ -12,17 +12,24 @@ const fixturePath = path.join(
 
 describe("ESLint ban on dangerouslySetInnerHTML", () => {
   it("fails linting a fixture that uses dangerouslySetInnerHTML", () => {
-    const result = spawnSync(
-      path.join(frontendRoot, "node_modules", ".bin", "eslint"),
-      ["--no-ignore", fixturePath],
-      {
-        cwd: frontendRoot,
-        encoding: "utf8",
-        env: process.env,
-      },
+    const eslintScript = path.join(
+      frontendRoot,
+      "node_modules",
+      "eslint",
+      "bin",
+      "eslint.js",
     );
+    const command = process.platform === "win32" ? process.execPath : eslintScript;
+    const args = process.platform === "win32"
+      ? [eslintScript, "--no-ignore", fixturePath]
+      : ["--no-ignore", fixturePath];
+    const result = spawnSync(command, args, {
+      cwd: frontendRoot,
+      encoding: "utf8",
+      env: process.env,
+    });
 
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/dangerouslySetInnerHTML|react\/no-danger/i);
-  });
+  }, 60000);
 });

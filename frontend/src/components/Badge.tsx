@@ -27,13 +27,13 @@ const badgeVariants = cva(
   {
     variants: {
       state: {
-        both: "bg-green-soft text-[#185a37]",
-        local_only: "bg-red-soft text-[#92372f]",
-        cloud_only: "bg-blue-soft text-[#24568f]",
-        restoring: "bg-amber-soft text-[#775400]",
-        mixed: "bg-amber-soft text-[#775400]",
-        missing: "bg-[#eee] text-[#555]",
-        unsupported: "bg-amber-soft text-[#775400]",
+        both: "bg-[var(--state-both-bg)] text-[var(--state-both-fg)]",
+        local_only: "bg-[var(--state-local-bg)] text-[var(--state-local-fg)]",
+        cloud_only: "bg-[var(--state-cloud-bg)] text-[var(--state-cloud-fg)]",
+        restoring: "bg-[var(--state-restoring-bg)] text-[var(--state-restoring-fg)]",
+        mixed: "bg-[var(--state-mixed-bg)] text-[var(--state-mixed-fg)]",
+        missing: "bg-[var(--state-missing-bg)] text-[var(--state-missing-fg)]",
+        unsupported: "bg-[var(--state-unsupported-bg)] text-[var(--state-unsupported-fg)]",
       },
     },
     defaultVariants: {

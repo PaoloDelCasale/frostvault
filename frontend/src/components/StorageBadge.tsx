@@ -15,9 +15,9 @@ const storageBadgeVariants = cva(
   {
     variants: {
       storage: {
-        standard: "border-line bg-[#f1f4f2] text-[#526159]",
-        glacier: "border-[#cddff5] bg-blue-soft text-[#24568f]",
-        "deep-archive": "border-[#d7c9f0] bg-violet-soft text-[#593a8a]",
+        standard: "border-line bg-[var(--storage-standard-bg)] text-[var(--storage-standard-fg)]",
+        glacier: "border-[var(--storage-glacier-border)] bg-blue-soft text-[var(--storage-glacier-fg)]",
+        "deep-archive": "border-[var(--storage-archive-border)] bg-violet-soft text-[var(--storage-archive-fg)]",
       },
     },
     defaultVariants: {
