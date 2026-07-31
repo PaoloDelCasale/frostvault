@@ -5,6 +5,7 @@ import { AuthCard } from "@/components/AuthCard";
 import { ThemeControl } from "@/components/ThemeControl";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
+import { useTheme } from "@/theme";
 
 type NoVaultPageProps = {
   onNavigate?: (url: string) => void;
@@ -16,9 +17,12 @@ function defaultNavigate(url: string): void {
 
 export function NoVaultPage({ onNavigate = defaultNavigate }: NoVaultPageProps) {
   const { t } = useI18n();
+  const { setUserId } = useTheme();
   const [signingOut, setSigningOut] = useState(false);
 
   async function handleSignOut() {
+    // The next page is unauthenticated; clear the marker before navigation.
+    setUserId(null);
     setSigningOut(true);
     try {
       await logout();

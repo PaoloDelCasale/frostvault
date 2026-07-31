@@ -11,6 +11,17 @@ export type BadgeState =
   | "missing"
   | "unsupported";
 
+/** Sole source of state-specific classes used by rendering and contrast checks. */
+export const BADGE_STATE_VARIANT_CLASSES = {
+  both: "bg-[var(--state-both-bg)] text-[var(--state-both-fg)]",
+  local_only: "bg-[var(--state-local-bg)] text-[var(--state-local-fg)]",
+  cloud_only: "bg-[var(--state-cloud-bg)] text-[var(--state-cloud-fg)]",
+  restoring: "bg-[var(--state-restoring-bg)] text-[var(--state-restoring-fg)]",
+  mixed: "bg-[var(--state-mixed-bg)] text-[var(--state-mixed-fg)]",
+  missing: "bg-[var(--state-missing-bg)] text-[var(--state-missing-fg)]",
+  unsupported: "bg-[var(--state-unsupported-bg)] text-[var(--state-unsupported-fg)]",
+} as const satisfies Record<BadgeState, string>;
+
 /** Independent labels — colour is never the only carrier of state. */
 export const BADGE_STATE_LABELS: Record<BadgeState, string> = {
   both: "Server + cloud",
@@ -26,15 +37,7 @@ const badgeVariants = cva(
   "inline-flex items-center gap-[7px] rounded-badge px-2.5 py-1.5 text-[13px] font-bold whitespace-nowrap",
   {
     variants: {
-      state: {
-        both: "bg-[var(--state-both-bg)] text-[var(--state-both-fg)]",
-        local_only: "bg-[var(--state-local-bg)] text-[var(--state-local-fg)]",
-        cloud_only: "bg-[var(--state-cloud-bg)] text-[var(--state-cloud-fg)]",
-        restoring: "bg-[var(--state-restoring-bg)] text-[var(--state-restoring-fg)]",
-        mixed: "bg-[var(--state-mixed-bg)] text-[var(--state-mixed-fg)]",
-        missing: "bg-[var(--state-missing-bg)] text-[var(--state-missing-fg)]",
-        unsupported: "bg-[var(--state-unsupported-bg)] text-[var(--state-unsupported-fg)]",
-      },
+      state: BADGE_STATE_VARIANT_CLASSES,
     },
     defaultVariants: {
       state: "both",

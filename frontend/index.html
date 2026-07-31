@@ -4,39 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FrostVault</title>
-    <!-- Apply the stored palette before React/CSS paint to prevent a light flash. -->
-    <script>
-      (function () {
-        var prefix = "frostvault_theme";
-        var activeUserKey = "frostvault_theme_active_user";
-        var guestKey = "frostvault_theme_guest";
-        var preference = "system";
-        try {
-          var activeUser = window.localStorage.getItem(activeUserKey);
-          var key = activeUser
-            ? prefix + "_user_" + encodeURIComponent(activeUser)
-            : guestKey;
-          var stored = window.localStorage.getItem(key);
-          if (stored === "light" || stored === "dark" || stored === "system") {
-            preference = stored;
-          }
-        } catch (_) {
-          // Storage can be unavailable in private browsing; system remains safe.
-        }
-        var dark = preference === "dark";
-        if (preference === "system") {
-          try {
-            dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-          } catch (_) {
-            dark = false;
-          }
-        }
-        var theme = dark ? "dark" : "light";
-        document.documentElement.dataset.theme = theme;
-        document.documentElement.style.colorScheme = theme;
-        if (dark) document.documentElement.classList.add("dark");
-      })();
-    </script>
+    <!-- Parser-blocking same-origin bootstrap is allowed by script-src 'self'. -->
+    <script src="/theme-bootstrap.js"></script>
   </head>
   <body>
     <div id="root"></div>

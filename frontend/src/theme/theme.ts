@@ -88,8 +88,10 @@ export function activeUserStorageKeyScript(): string {
   var activeUserKey = "${THEME_ACTIVE_USER_STORAGE_KEY}";
   var guestKey = "${THEME_GUEST_STORAGE_KEY}";
   var preference = "system";
+  var isLoginRoute = window.location.pathname === "/login";
   try {
-    var activeUser = window.localStorage.getItem(activeUserKey);
+    var activeUser = isLoginRoute ? null : window.localStorage.getItem(activeUserKey);
+    if (isLoginRoute) window.localStorage.removeItem(activeUserKey);
     var key = activeUser ? prefix + "_user_" + encodeURIComponent(activeUser) : guestKey;
     var stored = window.localStorage.getItem(key);
     if (stored === "light" || stored === "dark" || stored === "system") preference = stored;

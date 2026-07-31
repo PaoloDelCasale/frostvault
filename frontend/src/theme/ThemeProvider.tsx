@@ -27,10 +27,20 @@ function normalizeUserId(userId: string | number | null | undefined): string | n
   return String(userId);
 }
 
+function readInitialUserId(): string | null {
+  if (typeof window !== "undefined" && window.location.pathname === "/login") {
+    // A login screen has no trusted identity. Remove stale state before the
+    // first React paint rather than waiting for LoginPage's effect.
+    removeStorageValue(THEME_ACTIVE_USER_STORAGE_KEY);
+    return null;
+  }
+  return readActiveUserId();
+}
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [userId, setUserIdState] = useState<string | null>(() => readActiveUserId());
+  const [userId, setUserIdState] = useState<string | null>(readInitialUserId);
   const [preference, setPreference] = useState<ThemePreference>(() =>
-    readThemePreference(readActiveUserId()),
+    readThemePreference(userId),
   );
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(getSystemTheme);
   const resolvedTheme = resolveTheme(preference, systemTheme);

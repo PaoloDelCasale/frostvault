@@ -193,6 +193,9 @@ export default function App() {
         onAdministration: () => navigate("/admin"),
         onNewVault: () => navigate("/vaults/new"),
         onSignOut: () => {
+          // Clear the identity before reloading so /login cannot first-paint
+          // the departing user's palette.
+          setUserId(null);
           void logout()
             .catch(() => undefined)
             .finally(() => {

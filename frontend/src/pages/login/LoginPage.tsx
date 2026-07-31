@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 
+import { fetchMe } from "@/api";
 import { ApiError, loginWithPassword } from "@/api/client";
 import { AuthCard } from "@/components/AuthCard";
 import { ThemeControl } from "@/components/ThemeControl";
@@ -36,7 +37,6 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
     setSubmitting(true);
     try {
       await loginWithPassword(username, password);
-      onNavigate("/");
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
         setError(t("login.local_unavailable"));
@@ -44,7 +44,20 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
         setError(t("login.failed"));
       }
       setSubmitting(false);
+      return;
     }
+
+    try {
+      // Resolve the authenticated identity before a full navigation so the
+      // parser-blocking bootstrap can select this user's palette immediately.
+      const me = await fetchMe();
+      setUserId(me.id);
+    } catch {
+      // Authentication succeeded. Keep the first paint identity-safe and let
+      // the destination retry /api/me rather than reporting a login failure.
+      setUserId(null);
+    }
+    onNavigate("/");
   }
 
   return (
@@ -100,7 +113,12 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
               type="button"
               variant="secondary"
               className="w-full"
-              onClick={() => onNavigate("/auth/oidc/login")}
+              onClick={() => {
+                // OIDC does not identify the next user yet; never carry this
+                // session's marker across the authentication redirect.
+                setUserId(null);
+                onNavigate("/auth/oidc/login");
+              }}
             >
               {t("login.oidc")}
             </Button>
