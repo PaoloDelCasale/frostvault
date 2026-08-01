@@ -153,8 +153,8 @@ describe("dark theme first paint", () => {
   it("does not put an inline resolver behind the production self-only script CSP", () => {
     const html = readFileSync(indexPath, "utf8");
     const csp = readFileSync(composePath, "utf8");
-    const inlineScripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
-      .filter(([, attributes]) => !/\bsrc\s*=/i.test(attributes ?? ""));
+    const parsedHtml = new DOMParser().parseFromString(html, "text/html");
+    const inlineScripts = parsedHtml.querySelectorAll("script:not([src])");
 
     expect(csp).toMatch(/script-src 'self'(?:;|")/);
     expect(csp).not.toContain("script-src 'self' 'unsafe-inline'");
