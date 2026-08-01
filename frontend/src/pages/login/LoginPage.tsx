@@ -1,10 +1,13 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
+import { fetchMe } from "@/api";
 import { ApiError, loginWithPassword } from "@/api/client";
 import { AuthCard } from "@/components/AuthCard";
+import { ThemeControl } from "@/components/ThemeControl";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
+import { useTheme } from "@/theme";
 
 type LoginPageProps = {
   /** Navigation after successful Break-glass Login (defaults to location.assign). */
@@ -17,6 +20,12 @@ function defaultNavigate(url: string): void {
 
 export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
   const { t, locale, locales, setLocale } = useI18n();
+  const { setUserId } = useTheme();
+
+  useEffect(() => {
+    // A login screen has no trusted identity. Never reuse a previous user's override.
+    setUserId(null);
+  }, [setUserId]);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -28,7 +37,6 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
     setSubmitting(true);
     try {
       await loginWithPassword(username, password);
-      onNavigate("/");
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
         setError(t("login.local_unavailable"));
@@ -36,7 +44,20 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
         setError(t("login.failed"));
       }
       setSubmitting(false);
+      return;
     }
+
+    try {
+      // Resolve the authenticated identity before a full navigation so the
+      // parser-blocking bootstrap can select this user's palette immediately.
+      const me = await fetchMe();
+      setUserId(me.id);
+    } catch {
+      // Authentication succeeded. Keep the first paint identity-safe and let
+      // the destination retry /api/me rather than reporting a login failure.
+      setUserId(null);
+    }
+    onNavigate("/");
   }
 
   return (
@@ -92,28 +113,36 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
               type="button"
               variant="secondary"
               className="w-full"
-              onClick={() => onNavigate("/auth/oidc/login")}
+              onClick={() => {
+                // OIDC does not identify the next user yet; never carry this
+                // session's marker across the authentication redirect.
+                setUserId(null);
+                onNavigate("/auth/oidc/login");
+              }}
             >
               {t("login.oidc")}
             </Button>
           </div>
 
-          <label className="mt-5 inline-flex min-h-11 items-center gap-2 text-sm font-bold text-muted">
-            <span>{t("ui.language")}</span>
-            <FormSelect
-              aria-label={t("ui.language")}
-              value={locale}
-              onChange={(event) => {
-                void setLocale(event.target.value, { mode: "guest" });
-              }}
-            >
-              {locales.map((code) => (
-                <option key={code} value={code}>
-                  {t(`ui.language_${code}`)}
-                </option>
-              ))}
-            </FormSelect>
-          </label>
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+            <label className="flex min-h-11 flex-col justify-center gap-1 text-sm font-bold text-muted">
+              <span>{t("ui.language")}</span>
+              <FormSelect
+                aria-label={t("ui.language")}
+                value={locale}
+                onChange={(event) => {
+                  void setLocale(event.target.value, { mode: "guest" });
+                }}
+              >
+                {locales.map((code) => (
+                  <option key={code} value={code}>
+                    {t(`ui.language_${code}`)}
+                  </option>
+                ))}
+              </FormSelect>
+            </label>
+            <ThemeControl />
+          </div>
         </AuthCard>
       </main>
     </div>

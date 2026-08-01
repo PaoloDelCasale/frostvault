@@ -4,6 +4,13 @@ import { cn } from "@/lib/utils";
 
 export type StorageClass = "standard" | "glacier" | "deep-archive";
 
+/** Sole source of storage-specific classes used by rendering and contrast checks. */
+export const STORAGE_BADGE_VARIANT_CLASSES = {
+  standard: "border-line bg-[var(--storage-standard-bg)] text-[var(--storage-standard-fg)]",
+  glacier: "border-[var(--storage-glacier-border)] bg-blue-soft text-[var(--storage-glacier-fg)]",
+  "deep-archive": "border-[var(--storage-archive-border)] bg-violet-soft text-[var(--storage-archive-fg)]",
+} as const satisfies Record<StorageClass, string>;
+
 export const STORAGE_BADGE_LABELS: Record<StorageClass, string> = {
   standard: "Standard",
   glacier: "Glacier",
@@ -14,11 +21,7 @@ const storageBadgeVariants = cva(
   "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-bold whitespace-nowrap",
   {
     variants: {
-      storage: {
-        standard: "border-line bg-[#f1f4f2] text-[#526159]",
-        glacier: "border-[#cddff5] bg-blue-soft text-[#24568f]",
-        "deep-archive": "border-[#d7c9f0] bg-violet-soft text-[#593a8a]",
-      },
+      storage: STORAGE_BADGE_VARIANT_CLASSES,
     },
     defaultVariants: {
       storage: "standard",

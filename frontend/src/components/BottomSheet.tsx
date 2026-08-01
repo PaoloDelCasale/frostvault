@@ -29,7 +29,7 @@ export function BottomSheet({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-[rgba(15,30,21,0.42)]" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-[var(--overlay)]" />
         <Dialog.Content
           className={cn(
             "fixed inset-x-0 bottom-0 z-50 outline-none",

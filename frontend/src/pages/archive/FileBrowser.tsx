@@ -259,7 +259,7 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
               value={qInput}
               onChange={(event) => setQInput(event.target.value)}
               placeholder={t("ui.search_placeholder")}
-              className="min-h-11 w-full min-w-0 rounded-lg border border-input bg-white px-3 text-sm text-ink outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+              className="min-h-11 w-full min-w-0 rounded-lg border border-input bg-surface px-3 text-sm text-ink outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
               data-testid="file-search"
             />
           </label>
@@ -268,7 +268,7 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
             <select
               value={state}
               onChange={(event) => changeState(event.target.value)}
-              className="min-h-11 w-full rounded-lg border border-input bg-white px-3 text-sm font-bold text-ink sm:w-auto"
+              className="min-h-11 w-full rounded-lg border border-input bg-surface px-3 text-sm font-bold text-ink sm:w-auto"
               data-testid="state-filter"
               aria-label={t("ui.filter_by_state")}
             >

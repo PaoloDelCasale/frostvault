@@ -556,12 +556,12 @@ export function MembersDialog({
                     key={item.label}
                     className={
                       item.kind === "ok"
-                        ? "rounded-badge bg-green-soft px-2.5 py-1.5 font-bold text-[#185a37]"
+                        ? "rounded-badge bg-[var(--state-both-bg)] px-2.5 py-1.5 font-bold text-[var(--state-both-fg)]"
                         : item.kind === "warning"
-                          ? "rounded-badge bg-amber-soft px-2.5 py-1.5 font-bold text-[#775400]"
+                          ? "rounded-badge bg-[var(--state-restoring-bg)] px-2.5 py-1.5 font-bold text-[var(--state-restoring-fg)]"
                           : item.kind === "block"
-                            ? "rounded-badge bg-red-soft px-2.5 py-1.5 font-bold text-[#92372f]"
-                            : "rounded-badge bg-[#eee] px-2.5 py-1.5 font-bold text-[#555]"
+                            ? "rounded-badge bg-[var(--state-local-bg)] px-2.5 py-1.5 font-bold text-[var(--state-local-fg)]"
+                            : "rounded-badge bg-[var(--state-missing-bg)] px-2.5 py-1.5 font-bold text-[var(--state-missing-fg)]"
                     }
                   >
                     {item.label}

@@ -19,7 +19,7 @@ export function ProgressBar({ value, label, detail, className }: ProgressBarProp
         </div>
       ) : null}
       <div
-        className="h-[7px] w-full overflow-hidden rounded-badge bg-[#dfe7e1]"
+        className="h-[7px] w-full overflow-hidden rounded-badge bg-[var(--progress-track)]"
         role="progressbar"
         aria-valuenow={clamped}
         aria-valuemin={0}
@@ -27,7 +27,7 @@ export function ProgressBar({ value, label, detail, className }: ProgressBarProp
         aria-label={label ?? "Progress"}
       >
         <span
-          className="block h-full rounded-[inherit] bg-[linear-gradient(90deg,#257a4b,#53ad77)] transition-[width] duration-[450ms] ease-out"
+          className="block h-full rounded-[inherit] bg-[linear-gradient(90deg,var(--progress-fill-end),var(--progress-fill-start))] transition-[width] duration-[450ms] ease-out"
           style={{ width: `${clamped}%` }}
         />
       </div>

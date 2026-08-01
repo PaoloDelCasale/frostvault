@@ -13,9 +13,9 @@ const buttonVariants = cva(
         primary: "bg-primary text-primary-foreground font-bold hover:brightness-95",
         default: "bg-primary text-primary-foreground font-bold hover:brightness-95",
         outline:
-          "border-input bg-white text-ink font-bold hover:bg-canvas aria-expanded:bg-canvas",
+          "border-input bg-surface text-ink font-bold hover:bg-canvas aria-expanded:bg-canvas",
         secondary:
-          "border border-input bg-white text-ink font-bold hover:bg-canvas aria-expanded:bg-canvas",
+          "border border-input bg-surface text-ink font-bold hover:bg-canvas aria-expanded:bg-canvas",
         ghost:
           "hover:bg-canvas hover:text-ink aria-expanded:bg-canvas aria-expanded:text-ink",
         danger: "bg-destructive text-white font-bold hover:brightness-95",
