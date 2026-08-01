@@ -42,7 +42,9 @@ from .migrate_on_start import ensure_schema_current
 from .services.source_layout import (
     get_sources_root,
     prepare_sources_layout,
+    reconcile_source_volume_identities,
     source_volume_inventory,
+    validate_nested_mounts_after_identity,
     vault_local_access,
 )
 from .services import source_areas as source_areas_service
@@ -213,6 +215,9 @@ async def lifespan(_: FastAPI):
     prepare_sources_layout()
     ensure_schema_current()
     initialize_database()
+    # Identity must be reconciled before scans, workers, or watchers start.
+    reconcile_source_volume_identities()
+    validate_nested_mounts_after_identity()
     cleanup_abandoned_restore_files()
     reconcile_interrupted_jobs()
     tasks = [asyncio.create_task(background_loop())]

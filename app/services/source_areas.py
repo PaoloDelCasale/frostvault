@@ -92,7 +92,14 @@ def _volume_or_raise(volume_alias: str) -> source_layout.SourceVolume:
     volume = volumes.get(alias)
     if volume is None:
         raise SourceAreaError("volume_not_found", f"Source Volume '{alias}' was not found")
-    if volume.health != "ok" or volume.access != "rw":
+    identity_access = source_layout.vault_local_access(
+        Path(volume.path) / ".identity-gate"
+    )
+    if (
+        volume.health != "ok"
+        or volume.access != "rw"
+        or not identity_access.local_operations_allowed
+    ):
         raise SourceAreaError(
             "volume_unavailable",
             f"Source Volume '{alias}' is not healthy for assignment",

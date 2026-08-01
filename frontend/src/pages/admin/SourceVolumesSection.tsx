@@ -177,7 +177,8 @@ export function SourceVolumesSection() {
                   </dl>
                   {item.diagnostic || item.health !== "ok" ? (
                     <p className="mt-3 text-sm" role="status">
-                      {item.diagnostic || t("admin.sources_nested_mount_help")}
+                      {item.diagnostic ||
+                        t(`admin.sources_diagnostic_${item.health}`)}
                     </p>
                   ) : null}
 
