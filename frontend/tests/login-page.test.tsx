@@ -12,6 +12,11 @@ import {
 import { I18nContext, type I18nContextValue } from "@/i18n/context";
 import { translate } from "@/i18n/translate";
 import { LoginPage } from "@/pages/login/LoginPage";
+import { ThemeProvider } from "@/theme";
+import {
+  THEME_ACTIVE_USER_STORAGE_KEY,
+  themeStorageKey,
+} from "@/theme/theme";
 
 const localesDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -30,6 +35,22 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
+function meResponse(id = 42): Record<string, unknown> {
+  return {
+    id,
+    username: `user-${id}`,
+    display_name: `User ${id}`,
+    is_admin: true,
+    active: true,
+    session_version: 1,
+    csrf_token: "csrf-token",
+    auth_method: "local",
+    locale: "en",
+    locales: ["en", "it"],
+    vault: null,
+  };
+}
+
 describe("LoginPage Break-glass Login submit", () => {
   const fetchMock = vi.fn();
   const navigate = vi.fn();
@@ -39,11 +60,13 @@ describe("LoginPage Break-glass Login submit", () => {
     resetApiClientForTests();
     fetchMock.mockReset();
     navigate.mockReset();
+    window.localStorage.clear();
     configureApiClient({ fetch: fetchMock });
   });
 
   afterEach(() => {
     cleanup();
+    window.localStorage.clear();
     resetApiClientForTests();
   });
 
@@ -58,15 +81,19 @@ describe("LoginPage Break-glass Login submit", () => {
     };
     return render(
       <I18nContext.Provider value={value}>
-        <LoginPage onNavigate={navigate} />
+        <ThemeProvider>
+          <LoginPage onNavigate={navigate} />
+        </ThemeProvider>
       </I18nContext.Provider>,
     );
   }
 
   it("submits Break-glass credentials to POST /api/login and redirects to the archive on success", async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({ message_key: "api.signed_in", message: "Signed in" }),
-    );
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ message_key: "api.signed_in", message: "Signed in" }),
+      )
+      .mockResolvedValueOnce(jsonResponse(meResponse()));
     renderPage();
 
     fireEvent.change(screen.getByLabelText(en["login.username"]), {
@@ -90,6 +117,68 @@ describe("LoginPage Break-glass Login submit", () => {
     await waitFor(() => {
       expect(navigate).toHaveBeenCalledWith("/");
     });
+  });
+
+  it("updates the authenticated theme identity before navigating after login", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ message_key: "api.signed_in", message: "Signed in" }),
+      )
+      .mockResolvedValueOnce(jsonResponse(meResponse(42)));
+    renderPage();
+    window.localStorage.setItem(themeStorageKey(42), "dark");
+    navigate.mockImplementation(() => {
+      expect(window.localStorage.getItem(THEME_ACTIVE_USER_STORAGE_KEY)).toBe("42");
+    });
+
+    fireEvent.change(screen.getByLabelText(en["login.username"]), {
+      target: { value: "admin" },
+    });
+    fireEvent.change(screen.getByLabelText(en["login.password"]), {
+      target: { value: "correct-horse-battery" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: en["login.submit"] }));
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/"));
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/me");
+    expect(window.localStorage.getItem(themeStorageKey(42))).toBe("dark");
+  });
+
+  it("still navigates without a login error when identity lookup transiently fails", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ message_key: "api.signed_in", message: "Signed in" }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ detail: "Temporarily unavailable" }, 503));
+    renderPage();
+    window.localStorage.setItem(THEME_ACTIVE_USER_STORAGE_KEY, "previous-user");
+    navigate.mockImplementation(() => {
+      expect(window.localStorage.getItem(THEME_ACTIVE_USER_STORAGE_KEY)).toBeNull();
+    });
+
+    fireEvent.change(screen.getByLabelText(en["login.username"]), {
+      target: { value: "admin" },
+    });
+    fireEvent.change(screen.getByLabelText(en["login.password"]), {
+      target: { value: "correct-horse-battery" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: en["login.submit"] }));
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/"));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/me");
+  });
+
+  it("clears the active theme identity before OIDC navigation", () => {
+    renderPage();
+    window.localStorage.setItem(THEME_ACTIVE_USER_STORAGE_KEY, "42");
+    navigate.mockImplementation(() => {
+      expect(window.localStorage.getItem(THEME_ACTIVE_USER_STORAGE_KEY)).toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: en["login.oidc"] }));
+
+    expect(navigate).toHaveBeenCalledWith("/auth/oidc/login");
   });
 
   it("shows a localized error and does not redirect when credentials are wrong", async () => {

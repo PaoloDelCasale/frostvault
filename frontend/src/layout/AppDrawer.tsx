@@ -26,7 +26,7 @@ export function AppDrawer({
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Trigger asChild>{trigger}</Dialog.Trigger>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-[rgba(15,30,21,0.42)]" />
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-[var(--overlay)]" />
         <Dialog.Content
           className={cn(
             "fixed inset-y-0 left-0 z-50 flex w-[min(20rem,100vw)] flex-col",

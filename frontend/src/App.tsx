@@ -9,6 +9,7 @@ import {
   type VaultListItem,
 } from "@/api";
 import { useI18n } from "@/i18n";
+import { useTheme } from "@/theme";
 import { AppShell } from "@/layout/AppShell";
 import type { ShellCapabilities } from "@/layout/types";
 import { AdminPage } from "@/pages/admin";
@@ -73,6 +74,7 @@ function currentPathname(): string {
 
 export default function App() {
   const { t, setLocale } = useI18n();
+  const { setUserId } = useTheme();
   const [pathname, setPathname] = useState(currentPathname);
   const [me, setMe] = useState<MeResponse | null>(null);
   const [vaults, setVaults] = useState<VaultListItem[]>([]);
@@ -85,6 +87,7 @@ export default function App() {
 
   const refreshSession = useCallback(async () => {
     const nextMe = await fetchMe();
+    setUserId(nextMe.id);
     setMe(nextMe);
     try {
       const listed = await fetchVaults();
@@ -93,7 +96,7 @@ export default function App() {
       setVaults([]);
     }
     return nextMe;
-  }, []);
+  }, [setUserId]);
 
   useEffect(() => {
     const onPop = () => setPathname(currentPathname());
@@ -118,6 +121,7 @@ export default function App() {
       })
       .catch(() => {
         if (cancelled) return;
+        setUserId(null);
         setMe(null);
         setVaults([]);
         if (pathname !== "/login") {
@@ -130,7 +134,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [navigate, pathname, refreshSession]);
+  }, [navigate, pathname, refreshSession, setUserId]);
 
   if (isVaultCreateRecoveryDemo()) {
     return <VaultCreateScreenshotFixture />;
@@ -189,6 +193,9 @@ export default function App() {
         onAdministration: () => navigate("/admin"),
         onNewVault: () => navigate("/vaults/new"),
         onSignOut: () => {
+          // Clear the identity before reloading so /login cannot first-paint
+          // the departing user's palette.
+          setUserId(null);
           void logout()
             .catch(() => undefined)
             .finally(() => {

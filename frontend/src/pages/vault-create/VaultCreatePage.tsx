@@ -15,6 +15,7 @@ import type {
   VaultCreationMode,
 } from "@/api";
 import { AuthCard } from "@/components/AuthCard";
+import { ThemeControl } from "@/components/ThemeControl";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
@@ -171,6 +172,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
           <p className="mt-2 text-sm text-muted">
             {t("ui.vault_create.subtitle", { name: displayName })}
           </p>
+          <ThemeControl className="mt-4 max-w-[14rem]" />
 
           {recoveryExport ? (
             <RecoveryExportPanel

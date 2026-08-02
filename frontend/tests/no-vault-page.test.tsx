@@ -11,6 +11,8 @@ import {
 import { I18nContext, type I18nContextValue } from "@/i18n/context";
 import { translate } from "@/i18n/translate";
 import { NoVaultPage } from "@/pages/no-vault/NoVaultPage";
+import { ThemeProvider } from "@/theme";
+import { THEME_ACTIVE_USER_STORAGE_KEY } from "@/theme/theme";
 
 const localesDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -39,12 +41,14 @@ describe("NoVaultPage", () => {
     resetApiClientForTests();
     fetchMock.mockReset();
     navigate.mockReset();
+    window.localStorage.clear();
     document.cookie = "frostvault_csrf=test-csrf";
     configureApiClient({ fetch: fetchMock });
   });
 
   afterEach(() => {
     cleanup();
+    window.localStorage.clear();
     document.cookie = "frostvault_csrf=";
     resetApiClientForTests();
   });
@@ -60,7 +64,9 @@ describe("NoVaultPage", () => {
     };
     return render(
       <I18nContext.Provider value={value}>
-        <NoVaultPage onNavigate={navigate} />
+        <ThemeProvider>
+          <NoVaultPage onNavigate={navigate} />
+        </ThemeProvider>
       </I18nContext.Provider>,
     );
   }
@@ -93,6 +99,10 @@ describe("NoVaultPage", () => {
       jsonResponse({ message_key: "api.signed_out", message: "Signed out" }),
     );
     renderPage("en");
+    window.localStorage.setItem(THEME_ACTIVE_USER_STORAGE_KEY, "42");
+    navigate.mockImplementation(() => {
+      expect(window.localStorage.getItem(THEME_ACTIVE_USER_STORAGE_KEY)).toBeNull();
+    });
 
     fireEvent.click(screen.getByRole("button", { name: en["ui.sign_out"] }));
 

@@ -33,7 +33,7 @@ export function FilesystemHealthBanner({
       role="alert"
       data-testid="filesystem-health"
       className={cn(
-        "filesystem-health warn mb-4 rounded-card border border-[#efd48a] bg-amber-soft px-4 py-3.5",
+        "filesystem-health warn mb-4 rounded-card border border-[var(--health-warn-border)] bg-amber-soft px-4 py-3.5",
         className,
       )}
     >

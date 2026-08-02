@@ -309,7 +309,7 @@ export function FileList({
               key={`${item.type}:${item.path}`}
               className={
                 deep
-                  ? "deep-archive-row flex items-start gap-2 border-l-4 border-[#8062ad] bg-[#fcfaff] py-3 pl-2 first:pt-0 last:pb-0"
+                  ? "deep-archive-row flex items-start gap-2 border-l-4 border-[var(--deep-archive-accent)] bg-[var(--deep-archive-row)] py-3 pl-2 first:pt-0 last:pb-0"
                   : "flex items-start gap-2 py-3 first:pt-0 last:pb-0"
               }
               data-path={item.path}
@@ -397,7 +397,7 @@ export function FileList({
                   key={`${item.type}:${item.path}`}
                   className={
                     deep
-                      ? "deep-archive-row border-b border-line bg-[#fcfaff] last:border-b-0 [&>td:first-child]:shadow-[inset_4px_0_#8062ad]"
+                      ? "deep-archive-row border-b border-line bg-[var(--deep-archive-row)] last:border-b-0 [&>td:first-child]:shadow-[inset_4px_0_var(--deep-archive-accent)]"
                       : "border-b border-line last:border-b-0"
                   }
                   data-path={item.path}
