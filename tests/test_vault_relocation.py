@@ -1,7 +1,9 @@
 """Issue #152: verified same-Source-Volume Vault Root Relocation."""
 from __future__ import annotations
 
+import json
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -39,6 +41,7 @@ class VaultRelocationTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.addCleanup(source_layout.reset_sources_root_override)
+        self.addCleanup(vault_relocation._runtime_suspended_vaults.discard, 7)
         source_layout.override_sources_root(self.sources)
         mount = patch.object(
             source_layout,
@@ -104,7 +107,8 @@ class VaultRelocationTests(unittest.TestCase):
                 "SELECT user_id, role FROM vault_members WHERE vault_id=7"
             ).fetchone()
             event = connection.execute(
-                "SELECT event, actor_user_id, reason FROM audit_events WHERE vault_id=7 ORDER BY id DESC"
+                "SELECT event, actor_user_id, detail_json "
+                "FROM audit_events WHERE vault_id=7 ORDER BY id DESC"
             ).fetchone()
             notice = connection.execute(
                 "SELECT user_id, event FROM notifications WHERE vault_id=7 ORDER BY id DESC"
@@ -112,7 +116,10 @@ class VaultRelocationTests(unittest.TestCase):
         self.assertEqual(member, {"user_id": 1, "role": "owner"})
         self.assertEqual(event["event"], "vault_root_relocated")
         self.assertEqual(event["actor_user_id"], 9)
-        self.assertEqual(event["reason"], "operator renamed the directory")
+        self.assertEqual(
+            json.loads(event["detail_json"])["reason"],
+            "operator renamed the directory",
+        )
         self.assertEqual(notice, {"user_id": 1, "event": "vault_root_relocated"})
 
     def test_destination_rejection_matrix_fails_without_update(self) -> None:
@@ -127,6 +134,18 @@ class VaultRelocationTests(unittest.TestCase):
         with SQLiteConnection(str(self.db_path)) as connection:
             connection.execute("UPDATE vaults SET root_identity=NULL WHERE id=7")
         self.assertEqual(self.reason(), "identity_ambiguous")
+
+    def test_root_identity_rejects_an_ancestor_symlink(self) -> None:
+        real_parent = Path(self.tmp.name) / "real-parent"
+        real_parent.mkdir()
+        root = real_parent / "root"
+        root.mkdir()
+        linked_parent = Path(self.tmp.name) / "linked-parent"
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+
+        with self.assertRaises(vault_relocation.VaultRelocationError) as raised:
+            vault_relocation.root_identity(linked_parent / "root")
+        self.assertEqual(raised.exception.reason, "symlink")
 
     def test_overlap_symlink_and_source_present_are_rejected(self) -> None:
         overlap = self.new / "child"
@@ -163,15 +182,239 @@ class VaultRelocationTests(unittest.TestCase):
         self.assertEqual(row["relocation_state"], "ready")
         self.assertIsNone(row["relocation_previous_root"])
 
+    def test_relocation_lock_blocks_a_new_scan_during_handoff(self) -> None:
+        from fastapi import BackgroundTasks
+
+        from app.main import VaultRelocate, admin_relocate_vault_root
+        from app.storage import scan_lock_for_vault, scan_vault
+
+        entered = threading.Event()
+        continue_relocation = threading.Event()
+        original = vault_relocation.relocate_vault_root
+
+        def delayed_relocation(connection, **kwargs):
+            entered.set()
+            self.assertTrue(continue_relocation.wait(2))
+            return original(connection, **kwargs)
+
+        lock = scan_lock_for_vault(7)
+        with patch(
+            "app.main.vault_relocation_service.relocate_vault_root",
+            side_effect=delayed_relocation,
+        ):
+            outcome: list[object] = []
+
+            def invoke() -> None:
+                try:
+                    outcome.append(
+                        admin_relocate_vault_root(
+                            7,
+                            VaultRelocate(
+                                volume_alias="photos",
+                                relative_path="new-name",
+                                reason="operator renamed the directory",
+                            ),
+                            BackgroundTasks(),
+                            {"id": 9},
+                            None,
+                        )
+                    )
+                except BaseException as exc:  # pragma: no cover - assertion below
+                    outcome.append(exc)
+
+            thread = threading.Thread(target=invoke)
+            thread.start()
+            self.assertTrue(entered.wait(2))
+            self.assertEqual(scan_vault(dict(self.vault)), {"already_running": 1})
+            continue_relocation.set()
+            thread.join(2)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], dict)
+        self.assertFalse(lock.locked())
+        with SQLiteConnection(str(self.db_path)) as connection:
+            row = connection.execute(
+                "SELECT source_root, relocation_state FROM vaults WHERE id=7"
+            ).fetchone()
+        self.assertEqual(row["source_root"], str(self.new.resolve()))
+        self.assertEqual(row["relocation_state"], "scan_required")
+
+    def test_replaced_destination_is_rejected_before_scan(self) -> None:
+        from app.storage import scan_vault
+
+        relocated = self.relocate()
+        self.new.rename(self.volume / "original")
+        self.new.mkdir()
+
+        with patch("app.storage.scan_tree") as scan_tree:
+            result = scan_vault(dict(relocated))
+
+        scan_tree.assert_not_called()
+        self.assertEqual(result["local"], -1)
+        self.assertEqual(result["root_identity_mismatch"], 1)
+        with SQLiteConnection(str(self.db_path)) as connection:
+            row = connection.execute(
+                "SELECT relocation_state FROM vaults WHERE id=7"
+            ).fetchone()
+        self.assertEqual(row["relocation_state"], "scan_required")
+        self.assertTrue(vault_relocation.local_work_suspended({"id": 7}))
+
+    def test_symlink_destination_is_rejected_before_scan(self) -> None:
+        from app.storage import scan_vault
+
+        relocated = self.relocate()
+        target = self.volume / "target"
+        target.mkdir()
+        self.new.rename(self.volume / "original")
+        self.new.symlink_to(target, target_is_directory=True)
+
+        with patch("app.storage.scan_tree") as scan_tree:
+            result = scan_vault(dict(relocated))
+
+        scan_tree.assert_not_called()
+        self.assertEqual(result["local"], -1)
+        self.assertEqual(result["root_identity_mismatch"], 1)
+        with SQLiteConnection(str(self.db_path)) as connection:
+            row = connection.execute(
+                "SELECT relocation_state FROM vaults WHERE id=7"
+            ).fetchone()
+        self.assertEqual(row["relocation_state"], "scan_required")
+        self.assertTrue(vault_relocation.local_work_suspended({"id": 7}))
+
+    def test_destination_swap_during_scan_does_not_resume_suspension(self) -> None:
+        from app.storage import scan_vault
+
+        relocated = self.relocate()
+
+        def swap_destination(*_args, **_kwargs):
+            self.new.rename(self.volume / "original")
+            self.new.mkdir()
+            return 1, None
+
+        with patch("app.storage._scan_tree", side_effect=swap_destination):
+            result = scan_vault(dict(relocated))
+
+        self.assertEqual(result["local"], -1)
+        self.assertEqual(result["root_identity_mismatch"], 1)
+        with SQLiteConnection(str(self.db_path)) as connection:
+            row = connection.execute(
+                "SELECT relocation_state FROM vaults WHERE id=7"
+            ).fetchone()
+        self.assertEqual(row["relocation_state"], "scan_required")
+        self.assertTrue(vault_relocation.local_work_suspended({"id": 7}))
+
+    def test_ancestor_symlink_is_rejected_before_scan(self) -> None:
+        from app.storage import scan_vault
+
+        relocated = self.relocate()
+        real_volume = self.sources / "photos-real"
+        self.volume.rename(real_volume)
+        self.volume.symlink_to(real_volume, target_is_directory=True)
+
+        with patch("app.storage._scan_tree") as scan_tree:
+            result = scan_vault(dict(relocated))
+
+        scan_tree.assert_not_called()
+        self.assertEqual(result["root_identity_mismatch"], 1)
+        with SQLiteConnection(str(self.db_path)) as connection:
+            row = connection.execute(
+                "SELECT relocation_state FROM vaults WHERE id=7"
+            ).fetchone()
+        self.assertEqual(row["relocation_state"], "scan_required")
+
+    def test_scan_mutations_roll_back_when_root_changes_during_walk(self) -> None:
+        from app.catalog import ArchiveCatalog
+        from app.storage import scan_vault
+
+        relocated = self.relocate()
+
+        def mutate_then_swap(connection, vault, scan_id, **_kwargs):
+            ArchiveCatalog(connection).observe_local_copy(
+                vault_id=7,
+                path="unrelated.txt",
+                file_type="regular",
+                size=9,
+                mtime_ns=1,
+                seen_at=scan_id,
+                observed_at=scan_id,
+            )
+            self.new.rename(self.volume / "original")
+            self.new.mkdir()
+            return 1, None
+
+        with patch("app.storage._scan_tree", side_effect=mutate_then_swap):
+            result = scan_vault(dict(relocated))
+
+        self.assertEqual(result["root_identity_mismatch"], 1)
+        with SQLiteConnection(str(self.db_path)) as connection:
+            files = connection.execute(
+                "SELECT COUNT(*) AS count FROM vault_files WHERE vault_id=7"
+            ).fetchone()
+            jobs = connection.execute(
+                "SELECT COUNT(*) AS count FROM jobs WHERE vault_id=7"
+            ).fetchone()
+            state = connection.execute(
+                "SELECT relocation_state FROM vaults WHERE id=7"
+            ).fetchone()
+        self.assertEqual(files["count"], 0)
+        self.assertEqual(jobs["count"], 0)
+        self.assertEqual(state["relocation_state"], "scan_required")
+
+    def test_auto_rename_mutations_roll_back_when_root_changes(self) -> None:
+        from app.catalog import ArchiveCatalog
+        from app.storage import scan_vault
+
+        relocated = self.relocate()
+
+        def mutate_then_swap(connection, vault, **_kwargs):
+            catalog = ArchiveCatalog(connection)
+            catalog.observe_local_copy(
+                vault_id=7,
+                path="unrelated.txt",
+                file_type="regular",
+                size=9,
+                mtime_ns=1,
+                seen_at="scan-auto",
+                observed_at="scan-auto",
+            )
+            file_row = connection.execute(
+                "SELECT id FROM vault_files WHERE vault_id=7"
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO jobs(
+                    vault_id, vault_file_id, path, action, status,
+                    requested_at, updated_at
+                ) VALUES (7, %s, 'unrelated.txt', 'upload', 'queued', %s, %s)
+                """,
+                (file_row["id"], "scan-auto", "scan-auto"),
+            )
+            self.new.rename(self.volume / "original")
+            self.new.mkdir()
+            return {"hashed": 1, "confirmed": 0, "queued": 1, "ambiguous": 0}
+
+        with patch("app.storage._apply_auto_renames", side_effect=mutate_then_swap):
+            result = scan_vault(dict(relocated))
+
+        self.assertEqual(result["root_identity_mismatch"], 1)
+        with SQLiteConnection(str(self.db_path)) as connection:
+            files = connection.execute(
+                "SELECT COUNT(*) AS count FROM vault_files WHERE vault_id=7"
+            ).fetchone()
+            jobs = connection.execute(
+                "SELECT COUNT(*) AS count FROM jobs WHERE vault_id=7"
+            ).fetchone()
+        self.assertEqual(files["count"], 0)
+        self.assertEqual(jobs["count"], 0)
+
     def test_successful_full_scan_resumes_after_restart_state(self) -> None:
         relocated = self.relocate()
         # The persisted state is the restart recovery seam; scan_vault receives
         # a freshly loaded row and clears it only after local scan success.
         from app.storage import scan_vault
 
-        with patch("app.storage.scan_tree", return_value=1), patch(
-            "app.storage.apply_auto_renames", return_value={}
-        ), patch("app.storage.scan_cloud", return_value=0), patch(
+        with patch("app.storage.scan_cloud", return_value=0), patch(
             "app.storage.validate_cloud_vault", return_value=None
         ), patch("app.storage.reconcile_pending_policy_tags", return_value=0), patch(
             "app.storage.sync_lifecycle_rules_for_bucket", return_value=0

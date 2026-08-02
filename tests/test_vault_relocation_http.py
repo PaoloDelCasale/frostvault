@@ -71,7 +71,7 @@ class VaultRelocationAuthorizationTests(unittest.TestCase):
             headers=headers,
         )
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"], {"error": "reauth_required"})
+        self.assertEqual(response.json(), {"error": "reauth_required"})
 
     def test_csrf_is_not_weakened(self) -> None:
         client, _ = self.client_for(2)

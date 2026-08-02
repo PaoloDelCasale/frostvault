@@ -32,15 +32,7 @@ class VaultRelocationError(Exception):
         self.reason = reason
 
 
-def root_identity(path: str | Path) -> str:
-    """Opaque identity for one real directory; never follows the final symlink."""
-    candidate = Path(path)
-    try:
-        info = candidate.lstat()
-    except OSError as exc:
-        raise VaultRelocationError("inaccessible", "Directory identity is inaccessible") from exc
-    if stat.S_ISLNK(info.st_mode):
-        raise VaultRelocationError("symlink", "Vault roots cannot be symbolic links")
+def _identity_from_stat(info: os.stat_result) -> str:
     if not stat.S_ISDIR(info.st_mode):
         raise VaultRelocationError("not_directory", "Destination is not a directory")
     if not info.st_ino or info.st_dev < 0:
@@ -51,6 +43,40 @@ def root_identity(path: str | Path) -> str:
         sort_keys=True,
     ).encode("ascii")
     return hashlib.sha256(payload).hexdigest()
+
+
+def root_identity(path: str | Path) -> str:
+    """Opaque identity for a real directory reached without any symlink.
+
+    Component checks are deliberately fail-closed but are not an atomic path
+    lookup. Callers which use the directory after this check must pin it with a
+    directory descriptor and verify that descriptor's identity.
+    """
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    current = Path(candidate.anchor)
+    try:
+        info = current.lstat()
+        components = candidate.parts[1:] if candidate.anchor else candidate.parts
+        for component in components:
+            current /= component
+            info = current.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise VaultRelocationError(
+                    "symlink", "Vault root paths cannot contain symbolic links"
+                )
+    except VaultRelocationError:
+        raise
+    except OSError as exc:
+        raise VaultRelocationError("inaccessible", "Directory identity is inaccessible") from exc
+    return _identity_from_stat(info)
+
+
+def opened_root_identity(fd: int) -> str:
+    """Return the identity of an already-open directory descriptor."""
+    try:
+        return _identity_from_stat(os.fstat(fd))
+    except OSError as exc:
+        raise VaultRelocationError("inaccessible", "Directory identity is inaccessible") from exc
 
 
 def enroll_vault_root_identity(connection: Any, vault_id: int, source_root: str) -> str:
@@ -260,7 +286,9 @@ def relocate_vault_root(connection: Any, **kwargs: Any) -> dict[str, Any]:
             _runtime_suspended_vaults.discard(vault_id)
 
 
-def complete_relocation_scan(connection: Any, vault_id: int) -> None:
+def complete_relocation_scan(
+    connection: Any, vault_id: int, *, release_runtime: bool = True
+) -> None:
     connection.execute(
         """
         UPDATE vaults SET relocation_state='ready', relocation_previous_root=NULL
@@ -268,6 +296,12 @@ def complete_relocation_scan(connection: Any, vault_id: int) -> None:
         """,
         (vault_id,),
     )
+    if release_runtime:
+        release_relocation_scan_runtime(vault_id)
+
+
+def release_relocation_scan_runtime(vault_id: int) -> None:
+    """Release the process gate only after recovery state has committed."""
     _runtime_suspended_vaults.discard(int(vault_id))
 
 

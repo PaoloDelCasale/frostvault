@@ -184,6 +184,8 @@ from .storage import (
     reconcile_interrupted_jobs,
     runtime_status,
     safe_local_path,
+    scan_lock_for_vault,
+    status_lock,
     safe_relative_path,
     scan_vault,
     s3_client,
@@ -3757,23 +3759,34 @@ def admin_relocate_vault_root(
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
     """Relocate, never rebind, a missing root on its verified Source Volume."""
-    busy = bool(runtime_status.get(vault_id, {}).get("scanning"))
+    # Serialize the runtime snapshot, relocation transaction, and scan start.
+    # Without this lock a scan can begin after the ``busy`` snapshot but before
+    # relocation publishes its persistent suspension state.
+    relocation_lock = scan_lock_for_vault(vault_id)
+    if not relocation_lock.acquire(blocking=False):
+        status_code, message = _VAULT_RELOCATION_ERROR_STATUS["active_jobs"]
+        raise HTTPException(status_code, message)
     try:
-        with db() as connection:
-            vault = vault_relocation_service.relocate_vault_root(
-                connection,
-                vault_id=vault_id,
-                volume_alias=action.volume_alias,
-                relative_path=action.relative_path,
-                actor_user_id=int(admin["id"]),
-                reason=action.reason,
-                runtime_busy=busy,
+        with status_lock:
+            busy = bool(runtime_status.get(vault_id, {}).get("scanning"))
+        try:
+            with db() as connection:
+                vault = vault_relocation_service.relocate_vault_root(
+                    connection,
+                    vault_id=vault_id,
+                    volume_alias=action.volume_alias,
+                    relative_path=action.relative_path,
+                    actor_user_id=int(admin["id"]),
+                    reason=action.reason,
+                    runtime_busy=busy,
+                )
+        except vault_relocation_service.VaultRelocationError as exc:
+            status_code, message = _VAULT_RELOCATION_ERROR_STATUS.get(
+                exc.reason, (400, "Vault relocation could not be completed")
             )
-    except vault_relocation_service.VaultRelocationError as exc:
-        status_code, message = _VAULT_RELOCATION_ERROR_STATUS.get(
-            exc.reason, (400, "Vault relocation could not be completed")
-        )
-        raise HTTPException(status_code, message) from exc
+            raise HTTPException(status_code, message) from exc
+    finally:
+        relocation_lock.release()
     # BackgroundTasks registration is non-I/O and cannot partially dispatch.
     # A crash before execution is recovered by scan_all_vaults on next start;
     # relocation_state remains scan_required until local scan success.

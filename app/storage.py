@@ -12,6 +12,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
@@ -86,6 +87,12 @@ runtime_status: dict[int, dict[str, Any]] = {}
 scan_locks: dict[int, threading.Lock] = {}
 status_lock = threading.Lock()
 operation_process_lock = threading.Lock()
+
+
+def scan_lock_for_vault(vault_id: int) -> threading.Lock:
+    """Return the process-wide scan/relocation lock for one Vault."""
+    with status_lock:
+        return scan_locks.setdefault(int(vault_id), threading.Lock())
 active_operation_processes: dict[int, subprocess.Popen[str]] = {}
 cancelled_jobs: set[int] = set()
 
@@ -472,79 +479,103 @@ def _record_scan_finding(
         filesystem["ok"] = False
 
 
-def scan_tree(vault: dict[str, Any], scan_id: str) -> int:
+def _scan_tree(
+    connection: Any,
+    vault: dict[str, Any],
+    scan_id: str,
+    *,
+    root: Path,
+    allow_chunk_commits: bool,
+) -> tuple[int, str | None]:
+    """Catalog one root, leaving transaction ownership to the caller."""
+    vault_id = int(vault["id"])
+    count = 0
+    catalog = ArchiveCatalog(connection)
+    for entry in root.rglob("*"):
+        try:
+            if entry.is_symlink():
+                file_type = "symlink"
+                entry_stat = entry.lstat()
+            elif entry.is_file():
+                file_type = "regular"
+                entry_stat = entry.stat()
+            elif entry.exists() and not entry.is_dir():
+                file_type = "other"
+                entry_stat = entry.lstat()
+            else:
+                continue
+        except OSError as exc:
+            try:
+                relative = entry.relative_to(root).as_posix()
+            except ValueError:
+                relative = entry.name
+            _record_scan_finding(
+                vault_id,
+                path=relative,
+                code="fs.unreadable_file",
+                message=f"File is unreadable: {relative} ({exc})",
+            )
+            continue
+        if is_restore_temporary_name(entry.name):
+            continue
+        relative = entry.relative_to(root).as_posix()
+        catalog.observe_local_copy(
+            vault_id=vault_id,
+            path=relative,
+            file_type=file_type,
+            size=entry_stat.st_size,
+            mtime_ns=entry_stat.st_mtime_ns,
+            seen_at=scan_id,
+            observed_at=now_iso(),
+        )
+        count += 1
+        if allow_chunk_commits and count % 1000 == 0:
+            connection.commit()
+    access = source_layout.vault_local_access(vault["source_root"])
+    alias = access.volume_alias
+    safe_scan_result = access.local_operations_allowed or access.volume_health == "scan_required"
+    if safe_scan_result and (
+        alias is None or source_layout.should_emit_local_copy_removals(alias)
+    ):
+        catalog.mark_unseen_local_copies_missing(
+            vault_id=vault_id,
+            seen_at=scan_id,
+            observed_at=now_iso(),
+        )
+    completed_alias = (
+        alias
+        if safe_scan_result and alias and source_layout.requires_full_local_scan(alias)
+        else None
+    )
+    return count, completed_alias
+
+
+def scan_tree(
+    vault: dict[str, Any],
+    scan_id: str,
+    *,
+    _connection: Any | None = None,
+    _root: Path | None = None,
+) -> int:
     access = source_layout.vault_local_access(vault["source_root"])
     if not access.local_operations_allowed and access.volume_health != "scan_required":
         raise RuntimeError(
             f"Local scan blocked by Source Volume health: {access.volume_health}"
         )
-    root = Path(vault["source_root"]).resolve()
+    root = _root or Path(vault["source_root"]).resolve()
     if not root.exists():
         raise RuntimeError(f"Folder is not available in the container: {root}")
-    vault_id = int(vault["id"])
-    count = 0
-    with db() as connection:
-        catalog = ArchiveCatalog(connection)
-        for entry in root.rglob("*"):
-            try:
-                if entry.is_symlink():
-                    file_type = "symlink"
-                    entry_stat = entry.lstat()
-                elif entry.is_file():
-                    file_type = "regular"
-                    entry_stat = entry.stat()
-                elif entry.exists() and not entry.is_dir():
-                    file_type = "other"
-                    entry_stat = entry.lstat()
-                else:
-                    continue
-            except OSError as exc:
-                try:
-                    relative = entry.relative_to(root).as_posix()
-                except ValueError:
-                    relative = entry.name
-                _record_scan_finding(
-                    vault_id,
-                    path=relative,
-                    code="fs.unreadable_file",
-                    message=f"File is unreadable: {relative} ({exc})",
-                )
-                continue
-            if is_restore_temporary_name(entry.name):
-                # A concurrent recovery is not a catalog file. If a process is
-                # interrupted, its temporary residue must remain invisible.
-                continue
-            relative = entry.relative_to(root).as_posix()
-            catalog.observe_local_copy(
-                vault_id=vault_id,
-                path=relative,
-                file_type=file_type,
-                size=entry_stat.st_size,
-                mtime_ns=entry_stat.st_mtime_ns,
-                seen_at=scan_id,
-                observed_at=now_iso(),
-            )
-            count += 1
-            if count % 1000 == 0:
-                connection.commit()
-        # Recheck identity before applying the destructive-looking catalog
-        # consequence of a full scan. If the mount changed while walking, keep
-        # the prior Local Copy state rather than mass-marking it missing.
-        access = source_layout.vault_local_access(vault["source_root"])
-        alias = access.volume_alias
-        safe_scan_result = access.local_operations_allowed or (
-            access.volume_health == "scan_required"
+    if _connection is not None:
+        count, _completed_alias = _scan_tree(
+            _connection, vault, scan_id, root=root, allow_chunk_commits=False
         )
-        if safe_scan_result and (
-            alias is None or source_layout.should_emit_local_copy_removals(alias)
-        ):
-            catalog.mark_unseen_local_copies_missing(
-                vault_id=vault_id,
-                seen_at=scan_id,
-                observed_at=now_iso(),
-            )
-        if safe_scan_result and alias and source_layout.requires_full_local_scan(alias):
-            source_layout.note_full_local_scan_completed(alias)
+        return count
+    with db() as connection:
+        count, completed_alias = _scan_tree(
+            connection, vault, scan_id, root=root, allow_chunk_commits=True
+        )
+    if completed_alias:
+        source_layout.note_full_local_scan_completed(completed_alias)
     return count
 
 
@@ -767,138 +798,291 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
     return count
 
 
+def _current_scan_vault(vault: dict[str, Any]) -> dict[str, Any]:
+    """Reload a Vault immediately before local work starts.
+
+    Scheduled scans receive rows in a batch, so the row supplied by a caller
+    can be stale after an administrator relocates the Vault. The database row
+    is authoritative once the per-Vault scan lock has been acquired. The
+    fallback keeps lightweight storage unit-test seams, which provide no real
+    Vault row, working as before.
+    """
+    with db() as connection:
+        current = connection.execute(
+            "SELECT * FROM vaults WHERE id=%s", (int(vault["id"]),)
+        ).fetchone()
+    if isinstance(current, dict) and "source_root" in current:
+        return current
+    return vault
+
+
+def _validate_enrolled_scan_root(vault: dict[str, Any]) -> None:
+    """Reject a scan unless an enrolled root still has its original identity."""
+    # A few direct scan callers intentionally use a minimal in-memory Vault
+    # object rather than a persisted row. Real rows always have these columns.
+    if "root_identity" not in vault and "root_identity_version" not in vault:
+        return
+    if (
+        vault.get("root_identity_version") != vault_relocation.ROOT_IDENTITY_VERSION
+        or not vault.get("root_identity")
+    ):
+        raise RuntimeError("Vault root identity is ambiguous; local scan blocked")
+    try:
+        observed = vault_relocation.root_identity(vault["source_root"])
+    except vault_relocation.VaultRelocationError as exc:
+        raise RuntimeError(f"Vault root identity is unavailable: {exc}") from exc
+    if observed != vault["root_identity"]:
+        raise RuntimeError("Vault root identity mismatch; local scan blocked")
+
+
+class _ScanRootMismatch(RuntimeError):
+    pass
+
+
+@contextmanager
+def _pinned_verified_scan_root(vault: dict[str, Any]):
+    """Pin the enrolled directory so pathname replacement cannot redirect I/O.
+
+    Linux has no atomic "check every ancestor and keep using this pathname"
+    primitive. We therefore reject symlink components, open the directory with
+    ``O_NOFOLLOW``, verify the opened inode, and perform scan reads through its
+    ``/proc/self/fd`` handle. If procfs is unavailable, scanning fails closed.
+    """
+    try:
+        _validate_enrolled_scan_root(vault)
+    except Exception as exc:
+        raise _ScanRootMismatch(str(exc)) from exc
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        fd = os.open(str(vault["source_root"]), flags)
+    except OSError as exc:
+        raise _ScanRootMismatch(f"Vault root could not be pinned: {exc}") from exc
+    try:
+        if vault_relocation.opened_root_identity(fd) != vault.get("root_identity"):
+            raise _ScanRootMismatch("Vault root changed while it was being pinned")
+        pinned = Path(f"/proc/self/fd/{fd}")
+        try:
+            pinned_stat = pinned.stat()
+        except OSError as exc:
+            raise _ScanRootMismatch("Pinned Vault root is unavailable through procfs") from exc
+        opened_stat = os.fstat(fd)
+        if (pinned_stat.st_dev, pinned_stat.st_ino) != (
+            opened_stat.st_dev,
+            opened_stat.st_ino,
+        ):
+            raise _ScanRootMismatch("Pinned Vault root identity is inconsistent")
+        yield pinned
+    finally:
+        os.close(fd)
+
+
+def _current_verified_scan_row(connection: Any, vault: dict[str, Any]) -> dict[str, Any]:
+    current = connection.execute(
+        """
+        SELECT source_root, relocation_state, root_identity_version, root_identity
+        FROM vaults WHERE id=%s
+        """,
+        (int(vault["id"]),),
+    ).fetchone()
+    if not isinstance(current, dict) or current.get("source_root") != vault.get("source_root"):
+        raise _ScanRootMismatch("Vault root changed during local scan")
+    try:
+        _validate_enrolled_scan_root(current)
+    except Exception as exc:
+        raise _ScanRootMismatch(str(exc)) from exc
+    return current
+
+
+def _verified_local_scan(
+    vault: dict[str, Any], scan_id: str
+) -> tuple[int, dict[str, int], str | None]:
+    """Commit catalog, rename/jobs, and recovery state only after final identity proof."""
+    # Minimal in-memory Vaults are a longstanding unit-test seam. Persisted
+    # rows always contain identity columns and always use the atomic path.
+    if "root_identity" not in vault and "root_identity_version" not in vault:
+        return scan_tree(vault, scan_id), apply_auto_renames(vault), None
+
+    access = source_layout.vault_local_access(vault["source_root"])
+    if not access.local_operations_allowed and access.volume_health != "scan_required":
+        raise RuntimeError(
+            f"Local scan blocked by Source Volume health: {access.volume_health}"
+        )
+    with _pinned_verified_scan_root(vault) as pinned_root:
+        with db() as connection:
+            _current_verified_scan_row(connection, vault)
+            count = scan_tree(
+                vault,
+                scan_id,
+                _connection=connection,
+                _root=pinned_root,
+            )
+            alias = access.volume_alias
+            completed_alias = (
+                alias
+                if alias and source_layout.requires_full_local_scan(alias)
+                else None
+            )
+            _current_verified_scan_row(connection, vault)
+            rename_summary = apply_auto_renames(
+                vault, _connection=connection, _root=pinned_root
+            )
+            current = _current_verified_scan_row(connection, vault)
+            if current.get("relocation_state") == "scan_required":
+                vault_relocation.complete_relocation_scan(
+                    connection, int(vault["id"]), release_runtime=False
+                )
+        # Runtime gates are delayed until the DB transaction committed.
+        if current.get("relocation_state") == "scan_required":
+            vault_relocation.release_relocation_scan_runtime(int(vault["id"]))
+        if completed_alias:
+            source_layout.note_full_local_scan_completed(completed_alias)
+        return count, rename_summary, completed_alias
+
+
 def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
     vault_id = int(vault["id"])
+    lock = scan_lock_for_vault(vault_id)
+    if not lock.acquire(blocking=False):
+        return {"already_running": 1}
+
     with status_lock:
-        lock = scan_locks.setdefault(vault_id, threading.Lock())
         status = runtime_status.setdefault(
             vault_id, {"scanning": False, "last_scan": None, "last_error": None}
         )
-    if not lock.acquire(blocking=False):
-        return {"already_running": 1}
-    status.update(scanning=True, last_error=None)
     try:
+        # The relocation route holds this same lock while it publishes the
+        # recovery state. A direct caller can still observe the short runtime
+        # handoff gate, so do not turn that into a scan while the DB row is
+        # still ready. A persisted scan_required row is intentionally allowed:
+        # that scan is the recovery operation which must clear the suspension.
+        vault = _current_scan_vault(vault)
+        if (
+            str(vault.get("relocation_state") or "ready") == "ready"
+            and vault_relocation.local_work_suspended(vault)
+        ):
+            return {"suspended": 1}
+        try:
+            _validate_enrolled_scan_root(vault)
+        except Exception as exc:
+            with status_lock:
+                status["last_error"] = f"Source scan blocked: {exc}"
+            return {"local": -1, "root_identity_mismatch": 1}
+
+        with status_lock:
+            status.update(scanning=True, last_error=None)
+
         scan_id = now_iso()
         result: dict[str, int] = {}
-        local_scanned = False
-        try:
-            # Reset scan findings; live preflight still runs via /api/stats.
-            with status_lock:
-                status["filesystem"] = {
-                    "ok": True,
-                    "uid": None,
-                    "gid": None,
-                    "checks": [],
-                    "findings": [],
-                }
-            access = source_layout.vault_local_access(vault["source_root"])
-            if access.local_operations_allowed or access.volume_health == "scan_required":
-                result["local"] = scan_tree(vault, scan_id)
-                local_scanned = True
-            else:
-                result["local_skipped"] = 1
-                result["local"] = 0
-        except Exception as exc:
-            status["last_error"] = f"Source scan: {exc}"
-            result["local"] = -1
+        local_scan_identity_valid = True
+        # Reset scan findings; live preflight still runs via /api/stats.
+        with status_lock:
+            status["filesystem"] = {
+                "ok": True,
+                "uid": None,
+                "gid": None,
+                "checks": [],
+                "findings": [],
+            }
+        access = source_layout.vault_local_access(vault["source_root"])
+        if access.local_operations_allowed or access.volume_health == "scan_required":
+            try:
+                count, rename_summary, _completed_alias = _verified_local_scan(
+                    vault, scan_id
+                )
+                result["local"] = count
+                result.update(
+                    {f"rename_{key}": value for key, value in rename_summary.items()}
+                )
+            except _ScanRootMismatch as exc:
+                local_scan_identity_valid = False
+                status["last_error"] = f"Source scan blocked: {exc}"
+                result["local"] = -1
+                result["root_identity_mismatch"] = 1
+            except Exception as exc:
+                status["last_error"] = f"Source scan: {exc}"
+                result["local"] = -1
         else:
-            if local_scanned:
-                try:
-                    result.update(
-                        {
-                            f"rename_{key}": value
-                            for key, value in apply_auto_renames(vault).items()
-                        }
-                    )
-                    # Relocation remains persistently suspended across restart
-                    # until this exact destination completed a full local scan.
-                    with db() as connection:
-                        current = connection.execute(
-                            "SELECT source_root, relocation_state FROM vaults WHERE id=%s",
-                            (vault_id,),
-                        ).fetchone()
-                        if (
-                            current
-                            and current["source_root"] == vault["source_root"]
-                            and current["relocation_state"] == "scan_required"
-                        ):
-                            vault_relocation.complete_relocation_scan(connection, vault_id)
-                except Exception as exc:
-                    status["last_error"] = f"Rename analysis: {exc}"
-                    result["rename_confirmed"] = -1
-        try:
-            result["cloud"] = scan_cloud(vault, scan_id)
-        except Exception as exc:
-            status["last_error"] = f"Cloud scan: {exc}"
-            result["cloud"] = -1
-        try:
-            validate_cloud_vault(vault)
-            with db() as connection:
-                result["policy_tags"] = reconcile_pending_policy_tags(
-                    connection,
-                    vault,
-                    s3_client(),
-                )
-                result["lifecycle_rules"] = sync_lifecycle_rules_for_bucket(
-                    connection,
-                    s3_client(),
-                    bucket=vault["s3_bucket"],
-                )
-                owner = connection.execute(
-                    """
-                    SELECT user_id FROM vault_members
-                    WHERE vault_id=%s AND role='owner'
-                    LIMIT 1
-                    """,
-                    (vault["id"],),
-                ).fetchone()
-                local_access = source_layout.vault_local_access(vault["source_root"])
-                if owner and local_access.local_operations_allowed:
-                    result["auto_uploads"] = queue_auto_uploads(
+            result["local_skipped"] = 1
+            result["local"] = 0
+        if local_scan_identity_valid:
+            try:
+                result["cloud"] = scan_cloud(vault, scan_id)
+            except Exception as exc:
+                status["last_error"] = f"Cloud scan: {exc}"
+                result["cloud"] = -1
+            try:
+                validate_cloud_vault(vault)
+                with db() as connection:
+                    result["policy_tags"] = reconcile_pending_policy_tags(
                         connection,
-                        vault_id=int(vault["id"]),
-                        source_root=str(vault["source_root"]),
-                        requested_by=int(owner["user_id"]),
+                        vault,
+                        s3_client(),
                     )
-                    result["auto_local_cleanups"] = queue_auto_local_cleanups(
+                    result["lifecycle_rules"] = sync_lifecycle_rules_for_bucket(
                         connection,
-                        vault_id=int(vault["id"]),
-                        requested_by=int(owner["user_id"]),
-                        local_delete_enabled=_runtime_settings(
-                            connection
-                        ).allow_local_delete,
+                        s3_client(),
+                        bucket=vault["s3_bucket"],
                     )
-        except Exception as exc:
-            status["last_error"] = f"Policy tag reconciliation: {exc}"
-            result["policy_tags"] = -1
-            result["lifecycle_rules"] = -1
+                    owner = connection.execute(
+                        """
+                        SELECT user_id FROM vault_members
+                        WHERE vault_id=%s AND role='owner'
+                        LIMIT 1
+                        """,
+                        (vault["id"],),
+                    ).fetchone()
+                    local_access = source_layout.vault_local_access(vault["source_root"])
+                    if owner and local_access.local_operations_allowed:
+                        result["auto_uploads"] = queue_auto_uploads(
+                            connection,
+                            vault_id=int(vault["id"]),
+                            source_root=str(vault["source_root"]),
+                            requested_by=int(owner["user_id"]),
+                        )
+                        result["auto_local_cleanups"] = queue_auto_local_cleanups(
+                            connection,
+                            vault_id=int(vault["id"]),
+                            requested_by=int(owner["user_id"]),
+                            local_delete_enabled=_runtime_settings(
+                                connection
+                            ).allow_local_delete,
+                        )
+            except Exception as exc:
+                status["last_error"] = f"Policy tag reconciliation: {exc}"
+                result["policy_tags"] = -1
+                result["lifecycle_rules"] = -1
         status["last_scan"] = now_iso()
         return result
     finally:
-        status["scanning"] = False
+        with status_lock:
+            status["scanning"] = False
         lock.release()
 
 
-def apply_auto_renames(vault: dict[str, Any], *, requested_by: int | None = None) -> dict[str, int]:
-    """Hash new paths and auto-confirm unique digest renames after metadata scan."""
+def _apply_auto_renames(
+    connection: Any,
+    vault: dict[str, Any],
+    *,
+    root: Path,
+    requested_by: int | None = None,
+) -> dict[str, int]:
+    """Apply rename analysis inside the caller-owned transaction."""
     from .audit import audit_log
 
-    root = Path(vault["source_root"]).resolve()
     summary = {"hashed": 0, "confirmed": 0, "queued": 0, "ambiguous": 0}
     confirmed_paths: list[str] = []
-    with db() as connection:
-        catalog = ArchiveCatalog(connection)
-        if requested_by is None:
-            owner = connection.execute(
-                """
-                SELECT user_id FROM vault_members
-                WHERE vault_id=%s AND role='owner'
-                LIMIT 1
-                """,
-                (vault["id"],),
-            ).fetchone()
-            requested_by = int(owner["user_id"]) if owner else None
-        present_rows = connection.execute(
+    catalog = ArchiveCatalog(connection)
+    if requested_by is None:
+        owner = connection.execute(
+            """
+            SELECT user_id FROM vault_members
+            WHERE vault_id=%s AND role='owner'
+            LIMIT 1
+            """,
+            (vault["id"],),
+        ).fetchone()
+        requested_by = int(owner["user_id"]) if owner else None
+    present_rows = connection.execute(
             """
             SELECT vf.id AS vault_file_id, fp.path, lc.size, lc.mtime_ns
             FROM vault_files vf
@@ -913,8 +1097,8 @@ def apply_auto_renames(vault: dict[str, Any], *, requested_by: int | None = None
             ORDER BY lower(fp.path)
             """,
             (vault["id"],),
-        ).fetchall()
-        for row in present_rows:
+    ).fetchall()
+    for row in present_rows:
             local_path = safe_local_path(str(root), row["path"])
             if not local_path.is_file():
                 continue
@@ -948,9 +1132,9 @@ def apply_auto_renames(vault: dict[str, Any], *, requested_by: int | None = None
                     matched_archive_version_id=None,
                 )
 
-        candidates = catalog.list_rename_candidates(vault_id=vault["id"])
-        changed_at = now_iso()
-        for candidate in candidates:
+    candidates = catalog.list_rename_candidates(vault_id=vault["id"])
+    changed_at = now_iso()
+    for candidate in candidates:
             if candidate["decision"] == "ambiguous":
                 summary["ambiguous"] += 1
                 continue
@@ -973,8 +1157,8 @@ def apply_auto_renames(vault: dict[str, Any], *, requested_by: int | None = None
             confirmed_paths.append(candidate["new_path"])
             summary["confirmed"] += 1
 
-        for path in confirmed_paths:
-            job_ids, _total, eligible = catalog.queue_jobs(
+    for path in confirmed_paths:
+        job_ids, _total, eligible = catalog.queue_jobs(
                 vault_id=vault["id"],
                 path=path,
                 action="rename",
@@ -983,11 +1167,30 @@ def apply_auto_renames(vault: dict[str, Any], *, requested_by: int | None = None
                 group_id=uuid.uuid4().hex,
                 is_directory=False,
             )
-            if job_ids:
-                summary["queued"] += len(job_ids)
-            elif eligible:
-                continue
+        if job_ids:
+            summary["queued"] += len(job_ids)
+        elif eligible:
+            continue
     return summary
+
+
+def apply_auto_renames(
+    vault: dict[str, Any],
+    *,
+    requested_by: int | None = None,
+    _connection: Any | None = None,
+    _root: Path | None = None,
+) -> dict[str, int]:
+    """Hash and auto-confirm renames as one database transaction."""
+    root = _root or Path(vault["source_root"]).resolve()
+    if _connection is not None:
+        return _apply_auto_renames(
+            _connection, vault, root=root, requested_by=requested_by
+        )
+    with db() as connection:
+        return _apply_auto_renames(
+            connection, vault, root=root, requested_by=requested_by
+        )
 
 
 def run_rclone(
