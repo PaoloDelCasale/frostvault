@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,7 @@ _UNSUPPORTED_FILESYSTEMS = {
     "devtmpfs", "efivarfs", "fusectl", "hugetlbfs", "mqueue", "overlay",
     "proc", "pstore", "ramfs", "securityfs", "sysfs", "tmpfs", "tracefs",
 }
+_PLACEHOLDER_FIELDS = {"", "-", "?", "none", "unknown"}
 
 
 class MountIdentityError(ValueError):
@@ -113,11 +115,13 @@ def fingerprint_for_mount(target: str | Path, *, text: str | None = None) -> str
 
     Mount IDs, device numbers, optional fields and mount/super options are
     intentionally excluded because they can change during an ordinary remount.
+    The target is normalized lexically: identity lookup must not resolve or
+    traverse the Source Volume before the mount metadata gate has passed.
     """
-    target_text = str(Path(target).resolve())
+    target_text = os.path.normpath(os.path.abspath(os.fspath(target)))
     try:
         entries = parse_mountinfo(read_mountinfo_text() if text is None else text)
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise MountIdentityError("Linux mount metadata is inaccessible") from exc
     matches = [entry for entry in entries if entry.mount_point == target_text]
     if not matches:
@@ -126,11 +130,15 @@ def fingerprint_for_mount(target: str | Path, *, text: str | None = None) -> str
         raise MountIdentityError("mount identity is ambiguous")
     entry = matches[0]
     filesystem_type = entry.filesystem_type.strip().lower()
-    source = entry.mount_source.strip()
-    root = entry.root.strip()
+    source = entry.mount_source
+    root = entry.root
     if filesystem_type in _UNSUPPORTED_FILESYSTEMS:
         raise MountIdentityError("mount filesystem type is unsupported")
-    if not filesystem_type or not source or source in {"none", "-"} or not root:
+    if (
+        filesystem_type in _PLACEHOLDER_FIELDS
+        or source.strip().lower() in _PLACEHOLDER_FIELDS
+        or root.strip().lower() in _PLACEHOLDER_FIELDS
+    ):
         raise MountIdentityError("mount metadata is insufficient")
     payload = json.dumps(
         {

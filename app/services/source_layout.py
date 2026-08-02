@@ -380,6 +380,10 @@ def reconcile_source_volume_identities() -> None:
                 # Unsupported/ambiguous first sighting cannot establish an
                 # expected identity and therefore cannot be accepted.
                 continue
+            connection.execute(
+                "UPDATE source_volumes SET last_seen_at=%s WHERE alias=%s",
+                (now, alias),
+            )
             previous_alert = expected.get("last_alert_token")
             if alert_token != previous_alert:
                 connection.execute(
@@ -407,114 +411,135 @@ def reconcile_source_volume_identities() -> None:
     _identity_enforcement_ready = True
 
 
-def vault_local_access(vault_source_root: str | Path) -> VaultLocalAccess:
-    """Decide local-ops eligibility for a Vault root from Source Volume health.
+def _blocked_vault_access(
+    *, alias: str | None, health: str = "unavailable"
+) -> VaultLocalAccess:
+    return VaultLocalAccess(
+        local_operations_allowed=False,
+        cloud_catalog_allowed=True,
+        volume_alias=alias,
+        volume_health=health,
+    )
 
-    Managed UUID roots are always locally eligible when the structural layout
-    is ready. Custom Source Volume roots inherit that volume's health: an
-    unhealthy volume suspends local operations while cloud catalog access
-    remains available.
-    """
-    root = Path(vault_source_root).resolve()
-    managed = get_managed_root().resolve()
-    if root == managed or managed in root.parents or root.parent == managed:
-        ready = sources_layout_is_ready()
-        if not ready and _sources_root_override is not None and root.is_dir():
-            ready = True
-        return VaultLocalAccess(
-            local_operations_allowed=ready,
-            cloud_catalog_allowed=True,
-            volume_alias=MANAGED_DIR_NAME,
-            volume_health="ok" if ready else "unavailable",
-        )
 
-    sources = get_sources_root().resolve()
+def _lexical_source_alias(vault_source_root: str | Path) -> tuple[str, str | None]:
+    """Classify a configured root without resolving or probing the filesystem."""
+    text = str(vault_source_root or "").strip()
+    if not text or "\x00" in text:
+        return "invalid", None
+    path = Path(text)
+    # Reject traversal even when normpath would place the result back in bounds.
+    if ".." in path.parts:
+        return "invalid", None
+    normalized = os.path.normpath(text)
+    sources = os.path.normpath(str(get_sources_root()))
+    if not os.path.isabs(normalized) or not os.path.isabs(sources):
+        return "outside", None
     try:
-        relative = root.relative_to(sources)
+        if os.path.commonpath((normalized, sources)) != sources:
+            return "outside", None
     except ValueError:
-        # Outside the fixed namespace.
+        return "outside", None
+    relative = os.path.relpath(normalized, sources)
+    if relative == ".":
+        return "managed", MANAGED_DIR_NAME
+    alias = relative.split(os.sep, 1)[0]
+    if alias == MANAGED_DIR_NAME:
+        return "managed", MANAGED_DIR_NAME
+    return "custom", alias
+
+
+def _canonical_root_stays_within(root: str | Path, boundary: str | Path) -> bool:
+    """Resolve only an identity-safe mount and retain its lexical boundary."""
+    resolved_root = Path(root).resolve()
+    resolved_boundary = Path(boundary).resolve()
+    try:
+        resolved_root.relative_to(resolved_boundary)
+    except ValueError:
+        return False
+    return True
+
+
+def vault_local_access(vault_source_root: str | Path) -> VaultLocalAccess:
+    """Decide local-ops eligibility using a lexical-first identity gate.
+
+    Unsafe or unavailable Source Volumes are classified from their lexical
+    alias and runtime health before the configured Vault tree is resolved or
+    probed. Only mounted ``ok``, ``read_only`` and ``scan_required`` volumes
+    proceed to canonical containment checks.
+    """
+    location, alias = _lexical_source_alias(vault_source_root)
+    if location == "invalid":
+        return _blocked_vault_access(alias=None)
+    if location == "outside":
         test_seam_active = (
             _sources_root_override is not None
             or bool(os.getenv("FROSTVAULT_TEST_SOURCES_ROOT", "").strip())
         )
         if test_seam_active:
-            return VaultLocalAccess(
-                local_operations_allowed=False,
-                cloud_catalog_allowed=True,
-                volume_alias=None,
-                volume_health="unavailable",
-            )
+            return _blocked_vault_access(alias=None)
         production_active = (
             get_sources_root() == PRODUCTION_SOURCES_ROOT
             and PRODUCTION_SOURCES_ROOT.exists()
             and path_is_mount(PRODUCTION_SOURCES_ROOT)
         )
         if production_active:
-            return VaultLocalAccess(
-                local_operations_allowed=False,
-                cloud_catalog_allowed=True,
-                volume_alias=None,
-                volume_health="unavailable",
-            )
-        # Historical unit fixtures often use private or synthetic source_root
-        # values outside /sources without installing the layout seam.
-        return VaultLocalAccess(
-            local_operations_allowed=True,
-            cloud_catalog_allowed=True,
-            volume_alias=None,
-            volume_health="ok",
-        )
+            return _blocked_vault_access(alias=None)
+        # Historical unit fixtures use private roots without the layout seam.
+        return VaultLocalAccess(True, True, None, "ok")
 
-    alias = relative.parts[0] if relative.parts else None
-    if alias is None or alias == MANAGED_DIR_NAME:
+    if location == "managed":
         ready = sources_layout_is_ready()
-        return VaultLocalAccess(
-            local_operations_allowed=ready,
-            cloud_catalog_allowed=True,
-            volume_alias=MANAGED_DIR_NAME,
-            volume_health="ok" if ready else "unavailable",
-        )
+        if not ready:
+            return _blocked_vault_access(alias=MANAGED_DIR_NAME)
+        if not _canonical_root_stays_within(vault_source_root, get_managed_root()):
+            return _blocked_vault_access(alias=MANAGED_DIR_NAME)
+        return VaultLocalAccess(True, True, MANAGED_DIR_NAME, "ok")
+
+    assert alias is not None
+    state = _runtime_mount_state.get(alias, {})
+    identity_health = state.get("identity_health")
+    if identity_health in {
+        "absent",
+        "replaced",
+        "identity_ambiguous",
+        "identity_unsupported",
+    }:
+        return _blocked_vault_access(alias=alias, health=str(identity_health))
+    if state.get("lost"):
+        return _blocked_vault_access(alias=alias, health="mount_lost")
 
     volumes = {volume.alias: volume for volume in discover_source_volumes()}
     volume = volumes.get(alias)
     if volume is None:
-        return VaultLocalAccess(
-            local_operations_allowed=False,
-            cloud_catalog_allowed=True,
-            volume_alias=alias,
-            volume_health="absent",
-        )
+        return _blocked_vault_access(alias=alias, health="absent")
+    if volume.health == "inaccessible":
+        return _blocked_vault_access(alias=alias, health="inaccessible")
+
     if _identity_enforcement_ready:
         _check_live_volume_identity(volume)
-    state = _runtime_mount_state.get(alias, {})
-    identity_health = state.get("identity_health")
-    if identity_health in {"replaced", "identity_ambiguous", "identity_unsupported"}:
-        return VaultLocalAccess(
-            local_operations_allowed=False,
-            cloud_catalog_allowed=True,
-            volume_alias=volume.alias,
-            volume_health=str(identity_health),
-        )
-    if state.get("lost"):
-        return VaultLocalAccess(
-            local_operations_allowed=False,
-            cloud_catalog_allowed=True,
-            volume_alias=volume.alias,
-            volume_health="mount_lost",
-        )
-    if state.get("needs_scan"):
-        return VaultLocalAccess(
-            local_operations_allowed=False,
-            cloud_catalog_allowed=True,
-            volume_alias=volume.alias,
-            volume_health="scan_required",
-        )
-    allowed = volume.health == "ok" and volume.access == "rw"
+        state = _runtime_mount_state.get(alias, {})
+        identity_health = state.get("identity_health")
+        if identity_health in {
+            "absent",
+            "replaced",
+            "identity_ambiguous",
+            "identity_unsupported",
+        }:
+            return _blocked_vault_access(alias=alias, health=str(identity_health))
+        if state.get("lost"):
+            return _blocked_vault_access(alias=alias, health="mount_lost")
+
+    health = "scan_required" if state.get("needs_scan") else volume.health
+    if health not in {"ok", "read_only", "scan_required"}:
+        return _blocked_vault_access(alias=alias, health=health)
+    if not _canonical_root_stays_within(vault_source_root, volume.path):
+        return _blocked_vault_access(alias=alias)
     return VaultLocalAccess(
-        local_operations_allowed=allowed,
+        local_operations_allowed=health == "ok" and volume.access == "rw",
         cloud_catalog_allowed=True,
-        volume_alias=volume.alias,
-        volume_health=volume.health,
+        volume_alias=alias,
+        volume_health=health,
     )
 
 
@@ -540,14 +565,13 @@ def source_volume_inventory() -> list[dict[str, object]]:
     aliases = set(live) | persisted | {row["volume_alias"] for row in area_rows}
     counts = {alias: 0 for alias in aliases}
     area_counts = {alias: 0 for alias in aliases}
-    sources = get_sources_root().resolve()
+    # Count roots from their stored namespace path only. Inventory must remain
+    # usable for an absent/replaced volume and must not resolve or traverse a
+    # Vault tree merely to produce an administrative count.
     for row in vault_rows:
-        try:
-            relative = Path(row["source_root"]).resolve().relative_to(sources)
-        except ValueError:
-            continue
-        if relative.parts and relative.parts[0] in counts:
-            counts[relative.parts[0]] += 1
+        location, alias = _lexical_source_alias(row["source_root"])
+        if location == "custom" and alias in counts:
+            counts[alias] += 1
     for row in area_rows:
         area_counts[row["volume_alias"]] = int(row["total"])
 

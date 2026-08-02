@@ -1,6 +1,7 @@
 """Markerless Source Volume replacement detection (issue #151)."""
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import unittest
@@ -66,6 +67,19 @@ class MountInfoParserTests(unittest.TestCase):
             source_identity.fingerprint_for_mount(
                 target, text=mountinfo_line(target, fstype="overlay", source="overlay")
             )
+
+    def test_placeholder_identity_fields_fail_closed_without_resolving_target(self) -> None:
+        target = Path("/sources/photos")
+        text = mountinfo_line(target).replace("/host/photos", "?").replace(
+            "/dev/sda1", "?"
+        )
+        with patch.object(
+            Path,
+            "resolve",
+            side_effect=AssertionError("mount identity resolved the target"),
+        ):
+            with self.assertRaisesRegex(source_identity.MountIdentityError, "insufficient"):
+                source_identity.fingerprint_for_mount(target, text=text)
 
 
 class IdentityDiagnosticI18nTests(unittest.TestCase):
@@ -201,6 +215,111 @@ class PersistedSourceIdentityTests(unittest.TestCase):
         with patch.object(source_layout, "path_is_accessible", return_value=False):
             inventory = source_layout.source_volume_inventory()
         self.assertEqual(inventory[0]["health"], "inaccessible")
+
+    def test_unsafe_known_health_is_classified_lexically_without_tree_traversal(self) -> None:
+        self.enroll()
+        configured_root = self.vault_root / "nested"
+        unsafe_states = (
+            ("replaced", {"identity_health": "replaced"}),
+            ("identity_ambiguous", {"identity_health": "identity_ambiguous"}),
+            ("identity_unsupported", {"identity_health": "identity_unsupported"}),
+            ("absent", {"identity_health": "absent", "lost": True}),
+            ("mount_lost", {"lost": True, "needs_scan": True}),
+        )
+        for expected_health, state in unsafe_states:
+            with self.subTest(health=expected_health):
+                source_layout._runtime_mount_state["photos"] = state
+
+                def reject_resolve(path: Path, *_args, **_kwargs):
+                    if str(path).startswith(str(self.photos)):
+                        raise AssertionError(f"resolved unsafe Source Volume path: {path}")
+                    return Path(str(path))
+
+                def reject_stat(path: Path, *_args, **_kwargs):
+                    if str(path).startswith(str(self.photos)):
+                        raise AssertionError(f"statted unsafe Source Volume path: {path}")
+                    raise AssertionError(f"unexpected stat outside Source Volume: {path}")
+
+                with (
+                    patch.object(Path, "resolve", reject_resolve),
+                    patch.object(Path, "stat", reject_stat),
+                    patch("os.path.realpath", side_effect=AssertionError("realpath called")),
+                ):
+                    access = source_layout.vault_local_access(configured_root)
+                self.assertEqual(access.volume_alias, "photos")
+                self.assertEqual(access.volume_health, expected_health)
+                self.assertFalse(access.local_operations_allowed)
+
+    def test_parent_segments_fail_closed_before_filesystem_access(self) -> None:
+        configured_root = f"{self.photos}/family/../other"
+        with (
+            patch.object(Path, "resolve", side_effect=AssertionError("resolve called")),
+            patch.object(Path, "stat", side_effect=AssertionError("stat called")),
+            patch("os.path.realpath", side_effect=AssertionError("realpath called")),
+            patch.object(
+                source_layout,
+                "discover_source_volumes",
+                side_effect=AssertionError("volume discovery called"),
+            ),
+        ):
+            access = source_layout.vault_local_access(configured_root)
+        self.assertFalse(access.local_operations_allowed)
+        self.assertIsNone(access.volume_alias)
+        self.assertEqual(access.volume_health, "unavailable")
+
+    def test_inaccessible_volume_does_not_resolve_or_stat_configured_tree(self) -> None:
+        configured_root = self.vault_root / "nested"
+        original_stat = Path.stat
+
+        def guarded_stat(path: Path, *args, **kwargs):
+            if str(path).startswith(str(configured_root)):
+                raise AssertionError(f"statted inaccessible Vault tree: {path}")
+            return original_stat(path, *args, **kwargs)
+
+        with (
+            patch.object(source_layout, "path_is_accessible", return_value=False),
+            patch.object(
+                Path,
+                "resolve",
+                side_effect=AssertionError("resolved inaccessible Vault tree"),
+            ),
+            patch.object(Path, "stat", guarded_stat),
+            patch("os.path.realpath", side_effect=AssertionError("realpath called")),
+        ):
+            access = source_layout.vault_local_access(configured_root)
+        self.assertEqual(access.volume_alias, "photos")
+        self.assertEqual(access.volume_health, "inaccessible")
+        self.assertFalse(access.local_operations_allowed)
+
+    def test_safe_volume_canonicalization_rejects_symlink_escape(self) -> None:
+        outside = Path(self._tmp.name) / "outside"
+        outside.mkdir()
+        link = self.photos / "escape"
+        link.symlink_to(outside, target_is_directory=True)
+        access = source_layout.vault_local_access(link)
+        self.assertEqual(access.volume_alias, "photos")
+        self.assertEqual(access.volume_health, "unavailable")
+        self.assertFalse(access.local_operations_allowed)
+
+    def test_watcher_checks_identity_gate_before_resolving_vault_root(self) -> None:
+        from app import storage
+
+        source_layout.note_mount_lost("photos")
+        vault = {"id": 99, "source_root": str(self.vault_root)}
+        with (
+            patch.object(
+                Path,
+                "resolve",
+                side_effect=AssertionError("watcher resolved blocked vault root"),
+            ),
+            patch.object(
+                storage.asyncio,
+                "sleep",
+                side_effect=asyncio.CancelledError,
+            ),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(storage._watch_vault_filesystem(vault))
 
 
 if __name__ == "__main__":

@@ -526,15 +526,23 @@ def scan_tree(vault: dict[str, Any], scan_id: str) -> int:
             count += 1
             if count % 1000 == 0:
                 connection.commit()
+        # Recheck identity before applying the destructive-looking catalog
+        # consequence of a full scan. If the mount changed while walking, keep
+        # the prior Local Copy state rather than mass-marking it missing.
         access = source_layout.vault_local_access(vault["source_root"])
         alias = access.volume_alias
-        if alias is None or source_layout.should_emit_local_copy_removals(alias):
+        safe_scan_result = access.local_operations_allowed or (
+            access.volume_health == "scan_required"
+        )
+        if safe_scan_result and (
+            alias is None or source_layout.should_emit_local_copy_removals(alias)
+        ):
             catalog.mark_unseen_local_copies_missing(
                 vault_id=vault_id,
                 seen_at=scan_id,
                 observed_at=now_iso(),
             )
-        if alias and source_layout.requires_full_local_scan(alias):
+        if safe_scan_result and alias and source_layout.requires_full_local_scan(alias):
             source_layout.note_full_local_scan_completed(alias)
     return count
 
@@ -620,7 +628,9 @@ def _apply_filesystem_changes(
                 continue
             access = source_layout.vault_local_access(vault["source_root"])
             alias = access.volume_alias
-            if alias is None or source_layout.should_emit_local_copy_removals(alias):
+            if access.local_operations_allowed and (
+                alias is None or source_layout.should_emit_local_copy_removals(alias)
+            ):
                 catalog.mark_local_path_missing(
                     vault_id=vault["id"],
                     path=relative,
@@ -2906,7 +2916,6 @@ def _filesystem_watch_filter(_: Change, path: str) -> bool:
 
 
 async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
-    root = Path(vault["source_root"]).resolve()
     while True:
         access = await asyncio.to_thread(
             source_layout.vault_local_access, vault["source_root"]
@@ -2914,6 +2923,7 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
         if not access.local_operations_allowed:
             await asyncio.sleep(5)
             continue
+        root = Path(vault["source_root"]).resolve()
         if not root.is_dir():
             await asyncio.sleep(5)
             continue

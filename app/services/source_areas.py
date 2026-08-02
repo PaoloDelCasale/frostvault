@@ -86,20 +86,30 @@ def canonicalize_relative_path(relative_path: str) -> str:
 
 def _volume_or_raise(volume_alias: str) -> source_layout.SourceVolume:
     alias = (volume_alias or "").strip()
-    if not alias or alias == source_layout.MANAGED_DIR_NAME:
+    if (
+        not alias
+        or alias == source_layout.MANAGED_DIR_NAME
+        or Path(alias).parts != (alias,)
+    ):
         raise SourceAreaError("invalid_volume", "Source Volume is not assignable")
+    # Gate identity and volume health before discovering or resolving a
+    # candidate directory. A replacement must not be traversed by an
+    # assignment or browser request.
+    identity_access = source_layout.vault_local_access(
+        source_layout.get_sources_root() / alias
+    )
+    if identity_access.volume_health == "absent":
+        raise SourceAreaError("volume_not_found", f"Source Volume '{alias}' was not found")
+    if not identity_access.local_operations_allowed:
+        raise SourceAreaError(
+            "volume_unavailable",
+            f"Source Volume '{alias}' is not healthy for assignment",
+        )
     volumes = {volume.alias: volume for volume in source_layout.discover_source_volumes()}
     volume = volumes.get(alias)
     if volume is None:
         raise SourceAreaError("volume_not_found", f"Source Volume '{alias}' was not found")
-    identity_access = source_layout.vault_local_access(
-        Path(volume.path) / ".identity-gate"
-    )
-    if (
-        volume.health != "ok"
-        or volume.access != "rw"
-        or not identity_access.local_operations_allowed
-    ):
+    if volume.health != "ok" or volume.access != "rw":
         raise SourceAreaError(
             "volume_unavailable",
             f"Source Volume '{alias}' is not healthy for assignment",
@@ -153,6 +163,13 @@ def _user_is_active(connection: Any, user_id: int) -> bool:
 
 
 def _availability_for(volume_alias: str, relative_path: str) -> str:
+    # Listing grants is an administrative/catalog operation, but it must not
+    # resolve a configured tree while the backing Source Volume is unsafe.
+    access = source_layout.vault_local_access(
+        source_layout.get_sources_root() / volume_alias
+    )
+    if not access.local_operations_allowed:
+        return "unavailable"
     volumes = {volume.alias: volume for volume in source_layout.discover_source_volumes()}
     volume = volumes.get(volume_alias)
     if volume is None:
@@ -401,7 +418,11 @@ def _occupied_vault_roots(
     volume: source_layout.SourceVolume,
 ) -> list[dict[str, Any]]:
     """Vault roots under ``volume``, including disabled/unavailable Vaults."""
+    # Filter by the lexical namespace before canonicalizing any stored root;
+    # a different, currently replaced Source Volume must not be resolved just
+    # because an admin is browsing this healthy volume.
     volume_path = Path(volume.path).resolve()
+    lexical_volume_path = Path(os.path.normpath(volume.path))
     rows = connection.execute(
         """
         SELECT v.id, v.name, v.source_root, u.display_name AS owner_display_name
@@ -412,8 +433,13 @@ def _occupied_vault_roots(
     ).fetchall()
     occupied: list[dict[str, Any]] = []
     for row in rows:
+        configured_root = Path(os.path.normpath(str(row["source_root"])))
         try:
-            root = Path(row["source_root"]).resolve()
+            configured_root.relative_to(lexical_volume_path)
+        except ValueError:
+            continue
+        try:
+            root = configured_root.resolve()
             relative = root.relative_to(volume_path).as_posix()
         except ValueError:
             continue

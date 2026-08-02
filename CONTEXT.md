@@ -11,8 +11,16 @@ _Avoid_: Bucket, folder, account
 
 **Source Volume**:
 An operator-provided local filesystem whose directory tree may contain Source
-Areas and Vault roots.
+Areas and Vault roots. FrostVault persists a markerless opaque identity for each
+custom Source Volume and keeps local work suspended when its expected mount is
+absent, inaccessible, ambiguous, unsupported, or replaced.
 _Avoid_: Compose Volume, Storage Root, Mount
+
+**Source Volume Identity**:
+The versioned opaque fingerprint derived from one exact Linux mountinfo target;
+it is stable across ordinary remounts and is never represented by a marker file
+or by persisted raw host paths.
+_Avoid_: Marker file, Host path, Mount ID
 
 **Source Area**:
 A reusable, non-overlapping local directory tree assigned exclusively to one

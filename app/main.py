@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import mimetypes
+import os
 import re
 import secrets
 import uuid
@@ -162,6 +163,7 @@ from .sessions import (
     set_session_vault,
 )
 from .services.fs_preflight import (
+    FilesystemPreflightResult,
     check_vault_filesystem,
     resolve_configured_vault_root,
 )
@@ -1789,25 +1791,41 @@ def confirm_folder_rename(
 
 @app.get("/api/stats")
 def stats(vault: dict[str, Any] = Depends(current_vault)):
+    source_root = vault.get("source_root") or ""
+    # Reconcile Source Volume identity before anything can preflight or walk the
+    # configured Vault tree. Catalog summaries remain available when local work
+    # is suspended, so they are intentionally collected after this gate too.
+    access = vault_local_access(source_root)
     with db() as connection:
         summary = ArchiveCatalog(connection).summary(vault["id"])
-    source_root = vault.get("source_root") or ""
     allowed_bases = [str(get_sources_root())]
     bootstrap_root = (settings.bootstrap_vault_source_root or "").strip()
     if bootstrap_root:
         allowed_bases.append(bootstrap_root)
-    safe_root = resolve_configured_vault_root(
-        source_root, allowed_bases=allowed_bases
-    )
-    if safe_root is None:
-        # Report missing under the configured sources root; never walk raw input.
-        filesystem = check_vault_filesystem(
-            f"{str(get_sources_root()).rstrip(chr(47))}/.missing-vault-root",
-            allowed_bases=allowed_bases,
+    preflight_allowed = access.volume_health in {"ok", "read_only", "scan_required"}
+    if preflight_allowed:
+        safe_root = resolve_configured_vault_root(
+            source_root, allowed_bases=allowed_bases
         )
+        if safe_root is None:
+            # Report missing under the configured sources root; never walk raw input.
+            preflight_root = Path(
+                f"{str(get_sources_root()).rstrip(chr(47))}/.missing-vault-root"
+            )
+        else:
+            preflight_root = safe_root
+        filesystem = check_vault_filesystem(preflight_root, allowed_bases=allowed_bases)
     else:
-        filesystem = check_vault_filesystem(safe_root, allowed_bases=allowed_bases)
-    access = vault_local_access(source_root)
+        # Missing, inaccessible, or identity-unsafe volumes must not be
+        # resolved or traversed. Catalog and Source Volume diagnostics remain.
+        filesystem = FilesystemPreflightResult(
+            root=str(source_root),
+            ok=False,
+            uid=os.geteuid(),
+            gid=os.getegid(),
+            checks=(),
+            findings=(),
+        )
     checks_payload = [
         {
             "code": check.code,
