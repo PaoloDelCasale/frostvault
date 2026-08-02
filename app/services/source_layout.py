@@ -9,7 +9,10 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+
+from . import source_identity
 
 PRODUCTION_SOURCES_ROOT = Path("/sources")
 MANAGED_DIR_NAME = "managed"
@@ -20,9 +23,12 @@ _UUID_DIR_PATTERN = re.compile(
 
 _sources_root_override: Path | None = None
 _structural_error: str | None = None
-# alias -> {"lost": bool, "needs_scan": bool}
-_runtime_mount_state: dict[str, dict[str, bool]] = {}
+# Transient health is process-local and deliberately separate from persisted
+# markerless identity. Identity is reconciled before background work starts.
+_runtime_mount_state: dict[str, dict[str, object]] = {}
 _known_volume_aliases: set[str] = set()
+_identity_enforcement_ready = False
+_expected_identities: dict[str, tuple[str, str]] = {}
 
 
 class SourcesLayoutError(Exception):
@@ -63,6 +69,11 @@ def path_is_mount(path: Path | str) -> bool:
 def path_is_writable(path: Path | str) -> bool:
     """Writability probe seam — mockable for non-privileged CI hosts."""
     return os.access(Path(path), os.W_OK)
+
+
+def path_is_accessible(path: Path | str) -> bool:
+    """A Source Volume needs directory read and search access."""
+    return os.access(Path(path), os.R_OK | os.X_OK)
 
 
 def get_sources_root() -> Path:
@@ -160,8 +171,13 @@ def discover_source_volumes() -> list[SourceVolume]:
             continue
         if not entry.is_dir() or path_is_symlink(entry) or not path_is_mount(entry):
             continue
-        access = "rw" if path_is_writable(entry) else "ro"
-        health = "ok" if access == "rw" else "read_only"
+        accessible = path_is_accessible(entry)
+        access = "rw" if accessible and path_is_writable(entry) else "ro"
+        health = (
+            "inaccessible"
+            if not accessible
+            else ("ok" if access == "rw" else "read_only")
+        )
         volumes.append(
             SourceVolume(
                 alias=entry.name,
@@ -180,6 +196,10 @@ def reject_nested_mounts() -> None:
     as ``/sources/<alias>`` so one Vault can never cross Source Volumes.
     """
     for volume in discover_source_volumes():
+        if _identity_enforcement_ready and _runtime_mount_state.get(
+            volume.alias, {}
+        ).get("identity_health") != "ok":
+            continue
         root = Path(volume.path)
         if not root.is_dir():
             continue
@@ -195,10 +215,12 @@ def reject_nested_mounts() -> None:
 
 
 def reset_runtime_mount_state() -> None:
-    """Clear runtime mount-loss bookkeeping (tests / process restart)."""
-    global _known_volume_aliases
+    """Clear transient health bookkeeping (tests / process restart)."""
+    global _known_volume_aliases, _identity_enforcement_ready
     _runtime_mount_state.clear()
     _known_volume_aliases = set()
+    _expected_identities.clear()
+    _identity_enforcement_ready = False
 
 
 def note_mount_lost(alias: str) -> None:
@@ -239,162 +261,344 @@ def requires_full_local_scan(alias: str) -> bool:
     return bool(state and state.get("needs_scan"))
 
 
-def vault_local_access(vault_source_root: str | Path) -> VaultLocalAccess:
-    """Decide local-ops eligibility for a Vault root from Source Volume health.
+def _identity_error_health(error: source_identity.MountIdentityError) -> str:
+    message = str(error)
+    if "ambiguous" in message:
+        return "identity_ambiguous"
+    return "identity_unsupported"
 
-    Managed UUID roots are always locally eligible when the structural layout
-    is ready. Custom Source Volume roots inherit that volume's health: an
-    unhealthy volume suspends local operations while cloud catalog access
-    remains available.
+
+def _check_live_volume_identity(volume: SourceVolume) -> None:
+    """Refresh one live volume's identity health without opening the database."""
+    expected = _expected_identities.get(volume.alias)
+    state = _runtime_mount_state.setdefault(volume.alias, {})
+    previous_health = state.get("identity_health")
+    try:
+        observed = source_identity.fingerprint_for_mount(volume.path)
+    except source_identity.MountIdentityError as exc:
+        health = _identity_error_health(exc)
+    else:
+        if expected is None or expected[0] != source_identity.FINGERPRINT_VERSION:
+            health = "identity_unsupported"
+        else:
+            health = "ok" if observed == expected[1] else "replaced"
+    state["identity_health"] = health
+    state["lost"] = False
+    if health == "ok" and previous_health in {
+        "absent", "replaced", "identity_ambiguous", "identity_unsupported"
+    }:
+        state["needs_scan"] = True
+
+
+def reconcile_source_volume_identities() -> None:
+    """Enroll or compare every live custom volume before local data is touched.
+
+    Expected fingerprints are immutable. A retry or scan can never accept a
+    replacement; only restoring mount metadata that hashes to the persisted
+    expected value clears the replacement state (and then requires a scan).
     """
-    root = Path(vault_source_root).resolve()
-    managed = get_managed_root().resolve()
-    if root == managed or managed in root.parents or root.parent == managed:
-        ready = sources_layout_is_ready()
-        if not ready and _sources_root_override is not None and root.is_dir():
-            ready = True
-        return VaultLocalAccess(
-            local_operations_allowed=ready,
-            cloud_catalog_allowed=True,
-            volume_alias=MANAGED_DIR_NAME,
-            volume_health="ok" if ready else "unavailable",
+    global _identity_enforcement_ready
+    from ..database import db
+    from .audit_events import record_audit_event
+
+    volumes = {volume.alias: volume for volume in discover_source_volumes()}
+    now = datetime.now(UTC).isoformat()
+    with db() as connection:
+        persisted_rows = connection.execute(
+            "SELECT * FROM source_volumes ORDER BY alias"
+        ).fetchall()
+        persisted = {row["alias"]: row for row in persisted_rows}
+        _expected_identities.clear()
+        _expected_identities.update(
+            {
+                alias: (row["fingerprint_version"], row["expected_fingerprint"])
+                for alias, row in persisted.items()
+            }
         )
 
-    sources = get_sources_root().resolve()
+        for alias, volume in volumes.items():
+            state = _runtime_mount_state.setdefault(alias, {})
+            try:
+                observed = source_identity.fingerprint_for_mount(volume.path)
+                identity_health = "ok"
+                alert_token: str | None = None
+            except source_identity.MountIdentityError as exc:
+                observed = None
+                identity_health = _identity_error_health(exc)
+                alert_token = identity_health
+
+            expected = persisted.get(alias)
+            if expected is None and observed is not None:
+                connection.execute(
+                    """
+                    INSERT INTO source_volumes(
+                        alias, fingerprint_version, expected_fingerprint,
+                        first_seen_at, last_seen_at, last_alert_token
+                    ) VALUES (%s, %s, %s, %s, %s, NULL)
+                    """,
+                    (
+                        alias,
+                        source_identity.FINGERPRINT_VERSION,
+                        observed,
+                        now,
+                        now,
+                    ),
+                )
+                expected = {
+                    "alias": alias,
+                    "fingerprint_version": source_identity.FINGERPRINT_VERSION,
+                    "expected_fingerprint": observed,
+                    "last_alert_token": None,
+                }
+                persisted[alias] = expected
+                _expected_identities[alias] = (
+                    source_identity.FINGERPRINT_VERSION,
+                    observed,
+                )
+            elif expected is not None and (
+                expected["fingerprint_version"] != source_identity.FINGERPRINT_VERSION
+            ):
+                identity_health = "identity_unsupported"
+                alert_token = "identity_version_unsupported"
+            elif expected is not None and observed is not None:
+                if observed != expected["expected_fingerprint"]:
+                    identity_health = "replaced"
+                    alert_token = f"replaced:{observed}"
+                else:
+                    identity_health = "ok"
+                    alert_token = None
+
+            previous_health = state.get("identity_health")
+            state["identity_health"] = identity_health
+            state["lost"] = False
+            if identity_health == "ok" and previous_health in {
+                "replaced", "identity_ambiguous", "identity_unsupported"
+            }:
+                state["needs_scan"] = True
+
+            if expected is None:
+                # Unsupported/ambiguous first sighting cannot establish an
+                # expected identity and therefore cannot be accepted.
+                continue
+            connection.execute(
+                "UPDATE source_volumes SET last_seen_at=%s WHERE alias=%s",
+                (now, alias),
+            )
+            previous_alert = expected.get("last_alert_token")
+            if alert_token != previous_alert:
+                connection.execute(
+                    "UPDATE source_volumes SET last_alert_token=%s WHERE alias=%s",
+                    (alert_token, alias),
+                )
+                expected["last_alert_token"] = alert_token
+                if alert_token is not None:
+                    record_audit_event(
+                        connection,
+                        event="source_volume_identity_transition",
+                        outcome="blocked",
+                        visibility="admin",
+                        alias=alias,
+                        status=identity_health,
+                    )
+
+        for alias in persisted.keys() - volumes.keys():
+            state = _runtime_mount_state.setdefault(alias, {})
+            state["lost"] = True
+            state["needs_scan"] = True
+            state["identity_health"] = "absent"
+
+    _known_volume_aliases.update(volumes)
+    _identity_enforcement_ready = True
+
+
+def _blocked_vault_access(
+    *, alias: str | None, health: str = "unavailable"
+) -> VaultLocalAccess:
+    return VaultLocalAccess(
+        local_operations_allowed=False,
+        cloud_catalog_allowed=True,
+        volume_alias=alias,
+        volume_health=health,
+    )
+
+
+def _lexical_source_alias(vault_source_root: str | Path) -> tuple[str, str | None]:
+    """Classify a configured root without resolving or probing the filesystem."""
+    text = str(vault_source_root or "").strip()
+    if not text or "\x00" in text:
+        return "invalid", None
+    path = Path(text)
+    # Reject traversal even when normpath would place the result back in bounds.
+    if ".." in path.parts:
+        return "invalid", None
+    normalized = os.path.normpath(text)
+    sources = os.path.normpath(str(get_sources_root()))
+    if not os.path.isabs(normalized) or not os.path.isabs(sources):
+        return "outside", None
     try:
-        relative = root.relative_to(sources)
+        if os.path.commonpath((normalized, sources)) != sources:
+            return "outside", None
     except ValueError:
-        # Outside the fixed namespace.
+        return "outside", None
+    relative = os.path.relpath(normalized, sources)
+    if relative == ".":
+        return "managed", MANAGED_DIR_NAME
+    alias = relative.split(os.sep, 1)[0]
+    if alias == MANAGED_DIR_NAME:
+        return "managed", MANAGED_DIR_NAME
+    return "custom", alias
+
+
+def _canonical_root_stays_within(root: str | Path, boundary: str | Path) -> bool:
+    """Resolve only an identity-safe mount and retain its lexical boundary."""
+    resolved_root = Path(root).resolve()
+    resolved_boundary = Path(boundary).resolve()
+    try:
+        resolved_root.relative_to(resolved_boundary)
+    except ValueError:
+        return False
+    return True
+
+
+def vault_local_access(vault_source_root: str | Path) -> VaultLocalAccess:
+    """Decide local-ops eligibility using a lexical-first identity gate.
+
+    Unsafe or unavailable Source Volumes are classified from their lexical
+    alias and runtime health before the configured Vault tree is resolved or
+    probed. Only mounted ``ok``, ``read_only`` and ``scan_required`` volumes
+    proceed to canonical containment checks.
+    """
+    location, alias = _lexical_source_alias(vault_source_root)
+    if location == "invalid":
+        return _blocked_vault_access(alias=None)
+    if location == "outside":
         test_seam_active = (
             _sources_root_override is not None
             or bool(os.getenv("FROSTVAULT_TEST_SOURCES_ROOT", "").strip())
         )
         if test_seam_active:
-            return VaultLocalAccess(
-                local_operations_allowed=False,
-                cloud_catalog_allowed=True,
-                volume_alias=None,
-                volume_health="unavailable",
-            )
+            return _blocked_vault_access(alias=None)
         production_active = (
             get_sources_root() == PRODUCTION_SOURCES_ROOT
             and PRODUCTION_SOURCES_ROOT.exists()
             and path_is_mount(PRODUCTION_SOURCES_ROOT)
         )
         if production_active:
-            return VaultLocalAccess(
-                local_operations_allowed=False,
-                cloud_catalog_allowed=True,
-                volume_alias=None,
-                volume_health="unavailable",
-            )
-        # Historical unit fixtures often use private or synthetic source_root
-        # values outside /sources without installing the layout seam.
-        return VaultLocalAccess(
-            local_operations_allowed=True,
-            cloud_catalog_allowed=True,
-            volume_alias=None,
-            volume_health="ok",
-        )
+            return _blocked_vault_access(alias=None)
+        # Historical unit fixtures use private roots without the layout seam.
+        return VaultLocalAccess(True, True, None, "ok")
 
-    alias = relative.parts[0] if relative.parts else None
-    if alias is None or alias == MANAGED_DIR_NAME:
+    if location == "managed":
         ready = sources_layout_is_ready()
-        return VaultLocalAccess(
-            local_operations_allowed=ready,
-            cloud_catalog_allowed=True,
-            volume_alias=MANAGED_DIR_NAME,
-            volume_health="ok" if ready else "unavailable",
-        )
+        if not ready:
+            return _blocked_vault_access(alias=MANAGED_DIR_NAME)
+        if not _canonical_root_stays_within(vault_source_root, get_managed_root()):
+            return _blocked_vault_access(alias=MANAGED_DIR_NAME)
+        return VaultLocalAccess(True, True, MANAGED_DIR_NAME, "ok")
+
+    assert alias is not None
+    state = _runtime_mount_state.get(alias, {})
+    identity_health = state.get("identity_health")
+    if identity_health in {
+        "absent",
+        "replaced",
+        "identity_ambiguous",
+        "identity_unsupported",
+    }:
+        return _blocked_vault_access(alias=alias, health=str(identity_health))
+    if state.get("lost"):
+        return _blocked_vault_access(alias=alias, health="mount_lost")
 
     volumes = {volume.alias: volume for volume in discover_source_volumes()}
     volume = volumes.get(alias)
     if volume is None:
-        return VaultLocalAccess(
-            local_operations_allowed=False,
-            cloud_catalog_allowed=True,
-            volume_alias=alias,
-            volume_health="missing",
-        )
-    state = _runtime_mount_state.get(alias, {})
-    if state.get("lost"):
-        return VaultLocalAccess(
-            local_operations_allowed=False,
-            cloud_catalog_allowed=True,
-            volume_alias=volume.alias,
-            volume_health="mount_lost",
-        )
-    if state.get("needs_scan"):
-        return VaultLocalAccess(
-            local_operations_allowed=False,
-            cloud_catalog_allowed=True,
-            volume_alias=volume.alias,
-            volume_health="scan_required",
-        )
-    allowed = volume.health == "ok" and volume.access == "rw"
+        return _blocked_vault_access(alias=alias, health="absent")
+    if volume.health == "inaccessible":
+        return _blocked_vault_access(alias=alias, health="inaccessible")
+
+    if _identity_enforcement_ready:
+        _check_live_volume_identity(volume)
+        state = _runtime_mount_state.get(alias, {})
+        identity_health = state.get("identity_health")
+        if identity_health in {
+            "absent",
+            "replaced",
+            "identity_ambiguous",
+            "identity_unsupported",
+        }:
+            return _blocked_vault_access(alias=alias, health=str(identity_health))
+        if state.get("lost"):
+            return _blocked_vault_access(alias=alias, health="mount_lost")
+
+    health = "scan_required" if state.get("needs_scan") else volume.health
+    if health not in {"ok", "read_only", "scan_required"}:
+        return _blocked_vault_access(alias=alias, health=health)
+    if not _canonical_root_stays_within(vault_source_root, volume.path):
+        return _blocked_vault_access(alias=alias)
     return VaultLocalAccess(
-        local_operations_allowed=allowed,
+        local_operations_allowed=health == "ok" and volume.access == "rw",
         cloud_catalog_allowed=True,
-        volume_alias=volume.alias,
-        volume_health=volume.health,
+        volume_alias=alias,
+        volume_health=health,
     )
 
 
 
 def source_volume_inventory() -> list[dict[str, object]]:
-    """Admin inventory rows for discovered Source Volumes."""
+    """Admin inventory including persisted aliases that are currently absent."""
     from ..database import db
 
-    volumes = discover_source_volumes()
-    if not volumes:
-        return []
-
-    resolved = [(volume, Path(volume.path).resolve()) for volume in volumes]
-    counts: dict[str, int] = {volume.alias: 0 for volume, _ in resolved}
-    area_counts: dict[str, int] = {volume.alias: 0 for volume, _ in resolved}
+    if _identity_enforcement_ready:
+        reconcile_source_volume_identities()
+    live = {volume.alias: volume for volume in discover_source_volumes()}
     with db() as connection:
-        rows = connection.execute("SELECT source_root FROM vaults").fetchall()
+        persisted = {
+            row["alias"]
+            for row in connection.execute("SELECT alias FROM source_volumes").fetchall()
+        }
+        vault_rows = connection.execute("SELECT source_root FROM vaults").fetchall()
         area_rows = connection.execute(
             "SELECT volume_alias, COUNT(*) AS total FROM source_areas "
             "GROUP BY volume_alias"
         ).fetchall()
-    for row in rows:
-        root = Path(row["source_root"]).resolve()
-        for volume, volume_path in resolved:
-            try:
-                root.relative_to(volume_path)
-            except ValueError:
-                continue
-            counts[volume.alias] += 1
-            break
+
+    aliases = set(live) | persisted | {row["volume_alias"] for row in area_rows}
+    counts = {alias: 0 for alias in aliases}
+    area_counts = {alias: 0 for alias in aliases}
+    # Count roots from their stored namespace path only. Inventory must remain
+    # usable for an absent/replaced volume and must not resolve or traverse a
+    # Vault tree merely to produce an administrative count.
+    for row in vault_rows:
+        location, alias = _lexical_source_alias(row["source_root"])
+        if location == "custom" and alias in counts:
+            counts[alias] += 1
     for row in area_rows:
-        alias = row["volume_alias"]
-        if alias in area_counts:
-            area_counts[alias] = int(row["total"])
+        area_counts[row["volume_alias"]] = int(row["total"])
 
     items: list[dict[str, object]] = []
-    for volume, _ in resolved:
-        state = _runtime_mount_state.get(volume.alias, {})
-        health = volume.health
-        if state.get("lost"):
-            health = "mount_lost"
+    for alias in sorted(aliases):
+        volume = live.get(alias)
+        state = _runtime_mount_state.get(alias, {})
+        identity_health = state.get("identity_health")
+        if identity_health in {"replaced", "identity_ambiguous", "identity_unsupported"}:
+            health = str(identity_health)
+        elif volume is None or state.get("lost"):
+            health = "absent"
         elif state.get("needs_scan"):
             health = "scan_required"
-        diagnostic = volume.diagnostic
-        if health != "ok" and diagnostic is None:
-            diagnostic = (
-                f"Ensure /sources/{volume.alias} is a direct rw mount; "
-                "nested mounts and ordinary directories under /sources are unsupported."
-            )
+        else:
+            health = volume.health
+        diagnostic_code = None if health == "ok" else f"source_volume.{health}"
         items.append(
             {
-                "alias": volume.alias,
-                "path": volume.path,
-                "access": volume.access,
+                "alias": alias,
+                "path": str(get_sources_root() / alias),
+                "access": volume.access if volume is not None else "none",
                 "health": health,
-                "vault_count": counts.get(volume.alias, 0),
-                "source_area_count": area_counts.get(volume.alias, 0),
-                "diagnostic": diagnostic,
+                "vault_count": counts.get(alias, 0),
+                "source_area_count": area_counts.get(alias, 0),
+                "diagnostic": None,
+                "diagnostic_code": diagnostic_code,
             }
         )
     return items
@@ -423,6 +627,8 @@ def verify_mounts_once() -> list[str]:
             changed.append(alias)
 
     _known_volume_aliases |= current_aliases
+    if _identity_enforcement_ready:
+        reconcile_source_volume_identities()
     return changed
 
 
@@ -440,11 +646,21 @@ def prepare_sources_layout() -> None:
         validate_sources_structure()
         ensure_managed_directory()
         validate_sources_structure()
-        reject_nested_mounts()
     except SourcesLayoutError as exc:
         _structural_error = str(exc)
         if _sources_root_override is not None:
             raise
+
+
+def validate_nested_mounts_after_identity() -> None:
+    """Run content-boundary validation only after identity reconciliation."""
+    global _structural_error
+    try:
+        reject_nested_mounts()
+    except (OSError, SourcesLayoutError) as exc:
+        _structural_error = str(exc)
+        if _sources_root_override is not None:
+            raise SourcesLayoutError(str(exc)) from exc
 
 
 def override_sources_root(path: str | Path) -> Path:

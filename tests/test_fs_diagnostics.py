@@ -179,13 +179,166 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
                 patch("app.main.settings", test_settings),
                 patch("app.database.settings", test_settings),
                 patch.object(main_module, "is_owner", lambda _role: True),
+                patch.object(
+                    main_module,
+                    "vault_local_access",
+                    return_value=SimpleNamespace(
+                        local_operations_allowed=True,
+                        cloud_catalog_allowed=True,
+                        volume_alias="photos",
+                        volume_health="ok",
+                    ),
+                ),
             ):
                 payload = stats(vault=vault)
             filesystem = payload["filesystem"]
+            self.assertIn("states", payload)
+            self.assertIn("storage", payload)
             self.assertFalse(filesystem["ok"])
             self.assertEqual(filesystem["uid"], os.geteuid())
             finding_codes = {f["code"] for f in filesystem["findings"]}
             self.assertIn("fs.symlink", finding_codes)
+
+    def test_stats_retains_preflight_diagnostics_for_safe_degraded_volume(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.addCleanup(source_layout.reset_sources_root_override)
+            source_layout.override_sources_root(directory)
+            database_path = Path(directory) / "catalog.db"
+            source = Path(directory) / "sources"
+            source.mkdir()
+            (source / "a.txt").write_text("a", encoding="utf-8")
+            (source / "b.txt").symlink_to(source / "a.txt")
+            migrated = run_alembic(database_path)
+            self.assertEqual(migrated.returncode, 0, migrated.stderr)
+            with SQLiteConnection(str(database_path)) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO vaults(
+                        id, slug, name, source_root, s3_bucket, s3_prefix,
+                        rclone_remote
+                    ) VALUES (12, 'degraded', 'Degraded', %s, 'bucket', 'd', 'remote')
+                    """,
+                    (str(source),),
+                )
+            vault = {"id": 12, "role": "owner", "source_root": str(source)}
+            test_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+                allow_local_delete=True,
+                bootstrap_vault_source_root="",
+            )
+            from app import main as main_module
+
+            for health in ("read_only", "scan_required"):
+                with self.subTest(health=health):
+                    access = SimpleNamespace(
+                        local_operations_allowed=False,
+                        cloud_catalog_allowed=True,
+                        volume_alias="photos",
+                        volume_health=health,
+                    )
+                    with (
+                        patch("app.main.settings", test_settings),
+                        patch("app.database.settings", test_settings),
+                        patch.object(main_module, "is_owner", lambda _role: True),
+                        patch.object(main_module, "vault_local_access", return_value=access),
+                        patch.object(
+                            main_module,
+                            "check_vault_filesystem",
+                            wraps=main_module.check_vault_filesystem,
+                        ) as preflight,
+                    ):
+                        payload = stats(vault=vault)
+                    preflight.assert_called_once()
+                    filesystem = payload["filesystem"]
+                    self.assertIn("states", payload)
+                    self.assertIn("storage", payload)
+                    self.assertFalse(filesystem["ok"])
+                    self.assertEqual(filesystem["source_volume"]["health"], health)
+                    self.assertIn(
+                        "fs.symlink",
+                        {finding["code"] for finding in filesystem["findings"]},
+                    )
+
+    def test_stats_gates_preflight_for_unavailable_or_identity_unsafe_volume(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.addCleanup(source_layout.reset_sources_root_override)
+            source_layout.override_sources_root(directory)
+            database_path = Path(directory) / "catalog.db"
+            source = Path(directory) / "sources"
+            source.mkdir()
+            (source / "nested").mkdir()
+            (source / "nested" / "content.txt").write_text("content", encoding="utf-8")
+            migrated = run_alembic(database_path)
+            self.assertEqual(migrated.returncode, 0, migrated.stderr)
+            with SQLiteConnection(str(database_path)) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO vaults(
+                        id, slug, name, source_root, s3_bucket, s3_prefix,
+                        rclone_remote
+                    ) VALUES (12, 'blocked', 'Blocked', %s, 'bucket', 'b', 'remote')
+                    """,
+                    (str(source),),
+                )
+            vault = {"id": 12, "role": "owner", "source_root": str(source)}
+            test_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+                allow_local_delete=True,
+                bootstrap_vault_source_root="",
+            )
+            from app import main as main_module
+
+            for health in (
+                "replaced",
+                "identity_ambiguous",
+                "identity_unsupported",
+                "absent",
+                "mount_lost",
+                "inaccessible",
+            ):
+                with self.subTest(health=health):
+                    access = SimpleNamespace(
+                        local_operations_allowed=False,
+                        cloud_catalog_allowed=True,
+                        volume_alias="photos",
+                        volume_health=health,
+                    )
+                    original_resolve = Path.resolve
+                    original_realpath = os.path.realpath
+
+                    def guarded_resolve(path: Path, *args, **kwargs):
+                        if str(path).startswith(str(source)):
+                            raise AssertionError(
+                                f"resolved blocked Source Volume path: {path}"
+                            )
+                        return original_resolve(path, *args, **kwargs)
+
+                    def guarded_realpath(path, *args, **kwargs):
+                        if str(path).startswith(str(source)):
+                            raise AssertionError(
+                                f"realpath called for blocked Source Volume: {path}"
+                            )
+                        return original_realpath(path, *args, **kwargs)
+
+                    with (
+                        patch("app.main.settings", test_settings),
+                        patch("app.database.settings", test_settings),
+                        patch.object(main_module, "is_owner", lambda _role: True),
+                        patch.object(main_module, "vault_local_access", return_value=access),
+                        patch.object(Path, "resolve", guarded_resolve),
+                        patch("os.path.realpath", side_effect=guarded_realpath),
+                        patch.object(main_module, "check_vault_filesystem") as preflight,
+                    ):
+                        payload = stats(vault=vault)
+                    preflight.assert_not_called()
+                    filesystem = payload["filesystem"]
+                    self.assertIn("states", payload)
+                    self.assertIn("storage", payload)
+                    self.assertFalse(filesystem["ok"])
+                    self.assertEqual(filesystem["source_volume"]["health"], health)
+                    self.assertEqual(filesystem["findings"], [])
 
 
 if __name__ == "__main__":

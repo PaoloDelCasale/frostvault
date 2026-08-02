@@ -531,10 +531,11 @@ class LocalOpsGateTests(unittest.TestCase):
             return Path(path) in {self.sources, self.photos}
 
         with patch.object(source_layout, "path_is_mount", side_effect=is_mount):
-            scan_tree(
-                {"id": self.vault_id, "source_root": str(self.vault_root)},
-                "scan-1",
-            )
+            with self.assertRaisesRegex(RuntimeError, "mount_lost"):
+                scan_tree(
+                    {"id": self.vault_id, "source_root": str(self.vault_root)},
+                    "scan-1",
+                )
 
         with SQLiteConnection(str(self.database_path)) as connection:
             missing = connection.execute(
@@ -543,9 +544,9 @@ class LocalOpsGateTests(unittest.TestCase):
             present = connection.execute(
                 "SELECT COUNT(*) AS total FROM local_copies WHERE presence='present'"
             ).fetchone()["total"]
-        # Must not mass-mark missing during mount loss.
+        # The scan is blocked before touching data or mass-marking catalog rows.
         self.assertEqual(missing, 0)
-        self.assertGreaterEqual(present, 1)
+        self.assertEqual(present, 1)
 
 
 

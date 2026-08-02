@@ -734,6 +734,7 @@ export type SourceVolumeInventoryItem = {
   vault_count: number;
   source_area_count: number;
   diagnostic: string | null;
+  diagnostic_code?: string | null;
 };
 
 export type SourceVolumeInventoryResponse = {

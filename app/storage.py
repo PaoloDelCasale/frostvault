@@ -472,6 +472,11 @@ def _record_scan_finding(
 
 
 def scan_tree(vault: dict[str, Any], scan_id: str) -> int:
+    access = source_layout.vault_local_access(vault["source_root"])
+    if not access.local_operations_allowed and access.volume_health != "scan_required":
+        raise RuntimeError(
+            f"Local scan blocked by Source Volume health: {access.volume_health}"
+        )
     root = Path(vault["source_root"]).resolve()
     if not root.exists():
         raise RuntimeError(f"Folder is not available in the container: {root}")
@@ -521,15 +526,23 @@ def scan_tree(vault: dict[str, Any], scan_id: str) -> int:
             count += 1
             if count % 1000 == 0:
                 connection.commit()
+        # Recheck identity before applying the destructive-looking catalog
+        # consequence of a full scan. If the mount changed while walking, keep
+        # the prior Local Copy state rather than mass-marking it missing.
         access = source_layout.vault_local_access(vault["source_root"])
         alias = access.volume_alias
-        if alias is None or source_layout.should_emit_local_copy_removals(alias):
+        safe_scan_result = access.local_operations_allowed or (
+            access.volume_health == "scan_required"
+        )
+        if safe_scan_result and (
+            alias is None or source_layout.should_emit_local_copy_removals(alias)
+        ):
             catalog.mark_unseen_local_copies_missing(
                 vault_id=vault_id,
                 seen_at=scan_id,
                 observed_at=now_iso(),
             )
-        if alias and source_layout.requires_full_local_scan(alias):
+        if safe_scan_result and alias and source_layout.requires_full_local_scan(alias):
             source_layout.note_full_local_scan_completed(alias)
     return count
 
@@ -549,6 +562,11 @@ def _apply_filesystem_changes(
     vault: dict[str, Any], changes: set[tuple[Change, str]]
 ) -> int:
     """Apply filesystem watcher events directly to the local catalog."""
+    access = source_layout.vault_local_access(vault["source_root"])
+    if not access.local_operations_allowed:
+        raise RuntimeError(
+            f"Source watcher blocked by Source Volume health: {access.volume_health}"
+        )
     root = Path(vault["source_root"]).resolve()
     if not root.is_dir():
         raise RuntimeError(f"Folder is not available in the container: {root}")
@@ -610,7 +628,9 @@ def _apply_filesystem_changes(
                 continue
             access = source_layout.vault_local_access(vault["source_root"])
             alias = access.volume_alias
-            if alias is None or source_layout.should_emit_local_copy_removals(alias):
+            if access.local_operations_allowed and (
+                alias is None or source_layout.should_emit_local_copy_removals(alias)
+            ):
                 catalog.mark_local_path_missing(
                     vault_id=vault["id"],
                     path=relative,
@@ -751,6 +771,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
     try:
         scan_id = now_iso()
         result: dict[str, int] = {}
+        local_scanned = False
         try:
             # Reset scan findings; live preflight still runs via /api/stats.
             with status_lock:
@@ -764,6 +785,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
             access = source_layout.vault_local_access(vault["source_root"])
             if access.local_operations_allowed or access.volume_health == "scan_required":
                 result["local"] = scan_tree(vault, scan_id)
+                local_scanned = True
             else:
                 result["local_skipped"] = 1
                 result["local"] = 0
@@ -771,16 +793,17 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
             status["last_error"] = f"Source scan: {exc}"
             result["local"] = -1
         else:
-            try:
-                result.update(
-                    {
-                        f"rename_{key}": value
-                        for key, value in apply_auto_renames(vault).items()
-                    }
-                )
-            except Exception as exc:
-                status["last_error"] = f"Rename analysis: {exc}"
-                result["rename_confirmed"] = -1
+            if local_scanned:
+                try:
+                    result.update(
+                        {
+                            f"rename_{key}": value
+                            for key, value in apply_auto_renames(vault).items()
+                        }
+                    )
+                except Exception as exc:
+                    status["last_error"] = f"Rename analysis: {exc}"
+                    result["rename_confirmed"] = -1
         try:
             result["cloud"] = scan_cloud(vault, scan_id)
         except Exception as exc:
@@ -807,7 +830,8 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                     """,
                     (vault["id"],),
                 ).fetchone()
-                if owner:
+                local_access = source_layout.vault_local_access(vault["source_root"])
+                if owner and local_access.local_operations_allowed:
                     result["auto_uploads"] = queue_auto_uploads(
                         connection,
                         vault_id=int(vault["id"]),
@@ -1145,6 +1169,9 @@ def cleanup_abandoned_restore_files() -> int:
         ).fetchall()
     removed = 0
     for vault in vaults:
+        access = source_layout.vault_local_access(vault["source_root"])
+        if not access.local_operations_allowed:
+            continue
         root = Path(vault["source_root"]).resolve()
         if not root.is_dir():
             continue
@@ -1184,6 +1211,11 @@ def reconcile_interrupted_jobs() -> dict[str, int]:
         ).fetchall()
 
         for job in jobs:
+            access = source_layout.vault_local_access(job["source_root"])
+            if not access.local_operations_allowed:
+                # Keep interrupted local work suspended without touching the
+                # absent, inaccessible, or replaced tree.
+                continue
             timestamp = now_iso()
             try:
                 if job["action"] == "recover":
@@ -2655,6 +2687,21 @@ def process_job(job: dict[str, Any]) -> bool:
             with operation_process_lock:
                 cancelled_jobs.discard(int(job["id"]))
             job["status"] = current["status"]
+        local_statuses = {
+            "upload": {"queued", "retrying"},
+            "rename": {"queued"},
+            "recover": {"queued", "retrying", "restoring"},
+            "free-space": {"queued"},
+        }
+        allowed_statuses = local_statuses.get(job["action"])
+        if allowed_statuses is not None and job["status"] not in allowed_statuses:
+            return False
+        if allowed_statuses is not None and "source_root" in job:
+            access = source_layout.vault_local_access(job["source_root"])
+            if not access.local_operations_allowed:
+                # Leave the Job queued/suspended; restoring the expected mount
+                # is the only path back to local execution.
+                return False
         if job["status"] == "restoring":
             last_check = datetime.fromisoformat(job["updated_at"])
             age = (datetime.now(timezone.utc) - last_check).total_seconds()
@@ -2869,8 +2916,14 @@ def _filesystem_watch_filter(_: Change, path: str) -> bool:
 
 
 async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
-    root = Path(vault["source_root"]).resolve()
     while True:
+        access = await asyncio.to_thread(
+            source_layout.vault_local_access, vault["source_root"]
+        )
+        if not access.local_operations_allowed:
+            await asyncio.sleep(5)
+            continue
+        root = Path(vault["source_root"]).resolve()
         if not root.is_dir():
             await asyncio.sleep(5)
             continue
@@ -3128,6 +3181,9 @@ async def background_loop() -> None:
         metrics_service.set_gauge("worker_up", 1)
         try:
             runtime = await asyncio.to_thread(_runtime_settings)
+            # Reconcile Source Volume identity even when filesystem watchers are
+            # disabled, before workers or scheduled scans can touch local data.
+            await asyncio.to_thread(source_layout.verify_mounts_once)
             queued_count = await asyncio.to_thread(process_jobs_once)
             metrics_service.set_gauge("queue_depth", float(queued_count))
             current = loop.time()

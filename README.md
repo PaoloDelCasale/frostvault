@@ -156,6 +156,14 @@ instead of trying other credentials available on the computer.
    Compose may still substitute the host path with `SOURCES_ROOT`; the
    application no longer accepts `VAULT_SOURCES_ROOT`.
 
+   On first discovery FrostVault stores a markerless, opaque identity for each
+   custom Source Volume. It accepts ordinary remounts of the same source but
+   blocks scans, watchers, and all local operations if the alias is absent,
+   inaccessible, ambiguous, unsupported, or backed by a different source. The
+   catalog remains intact. There is no “accept replacement” action: restore the
+   expected Compose mount. Bind, Docker Desktop, and NAS details and limitations
+   are documented in [docs/filesystem-permissions.md](docs/filesystem-permissions.md).
+
    Administrators assign exclusive **Source Areas** under those volumes.
    When creating a Vault, Users can keep the default empty root
    (`/sources/managed/<uuid>`) or adopt an existing directory under one of
