@@ -39,6 +39,7 @@ from ..database import INTEGRITY_ERRORS, db
 from . import source_areas
 from .source_layout import ensure_managed_directory, managed_vault_path
 from .vault_crypto import encrypt_vault_secrets, generate_crypt_secrets
+from .vault_relocation import enroll_vault_root_identity
 
 
 class VaultCreationError(Exception):
@@ -207,6 +208,10 @@ def create_vault_for_user(
                 # vault row can ever be left pointing at a missing directory.
                 os.makedirs(source_root, exist_ok=False)
                 directory_created = True
+            # Enrol the real directory identity while creation still owns the
+            # transaction. Relocation can later prove a rename by inode rather
+            # than accepting a content lookalike or generic rebind.
+            enroll_vault_root_identity(connection, int(vault["id"]), source_root)
     except INTEGRITY_ERRORS as exc:
         message = str(exc).lower()
         if "slug" in message:

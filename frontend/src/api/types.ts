@@ -701,6 +701,19 @@ export type AdminVaultCreatePayload = {
   relative_path?: string;
 };
 
+export type AdminVaultRelocatePayload = {
+  volume_alias: string;
+  relative_path: string;
+  reason: string;
+};
+
+export type AdminVaultRelocationResponse = {
+  vault_id: number;
+  source_root: string;
+  relocation_state: "scan_required" | "ready";
+  full_scan_required: boolean;
+};
+
 export type AdminVaultMember = {
   id: number;
   username: string;

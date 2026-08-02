@@ -24,6 +24,7 @@ from .config import Settings, is_placeholder, settings
 from .catalog import ArchiveCatalog
 from .database import db
 from .services import source_layout
+from .services import vault_relocation
 from .i18n import DEFAULT_LOCALE, format_message_params, translate
 from .system_settings import effective_settings
 from .services.rclone_runtime import (
@@ -562,6 +563,14 @@ def _apply_filesystem_changes(
     vault: dict[str, Any], changes: set[tuple[Change, str]]
 ) -> int:
     """Apply filesystem watcher events directly to the local catalog."""
+    if vault_relocation.local_work_suspended(vault):
+        raise RuntimeError("Source watcher suspended for Vault relocation")
+    with db() as connection:
+        state = connection.execute(
+            "SELECT relocation_state FROM vaults WHERE id=%s", (vault["id"],)
+        ).fetchone()
+    if state and state["relocation_state"] != "ready":
+        raise RuntimeError("Source watcher suspended for Vault relocation")
     access = source_layout.vault_local_access(vault["source_root"])
     if not access.local_operations_allowed:
         raise RuntimeError(
@@ -801,6 +810,19 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                             for key, value in apply_auto_renames(vault).items()
                         }
                     )
+                    # Relocation remains persistently suspended across restart
+                    # until this exact destination completed a full local scan.
+                    with db() as connection:
+                        current = connection.execute(
+                            "SELECT source_root, relocation_state FROM vaults WHERE id=%s",
+                            (vault_id,),
+                        ).fetchone()
+                        if (
+                            current
+                            and current["source_root"] == vault["source_root"]
+                            and current["relocation_state"] == "scan_required"
+                        ):
+                            vault_relocation.complete_relocation_scan(connection, vault_id)
                 except Exception as exc:
                     status["last_error"] = f"Rename analysis: {exc}"
                     result["rename_confirmed"] = -1
@@ -2822,6 +2844,7 @@ def process_jobs_once() -> int:
             FROM jobs j
             JOIN vaults v ON v.id=j.vault_id
             WHERE v.enabled=TRUE
+              AND v.relocation_state='ready'
               AND (
                     j.status='queued'
                  OR (
@@ -2850,6 +2873,7 @@ def process_jobs_once() -> int:
             FROM jobs j
             JOIN vaults v ON v.id=j.vault_id
             WHERE j.status='restoring' AND v.enabled=TRUE
+              AND v.relocation_state='ready'
             ORDER BY j.updated_at ASC
             LIMIT 10
             """
@@ -2860,6 +2884,8 @@ def process_jobs_once() -> int:
         for row in queued_candidates:
             job = dict(row)
             vault_id = int(job["vault_id"])
+            if vault_relocation.local_work_suspended({"id": vault_id}):
+                continue
             if vault_id not in policy_cache:
                 policy_cache[vault_id] = get_policy(connection, vault_id)
             policy = policy_cache[vault_id]
@@ -2917,6 +2943,16 @@ def _filesystem_watch_filter(_: Change, path: str) -> bool:
 
 async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
     while True:
+        if vault_relocation.local_work_suspended(vault):
+            await asyncio.sleep(1)
+            continue
+        with db() as connection:
+            current = connection.execute(
+                "SELECT relocation_state FROM vaults WHERE id=%s", (vault["id"],)
+            ).fetchone()
+        if current and current["relocation_state"] != "ready":
+            await asyncio.sleep(1)
+            continue
         access = await asyncio.to_thread(
             source_layout.vault_local_access, vault["source_root"]
         )
@@ -2973,6 +3009,12 @@ async def filesystem_watch_loop() -> None:
                     task.cancel()
                     watchers.pop(vault_id)
             for vault_id, vault in desired.items():
+                if vault_relocation.local_work_suspended(vault):
+                    existing = watchers.get(vault_id)
+                    if existing is not None:
+                        existing[1].cancel()
+                        watchers.pop(vault_id, None)
+                    continue
                 access = source_layout.vault_local_access(vault["source_root"])
                 if not access.local_operations_allowed:
                     existing = watchers.get(vault_id)

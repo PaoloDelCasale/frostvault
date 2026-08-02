@@ -49,6 +49,7 @@ from .services.source_layout import (
     vault_local_access,
 )
 from .services import source_areas as source_areas_service
+from .services import vault_relocation as vault_relocation_service
 from .oidc import OidcError, begin_login, complete_login
 from .oidc_configuration import (
     OidcConfigurationConflict,
@@ -220,6 +221,10 @@ async def lifespan(_: FastAPI):
     # Identity must be reconciled before scans, workers, or watchers start.
     reconcile_source_volume_identities()
     validate_nested_mounts_after_identity()
+    # Legacy healthy roots are enrolled before any watcher or Job can touch
+    # them. A root already missing at upgrade stays ambiguous and cannot be
+    # rebound by the relocation workflow.
+    vault_relocation_service.reconcile_vault_root_identities()
     cleanup_abandoned_restore_files()
     reconcile_interrupted_jobs()
     tasks = [asyncio.create_task(background_loop())]
@@ -790,6 +795,16 @@ class VaultCreate(BaseModel):
     creation_mode: str = Field(default="empty", pattern="^(empty|adopt)$")
     volume_alias: str | None = Field(default=None, min_length=1, max_length=120)
     relative_path: str | None = Field(default=None, max_length=1024)
+
+
+class VaultRelocate(BaseModel):
+    """Constrained destination within the Vault's existing Source Volume."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    volume_alias: str = Field(min_length=1, max_length=120)
+    relative_path: str = Field(default="", max_length=1024)
+    reason: str = Field(min_length=3, max_length=500)
 
 
 class MembershipCreate(BaseModel):
@@ -1708,6 +1723,8 @@ def confirm_rename(
 ):
     if not can_operate(vault["role"]):
         raise HTTPException(403, "Vault is read-only")
+    if vault_relocation_service.local_work_suspended(vault):
+        raise HTTPException(409, "Local work is suspended pending relocation scan")
     new_path = safe_relative_path(action.new_path).as_posix()
     with db() as connection:
         catalog = ArchiveCatalog(connection)
@@ -1751,6 +1768,8 @@ def confirm_folder_rename(
 ):
     if not can_operate(vault["role"]):
         raise HTTPException(403, "Vault is read-only")
+    if vault_relocation_service.local_work_suspended(vault):
+        raise HTTPException(409, "Local work is suspended pending relocation scan")
     old_prefix = safe_relative_path(action.old_prefix).as_posix()
     new_prefix = safe_relative_path(action.new_prefix).as_posix()
     with db() as connection:
@@ -2568,16 +2587,18 @@ def queue_jobs(
         logical_path = safe_relative_path(path).as_posix()
     if action not in {"upload", "recover", "free-space", "rename", "storage-class"}:
         raise HTTPException(422, "Invalid operation")
-    if action in {"upload", "recover", "free-space", "rename"}:
+    if action in {"upload", "recover", "free-space", "rename", "storage-class"}:
         with db() as connection:
             vault_row = connection.execute(
-                "SELECT source_root FROM vaults WHERE id=%s",
+                "SELECT source_root, relocation_state FROM vaults WHERE id=%s",
                 (vault_id,),
             ).fetchone()
         if vault_row is None:
             raise HTTPException(404, "Vault not found")
+        if vault_relocation_service.local_work_suspended(vault_row):
+            raise HTTPException(409, "Local work is suspended pending relocation scan")
         access = vault_local_access(vault_row["source_root"])
-        if not access.local_operations_allowed:
+        if action in {"upload", "recover", "free-space", "rename"} and not access.local_operations_allowed:
             raise HTTPException(
                 503,
                 "Local storage for this vault is unavailable"
@@ -3705,6 +3726,64 @@ def create_vault(
         reason=action.reason,
     )
     return vault
+
+
+_VAULT_RELOCATION_ERROR_STATUS: dict[str, tuple[int, str]] = {
+    "not_found": (404, "Vault not found"),
+    "reason_required": (422, "A reason between 3 and 500 characters is required"),
+    "invalid_path": (422, "Relocation destination is invalid"),
+    "not_directory": (422, "Relocation destination is not a directory"),
+    "unsupported_root": (409, "Only custom Source Volume roots can be relocated"),
+    "source_present": (409, "Original Vault root still exists; rebind is forbidden"),
+    "source_inaccessible": (409, "Original Vault root cannot be proven missing"),
+    "different_volume": (409, "Destination must be the same Source Volume"),
+    "volume_unavailable": (409, "Expected Source Volume is unavailable"),
+    "symlink": (409, "Relocation paths cannot contain symbolic links"),
+    "inaccessible": (409, "Relocation destination is inaccessible"),
+    "overlap": (409, "Relocation destination overlaps another Vault"),
+    "active_jobs": (409, "Vault has active Jobs or a scan"),
+    "identity_ambiguous": (409, "Vault root identity is ambiguous; relocation is unavailable"),
+    "identity_mismatch": (409, "Destination is not the enrolled Vault directory"),
+    "relocation_in_progress": (409, "Vault relocation already requires a full scan"),
+}
+
+
+@app.post("/api/admin/vaults/{vault_id}/relocate")
+def admin_relocate_vault_root(
+    vault_id: int,
+    action: VaultRelocate,
+    background_tasks: BackgroundTasks,
+    admin: dict[str, Any] = Depends(admin_user),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    """Relocate, never rebind, a missing root on its verified Source Volume."""
+    busy = bool(runtime_status.get(vault_id, {}).get("scanning"))
+    try:
+        with db() as connection:
+            vault = vault_relocation_service.relocate_vault_root(
+                connection,
+                vault_id=vault_id,
+                volume_alias=action.volume_alias,
+                relative_path=action.relative_path,
+                actor_user_id=int(admin["id"]),
+                reason=action.reason,
+                runtime_busy=busy,
+            )
+    except vault_relocation_service.VaultRelocationError as exc:
+        status_code, message = _VAULT_RELOCATION_ERROR_STATUS.get(
+            exc.reason, (400, "Vault relocation could not be completed")
+        )
+        raise HTTPException(status_code, message) from exc
+    # BackgroundTasks registration is non-I/O and cannot partially dispatch.
+    # A crash before execution is recovered by scan_all_vaults on next start;
+    # relocation_state remains scan_required until local scan success.
+    background_tasks.add_task(scan_vault, dict(vault))
+    return {
+        "vault_id": vault_id,
+        "source_root": vault["source_root"],
+        "relocation_state": vault["relocation_state"],
+        "full_scan_required": True,
+    }
 
 
 @app.post("/api/admin/vaults/{vault_id}/recovery/export")
