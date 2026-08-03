@@ -36,6 +36,8 @@ function translatedLabel(
 
 type ThemeControlProps = {
   className?: string;
+  locale?: string;
+  t?: (key: string) => string;
 };
 
 /**
@@ -43,13 +45,21 @@ type ThemeControlProps = {
  * used instead of a colour-only icon toggle so all three choices are announced
  * by assistive technology and remain usable at 320px wide.
  */
-export function ThemeControl({ className }: ThemeControlProps) {
+export function ThemeControl({
+  className,
+  locale: localeProp,
+  t: tProp,
+}: ThemeControlProps) {
   const i18n = useContext(I18nContext);
-  const locale = i18n?.locale ?? "en";
-  const t = i18n?.t ?? ((key: string) => key);
+  const locale = localeProp ?? i18n?.locale ?? "en";
+  const t = tProp ?? i18n?.t ?? ((key: string) => key);
   const { preference, setTheme } = useTheme();
   const fallback = locale === "it" ? FALLBACK_LABELS.it : FALLBACK_LABELS.en;
-  const label = translatedLabel(THEME_KEYS.label, t(THEME_KEYS.label), fallback.label);
+  const label = translatedLabel(
+    THEME_KEYS.label,
+    t(THEME_KEYS.label),
+    fallback.label,
+  );
   const options: Array<[ThemePreference, string, string]> = [
     ["system", THEME_KEYS.system, fallback.system],
     ["light", THEME_KEYS.light, fallback.light],

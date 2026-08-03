@@ -82,6 +82,12 @@ test.describe("accessibility and touch", () => {
     await openMobileDrawer(page);
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: /new vault|nuovo vault/i }),
+    ).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: /sign out|esci/i }),
+    ).toBeVisible();
     const tooSmall = await dialog.evaluate((root) => {
       const nodes = Array.from(
         root.querySelectorAll<HTMLElement>("button, select, a[href], [role='button']"),

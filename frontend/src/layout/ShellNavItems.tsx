@@ -1,5 +1,6 @@
 import { ThemeControl } from "@/components/ThemeControl";
 
+import { shellLabel } from "./labels";
 import type { ShellCapabilities, ShellNavHandlers } from "./types";
 
 type ShellNavItemsProps = {
@@ -10,9 +11,9 @@ type ShellNavItemsProps = {
   className?: string;
 };
 
-const localeLabel: Record<string, string> = {
-  en: "English",
-  it: "Italiano",
+const localeLabels: Record<string, { key: string; fallback: string }> = {
+  en: { key: "ui.language_en", fallback: "English" },
+  it: { key: "ui.language_it", fallback: "Italiano" },
 };
 
 export function ShellNavItems({
@@ -36,14 +37,20 @@ export function ShellNavItems({
     "min-h-11 rounded-[10px] border border-input bg-surface px-4 text-left font-bold text-ink";
   const selectClass =
     "min-h-11 rounded-[10px] border border-input bg-surface px-3 text-ink";
-  const refreshListLabel = t?.("ui.refresh_list") ?? "Refresh list";
+  const vaultLabel = shellLabel(t, "ui.vault", "Vault");
+  const languageLabel = shellLabel(t, "ui.language", "Language");
+  const refreshListLabel = shellLabel(t, "ui.refresh_list", "Refresh list");
+  const newVaultLabel = shellLabel(t, "ui.new_vault", "New vault");
+  const manageAccessLabel = shellLabel(t, "ui.manage_access", "Manage access");
+  const administrationLabel = shellLabel(t, "ui.administration", "Administration");
+  const signOutLabel = shellLabel(t, "ui.sign_out", "Sign out");
 
   return (
     <div className={className ?? "flex flex-col gap-2"}>
       <label className="flex min-h-11 flex-col justify-center gap-1 text-sm font-bold text-muted">
-        <span>Vault</span>
+        <span>{vaultLabel}</span>
         <select
-          aria-label="Vault"
+          aria-label={vaultLabel}
           className={selectClass}
           value={selectedVaultId}
           onChange={(event) => {
@@ -67,7 +74,7 @@ export function ShellNavItems({
           onNavigate?.();
         }}
       >
-        New vault
+        {newVaultLabel}
       </button>
 
       {isVaultOwner ? (
@@ -79,7 +86,7 @@ export function ShellNavItems({
             onNavigate?.();
           }}
         >
-          Manage access
+          {manageAccessLabel}
         </button>
       ) : null}
 
@@ -92,7 +99,7 @@ export function ShellNavItems({
             onNavigate?.();
           }}
         >
-          Administration
+          {administrationLabel}
         </button>
       ) : null}
 
@@ -110,22 +117,25 @@ export function ShellNavItems({
       ) : null}
 
       <label className="flex min-h-11 flex-col justify-center gap-1 text-sm font-bold text-muted">
-        <span>Language</span>
+        <span>{languageLabel}</span>
         <select
-          aria-label="Language"
+          aria-label={languageLabel}
           className={selectClass}
           value={locale}
           onChange={(event) => handlers?.onLocaleChange?.(event.target.value)}
         >
-          {locales.map((code) => (
-            <option key={code} value={code}>
-              {localeLabel[code] ?? code}
-            </option>
-          ))}
+          {locales.map((code) => {
+            const locale = localeLabels[code];
+            return (
+              <option key={code} value={code}>
+                {locale ? shellLabel(t, locale.key, locale.fallback) : code}
+              </option>
+            );
+          })}
         </select>
       </label>
 
-      <ThemeControl />
+      <ThemeControl t={t} locale={locale} />
 
       <button
         type="button"
@@ -135,7 +145,7 @@ export function ShellNavItems({
           onNavigate?.();
         }}
       >
-        Sign out
+        {signOutLabel}
       </button>
     </div>
   );
