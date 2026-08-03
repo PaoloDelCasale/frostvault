@@ -1126,18 +1126,31 @@ class ArchiveCatalog:
         # SQLite takes its write lock before the usage snapshot and inserts.
         # Every manual upload/recovery/free-space admission therefore observes
         # one serialized Vault state.
-        lock_vault(self.connection, vault_id)
+        lock_vault(
+            self.connection,
+            vault_id,
+            allow_decommission=origin == "decommission",
+        )
         self.last_skipped_same_class = 0
+        vault = self.connection.execute(
+            """
+            SELECT decommission_state, encryption_mode,
+                   recovery_custody_confirmed_at
+            FROM vaults WHERE id=%s
+            """,
+            (vault_id,),
+        ).fetchone()
+        if vault is None:
+            raise ValueError(f"Vault {vault_id} not found")
+        lifecycle = str(vault.get("decommission_state") or "active")
+        if lifecycle != "active" and not (
+            lifecycle == "decommissioning" and origin == "decommission"
+        ):
+            raise ValueError("Vault is quiesced for decommission")
+        if origin == "decommission" and lifecycle != "decommissioning":
+            raise ValueError("Decommission Jobs require a quiesced Vault")
         if action == "upload":
-            vault = self.connection.execute(
-                """
-                SELECT encryption_mode, recovery_custody_confirmed_at
-                FROM vaults WHERE id=%s
-                """,
-                (vault_id,),
-            ).fetchone()
-            if vault is not None:
-                require_upload_custody(vault)
+            require_upload_custody(vault)
         clauses = ["vf.vault_id=%s", "vf.status='active'"]
         params: list[Any] = [vault_id]
         clauses.append(

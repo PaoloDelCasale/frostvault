@@ -145,6 +145,16 @@ def set_cloud_deletion_enabled(
     actor_user_id: int,
 ) -> bool:
     stamp = now_iso()
+    locked = connection.execute(
+        """
+        UPDATE vaults SET name=name
+        WHERE id=%s AND decommission_state='active'
+        RETURNING id
+        """,
+        (vault_id,),
+    ).fetchone()
+    if locked is None:
+        raise CloudDeletionDisabled("Vault is quiesced for decommission")
     connection.execute(
         """
         UPDATE vaults
@@ -221,10 +231,14 @@ def _selected_files(
     paths: list[str],
     is_directory: bool,
     require_cloud_items: bool = False,
+    whole_vault: bool = False,
 ) -> list[dict[str, Any]]:
-    path_sql, path_params = _path_filter_clauses(
-        paths=paths, is_directory=is_directory
-    )
+    if whole_vault:
+        path_sql, path_params = "1=1", []
+    else:
+        path_sql, path_params = _path_filter_clauses(
+            paths=paths, is_directory=is_directory
+        )
     cloud_filter = ""
     if require_cloud_items:
         cloud_filter = """
@@ -237,6 +251,11 @@ def _selected_files(
              OR EXISTS (
                     SELECT 1 FROM delete_markers dm
                     WHERE dm.vault_file_id=vf.id
+                      AND NOT EXISTS (
+                          SELECT 1 FROM cloud_deletion_items prior
+                          WHERE prior.delete_marker_id=dm.id
+                            AND prior.status='deleted'
+                      )
                 )
           )
         """
@@ -262,12 +281,14 @@ def preview_selection(
     vault_id: int,
     paths: list[str],
     is_directory: bool = False,
+    whole_vault: bool = False,
 ) -> DeletionPreview:
     files = _selected_files(
         connection,
         vault_id=vault_id,
         paths=paths,
         is_directory=is_directory,
+        whole_vault=whole_vault,
     )
     if not files:
         return DeletionPreview(0, 0, 0, 0)
@@ -285,8 +306,12 @@ def preview_selection(
     markers = connection.execute(
         f"""
         SELECT COUNT(*) AS total
-        FROM delete_markers
-        WHERE vault_file_id IN ({placeholders})
+        FROM delete_markers dm
+        WHERE dm.vault_file_id IN ({placeholders})
+          AND NOT EXISTS (
+              SELECT 1 FROM cloud_deletion_items prior
+              WHERE prior.delete_marker_id=dm.id AND prior.status='deleted'
+          )
         """,
         file_ids,
     ).fetchone()
@@ -298,11 +323,54 @@ def preview_selection(
     )
 
 
-def _require_enabled(connection: Any, vault_id: int) -> None:
-    if not is_cloud_deletion_enabled(connection, vault_id):
-        raise CloudDeletionDisabled(
-            "Cloud deletion is disabled for this vault"
+def _require_enabled(
+    connection: Any, vault_id: int, *, allow_decommission: bool = False
+) -> None:
+    # Serialize destructive admission with decommission's lifecycle transition.
+    connection.execute("UPDATE vaults SET name=name WHERE id=%s", (vault_id,))
+    if getattr(connection, "backend", None) == "sqlite":
+        lifecycle_present = any(
+            column["name"] == "decommission_state"
+            for column in connection.execute("PRAGMA table_info(vaults)").fetchall()
         )
+    else:
+        lifecycle_present = bool(
+            connection.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema=current_schema()
+                      AND table_name='vaults'
+                      AND column_name='decommission_state'
+                ) AS present
+                """
+            ).fetchone()["present"]
+        )
+    if lifecycle_present:
+        row = connection.execute(
+            """
+            SELECT cloud_deletion_enabled, decommission_state
+            FROM vaults WHERE id=%s
+            """,
+            (vault_id,),
+        ).fetchone()
+    else:
+        # Migration 0027 schedules a purge against a 0026 database before the
+        # decommission lifecycle exists.
+        legacy = connection.execute(
+            "SELECT cloud_deletion_enabled FROM vaults WHERE id=%s",
+            (vault_id,),
+        ).fetchone()
+        row = {**legacy, "decommission_state": "active"} if legacy else None
+    if row is None:
+        raise ValueError(f"Vault {vault_id} not found")
+    lifecycle = str(row.get("decommission_state") or "active")
+    if lifecycle != "active" and not (
+        allow_decommission and lifecycle == "decommissioning"
+    ):
+        raise CloudDeletionDisabled("Vault is quiesced for decommission")
+    if not bool(row["cloud_deletion_enabled"]):
+        raise CloudDeletionDisabled("Cloud deletion is disabled for this vault")
 
 
 def _vault_name(connection: Any, vault_id: int) -> str:
@@ -469,8 +537,14 @@ def schedule_cloud_purge(
     reason: str,
     generated_phrase: str,
     delay_seconds: int,
+    whole_vault: bool = False,
+    origin: str = "manual",
 ) -> ScheduledDeletion:
-    _require_enabled(connection, vault_id)
+    _require_enabled(
+        connection,
+        vault_id,
+        allow_decommission=origin == "decommission",
+    )
     vault_name = _vault_name(connection, vault_id)
     if not confirmation_matches(
         provided=confirmation,
@@ -492,6 +566,7 @@ def schedule_cloud_purge(
         paths=paths,
         is_directory=is_directory,
         require_cloud_items=True,
+        whole_vault=whole_vault,
     )
     if not files:
         raise ValueError("No Vault Files matched the selection")
@@ -500,6 +575,7 @@ def schedule_cloud_purge(
         vault_id=vault_id,
         paths=paths,
         is_directory=is_directory,
+        whole_vault=whole_vault,
     )
     if preview.version_count == 0 and preview.delete_marker_count == 0:
         raise ValueError("Selection has nothing to purge")
@@ -507,7 +583,9 @@ def schedule_cloud_purge(
     requested_dt = datetime.fromisoformat(requested_at)
     pending_until = (requested_dt + timedelta(seconds=delay_seconds)).isoformat()
     group_id = str(uuid.uuid4())
-    group_path = paths[0] if len(paths) == 1 else f"selection:{len(paths)}"
+    group_path = (
+        "" if whole_vault else paths[0] if len(paths) == 1 else f"selection:{len(paths)}"
+    )
     job_ids: list[int] = []
 
     for row in files:
@@ -527,12 +605,12 @@ def schedule_cloud_purge(
                 vault_id, vault_file_id, archive_version_id, path,
                 action, status, requested_by, requested_at, updated_at,
                 group_id, group_path, total_bytes, transferred_bytes,
-                pending_until, reason, confirmation_phrase
+                pending_until, reason, confirmation_phrase, origin
             ) VALUES (
                 %s, %s, NULL, %s,
                 'cloud-purge', 'pending_delay', %s, %s, %s,
                 %s, %s, 0, 0,
-                %s, %s, %s
+                %s, %s, %s, %s
             )
             RETURNING id
             """,
@@ -548,6 +626,7 @@ def schedule_cloud_purge(
                 pending_until,
                 cleaned_reason,
                 confirmation.strip(),
+                origin,
             ),
         ).fetchone()
         job_id = int(job["id"])
@@ -646,10 +725,14 @@ def _expand_purge_items(
         )
     markers = connection.execute(
         """
-        SELECT id, object_key, provider_version_id
-        FROM delete_markers
+        SELECT dm.id, dm.object_key, dm.provider_version_id
+        FROM delete_markers dm
         WHERE vault_file_id=%s
-        ORDER BY created_at, id
+          AND NOT EXISTS (
+              SELECT 1 FROM cloud_deletion_items prior
+              WHERE prior.delete_marker_id=dm.id AND prior.status='deleted'
+          )
+        ORDER BY dm.created_at, dm.id
         """,
         (vault_file_id,),
     ).fetchall()

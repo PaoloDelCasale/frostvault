@@ -3,17 +3,22 @@ import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
 import type { AdminUser, AdminVault, SourceVolumeInventoryItem } from "@/api";
 import {
   browseAdminSourceVolume,
+  cancelAdminVaultDecommissionCloudPurge,
   createAdminUser,
   createAdminVault,
   fetchAdminSourceVolumes,
   fetchAdminUsers,
   fetchAdminVaults,
+  fetchAdminVaultDecommissionStatus,
   fetchMe,
+  previewAdminVaultDecommission,
+  startAdminVaultDecommission,
   updateAdminUser,
 } from "@/api";
 import { Badge } from "@/components/Badge";
 import { BottomSheet } from "@/components/BottomSheet";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DecommissionVaultDialog } from "@/components/DecommissionVaultDialog";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { Panel } from "@/components/Panel";
 import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
@@ -77,6 +82,7 @@ export function AdminPage() {
   const [membersVault, setMembersVault] = useState<AdminVault | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
   const [relocateVault, setRelocateVault] = useState<AdminVault | null>(null);
+  const [decommissionVault, setDecommissionVault] = useState<AdminVault | null>(null);
 
   const [resetUserId, setResetUserId] = useState<number | null>(null);
   const [identityUser, setIdentityUser] = useState<AdminUser | null>(null);
@@ -692,9 +698,23 @@ export function AdminPage() {
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge
-                      state={vault.enabled ? "both" : "missing"}
+                      state={
+                        vault.decommission_state === "decommissioning"
+                          ? "restoring"
+                          : vault.decommission_state === "decommissioned"
+                            ? "missing"
+                            : vault.enabled
+                              ? "both"
+                              : "missing"
+                      }
                       label={
-                        vault.enabled ? t("admin.active") : t("admin.disabled")
+                        vault.decommission_state === "decommissioning"
+                          ? t("decommission.state.decommissioning")
+                          : vault.decommission_state === "decommissioned"
+                            ? t("decommission.state.decommissioned")
+                            : vault.enabled
+                              ? t("admin.active")
+                              : t("admin.disabled")
                       }
                     />
                     <Button
@@ -713,14 +733,26 @@ export function AdminPage() {
                       type="button"
                       variant="secondary"
                       className="max-md:hidden"
+                      disabled={(vault.decommission_state ?? "active") !== "active"}
                       onClick={() => setRelocateVault(vault)}
                     >
                       {t("admin.relocate_vault")}
                     </Button>
                     <Button
                       type="button"
+                      variant="danger"
+                      className="max-md:hidden"
+                      onClick={() => setDecommissionVault(vault)}
+                    >
+                      {(vault.decommission_state ?? "active") === "active"
+                        ? t("decommission.open")
+                        : t("decommission.view_progress")}
+                    </Button>
+                    <Button
+                      type="button"
                       variant="secondary"
                       className="max-md:hidden"
+                      disabled={(vault.decommission_state ?? "active") !== "active"}
                       onClick={() => {
                         setMembersVault(vault);
                         setMembersOpen(true);
@@ -737,6 +769,28 @@ export function AdminPage() {
           </>
         )}
       </main>
+
+      <DecommissionVaultDialog
+        open={decommissionVault !== null}
+        onOpenChange={(open) => {
+          if (!open) setDecommissionVault(null);
+        }}
+        vaultName={decommissionVault?.name ?? ""}
+        existingState={decommissionVault?.decommission_state ?? "active"}
+        preview={(selection) =>
+          previewAdminVaultDecommission(decommissionVault!.id, selection)
+        }
+        start={(payload) =>
+          startAdminVaultDecommission(decommissionVault!.id, payload)
+        }
+        status={() =>
+          fetchAdminVaultDecommissionStatus(decommissionVault!.id)
+        }
+        cancelCloudPurge={() =>
+          cancelAdminVaultDecommissionCloudPurge(decommissionVault!.id)
+        }
+        onCompleted={loadVaults}
+      />
 
       <RelocateVaultDialog
         open={relocateVault !== null}
@@ -851,8 +905,19 @@ export function AdminPage() {
         onOpenChange={setVaultSheetOpen}
         title={vaultSheetTarget?.name ?? t("admin.row_actions")}
         actions={[
-          { id: "relocate", label: t("admin.relocate_vault") },
-          { id: "members", label: t("admin.manage_access") },
+          ...((vaultSheetTarget?.decommission_state ?? "active") === "active"
+            ? [
+                { id: "relocate", label: t("admin.relocate_vault") },
+                { id: "members", label: t("admin.manage_access") },
+              ]
+            : []),
+          {
+            id: "decommission",
+            label:
+              (vaultSheetTarget?.decommission_state ?? "active") === "active"
+                ? t("decommission.open")
+                : t("decommission.view_progress"),
+          },
         ]}
         onAction={(actionId) => {
           if (actionId === "relocate" && vaultSheetTarget) {
@@ -861,6 +926,9 @@ export function AdminPage() {
           if (actionId === "members" && vaultSheetTarget) {
             setMembersVault(vaultSheetTarget);
             setMembersOpen(true);
+          }
+          if (actionId === "decommission" && vaultSheetTarget) {
+            setDecommissionVault(vaultSheetTarget);
           }
         }}
       />

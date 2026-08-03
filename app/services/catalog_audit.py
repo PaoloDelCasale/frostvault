@@ -140,7 +140,11 @@ def audit_all_vaults(connection_factory: Any, client_factory: Any) -> list[dict[
     """Run catalog audits for every enabled vault."""
     with connection_factory() as connection:
         vaults = connection.execute(
-            "SELECT * FROM vaults WHERE enabled=TRUE ORDER BY id"
+            """
+            SELECT * FROM vaults
+            WHERE enabled=TRUE AND decommission_state='active'
+            ORDER BY id
+            """
         ).fetchall()
     reports: list[dict[str, Any]] = []
     for vault in vaults:

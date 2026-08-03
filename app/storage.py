@@ -67,6 +67,7 @@ def _runtime_settings(connection=None):
 from .services import worker_errors as worker_error_store
 from .services import notifications as notification_service
 from .services import cloud_deletion as cloud_deletion_service
+from .services import vault_decommission as vault_decommission_service
 from .services import audit_events as audit_event_store
 from .services.restore_estimates import (
     estimate_restore,
@@ -596,12 +597,20 @@ def _apply_filesystem_changes(
     """Apply filesystem watcher events directly to the local catalog."""
     if vault_relocation.local_work_suspended(vault):
         raise RuntimeError("Source watcher suspended for Vault relocation")
+    if vault_decommission_service.local_work_suspended(vault):
+        raise RuntimeError("Source watcher suspended for Vault decommission")
     with db() as connection:
         state = connection.execute(
-            "SELECT relocation_state FROM vaults WHERE id=%s", (vault["id"],)
+            """
+            SELECT relocation_state, decommission_state
+            FROM vaults WHERE id=%s
+            """,
+            (vault["id"],),
         ).fetchone()
     if state and state["relocation_state"] != "ready":
         raise RuntimeError("Source watcher suspended for Vault relocation")
+    if state and state["decommission_state"] != "active":
+        raise RuntimeError("Source watcher suspended for Vault decommission")
     access = source_layout.vault_local_access(vault["source_root"])
     if not access.local_operations_allowed:
         raise RuntimeError(
@@ -879,13 +888,16 @@ def _pinned_verified_scan_root(vault: dict[str, Any]):
 def _current_verified_scan_row(connection: Any, vault: dict[str, Any]) -> dict[str, Any]:
     current = connection.execute(
         """
-        SELECT source_root, relocation_state, root_identity_version, root_identity
+        SELECT source_root, relocation_state, root_identity_version, root_identity,
+               decommission_state
         FROM vaults WHERE id=%s
         """,
         (int(vault["id"]),),
     ).fetchone()
     if not isinstance(current, dict) or current.get("source_root") != vault.get("source_root"):
         raise _ScanRootMismatch("Vault root changed during local scan")
+    if current.get("decommission_state", "active") != "active":
+        raise _ScanRootMismatch("Vault was quiesced during local scan")
     try:
         _validate_enrolled_scan_root(current)
     except Exception as exc:
@@ -956,6 +968,8 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
         # still ready. A persisted scan_required row is intentionally allowed:
         # that scan is the recovery operation which must clear the suspension.
         vault = _current_scan_vault(vault)
+        if vault_decommission_service.local_work_suspended(vault):
+            return {"suspended": 1}
         if (
             str(vault.get("relocation_state") or "ready") == "ready"
             and vault_relocation.local_work_suspended(vault)
@@ -1390,7 +1404,10 @@ def cleanup_abandoned_restore_files() -> int:
     """Remove application-owned recovery residues before workers are started."""
     with db() as connection:
         vaults = connection.execute(
-            "SELECT source_root FROM vaults WHERE enabled=TRUE"
+            """
+            SELECT source_root FROM vaults
+            WHERE enabled=TRUE AND decommission_state='active'
+            """
         ).fetchall()
     removed = 0
     for vault in vaults:
@@ -3043,11 +3060,16 @@ def process_jobs_once() -> int:
                    v.s3_prefix, v.rclone_remote, v.encryption_mode,
                    v.crypt_password_ciphertext, v.crypt_password2_ciphertext,
                    v.uuid AS vault_uuid, v.name AS vault_name,
-                   v.cloud_deletion_enabled
+                   v.cloud_deletion_enabled, v.decommission_state
             FROM jobs j
             JOIN vaults v ON v.id=j.vault_id
-            WHERE v.enabled=TRUE
-              AND v.relocation_state='ready'
+            WHERE v.relocation_state='ready'
+              AND (
+                    (v.enabled=TRUE AND v.decommission_state='active'
+                     AND j.origin<>'decommission')
+                 OR (v.decommission_state='decommissioning'
+                     AND j.origin='decommission')
+              )
               AND (
                     j.status='queued'
                  OR (
@@ -3072,10 +3094,11 @@ def process_jobs_once() -> int:
                    v.s3_prefix, v.rclone_remote, v.encryption_mode,
                    v.crypt_password_ciphertext, v.crypt_password2_ciphertext,
                    v.uuid AS vault_uuid, v.name AS vault_name,
-                   v.cloud_deletion_enabled
+                   v.cloud_deletion_enabled, v.decommission_state
             FROM jobs j
             JOIN vaults v ON v.id=j.vault_id
             WHERE j.status='restoring' AND v.enabled=TRUE
+              AND v.decommission_state='active'
               AND v.relocation_state='ready'
             ORDER BY j.updated_at ASC
             LIMIT 10
@@ -3088,6 +3111,11 @@ def process_jobs_once() -> int:
             job = dict(row)
             vault_id = int(job["vault_id"])
             if vault_relocation.local_work_suspended({"id": vault_id}):
+                continue
+            if (
+                job.get("origin") != "decommission"
+                and vault_decommission_service.local_work_suspended(job)
+            ):
                 continue
             if vault_id not in policy_cache:
                 policy_cache[vault_id] = get_policy(connection, vault_id)
@@ -3135,7 +3163,13 @@ def process_jobs_once() -> int:
 
 def scan_all_vaults() -> None:
     with db() as connection:
-        vaults = connection.execute("SELECT * FROM vaults WHERE enabled=TRUE ORDER BY id").fetchall()
+        vaults = connection.execute(
+            """
+            SELECT * FROM vaults
+            WHERE enabled=TRUE AND decommission_state='active'
+            ORDER BY id
+            """
+        ).fetchall()
     for vault in vaults:
         scan_vault(vault)
 
@@ -3149,11 +3183,21 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
         if vault_relocation.local_work_suspended(vault):
             await asyncio.sleep(1)
             continue
+        if vault_decommission_service.local_work_suspended(vault):
+            await asyncio.sleep(1)
+            continue
         with db() as connection:
             current = connection.execute(
-                "SELECT relocation_state FROM vaults WHERE id=%s", (vault["id"],)
+                """
+                SELECT relocation_state, decommission_state
+                FROM vaults WHERE id=%s
+                """,
+                (vault["id"],),
             ).fetchone()
         if current and current["relocation_state"] != "ready":
+            await asyncio.sleep(1)
+            continue
+        if current and current["decommission_state"] != "active":
             await asyncio.sleep(1)
             continue
         access = await asyncio.to_thread(
@@ -3194,7 +3238,11 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
 def _enabled_vaults() -> list[dict[str, Any]]:
     with db() as connection:
         return connection.execute(
-            "SELECT * FROM vaults WHERE enabled=TRUE ORDER BY id"
+            """
+            SELECT * FROM vaults
+            WHERE enabled=TRUE AND decommission_state='active'
+            ORDER BY id
+            """
         ).fetchall()
 
 
@@ -3242,7 +3290,11 @@ async def filesystem_watch_loop() -> None:
 def audit_all_vaults() -> None:
     with db() as connection:
         vaults = connection.execute(
-            "SELECT * FROM vaults WHERE enabled=TRUE ORDER BY id"
+            """
+            SELECT * FROM vaults
+            WHERE enabled=TRUE AND decommission_state='active'
+            ORDER BY id
+            """
         ).fetchall()
     for vault in vaults:
         vault_id = int(vault["id"])
@@ -3430,6 +3482,11 @@ async def background_loop() -> None:
             # disabled, before workers or scheduled scans can touch local data.
             await asyncio.to_thread(source_layout.verify_mounts_once)
             queued_count = await asyncio.to_thread(process_jobs_once)
+            await asyncio.to_thread(
+                vault_decommission_service.reconcile_all,
+                local_delete_enabled=runtime.allow_local_delete,
+                purge_delay_seconds=runtime.cloud_purge_delay_seconds,
+            )
             metrics_service.set_gauge("queue_depth", float(queued_count))
             current = loop.time()
             if current - last_scan >= runtime.scan_interval:

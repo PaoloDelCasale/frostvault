@@ -431,6 +431,7 @@ def _occupied_vault_roots(
         FROM vaults v
         LEFT JOIN vault_members vm ON vm.vault_id=v.id AND vm.role='owner'
         LEFT JOIN users u ON u.id=vm.user_id
+        WHERE v.root_released_at IS NULL
         """
     ).fetchall()
     occupied: list[dict[str, Any]] = []

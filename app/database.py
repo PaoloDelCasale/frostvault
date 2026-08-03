@@ -13,7 +13,7 @@ from .security import hash_password
 
 
 INTEGRITY_ERRORS = (UniqueViolation, sqlite3.IntegrityError)
-HEAD_SCHEMA_REVISION = "0030_vault_root_relocation"
+HEAD_SCHEMA_REVISION = "0031_vault_decommission"
 
 
 class DatabaseSchemaError(RuntimeError):

@@ -566,7 +566,9 @@ def source_volume_inventory() -> list[dict[str, object]]:
             row["alias"]
             for row in connection.execute("SELECT alias FROM source_volumes").fetchall()
         }
-        vault_rows = connection.execute("SELECT source_root FROM vaults").fetchall()
+        vault_rows = connection.execute(
+            "SELECT source_root FROM vaults WHERE root_released_at IS NULL"
+        ).fetchall()
         area_rows = connection.execute(
             "SELECT volume_alias, COUNT(*) AS total FROM source_areas "
             "GROUP BY volume_alias"

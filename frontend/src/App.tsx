@@ -170,12 +170,15 @@ export default function App() {
   }
 
   if (pathIsVaultAccess(pathname)) {
-    const vaultId = me.vault?.id ?? 1;
-    const vaultName = me.vault?.name ?? "FrostVault";
+    const accessVault = me.vault ?? me.decommission_vault;
+    if (!accessVault) return <NoVaultPage />;
     return (
       <VaultAccessPage
-        vaultId={vaultId}
-        vaultName={vaultName}
+        vaultId={accessVault.id}
+        vaultName={accessVault.name}
+        decommissionState={
+          me.decommission_vault?.decommission_state ?? "active"
+        }
         isAdmin={Boolean(me.is_admin)}
         onBack={() => navigate("/")}
         onTransferred={() => navigate("/")}
