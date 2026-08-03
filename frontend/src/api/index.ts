@@ -187,6 +187,8 @@ export type {
   JobStatus,
   JobsResponse,
   LifecycleGuidedProfile,
+  LifecycleProfile,
+  LifecycleProfileSelection,
   LifecycleResponse,
   LocaleUpdateResponse,
   MeDecommissionVault,

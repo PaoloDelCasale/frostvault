@@ -211,6 +211,13 @@ def list_vault_policies(connection: Any, vault_id: int) -> list[dict[str, Any]]:
                         ],
                         "expiration_days": profile.expiration_days,
                         "noncurrent_expiration_days": profile.noncurrent_expiration_days,
+                        "noncurrent_transitions": [
+                            {
+                                "days": transition.days,
+                                "storage_class": transition.storage_class,
+                            }
+                            for transition in profile.noncurrent_transitions
+                        ],
                     }
                     if profile is not None
                     else None

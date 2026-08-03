@@ -36,6 +36,10 @@ await new Promise((resolve) => server.listen(4177, "127.0.0.1", resolve));
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
+page.on("console", (message) => {
+  if (message.type() === "error") console.error("browser:", message.text());
+});
+page.on("pageerror", (error) => console.error("browser page error:", error.message));
 
 const en = JSON.parse(
   readFileSync(path.resolve(root, "../../app/locales/en.json"), "utf8"),
@@ -78,6 +82,13 @@ await page.route("**/api/**", async (route) => {
           is_vault_owner: true,
         },
       }),
+    });
+  }
+  if (url.includes("/api/storage-classes")) {
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ items: [] }),
     });
   }
   if (url.includes("/api/vault/members") && method === "GET") {
@@ -140,7 +151,19 @@ await page.route("**/api/**", async (route) => {
           { folder_path: "photos/2024", policy_id: 2 },
         ],
         policies: [
-          { id: 2, name: "archive_tiered", profile: { transitions: [{ days: 90, storage_class: "GLACIER" }] } },
+          {
+            id: 2,
+            name: "Photos custom ladder",
+            profile: {
+              transitions: [
+                { days: 30, storage_class: "STANDARD_IA" },
+                { days: 180, storage_class: "DEEP_ARCHIVE" },
+              ],
+              noncurrent_transitions: [],
+              expiration_days: null,
+              noncurrent_expiration_days: null,
+            },
+          },
         ],
         guided_profiles: {
           standard_only: { transitions: [] },
@@ -148,7 +171,11 @@ await page.route("**/api/**", async (route) => {
           archive_tiered: {
             transitions: [
               { days: 30, storage_class: "STANDARD_IA" },
-              { days: 90, storage_class: "GLACIER" },
+              { days: 90, storage_class: "GLACIER_IR" },
+              { days: 365, storage_class: "DEEP_ARCHIVE" },
+            ],
+            noncurrent_transitions: [
+              { days: 180, storage_class: "DEEP_ARCHIVE" },
             ],
           },
         },
@@ -170,7 +197,38 @@ await page.route("**/api/**", async (route) => {
 });
 
 await page.goto("http://127.0.0.1:4177/vault/access", { waitUntil: "networkidle" });
-await page.getByRole("heading", { name: /add a member/i }).waitFor();
+const lifecyclePanel = page.locator('[data-panel="lifecycle"]');
+await lifecyclePanel.waitFor();
+await lifecyclePanel.scrollIntoViewIfNeeded();
+await lifecyclePanel.screenshot({
+  path: path.join(artifacts, "lifecycle-guided-picker-375px.png"),
+});
+
+await page.getByLabel(/vault default profile/i).selectOption("ia_after_30");
+await page.getByRole("button", { name: /customize/i }).first().click();
+await page.getByRole("button", { name: /add rule/i }).click();
+await page.getByLabel(/after n days from creation/i).nth(1).fill("180");
+await page.getByLabel(/target storage class/i).nth(1).selectOption("DEEP_ARCHIVE");
+await page.locator("[data-lifecycle-editor]").screenshot({
+  path: path.join(artifacts, "lifecycle-custom-two-rules-375px.png"),
+});
+
+const currentDays = page.getByLabel(/after n days from creation/i);
+await currentDays.nth(1).fill("20");
+await page.getByLabel(/target storage class/i).nth(1).selectOption("ONEZONE_IA");
+await page.getByRole("button", { name: /save custom rules/i }).click();
+await page.locator("[data-lifecycle-editor]").screenshot({
+  path: path.join(artifacts, "lifecycle-validation-error-375px.png"),
+});
+
+await page.getByRole("button", { name: /^cancel$/i }).click();
+await lifecyclePanel.locator("text=photos/2024").scrollIntoViewIfNeeded();
+await lifecyclePanel.screenshot({
+  path: path.join(artifacts, "lifecycle-custom-folder-override-375px.png"),
+});
+
+const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+if (overflow > 0) throw new Error(`375px layout overflows horizontally by ${overflow}px`);
 
 const panels = [
   "add-member",

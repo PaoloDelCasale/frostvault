@@ -134,17 +134,22 @@ from .services.cost_estimates import (
     upsert_price_book,
 )
 from .services.lifecycle_policies import (
-    apply_guided_profile_to_policy,
     clear_folder_override,
     create_policy,
-    ensure_default_policy_with_profile,
     list_vault_policies,
     load_policy_assignments,
     set_folder_override,
+    set_policy_profile,
     set_vault_default_policy,
     sync_lifecycle_rules_for_bucket,
 )
-from .services.lifecycle_profiles import GUIDED_PROFILES, guided_profile
+from .services.lifecycle_profiles import (
+    GUIDED_PROFILES,
+    LifecycleProfile,
+    LifecycleTransition,
+    guided_profile,
+    validate_lifecycle_profile,
+)
 from .services import cloud_deletion as cloud_deletion_service
 from .services.vaults import (
     InvalidVaultName,
@@ -961,18 +966,63 @@ class SystemSettingsUpdate(BaseModel):
     removals: list[str] = Field(default_factory=list)
 
 
-class LifecycleDefaultUpdate(BaseModel):
+class LifecycleTransitionUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    guided_profile: str = Field(min_length=1, max_length=80)
+    days: int
+    storage_class: str = Field(min_length=1, max_length=40)
+
+
+class LifecycleProfileUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transitions: list[LifecycleTransitionUpdate] = Field(default_factory=list)
+    expiration_days: int | None = None
+    noncurrent_expiration_days: int | None = None
+    noncurrent_transitions: list[LifecycleTransitionUpdate] = Field(
+        default_factory=list
+    )
+
+    def to_profile(self) -> LifecycleProfile:
+        return LifecycleProfile(
+            transitions=tuple(
+                LifecycleTransition(
+                    days=item.days,
+                    storage_class=item.storage_class.upper(),
+                )
+                for item in self.transitions
+            ),
+            expiration_days=self.expiration_days,
+            noncurrent_expiration_days=self.noncurrent_expiration_days,
+            noncurrent_transitions=tuple(
+                LifecycleTransition(
+                    days=item.days,
+                    storage_class=item.storage_class.upper(),
+                )
+                for item in self.noncurrent_transitions
+            ),
+        )
+
+
+class LifecycleProfileSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    guided_profile: str | None = Field(default=None, min_length=1, max_length=80)
+    profile: LifecycleProfileUpdate | None = None
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> "LifecycleProfileSelection":
+        if (self.guided_profile is None) == (self.profile is None):
+            raise ValueError("provide exactly one of guided_profile or profile")
+        return self
+
+
+class LifecycleDefaultUpdate(LifecycleProfileSelection):
     name: str = Field(default="Vault default", min_length=1, max_length=120)
 
 
-class LifecycleFolderOverrideUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class LifecycleFolderOverrideUpdate(LifecycleProfileSelection):
     folder_path: str = Field(min_length=1, max_length=500)
-    guided_profile: str = Field(min_length=1, max_length=80)
     name: str | None = Field(default=None, min_length=1, max_length=120)
 
 
@@ -4429,6 +4479,23 @@ def admin_storage_cost_estimate(
     ).as_dict()
 
 
+def _selected_lifecycle_profile(
+    action: LifecycleProfileSelection,
+) -> tuple[LifecycleProfile, str | None]:
+    if action.guided_profile is not None:
+        try:
+            return guided_profile(action.guided_profile), action.guided_profile
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if action.profile is None:  # Defensive; Pydantic enforces exactly one selection.
+        raise HTTPException(status_code=400, detail="Lifecycle profile is required")
+    profile = action.profile.to_profile()
+    validation = validate_lifecycle_profile(profile)
+    if not validation.ok:
+        raise HTTPException(status_code=400, detail="; ".join(validation.errors))
+    return profile, None
+
+
 def _lifecycle_payload(connection: Any, vault: dict[str, Any]) -> dict[str, Any]:
     assignments = load_policy_assignments(connection, vault["id"])
     return {
@@ -4449,6 +4516,13 @@ def _lifecycle_payload(connection: Any, vault: dict[str, Any]) -> dict[str, Any]
                 ],
                 "expiration_days": profile.expiration_days,
                 "noncurrent_expiration_days": profile.noncurrent_expiration_days,
+                "noncurrent_transitions": [
+                    {
+                        "days": transition.days,
+                        "storage_class": transition.storage_class,
+                    }
+                    for transition in profile.noncurrent_transitions
+                ],
             }
             for name, profile in GUIDED_PROFILES.items()
         },
@@ -4468,19 +4542,18 @@ def update_vault_lifecycle_default(
     user: dict[str, Any] = Depends(current_user),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
-    try:
-        guided_profile(action.guided_profile)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    profile, guided_name = _selected_lifecycle_profile(action)
+    validation = validate_lifecycle_profile(profile)
     with db() as connection:
-        policy_id, validation = ensure_default_policy_with_profile(
-            connection,
-            vault_id=vault["id"],
-            name=action.name,
-            guided_profile=action.guided_profile,
-        )
-        if not validation.ok:
+        assignments = load_policy_assignments(connection, vault["id"])
+        policy_id = assignments.default_policy_id
+        if not policy_id:
+            policy_id = create_policy(connection, vault_id=vault["id"], name=action.name)
+        validation = set_policy_profile(connection, policy_id, profile)
+        if not validation.ok:  # Defensive against future validation changes.
             raise HTTPException(status_code=400, detail="; ".join(validation.errors))
+        if assignments.default_policy_id is None:
+            set_vault_default_policy(connection, vault["id"], policy_id)
         try:
             sync_lifecycle_rules_for_bucket(
                 connection,
@@ -4488,7 +4561,7 @@ def update_vault_lifecycle_default(
                 bucket=vault["s3_bucket"],
             )
         except Exception:
-            # Tag/rule sync continues on the next vault scan if AWS is unavailable.
+            # Durable policy/tag intent is retried by established reconciliation.
             pass
         payload = _lifecycle_payload(connection, vault)
         audit_log(
@@ -4497,7 +4570,8 @@ def update_vault_lifecycle_default(
             vault_id=vault["id"],
             actor_user_id=user["id"],
             policy_id=policy_id,
-            guided_profile=action.guided_profile,
+            guided_profile=guided_name,
+            custom_profile=guided_name is None,
         )
     return {
         "message": "Vault default lifecycle profile updated",
@@ -4513,10 +4587,8 @@ def upsert_vault_lifecycle_folder_override(
     user: dict[str, Any] = Depends(current_user),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
-    try:
-        guided_profile(action.guided_profile)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    profile, guided_name = _selected_lifecycle_profile(action)
+    validation = validate_lifecycle_profile(profile)
     with db() as connection:
         assignments = load_policy_assignments(connection, vault["id"])
         existing = dict(assignments.folder_overrides).get(
@@ -4530,11 +4602,7 @@ def upsert_vault_lifecycle_folder_override(
                 vault_id=vault["id"],
                 name=action.name or f"Folder {action.folder_path}",
             )
-        validation = apply_guided_profile_to_policy(
-            connection,
-            policy_id=policy_id,
-            guided_profile=action.guided_profile,
-        )
+        validation = set_policy_profile(connection, policy_id, profile)
         if not validation.ok:
             raise HTTPException(status_code=400, detail="; ".join(validation.errors))
         set_folder_override(
@@ -4543,6 +4611,15 @@ def upsert_vault_lifecycle_folder_override(
             folder_path=action.folder_path,
             policy_id=policy_id,
         )
+        try:
+            sync_lifecycle_rules_for_bucket(
+                connection,
+                s3_client(),
+                bucket=vault["s3_bucket"],
+            )
+        except Exception:
+            # Durable policy/tag intent is retried by established reconciliation.
+            pass
         payload = _lifecycle_payload(connection, vault)
         audit_log(
             "vault_lifecycle_folder_override_updated",
@@ -4551,7 +4628,8 @@ def upsert_vault_lifecycle_folder_override(
             actor_user_id=user["id"],
             folder_path=action.folder_path,
             policy_id=policy_id,
-            guided_profile=action.guided_profile,
+            guided_profile=guided_name,
+            custom_profile=guided_name is None,
         )
     return {
         "message": "Folder lifecycle override updated",
