@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import {
+  ApiError,
+  apiQueryKeys,
   fetchMe,
   fetchVaults,
   logout,
+  ReauthenticationRedirectError,
+  requestScan,
   selectVault,
   type MeResponse,
   type VaultListItem,
@@ -11,6 +16,7 @@ import {
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/theme";
 import { AppShell } from "@/layout/AppShell";
+import { Toast } from "@/components/Toast";
 import type { ShellCapabilities } from "@/layout/types";
 import { AdminPage } from "@/pages/admin";
 import { ArchivePage } from "@/pages/archive";
@@ -75,10 +81,15 @@ function currentPathname(): string {
 export default function App() {
   const { t, setLocale } = useI18n();
   const { setUserId } = useTheme();
+  const queryClient = useQueryClient();
   const [pathname, setPathname] = useState(currentPathname);
   const [me, setMe] = useState<MeResponse | null>(null);
   const [vaults, setVaults] = useState<VaultListItem[]>([]);
   const [authChecked, setAuthChecked] = useState(pathname === "/login");
+  const [refreshNotice, setRefreshNotice] = useState<{
+    message: string;
+    error: boolean;
+  } | null>(null);
 
   const navigate = useCallback((path: string) => {
     window.history.pushState({}, "", path);
@@ -97,6 +108,33 @@ export default function App() {
     }
     return nextMe;
   }, [setUserId]);
+
+  const onRefreshList = useCallback(() => {
+    void requestScan()
+      .then(async (result) => {
+        setRefreshNotice({ message: result.message, error: false });
+        await Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: ["files"],
+            refetchType: "active",
+          }),
+          queryClient.invalidateQueries({
+            queryKey: apiQueryKeys.stats,
+            refetchType: "active",
+          }),
+        ]);
+      })
+      .catch((error: unknown) => {
+        // OIDC reauthentication has already navigated away; do not replace it
+        // with a stale toast. Every other failure remains visible to the user.
+        if (error instanceof ReauthenticationRedirectError) return;
+        const message =
+          error instanceof ApiError && error.messageKey
+            ? error.message
+            : t("ui.refresh_list_failed");
+        setRefreshNotice({ message, error: true });
+      });
+  }, [queryClient, t]);
 
   useEffect(() => {
     const onPop = () => setPathname(currentPathname());
@@ -191,10 +229,12 @@ export default function App() {
   return (
     <AppShell
       capabilities={capabilities}
+      t={t}
       handlers={{
         onManageAccess: () => navigate("/vault/access"),
         onAdministration: () => navigate("/admin"),
         onNewVault: () => navigate("/vaults/new"),
+        onRefreshList,
         onSignOut: () => {
           // Clear the identity before reloading so /login cannot first-paint
           // the departing user's palette.
@@ -238,6 +278,12 @@ export default function App() {
             }}
           />
         }
+      />
+      <Toast
+        open={Boolean(refreshNotice)}
+        message={refreshNotice?.message ?? ""}
+        variant={refreshNotice?.error ? "error" : "success"}
+        onClose={() => setRefreshNotice(null)}
       />
     </AppShell>
   );

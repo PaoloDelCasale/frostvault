@@ -270,6 +270,11 @@ export type FilesystemHealth = {
   findings: FilesystemFinding[];
 };
 
+export type ScanResponse = {
+  message: string;
+  message_key: string;
+};
+
 export type StatsResponse = {
   states: Record<string, number>;
   storage: {

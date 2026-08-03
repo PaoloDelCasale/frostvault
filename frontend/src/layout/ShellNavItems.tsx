@@ -5,6 +5,7 @@ import type { ShellCapabilities, ShellNavHandlers } from "./types";
 type ShellNavItemsProps = {
   capabilities: ShellCapabilities;
   handlers?: ShellNavHandlers;
+  t?: (key: string) => string;
   onNavigate?: () => void;
   className?: string;
 };
@@ -17,6 +18,7 @@ const localeLabel: Record<string, string> = {
 export function ShellNavItems({
   capabilities,
   handlers,
+  t,
   onNavigate,
   className,
 }: ShellNavItemsProps) {
@@ -34,6 +36,7 @@ export function ShellNavItems({
     "min-h-11 rounded-[10px] border border-input bg-surface px-4 text-left font-bold text-ink";
   const selectClass =
     "min-h-11 rounded-[10px] border border-input bg-surface px-3 text-ink";
+  const refreshListLabel = t?.("ui.refresh_list") ?? "Refresh list";
 
   return (
     <div className={className ?? "flex flex-col gap-2"}>
@@ -102,7 +105,7 @@ export function ShellNavItems({
             onNavigate?.();
           }}
         >
-          Refresh list
+          {refreshListLabel}
         </button>
       ) : null}
 

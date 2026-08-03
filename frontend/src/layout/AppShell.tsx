@@ -9,10 +9,11 @@ import type { ShellCapabilities, ShellNavHandlers } from "./types";
 type AppShellProps = {
   capabilities: ShellCapabilities;
   handlers?: ShellNavHandlers;
+  t?: (key: string) => string;
   children: ReactNode;
 };
 
-export function AppShell({ capabilities, handlers, children }: AppShellProps) {
+export function AppShell({ capabilities, handlers, t, children }: AppShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
@@ -48,6 +49,7 @@ export function AppShell({ capabilities, handlers, children }: AppShellProps) {
               onOpenChange={setDrawerOpen}
               capabilities={capabilities}
               handlers={handlers}
+              t={t}
               trigger={
                 <Button
                   type="button"
@@ -68,6 +70,7 @@ export function AppShell({ capabilities, handlers, children }: AppShellProps) {
             <ShellNavItems
               capabilities={capabilities}
               handlers={handlers}
+              t={t}
               className="flex flex-row flex-wrap items-end gap-2"
             />
           </nav>

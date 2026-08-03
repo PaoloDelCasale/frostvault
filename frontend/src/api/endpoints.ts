@@ -48,6 +48,7 @@ import type {
   RecoveryConfirmResponse,
   RecoveryExportRequest,
   RecoveryExportResponse,
+  ScanResponse,
   StatsResponse,
   StorageClassesResponse,
   SystemSettingsResponse,
@@ -529,6 +530,12 @@ export function exportAdminVaultRecovery(
       body: JSON.stringify({ reason }),
     },
   );
+}
+
+export function requestScan(): Promise<ScanResponse> {
+  return apiRequest<ScanResponse>("/api/scan", {
+    method: "POST",
+  });
 }
 
 export function fetchStats(): Promise<StatsResponse> {
