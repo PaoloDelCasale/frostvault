@@ -449,6 +449,11 @@ def _lexical_source_alias(vault_source_root: str | Path) -> tuple[str, str | Non
     return "custom", alias
 
 
+def source_alias_for_root(vault_source_root: str | Path) -> tuple[str, str | None]:
+    """Public lexical-only classifier used by relocation preflight."""
+    return _lexical_source_alias(vault_source_root)
+
+
 def _canonical_root_stays_within(root: str | Path, boundary: str | Path) -> bool:
     """Resolve only an identity-safe mount and retain its lexical boundary."""
     resolved_root = Path(root).resolve()

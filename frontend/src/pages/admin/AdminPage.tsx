@@ -27,6 +27,7 @@ import { InvitesPanel } from "./InvitesPanel";
 import { MembersDialog } from "./MembersDialog";
 import { OidcSection } from "./OidcSection";
 import { PasswordDialog } from "./PasswordDialog";
+import { RelocateVaultDialog } from "./RelocateVaultDialog";
 import { SettingsSection } from "./SettingsSection";
 import { SourceVolumesSection } from "./SourceVolumesSection";
 
@@ -75,6 +76,7 @@ export function AdminPage() {
 
   const [membersVault, setMembersVault] = useState<AdminVault | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
+  const [relocateVault, setRelocateVault] = useState<AdminVault | null>(null);
 
   const [resetUserId, setResetUserId] = useState<number | null>(null);
   const [identityUser, setIdentityUser] = useState<AdminUser | null>(null);
@@ -711,6 +713,14 @@ export function AdminPage() {
                       type="button"
                       variant="secondary"
                       className="max-md:hidden"
+                      onClick={() => setRelocateVault(vault)}
+                    >
+                      {t("admin.relocate_vault")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="max-md:hidden"
                       onClick={() => {
                         setMembersVault(vault);
                         setMembersOpen(true);
@@ -727,6 +737,16 @@ export function AdminPage() {
           </>
         )}
       </main>
+
+      <RelocateVaultDialog
+        open={relocateVault !== null}
+        onOpenChange={(open) => {
+          if (!open) setRelocateVault(null);
+        }}
+        vault={relocateVault}
+        onNotice={showNotice}
+        onCompleted={loadVaults}
+      />
 
       <MembersDialog
         open={membersOpen}
@@ -831,9 +851,13 @@ export function AdminPage() {
         onOpenChange={setVaultSheetOpen}
         title={vaultSheetTarget?.name ?? t("admin.row_actions")}
         actions={[
+          { id: "relocate", label: t("admin.relocate_vault") },
           { id: "members", label: t("admin.manage_access") },
         ]}
         onAction={(actionId) => {
+          if (actionId === "relocate" && vaultSheetTarget) {
+            setRelocateVault(vaultSheetTarget);
+          }
           if (actionId === "members" && vaultSheetTarget) {
             setMembersVault(vaultSheetTarget);
             setMembersOpen(true);

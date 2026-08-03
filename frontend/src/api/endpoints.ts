@@ -11,6 +11,8 @@ import type {
   AdminVault,
   AdminVaultCreatePayload,
   AdminVaultMembersResponse,
+  AdminVaultRelocatePayload,
+  AdminVaultRelocationResponse,
   AdminVaultsResponse,
   SourceVolumeInventoryResponse,
   SourceAreaAssignPayload,
@@ -378,6 +380,16 @@ export function createAdminVault(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function relocateAdminVault(
+  vaultId: number,
+  payload: AdminVaultRelocatePayload,
+): Promise<AdminVaultRelocationResponse> {
+  return apiRequest<AdminVaultRelocationResponse>(
+    `/api/admin/vaults/${vaultId}/relocate`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
 }
 
 export function fetchAdminVaultMembers(
