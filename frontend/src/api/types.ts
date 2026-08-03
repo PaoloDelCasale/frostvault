@@ -209,14 +209,23 @@ export type LifecycleTransition = {
   storage_class: string;
 };
 
-export type LifecycleGuidedProfile = {
-  transitions?: LifecycleTransition[];
+export type LifecycleProfile = {
+  transitions: LifecycleTransition[];
+  expiration_days?: number | null;
+  noncurrent_expiration_days?: number | null;
+  noncurrent_transitions: LifecycleTransition[];
 };
+
+export type LifecycleGuidedProfile = Partial<LifecycleProfile>;
+
+export type LifecycleProfileSelection =
+  | { guided_profile: string }
+  | { profile: LifecycleProfile };
 
 export type LifecyclePolicy = {
   id: number | string;
   name?: string;
-  profile?: LifecycleGuidedProfile;
+  profile?: LifecycleProfile;
 };
 
 export type LifecycleFolderOverride = {

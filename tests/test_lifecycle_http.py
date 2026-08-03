@@ -27,6 +27,7 @@ class VaultLifecycleHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.path)) as connection:
             self.owner_id = self._user(connection, "owner", False)
             self.operator_id = self._user(connection, "operator", False)
+            self.viewer_id = self._user(connection, "viewer", False)
             self.vault_id = connection.execute(
                 "INSERT INTO vaults(slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
                 "VALUES ('docs', 'Docs', '/source', 'bucket', 'docs', 'remote') RETURNING id"
@@ -38,6 +39,10 @@ class VaultLifecycleHttpTests(unittest.TestCase):
             connection.execute(
                 "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'operator')",
                 (self.vault_id, self.operator_id),
+            )
+            connection.execute(
+                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'viewer')",
+                (self.vault_id, self.viewer_id),
             )
         test_settings = replace(
             settings,
@@ -86,10 +91,12 @@ class VaultLifecycleHttpTests(unittest.TestCase):
         self.assertIn("ia_after_30", body["guided_profiles"])
         self.assertEqual(body["policies"], [])
 
-    def test_operator_cannot_read_lifecycle(self) -> None:
-        self._authenticate(self.operator_id)
-        response = self.client.get("/api/vault/lifecycle")
-        self.assertEqual(response.status_code, 403)
+    def test_nonowners_cannot_read_lifecycle(self) -> None:
+        for user_id in (self.operator_id, self.viewer_id):
+            with self.subTest(user_id=user_id):
+                self._authenticate(user_id)
+                response = self.client.get("/api/vault/lifecycle")
+                self.assertEqual(response.status_code, 403)
 
     def test_owner_update_requires_reauth_and_applies_guided_profile(self) -> None:
         self._authenticate(self.owner_id)
@@ -145,3 +152,104 @@ class VaultLifecycleHttpTests(unittest.TestCase):
         )
         self.assertEqual(deleted.status_code, 200, deleted.text)
         self.assertEqual(deleted.json()["folder_overrides"], [])
+
+    def test_custom_default_round_trips_exact_rules_and_preserves_policy_uuid(self) -> None:
+        self._authenticate(self.owner_id, reauth=True)
+        profile = {
+            "transitions": [
+                {"days": 30, "storage_class": "STANDARD_IA"},
+                {"days": 180, "storage_class": "DEEP_ARCHIVE"},
+            ],
+            "expiration_days": None,
+            "noncurrent_expiration_days": None,
+            "noncurrent_transitions": [
+                {"days": 90, "storage_class": "GLACIER"},
+                {"days": 180, "storage_class": "DEEP_ARCHIVE"},
+            ],
+        }
+        with (
+            patch("app.main.s3_client", return_value=object()),
+            patch("app.main.sync_lifecycle_rules_for_bucket") as sync,
+        ):
+            created = self.client.put(
+                "/api/vault/lifecycle/default",
+                headers=self._headers(),
+                json={"profile": profile},
+            )
+            updated = self.client.put(
+                "/api/vault/lifecycle/default",
+                headers=self._headers(),
+                json={
+                    "profile": {
+                        **profile,
+                        "transitions": [
+                            {"days": 30, "storage_class": "STANDARD_IA"},
+                            {"days": 120, "storage_class": "GLACIER"},
+                        ],
+                    }
+                },
+            )
+        self.assertEqual(created.status_code, 200, created.text)
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(
+            created.json()["default_policy_id"], updated.json()["default_policy_id"]
+        )
+        self.assertEqual(created.json()["policies"][0]["profile"], profile)
+        self.assertEqual(
+            self.client.get("/api/vault/lifecycle").json()["policies"][0]["profile"],
+            updated.json()["policies"][0]["profile"],
+        )
+        self.assertEqual(sync.call_count, 2)
+
+    def test_invalid_custom_profiles_are_rejected_before_mutation(self) -> None:
+        self._authenticate(self.owner_id, reauth=True)
+        invalid_profiles = (
+            {
+                "transitions": [
+                    {"days": 90, "storage_class": "GLACIER"},
+                    {"days": 60, "storage_class": "DEEP_ARCHIVE"},
+                ]
+            },
+            {
+                "transitions": [
+                    {"days": 30, "storage_class": "STANDARD_IA"},
+                    {"days": 60, "storage_class": "ONEZONE_IA"},
+                ]
+            },
+            {"transitions": [{"days": 7, "storage_class": "STANDARD_IA"}]},
+        )
+        for profile in invalid_profiles:
+            with self.subTest(profile=profile):
+                response = self.client.put(
+                    "/api/vault/lifecycle/default",
+                    headers=self._headers(),
+                    json={"profile": profile},
+                )
+                self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(self.client.get("/api/vault/lifecycle").json()["policies"], [])
+
+    def test_custom_folder_override_round_trips_and_invokes_sync(self) -> None:
+        self._authenticate(self.owner_id, reauth=True)
+        profile = {
+            "transitions": [
+                {"days": 30, "storage_class": "ONEZONE_IA"},
+                {"days": 180, "storage_class": "DEEP_ARCHIVE"},
+            ],
+            "noncurrent_transitions": [],
+        }
+        with (
+            patch("app.main.s3_client", return_value=object()),
+            patch("app.main.sync_lifecycle_rules_for_bucket") as sync,
+        ):
+            response = self.client.put(
+                "/api/vault/lifecycle/folder-overrides",
+                headers=self._headers(),
+                json={"folder_path": "photos/2024", "profile": profile},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        policy_id = body["folder_overrides"][0]["policy_id"]
+        stored = next(policy for policy in body["policies"] if policy["id"] == policy_id)
+        self.assertEqual(stored["profile"]["transitions"], profile["transitions"])
+        self.assertEqual(stored["profile"]["noncurrent_transitions"], [])
+        sync.assert_called_once()

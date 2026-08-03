@@ -37,6 +37,7 @@ import type {
   JobCancelPayload,
   JobCancelResponse,
   JobsResponse,
+  LifecycleProfileSelection,
   LifecycleResponse,
   LocaleUpdateResponse,
   MeResponse,
@@ -232,24 +233,25 @@ export function fetchLifecycle(): Promise<LifecycleResponse> {
 }
 
 export function updateLifecycleDefault(
-  guidedProfile: string,
+  selection: string | LifecycleProfileSelection,
 ): Promise<LifecycleResponse> {
+  const payload =
+    typeof selection === "string" ? { guided_profile: selection } : selection;
   return apiRequest<LifecycleResponse>("/api/vault/lifecycle/default", {
     method: "PUT",
-    body: JSON.stringify({ guided_profile: guidedProfile }),
+    body: JSON.stringify(payload),
   });
 }
 
 export function upsertLifecycleFolderOverride(
   folderPath: string,
-  guidedProfile: string,
+  selection: string | LifecycleProfileSelection,
 ): Promise<LifecycleResponse> {
+  const payload =
+    typeof selection === "string" ? { guided_profile: selection } : selection;
   return apiRequest<LifecycleResponse>("/api/vault/lifecycle/folder-overrides", {
     method: "PUT",
-    body: JSON.stringify({
-      folder_path: folderPath,
-      guided_profile: guidedProfile,
-    }),
+    body: JSON.stringify({ folder_path: folderPath, ...payload }),
   });
 }
 

@@ -117,7 +117,8 @@ def validate_lifecycle_profile(profile: LifecycleProfile) -> ProfileValidation:
     errors: list[str] = []
     warnings: list[str] = []
     previous_days = 0
-    previous_depth = -1
+    # Lifecycle targets always start deeper than STANDARD. IA variants share band 1.
+    previous_depth = 0
 
     for transition in profile.transitions:
         storage_class = transition.storage_class.upper()
@@ -156,6 +157,7 @@ def validate_lifecycle_profile(profile: LifecycleProfile) -> ProfileValidation:
         errors.append("noncurrent_expiration_days must be positive when set")
 
     previous_noncurrent_days = 0
+    previous_noncurrent_depth = 0
     for transition in profile.noncurrent_transitions:
         storage_class = transition.storage_class.upper()
         if storage_class not in SUPPORTED_STORAGE_CLASSES:
@@ -164,6 +166,14 @@ def validate_lifecycle_profile(profile: LifecycleProfile) -> ProfileValidation:
         if transition.days <= previous_noncurrent_days:
             errors.append(
                 "Noncurrent transition days must strictly increase across the profile"
+            )
+        from .storage_classes import storage_class_depth
+
+        depth = storage_class_depth(storage_class)
+        if depth <= previous_noncurrent_depth:
+            errors.append(
+                "Noncurrent transition storage classes must deepen "
+                f"(got {storage_class} after a class of equal or colder depth)"
             )
         minimum_days = MIN_TRANSITION_DAYS[storage_class]
         if transition.days < minimum_days:
@@ -177,6 +187,7 @@ def validate_lifecycle_profile(profile: LifecycleProfile) -> ProfileValidation:
                 "and minimum storage-duration billing"
             )
         previous_noncurrent_days = transition.days
+        previous_noncurrent_depth = depth
 
     return ProfileValidation(
         ok=not errors,
