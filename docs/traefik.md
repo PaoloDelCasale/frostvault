@@ -12,7 +12,8 @@ with host `ports`.
   HSTS / security-header middleware, and apply a basic rate limit
 - App settings: `COOKIE_SECURE=true`, `ALLOWED_HOSTS` = public hostname,
   `TRUSTED_PROXIES` = Traefik/proxy CIDR so `X-Forwarded-*` is believed only
-  from that hop
+  from that hop. This is required for network-gated Local Sign-in and
+  administrator Break-glass Login to use the real client address.
 
 ## Bring-up sketch
 
@@ -46,4 +47,8 @@ The reference labels set:
 
 Adjust middleware names or CSP if you front additional assets. Keep
 `TRUSTED_PROXIES` narrow; an overly broad CIDR defeats client-IP gating for
-break-glass login.
+Local Sign-in, including administrator Break-glass Login. The compatible
+`BREAK_GLASS_ALLOWED_CIDRS` setting gates both uses: an empty value is
+loopback-only, with no implicit allow-all mode. Before activating a managed
+OIDC configuration, ensure an active administrator has a local password and
+that recovery is reachable through the configured network policy.

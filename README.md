@@ -11,8 +11,9 @@ Search remains global across every file in the selected vault.
 
 ## Users and vaults
 
-- Users sign in with configured OIDC, or with the restricted break-glass
-  administrator password when that path is enabled for the client network.
+- Users sign in with configured OIDC or the network-gated **Local Sign-in**
+  path when they have a local password. An administrator's use of Local Sign-in
+  to recover access while OIDC is unavailable is **Break-glass Login**.
 - Each vault has its own local folder, S3 prefix, and Rclone remote.
 - Every query and operation includes the vault identifier.
 - Users can see only vaults assigned to them.
@@ -40,6 +41,24 @@ Search remains global across every file in the selected vault.
 
 Administrators do not automatically enter other users' vaults. They must be
 explicitly assigned like any other user before they can browse files.
+
+### Local Sign-in and Break-glass Login
+
+Local Sign-in is available to any active User with a configured local password,
+not only to administrators. It is always network-gated: loopback is allowed and
+additional client networks must be listed in `BREAK_GLASS_ALLOWED_CIDRS`. An
+empty value means loopback-only (`127.0.0.0/8` and `::1`); there is no implicit
+allow-all value. A successful Local Sign-in creates a Session with only the
+User's existing global role and Vault assignments.
+
+Break-glass Login describes an administrator using that same Local Sign-in path
+for recovery when OIDC is unavailable. Keep at least one active administrator
+with a local password and a non-empty `BREAK_GLASS_ALLOWED_CIDRS` configuration
+before activating a managed OIDC configuration; activation refuses to proceed
+without that recovery path. The empty setting still permits loopback Local
+Sign-in, but is not enough to activate OIDC. Passwordless Users cannot use
+Local Sign-in, and administrator-only Reauthentication and authorization checks
+remain unchanged.
 
 ## Archive lifecycle and cloud deletion
 
@@ -332,7 +351,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Area | Variables |
 | --- | --- |
 | Database | `DB_BACKEND`, `SQLITE_PATH`, `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
-| Authentication | `BOOTSTRAP_ADMIN_*`, `OIDC_*` (including the dedicated `OIDC_SETTINGS_ENCRYPTION_KEY`), `BREAK_GLASS_ALLOWED_CIDRS` |
+| Authentication | `BOOTSTRAP_ADMIN_*`, `OIDC_*` (including the dedicated `OIDC_SETTINGS_ENCRYPTION_KEY`), `BREAK_GLASS_ALLOWED_CIDRS` (network gate for Local Sign-in and administrator Break-glass Login) |
 | Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES` |
 | Frontend | `FRONTEND_DIST_DIR` (Vite build output; required for HTML routes) |
 | Web Push | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (optional; see below) |
@@ -404,8 +423,9 @@ cloud credentials.
 ## Security
 
 - Expose FrostVault only through HTTPS and configure trusted hosts and proxies.
-- Prefer OIDC and short-lived AWS credentials. Restrict break-glass login to
-  loopback or explicitly trusted networks.
+- Prefer OIDC and short-lived AWS credentials. Restrict Local Sign-in (including
+  administrator Break-glass Login) to loopback or explicitly trusted networks;
+  an empty `BREAK_GLASS_ALLOWED_CIDRS` value is loopback-only, never allow-all.
 - Grant only the documented S3 actions and prefixes. Do not grant account-root
   credentials or broad bucket deletion rights.
 - Keep versioning enabled, test restores, and review audit events.

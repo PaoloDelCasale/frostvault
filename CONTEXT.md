@@ -106,10 +106,17 @@ An expiring, revocable credential that represents one authenticated User on one
 device.
 _Avoid_: Cookie, Token, Login
 
+**Local Sign-in**:
+A network-gated sign-in using a local password, available to any active User
+with a configured local password, and limited to loopback or the explicitly
+allowed CIDRs.
+_Avoid_: Local login, Password login
+
 **Break-glass Login**:
-A restricted local-password sign-in for administrators from trusted networks,
-used when external identity is unavailable.
-_Avoid_: Local login, Password login, Admin login
+An administrator's use of Local Sign-in to recover access when external identity
+is unavailable. It remains an administrator recovery path, but Local Sign-in does
+not grant administrator privileges or require them.
+_Avoid_: Admin login
 
 **Reauthentication**:
 A fresh proof of the acting User's identity, required within a recent window

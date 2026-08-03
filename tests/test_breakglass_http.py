@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.config import settings
 from app.database import SQLiteConnection
-from app.security import hash_password
+from app.security import DUMMY_PASSWORD_HASH, hash_password
 from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
 
@@ -49,6 +49,14 @@ class BreakGlassHttpTests(unittest.TestCase):
                 INSERT INTO users(username, display_name, password_hash, is_admin)
                 VALUES ('shell', 'Shell', NULL, TRUE)
                 """
+            )
+            connection.execute(
+                """
+                INSERT INTO users(
+                    username, display_name, password_hash, is_admin, active
+                ) VALUES ('inactive', 'Inactive', %s, FALSE, FALSE)
+                """,
+                (hash_password(ADMIN_PASSWORD),),
             )
 
         self.test_settings = replace(
@@ -118,21 +126,95 @@ class BreakGlassHttpTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200, page.text)
         self.assertIn('id="root"', page.text)
 
-    # --- admin-only -------------------------------------------------------
+    # --- local authentication --------------------------------------------
 
-    def test_non_admin_cannot_break_glass_login(self) -> None:
+    def test_active_non_admin_can_sign_in_without_privilege_escalation(self) -> None:
         client = self._client(LOOPBACK)
         response = client.post(
             "/api/login", json={"username": "member", "password": ADMIN_PASSWORD}
         )
-        self.assertEqual(response.status_code, 401, response.text)
+        self.assertEqual(response.status_code, 200, response.text)
 
-    def test_null_password_user_cannot_break_glass_login(self) -> None:
-        client = self._client(LOOPBACK)
-        response = client.post(
-            "/api/login", json={"username": "shell", "password": ""}
+        me = client.get("/api/me")
+        self.assertEqual(me.status_code, 200, me.text)
+        self.assertFalse(me.json()["is_admin"])
+        self.assertEqual(me.json()["auth_method"], "local")
+        self.assertEqual(client.get("/api/admin/users").status_code, 403)
+
+    def test_active_non_admin_can_sign_in_from_an_allowed_cidr(self) -> None:
+        allowed_settings = replace(
+            self.test_settings, break_glass_allowed_cidrs="203.0.113.0/24"
         )
+        client = self._client(OUTSIDE)
+        with patch("app.breakglass.settings", allowed_settings):
+            response = client.post(
+                "/api/login",
+                json={"username": "member", "password": ADMIN_PASSWORD},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def test_inactive_passwordless_unknown_and_wrong_password_are_indistinguishable(
+        self,
+    ) -> None:
+        attempts = (
+            ("inactive", ADMIN_PASSWORD),
+            ("shell", ""),
+            ("unknown", ADMIN_PASSWORD),
+            ("member", "wrong-password"),
+        )
+        responses = [
+            self._client(LOOPBACK).post(
+                "/api/login", json={"username": username, "password": password}
+            )
+            for username, password in attempts
+        ]
+
+        self.assertEqual(
+            {
+                (response.status_code, response.json().get("detail"))
+                for response in responses
+            },
+            {(401, "Incorrect username or password")},
+        )
+
+    def test_wrong_password_verifies_once_against_the_real_hash(self) -> None:
+        with SQLiteConnection(str(self.database_path)) as connection:
+            password_hash = connection.execute(
+                "SELECT password_hash FROM users WHERE username=%s",
+                ("member",),
+            ).fetchone()["password_hash"]
+
+        client = self._client(LOOPBACK)
+        with patch("app.main.verify_password", return_value=False) as verify:
+            response = client.post(
+                "/api/login",
+                json={"username": "member", "password": "wrong-password"},
+            )
+
         self.assertEqual(response.status_code, 401, response.text)
+        verify.assert_called_once_with(password_hash, "wrong-password")
+
+    def test_ineligible_users_verify_once_against_the_dummy_hash_and_cannot_sign_in(
+        self,
+    ) -> None:
+        attempts = (
+            ("unknown", ADMIN_PASSWORD),
+            ("inactive", ADMIN_PASSWORD),
+            ("shell", ADMIN_PASSWORD),
+        )
+        for username, password in attempts:
+            with self.subTest(username=username):
+                client = self._client(LOOPBACK)
+                # Returning True here proves that the dummy verification result
+                # is never enough to authenticate an ineligible account.
+                with patch("app.main.verify_password", return_value=True) as verify:
+                    response = client.post(
+                        "/api/login",
+                        json={"username": username, "password": password},
+                    )
+
+                self.assertEqual(response.status_code, 401, response.text)
+                verify.assert_called_once_with(DUMMY_PASSWORD_HASH, password)
 
     # --- throttling -------------------------------------------------------
 

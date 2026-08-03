@@ -31,7 +31,9 @@ original hostname for HTTP Host and TLS SNI/certificate verification. DNS
 rebinding therefore cannot redirect the actual socket to a private or local
 network.
 
-Activation additionally requires a configured Break-glass Login network and at
-least one active administrator with a password. Invite-only Identity binding,
-Authorization Code + PKCE, and explicit issuer/subject matching remain
-unchanged.
+Activation additionally requires a non-empty `BREAK_GLASS_ALLOWED_CIDRS`
+configuration and at least one active administrator with a local password who
+can use network-gated Local Sign-in for Break-glass Login recovery. The empty
+setting remains fail-closed loopback-only for Local Sign-in, but is not enough
+to activate OIDC. Invite-only Identity binding, Authorization Code + PKCE, and
+explicit issuer/subject matching remain unchanged.
