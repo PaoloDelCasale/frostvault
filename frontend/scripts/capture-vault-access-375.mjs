@@ -199,33 +199,57 @@ await page.route("**/api/**", async (route) => {
 await page.goto("http://127.0.0.1:4177/vault/access", { waitUntil: "networkidle" });
 const lifecyclePanel = page.locator('[data-panel="lifecycle"]');
 await lifecyclePanel.waitFor();
-await lifecyclePanel.scrollIntoViewIfNeeded();
-await lifecyclePanel.screenshot({
-  path: path.join(artifacts, "lifecycle-guided-picker-375px.png"),
-});
+
+async function screenshotAtViewportWidth(locator, outputPath) {
+  await locator.scrollIntoViewIfNeeded();
+  const box = await locator.boundingBox();
+  const viewport = page.viewportSize();
+  if (!box || !viewport || viewport.width !== 375) {
+    throw new Error("Unable to capture a 375px-wide lifecycle screenshot");
+  }
+  const scrollY = await page.evaluate(() => window.scrollY);
+  await page.screenshot({
+    path: outputPath,
+    fullPage: true,
+    clip: {
+      x: 0,
+      y: box.y + scrollY,
+      width: viewport.width,
+      height: box.height,
+    },
+  });
+}
+
+await screenshotAtViewportWidth(
+  lifecyclePanel,
+  path.join(artifacts, "lifecycle-guided-picker-375px.png"),
+);
 
 await page.getByLabel(/vault default profile/i).selectOption("ia_after_30");
 await page.getByRole("button", { name: /customize/i }).first().click();
 await page.getByRole("button", { name: /add rule/i }).click();
 await page.getByLabel(/after n days from creation/i).nth(1).fill("180");
 await page.getByLabel(/target storage class/i).nth(1).selectOption("DEEP_ARCHIVE");
-await page.locator("[data-lifecycle-editor]").screenshot({
-  path: path.join(artifacts, "lifecycle-custom-two-rules-375px.png"),
-});
+await screenshotAtViewportWidth(
+  page.locator("[data-lifecycle-editor]"),
+  path.join(artifacts, "lifecycle-custom-two-rules-375px.png"),
+);
 
 const currentDays = page.getByLabel(/after n days from creation/i);
 await currentDays.nth(1).fill("20");
 await page.getByLabel(/target storage class/i).nth(1).selectOption("ONEZONE_IA");
 await page.getByRole("button", { name: /save custom rules/i }).click();
-await page.locator("[data-lifecycle-editor]").screenshot({
-  path: path.join(artifacts, "lifecycle-validation-error-375px.png"),
-});
+await screenshotAtViewportWidth(
+  page.locator("[data-lifecycle-editor]"),
+  path.join(artifacts, "lifecycle-validation-error-375px.png"),
+);
 
 await page.getByRole("button", { name: /^cancel$/i }).click();
 await lifecyclePanel.locator("text=photos/2024").scrollIntoViewIfNeeded();
-await lifecyclePanel.screenshot({
-  path: path.join(artifacts, "lifecycle-custom-folder-override-375px.png"),
-});
+await screenshotAtViewportWidth(
+  lifecyclePanel,
+  path.join(artifacts, "lifecycle-custom-folder-override-375px.png"),
+);
 
 const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
 if (overflow > 0) throw new Error(`375px layout overflows horizontally by ${overflow}px`);
