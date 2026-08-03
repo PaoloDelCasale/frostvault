@@ -38,6 +38,17 @@ Retargeting a Vault to a different local directory rather than relocating the
 same one.
 _Avoid_: Relocation, Rename
 
+**Vault Decommission**:
+A deliberate, auditable lifecycle that quiesces one Vault, applies explicit
+Local Copy and cloud-history dispositions, and releases its root only after both
+are terminal and verified. Disabling a Vault is never a decommission.
+_Avoid_: Disable, Delete Vault, Automatic release
+
+**Vault Tombstone**:
+The non-operational Vault and retained identity/history that remain after Vault
+Decommission releases its root.
+_Avoid_: Deleted Vault, Active Vault
+
 **Vault File**:
 A stable logical file in a Vault whose identity survives confirmed renames and
 content changes.

@@ -50,6 +50,7 @@ from .services.source_layout import (
 )
 from .services import source_areas as source_areas_service
 from .services import vault_relocation as vault_relocation_service
+from .services import vault_decommission as vault_decommission_service
 from .oidc import OidcError, begin_login, complete_login
 from .oidc_configuration import (
     OidcConfigurationConflict,
@@ -229,6 +230,13 @@ async def lifespan(_: FastAPI):
     vault_relocation_service.reconcile_vault_root_identities()
     cleanup_abandoned_restore_files()
     reconcile_interrupted_jobs()
+    with db() as connection:
+        vault_decommission_service.reconcile_interrupted_jobs(connection)
+    runtime = _runtime_settings()
+    vault_decommission_service.reconcile_all(
+        local_delete_enabled=runtime.allow_local_delete,
+        purge_delay_seconds=runtime.cloud_purge_delay_seconds,
+    )
     tasks = [asyncio.create_task(background_loop())]
     if settings.filesystem_watch_enabled:
         tasks.append(asyncio.create_task(filesystem_watch_loop()))
@@ -493,6 +501,7 @@ _GOVERNANCE_ERROR_STATUS: dict[str, tuple[int, str]] = {
     "no_current_owner": (409, "Vault has no primary owner to transfer from"),
     "already_owner": (400, "That user is already the primary owner"),
     "ownership_changed": (409, "Vault ownership changed; refresh and try again"),
+    "vault_quiesced": (409, "Vault is quiesced for decommission"),
 }
 
 
@@ -558,6 +567,7 @@ def current_vault(
                 FROM vaults v
                 JOIN vault_members vm ON vm.vault_id=v.id
                 WHERE v.id=%s AND vm.user_id=%s AND v.enabled=TRUE
+                  AND v.decommission_state='active'
                 """,
                 (requested_id, user["id"]),
             ).fetchone()
@@ -568,6 +578,7 @@ def current_vault(
                 FROM vaults v
                 JOIN vault_members vm ON vm.vault_id=v.id
                 WHERE vm.user_id=%s AND v.enabled=TRUE
+                  AND v.decommission_state='active'
                 ORDER BY v.name
                 LIMIT 1
                 """,
@@ -590,6 +601,62 @@ def owner_vault(vault: dict[str, Any] = Depends(current_vault)) -> dict[str, Any
     """
     if not is_owner(vault["role"]):
         raise HTTPException(403, "Only the vault owner can manage sharing")
+    return vault
+
+
+def _owned_vault_for_decommission(vault_id: int, user_id: int) -> dict[str, Any]:
+    with db() as connection:
+        vault = connection.execute(
+            """
+            SELECT v.*, vm.role, vm.user_id AS member_user_id
+            FROM vaults v
+            JOIN vault_members vm ON vm.vault_id=v.id
+            WHERE v.id=%s AND vm.user_id=%s AND vm.role='owner'
+            """,
+            (vault_id, user_id),
+        ).fetchone()
+    if vault is None:
+        raise HTTPException(403, "Only the primary owner can decommission this Vault")
+    return vault
+
+
+def decommission_owner_vault(
+    request: Request, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
+    """Resolve an owned Vault even after it is quiesced or disabled.
+
+    Normal ``current_vault`` deliberately hides non-operational Vaults.  This
+    narrow seam keeps decommission progress visible to the primary owner while
+    membership/history remains preserved in the tombstone.
+    """
+    requested_id = request.state.session.get("vault_id")
+    with db() as connection:
+        vault = None
+        if requested_id:
+            vault = connection.execute(
+                """
+                SELECT v.*, vm.role, vm.user_id AS member_user_id
+                FROM vaults v
+                JOIN vault_members vm ON vm.vault_id=v.id
+                WHERE v.id=%s AND vm.user_id=%s AND vm.role='owner'
+                """,
+                (requested_id, user["id"]),
+            ).fetchone()
+        if vault is None:
+            vault = connection.execute(
+                """
+                SELECT v.*, vm.role, vm.user_id AS member_user_id
+                FROM vaults v
+                JOIN vault_members vm ON vm.vault_id=v.id
+                WHERE vm.user_id=%s AND vm.role='owner'
+                ORDER BY CASE WHEN v.decommission_state='decommissioning' THEN 0 ELSE 1 END,
+                         lower(v.name)
+                LIMIT 1
+                """,
+                (user["id"],),
+            ).fetchone()
+    if vault is None:
+        raise HTTPException(403, "Only the primary owner can decommission this Vault")
     return vault
 
 
@@ -807,6 +874,19 @@ class VaultRelocate(BaseModel):
     volume_alias: str = Field(min_length=1, max_length=120)
     relative_path: str = Field(default="", max_length=1024)
     reason: str = Field(min_length=3, max_length=500)
+
+
+class VaultDecommissionPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    local_disposition: str = Field(pattern="^(retain|remove)$")
+    cloud_disposition: str = Field(pattern="^(retain|purge)$")
+
+
+class VaultDecommissionStart(VaultDecommissionPreview):
+    confirmation: str = Field(min_length=1, max_length=120)
+    reason: str = Field(min_length=3, max_length=500)
+    preview_fingerprint: str = Field(min_length=64, max_length=64)
 
 
 class MembershipCreate(BaseModel):
@@ -1450,6 +1530,7 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
             raise
         vault = None
     vault_block = None
+    decommission_vault_block = None
     if vault is not None:
         role = vault["role"]
         vault_block = {
@@ -1463,6 +1544,47 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
             and is_owner(role),
             "is_vault_owner": is_owner(role),
         }
+    else:
+        selected_id = request.state.session.get("vault_id")
+        if selected_id:
+            with db() as connection:
+                decommission_vault = connection.execute(
+                    """
+                    SELECT v.id, v.slug, v.name, v.decommission_state,
+                           v.root_released_at
+                    FROM vaults v
+                    JOIN vault_members vm ON vm.vault_id=v.id
+                    WHERE v.id=%s AND vm.user_id=%s AND vm.role='owner'
+                      AND v.decommission_state<>'active'
+                    """,
+                    (selected_id, user["id"]),
+                ).fetchone()
+            if decommission_vault:
+                decommission_vault_block = {
+                    **decommission_vault,
+                    "root_released": bool(decommission_vault["root_released_at"]),
+                }
+        if decommission_vault_block is None:
+            with db() as connection:
+                decommission_vault = connection.execute(
+                    """
+                    SELECT v.id, v.slug, v.name, v.decommission_state,
+                           v.root_released_at
+                    FROM vaults v
+                    JOIN vault_members vm ON vm.vault_id=v.id
+                    WHERE vm.user_id=%s AND vm.role='owner'
+                      AND v.decommission_state<>'active'
+                    ORDER BY CASE WHEN v.decommission_state='decommissioning' THEN 0 ELSE 1 END,
+                             v.decommissioned_at DESC, lower(v.name)
+                    LIMIT 1
+                    """,
+                    (user["id"],),
+                ).fetchone()
+            if decommission_vault:
+                decommission_vault_block = {
+                    **decommission_vault,
+                    "root_released": bool(decommission_vault["root_released_at"]),
+                }
     return {
         **user,
         "csrf_token": csrf_token,
@@ -1470,6 +1592,7 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
         "locale": _request_locale(request),
         "locales": list(available_locales()),
         "vault": vault_block,
+        "decommission_vault": decommission_vault_block,
     }
 
 
@@ -1516,6 +1639,7 @@ def user_vaults(user: dict[str, Any] = Depends(current_user)):
             FROM vaults v
             JOIN vault_members vm ON vm.vault_id=v.id
             WHERE vm.user_id=%s AND v.enabled=TRUE
+              AND v.decommission_state='active'
             ORDER BY v.name
             """,
             (user["id"],),
@@ -1575,6 +1699,216 @@ def create_own_vault(
     if vault["encryption_mode"] == "crypt":
         payload["recovery_export"] = build_recovery_export(vault)
     return payload
+
+
+_VAULT_DECOMMISSION_ERROR_STATUS: dict[str, tuple[int, str]] = {
+    "not_found": (404, "Vault not found"),
+    "not_started": (404, "Vault decommission has not started"),
+    "reason_required": (422, "A reason between 3 and 500 characters is required"),
+    "confirmation_required": (422, "Type the exact Vault name to confirm"),
+    "invalid_disposition": (422, "Invalid decommission disposition"),
+    "owner_required": (403, "Only the primary owner can decommission this Vault"),
+    "stale_preview": (409, "Vault contents changed; request a new preview"),
+    "blocked": (409, "Vault decommission is blocked; review the preview"),
+    "decommission_in_progress": (409, "Vault decommission is already in progress"),
+    "already_decommissioned": (409, "Vault root has already been released"),
+    "state_changed": (409, "Vault lifecycle changed; request a new preview"),
+    "cloud_purge_not_cancellable": (409, "Cloud purge delay is no longer cancellable"),
+}
+
+
+def _vault_decommission_http_error(
+    exc: vault_decommission_service.VaultDecommissionError,
+) -> HTTPException:
+    status_code, message = _VAULT_DECOMMISSION_ERROR_STATUS.get(
+        exc.reason, (409, "Vault decommission could not be completed")
+    )
+    return HTTPException(status_code, message)
+
+
+def _preview_vault_decommission(
+    vault_id: int, action: VaultDecommissionPreview
+) -> dict[str, Any]:
+    with status_lock:
+        scan_active = bool(runtime_status.get(vault_id, {}).get("scanning"))
+    runtime = _runtime_settings()
+    try:
+        with db() as connection:
+            return vault_decommission_service.build_preview(
+                connection,
+                vault_id=vault_id,
+                local_disposition=action.local_disposition,
+                cloud_disposition=action.cloud_disposition,
+                local_delete_enabled=runtime.allow_local_delete,
+                runtime_scan_active=scan_active,
+            )
+    except vault_decommission_service.VaultDecommissionError as exc:
+        raise _vault_decommission_http_error(exc) from exc
+
+
+def _start_vault_decommission(
+    *,
+    vault_id: int,
+    action: VaultDecommissionStart,
+    actor: dict[str, Any],
+    actor_is_admin: bool,
+) -> dict[str, Any]:
+    runtime = _runtime_settings()
+    operation_lock = scan_lock_for_vault(vault_id)
+    if not operation_lock.acquire(blocking=False):
+        raise HTTPException(409, "A Vault scan is active; request a new preview")
+    try:
+        with status_lock:
+            scan_active = bool(runtime_status.get(vault_id, {}).get("scanning"))
+        if scan_active:
+            raise HTTPException(409, "A Vault scan is active; request a new preview")
+        try:
+            with db() as connection:
+                vault_decommission_service.start_decommission(
+                    connection,
+                    vault_id=vault_id,
+                    actor_user_id=int(actor["id"]),
+                    actor_is_admin=actor_is_admin,
+                    local_disposition=action.local_disposition,
+                    cloud_disposition=action.cloud_disposition,
+                    confirmation=action.confirmation,
+                    reason=action.reason,
+                    preview_fingerprint=action.preview_fingerprint,
+                    local_delete_enabled=runtime.allow_local_delete,
+                    purge_delay_seconds=runtime.cloud_purge_delay_seconds,
+                    runtime_scan_active=False,
+                )
+                result = vault_decommission_service.reconcile_one(
+                    connection,
+                    vault_id=vault_id,
+                    local_delete_enabled=runtime.allow_local_delete,
+                    purge_delay_seconds=runtime.cloud_purge_delay_seconds,
+                )
+        except vault_decommission_service.VaultDecommissionError as exc:
+            vault_decommission_service.release_runtime_gate(vault_id)
+            raise _vault_decommission_http_error(exc) from exc
+        except BaseException:
+            # The database context rolled back; do not leave an in-process-only
+            # suspension without its persistent decommission row.
+            vault_decommission_service.release_runtime_gate(vault_id)
+            raise
+    finally:
+        operation_lock.release()
+    if result["state"] == "completed":
+        vault_decommission_service.release_runtime_gate(vault_id)
+    return result
+
+
+@app.post("/api/vault/decommission/preview")
+def preview_own_vault_decommission(
+    action: VaultDecommissionPreview,
+    vault: dict[str, Any] = Depends(decommission_owner_vault),
+):
+    return _preview_vault_decommission(int(vault["id"]), action)
+
+
+@app.get("/api/vault/decommission/status")
+def own_vault_decommission_status(
+    vault: dict[str, Any] = Depends(decommission_owner_vault),
+):
+    try:
+        with db() as connection:
+            return vault_decommission_service.operation_status(
+                connection, vault_id=int(vault["id"])
+            )
+    except vault_decommission_service.VaultDecommissionError as exc:
+        raise _vault_decommission_http_error(exc) from exc
+
+
+@app.post("/api/vault/decommission", status_code=202)
+def start_own_vault_decommission(
+    action: VaultDecommissionStart,
+    user: dict[str, Any] = Depends(current_user),
+    vault: dict[str, Any] = Depends(decommission_owner_vault),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    return _start_vault_decommission(
+        vault_id=int(vault["id"]),
+        action=action,
+        actor=user,
+        actor_is_admin=False,
+    )
+
+
+@app.post("/api/vault/decommission/cloud-purge/cancel")
+def cancel_own_vault_decommission_cloud_purge(
+    user: dict[str, Any] = Depends(current_user),
+    vault: dict[str, Any] = Depends(decommission_owner_vault),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    try:
+        with db() as connection:
+            return vault_decommission_service.cancel_pending_cloud_purge(
+                connection,
+                vault_id=int(vault["id"]),
+                actor_user_id=int(user["id"]),
+            )
+    except vault_decommission_service.VaultDecommissionError as exc:
+        raise _vault_decommission_http_error(exc) from exc
+
+
+@app.post("/api/vaults/{vault_id}/decommission/preview")
+def preview_owned_vault_decommission_by_id(
+    vault_id: int,
+    action: VaultDecommissionPreview,
+    user: dict[str, Any] = Depends(current_user),
+):
+    _owned_vault_for_decommission(vault_id, int(user["id"]))
+    return _preview_vault_decommission(vault_id, action)
+
+
+@app.get("/api/vaults/{vault_id}/decommission/status")
+def owned_vault_decommission_status_by_id(
+    vault_id: int,
+    user: dict[str, Any] = Depends(current_user),
+):
+    _owned_vault_for_decommission(vault_id, int(user["id"]))
+    try:
+        with db() as connection:
+            return vault_decommission_service.operation_status(
+                connection, vault_id=vault_id
+            )
+    except vault_decommission_service.VaultDecommissionError as exc:
+        raise _vault_decommission_http_error(exc) from exc
+
+
+@app.post("/api/vaults/{vault_id}/decommission", status_code=202)
+def start_owned_vault_decommission_by_id(
+    vault_id: int,
+    action: VaultDecommissionStart,
+    user: dict[str, Any] = Depends(current_user),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    _owned_vault_for_decommission(vault_id, int(user["id"]))
+    return _start_vault_decommission(
+        vault_id=vault_id,
+        action=action,
+        actor=user,
+        actor_is_admin=False,
+    )
+
+
+@app.post("/api/vaults/{vault_id}/decommission/cloud-purge/cancel")
+def cancel_owned_vault_decommission_cloud_purge_by_id(
+    vault_id: int,
+    user: dict[str, Any] = Depends(current_user),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    _owned_vault_for_decommission(vault_id, int(user["id"]))
+    try:
+        with db() as connection:
+            return vault_decommission_service.cancel_pending_cloud_purge(
+                connection,
+                vault_id=vault_id,
+                actor_user_id=int(user["id"]),
+            )
+    except vault_decommission_service.VaultDecommissionError as exc:
+        raise _vault_decommission_http_error(exc) from exc
 
 
 @app.post("/api/vault/recovery/confirm")
@@ -1642,6 +1976,7 @@ def select_vault(
             SELECT 1 FROM vault_members vm
             JOIN vaults v ON v.id=vm.vault_id
             WHERE vm.vault_id=%s AND vm.user_id=%s AND v.enabled=TRUE
+              AND v.decommission_state='active'
             """,
             (action.vault_id, user["id"]),
         ).fetchone()
@@ -2592,11 +2927,16 @@ def queue_jobs(
     if action in {"upload", "recover", "free-space", "rename", "storage-class"}:
         with db() as connection:
             vault_row = connection.execute(
-                "SELECT source_root, relocation_state FROM vaults WHERE id=%s",
+                """
+                SELECT source_root, relocation_state, decommission_state
+                FROM vaults WHERE id=%s
+                """,
                 (vault_id,),
             ).fetchone()
         if vault_row is None:
             raise HTTPException(404, "Vault not found")
+        if vault_decommission_service.local_work_suspended(vault_row):
+            raise HTTPException(409, "Vault is quiesced for decommission")
         if vault_relocation_service.local_work_suspended(vault_row):
             raise HTTPException(409, "Local work is suspended pending relocation scan")
         access = vault_local_access(vault_row["source_root"])
@@ -3232,13 +3572,16 @@ def update_cloud_deletion_setting(
 ):
     if not is_owner(vault["role"]):
         raise HTTPException(403, "Only the primary owner can change cloud deletion")
-    with db() as connection:
-        enabled = cloud_deletion_service.set_cloud_deletion_enabled(
-            connection,
-            vault_id=vault["id"],
-            enabled=action.enabled,
-            actor_user_id=user["id"],
-        )
+    try:
+        with db() as connection:
+            enabled = cloud_deletion_service.set_cloud_deletion_enabled(
+                connection,
+                vault_id=vault["id"],
+                enabled=action.enabled,
+                actor_user_id=user["id"],
+            )
+    except cloud_deletion_service.CloudDeletionDisabled as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {"enabled": enabled}
 
 
@@ -3680,6 +4023,61 @@ def admin_vaults(_: dict[str, Any] = Depends(admin_user)):
     return {"items": rows}
 
 
+@app.post("/api/admin/vaults/{vault_id}/decommission/preview")
+def preview_admin_vault_decommission(
+    vault_id: int,
+    action: VaultDecommissionPreview,
+    _: dict[str, Any] = Depends(admin_user),
+):
+    return _preview_vault_decommission(vault_id, action)
+
+
+@app.get("/api/admin/vaults/{vault_id}/decommission/status")
+def admin_vault_decommission_status(
+    vault_id: int,
+    _: dict[str, Any] = Depends(admin_user),
+):
+    try:
+        with db() as connection:
+            return vault_decommission_service.operation_status(
+                connection, vault_id=vault_id
+            )
+    except vault_decommission_service.VaultDecommissionError as exc:
+        raise _vault_decommission_http_error(exc) from exc
+
+
+@app.post("/api/admin/vaults/{vault_id}/decommission", status_code=202)
+def start_admin_vault_decommission(
+    vault_id: int,
+    action: VaultDecommissionStart,
+    admin: dict[str, Any] = Depends(admin_user),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    return _start_vault_decommission(
+        vault_id=vault_id,
+        action=action,
+        actor=admin,
+        actor_is_admin=True,
+    )
+
+
+@app.post("/api/admin/vaults/{vault_id}/decommission/cloud-purge/cancel")
+def cancel_admin_vault_decommission_cloud_purge(
+    vault_id: int,
+    admin: dict[str, Any] = Depends(admin_user),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    try:
+        with db() as connection:
+            return vault_decommission_service.cancel_pending_cloud_purge(
+                connection,
+                vault_id=vault_id,
+                actor_user_id=int(admin["id"]),
+            )
+    except vault_decommission_service.VaultDecommissionError as exc:
+        raise _vault_decommission_http_error(exc) from exc
+
+
 @app.post("/api/admin/vaults", status_code=201)
 def create_vault(
     action: VaultCreate,
@@ -3747,6 +4145,7 @@ _VAULT_RELOCATION_ERROR_STATUS: dict[str, tuple[int, str]] = {
     "identity_ambiguous": (409, "Vault root identity is ambiguous; relocation is unavailable"),
     "identity_mismatch": (409, "Destination is not the enrolled Vault directory"),
     "relocation_in_progress": (409, "Vault relocation already requires a full scan"),
+    "decommission_in_progress": (409, "Vault decommission prevents relocation"),
 }
 
 
@@ -3915,6 +4314,11 @@ def update_vault_operation_policy(
             stored = set_policy(connection, vault["id"], policy)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+        except LookupError as exc:
+            reason = str(exc)
+            if reason == "vault_quiesced":
+                raise HTTPException(409, "Vault is quiesced for decommission") from exc
+            raise HTTPException(404, "Vault not found") from exc
         audit_log(
             "vault_operation_policy_updated",
             connection=connection,

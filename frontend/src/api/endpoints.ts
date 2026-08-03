@@ -14,6 +14,10 @@ import type {
   AdminVaultRelocatePayload,
   AdminVaultRelocationResponse,
   AdminVaultsResponse,
+  VaultDecommissionPreview,
+  VaultDecommissionSelection,
+  VaultDecommissionStartPayload,
+  VaultDecommissionStatus,
   SourceVolumeInventoryResponse,
   SourceAreaAssignPayload,
   SourceAreaGrant,
@@ -389,6 +393,80 @@ export function relocateAdminVault(
   return apiRequest<AdminVaultRelocationResponse>(
     `/api/admin/vaults/${vaultId}/relocate`,
     { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export function previewAdminVaultDecommission(
+  vaultId: number,
+  payload: VaultDecommissionSelection,
+): Promise<VaultDecommissionPreview> {
+  return apiRequest<VaultDecommissionPreview>(
+    `/api/admin/vaults/${vaultId}/decommission/preview`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export function startAdminVaultDecommission(
+  vaultId: number,
+  payload: VaultDecommissionStartPayload,
+): Promise<VaultDecommissionStatus> {
+  return apiRequest<VaultDecommissionStatus>(
+    `/api/admin/vaults/${vaultId}/decommission`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export function fetchAdminVaultDecommissionStatus(
+  vaultId: number,
+): Promise<VaultDecommissionStatus> {
+  return apiRequest<VaultDecommissionStatus>(
+    `/api/admin/vaults/${vaultId}/decommission/status`,
+  );
+}
+
+export function cancelAdminVaultDecommissionCloudPurge(
+  vaultId: number,
+): Promise<VaultDecommissionStatus> {
+  return apiRequest<VaultDecommissionStatus>(
+    `/api/admin/vaults/${vaultId}/decommission/cloud-purge/cancel`,
+    { method: "POST", body: "{}" },
+  );
+}
+
+export function previewOwnVaultDecommission(
+  vaultId: number,
+  payload: VaultDecommissionSelection,
+): Promise<VaultDecommissionPreview> {
+  return apiRequest<VaultDecommissionPreview>(
+    `/api/vaults/${vaultId}/decommission/preview`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export function startOwnVaultDecommission(
+  vaultId: number,
+  payload: VaultDecommissionStartPayload,
+): Promise<VaultDecommissionStatus> {
+  return apiRequest<VaultDecommissionStatus>(`/api/vaults/${vaultId}/decommission`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function fetchOwnVaultDecommissionStatus(
+  vaultId: number,
+): Promise<VaultDecommissionStatus> {
+  return apiRequest<VaultDecommissionStatus>(
+    `/api/vaults/${vaultId}/decommission/status`,
+  );
+}
+
+export function cancelOwnVaultDecommissionCloudPurge(
+  vaultId: number,
+): Promise<VaultDecommissionStatus> {
+  return apiRequest<VaultDecommissionStatus>(
+    `/api/vaults/${vaultId}/decommission/cloud-purge/cancel`,
+    { method: "POST", body: "{}" },
   );
 }
 

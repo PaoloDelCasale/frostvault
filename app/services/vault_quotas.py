@@ -162,13 +162,24 @@ def set_limits(connection: Any, vault_id: int, limits: QuotaLimits) -> QuotaLimi
     return limits
 
 
-def lock_vault(connection: Any, vault_id: int) -> None:
-    """Serialize quota accounting with all other admissions for a Vault."""
+def lock_vault(
+    connection: Any, vault_id: int, *, allow_decommission: bool = False
+) -> None:
+    """Serialize admission and reject normal work for a quiesced Vault."""
     row = connection.execute(
-        "UPDATE vaults SET name=name WHERE id=%s RETURNING id", (vault_id,)
+        """
+        UPDATE vaults SET name=name WHERE id=%s
+        RETURNING id, decommission_state
+        """,
+        (vault_id,),
     ).fetchone()
     if not row:
         raise LookupError("vault_not_found")
+    lifecycle = str(row.get("decommission_state") or "active")
+    if lifecycle != "active" and not (
+        allow_decommission and lifecycle == "decommissioning"
+    ):
+        raise LookupError("vault_quiesced")
 
 
 def _as_utc(value: datetime | None) -> datetime:

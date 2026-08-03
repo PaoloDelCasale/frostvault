@@ -15,6 +15,15 @@ export type MeVault = {
   is_vault_owner: boolean;
 };
 
+export type MeDecommissionVault = {
+  id: number;
+  slug: string;
+  name: string;
+  decommission_state: "decommissioning" | "decommissioned";
+  root_released_at?: string | null;
+  root_released: boolean;
+};
+
 export type MeResponse = {
   id: number;
   username: string;
@@ -27,6 +36,7 @@ export type MeResponse = {
   locale: string;
   locales: string[];
   vault: MeVault | null;
+  decommission_vault?: MeDecommissionVault | null;
 };
 
 export type VaultListItem = {
@@ -684,6 +694,9 @@ export type AdminVault = {
   member_count: number;
   encryption_mode?: string;
   uuid?: string;
+  decommission_state?: "active" | "decommissioning" | "decommissioned";
+  decommissioned_at?: string | null;
+  root_released_at?: string | null;
 };
 
 export type AdminVaultsResponse = {
@@ -712,6 +725,90 @@ export type AdminVaultRelocationResponse = {
   source_root: string;
   relocation_state: "scan_required" | "ready";
   full_scan_required: boolean;
+};
+
+export type VaultDecommissionDisposition = "retain" | "remove" | "purge";
+
+export type VaultDecommissionSelection = {
+  local_disposition: "retain" | "remove";
+  cloud_disposition: "retain" | "purge";
+};
+
+export type VaultDecommissionStartPayload = VaultDecommissionSelection & {
+  confirmation: string;
+  reason: string;
+  preview_fingerprint: string;
+};
+
+export type VaultDecommissionCounts = {
+  vault_files: number;
+  local_files: number;
+  local_bytes: number;
+  archive_versions: number;
+  cloud_bytes: number;
+  delete_markers: number;
+  jobs: number;
+  memberships: number;
+};
+
+export type VaultDecommissionBlocker = {
+  code: string;
+  message: string;
+  message_key?: string;
+  count?: number;
+};
+
+export type VaultDecommissionPreview = VaultDecommissionSelection & {
+  vault_id: number;
+  vault_name: string;
+  enabled: boolean;
+  decommission_state: string;
+  counts: VaultDecommissionCounts;
+  blockers: VaultDecommissionBlocker[];
+  can_start: boolean;
+  fingerprint: string;
+  root_identity_version?: string | null;
+  root_identity_fingerprint?: string | null;
+  recovery_material?: {
+    encryption_mode: string;
+    custody_confirmed: boolean;
+    disposition: string;
+  };
+  records?: Record<string, string>;
+};
+
+export type VaultDecommissionJobProgress = {
+  total: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  active: number;
+};
+
+export type VaultDecommissionStatus = VaultDecommissionSelection & {
+  id: number;
+  vault_id: number;
+  vault_name: string;
+  state: string;
+  decommission_state: string;
+  enabled: boolean;
+  local_status: string;
+  cloud_status: string;
+  requested_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+  decommissioned_at?: string | null;
+  root_released_at?: string | null;
+  root_released: boolean;
+  error_code?: string | null;
+  error_message?: string | null;
+  preview: VaultDecommissionPreview;
+  jobs: {
+    local: VaultDecommissionJobProgress;
+    cloud: VaultDecommissionJobProgress;
+  };
+  cloud_cancellable?: boolean;
+  progress_percent: number;
 };
 
 export type AdminVaultMember = {

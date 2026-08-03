@@ -3,14 +3,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   addVaultMember,
   ApiError,
+  cancelOwnVaultDecommissionCloudPurge,
   createLatestRequestScope,
+  fetchOwnVaultDecommissionStatus,
   fetchVaultMembers,
   lookupVaultUser,
+  previewOwnVaultDecommission,
   removeVaultMember,
+  startOwnVaultDecommission,
   type UserLookupResult,
   type VaultMember,
 } from "@/api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DecommissionVaultDialog } from "@/components/DecommissionVaultDialog";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { Panel } from "@/components/Panel";
 import { Toast } from "@/components/Toast";
@@ -27,6 +32,7 @@ import { TransferOwnershipDialog } from "./TransferOwnershipDialog";
 export type VaultAccessPageProps = {
   vaultId: number;
   vaultName: string;
+  decommissionState?: "active" | "decommissioning" | "decommissioned";
   isAdmin?: boolean;
   onBack?: () => void;
   onTransferred?: () => void;
@@ -42,6 +48,7 @@ function roleKey(role: string | null | undefined): string {
 export function VaultAccessPage({
   vaultId,
   vaultName,
+  decommissionState = "active",
   isAdmin = false,
   onBack,
   onTransferred,
@@ -60,6 +67,9 @@ export function VaultAccessPage({
   const [removeTarget, setRemoveTarget] = useState<VaultMember | null>(null);
   const [transferTarget, setTransferTarget] = useState<VaultMember | null>(
     null,
+  );
+  const [decommissionOpen, setDecommissionOpen] = useState(
+    decommissionState !== "active",
   );
 
   const membersScope = useRef(createLatestRequestScope()).current;
@@ -91,9 +101,13 @@ export function VaultAccessPage({
   );
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || decommissionState !== "active") return;
     void loadMembers();
-  }, [loadMembers, ready]);
+  }, [decommissionState, loadMembers, ready]);
+
+  useEffect(() => {
+    if (decommissionState !== "active") setDecommissionOpen(true);
+  }, [decommissionState]);
 
   if (!ready) {
     return (
@@ -175,6 +189,31 @@ export function VaultAccessPage({
         </Button>
       </header>
 
+      {decommissionState !== "active" ? (
+        <section data-panel="decommission-progress">
+          <Panel className="border-red-300 p-4 sm:p-5">
+            <h2 className="text-lg font-bold text-ink">
+              {t("decommission.view_progress")}
+            </h2>
+            <p className="mt-1 text-sm text-muted">
+              {t(
+                decommissionState === "decommissioned"
+                  ? "decommission.root_released"
+                  : "decommission.root_reserved",
+              )}
+            </p>
+            <Button
+              type="button"
+              variant="primary"
+              className="mt-4 min-h-11 w-full sm:w-auto"
+              onClick={() => setDecommissionOpen(true)}
+            >
+              {t("decommission.view_progress")}
+            </Button>
+          </Panel>
+        </section>
+      ) : (
+        <>
       <section data-panel="add-member">
       <Panel className="p-4 sm:p-5">
         <h2 className="text-lg font-bold">{t("access.add_member")}</h2>
@@ -303,6 +342,38 @@ export function VaultAccessPage({
       <OperationPolicyPanel onNotice={show} />
       <LifecyclePanel onNotice={show} />
       <CloudDeletionPanel onNotice={show} />
+
+      <section data-panel="decommission">
+        <Panel className="border-red-300 p-4 sm:p-5">
+          <h2 className="text-lg font-bold text-ink">{t("decommission.owner_panel_title")}</h2>
+          <p className="mt-1 text-sm text-muted">{t("decommission.owner_panel_help")}</p>
+          <Button
+            type="button"
+            variant="danger"
+            className="mt-4 min-h-11 w-full sm:w-auto"
+            onClick={() => setDecommissionOpen(true)}
+          >
+            {t("decommission.open")}
+          </Button>
+        </Panel>
+      </section>
+        </>
+      )}
+
+      <DecommissionVaultDialog
+        open={decommissionOpen}
+        onOpenChange={setDecommissionOpen}
+        vaultName={vaultName}
+        existingState={decommissionState}
+        preview={(selection) => previewOwnVaultDecommission(vaultId, selection)}
+        start={(payload) => startOwnVaultDecommission(vaultId, payload)}
+        status={() => fetchOwnVaultDecommissionStatus(vaultId)}
+        cancelCloudPurge={() => cancelOwnVaultDecommissionCloudPurge(vaultId)}
+        onCompleted={() => {
+          if (onTransferred) onTransferred();
+          else window.location.href = "/no-vault";
+        }}
+      />
 
       <TransferOwnershipDialog
         open={transferTarget !== null}

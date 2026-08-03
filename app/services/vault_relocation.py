@@ -96,7 +96,11 @@ def reconcile_vault_root_identities() -> int:
     enrolled = 0
     with db() as connection:
         rows = connection.execute(
-            "SELECT id, source_root FROM vaults WHERE root_identity IS NULL"
+            """
+            SELECT id, source_root FROM vaults
+            WHERE root_identity IS NULL AND root_released_at IS NULL
+              AND decommission_state='active'
+            """
         ).fetchall()
         for row in rows:
             access = source_layout.vault_local_access(row["source_root"])
@@ -192,7 +196,13 @@ def _candidate(volume: source_layout.SourceVolume, relative_path: str) -> tuple[
 
 def _reject_overlap(connection: Any, *, vault_id: int, destination: Path) -> None:
     destination_text = os.path.normpath(str(destination))
-    rows = connection.execute("SELECT id, source_root FROM vaults WHERE id<>%s", (vault_id,)).fetchall()
+    rows = connection.execute(
+        """
+        SELECT id, source_root FROM vaults
+        WHERE id<>%s AND root_released_at IS NULL
+        """,
+        (vault_id,),
+    ).fetchall()
     for row in rows:
         other = os.path.normpath(str(row["source_root"]))
         try:
@@ -234,6 +244,11 @@ def _relocate_vault_root(
     vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
     if vault is None:
         raise VaultRelocationError("not_found", "Vault not found")
+    if vault.get("decommission_state", "active") != "active" or vault.get("root_released_at"):
+        raise VaultRelocationError(
+            "decommission_in_progress",
+            "A decommissioned or decommissioning Vault cannot be relocated",
+        )
     if vault.get("relocation_state") != "ready":
         raise VaultRelocationError("relocation_in_progress", "Vault relocation already requires recovery")
     expected_alias = _alias_for_root(str(vault["source_root"]))

@@ -36,10 +36,30 @@ class GovernanceError(Exception):
         self.reason = reason
 
 
-def _find_vault(connection: Any, vault_id: int) -> dict[str, Any] | None:
-    return connection.execute(
-        "SELECT id FROM vaults WHERE id=%s", (vault_id,)
+def _require_active_vault(connection: Any, vault_id: int) -> dict[str, Any]:
+    row = connection.execute(
+        "SELECT id, decommission_state FROM vaults WHERE id=%s",
+        (vault_id,),
     ).fetchone()
+    if row is None:
+        raise GovernanceError("vault_not_found")
+    if str(row.get("decommission_state") or "active") != "active":
+        raise GovernanceError("vault_quiesced")
+    return row
+
+
+def _lock_active_vault(connection: Any, vault_id: int) -> None:
+    row = connection.execute(
+        """
+        UPDATE vaults SET name=name
+        WHERE id=%s AND decommission_state='active'
+        RETURNING id
+        """,
+        (vault_id,),
+    ).fetchone()
+    if row is None:
+        _require_active_vault(connection, vault_id)
+        raise GovernanceError("vault_quiesced")
 
 
 def _find_active_user(connection: Any, user_id: int) -> dict[str, Any] | None:
@@ -79,8 +99,7 @@ def assign_member_role(
     """
     if role not in ASSIGNABLE_ROLES:
         raise GovernanceError("invalid_role")
-    if not _find_vault(connection, vault_id):
-        raise GovernanceError("vault_not_found")
+    _require_active_vault(connection, vault_id)
     if not _find_active_user(connection, user_id):
         raise GovernanceError("user_not_found")
     target = connection.execute(
@@ -89,16 +108,25 @@ def assign_member_role(
     ).fetchone()
     if target and target["role"] == OWNER:
         raise GovernanceError("owner_required")
+    _lock_active_vault(connection, vault_id)
     assigned = connection.execute(
         """
         INSERT INTO vault_members(vault_id, user_id, role)
         SELECT %s, %s, %s
-        WHERE %s IS NULL OR EXISTS (
+        WHERE EXISTS (
+            SELECT 1 FROM vaults
+            WHERE id=%s AND decommission_state='active'
+        )
+          AND (%s IS NULL OR EXISTS (
             SELECT 1 FROM vault_members
             WHERE vault_id=%s AND user_id=%s AND role=%s
-        )
+          ))
         ON CONFLICT(vault_id, user_id) DO UPDATE SET role=excluded.role
         WHERE vault_members.role <> %s
+          AND EXISTS (
+              SELECT 1 FROM vaults
+              WHERE id=%s AND decommission_state='active'
+          )
           AND (
             %s IS NULL OR EXISTS (
                 SELECT 1 FROM vault_members AS owner_membership
@@ -113,11 +141,13 @@ def assign_member_role(
             vault_id,
             user_id,
             role,
+            vault_id,
             expected_owner_user_id,
             vault_id,
             expected_owner_user_id,
             OWNER,
             OWNER,
+            vault_id,
             expected_owner_user_id,
             vault_id,
             expected_owner_user_id,
@@ -125,6 +155,7 @@ def assign_member_role(
         ),
     ).fetchone()
     if not assigned:
+        _require_active_vault(connection, vault_id)
         owner = primary_owner(connection, vault_id)
         if (
             expected_owner_user_id is not None
@@ -150,6 +181,7 @@ def remove_member(
     authorization; the delete statement rejects it if ownership changed.
     Global-admin overrides explicitly pass ``None``.
     """
+    _require_active_vault(connection, vault_id)
     target = connection.execute(
         "SELECT role FROM vault_members WHERE vault_id=%s AND user_id=%s",
         (vault_id, user_id),
@@ -160,6 +192,10 @@ def remove_member(
         """
         DELETE FROM vault_members
         WHERE vault_id=%s AND user_id=%s AND role <> %s
+          AND EXISTS (
+              SELECT 1 FROM vaults
+              WHERE id=%s AND decommission_state='active'
+          )
           AND (
             %s IS NULL OR EXISTS (
                 SELECT 1 FROM vault_members AS owner_membership
@@ -174,6 +210,7 @@ def remove_member(
             vault_id,
             user_id,
             OWNER,
+            vault_id,
             expected_owner_user_id,
             vault_id,
             expected_owner_user_id,
@@ -181,6 +218,7 @@ def remove_member(
         ),
     ).fetchone()
     if not deleted:
+        _require_active_vault(connection, vault_id)
         owner = primary_owner(connection, vault_id)
         if (
             expected_owner_user_id is not None
@@ -216,8 +254,7 @@ def transfer_primary_ownership(
     only ever updates ``vault_members`` rows; it never moves the vault's
     generated namespace, local directory, or S3 objects.
     """
-    if not _find_vault(connection, vault_id):
-        raise GovernanceError("vault_not_found")
+    _require_active_vault(connection, vault_id)
     if not _find_active_user(connection, new_owner_user_id):
         raise GovernanceError("user_not_found")
     actual = primary_owner(connection, vault_id)
@@ -237,12 +274,19 @@ def transfer_primary_ownership(
     if not target:
         raise GovernanceError("member_not_found")
 
+    # Lock lifecycle immediately before the ownership writes. This occurs after
+    # authorization reads so existing concurrent-transfer guards remain valid.
+    _lock_active_vault(connection, vault_id)
     # The owner predicate is repeated in the write, so a concurrent transfer
     # cannot demote the wrong owner after the authorization read above.
     current = connection.execute(
         """
         UPDATE vault_members SET role=%s
         WHERE vault_id=%s AND role=%s AND user_id <> %s
+          AND EXISTS (
+              SELECT 1 FROM vaults
+              WHERE id=%s AND decommission_state='active'
+          )
           AND (%s IS NULL OR user_id=%s)
         RETURNING user_id
         """,
@@ -251,11 +295,13 @@ def transfer_primary_ownership(
             vault_id,
             OWNER,
             new_owner_user_id,
+            vault_id,
             expected_current_owner_user_id,
             expected_current_owner_user_id,
         ),
     ).fetchone()
     if not current:
+        _require_active_vault(connection, vault_id)
         raise GovernanceError("ownership_changed")
     connection.execute(
         """
