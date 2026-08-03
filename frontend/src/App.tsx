@@ -16,6 +16,7 @@ import {
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/theme";
 import { AppShell } from "@/layout/AppShell";
+import { shellLabel } from "@/layout/labels";
 import { Toast } from "@/components/Toast";
 import type { ShellCapabilities } from "@/layout/types";
 import { AdminPage } from "@/pages/admin";
@@ -185,7 +186,7 @@ export default function App() {
   if (!authChecked || !me) {
     return (
       <div className="grid min-h-svh place-items-center bg-canvas text-sm text-muted">
-        Loading…
+        {shellLabel(t, "ui.loading", "Loading…")}
       </div>
     );
   }

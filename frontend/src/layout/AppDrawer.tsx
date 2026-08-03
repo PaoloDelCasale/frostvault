@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+import { shellLabel } from "./labels";
 import type { ShellCapabilities, ShellNavHandlers } from "./types";
 import { ShellNavItems } from "./ShellNavItems";
 
@@ -24,6 +25,18 @@ export function AppDrawer({
   t,
   trigger,
 }: AppDrawerProps) {
+  const navigationLabel = shellLabel(t, "ui.navigation", "Navigation");
+  const closeNavigationLabel = shellLabel(
+    t,
+    "ui.close_navigation",
+    "Close navigation",
+  );
+  const vaultNavigationLabel = shellLabel(
+    t,
+    "ui.vault_navigation",
+    "Vault navigation",
+  );
+
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Trigger asChild>{trigger}</Dialog.Trigger>
@@ -41,20 +54,23 @@ export function AppDrawer({
         >
           <div className="mb-3 flex items-center justify-between gap-2">
             <Dialog.Title className="text-base font-bold text-ink">
-              Navigation
+              {navigationLabel}
             </Dialog.Title>
             <Dialog.Close asChild>
               <Button
                 type="button"
                 variant="secondary"
                 className="min-h-11 min-w-11"
-                aria-label="Close navigation"
+                aria-label={closeNavigationLabel}
               >
                 ×
               </Button>
             </Dialog.Close>
           </div>
-          <nav aria-label="Vault navigation" className="flex flex-1 flex-col gap-2 overflow-y-auto">
+          <nav
+            aria-label={vaultNavigationLabel}
+            className="flex flex-1 flex-col gap-2 overflow-y-auto"
+          >
             <ShellNavItems
               capabilities={capabilities}
               handlers={handlers}

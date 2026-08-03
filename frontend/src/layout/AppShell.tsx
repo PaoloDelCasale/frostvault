@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 
 import { AppDrawer } from "./AppDrawer";
+import { shellLabel } from "./labels";
 import { ShellNavItems } from "./ShellNavItems";
 import type { ShellCapabilities, ShellNavHandlers } from "./types";
 
@@ -15,6 +16,21 @@ type AppShellProps = {
 
 export function AppShell({ capabilities, handlers, t, children }: AppShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const skipToMainLabel = shellLabel(
+    t,
+    "ui.skip_to_main",
+    "Skip to main content",
+  );
+  const openNavigationLabel = shellLabel(
+    t,
+    "ui.open_navigation",
+    "Open navigation",
+  );
+  const vaultNavigationLabel = shellLabel(
+    t,
+    "ui.vault_navigation",
+    "Vault navigation",
+  );
 
   return (
     <div className="min-h-svh bg-canvas text-ink">
@@ -27,7 +43,7 @@ export function AppShell({ capabilities, handlers, t, children }: AppShellProps)
           main?.focus();
         }}
       >
-        Skip to main content
+        {skipToMainLabel}
       </a>
 
       <header
@@ -55,7 +71,7 @@ export function AppShell({ capabilities, handlers, t, children }: AppShellProps)
                   type="button"
                   variant="secondary"
                   className="min-h-11 min-w-11"
-                  aria-label="Open navigation"
+                  aria-label={openNavigationLabel}
                 >
                   ☰
                 </Button>
@@ -64,7 +80,7 @@ export function AppShell({ capabilities, handlers, t, children }: AppShellProps)
           </div>
 
           <nav
-            aria-label="Vault navigation"
+            aria-label={vaultNavigationLabel}
             className="hidden md:flex md:flex-wrap md:items-center md:justify-end md:gap-2"
           >
             <ShellNavItems
