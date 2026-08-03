@@ -62,6 +62,22 @@ export function DecommissionVaultDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const completionReported = useRef(false);
+  const operationVaultName = useRef<string | null>(
+    existingState === "decommissioning" || existingState === "decommissioned"
+      ? vaultName
+      : null,
+  );
+
+  useEffect(() => {
+    // Admin closes temporarily clear the selected Vault props. Retain the
+    // operation key across that empty state, but never apply it to another Vault.
+    if (!vaultName) return;
+    if (existingState === "decommissioning" || existingState === "decommissioned") {
+      operationVaultName.current = vaultName;
+    } else if (operationVaultName.current !== vaultName) {
+      operationVaultName.current = null;
+    }
+  }, [existingState, vaultName]);
 
   useEffect(() => {
     if (!open) return;
@@ -81,9 +97,14 @@ export function DecommissionVaultDialog({
     setError("");
     setPreview(null);
     const load =
-      existingState === "decommissioning" || existingState === "decommissioned"
+      operationVaultName.current === vaultName ||
+      existingState === "decommissioning" ||
+      existingState === "decommissioned"
         ? requestStatus().then((value) => {
-            if (!cancelled) setOperation(value);
+            if (!cancelled) {
+              operationVaultName.current = vaultName;
+              setOperation(value);
+            }
           })
         : requestPreview(selection).then((value) => {
             if (!cancelled) setPreview(value);
@@ -98,7 +119,7 @@ export function DecommissionVaultDialog({
     return () => {
       cancelled = true;
     };
-  }, [existingState, open, requestPreview, requestStatus, selection]);
+  }, [existingState, open, requestPreview, requestStatus, selection, vaultName]);
 
   useEffect(() => {
     if (!open || !operation || operation.state === "completed") return;
@@ -162,6 +183,7 @@ export function DecommissionVaultDialog({
         reason: reason.trim(),
         preview_fingerprint: preview.fingerprint,
       });
+      operationVaultName.current = vaultName;
       setOperation(value);
     } catch (reasonValue) {
       setError(reasonValue instanceof Error ? reasonValue.message : String(reasonValue));

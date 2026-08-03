@@ -156,11 +156,18 @@ def set_policy(
     connection: Any, vault_id: int, policy: OperationPolicy
 ) -> OperationPolicy:
     validate_policy(policy)
-    exists = connection.execute(
-        "SELECT id FROM vaults WHERE id=%s", (vault_id,)
+    locked = connection.execute(
+        """
+        UPDATE vaults SET name=name
+        WHERE id=%s
+        RETURNING id, decommission_state
+        """,
+        (vault_id,),
     ).fetchone()
-    if not exists:
+    if not locked:
         raise LookupError("vault_not_found")
+    if str(locked.get("decommission_state") or "active") != "active":
+        raise LookupError("vault_quiesced")
     include_globs = _normalize_globs(policy.include_globs)
     exclude_globs = _normalize_globs(policy.exclude_globs)
     windows = _normalize_windows(policy.operating_windows)

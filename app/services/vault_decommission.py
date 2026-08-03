@@ -110,8 +110,110 @@ def _validate_dispositions(local: str, cloud: str) -> tuple[str, str]:
     return local_value, cloud_value
 
 
-def _filesystem_snapshot(vault: dict[str, Any]) -> dict[str, Any]:
-    """Return a deterministic, non-secret root inventory for the fingerprint."""
+_DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_FILE_OPEN_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def _open_directory_without_symlinks(path: str | Path) -> int:
+    """Open an absolute directory one component at a time without following links."""
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    descriptor = os.open(candidate.anchor or "/", _DIRECTORY_OPEN_FLAGS)
+    try:
+        components = candidate.parts[1:] if candidate.anchor else candidate.parts
+        for component in components:
+            child = os.open(component, _DIRECTORY_OPEN_FLAGS, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _same_entry(left: os.stat_result, right: os.stat_result) -> bool:
+    return (
+        int(left.st_dev),
+        int(left.st_ino),
+        stat.S_IFMT(left.st_mode),
+    ) == (
+        int(right.st_dev),
+        int(right.st_ino),
+        stat.S_IFMT(right.st_mode),
+    )
+
+
+def _descriptor_is_mount(descriptor: int, parent: os.stat_result) -> bool:
+    info = os.fstat(descriptor)
+    if info.st_dev != parent.st_dev:
+        return True
+    # The procfs descriptor path is anchored to the already-open directory.  It
+    # cannot be redirected by renaming or replacing a path component.
+    return source_layout.path_is_mount(Path(f"/proc/self/fd/{descriptor}"))
+
+
+def _inventory_root_descriptor(
+    descriptor: int, snapshot: dict[str, Any], *, prefix: str = ""
+) -> None:
+    parent_info = os.fstat(descriptor)
+    for name in sorted(os.listdir(descriptor)):
+        relative = f"{prefix}/{name}" if prefix else name
+        before = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if stat.S_ISLNK(before.st_mode):
+            kind = "symlink"
+            info = before
+            snapshot["data_paths"].append(relative)
+            snapshot["unsupported_paths"].append(relative)
+            snapshot["file_count"] += 1
+            snapshot["byte_count"] += int(info.st_size)
+        elif stat.S_ISDIR(before.st_mode):
+            child = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=descriptor)
+            try:
+                info = os.fstat(child)
+                if not _same_entry(before, info):
+                    raise OSError("directory replaced during inventory")
+                if _descriptor_is_mount(child, parent_info):
+                    kind = "nested_mount"
+                    snapshot["data_paths"].append(relative)
+                    snapshot["unsupported_paths"].append(relative)
+                    snapshot["file_count"] += 1
+                else:
+                    kind = "directory"
+                    _inventory_root_descriptor(child, snapshot, prefix=relative)
+            finally:
+                os.close(child)
+        elif stat.S_ISREG(before.st_mode):
+            child = os.open(name, _FILE_OPEN_FLAGS, dir_fd=descriptor)
+            try:
+                info = os.fstat(child)
+                if not _same_entry(before, info):
+                    raise OSError("file replaced during inventory")
+            finally:
+                os.close(child)
+            kind = "regular"
+            snapshot["data_paths"].append(relative)
+            snapshot["regular_paths"].append(relative)
+            snapshot["file_count"] += 1
+            snapshot["byte_count"] += int(info.st_size)
+        else:
+            kind = "special"
+            info = before
+            snapshot["data_paths"].append(relative)
+            snapshot["unsupported_paths"].append(relative)
+            snapshot["file_count"] += 1
+            snapshot["byte_count"] += int(info.st_size)
+        snapshot["entries"].append(
+            [relative, kind, int(info.st_size), int(info.st_mtime_ns), int(info.st_ino)]
+        )
+
+
+def _opened_filesystem_snapshot(
+    vault: dict[str, Any],
+) -> tuple[dict[str, Any], int | None]:
+    """Inventory the enrolled root through a pinned descriptor.
+
+    A healthy return transfers descriptor ownership to the caller.  This lets
+    finalization retain the exact root through the path-identity release check.
+    """
     snapshot: dict[str, Any] = {
         "healthy": False,
         "identity": None,
@@ -128,90 +230,59 @@ def _filesystem_snapshot(vault: dict[str, Any]) -> dict[str, Any]:
     snapshot["volume_health"] = access.volume_health
     if not access.local_operations_allowed:
         snapshot["error"] = "source_unavailable"
-        return snapshot
+        return snapshot, None
     if (
         vault.get("root_identity_version")
         != vault_relocation.ROOT_IDENTITY_VERSION
         or not vault.get("root_identity")
     ):
         snapshot["error"] = "root_identity_ambiguous"
-        return snapshot
+        return snapshot, None
+
+    descriptor: int | None = None
     try:
-        observed_identity = vault_relocation.root_identity(vault["source_root"])
-    except vault_relocation.VaultRelocationError:
+        descriptor = _open_directory_without_symlinks(vault["source_root"])
+        observed_identity = vault_relocation.opened_root_identity(descriptor)
+        snapshot["identity"] = observed_identity
+        if observed_identity != vault.get("root_identity"):
+            snapshot["error"] = "root_identity_mismatch"
+            os.close(descriptor)
+            return snapshot, None
+        _inventory_root_descriptor(descriptor, snapshot)
+    except (OSError, ValueError, vault_relocation.VaultRelocationError):
+        if descriptor is not None:
+            os.close(descriptor)
         snapshot["error"] = "filesystem_unreadable"
-        return snapshot
-    snapshot["identity"] = observed_identity
-    if observed_identity != vault.get("root_identity"):
-        snapshot["error"] = "root_identity_mismatch"
-        return snapshot
-
-    root = Path(str(vault["source_root"]))
-
-    def _walk_error(error: OSError) -> None:
-        raise error
-
-    try:
-        for directory, names, filenames in os.walk(
-            root, topdown=True, followlinks=False, onerror=_walk_error
-        ):
-            directory_path = Path(directory)
-            names.sort()
-            filenames.sort()
-            retained_names: list[str] = []
-            for name in names:
-                entry = directory_path / name
-                relative = entry.relative_to(root).as_posix()
-                info = entry.lstat()
-                if stat.S_ISLNK(info.st_mode):
-                    kind = "symlink"
-                    snapshot["data_paths"].append(relative)
-                    snapshot["unsupported_paths"].append(relative)
-                    snapshot["file_count"] += 1
-                    snapshot["byte_count"] += int(info.st_size)
-                elif source_layout.path_is_mount(entry):
-                    kind = "nested_mount"
-                    snapshot["data_paths"].append(relative)
-                    snapshot["unsupported_paths"].append(relative)
-                    snapshot["file_count"] += 1
-                elif stat.S_ISDIR(info.st_mode):
-                    kind = "directory"
-                    retained_names.append(name)
-                else:
-                    kind = "special"
-                    snapshot["data_paths"].append(relative)
-                    snapshot["unsupported_paths"].append(relative)
-                    snapshot["file_count"] += 1
-                    snapshot["byte_count"] += int(info.st_size)
-                snapshot["entries"].append(
-                    [relative, kind, int(info.st_size), int(info.st_mtime_ns), int(info.st_ino)]
-                )
-            names[:] = retained_names
-            for name in filenames:
-                entry = directory_path / name
-                relative = entry.relative_to(root).as_posix()
-                info = entry.lstat()
-                snapshot["data_paths"].append(relative)
-                snapshot["file_count"] += 1
-                snapshot["byte_count"] += int(info.st_size)
-                if stat.S_ISREG(info.st_mode):
-                    kind = "regular"
-                    snapshot["regular_paths"].append(relative)
-                else:
-                    kind = "symlink" if stat.S_ISLNK(info.st_mode) else "special"
-                    snapshot["unsupported_paths"].append(relative)
-                snapshot["entries"].append(
-                    [relative, kind, int(info.st_size), int(info.st_mtime_ns), int(info.st_ino)]
-                )
-    except (OSError, ValueError):
-        snapshot["error"] = "filesystem_unreadable"
-        return snapshot
+        return snapshot, None
     snapshot["entries"].sort(key=lambda item: item[0])
     snapshot["data_paths"].sort()
     snapshot["regular_paths"].sort()
     snapshot["unsupported_paths"].sort()
     snapshot["healthy"] = True
+    return snapshot, descriptor
+
+
+def _filesystem_snapshot(vault: dict[str, Any]) -> dict[str, Any]:
+    """Return a deterministic, non-secret root inventory for the fingerprint."""
+    snapshot, descriptor = _opened_filesystem_snapshot(vault)
+    if descriptor is not None:
+        os.close(descriptor)
     return snapshot
+
+
+def _path_still_names_open_root(vault: dict[str, Any], descriptor: int) -> bool:
+    """Re-open without links and compare path identity with the pinned root."""
+    candidate: int | None = None
+    try:
+        pinned = vault_relocation.opened_root_identity(descriptor)
+        candidate = _open_directory_without_symlinks(vault["source_root"])
+        observed = vault_relocation.opened_root_identity(candidate)
+        return observed == pinned == vault.get("root_identity")
+    except (OSError, vault_relocation.VaultRelocationError):
+        return False
+    finally:
+        if candidate is not None:
+            os.close(candidate)
 
 
 def _local_catalog_rows(connection: Any, vault_id: int) -> list[dict[str, Any]]:
@@ -981,27 +1052,31 @@ def _mark_blocked(
         )
 
 
-def _prune_empty_directories(root: Path) -> None:
-    """Remove only empty descendant directories; never remove the Vault root."""
-    directories: list[Path] = []
-    for directory, names, _ in os.walk(root, topdown=True, followlinks=False):
-        base = Path(directory)
-        retained: list[str] = []
-        for name in names:
-            entry = base / name
-            try:
-                if entry.is_symlink() or source_layout.path_is_mount(entry):
-                    continue
-            except OSError:
-                continue
-            retained.append(name)
-            directories.append(entry)
-        names[:] = retained
-    for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+def _prune_empty_directories(descriptor: int) -> None:
+    """Remove empty descendants relative to the pinned root descriptor."""
+    parent_info = os.fstat(descriptor)
+    for name in sorted(os.listdir(descriptor)):
         try:
-            directory.rmdir()
+            before = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if not stat.S_ISDIR(before.st_mode) or stat.S_ISLNK(before.st_mode):
+                continue
+            child = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=descriptor)
         except OSError:
-            pass
+            continue
+        try:
+            opened = os.fstat(child)
+            if not _same_entry(before, opened) or _descriptor_is_mount(child, parent_info):
+                continue
+            _prune_empty_directories(child)
+            current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if not _same_entry(opened, current):
+                continue
+            try:
+                os.rmdir(name, dir_fd=descriptor)
+            except OSError:
+                pass
+        finally:
+            os.close(child)
 
 
 def _schedule_cloud_purge(
@@ -1089,8 +1164,8 @@ def reconcile_one(
                 message="Local Copy removal Jobs are missing",
             )
             return operation_status(connection, vault_id=vault_id)
-        snapshot = _filesystem_snapshot(vault)
-        if not snapshot["healthy"]:
+        snapshot, root_descriptor = _opened_filesystem_snapshot(vault)
+        if not snapshot["healthy"] or root_descriptor is None:
             _mark_blocked(
                 connection,
                 operation=operation,
@@ -1098,7 +1173,10 @@ def reconcile_one(
                 message="Vault root cannot be verified after Local Copy removal",
             )
             return operation_status(connection, vault_id=vault_id)
-        _prune_empty_directories(Path(str(vault["source_root"])))
+        try:
+            _prune_empty_directories(root_descriptor)
+        finally:
+            os.close(root_descriptor)
         snapshot = _filesystem_snapshot(vault)
         if snapshot["file_count"] or snapshot["unsupported_paths"]:
             _mark_blocked(
@@ -1195,11 +1273,26 @@ def reconcile_one(
                 message="Permanent cloud purge Jobs are missing",
             )
             return operation_status(connection, vault_id=vault_id)
-        remaining = int(
+        remaining_versions = int(
             connection.execute(
                 """
                 SELECT COUNT(*) AS total FROM archive_versions
                 WHERE vault_id=%s AND availability <> 'purged'
+                """,
+                (vault_id,),
+            ).fetchone()["total"]
+            or 0
+        )
+        remaining_markers = int(
+            connection.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM delete_markers dm
+                WHERE dm.vault_id=%s
+                  AND NOT EXISTS (
+                      SELECT 1 FROM cloud_deletion_items item
+                      WHERE item.delete_marker_id=dm.id AND item.status='deleted'
+                  )
                 """,
                 (vault_id,),
             ).fetchone()["total"]
@@ -1218,7 +1311,7 @@ def reconcile_one(
             ).fetchone()["total"]
             or 0
         )
-        if remaining or unfinished_items:
+        if remaining_versions or remaining_markers or unfinished_items:
             _mark_blocked(
                 connection,
                 operation=operation,
@@ -1253,10 +1346,10 @@ def reconcile_one(
         operation["local_status"] in LOCAL_TERMINAL
         and operation["cloud_status"] in CLOUD_TERMINAL
     ):
-        # Re-prove the enrolled root immediately before the only statement that
-        # releases occupancy.  For remove, also prove that no local data remains.
-        snapshot = _filesystem_snapshot(vault)
-        if not snapshot["healthy"]:
+        # Pin and inventory the enrolled root.  The descriptor remains open
+        # through the transaction that releases occupancy.
+        snapshot, root_descriptor = _opened_filesystem_snapshot(vault)
+        if not snapshot["healthy"] or root_descriptor is None:
             _mark_blocked(
                 connection,
                 operation=operation,
@@ -1264,74 +1357,88 @@ def reconcile_one(
                 message="Vault root health could not be verified for release",
             )
             return operation_status(connection, vault_id=vault_id)
-        if operation["local_disposition"] == "remove" and (
-            snapshot["file_count"] or snapshot["unsupported_paths"]
-        ):
-            _mark_blocked(
-                connection,
-                operation=operation,
-                code="local_data_remains",
-                message="Local data remains; the root was not released",
+        try:
+            if operation["local_disposition"] == "remove" and (
+                snapshot["file_count"] or snapshot["unsupported_paths"]
+            ):
+                _mark_blocked(
+                    connection,
+                    operation=operation,
+                    code="local_data_remains",
+                    message="Local data remains; the root was not released",
+                )
+                return operation_status(connection, vault_id=vault_id)
+            # Resolve the configured path again without following any component
+            # symlink and compare it with the pinned descriptor immediately
+            # before the single atomic root-release transition.
+            if not _path_still_names_open_root(vault, root_descriptor):
+                _mark_blocked(
+                    connection,
+                    operation=operation,
+                    code="root_identity_mismatch",
+                    message="Vault root changed during final verification",
+                )
+                return operation_status(connection, vault_id=vault_id)
+            stamp = now_iso()
+            connection.execute(
+                "UPDATE vault_decommissions SET state='finalizing', updated_at=%s WHERE id=%s",
+                (stamp, operation["id"]),
             )
-            return operation_status(connection, vault_id=vault_id)
-        stamp = now_iso()
-        connection.execute(
-            "UPDATE vault_decommissions SET state='finalizing', updated_at=%s WHERE id=%s",
-            (stamp, operation["id"]),
-        )
-        released = connection.execute(
-            """
-            UPDATE vaults
-            SET decommission_state='decommissioned',
-                decommissioned_at=%s,
-                root_released_at=%s
-            WHERE id=%s AND decommission_state='decommissioning'
-              AND root_released_at IS NULL
-            RETURNING id
-            """,
-            (stamp, stamp, vault_id),
-        ).fetchone()
-        if released is None:
-            _mark_blocked(
-                connection,
-                operation=operation,
-                code="root_release_conflict",
-                message="Root occupancy changed before terminal release",
+            released = connection.execute(
+                """
+                UPDATE vaults
+                SET decommission_state='decommissioned',
+                    decommissioned_at=%s,
+                    root_released_at=%s
+                WHERE id=%s AND decommission_state='decommissioning'
+                  AND root_released_at IS NULL
+                RETURNING id
+                """,
+                (stamp, stamp, vault_id),
+            ).fetchone()
+            if released is None:
+                _mark_blocked(
+                    connection,
+                    operation=operation,
+                    code="root_release_conflict",
+                    message="Root occupancy changed before terminal release",
+                )
+                return operation_status(connection, vault_id=vault_id)
+            connection.execute(
+                """
+                UPDATE vault_decommissions
+                SET state='completed', completed_at=%s, updated_at=%s,
+                    error_code=NULL, error_message=NULL
+                WHERE id=%s AND state='finalizing'
+                """,
+                (stamp, stamp, operation["id"]),
             )
-            return operation_status(connection, vault_id=vault_id)
-        connection.execute(
-            """
-            UPDATE vault_decommissions
-            SET state='completed', completed_at=%s, updated_at=%s,
-                error_code=NULL, error_message=NULL
-            WHERE id=%s AND state='finalizing'
-            """,
-            (stamp, stamp, operation["id"]),
-        )
-        record_audit_event(
-            connection,
-            event="vault_decommission.completed",
-            actor_user_id=operation.get("requested_by"),
-            vault_id=vault_id,
-            outcome="success",
-            visibility="owner",
-            reason=operation.get("reason"),
-            local_disposition=operation["local_disposition"],
-            cloud_disposition=operation["cloud_disposition"],
-            root_released_at=stamp,
-            tombstone_retained=True,
-        )
-        _notify_members(
-            connection,
-            vault_id=vault_id,
-            event="vault_decommission.completed",
-            title="Vault decommission completed",
-            body=(
-                f"The local root was released. Local Copies: "
-                f"{operation['local_disposition']}; cloud history: "
-                f"{operation['cloud_disposition']}."
-            ),
-        )
+            record_audit_event(
+                connection,
+                event="vault_decommission.completed",
+                actor_user_id=operation.get("requested_by"),
+                vault_id=vault_id,
+                outcome="success",
+                visibility="owner",
+                reason=operation.get("reason"),
+                local_disposition=operation["local_disposition"],
+                cloud_disposition=operation["cloud_disposition"],
+                root_released_at=stamp,
+                tombstone_retained=True,
+            )
+            _notify_members(
+                connection,
+                vault_id=vault_id,
+                event="vault_decommission.completed",
+                title="Vault decommission completed",
+                body=(
+                    f"The local root was released. Local Copies: "
+                    f"{operation['local_disposition']}; cloud history: "
+                    f"{operation['cloud_disposition']}."
+                ),
+            )
+        finally:
+            os.close(root_descriptor)
     return operation_status(connection, vault_id=vault_id)
 
 

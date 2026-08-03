@@ -4314,6 +4314,11 @@ def update_vault_operation_policy(
             stored = set_policy(connection, vault["id"], policy)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+        except LookupError as exc:
+            reason = str(exc)
+            if reason == "vault_quiesced":
+                raise HTTPException(409, "Vault is quiesced for decommission") from exc
+            raise HTTPException(404, "Vault not found") from exc
         audit_log(
             "vault_operation_policy_updated",
             connection=connection,

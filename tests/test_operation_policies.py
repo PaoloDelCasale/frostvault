@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -205,6 +206,40 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
             loaded = get_policy(connection, 1)
         self.assertEqual(stored, desired)
         self.assertEqual(loaded, desired)
+
+    def test_concurrent_decommission_transition_wins_before_policy_write(self) -> None:
+        transition_started = threading.Event()
+        policy_finished = threading.Event()
+        errors: list[BaseException] = []
+
+        def update_policy() -> None:
+            transition_started.wait(2)
+            try:
+                with SQLiteConnection(str(self.path)) as connection:
+                    set_policy(connection, 1, OperationPolicy(auto_upload=True))
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                policy_finished.set()
+
+        thread = threading.Thread(target=update_policy)
+        thread.start()
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                "UPDATE vaults SET decommission_state='decommissioning' WHERE id=1"
+            )
+            transition_started.set()
+            self.assertFalse(policy_finished.wait(0.1))
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], LookupError)
+        self.assertEqual(str(errors[0]), "vault_quiesced")
+        with SQLiteConnection(str(self.path)) as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) AS total FROM vault_operation_policies WHERE vault_id=1"
+            ).fetchone()["total"]
+        self.assertEqual(count, 0)
 
 
 class AutoUploadEligibilityTests(unittest.TestCase):

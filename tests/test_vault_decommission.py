@@ -1,6 +1,7 @@
 """Vault decommission lifecycle, dispositions, and root occupancy (issue #153)."""
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from dataclasses import replace
@@ -522,6 +523,182 @@ class VaultDecommissionTests(unittest.TestCase):
         self.assertEqual(completed["state"], "completed")
         self.assertTrue(completed["root_released"])
         self.assertTrue((self.root / "report.txt").is_file())
+
+    def test_whole_vault_purge_includes_active_version_and_orphan_marker(self) -> None:
+        self.add_verified_local_copy()
+        with SQLiteConnection(str(self.db_path)) as connection:
+            catalog = ArchiveCatalog(connection)
+            marker_id = catalog.record_delete_marker(
+                vault_id=7,
+                path="orphan.txt",
+                object_key="vaults/archive/orphan.txt",
+                provider_version_id="orphan-marker-version",
+                created_at="2026-08-01T10:02:00+00:00",
+                observed_at="2026-08-01T10:02:00+00:00",
+            )
+            connection.execute(
+                """
+                UPDATE vault_files SET status='purged'
+                WHERE id=(SELECT vault_file_id FROM delete_markers WHERE id=%s)
+                """,
+                (marker_id,),
+            )
+            connection.execute("UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=7")
+        preview = self.preview(cloud="purge")
+        self.assertEqual(preview["counts"]["archive_versions"], 1)
+        self.assertEqual(preview["counts"]["delete_markers"], 1)
+
+        with SQLiteConnection(str(self.db_path)) as connection:
+            vault_decommission.start_decommission(
+                connection,
+                vault_id=7,
+                actor_user_id=1,
+                actor_is_admin=False,
+                local_disposition="retain",
+                cloud_disposition="purge",
+                confirmation="Archive",
+                reason="purge all authoritative cloud history",
+                preview_fingerprint=preview["fingerprint"],
+                local_delete_enabled=True,
+                purge_delay_seconds=3600,
+            )
+            waiting = vault_decommission.reconcile_one(
+                connection,
+                vault_id=7,
+                local_delete_enabled=True,
+                purge_delay_seconds=3600,
+            )
+            group_id = connection.execute(
+                "SELECT cloud_job_group_id FROM vault_decommissions WHERE vault_id=7"
+            ).fetchone()["cloud_job_group_id"]
+            jobs = connection.execute(
+                "SELECT id, vault_file_id FROM jobs WHERE group_id=%s ORDER BY id",
+                (group_id,),
+            ).fetchall()
+            items = connection.execute(
+                """
+                SELECT kind, delete_marker_id FROM cloud_deletion_items
+                WHERE job_id IN (SELECT id FROM jobs WHERE vault_id=7)
+                ORDER BY kind
+                """
+            ).fetchall()
+            self.assertEqual(len(jobs), 2)
+            self.assertEqual({item["kind"] for item in items}, {"version", "delete_marker"})
+            self.assertIn(marker_id, {item["delete_marker_id"] for item in items})
+            connection.execute(
+                "UPDATE cloud_deletion_items SET status='deleted' WHERE kind='version'"
+            )
+            connection.execute(
+                "UPDATE archive_versions SET availability='purged' WHERE vault_id=7"
+            )
+            connection.execute("UPDATE jobs SET status='completed' WHERE vault_id=7")
+            blocked = vault_decommission.reconcile_one(
+                connection,
+                vault_id=7,
+                local_delete_enabled=True,
+                purge_delay_seconds=3600,
+            )
+            self.assertEqual(blocked["error_code"], "cloud_purge_unverified")
+            self.assertFalse(blocked["root_released"])
+            connection.execute(
+                "UPDATE cloud_deletion_items SET status='deleted' WHERE kind='delete_marker'"
+            )
+            completed = vault_decommission.reconcile_one(
+                connection,
+                vault_id=7,
+                local_delete_enabled=True,
+                purge_delay_seconds=3600,
+            )
+        self.assertEqual(completed["state"], "completed")
+        self.assertTrue(completed["root_released"])
+
+    def test_root_replacement_during_descriptor_inventory_blocks_release(self) -> None:
+        preview = self.preview()
+        with SQLiteConnection(str(self.db_path)) as connection:
+            vault_decommission.start_decommission(
+                connection,
+                vault_id=7,
+                actor_user_id=1,
+                actor_is_admin=False,
+                local_disposition="retain",
+                cloud_disposition="retain",
+                confirmation="Archive",
+                reason="retire completed archive",
+                preview_fingerprint=preview["fingerprint"],
+                local_delete_enabled=True,
+                purge_delay_seconds=3600,
+            )
+        original_listdir = os.listdir
+        old_root = self.root.with_name("vault-root-original")
+        replaced = False
+
+        def replace_after_open(descriptor):
+            nonlocal replaced
+            names = original_listdir(descriptor)
+            if not replaced:
+                replaced = True
+                self.root.rename(old_root)
+                self.root.mkdir()
+            return names
+
+        with patch(
+            "app.services.vault_decommission.os.listdir",
+            side_effect=replace_after_open,
+        ):
+            with SQLiteConnection(str(self.db_path)) as connection:
+                status = vault_decommission.reconcile_one(
+                    connection,
+                    vault_id=7,
+                    local_delete_enabled=True,
+                    purge_delay_seconds=3600,
+                )
+        self.assertEqual(status["state"], "blocked")
+        self.assertEqual(status["error_code"], "root_identity_mismatch")
+        self.assertFalse(status["root_released"])
+
+    def test_root_symlink_replacement_during_descriptor_inventory_blocks_release(self) -> None:
+        preview = self.preview()
+        with SQLiteConnection(str(self.db_path)) as connection:
+            vault_decommission.start_decommission(
+                connection,
+                vault_id=7,
+                actor_user_id=1,
+                actor_is_admin=False,
+                local_disposition="retain",
+                cloud_disposition="retain",
+                confirmation="Archive",
+                reason="retire completed archive",
+                preview_fingerprint=preview["fingerprint"],
+                local_delete_enabled=True,
+                purge_delay_seconds=3600,
+            )
+        original_listdir = os.listdir
+        old_root = self.root.with_name("vault-root-link-target")
+        replaced = False
+
+        def replace_with_symlink_after_open(descriptor):
+            nonlocal replaced
+            names = original_listdir(descriptor)
+            if not replaced:
+                replaced = True
+                self.root.rename(old_root)
+                self.root.symlink_to(old_root, target_is_directory=True)
+            return names
+
+        with patch(
+            "app.services.vault_decommission.os.listdir",
+            side_effect=replace_with_symlink_after_open,
+        ):
+            with SQLiteConnection(str(self.db_path)) as connection:
+                status = vault_decommission.reconcile_one(
+                    connection,
+                    vault_id=7,
+                    local_delete_enabled=True,
+                    purge_delay_seconds=3600,
+                )
+        self.assertEqual(status["state"], "blocked")
+        self.assertEqual(status["error_code"], "root_identity_mismatch")
+        self.assertFalse(status["root_released"])
 
     def test_cloud_purge_delay_remains_cancellable_and_keeps_root_occupied(self) -> None:
         self.add_verified_local_copy()

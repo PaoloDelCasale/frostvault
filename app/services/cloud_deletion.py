@@ -259,6 +259,23 @@ def _selected_files(
                 )
           )
         """
+    if whole_vault:
+        # A Vault-wide purge is a terminal custody operation, not a browser
+        # selection.  Include purged/orphaned Vault File tombstones whenever an
+        # authoritative version or Delete Marker still remains.
+        return connection.execute(
+            f"""
+            SELECT vf.id AS vault_file_id, COALESCE(fp.path, '') AS path
+            FROM vault_files vf
+            LEFT JOIN file_paths fp
+              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+            WHERE vf.vault_id=%s
+              AND {path_sql}
+              {cloud_filter}
+            ORDER BY lower(COALESCE(fp.path, '')), vf.id
+            """,
+            [vault_id, *path_params],
+        ).fetchall()
     return connection.execute(
         f"""
         SELECT vf.id AS vault_file_id, fp.path

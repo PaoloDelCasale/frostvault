@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { useState } from "react";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -96,17 +97,27 @@ async function renderDialog(options?: {
   const requestPreview = vi.fn(async () => options?.previewValue ?? preview());
   const requestStart = vi.fn(async () => options?.startValue ?? status());
   const requestStatus = vi.fn(async () => options?.startValue ?? status());
-  render(
-    <ApiQueryProvider client={createAppQueryClient()}>
-      <I18nProvider>
+  function ReopenableDialog() {
+    const [open, setOpen] = useState(true);
+    return (
+      <>
+        <button type="button" onClick={() => setOpen(true)}>Reopen decommission</button>
         <DecommissionVaultDialog
-          open
-          vaultName="Exact Archive"
-          onOpenChange={vi.fn()}
+          open={open}
+          vaultName={open ? "Exact Archive" : ""}
+          existingState="active"
+          onOpenChange={setOpen}
           preview={requestPreview}
           start={requestStart}
           status={requestStatus}
         />
+      </>
+    );
+  }
+  render(
+    <ApiQueryProvider client={createAppQueryClient()}>
+      <I18nProvider>
+        <ReopenableDialog />
       </I18nProvider>
     </ApiQueryProvider>,
   );
@@ -162,6 +173,27 @@ describe("Vault decommission confirmation and progress", () => {
     );
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "40");
     expect(screen.getByText(/root remains reserved/i)).toBeInTheDocument();
+  });
+
+  it("reloads in-progress status instead of stale preview when reopened", async () => {
+    const user = userEvent.setup();
+    const harness = await renderDialog();
+    await user.type(screen.getByLabelText(/Mandatory reason/i), "retire archive");
+    await user.type(screen.getByLabelText(/Type the exact Vault name/i), "Exact Archive");
+    await user.click(screen.getByRole("button", { name: /Start irreversible/i }));
+    await screen.findByTestId("decommission-progress");
+
+    await user.click(screen.getByText("Close", { selector: "button" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    const previewsBeforeReopen = harness.requestPreview.mock.calls.length;
+    const statusesBeforeReopen = harness.requestStatus.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: /Reopen decommission/i }));
+
+    expect(await screen.findByTestId("decommission-progress")).toHaveTextContent(
+      /Permanent cloud purge in progress/i,
+    );
+    expect(harness.requestStatus.mock.calls.length).toBeGreaterThan(statusesBeforeReopen);
+    expect(harness.requestPreview).toHaveBeenCalledTimes(previewsBeforeReopen);
   });
 
   it("renders blockers and cannot submit a destructive choice", async () => {
