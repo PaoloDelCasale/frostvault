@@ -655,7 +655,9 @@ def start_decommission(
                 and existing["preview_fingerprint"]
                 == (preview_fingerprint or "").strip()
             )
-            if existing["state"] == "completed" and same_request:
+            if same_request:
+                # The durable operation is also the idempotency record when a
+                # client retries after losing the original response.
                 succeeded = True
                 return operation_status(connection, vault_id=vault_id)
             if existing["state"] == "completed":

@@ -288,6 +288,35 @@ class VaultDecommissionTests(unittest.TestCase):
         self.assertEqual(operation["state"], "quiescing")
         self.assertIsNone(operation["completed_at"])
 
+    def test_in_progress_request_replay_does_not_duplicate_destructive_jobs(self) -> None:
+        self.add_verified_local_copy()
+        preview = self.preview(local="remove")
+        request = {
+            "vault_id": 7,
+            "actor_user_id": 1,
+            "actor_is_admin": False,
+            "local_disposition": "remove",
+            "cloud_disposition": "retain",
+            "confirmation": "Archive",
+            "reason": "remove local archive copy",
+            "preview_fingerprint": preview["fingerprint"],
+            "local_delete_enabled": True,
+            "purge_delay_seconds": 3600,
+        }
+        with SQLiteConnection(str(self.db_path)) as connection:
+            first = vault_decommission.start_decommission(connection, **request)
+            replay = vault_decommission.start_decommission(connection, **request)
+            operation_count = connection.execute(
+                "SELECT COUNT(*) AS total FROM vault_decommissions WHERE vault_id=7"
+            ).fetchone()["total"]
+            job_count = connection.execute(
+                "SELECT COUNT(*) AS total FROM jobs WHERE vault_id=7"
+            ).fetchone()["total"]
+        self.assertEqual(first["state"], "local_cleanup")
+        self.assertEqual(replay["id"], first["id"])
+        self.assertEqual(operation_count, 1)
+        self.assertEqual(job_count, 1)
+
     def test_completed_request_replay_is_idempotent_but_conflicts_fail(self) -> None:
         preview = self.preview()
         completed = self.start(preview)
