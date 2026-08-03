@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Capture 375px evidence screenshots for file operations (issue #67).
+ * Build the capture bundle first: VITE_ALLOW_DEMO=1 npm run build
+ * Then run: node scripts/capture-file-operations-screenshots.mjs
  * Requires a Vite preview server and google-chrome.
  */
 import { spawn } from "node:child_process";

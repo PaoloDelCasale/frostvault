@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Capture 375px evidence for PWA offline stale listing (issue #72).
+ * Build the capture bundle first: VITE_ALLOW_DEMO=1 npm run build
+ * Then run: node scripts/capture-pwa-offline-screenshot.mjs
  */
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";

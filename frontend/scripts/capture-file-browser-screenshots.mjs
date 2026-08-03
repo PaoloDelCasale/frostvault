@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Capture 375px evidence screenshots for the responsive file browser.
+ * Build the capture bundle first: VITE_ALLOW_DEMO=1 npm run build
+ * Then run: node scripts/capture-file-browser-screenshots.mjs
  * Requires a Vite preview (or dev) server and google-chrome.
  */
 import { spawn } from "node:child_process";

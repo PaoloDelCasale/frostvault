@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { DEMO_MODE_ENABLED, getDemoSearchParam } from "@/demoGate";
 import {
   DEFAULT_PAGE_SIZE,
   countActiveJobGroups,
@@ -92,17 +93,16 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
   const [state, setState] = useState(initial.state);
   const [page, setPage] = useState(initial.page);
   const [sheetPath, setSheetPath] = useState<string | null>(() => {
-    // Screenshot helper: ?sheet=<path> opens the actions bottom sheet.
-    return new URLSearchParams(window.location.search).get("sheet");
+    // Capture helper: ?sheet=<path> opens the actions bottom sheet.
+    return getDemoSearchParam("sheet");
   });
   const [historyPath, setHistoryPath] = useState<string | null>(() => {
-    // Screenshot / deep-link helper: ?history=<path> opens Path History.
-    return new URLSearchParams(window.location.search).get("history");
+    // Capture / deep-link helper: ?history=<path> opens Path History.
+    return getDemoSearchParam("history");
   });
-  const demoConfirm = new URLSearchParams(window.location.search).get("confirm");
-  const demoConfirmTarget =
-    new URLSearchParams(window.location.search).get("target") || "readme.txt";
-  const demoVersions = new URLSearchParams(window.location.search).get("versions");
+  const demoConfirm = getDemoSearchParam("confirm");
+  const demoConfirmTarget = getDemoSearchParam("target") || "readme.txt";
+  const demoVersions = getDemoSearchParam("versions");
 
   const query = useMemo(
     () => ({
@@ -134,8 +134,7 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
     refetchInterval: filesRefetchIntervalFromJobs(jobsQuery.data),
   });
   const forceOfflineDemo =
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("offline") === "1";
+    DEMO_MODE_ENABLED && getDemoSearchParam("offline") === "1";
 
   useEffect(() => {
     if (forceOfflineDemo) {

@@ -91,6 +91,16 @@ npm ci && npm run lint && npm run test && npm run build
 npx playwright install chromium
 npm run test:e2e
 
+# Capture-only archive screenshots (375px; demo seams require explicit opt-in)
+VITE_ALLOW_DEMO=1 npm run build
+node scripts/capture-file-browser-screenshots.mjs
+node scripts/capture-file-operations-screenshots.mjs
+node scripts/capture-pwa-offline-screenshot.mjs
+node scripts/capture-storage-class-screenshots.mjs
+
+# Other 375px capture scripts use mocked/seeded API routes and need no demo flag:
+# capture-vault-access-375.mjs, screenshot-admin.mjs, screenshot-auth-pages.mjs
+
 # MinIO integrity (requires a local MinIO on :9000 and rclone on PATH)
 export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
 export AWS_DEFAULT_REGION=us-east-1

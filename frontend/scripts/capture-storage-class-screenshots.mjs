@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Capture 375px evidence screenshots for storage-class + pin (issue #110).
+ * Build the capture bundle first: VITE_ALLOW_DEMO=1 npm run build
+ * Then run: node scripts/capture-storage-class-screenshots.mjs
  * Requires Vite preview and google-chrome/chromium.
  */
 import { spawn } from "node:child_process";
