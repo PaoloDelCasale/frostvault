@@ -455,14 +455,19 @@ def source_alias_for_root(vault_source_root: str | Path) -> tuple[str, str | Non
 
 
 def _canonical_root_stays_within(root: str | Path, boundary: str | Path) -> bool:
-    """Resolve only an identity-safe mount and retain its lexical boundary."""
-    resolved_root = Path(root).resolve()
-    resolved_boundary = Path(boundary).resolve()
+    """Resolve and constrain a configured root before any later filesystem use."""
     try:
-        resolved_root.relative_to(resolved_boundary)
-    except ValueError:
+        resolved_root = os.path.realpath(os.fspath(root))
+        resolved_boundary = os.path.realpath(os.fspath(boundary))
+    except (OSError, TypeError, ValueError):
         return False
-    return True
+
+    # Include the separator in the prefix so a sibling such as
+    # ``/sources/photos-escape`` cannot satisfy the boundary check. Appending
+    # it to the candidate also permits the boundary directory itself.
+    guarded_root = resolved_root.rstrip(os.sep) + os.sep
+    guarded_boundary = resolved_boundary.rstrip(os.sep) + os.sep
+    return guarded_root.startswith(guarded_boundary)
 
 
 def vault_local_access(vault_source_root: str | Path) -> VaultLocalAccess:

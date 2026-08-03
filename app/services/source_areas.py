@@ -70,6 +70,8 @@ def canonicalize_relative_path(relative_path: str) -> str:
     ``.`` / ``..``, backslashes, and absolute forms.
     """
     raw = (relative_path or "").strip().replace("\\", "/")
+    if "\x00" in raw:
+        raise SourceAreaError("invalid_path", "Source Area path contains invalid data")
     if raw in ("", "."):
         return ""
     if raw.startswith("/"):
