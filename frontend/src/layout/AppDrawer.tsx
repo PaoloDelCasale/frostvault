@@ -12,6 +12,7 @@ type AppDrawerProps = {
   onOpenChange: (open: boolean) => void;
   capabilities: ShellCapabilities;
   handlers?: ShellNavHandlers;
+  t?: (key: string) => string;
   trigger: ReactNode;
 };
 
@@ -20,6 +21,7 @@ export function AppDrawer({
   onOpenChange,
   capabilities,
   handlers,
+  t,
   trigger,
 }: AppDrawerProps) {
   return (
@@ -56,6 +58,7 @@ export function AppDrawer({
             <ShellNavItems
               capabilities={capabilities}
               handlers={handlers}
+              t={t}
               onNavigate={() => onOpenChange(false)}
             />
           </nav>

@@ -4,6 +4,7 @@
   "ui.active_operations": "Operazioni attive",
   "ui.sign_out": "Esci",
   "ui.refresh_list": "Aggiorna elenco",
+  "ui.refresh_list_failed": "Impossibile aggiornare l'elenco.",
   "ui.new_vault": "Nuovo vault",
   "ui.administration": "Amministrazione",
   "ui.manage_access": "Gestisci accesso",

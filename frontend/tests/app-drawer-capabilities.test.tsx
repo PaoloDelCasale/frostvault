@@ -5,10 +5,13 @@ import { describe, expect, it } from "vitest";
 import { AppShell } from "@/layout/AppShell";
 import type { ShellCapabilities } from "@/layout/types";
 
-async function openDrawer(capabilities: ShellCapabilities) {
+async function openDrawer(
+  capabilities: ShellCapabilities,
+  t?: (key: string) => string,
+) {
   const user = userEvent.setup();
   render(
-    <AppShell capabilities={capabilities}>
+    <AppShell capabilities={capabilities} t={t}>
       <p>content</p>
     </AppShell>,
   );
@@ -54,6 +57,24 @@ describe("App drawer capability filtering", () => {
     expect(drawer).toHaveTextContent("Refresh list");
     expect(drawer).not.toHaveTextContent("Manage access");
     expect(drawer).not.toHaveTextContent("Administration");
+  });
+
+  it("uses the translated Refresh list label for an operator", async () => {
+    await openDrawer(
+      {
+        vaultName: "Ops Vault",
+        isVaultOwner: false,
+        canOperate: true,
+        isAdmin: false,
+        locale: "it",
+        locales: ["it"],
+        vaults: [{ id: 2, slug: "ops", name: "Ops Vault", role: "operator" }],
+        role: "operator",
+      },
+      (key) => (key === "ui.refresh_list" ? "Aggiorna elenco" : key),
+    );
+
+    expect(screen.getByRole("dialog")).toHaveTextContent("Aggiorna elenco");
   });
 
   it("hides Manage access, Administration and Refresh list for a viewer", async () => {

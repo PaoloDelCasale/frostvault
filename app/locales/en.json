@@ -4,6 +4,7 @@
   "ui.active_operations": "Active operations",
   "ui.sign_out": "Sign out",
   "ui.refresh_list": "Refresh list",
+  "ui.refresh_list_failed": "Could not refresh the list.",
   "ui.new_vault": "New vault",
   "ui.administration": "Administration",
   "ui.manage_access": "Manage access",

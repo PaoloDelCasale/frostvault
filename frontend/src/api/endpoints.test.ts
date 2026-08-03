@@ -9,6 +9,7 @@ import {
   fetchMe,
   fetchVaults,
   relocateAdminVault,
+  requestScan,
   selectVault,
 } from "./endpoints";
 
@@ -58,6 +59,25 @@ describe("foundation endpoint helpers", () => {
 
     expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get("X-CSRF-Token")).toBe(
       "from-me",
+    );
+  });
+
+  it("requests a scan through the shared API client", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        message: "Scan of Test Archive started",
+        message_key: "api.scan_started",
+      }, 202),
+    );
+
+    await expect(requestScan()).resolves.toEqual({
+      message: "Scan of Test Archive started",
+      message_key: "api.scan_started",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/scan",
+      expect.objectContaining({ method: "POST" }),
     );
   });
 
