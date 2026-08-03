@@ -73,7 +73,7 @@ from .invites import (
     revoke_invite,
 )
 from .lookup_rate_limit import check_lookup_rate_limit
-from .security import hash_password, verify_password
+from .security import DUMMY_PASSWORD_HASH, hash_password, verify_password
 from .services.vault_governance import (
     GovernanceError,
     assign_member_role,
@@ -1176,16 +1176,17 @@ def login(action: LoginRequest, request: Request, response: Response):
             retry_after = blocked.retry_after
         else:
             user = connection.execute(
-                "SELECT * FROM users WHERE lower(username)=lower(%s) AND active=TRUE",
+                "SELECT * FROM users WHERE lower(username)=lower(%s)",
                 (username,),
             ).fetchone()
-            # Break-glass Login is admin-only and never accepts a null password hash.
-            if (
-                not user
-                or not user["password_hash"]
-                or not user["is_admin"]
-                or not verify_password(user["password_hash"], action.password)
-            ):
+            eligible = bool(user and user["active"] and user["password_hash"])
+            password_hash = (
+                user["password_hash"] if eligible else DUMMY_PASSWORD_HASH
+            )
+            password_valid = verify_password(password_hash, action.password)
+            # Always reject the dummy path, even if its hash ever matches the
+            # submitted password (or verification is replaced in a test).
+            if not eligible or not password_valid:
                 record_failure(connection, scope="ip", key=client_ip)
                 record_failure(connection, scope="account", key=username)
                 audit_log(
