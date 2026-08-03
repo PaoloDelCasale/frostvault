@@ -118,6 +118,11 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
+      - name: Regenerate OpenAPI TypeScript types
+        working-directory: frontend
+        run: npm run generate:api
+      - name: Fail when generated API types drift
+        run: git diff --exit-code -- frontend/src/api/openapi.generated.ts frontend/src/api/types.ts
       - name: Frontend SPA lint
         working-directory: frontend
         run: npm run lint

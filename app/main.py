@@ -14,9 +14,11 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .api_models import JsonObjectResponse, documented_schemas, response_model
 from .branding import PRODUCT_NAME
 from .config import Settings, settings, validate_settings
 from .audit import audit_log
@@ -252,6 +254,24 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=PRODUCT_NAME, lifespan=lifespan)
+
+
+def _openapi_schema() -> dict[str, Any]:
+    if app.openapi_schema is None:
+        schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
+        components = schema.setdefault("components", {}).setdefault("schemas", {})
+        for name, documented in documented_schemas().items():
+            existing = components.get(name)
+            # Never replace a canonical inbound Pydantic contract. Named
+            # pass-through response components are identifiable by their open
+            # object schema and are enriched with the documented field shape.
+            if existing is None or existing.get("additionalProperties") is True:
+                components[name] = documented
+        app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = _openapi_schema
 
 
 def _request_locale(request: Any | None = None) -> str:
@@ -1199,7 +1219,7 @@ def login_page():
     return _spa_index_response()
 
 
-@app.post("/api/login")
+@app.post("/api/login", response_model=JsonObjectResponse)
 def login(action: LoginRequest, request: Request, response: Response):
     client_ip = _client_ip(request)
     username = action.username.strip().lower()
@@ -1279,7 +1299,7 @@ def login(action: LoginRequest, request: Request, response: Response):
     return {**_api_message(request, "api.signed_in")}
 
 
-@app.post("/api/logout")
+@app.post("/api/logout", response_model=JsonObjectResponse)
 def logout(request: Request, response: Response):
     token = _read_session_cookie(request)
     if token:
@@ -1291,7 +1311,7 @@ def logout(request: Request, response: Response):
     return {**_api_message(request, "api.signed_out")}
 
 
-@app.post("/api/reauth")
+@app.post("/api/reauth", response_model=JsonObjectResponse)
 def reauth(
     action: ReauthRequest,
     request: Request,
@@ -1570,7 +1590,7 @@ def admin_page():
     return _spa_index_response()
 
 
-@app.get("/api/me")
+@app.get("/api/me", response_model=response_model("MeResponse"))
 def me(request: Request, response: Response, user: dict[str, Any] = Depends(current_user)):
     csrf_token = request.state.session["csrf_token"]
     _set_csrf_cookie(response, csrf_token)
@@ -1647,7 +1667,7 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
     }
 
 
-@app.get("/api/i18n/catalog")
+@app.get("/api/i18n/catalog", response_model=response_model("I18nCatalogResponse"))
 def i18n_catalog(request: Request, locale: str | None = None):
     resolved = normalize_locale(locale) if locale else _request_locale(request)
     return {
@@ -1657,7 +1677,7 @@ def i18n_catalog(request: Request, locale: str | None = None):
     }
 
 
-@app.put("/api/locale")
+@app.put("/api/locale", response_model=response_model("LocaleUpdateResponse"))
 def update_locale(
     action: LocaleUpdate,
     request: Request,
@@ -1681,7 +1701,7 @@ def update_locale(
     }
 
 
-@app.get("/api/vaults")
+@app.get("/api/vaults", response_model=response_model("VaultsResponse"))
 def user_vaults(user: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         rows = connection.execute(
@@ -1698,7 +1718,7 @@ def user_vaults(user: dict[str, Any] = Depends(current_user)):
     return {"items": rows}
 
 
-@app.post("/api/vaults", status_code=201)
+@app.post("/api/vaults", status_code=201, response_model=response_model("VaultCreateResponse"))
 def create_own_vault(
     action: VaultSelfServiceCreate,
     background_tasks: BackgroundTasks,
@@ -1850,7 +1870,7 @@ def _start_vault_decommission(
     return result
 
 
-@app.post("/api/vault/decommission/preview")
+@app.post("/api/vault/decommission/preview", response_model=response_model("VaultDecommissionPreview"))
 def preview_own_vault_decommission(
     action: VaultDecommissionPreview,
     vault: dict[str, Any] = Depends(decommission_owner_vault),
@@ -1858,7 +1878,7 @@ def preview_own_vault_decommission(
     return _preview_vault_decommission(int(vault["id"]), action)
 
 
-@app.get("/api/vault/decommission/status")
+@app.get("/api/vault/decommission/status", response_model=response_model("VaultDecommissionStatus"))
 def own_vault_decommission_status(
     vault: dict[str, Any] = Depends(decommission_owner_vault),
 ):
@@ -1871,7 +1891,7 @@ def own_vault_decommission_status(
         raise _vault_decommission_http_error(exc) from exc
 
 
-@app.post("/api/vault/decommission", status_code=202)
+@app.post("/api/vault/decommission", status_code=202, response_model=response_model("VaultDecommissionStatus"))
 def start_own_vault_decommission(
     action: VaultDecommissionStart,
     user: dict[str, Any] = Depends(current_user),
@@ -1886,7 +1906,7 @@ def start_own_vault_decommission(
     )
 
 
-@app.post("/api/vault/decommission/cloud-purge/cancel")
+@app.post("/api/vault/decommission/cloud-purge/cancel", response_model=JsonObjectResponse)
 def cancel_own_vault_decommission_cloud_purge(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(decommission_owner_vault),
@@ -1903,7 +1923,7 @@ def cancel_own_vault_decommission_cloud_purge(
         raise _vault_decommission_http_error(exc) from exc
 
 
-@app.post("/api/vaults/{vault_id}/decommission/preview")
+@app.post("/api/vaults/{vault_id}/decommission/preview", response_model=response_model("VaultDecommissionPreview"))
 def preview_owned_vault_decommission_by_id(
     vault_id: int,
     action: VaultDecommissionPreview,
@@ -1913,7 +1933,7 @@ def preview_owned_vault_decommission_by_id(
     return _preview_vault_decommission(vault_id, action)
 
 
-@app.get("/api/vaults/{vault_id}/decommission/status")
+@app.get("/api/vaults/{vault_id}/decommission/status", response_model=response_model("VaultDecommissionStatus"))
 def owned_vault_decommission_status_by_id(
     vault_id: int,
     user: dict[str, Any] = Depends(current_user),
@@ -1928,7 +1948,7 @@ def owned_vault_decommission_status_by_id(
         raise _vault_decommission_http_error(exc) from exc
 
 
-@app.post("/api/vaults/{vault_id}/decommission", status_code=202)
+@app.post("/api/vaults/{vault_id}/decommission", status_code=202, response_model=response_model("VaultDecommissionStatus"))
 def start_owned_vault_decommission_by_id(
     vault_id: int,
     action: VaultDecommissionStart,
@@ -1944,7 +1964,7 @@ def start_owned_vault_decommission_by_id(
     )
 
 
-@app.post("/api/vaults/{vault_id}/decommission/cloud-purge/cancel")
+@app.post("/api/vaults/{vault_id}/decommission/cloud-purge/cancel", response_model=JsonObjectResponse)
 def cancel_owned_vault_decommission_cloud_purge_by_id(
     vault_id: int,
     user: dict[str, Any] = Depends(current_user),
@@ -1962,7 +1982,7 @@ def cancel_owned_vault_decommission_cloud_purge_by_id(
         raise _vault_decommission_http_error(exc) from exc
 
 
-@app.post("/api/vault/recovery/confirm")
+@app.post("/api/vault/recovery/confirm", response_model=response_model("RecoveryConfirmResponse"))
 def confirm_vault_recovery_custody(
     action: RecoveryConfirm,
     user: dict[str, Any] = Depends(current_user),
@@ -1982,7 +2002,7 @@ def confirm_vault_recovery_custody(
     }
 
 
-@app.post("/api/vault/recovery/export")
+@app.post("/api/vault/recovery/export", response_model=response_model("RecoveryExportResponse"))
 def reexport_vault_recovery_secret(
     action: RecoveryExportRequest,
     user: dict[str, Any] = Depends(current_user),
@@ -2015,7 +2035,7 @@ def reexport_vault_recovery_secret(
     return {"recovery_export": export}
 
 
-@app.post("/api/vaults/select")
+@app.post("/api/vaults/select", response_model=response_model("VaultSelectResponse"))
 def select_vault(
     action: VaultSelection,
     request: Request,
@@ -2038,7 +2058,7 @@ def select_vault(
     return {**_api_message(request, "api.vault_selected")}
 
 
-@app.get("/api/files")
+@app.get("/api/files", response_model=response_model("FilesResponse"))
 def list_files(
     q: str = "",
     state: str = "",
@@ -2075,7 +2095,7 @@ def list_files(
     }
 
 
-@app.get("/api/file-history")
+@app.get("/api/file-history", response_model=response_model("FileHistoryResponse"))
 def file_history(
     path: str,
     vault: dict[str, Any] = Depends(current_vault),
@@ -2096,14 +2116,14 @@ def file_history(
     }
 
 
-@app.get("/api/rename-candidates")
+@app.get("/api/rename-candidates", response_model=JsonObjectResponse)
 def rename_candidates(vault: dict[str, Any] = Depends(current_vault)):
     with db() as connection:
         candidates = ArchiveCatalog(connection).list_rename_candidates(vault["id"])
     return {"items": candidates}
 
 
-@app.post("/api/confirm-rename", status_code=202)
+@app.post("/api/confirm-rename", status_code=202, response_model=JsonObjectResponse)
 def confirm_rename(
     action: ConfirmRenameAction,
     user: dict[str, Any] = Depends(current_user),
@@ -2148,7 +2168,7 @@ def confirm_rename(
     }
 
 
-@app.post("/api/confirm-folder-rename", status_code=202)
+@app.post("/api/confirm-folder-rename", status_code=202, response_model=JsonObjectResponse)
 def confirm_folder_rename(
     action: ConfirmFolderRenameAction,
     user: dict[str, Any] = Depends(current_user),
@@ -2196,7 +2216,7 @@ def confirm_folder_rename(
     }
 
 
-@app.get("/api/stats")
+@app.get("/api/stats", response_model=response_model("StatsResponse"))
 def stats(vault: dict[str, Any] = Depends(current_vault)):
     source_root = vault.get("source_root") or ""
     # Reconcile Source Volume identity before anything can preflight or walk the
@@ -2300,7 +2320,7 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
     }
 
 
-@app.get("/api/audit-events")
+@app.get("/api/audit-events", response_model=JsonObjectResponse)
 def vault_audit_events(vault: dict[str, Any] = Depends(current_vault)):
     """List audit events visible to members of the current vault."""
     with db() as connection:
@@ -2308,7 +2328,7 @@ def vault_audit_events(vault: dict[str, Any] = Depends(current_vault)):
     return {"events": events}
 
 
-@app.get("/api/admin/audit-events")
+@app.get("/api/admin/audit-events", response_model=JsonObjectResponse)
 def admin_audit_events(_: dict[str, Any] = Depends(admin_user)):
     """List all audit events for global administrators."""
     with db() as connection:
@@ -2316,13 +2336,13 @@ def admin_audit_events(_: dict[str, Any] = Depends(admin_user)):
     return {"events": events}
 
 
-@app.get("/api/admin/settings")
+@app.get("/api/admin/settings", response_model=response_model("SystemSettingsResponse"))
 def admin_system_settings(_: dict[str, Any] = Depends(admin_user)):
     with db() as connection:
         return system_settings_response(connection, settings_obj=settings)
 
 
-@app.patch("/api/admin/settings")
+@app.patch("/api/admin/settings", response_model=response_model("SystemSettingsResponse"))
 def update_admin_system_settings(
     action: SystemSettingsUpdate,
     user: dict[str, Any] = Depends(admin_user),
@@ -2339,7 +2359,7 @@ def update_admin_system_settings(
         )
 
 
-@app.get("/api/admin/oidc-configuration")
+@app.get("/api/admin/oidc-configuration", response_model=response_model("OidcConfigurationResponse"))
 def admin_oidc_configuration(
     request: Request,
     _: dict[str, Any] = Depends(admin_user),
@@ -2352,7 +2372,7 @@ def admin_oidc_configuration(
         )
 
 
-@app.put("/api/admin/oidc-configuration/draft")
+@app.put("/api/admin/oidc-configuration/draft", response_model=response_model("OidcConfigurationResponse"))
 def save_admin_oidc_draft(
     request: Request,
     action: OidcDraftAction,
@@ -2396,7 +2416,7 @@ def save_admin_oidc_draft(
         )
 
 
-@app.post("/api/admin/oidc-configuration/draft/validate")
+@app.post("/api/admin/oidc-configuration/draft/validate", response_model=response_model("OidcConfigurationResponse"))
 def validate_admin_oidc_draft(
     request: Request,
     user: dict[str, Any] = Depends(admin_user),
@@ -2429,7 +2449,7 @@ def validate_admin_oidc_draft(
         return response
 
 
-@app.post("/api/admin/oidc-configuration/activate")
+@app.post("/api/admin/oidc-configuration/activate", response_model=response_model("OidcConfigurationResponse"))
 def activate_admin_oidc_configuration(
     request: Request,
     user: dict[str, Any] = Depends(admin_user),
@@ -2459,7 +2479,7 @@ def activate_admin_oidc_configuration(
         )
 
 
-@app.post("/api/admin/oidc-configuration/disable")
+@app.post("/api/admin/oidc-configuration/disable", response_model=response_model("OidcConfigurationResponse"))
 def disable_admin_oidc_configuration(
     request: Request,
     user: dict[str, Any] = Depends(admin_user),
@@ -2489,7 +2509,7 @@ def disable_admin_oidc_configuration(
         )
 
 
-@app.post("/api/admin/oidc-configuration/rotate-secret")
+@app.post("/api/admin/oidc-configuration/rotate-secret", response_model=response_model("OidcConfigurationResponse"))
 def rotate_admin_oidc_secret(
     request: Request,
     action: OidcSecretRotationAction,
@@ -2524,7 +2544,7 @@ def rotate_admin_oidc_secret(
         )
 
 
-@app.get("/api/notifications")
+@app.get("/api/notifications", response_model=JsonObjectResponse)
 def list_notifications(user: dict[str, Any] = Depends(current_user)):
     """List in-app notifications for the authenticated user."""
     with db() as connection:
@@ -2538,7 +2558,7 @@ class NotificationReadAction(BaseModel):
     notification_id: int
 
 
-@app.post("/api/notifications/read")
+@app.post("/api/notifications/read", response_model=JsonObjectResponse)
 def mark_notification_read(
     action: NotificationReadAction,
     user: dict[str, Any] = Depends(current_user),
@@ -2559,7 +2579,7 @@ class PushSubscribeAction(BaseModel):
     keys: dict[str, str]
 
 
-@app.get("/api/push/config")
+@app.get("/api/push/config", response_model=JsonObjectResponse)
 def push_config():
     """Public VAPID config; degrades cleanly when push is unconfigured."""
     from .config import push_configured
@@ -2572,7 +2592,7 @@ def push_config():
     }
 
 
-@app.post("/api/push/subscriptions")
+@app.post("/api/push/subscriptions", response_model=JsonObjectResponse)
 def subscribe_push(
     action: PushSubscribeAction,
     request: Request,
@@ -2625,7 +2645,7 @@ class VaultNotificationPreferenceAction(BaseModel):
     recipient_user_ids: list[int] = Field(default_factory=list)
 
 
-@app.post("/api/admin/notification-endpoints/webhook")
+@app.post("/api/admin/notification-endpoints/webhook", response_model=JsonObjectResponse)
 def admin_set_webhook_endpoint(
     action: WebhookEndpointAction,
     admin: dict[str, Any] = Depends(admin_user),
@@ -2648,7 +2668,7 @@ def admin_set_webhook_endpoint(
     return endpoint
 
 
-@app.post("/api/admin/notification-endpoints/smtp")
+@app.post("/api/admin/notification-endpoints/smtp", response_model=JsonObjectResponse)
 def admin_set_smtp_endpoint(
     action: SmtpEndpointAction,
     admin: dict[str, Any] = Depends(admin_user),
@@ -2681,7 +2701,7 @@ def admin_set_smtp_endpoint(
     return {"id": endpoint["id"], "kind": "smtp", "enabled": endpoint["enabled"]}
 
 
-@app.post("/api/vault/notification-preferences")
+@app.post("/api/vault/notification-preferences", response_model=JsonObjectResponse)
 def set_vault_notification_preference(
     action: VaultNotificationPreferenceAction,
     vault: dict[str, Any] = Depends(owner_vault),
@@ -2699,7 +2719,7 @@ def set_vault_notification_preference(
     return pref
 
 
-@app.get("/api/admin/worker-errors")
+@app.get("/api/admin/worker-errors", response_model=JsonObjectResponse)
 def admin_worker_errors(_: dict[str, Any] = Depends(admin_user)):
     with db() as connection:
         items = worker_error_store.list_worker_errors(connection)
@@ -2710,7 +2730,7 @@ class MetadataBackupRunAction(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
-@app.get("/api/admin/metadata-backups")
+@app.get("/api/admin/metadata-backups", response_model=JsonObjectResponse)
 def admin_list_metadata_backups(_: dict[str, Any] = Depends(admin_user)):
     with db() as connection:
         status = metadata_backup_service.backup_status(connection)
@@ -2718,7 +2738,7 @@ def admin_list_metadata_backups(_: dict[str, Any] = Depends(admin_user)):
     return {"status": status, "runs": runs}
 
 
-@app.post("/api/admin/metadata-backups/run")
+@app.post("/api/admin/metadata-backups/run", response_model=JsonObjectResponse)
 def admin_run_metadata_backup(
     action: MetadataBackupRunAction,
     admin: dict[str, Any] = Depends(admin_user),
@@ -2758,7 +2778,16 @@ def admin_run_metadata_backup(
     return result
 
 
-@app.get("/api/admin/metadata-backups/download/{run_id}")
+@app.get(
+    "/api/admin/metadata-backups/download/{run_id}",
+    response_class=Response,
+    responses={
+        200: {
+            "description": "Raw metadata backup artifact",
+            "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
+        }
+    },
+)
 def admin_download_metadata_backup(
     run_id: int,
     admin: dict[str, Any] = Depends(admin_user),
@@ -2890,7 +2919,7 @@ def build_job_groups(
     return list(groups.values())
 
 
-@app.get("/api/jobs")
+@app.get("/api/jobs", response_model=response_model("JobsResponse"))
 def jobs(request: Request, vault: dict[str, Any] = Depends(current_vault)):
     locale = _request_locale(request)
     with db() as connection:
@@ -2942,7 +2971,7 @@ def jobs(request: Request, vault: dict[str, Any] = Depends(current_vault)):
     }
 
 
-@app.post("/api/scan", status_code=202)
+@app.post("/api/scan", status_code=202, response_model=response_model("ScanResponse"))
 async def start_scan(
     request: Request,
     vault: dict[str, Any] = Depends(current_vault),
@@ -3158,7 +3187,7 @@ def queue_jobs(
     return result
 
 
-@app.get("/api/files/versions")
+@app.get("/api/files/versions", response_model=response_model("FileVersionsResponse"))
 def file_versions(
     path: str = Query(min_length=1),
     vault: dict[str, Any] = Depends(current_vault),
@@ -3179,7 +3208,7 @@ def file_versions(
     }
 
 
-@app.post("/api/recover/estimate")
+@app.post("/api/recover/estimate", response_model=response_model("RecoverEstimateResponse"))
 def recover_estimate(
     action: RecoverEstimateRequest,
     vault: dict[str, Any] = Depends(current_vault),
@@ -3254,7 +3283,7 @@ def recover_estimate(
     }
 
 
-@app.post("/api/upload", status_code=202)
+@app.post("/api/upload", status_code=202, response_model=JsonObjectResponse)
 def upload(
     action: FileAction,
     request: Request,
@@ -3383,7 +3412,7 @@ def cancel_job_group(group_id: str, job_action: str, vault: dict[str, Any]):
     }
 
 
-@app.post("/api/jobs/cancel")
+@app.post("/api/jobs/cancel", response_model=response_model("JobCancelResponse"))
 def cancel_job(
     action: JobCancelAction,
     user: dict[str, Any] = Depends(current_user),
@@ -3392,7 +3421,7 @@ def cancel_job(
     return cancel_job_group(action.group_id, action.action, vault)
 
 
-@app.post("/api/upload/cancel")
+@app.post("/api/upload/cancel", response_model=response_model("JobCancelResponse"))
 def cancel_upload(
     action: GroupCancelAction,
     user: dict[str, Any] = Depends(current_user),
@@ -3402,7 +3431,7 @@ def cancel_upload(
     return cancel_job_group(action.group_id, "upload", vault)
 
 
-@app.post("/api/recover", status_code=202)
+@app.post("/api/recover", status_code=202, response_model=JsonObjectResponse)
 def recover(
     action: FileAction,
     request: Request,
@@ -3424,7 +3453,7 @@ def recover(
     return {**queued, **_api_message(request, "api.recovery_started")}
 
 
-@app.post("/api/recover/approve", status_code=202)
+@app.post("/api/recover/approve", status_code=202, response_model=JsonObjectResponse)
 def approve_recover(
     action: RecoverApproveAction,
     user: dict[str, Any] = Depends(current_user),
@@ -3472,7 +3501,7 @@ def approve_recover(
     }
 
 
-@app.post("/api/free-space", status_code=202)
+@app.post("/api/free-space", status_code=202, response_model=JsonObjectResponse)
 def free_space(
     action: FileAction,
     request: Request,
@@ -3490,7 +3519,7 @@ def free_space(
     return {**queued, **_api_message(request, "api.free_space_started")}
 
 
-@app.get("/api/storage-classes")
+@app.get("/api/storage-classes", response_model=response_model("StorageClassesResponse"))
 def get_storage_classes(
     _: dict[str, Any] = Depends(current_user),
     __: dict[str, Any] = Depends(current_vault),
@@ -3500,7 +3529,7 @@ def get_storage_classes(
     return list_storage_class_options(book)
 
 
-@app.post("/api/storage-class", status_code=202)
+@app.post("/api/storage-class", status_code=202, response_model=JsonObjectResponse)
 def change_storage_class(
     action: StorageClassChangeRequest,
     request: Request,
@@ -3551,7 +3580,7 @@ def change_storage_class(
     return {**queued, **_api_message(request, "api.storage_class_started")}
 
 
-@app.put("/api/lifecycle-pin")
+@app.put("/api/lifecycle-pin", response_model=JsonObjectResponse)
 def update_lifecycle_pin(
     action: LifecyclePinRequest,
     request: Request,
@@ -3594,7 +3623,7 @@ def _cloud_deletion_paths(action: CloudDeletionPreviewRequest | CloudArchiveRequ
     return [action.path]
 
 
-@app.get("/api/vault/cloud-deletion")
+@app.get("/api/vault/cloud-deletion", response_model=response_model("CloudDeletionSettings"))
 def get_cloud_deletion_setting(vault: dict[str, Any] = Depends(current_vault)):
     with db() as connection:
         enabled = cloud_deletion_service.is_cloud_deletion_enabled(
@@ -3614,7 +3643,7 @@ def get_cloud_deletion_setting(vault: dict[str, Any] = Depends(current_vault)):
     }
 
 
-@app.put("/api/vault/cloud-deletion")
+@app.put("/api/vault/cloud-deletion", response_model=response_model("CloudDeletionSettings"))
 def update_cloud_deletion_setting(
     action: CloudDeletionSettingUpdate,
     user: dict[str, Any] = Depends(current_user),
@@ -3636,7 +3665,7 @@ def update_cloud_deletion_setting(
     return {"enabled": enabled}
 
 
-@app.post("/api/cloud-deletion/preview")
+@app.post("/api/cloud-deletion/preview", response_model=response_model("CloudDeletionPreview"))
 def preview_cloud_deletion(
     action: CloudDeletionPreviewRequest,
     vault: dict[str, Any] = Depends(current_vault),
@@ -3656,7 +3685,7 @@ def preview_cloud_deletion(
     }
 
 
-@app.post("/api/cloud-archive", status_code=202)
+@app.post("/api/cloud-archive", status_code=202, response_model=JsonObjectResponse)
 def cloud_archive(
     action: CloudArchiveRequest,
     request: Request,
@@ -3689,7 +3718,7 @@ def cloud_archive(
     }
 
 
-@app.post("/api/cloud-purge", status_code=202)
+@app.post("/api/cloud-purge", status_code=202, response_model=JsonObjectResponse)
 def cloud_purge(
     action: CloudPurgeRequest,
     request: Request,
@@ -3734,7 +3763,7 @@ def cloud_purge(
     }
 
 
-@app.post("/api/cloud-purge/accelerate", status_code=202)
+@app.post("/api/cloud-purge/accelerate", status_code=202, response_model=JsonObjectResponse)
 def accelerate_cloud_purge(
     action: GroupCancelAction,
     request: Request,
@@ -3767,14 +3796,14 @@ def accelerate_cloud_purge(
     }
 
 
-@app.get("/api/admin/users")
+@app.get("/api/admin/users", response_model=response_model("AdminUsersResponse"))
 def admin_users(_: dict[str, Any] = Depends(admin_user)):
     """List every User with vault membership and authentication capabilities."""
     with db() as connection:
         return {"items": user_admin_service.list_users(connection)}
 
 
-@app.post("/api/admin/users", status_code=201)
+@app.post("/api/admin/users", status_code=201, response_model=response_model("AdminUser"))
 def create_user(
     action: UserCreate,
     admin: dict[str, Any] = Depends(admin_user),
@@ -3799,14 +3828,14 @@ def create_user(
         raise HTTPException(409, "Username is already in use")
 
 
-@app.get("/api/admin/invites")
+@app.get("/api/admin/invites", response_model=response_model("AdminInvitesResponse"))
 def admin_invites(_: dict[str, Any] = Depends(admin_user)):
     """List Invites that can still be redeemed, without any token material."""
     with db() as connection:
         return {"items": list_pending_invites(connection)}
 
 
-@app.post("/api/admin/invites", status_code=201)
+@app.post("/api/admin/invites", status_code=201, response_model=JsonObjectResponse)
 def create_invite_endpoint(
     action: InviteCreate,
     admin: dict[str, Any] = Depends(admin_user),
@@ -3824,7 +3853,7 @@ def create_invite_endpoint(
     return {"token": token}
 
 
-@app.post("/api/admin/invites/{invite_id}/revoke")
+@app.post("/api/admin/invites/{invite_id}/revoke", response_model=JsonObjectResponse)
 def revoke_invite_endpoint(
     invite_id: int,
     admin: dict[str, Any] = Depends(admin_user),
@@ -3850,7 +3879,7 @@ def revoke_invite_endpoint(
     return revoked
 
 
-@app.patch("/api/admin/users/{user_id}")
+@app.patch("/api/admin/users/{user_id}", response_model=JsonObjectResponse)
 def update_user(
     user_id: int,
     action: UserUpdate,
@@ -3879,7 +3908,7 @@ def update_user(
         raise _administration_http_error(exc) from exc
 
 
-@app.get("/api/admin/users/{user_id}/identities")
+@app.get("/api/admin/users/{user_id}/identities", response_model=response_model("AdminIdentitiesResponse"))
 def admin_user_identities(user_id: int, _: dict[str, Any] = Depends(admin_user)):
     """List the external Identities linked to one User."""
     try:
@@ -3893,7 +3922,7 @@ def admin_user_identities(user_id: int, _: dict[str, Any] = Depends(admin_user))
         raise _administration_http_error(exc) from exc
 
 
-@app.delete("/api/admin/users/{user_id}/identities/{identity_id}")
+@app.delete("/api/admin/users/{user_id}/identities/{identity_id}", response_model=JsonObjectResponse)
 def admin_unlink_identity(
     user_id: int,
     identity_id: int,
@@ -3918,7 +3947,7 @@ def admin_unlink_identity(
 
 
 
-@app.get("/api/admin/source-volumes")
+@app.get("/api/admin/source-volumes", response_model=response_model("SourceVolumeInventoryResponse"))
 def admin_source_volumes(user: dict[str, Any] = Depends(admin_user)):
     """Operator inventory of discovered Source Volumes (issue #148)."""
     return {"items": source_volume_inventory()}
@@ -3946,7 +3975,7 @@ def _source_area_http_error(exc: source_areas_service.SourceAreaError) -> HTTPEx
     return HTTPException(status_code, message)
 
 
-@app.post("/api/admin/source-areas", status_code=201)
+@app.post("/api/admin/source-areas", status_code=201, response_model=response_model("SourceAreaGrant"))
 def admin_assign_source_area(
     action: AdminSourceAreaAssign,
     admin: dict[str, Any] = Depends(admin_user),
@@ -3967,7 +3996,7 @@ def admin_assign_source_area(
         raise _source_area_http_error(exc) from exc
 
 
-@app.delete("/api/admin/source-areas/{source_area_id}")
+@app.delete("/api/admin/source-areas/{source_area_id}", response_model=JsonObjectResponse)
 def admin_revoke_source_area(
     source_area_id: int,
     reason: str = Query(min_length=3, max_length=500),
@@ -3987,7 +4016,7 @@ def admin_revoke_source_area(
         raise _source_area_http_error(exc) from exc
 
 
-@app.get("/api/admin/source-areas")
+@app.get("/api/admin/source-areas", response_model=response_model("SourceAreaListResponse"))
 def admin_list_source_areas(
     user_id: int | None = None,
     volume_alias: str | None = None,
@@ -4008,7 +4037,7 @@ def admin_list_source_areas(
     return {"items": items}
 
 
-@app.get("/api/admin/source-volumes/{volume_alias}/browse")
+@app.get("/api/admin/source-volumes/{volume_alias}/browse", response_model=response_model("SourceDirectoryBrowseResponse"))
 def admin_browse_source_volume(
     volume_alias: str,
     path: str = Query(default=""),
@@ -4030,7 +4059,7 @@ def admin_browse_source_volume(
         raise _source_area_http_error(exc) from exc
 
 
-@app.get("/api/source-areas")
+@app.get("/api/source-areas", response_model=response_model("SourceAreaListResponse"))
 def list_my_source_areas(user: dict[str, Any] = Depends(current_user)):
     """Source Areas granted to the authenticated User."""
     with db() as connection:
@@ -4041,7 +4070,7 @@ def list_my_source_areas(user: dict[str, Any] = Depends(current_user)):
         }
 
 
-@app.get("/api/source-volumes/{volume_alias}/browse")
+@app.get("/api/source-volumes/{volume_alias}/browse", response_model=response_model("SourceDirectoryBrowseResponse"))
 def browse_my_source_volume(
     volume_alias: str,
     path: str = Query(default=""),
@@ -4061,7 +4090,7 @@ def browse_my_source_volume(
         raise _source_area_http_error(exc) from exc
 
 
-@app.get("/api/admin/vaults")
+@app.get("/api/admin/vaults", response_model=response_model("AdminVaultsResponse"))
 def admin_vaults(_: dict[str, Any] = Depends(admin_user)):
     with db() as connection:
         rows = connection.execute(
@@ -4074,7 +4103,7 @@ def admin_vaults(_: dict[str, Any] = Depends(admin_user)):
     return {"items": rows}
 
 
-@app.post("/api/admin/vaults/{vault_id}/decommission/preview")
+@app.post("/api/admin/vaults/{vault_id}/decommission/preview", response_model=response_model("VaultDecommissionPreview"))
 def preview_admin_vault_decommission(
     vault_id: int,
     action: VaultDecommissionPreview,
@@ -4083,7 +4112,7 @@ def preview_admin_vault_decommission(
     return _preview_vault_decommission(vault_id, action)
 
 
-@app.get("/api/admin/vaults/{vault_id}/decommission/status")
+@app.get("/api/admin/vaults/{vault_id}/decommission/status", response_model=response_model("VaultDecommissionStatus"))
 def admin_vault_decommission_status(
     vault_id: int,
     _: dict[str, Any] = Depends(admin_user),
@@ -4097,7 +4126,7 @@ def admin_vault_decommission_status(
         raise _vault_decommission_http_error(exc) from exc
 
 
-@app.post("/api/admin/vaults/{vault_id}/decommission", status_code=202)
+@app.post("/api/admin/vaults/{vault_id}/decommission", status_code=202, response_model=response_model("VaultDecommissionStatus"))
 def start_admin_vault_decommission(
     vault_id: int,
     action: VaultDecommissionStart,
@@ -4112,7 +4141,7 @@ def start_admin_vault_decommission(
     )
 
 
-@app.post("/api/admin/vaults/{vault_id}/decommission/cloud-purge/cancel")
+@app.post("/api/admin/vaults/{vault_id}/decommission/cloud-purge/cancel", response_model=JsonObjectResponse)
 def cancel_admin_vault_decommission_cloud_purge(
     vault_id: int,
     admin: dict[str, Any] = Depends(admin_user),
@@ -4129,7 +4158,7 @@ def cancel_admin_vault_decommission_cloud_purge(
         raise _vault_decommission_http_error(exc) from exc
 
 
-@app.post("/api/admin/vaults", status_code=201)
+@app.post("/api/admin/vaults", status_code=201, response_model=response_model("AdminVault"))
 def create_vault(
     action: VaultCreate,
     background_tasks: BackgroundTasks,
@@ -4200,7 +4229,7 @@ _VAULT_RELOCATION_ERROR_STATUS: dict[str, tuple[int, str]] = {
 }
 
 
-@app.post("/api/admin/vaults/{vault_id}/relocate")
+@app.post("/api/admin/vaults/{vault_id}/relocate", response_model=response_model("AdminVaultRelocationResponse"))
 def admin_relocate_vault_root(
     vault_id: int,
     action: VaultRelocate,
@@ -4249,7 +4278,7 @@ def admin_relocate_vault_root(
     }
 
 
-@app.post("/api/admin/vaults/{vault_id}/recovery/export")
+@app.post("/api/admin/vaults/{vault_id}/recovery/export", response_model=JsonObjectResponse)
 def admin_export_vault_recovery_secret(
     vault_id: int,
     action: RecoveryExportRequest,
@@ -4293,7 +4322,7 @@ def _quota_payload(connection: Any, vault_id: int) -> dict[str, Any]:
     }
 
 
-@app.get("/api/admin/vaults/{vault_id}/quotas")
+@app.get("/api/admin/vaults/{vault_id}/quotas", response_model=response_model("VaultQuotasResponse"))
 def admin_vault_quotas(
     vault_id: int, _: dict[str, Any] = Depends(admin_user)
 ):
@@ -4301,7 +4330,7 @@ def admin_vault_quotas(
         return _quota_payload(connection, vault_id)
 
 
-@app.put("/api/admin/vaults/{vault_id}/quotas")
+@app.put("/api/admin/vaults/{vault_id}/quotas", response_model=response_model("VaultQuotasResponse"))
 def update_admin_vault_quotas(
     vault_id: int,
     action: VaultQuotaUpdate,
@@ -4330,20 +4359,20 @@ def update_admin_vault_quotas(
     return payload
 
 
-@app.get("/api/vault/quotas")
+@app.get("/api/vault/quotas", response_model=response_model("VaultQuotasResponse"))
 def own_vault_quotas(vault: dict[str, Any] = Depends(owner_vault)):
     """Primary-owner read seam; ordinary operators and viewers are denied."""
     with db() as connection:
         return _quota_payload(connection, vault["id"])
 
 
-@app.get("/api/vault/operation-policy")
+@app.get("/api/vault/operation-policy", response_model=response_model("OperationPolicy"))
 def own_vault_operation_policy(vault: dict[str, Any] = Depends(owner_vault)):
     with db() as connection:
         return get_policy(connection, vault["id"]).as_dict()
 
 
-@app.put("/api/vault/operation-policy")
+@app.put("/api/vault/operation-policy", response_model=response_model("OperationPolicy"))
 def update_vault_operation_policy(
     action: OperationPolicyUpdate,
     vault: dict[str, Any] = Depends(owner_vault),
@@ -4382,7 +4411,7 @@ def update_vault_operation_policy(
     return stored.as_dict()
 
 
-@app.post("/api/vault/operation-policy/preview-globs")
+@app.post("/api/vault/operation-policy/preview-globs", response_model=response_model("GlobPreviewResponse"))
 def preview_vault_operation_globs(
     action: GlobPreviewRequest,
     vault: dict[str, Any] = Depends(owner_vault),
@@ -4397,19 +4426,19 @@ def preview_vault_operation_globs(
         raise HTTPException(422, str(exc)) from exc
 
 
-@app.get("/api/admin/cost-price-books/active")
+@app.get("/api/admin/cost-price-books/active", response_model=JsonObjectResponse)
 def admin_active_cost_price_book(_: dict[str, Any] = Depends(admin_user)):
     with db() as connection:
         return get_active_price_book(connection).as_dict()
 
 
-@app.get("/api/admin/cost-price-books")
+@app.get("/api/admin/cost-price-books", response_model=JsonObjectResponse)
 def admin_list_cost_price_books(_: dict[str, Any] = Depends(admin_user)):
     with db() as connection:
         return {"items": [book.as_dict() for book in list_price_books(connection)]}
 
 
-@app.post("/api/admin/cost-price-books", status_code=201)
+@app.post("/api/admin/cost-price-books", status_code=201, response_model=JsonObjectResponse)
 def admin_create_cost_price_book(
     action: CostPriceBookCreate,
     admin: dict[str, Any] = Depends(admin_user),
@@ -4440,7 +4469,7 @@ def admin_create_cost_price_book(
     return created.as_dict()
 
 
-@app.post("/api/admin/cost-price-books/{price_book_id}/activate")
+@app.post("/api/admin/cost-price-books/{price_book_id}/activate", response_model=JsonObjectResponse)
 def admin_activate_cost_price_book(
     price_book_id: int,
     action: CostPriceBookActivate,
@@ -4465,7 +4494,7 @@ def admin_activate_cost_price_book(
     return active.as_dict()
 
 
-@app.post("/api/admin/cost-estimates/storage")
+@app.post("/api/admin/cost-estimates/storage", response_model=JsonObjectResponse)
 def admin_storage_cost_estimate(
     action: StorageEstimateRequest,
     _: dict[str, Any] = Depends(admin_user),
@@ -4529,13 +4558,13 @@ def _lifecycle_payload(connection: Any, vault: dict[str, Any]) -> dict[str, Any]
     }
 
 
-@app.get("/api/vault/lifecycle")
+@app.get("/api/vault/lifecycle", response_model=response_model("LifecycleResponse"))
 def own_vault_lifecycle(vault: dict[str, Any] = Depends(owner_vault)):
     with db() as connection:
         return _lifecycle_payload(connection, vault)
 
 
-@app.put("/api/vault/lifecycle/default")
+@app.put("/api/vault/lifecycle/default", response_model=response_model("LifecycleResponse"))
 def update_vault_lifecycle_default(
     action: LifecycleDefaultUpdate,
     vault: dict[str, Any] = Depends(owner_vault),
@@ -4580,7 +4609,7 @@ def update_vault_lifecycle_default(
     }
 
 
-@app.put("/api/vault/lifecycle/folder-overrides")
+@app.put("/api/vault/lifecycle/folder-overrides", response_model=response_model("LifecycleResponse"))
 def upsert_vault_lifecycle_folder_override(
     action: LifecycleFolderOverrideUpdate,
     vault: dict[str, Any] = Depends(owner_vault),
@@ -4638,7 +4667,7 @@ def upsert_vault_lifecycle_folder_override(
     }
 
 
-@app.delete("/api/vault/lifecycle/folder-overrides")
+@app.delete("/api/vault/lifecycle/folder-overrides", response_model=response_model("LifecycleResponse"))
 def delete_vault_lifecycle_folder_override(
     action: LifecycleFolderOverrideDelete,
     vault: dict[str, Any] = Depends(owner_vault),
@@ -4662,7 +4691,7 @@ def delete_vault_lifecycle_folder_override(
     return {"message": "Folder lifecycle override removed", **payload}
 
 
-@app.get("/api/admin/vaults/{vault_id}/members")
+@app.get("/api/admin/vaults/{vault_id}/members", response_model=response_model("AdminVaultMembersResponse"))
 def vault_members(vault_id: int, _: dict[str, Any] = Depends(admin_user)):
     with db() as connection:
         rows = connection.execute(
@@ -4676,7 +4705,7 @@ def vault_members(vault_id: int, _: dict[str, Any] = Depends(admin_user)):
     return {"items": rows}
 
 
-@app.post("/api/admin/vaults/{vault_id}/members", status_code=201)
+@app.post("/api/admin/vaults/{vault_id}/members", status_code=201, response_model=JsonObjectResponse)
 def add_vault_member(
     vault_id: int,
     action: AdminMembershipCreate,
@@ -4716,7 +4745,7 @@ def add_vault_member(
     return {"message": "Assignment updated"}
 
 
-@app.delete("/api/admin/vaults/{vault_id}/members/{user_id}")
+@app.delete("/api/admin/vaults/{vault_id}/members/{user_id}", response_model=JsonObjectResponse)
 def remove_vault_member(
     vault_id: int,
     user_id: int,
@@ -4752,7 +4781,7 @@ def remove_vault_member(
     return {"message": "Access removed"}
 
 
-@app.post("/api/admin/vaults/{vault_id}/transfer-owner")
+@app.post("/api/admin/vaults/{vault_id}/transfer-owner", response_model=JsonObjectResponse)
 def transfer_vault_owner(
     vault_id: int,
     action: AdminOwnerTransfer,
@@ -4790,7 +4819,7 @@ def transfer_vault_owner(
     return {"message": "Ownership transferred", **result}
 
 
-@app.get("/api/vault/members")
+@app.get("/api/vault/members", response_model=response_model("VaultMembersResponse"))
 def list_own_vault_members(vault: dict[str, Any] = Depends(owner_vault)):
     """Owner self-service: view the current vault's sharing."""
     with db() as connection:
@@ -4805,7 +4834,7 @@ def list_own_vault_members(vault: dict[str, Any] = Depends(owner_vault)):
     return {"items": rows}
 
 
-@app.post("/api/vault/user-lookup")
+@app.post("/api/vault/user-lookup", response_model=response_model("UserLookupResult"))
 def lookup_vault_user(
     action: UserLookup,
     request: Request,
@@ -4859,7 +4888,7 @@ def lookup_vault_user(
     }
 
 
-@app.post("/api/vault/members", status_code=201)
+@app.post("/api/vault/members", status_code=201, response_model=JsonObjectResponse)
 def add_own_vault_member(
     action: MembershipCreate,
     vault: dict[str, Any] = Depends(owner_vault),
@@ -4888,7 +4917,7 @@ def add_own_vault_member(
     return {"message": "Assignment updated"}
 
 
-@app.delete("/api/vault/members/{user_id}")
+@app.delete("/api/vault/members/{user_id}", response_model=JsonObjectResponse)
 def remove_own_vault_member(
     user_id: int,
     vault: dict[str, Any] = Depends(owner_vault),
@@ -4916,7 +4945,7 @@ def remove_own_vault_member(
     return {"message": "Access removed"}
 
 
-@app.post("/api/vault/transfer-owner")
+@app.post("/api/vault/transfer-owner", response_model=JsonObjectResponse)
 def transfer_own_vault_owner(
     action: OwnerTransfer,
     vault: dict[str, Any] = Depends(owner_vault),
@@ -4947,13 +4976,13 @@ def transfer_own_vault_owner(
     return {"message": "Ownership transferred", **result}
 
 
-@app.get("/health")
+@app.get("/health", response_model=JsonObjectResponse)
 def health():
     """Process liveness probe — does not inspect dependencies."""
     return {"status": "ok"}
 
 
-@app.get("/ready")
+@app.get("/ready", response_model=JsonObjectResponse)
 def ready():
     """Dependency-aware readiness: database, worker heartbeat, and config."""
     report = health_service.readiness_report()
@@ -4961,7 +4990,16 @@ def ready():
     return JSONResponse(report, status_code=status_code)
 
 
-@app.get("/metrics")
+@app.get(
+    "/metrics",
+    response_class=Response,
+    responses={
+        200: {
+            "description": "Prometheus text exposition",
+            "content": {"text/plain": {"schema": {"type": "string"}}},
+        }
+    },
+)
 def metrics():
     """Prometheus text exposition (low-cardinality labels only)."""
     return Response(
