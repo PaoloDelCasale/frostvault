@@ -1,5 +1,35 @@
 # Gate Break-glass Login to trusted networks with shared-counter backoff
 
+> **Status: amended by Issue #159.** The original administrator-only
+> authentication boundary is retained below as historical context. The current
+> terminology and boundary are defined in the amendment that follows.
+
+## Amendment — network-gated Local Sign-in
+
+Issue #159 broadens the network-gated local password authentication decision,
+without weakening its perimeter. **Local Sign-in** is available to any active
+User with a configured local password; it does not require `is_admin=true` and
+a successful Session receives only that User's existing global role and Vault
+assignments. **Break-glass Login** now names an administrator's use of Local
+Sign-in to recover access when OIDC is unavailable; it is not a separate,
+administrator-only authentication mechanism.
+
+The deployment setting remains `BREAK_GLASS_ALLOWED_CIDRS` for compatibility.
+Loopback (`127.0.0.0/8` and `::1`) is always allowed, while entries in that
+setting add explicitly trusted client networks. An empty value is therefore
+fail-closed loopback-only, and there is no implicit allow-all value. Invalid
+entries continue to fail closed at startup. Account/IP backoff, generic failure
+responses, auditing, CSRF protections, and administrator-only Reauthentication
+and authorization are unchanged.
+
+The OIDC recovery invariant also remains: OIDC activation requires a non-empty
+`BREAK_GLASS_ALLOWED_CIDRS` configuration and at least one active administrator
+with a local password who can use Local Sign-in for Break-glass Login. An empty
+setting still permits loopback Local Sign-in, but is not sufficient to activate
+OIDC.
+
+## Original decision (historical)
+
 Break-glass Login — the local username/password path — is the recovery door for
 when external identity is unavailable, so it is the most attractive target on an
 internet-facing deployment. We restrict it along three axes at once: **who**,
