@@ -125,6 +125,9 @@ class VaultRelocationTests(unittest.TestCase):
     def test_destination_rejection_matrix_fails_without_update(self) -> None:
         self.assertEqual(self.reason(volume_alias="other"), "different_volume")
         self.assertEqual(self.reason(relative_path="missing"), "inaccessible")
+        self.assertEqual(self.reason(relative_path="../new-name"), "invalid_path")
+        self.assertEqual(self.reason(relative_path="/new-name"), "invalid_path")
+        self.assertEqual(self.reason(relative_path="new-name\x00suffix"), "invalid_path")
         self.assertEqual(self.reason(runtime_busy=True), "active_jobs")
         with patch("app.services.vault_relocation._active_jobs", return_value=True):
             self.assertEqual(self.reason(), "active_jobs")
@@ -159,12 +162,9 @@ class VaultRelocationTests(unittest.TestCase):
         self.assertEqual(self.reason(), "overlap")
         with SQLiteConnection(str(self.db_path)) as connection:
             connection.execute("DELETE FROM vaults WHERE id=8")
-        with patch.object(
-            source_layout,
-            "path_is_symlink",
-            side_effect=lambda path: Path(path) == self.new,
-        ):
-            self.assertEqual(self.reason(), "symlink")
+        linked = self.volume / "linked-name"
+        linked.symlink_to(self.new, target_is_directory=True)
+        self.assertEqual(self.reason(relative_path="linked-name"), "symlink")
         self.old.mkdir()
         self.assertEqual(self.reason(), "source_present")
 

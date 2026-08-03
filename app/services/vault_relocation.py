@@ -129,29 +129,65 @@ def _candidate(volume: source_layout.SourceVolume, relative_path: str) -> tuple[
         relative = source_areas.canonicalize_relative_path(relative_path)
     except source_areas.SourceAreaError as exc:
         raise VaultRelocationError("invalid_path", str(exc)) from exc
-    target = Path(volume.path)
-    for part in relative.split("/") if relative else ():
-        target = target / part
-        if source_layout.path_is_symlink(target):
-            raise VaultRelocationError("symlink", "Destination path crosses a symbolic link")
-    if source_layout.path_is_symlink(target):
-        raise VaultRelocationError("symlink", "Destination is a symbolic link")
-    if not target.is_dir():
-        raise VaultRelocationError("inaccessible", "Destination is missing or not a directory")
+
+    # Normalize the untrusted relative path before performing any filesystem
+    # probe. A realpath/controlled-prefix guard is intentionally used here so
+    # path traversal and every symlinked component fail before the resulting
+    # destination reaches is_dir, mount, or access checks.
     try:
-        resolved = target.resolve(strict=True)
-        resolved.relative_to(Path(volume.path).resolve(strict=True))
-    except (OSError, ValueError) as exc:
-        raise VaultRelocationError("inaccessible", "Destination is inaccessible or outside the Source Volume") from exc
-    current = resolved
-    volume_root = Path(volume.path).resolve()
+        volume_root_text = os.path.realpath(volume.path)
+        if relative:
+            lexical_target = os.path.abspath(
+                os.path.join(volume_root_text, relative)
+            )
+            resolved_target = os.path.realpath(lexical_target)
+            if resolved_target != lexical_target:
+                raise VaultRelocationError(
+                    "symlink", "Destination path crosses a symbolic link"
+                )
+            guarded_boundary = volume_root_text.rstrip(os.sep) + os.sep
+            if not resolved_target.startswith(guarded_boundary):
+                raise VaultRelocationError(
+                    "inaccessible",
+                    "Destination is inaccessible or outside the Source Volume",
+                )
+            safe_target = Path(resolved_target)
+        else:
+            # The empty relative path names the already trusted volume root;
+            # never derive it from request data.
+            safe_target = Path(volume_root_text)
+    except VaultRelocationError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise VaultRelocationError(
+            "inaccessible", "Destination is inaccessible or outside the Source Volume"
+        ) from exc
+    if not safe_target.is_dir():
+        raise VaultRelocationError(
+            "inaccessible", "Destination is missing or not a directory"
+        )
+
+    current = safe_target
+    volume_root = Path(volume_root_text)
     while current != volume_root:
         if source_layout.path_is_mount(current):
-            raise VaultRelocationError("different_volume", "Destination crosses a nested mount")
-        current = current.parent
-    if not os.access(resolved, os.R_OK | os.X_OK) or not source_layout.path_is_writable(resolved):
-        raise VaultRelocationError("inaccessible", "Destination is not readable, traversable, and writable")
-    return relative, resolved
+            raise VaultRelocationError(
+                "different_volume", "Destination crosses a nested mount"
+            )
+        parent = current.parent
+        if parent == current:
+            raise VaultRelocationError(
+                "inaccessible", "Destination is inaccessible or outside the Source Volume"
+            )
+        current = parent
+    if not os.access(
+        safe_target, os.R_OK | os.X_OK
+    ) or not source_layout.path_is_writable(safe_target):
+        raise VaultRelocationError(
+            "inaccessible",
+            "Destination is not readable, traversable, and writable",
+        )
+    return relative, safe_target
 
 
 def _reject_overlap(connection: Any, *, vault_id: int, destination: Path) -> None:
