@@ -51,7 +51,7 @@ function meResponse(id = 42): Record<string, unknown> {
   };
 }
 
-describe("LoginPage Break-glass Login submit", () => {
+describe("LoginPage local sign-in", () => {
   const fetchMock = vi.fn();
   const navigate = vi.fn();
   const en = loadCatalog("en");
@@ -88,7 +88,18 @@ describe("LoginPage Break-glass Login submit", () => {
     );
   }
 
-  it("submits Break-glass credentials to POST /api/login and redirects to the archive on success", async () => {
+  it("displays the network gate and administrator recovery guidance", () => {
+    renderPage();
+
+    expect(screen.getByText(en["login.subtitle"])).toBeInTheDocument();
+    expect(screen.getByText(en["login.admin_recovery"])).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: en["login.oidc"] }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Break-glass/i)).not.toBeInTheDocument();
+  });
+
+  it("submits local credentials to POST /api/login and redirects to the archive on success", async () => {
     fetchMock
       .mockResolvedValueOnce(
         jsonResponse({ message_key: "api.signed_in", message: "Signed in" }),
@@ -199,7 +210,7 @@ describe("LoginPage Break-glass Login submit", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it("explains Break-glass network gating when the backend refuses with 403", async () => {
+  it("explains local sign-in network gating when the backend refuses with 403", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(
         { detail: "Break-glass login is not allowed from this network" },
@@ -266,6 +277,11 @@ describe("LoginPage Break-glass Login submit", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: it["login.submit"] })).toBeInTheDocument();
     });
+    expect(screen.getByText(it["login.subtitle"])).toBeInTheDocument();
+    expect(screen.getByText(it["login.admin_recovery"])).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: it["login.oidc"] }),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText(it["login.username"])).toHaveValue("typed-user");
     expect(screen.getByLabelText(it["login.password"])).toHaveValue("typed-pass");
   });

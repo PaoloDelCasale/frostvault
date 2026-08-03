@@ -10,7 +10,7 @@ import { useI18n } from "@/i18n/useI18n";
 import { useTheme } from "@/theme";
 
 type LoginPageProps = {
-  /** Navigation after successful Break-glass Login (defaults to location.assign). */
+  /** Navigation after successful local sign-in (defaults to location.assign). */
   onNavigate?: (url: string) => void;
 };
 
@@ -71,6 +71,7 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
             {t("login.welcome")}
           </h1>
           <p className="mt-2 text-sm text-muted">{t("login.subtitle")}</p>
+          <p className="mt-3 text-sm text-muted">{t("login.admin_recovery")}</p>
 
           <form className="mt-6 grid gap-3.5" onSubmit={(e) => void handleSubmit(e)}>
             <FormField label={t("login.username")} htmlFor="login-username">
