@@ -29,6 +29,7 @@ import {
   startUpload,
   updateLifecyclePin,
 } from "@/api";
+import { DEMO_MODE_ENABLED } from "@/demoGate";
 import type {
   ArchiveListItem,
   ArchiveVersionItem,
@@ -542,27 +543,32 @@ export function FileOperationsHost({
     [refreshAfterMutation, showError, showSuccess, t],
   );
 
-  // Screenshot / demo deep-links: open confirm or version dialogs once.
+  // Capture-only deep-links: open confirm or version dialogs once.
   const demoBootstrapped = useRef(false);
+  const gatedDemoConfirm = DEMO_MODE_ENABLED ? demoConfirm : null;
+  const gatedDemoVersionsPath = DEMO_MODE_ENABLED ? demoVersionsPath : null;
   useEffect(() => {
     if (demoBootstrapped.current) return;
-    if (demoConfirm?.action === "free-space" || demoConfirm?.action === "cloud-archive") {
+    if (
+      gatedDemoConfirm?.action === "free-space" ||
+      gatedDemoConfirm?.action === "cloud-archive"
+    ) {
       demoBootstrapped.current = true;
       setConfirmAction({
-        action: demoConfirm.action as RowActionId,
-        path: demoConfirm.path,
+        action: gatedDemoConfirm.action as RowActionId,
+        path: gatedDemoConfirm.path,
         isDirectory: false,
         explanation:
-          demoConfirm.action === "cloud-archive"
+          gatedDemoConfirm.action === "cloud-archive"
             ? "Delete markers hide the current key."
             : undefined,
       });
       return;
     }
-    if (demoConfirm?.action === "storage-class") {
+    if (gatedDemoConfirm?.action === "storage-class") {
       demoBootstrapped.current = true;
       setStorageClassTarget({
-        path: demoConfirm.path,
+        path: gatedDemoConfirm.path,
         isDirectory: false,
         count: 1,
         totalBytes: 2048,
@@ -571,22 +577,22 @@ export function FileOperationsHost({
       return;
     }
     if (
-      demoConfirm?.action === "lifecycle-pin" ||
-      demoConfirm?.action === "lifecycle-unpin"
+      gatedDemoConfirm?.action === "lifecycle-pin" ||
+      gatedDemoConfirm?.action === "lifecycle-unpin"
     ) {
       demoBootstrapped.current = true;
       setPinAction({
-        path: demoConfirm.path,
+        path: gatedDemoConfirm.path,
         isDirectory: false,
-        pinned: demoConfirm.action === "lifecycle-pin",
+        pinned: gatedDemoConfirm.action === "lifecycle-pin",
       });
       return;
     }
-    if (demoVersionsPath) {
+    if (gatedDemoVersionsPath) {
       demoBootstrapped.current = true;
-      void beginRecover(demoVersionsPath, false).catch(showError);
+      void beginRecover(gatedDemoVersionsPath, false).catch(showError);
     }
-  }, [beginRecover, demoConfirm, demoVersionsPath, showError]);
+  }, [beginRecover, gatedDemoConfirm, gatedDemoVersionsPath, showError]);
 
   // Expose endpoint mapping for tests via data attribute on host.
   const hostRef = useRef<HTMLDivElement>(null);

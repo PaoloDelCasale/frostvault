@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { ApiQueryProvider } from "@/api";
+import { DEMO_MODE_ENABLED, getDemoSearchParam } from "@/demoGate";
 import { I18nProvider } from "@/i18n";
 import { ThemeProvider } from "@/theme";
 import { installDemoFilesFetch } from "@/pages/archive/demoFiles";
@@ -12,7 +13,7 @@ import "./index.css";
 
 registerFrostVaultServiceWorker();
 
-if (new URLSearchParams(window.location.search).get("demo") === "files") {
+if (DEMO_MODE_ENABLED && getDemoSearchParam("demo") === "files") {
   installDemoFilesFetch();
 }
 

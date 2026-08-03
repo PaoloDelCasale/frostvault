@@ -1,8 +1,9 @@
 /**
  * Dev-only mock of /api/files, /api/file-history, /api/jobs and operation
  * endpoints for 375px screenshots.
- * Activated when ?demo=files is present (patched in at screenshot time).
+ * Activated only in Vite development or an explicit VITE_ALLOW_DEMO=1 build.
  */
+import { DEMO_MODE_ENABLED, getDemoSearchParam } from "@/demoGate";
 import type {
   FileHistoryResponse,
   FilesResponse,
@@ -70,7 +71,7 @@ export const demoRootListing: FilesResponse = {
   mode: "browse",
 };
 
-export const demoNestedListing: FilesResponse = {
+const demoNestedListing: FilesResponse = {
   items: [
     {
       type: "directory",
@@ -101,7 +102,7 @@ export const demoNestedListing: FilesResponse = {
   mode: "browse",
 };
 
-export const demoSearchListing: FilesResponse = {
+const demoSearchListing: FilesResponse = {
   items: [
     {
       type: "file",
@@ -121,7 +122,7 @@ export const demoSearchListing: FilesResponse = {
   mode: "search",
 };
 
-export const demoFileHistory: FileHistoryResponse = {
+const demoFileHistory: FileHistoryResponse = {
   vault_file_id: "vf-readme",
   path: "readme.txt",
   path_history: [
@@ -134,7 +135,7 @@ export const demoFileHistory: FileHistoryResponse = {
   ],
 };
 
-export const demoActiveJobs: JobsResponse = {
+const demoActiveJobs: JobsResponse = {
   items: [],
   groups: [
     {
@@ -161,6 +162,8 @@ function json(data: unknown, status = 200): Response {
 }
 
 export function installDemoFilesFetch(): void {
+  if (!DEMO_MODE_ENABLED || typeof window === "undefined") return;
+
   const realFetch = window.fetch.bind(window);
   let catalogPromise: Promise<Record<string, string>> | null = null;
 
@@ -186,10 +189,10 @@ export function installDemoFilesFetch(): void {
     );
     const method = (init?.method ?? "GET").toUpperCase();
     const showJob =
-      new URLSearchParams(window.location.search).get("job") === "1" ||
-      new URLSearchParams(window.location.search).get("job") === "storage-class";
+      getDemoSearchParam("job") === "1" ||
+      getDemoSearchParam("job") === "storage-class";
     const jobAction =
-      new URLSearchParams(window.location.search).get("job") === "storage-class"
+      getDemoSearchParam("job") === "storage-class"
         ? "storage-class"
         : "upload";
 
@@ -322,7 +325,7 @@ export function installDemoFilesFetch(): void {
       return json({
         states: {},
         storage: { local_bytes: 0, cloud_bytes: 0 },
-        active_jobs: new URLSearchParams(window.location.search).get("job") === "1" ? 1 : 0,
+        active_jobs: getDemoSearchParam("job") === "1" ? 1 : 0,
         runtime: {},
         filesystem: null,
         delete_enabled: true,

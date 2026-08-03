@@ -13,6 +13,7 @@ import {
   type MeResponse,
   type VaultListItem,
 } from "@/api";
+import { DEMO_MODE_ENABLED, getDemoSearchParam } from "@/demoGate";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/theme";
 import { AppShell } from "@/layout/AppShell";
@@ -67,10 +68,9 @@ function capabilitiesFromMe(
 }
 
 function isVaultCreateRecoveryDemo(): boolean {
-  if (typeof window === "undefined") return false;
   return (
-    new URLSearchParams(window.location.search).get("demo") ===
-    "vault-create-recovery"
+    DEMO_MODE_ENABLED &&
+    getDemoSearchParam("demo") === "vault-create-recovery"
   );
 }
 
