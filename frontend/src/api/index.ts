@@ -21,6 +21,8 @@ export {
   cancelOwnVaultDecommissionCloudPurge,
   cancelUpload,
   confirmRecoveryCustody,
+  confirmFileRename,
+  confirmFolderRename,
   createAdminInvite,
   createAdminUser,
   createAdminVault,
@@ -54,6 +56,7 @@ export {
   fetchMe,
   fetchOidcConfiguration,
   fetchOperationPolicy,
+  fetchRenameCandidates,
   fetchStats,
   fetchSystemSettings,
   fetchVaultMembers,
@@ -120,6 +123,7 @@ export {
   jobsQueryOptions,
   jobsRefetchInterval,
   meQueryOptions,
+  renameCandidatesQueryOptions,
   statsQueryOptions,
   statsRefetchInterval,
   vaultsQueryOptions,
@@ -231,3 +235,9 @@ export type {
   VaultSelectResponse,
   VaultsResponse,
 } from "./types";
+
+export type {
+  RenameCandidate,
+  RenameCandidatesResponse,
+  RenameConfirmationResponse,
+} from "./endpoints";

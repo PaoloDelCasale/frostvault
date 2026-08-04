@@ -244,6 +244,7 @@ describe("File operations — seams 1–10", () => {
         <FileBrowser
           t={t}
           capabilities={caps}
+          vaultId={1}
           vaultName="Test Archive"
         />
       </ApiQueryProvider>,
@@ -872,7 +873,7 @@ describe("bottom sheet tap targets", () => {
     });
     render(
       <ApiQueryProvider client={client}>
-        <FileBrowser t={t} capabilities={ownerCaps} vaultName="Test Archive" />
+        <FileBrowser t={t} capabilities={ownerCaps} vaultId={1} vaultName="Test Archive" />
       </ApiQueryProvider>,
     );
     await screen.findByTestId("file-list-cards");

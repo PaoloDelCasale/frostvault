@@ -86,6 +86,7 @@ describe("FileBrowser offline shell and stale listing (seams 2–3)", () => {
       <ApiQueryProvider client={client}>
         <FileBrowser
           t={t}
+          vaultId={1}
           vaultName="Docs"
           capabilities={{
             can_operate: true,
@@ -117,6 +118,7 @@ describe("FileBrowser offline shell and stale listing (seams 2–3)", () => {
       <ApiQueryProvider client={client}>
         <FileBrowser
           t={t}
+          vaultId={1}
           vaultName="Docs"
           capabilities={{
             can_operate: true,

@@ -13,6 +13,7 @@ import {
   fetchI18nCatalog,
   fetchJobs,
   fetchMe,
+  fetchRenameCandidates,
   fetchStats,
   fetchVaults,
 } from "./endpoints";
@@ -24,6 +25,7 @@ export const apiQueryKeys = {
   vaults: ["vaults"] as const,
   stats: ["stats"] as const,
   jobs: ["jobs"] as const,
+  renameCandidates: (vaultId: number) => ["rename-candidates", vaultId] as const,
   i18nCatalog: (locale?: string) => ["i18n", "catalog", locale ?? "default"] as const,
   files: (query: FilesQuery) =>
     [
@@ -96,6 +98,13 @@ export function filesQueryOptions(query: FilesQuery) {
   return {
     queryKey: apiQueryKeys.files(query),
     queryFn: () => fetchFiles(query),
+  };
+}
+
+export function renameCandidatesQueryOptions(vaultId: number) {
+  return {
+    queryKey: apiQueryKeys.renameCandidates(vaultId),
+    queryFn: fetchRenameCandidates,
   };
 }
 
