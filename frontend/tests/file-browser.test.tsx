@@ -165,7 +165,7 @@ describe("FileBrowser — cards and table from /api/files", () => {
     });
     return render(
       <ApiQueryProvider client={client}>
-        <FileBrowser t={t} capabilities={testCapabilities} vaultName="Test Archive" />
+        <FileBrowser t={t} capabilities={testCapabilities} vaultId={1} vaultName="Test Archive" />
       </ApiQueryProvider>,
     );
   }
@@ -252,7 +252,7 @@ describe("FileBrowser — directory navigation", () => {
     });
     return render(
       <ApiQueryProvider client={client}>
-        <FileBrowser t={t} capabilities={testCapabilities} vaultName="Test Archive" />
+        <FileBrowser t={t} capabilities={testCapabilities} vaultId={1} vaultName="Test Archive" />
       </ApiQueryProvider>,
     );
   }
@@ -479,7 +479,7 @@ describe("FileBrowser — search, filter, pagination", () => {
     });
     return render(
       <ApiQueryProvider client={client}>
-        <FileBrowser t={t} capabilities={testCapabilities} vaultName="Test Archive" />
+        <FileBrowser t={t} capabilities={testCapabilities} vaultId={1} vaultName="Test Archive" />
       </ApiQueryProvider>,
     );
   }
@@ -647,7 +647,7 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
     });
     return render(
       <ApiQueryProvider client={client}>
-        <FileBrowser t={t} capabilities={testCapabilities} vaultName="Test Archive" />
+        <FileBrowser t={t} capabilities={testCapabilities} vaultId={1} vaultName="Test Archive" />
       </ApiQueryProvider>,
     );
   }
@@ -720,7 +720,7 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
       });
       const view = render(
         <ApiQueryProvider client={client}>
-          <FileBrowser t={t} capabilities={testCapabilities} vaultName="Test Archive" />
+          <FileBrowser t={t} capabilities={testCapabilities} vaultId={1} vaultName="Test Archive" />
         </ApiQueryProvider>,
       );
       return view;

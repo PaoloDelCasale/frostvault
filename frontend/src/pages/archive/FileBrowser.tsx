@@ -28,12 +28,15 @@ import {
   parentDirectory,
 } from "./fileLabels";
 import { PathHistoryPanel } from "./PathHistoryPanel";
+import { RenameCandidatesPanel } from "./RenameCandidatesPanel";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
 export type FileBrowserProps = {
   t: Translate;
   capabilities: VaultCapabilities;
+  /** Current Vault identity, used to isolate the candidate query cache. */
+  vaultId: number;
   vaultName: string;
 };
 
@@ -85,7 +88,12 @@ function writeSearchParams(
  * Responsive archive listing: sticky search/breadcrumbs, cards below md,
  * table from md up, Path History on file tap.
  */
-export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
+export function FileBrowser({
+  t,
+  capabilities,
+  vaultId,
+  vaultName,
+}: FileBrowserProps) {
   const initial = readSearchParams();
   const [directory, setDirectory] = useState(initial.directory);
   const [qInput, setQInput] = useState(initial.q);
@@ -228,6 +236,11 @@ export function FileBrowser({ t, capabilities, vaultName }: FileBrowserProps) {
 
   return (
     <div className="min-w-0" data-testid="file-browser">
+      <RenameCandidatesPanel
+        vaultId={vaultId}
+        canOperate={capabilities.can_operate}
+        t={t}
+      />
       {showingStale ? (
         <div
           role="status"

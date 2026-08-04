@@ -123,6 +123,10 @@ export default function App() {
             queryKey: apiQueryKeys.stats,
             refetchType: "active",
           }),
+          queryClient.invalidateQueries({
+            queryKey: ["rename-candidates"],
+            refetchType: "active",
+          }),
         ]);
       })
       .catch((error: unknown) => {
@@ -268,6 +272,7 @@ export default function App() {
         fileList={
           <FileBrowser
             t={t}
+            vaultId={me.vault?.id ?? capabilities.currentVaultId ?? 0}
             vaultName={capabilities.vaultName}
             capabilities={{
               role: capabilities.role ?? "viewer",
