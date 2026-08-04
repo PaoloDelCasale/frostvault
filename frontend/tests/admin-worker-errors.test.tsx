@@ -168,6 +168,19 @@ describe("WorkerErrorsSection", () => {
     expect(screen.getByText("Vault #99")).toBeInTheDocument();
     expect(screen.getAllByText("Expected in this environment")).toHaveLength(2);
     expect(screen.getByText("Actionable")).toBeInTheDocument();
+    const articles = screen.getAllByRole("article");
+    expect(articles).toHaveLength(3);
+    for (const article of articles) {
+      const headingId = article.getAttribute("aria-labelledby");
+      expect(headingId).toBeTruthy();
+      expect(headingId).not.toMatch(/\s/);
+      expect(document.getElementById(headingId ?? "")).toBe(
+        article.querySelector("h3"),
+      );
+    }
+    expect(screen.getByRole("article", { name: "scan" })).toHaveAccessibleName(
+      "scan",
+    );
     expect(screen.getByText(/2026-07-01T00:01:00/)).toBeInTheDocument();
     expect(screen.getAllByText(/2026-07-01T00:02:00/).length).toBeGreaterThan(0);
     expect(

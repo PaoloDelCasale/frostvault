@@ -133,6 +133,10 @@ function vaultLabel(
   return vault?.name || translate("admin.worker_errors_vault_fallback", { id: vaultId });
 }
 
+function workerErrorDomId(groupKey: string): string {
+  return `worker-error-${encodeURIComponent(groupKey)}`;
+}
+
 function errorMessage(reason: unknown, fallback: string): string {
   return reason instanceof Error && reason.message ? reason.message : fallback;
 }
@@ -225,14 +229,15 @@ export function WorkerErrorsSection() {
             const disposition = workerErrorDisposition(group.latest);
             const expected = disposition === "expected_environment";
             const operation = group.operation || t("admin.worker_errors_unknown_operation");
+            const headingId = workerErrorDomId(group.key);
             return (
               <li key={group.key}>
                 <Panel className="p-5">
-                  <article aria-labelledby={`worker-error-${group.key}`}>
+                  <article aria-labelledby={headingId}>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <h3
-                          id={`worker-error-${group.key}`}
+                          id={headingId}
                           className="break-words text-lg font-bold"
                         >
                           {operation}
