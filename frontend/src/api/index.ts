@@ -47,6 +47,8 @@ export {
   fetchAdminVaults,
   fetchAdminVaultDecommissionStatus,
   fetchAdminWorkerErrors,
+  saveAdminSmtpEndpoint,
+  saveAdminWebhookEndpoint,
   fetchAdminMetadataBackups,
   runAdminMetadataBackup,
   downloadAdminMetadataBackup,
@@ -114,6 +116,7 @@ export {
 export type {
   AdminWorkerError,
   AdminWorkerErrorsResponse,
+  NotificationEndpointResponse,
   MetadataBackupRun,
   MetadataBackupRunResult,
   MetadataBackupStatus,
@@ -241,6 +244,7 @@ export type {
   RecoveryExportResponse,
   RestoreEstimate,
   ScanResponse,
+  SmtpEndpointAction,
   StatsResponse,
   StorageClassOptionItem,
   StorageClassesResponse,
@@ -263,6 +267,7 @@ export type {
   VaultSelectRequest,
   VaultSelectResponse,
   VaultsResponse,
+  WebhookEndpointAction,
 } from "./types";
 
 export type {

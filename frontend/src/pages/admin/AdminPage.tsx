@@ -30,6 +30,7 @@ import { DisplayNameDialog } from "./DisplayNameDialog";
 import { IdentityDialog } from "./IdentityDialog";
 import { InvitesPanel } from "./InvitesPanel";
 import { MembersDialog } from "./MembersDialog";
+import { NotificationsSection } from "./NotificationsSection";
 import { OidcSection } from "./OidcSection";
 import { PasswordDialog } from "./PasswordDialog";
 import { RelocateVaultDialog } from "./RelocateVaultDialog";
@@ -148,6 +149,7 @@ export function AdminPage() {
           pathname !== "/admin/cost-price-books" &&
           pathname !== "/admin/storage-cost-estimates" &&
           pathname !== "/admin/worker-errors" &&
+          pathname !== "/admin/notifications" &&
           pathname !== "/admin/metadata-backups"
         ) {
           await Promise.all([loadUsers(), loadVaults()]);
@@ -343,6 +345,7 @@ export function AdminPage() {
               ["admin.section_sources", "/admin/sources"],
               ["admin.section_defaults", "/admin/defaults"],
               ["admin.section_oidc", "/admin/oidc"],
+              ["admin.section_notifications", "/admin/notifications"],
               ["admin.section_deployment", "/admin/deployment"],
               ["admin.section_price_books", "/admin/cost-price-books"],
               ["admin.section_storage_estimates", "/admin/storage-cost-estimates"],
@@ -368,6 +371,8 @@ export function AdminPage() {
           <StorageCostEstimatesSection />
         ) : pathname === "/admin/worker-errors" ? (
           <WorkerErrorsSection />
+        ) : pathname === "/admin/notifications" ? (
+          <NotificationsSection />
         ) : pathname === "/admin/metadata-backups" ? (
           <MetadataBackupsSection />
         ) : settingsMode ? (

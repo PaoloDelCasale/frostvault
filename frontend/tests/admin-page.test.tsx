@@ -458,6 +458,7 @@ describe("AdminPage — administration navigation (issue #136 seam 1)", () => {
       ["Source Volumes", "/admin/sources"],
       ["Defaults", "/admin/defaults"],
       ["OIDC", "/admin/oidc"],
+      ["Notifications", "/admin/notifications"],
       ["Deployment configuration", "/admin/deployment"],
       ["Cost price books", "/admin/cost-price-books"],
       ["Storage cost estimates", "/admin/storage-cost-estimates"],
