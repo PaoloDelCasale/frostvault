@@ -46,6 +46,8 @@ class PriceBookDefaultTests(unittest.TestCase):
         self.assertIsInstance(estimate, CostEstimate)
         self.assertEqual(estimate.estimated_cost_eur, 0.046)
         self.assertEqual(estimate.pricing_effective_at, book.effective_at)
+        self.assertIsNone(estimate.price_book_id)
+        self.assertEqual(estimate.price_book_name, "builtin-defaults")
         self.assertEqual(estimate.assumptions, book.assumptions)
 
 
@@ -87,6 +89,8 @@ class PriceBookPersistenceTests(unittest.TestCase):
             storage_class="STANDARD",
         )
         self.assertEqual(estimate.estimated_cost_eur, 0.01)
+        self.assertEqual(estimate.price_book_id, created.id)
+        self.assertEqual(estimate.price_book_name, "eu-south-1 2026-07")
         self.assertEqual(estimate.pricing_effective_at, "2026-07-01T00:00:00+00:00")
 
 
@@ -111,6 +115,8 @@ class RestoreEstimateFromPriceBookTests(unittest.TestCase):
             tier="Bulk",
         )
         self.assertEqual(estimate.estimated_cost_eur, 0.0025)
+        self.assertIsNone(estimate.price_book_id)
+        self.assertEqual(estimate.price_book_name, "builtin")
         self.assertEqual(estimate.pricing_effective_at, "2026-06-01T00:00:00+00:00")
         self.assertEqual(estimate.assumptions["disclaimer"], "Internal estimate.")
 

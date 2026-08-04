@@ -81,6 +81,19 @@ class OpenApiResponseContractTests(unittest.TestCase):
             {"type": "string"},
         )
 
+    def test_storage_estimate_response_documents_atomic_price_book_identity(self) -> None:
+        schema = app.openapi()
+        operation = schema["paths"]["/api/admin/cost-estimates/storage"]["post"]
+        response = operation["responses"]["200"]["content"]["application/json"]["schema"]
+        self.assertEqual(
+            response,
+            {"$ref": "#/components/schemas/StorageEstimateResponse"},
+        )
+        estimate = schema["components"]["schemas"]["StorageEstimateResponse"]
+        self.assertIn("price_book_id", estimate["required"])
+        self.assertIn("price_book_name", estimate["required"])
+        self.assertIn("pricing_effective_at", estimate["required"])
+
     def test_committed_openapi_document_matches_the_application(self) -> None:
         committed = json.loads((ROOT / "frontend" / "openapi.json").read_text(encoding="utf-8"))
         self.assertEqual(committed, app.openapi())

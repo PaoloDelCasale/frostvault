@@ -459,6 +459,7 @@ describe("AdminPage — administration navigation (issue #136 seam 1)", () => {
       ["OIDC", "/admin/oidc"],
       ["Deployment configuration", "/admin/deployment"],
       ["Cost price books", "/admin/cost-price-books"],
+      ["Storage cost estimates", "/admin/storage-cost-estimates"],
     ];
 
     for (const [name, href] of expectedRoutes) {

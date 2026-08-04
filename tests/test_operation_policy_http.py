@@ -136,6 +136,15 @@ class OperationPolicyHttpTests(unittest.TestCase):
         self.assertEqual(preview.json()["included"], ["a.txt"])
         self.assertEqual(preview.json()["excluded"], ["tmp/x.txt", "photo.jpg"])
 
+    def test_non_admin_cannot_request_storage_cost_estimates(self) -> None:
+        self._authenticate(self.owner_id)
+        response = self.client.post(
+            "/api/admin/cost-estimates/storage",
+            headers=self._headers(),
+            json={"size_bytes": 1024, "storage_class": "STANDARD"},
+        )
+        self.assertEqual(response.status_code, 403, response.text)
+
     def test_admin_can_manage_price_books(self) -> None:
         self._authenticate(self.admin_id)
         created = self.client.post(
@@ -170,6 +179,8 @@ class OperationPolicyHttpTests(unittest.TestCase):
         self.assertEqual(estimate.status_code, 200, estimate.text)
         body = estimate.json()
         self.assertEqual(body["estimated_cost_eur"], 0.02)
+        self.assertEqual(body["price_book_id"], book_id)
+        self.assertEqual(body["price_book_name"], "eu-2026-07")
         self.assertEqual(body["pricing_effective_at"], "2026-07-01T00:00:00+00:00")
         self.assertIn("assumptions", body)
 
