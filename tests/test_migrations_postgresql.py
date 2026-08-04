@@ -21,6 +21,7 @@ from app.invites import (
     resolve_invite,
     revoke_invite,
 )
+from app.services import notifications
 from app.services import user_administration
 from app.system_settings import resolve_system_settings, set_system_setting
 
@@ -425,6 +426,112 @@ class PostgreSQLMigrationTests(unittest.TestCase):
 
         self.assertEqual(len(first), 1)
         self.assertEqual(duplicate, [])
+
+    def test_terminal_job_commits_when_notification_savepoint_fails_on_postgresql(
+        self,
+    ) -> None:
+        upgraded = run_alembic()
+        self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+
+        connect_url = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
+        with psycopg.connect(connect_url, row_factory=dict_row) as connection:
+            user_id = connection.execute(
+                """
+                INSERT INTO users(username, display_name, password_hash, is_admin)
+                VALUES ('notification-owner', 'Notification Owner', 'hash', FALSE)
+                RETURNING id
+                """
+            ).fetchone()["id"]
+            vault_id = connection.execute(
+                """
+                INSERT INTO vaults(
+                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
+                ) VALUES ('notification-vault', 'Notification Vault', '/source',
+                          'bucket', 'notifications', 'remote')
+                RETURNING id
+                """
+            ).fetchone()["id"]
+            connection.execute(
+                """
+                INSERT INTO vault_members(vault_id, user_id, role)
+                VALUES (%s, %s, 'owner')
+                """,
+                (vault_id, user_id),
+            )
+            catalog = ArchiveCatalog(connection)
+            catalog.observe_local_copy(
+                vault_id=vault_id,
+                path="terminal.txt",
+                file_type="regular",
+                size=12,
+                mtime_ns=1,
+                observed_at="2026-07-22T10:00:00+00:00",
+            )
+            job_ids, _, _ = catalog.queue_jobs(
+                vault_id=vault_id,
+                path="terminal.txt",
+                action="upload",
+                requested_by=user_id,
+                requested_at="2026-07-22T10:01:00+00:00",
+                group_id="notification-regression",
+                is_directory=False,
+            )
+            self.assertEqual(len(job_ids), 1)
+            job_id = job_ids[0]
+            connection.execute(
+                "UPDATE jobs SET status='completed' WHERE id=%s", (job_id,)
+            )
+
+            def fail_inside_savepoint(connection, *, job_id):
+                connection.execute(
+                    """
+                    INSERT INTO notifications(
+                        user_id, vault_id, job_id, event, title, body, created_at
+                    ) VALUES (%s, %s, %s, 'job_completed', 'Partial', '', %s)
+                    """,
+                    (user_id, vault_id, job_id, "2026-07-22T10:02:00+00:00"),
+                )
+                connection.execute(
+                    "INSERT INTO missing_notification_table(id) VALUES (1)"
+                )
+
+            with patch.object(
+                notifications,
+                "enqueue_job_terminal_push",
+                side_effect=fail_inside_savepoint,
+            ):
+                enqueued = notifications.enqueue_job_terminal_notification_best_effort(
+                    connection, job_id=job_id
+                )
+            self.assertEqual(enqueued, 0)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT status FROM jobs WHERE id=%s", (job_id,)
+                ).fetchone()["status"],
+                "completed",
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) AS total FROM notifications WHERE job_id=%s",
+                    (job_id,),
+                ).fetchone()["total"],
+                0,
+            )
+
+        with psycopg.connect(connect_url, row_factory=dict_row) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT status FROM jobs WHERE id=%s", (job_id,)
+                ).fetchone()["status"],
+                "completed",
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) AS total FROM notifications WHERE job_id=%s",
+                    (job_id,),
+                ).fetchone()["total"],
+                0,
+            )
 
     def test_invite_revocation_and_last_administrator_hold_on_postgresql(self) -> None:
         upgraded = run_alembic()

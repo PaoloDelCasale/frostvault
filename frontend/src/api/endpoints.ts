@@ -99,6 +99,55 @@ export type RenameCandidate = {
 export type RenameCandidatesResponse = { items: RenameCandidate[] };
 export type RenameConfirmationResponse = Record<string, unknown>;
 
+/**
+ * The notification routes intentionally use the generic JSON response model on
+ * the server. Keep the inbox wire types here instead of claiming they are
+ * generated OpenAPI schemas (the preferences GET is a Starlette route).
+ */
+export type NotificationItem = {
+  id: number;
+  user_id: number;
+  vault_id: number | null;
+  job_id: number | null;
+  event: string;
+  title: string;
+  body: string;
+  title_key: string | null;
+  body_key: string | null;
+  message_params: Record<string, unknown>;
+  in_app_enabled: boolean;
+  dedupe_key: string | null;
+  created_at: string;
+  read: boolean;
+  read_at: string | null;
+};
+
+export type NotificationsResponse = {
+  items: NotificationItem[];
+  unread_count: number;
+};
+
+export type NotificationPreferenceChannel = "in_app" | "push";
+
+export type VaultNotificationPreference = {
+  id: number;
+  user_id: number;
+  vault_id: number;
+  event: string;
+  channel: NotificationPreferenceChannel;
+  enabled: boolean;
+};
+
+export type VaultNotificationPreferencesResponse = {
+  items: VaultNotificationPreference[];
+};
+
+export type VaultNotificationPreferencePayload = {
+  event: string;
+  channel: NotificationPreferenceChannel;
+  enabled: boolean;
+};
+
 /** Response shape emitted by the admin price-book endpoints. */
 export type CostPriceBook = {
   id: number | null;
@@ -510,6 +559,47 @@ export function saveAdminSmtpEndpoint(
     },
   );
 }
+
+/** List the authenticated user's visible in-app notifications and unread count. */
+export function fetchNotifications(limit?: number): Promise<NotificationsResponse> {
+  const query = limit === undefined ? "" : `?limit=${encodeURIComponent(String(limit))}`;
+  return apiRequest<NotificationsResponse>(`/api/notifications${query}`);
+}
+
+/** Mark one visible notification read; the server operation is idempotent. */
+export function markNotificationRead(
+  notificationId: number,
+): Promise<NotificationItem> {
+  return apiRequest<NotificationItem>("/api/notifications/read", {
+    method: "POST",
+    body: JSON.stringify({ notification_id: notificationId }),
+  });
+}
+
+/** List personal preferences for the server-selected active Vault. */
+export function fetchVaultNotificationPreferences(): Promise<VaultNotificationPreferencesResponse> {
+  return apiRequest<VaultNotificationPreferencesResponse>(
+    "/api/vault/notification-preferences",
+  );
+}
+
+/** Save one personal preference for the server-selected active Vault. */
+export function setVaultNotificationPreference(
+  payload: VaultNotificationPreferencePayload,
+): Promise<VaultNotificationPreference> {
+  return apiRequest<VaultNotificationPreference>(
+    "/api/vault/notification-preferences",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+// Short aliases keep the helper names discoverable for callers that do not
+// need to repeat the Vault scope; both use the same authenticated routes.
+export const fetchNotificationPreferences = fetchVaultNotificationPreferences;
+export const setNotificationPreference = setVaultNotificationPreference;
 
 export function fetchAdminWorkerErrors(): Promise<AdminWorkerErrorsResponse> {
   return apiRequest<AdminWorkerErrorsResponse>("/api/admin/worker-errors");

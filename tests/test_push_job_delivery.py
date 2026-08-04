@@ -158,6 +158,42 @@ class JobPushDeliveryTests(unittest.TestCase):
         )
         self.assertEqual(push.messages[0]["payload"]["title"], "Job completed")
 
+    def test_explicit_push_opt_out_keeps_in_app_only(self) -> None:
+        push = _RecordingPush()
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                "UPDATE jobs SET status='completed' WHERE id=%s",
+                (self.job_id,),
+            )
+            notifications.set_user_vault_notification_preference(
+                connection,
+                user_id=self.owner_id,
+                vault_id=self.vault_id,
+                event="job_completed",
+                channel="push",
+                enabled=False,
+            )
+            enqueued = notifications.enqueue_job_terminal_push(
+                connection, job_id=self.job_id
+            )
+            notifications.deliver_pending_notifications(
+                connection, push_client=push, max_attempts=1
+            )
+            notification = connection.execute(
+                "SELECT in_app_enabled FROM notifications WHERE job_id=%s",
+                (self.job_id,),
+            ).fetchone()
+            deliveries = connection.execute(
+                "SELECT COUNT(*) AS total FROM notification_deliveries "
+                "WHERE notification_id IN "
+                "(SELECT id FROM notifications WHERE job_id=%s)",
+                (self.job_id,),
+            ).fetchone()["total"]
+        self.assertEqual(enqueued, 1)
+        self.assertTrue(notification["in_app_enabled"])
+        self.assertEqual(deliveries, 0)
+        self.assertEqual(push.messages, [])
+
     def test_revoked_session_stops_push_delivery(self) -> None:
         push = _RecordingPush()
         with SQLiteConnection(str(self.path)) as connection:
@@ -214,7 +250,7 @@ class JobPushDeliveryTests(unittest.TestCase):
             )
         self.assertEqual(push.messages, [])
 
-    def test_unconfigured_push_enqueues_nothing(self) -> None:
+    def test_unconfigured_push_still_enqueues_default_in_app_notice(self) -> None:
         with patch(
             "app.services.notifications.push_configured",
             lambda settings_obj=None: False,
@@ -227,7 +263,12 @@ class JobPushDeliveryTests(unittest.TestCase):
                 enqueued = notifications.enqueue_job_terminal_push(
                     connection, job_id=self.job_id
                 )
-        self.assertEqual(enqueued, 0)
+                row = connection.execute(
+                    "SELECT in_app_enabled FROM notifications WHERE job_id=%s",
+                    (self.job_id,),
+                ).fetchone()
+        self.assertEqual(enqueued, 1)
+        self.assertTrue(row["in_app_enabled"])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,9 @@
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+import type { QueryClient } from "@tanstack/react-query";
 
+import { createAppQueryClient } from "@/api";
 import { Button } from "@/components/ui/button";
+import { NotificationCenter } from "@/components/NotificationCenter";
 
 import { AppDrawer } from "./AppDrawer";
 import { shellLabel } from "./labels";
@@ -10,12 +13,22 @@ import type { ShellCapabilities, ShellNavHandlers } from "./types";
 type AppShellProps = {
   capabilities: ShellCapabilities;
   handlers?: ShellNavHandlers;
-  t?: (key: string) => string;
+  t?: (key: string, params?: Record<string, unknown>) => string;
+  /** Shared app client; optional for isolated shell stories and tests. */
+  queryClient?: QueryClient;
   children: ReactNode;
 };
 
-export function AppShell({ capabilities, handlers, t, children }: AppShellProps) {
+export function AppShell({
+  capabilities,
+  handlers,
+  t,
+  queryClient: providedQueryClient,
+  children,
+}: AppShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const fallbackQueryClient = useMemo(() => createAppQueryClient(), []);
+  const queryClient = providedQueryClient ?? fallbackQueryClient;
   const skipToMainLabel = shellLabel(
     t,
     "ui.skip_to_main",
@@ -59,37 +72,47 @@ export function AppShell({ capabilities, handlers, t, children }: AppShellProps)
             </h1>
           </div>
 
-          <div className="md:hidden">
-            <AppDrawer
-              open={drawerOpen}
-              onOpenChange={setDrawerOpen}
-              capabilities={capabilities}
-              handlers={handlers}
+          <div className="flex items-center gap-2">
+            <NotificationCenter
+              currentVaultId={capabilities.currentVaultId}
+              vaultName={capabilities.vaultName}
+              locale={capabilities.locale}
               t={t}
-              trigger={
-                <Button
-                  type="button"
-                  variant="secondary"
-                  className="min-h-11 min-w-11"
-                  aria-label={openNavigationLabel}
-                >
-                  ☰
-                </Button>
-              }
+              queryClient={queryClient}
             />
-          </div>
 
-          <nav
-            aria-label={vaultNavigationLabel}
-            className="hidden md:flex md:flex-wrap md:items-center md:justify-end md:gap-2"
-          >
-            <ShellNavItems
-              capabilities={capabilities}
-              handlers={handlers}
-              t={t}
-              className="flex flex-row flex-wrap items-end gap-2"
-            />
-          </nav>
+            <div className="md:hidden">
+              <AppDrawer
+                open={drawerOpen}
+                onOpenChange={setDrawerOpen}
+                capabilities={capabilities}
+                handlers={handlers}
+                t={t}
+                trigger={
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="min-h-11 min-w-11"
+                    aria-label={openNavigationLabel}
+                  >
+                    ☰
+                  </Button>
+                }
+              />
+            </div>
+
+            <nav
+              aria-label={vaultNavigationLabel}
+              className="hidden md:flex md:flex-wrap md:items-center md:justify-end md:gap-2"
+            >
+              <ShellNavItems
+                capabilities={capabilities}
+                handlers={handlers}
+                t={t}
+                className="flex flex-row flex-wrap items-end gap-2"
+              />
+            </nav>
+          </div>
         </div>
       </header>
 

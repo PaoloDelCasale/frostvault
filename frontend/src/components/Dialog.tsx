@@ -9,6 +9,8 @@ type DialogProps = {
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
+  /** Accessible label for the dismiss control. */
+  closeLabel?: string;
   children: ReactNode;
   className?: string;
 };
@@ -21,6 +23,7 @@ export function Dialog({
   onOpenChange,
   title,
   description,
+  closeLabel = "Close",
   children,
   className,
 }: DialogProps) {
@@ -47,7 +50,12 @@ export function Dialog({
               )}
             </div>
             <RadixDialog.Close asChild>
-              <Button type="button" variant="secondary" className="min-h-11 min-w-11" aria-label="Close">
+              <Button
+                type="button"
+                variant="secondary"
+                className="min-h-11 min-w-11"
+                aria-label={closeLabel}
+              >
                 ×
               </Button>
             </RadixDialog.Close>

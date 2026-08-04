@@ -13,6 +13,8 @@ import {
   fetchI18nCatalog,
   fetchJobs,
   fetchMe,
+  fetchNotificationPreferences,
+  fetchNotifications,
   fetchRenameCandidates,
   fetchStats,
   fetchVaults,
@@ -38,6 +40,9 @@ export const apiQueryKeys = {
     ] as const,
   fileHistory: (path: string) => ["file-history", path] as const,
   fileVersions: (path: string) => ["file-versions", path] as const,
+  notifications: ["notifications"] as const,
+  notificationPreferences: (vaultId: number) =>
+    ["notification-preferences", vaultId] as const,
 };
 
 export function createAppQueryClient(
@@ -121,6 +126,19 @@ export function fileVersionsQueryOptions(path: string) {
     queryKey: apiQueryKeys.fileVersions(path),
     queryFn: () => fetchFileVersions(path),
     enabled: Boolean(path),
+  };
+}
+
+export const notificationsQueryOptions = {
+  queryKey: apiQueryKeys.notifications,
+  queryFn: () => fetchNotifications(),
+};
+
+export function notificationPreferencesQueryOptions(vaultId: number) {
+  return {
+    queryKey: apiQueryKeys.notificationPreferences(vaultId),
+    queryFn: fetchNotificationPreferences,
+    enabled: Number.isSafeInteger(vaultId) && vaultId > 0,
   };
 }
 

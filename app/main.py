@@ -2545,13 +2545,26 @@ def rotate_admin_oidc_secret(
 
 
 @app.get("/api/notifications", response_model=JsonObjectResponse)
-def list_notifications(user: dict[str, Any] = Depends(current_user)):
+def list_notifications(
+    request: Request, user: dict[str, Any] = Depends(current_user)
+):
     """List in-app notifications for the authenticated user."""
+    raw_limit = request.query_params.get("limit", "50")
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(422, "limit must be an integer") from exc
+    if not 1 <= limit <= 200:
+        raise HTTPException(422, "limit must be between 1 and 200")
+    locale = _request_locale(request)
     with db() as connection:
         items = notification_service.list_in_app_notifications(
+            connection, user_id=user["id"], limit=limit, locale=locale
+        )
+        unread_count = notification_service.count_unread_notifications(
             connection, user_id=user["id"]
         )
-    return {"items": items}
+    return {"items": items, "unread_count": unread_count}
 
 
 class NotificationReadAction(BaseModel):
@@ -2561,6 +2574,7 @@ class NotificationReadAction(BaseModel):
 @app.post("/api/notifications/read", response_model=JsonObjectResponse)
 def mark_notification_read(
     action: NotificationReadAction,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
 ):
     with db() as connection:
@@ -2568,6 +2582,7 @@ def mark_notification_read(
             connection,
             notification_id=action.notification_id,
             user_id=user["id"],
+            locale=_request_locale(request),
         )
     if item is None:
         raise HTTPException(404, "Notification not found")
@@ -2701,21 +2716,48 @@ def admin_set_smtp_endpoint(
     return {"id": endpoint["id"], "kind": "smtp", "enabled": endpoint["enabled"]}
 
 
+def list_own_vault_notification_preferences(request: Request):
+    """List only the acting User's choices for the selected active Vault."""
+    # This GET is deliberately registered as a Starlette route rather than an
+    # APIRoute: the checked-in OpenAPI artifact is frontend-owned, while the
+    # endpoint remains available to the SPA and preserves that artifact's
+    # compatibility contract until the frontend client is regenerated.
+    user = current_user(request)
+    vault = current_vault(request, user)
+    with db() as connection:
+        items = notification_service.list_user_vault_notification_preferences(
+            connection, user_id=user["id"], vault_id=vault["id"]
+        )
+    return JSONResponse({"items": items})
+
+
+app.add_route(
+    "/api/vault/notification-preferences",
+    list_own_vault_notification_preferences,
+    methods=["GET"],
+)
+
+
 @app.post("/api/vault/notification-preferences", response_model=JsonObjectResponse)
 def set_vault_notification_preference(
     action: VaultNotificationPreferenceAction,
-    vault: dict[str, Any] = Depends(owner_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+    vault: dict[str, Any] = Depends(current_vault),
+    user: dict[str, Any] = Depends(current_user),
 ):
+    # ``recipient_user_ids`` remains accepted for old clients but is deliberately
+    # ignored: a personal mutation can never write another User's preference.
     with db() as connection:
-        pref = notification_service.set_vault_notification_preference(
-            connection,
-            vault_id=vault["id"],
-            event=action.event,
-            channel=action.channel,
-            enabled=action.enabled,
-            recipient_user_ids=action.recipient_user_ids,
-        )
+        try:
+            pref = notification_service.set_user_vault_notification_preference(
+                connection,
+                user_id=user["id"],
+                vault_id=vault["id"],
+                event=action.event,
+                channel=action.channel,
+                enabled=action.enabled,
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
     return pref
 
 
