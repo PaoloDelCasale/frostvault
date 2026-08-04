@@ -15,21 +15,25 @@ Infer the repo from `git remote -v` — `gh` does this automatically when run in
 
 ## When creating an issue
 
-Creating the GitHub issue is only the first step. Before considering it complete:
+Creating an issue does not require adding it to a GitHub Project. Before
+considering it complete:
 
-1. Add it to the repository's active GitHub Project.
-2. Set its native parent issue when it belongs to an epic.
-3. Set native `blocked by` and `blocking` relationships; do not rely only on a
+1. Set its native parent issue when it belongs to an epic.
+2. Set native `blocked by` and `blocking` relationships; do not rely only on a
    prose `Depends on:` line.
-4. Assign project fields that match adjacent work: initial Status, Phase,
-   Priority, and Effort.
-5. Place it in the parent's dependency-ordered checklist or roadmap section.
-6. Verify the resulting project item, parent, and dependencies through `gh`
-   before reporting completion.
+3. When the issue explicitly belongs to a GitHub Project, add it to that Project
+   and assign fields that match adjacent work: initial Status, Phase, Priority,
+   and Effort.
+4. When it has a parent, place it in the parent's dependency-ordered checklist
+   or roadmap section when one exists.
+5. Verify the resulting parent and dependencies, plus any applicable project
+   item, through `gh` before reporting completion.
 
-Infer field values from the parent and neighboring issues rather than inventing
-an isolated classification. If the correct parent, dependency, or project field
-is ambiguous, ask before creating the issue.
+Infer applicable field values from the parent and neighboring issues rather
+than inventing an isolated classification. If the correct parent or dependency
+is ambiguous, ask before creating the issue. Project membership is optional;
+if it is unclear, create the issue without adding it to a Project and report
+that fact.
 
 ## Before working on a referenced issue
 
