@@ -1,4 +1,5 @@
 import { AlertDialog } from "radix-ui";
+import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -12,6 +13,10 @@ type ConfirmDialogProps = {
   cancelLabel?: string;
   onConfirm: () => void;
   tone?: "danger" | "default";
+  confirmDisabled?: boolean;
+  /** Keep the alert open while the caller settles an asynchronous action. */
+  keepOpenOnConfirm?: boolean;
+  children?: ReactNode;
 };
 
 export function ConfirmDialog({
@@ -23,6 +28,9 @@ export function ConfirmDialog({
   cancelLabel = "Cancel",
   onConfirm,
   tone = "danger",
+  confirmDisabled = false,
+  keepOpenOnConfirm = false,
+  children,
 }: ConfirmDialogProps) {
   return (
     <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
@@ -39,6 +47,7 @@ export function ConfirmDialog({
           <AlertDialog.Description className="mt-2 whitespace-pre-line text-sm text-muted">
             {description}
           </AlertDialog.Description>
+          {children ? <div className="mt-4 grid gap-3">{children}</div> : null}
           <div className="mt-5 flex flex-wrap justify-end gap-2">
             <AlertDialog.Cancel asChild>
               <Button type="button" variant="secondary" className="min-h-11 min-w-11 px-4">
@@ -50,7 +59,11 @@ export function ConfirmDialog({
                 type="button"
                 variant={tone === "danger" ? "danger" : "primary"}
                 className="min-h-11 min-w-11 px-4"
-                onClick={onConfirm}
+                disabled={confirmDisabled}
+                onClick={(event) => {
+                  if (keepOpenOnConfirm) event.preventDefault();
+                  onConfirm();
+                }}
               >
                 {confirmLabel}
               </Button>

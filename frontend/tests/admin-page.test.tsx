@@ -458,6 +458,7 @@ describe("AdminPage — administration navigation (issue #136 seam 1)", () => {
       ["Defaults", "/admin/defaults"],
       ["OIDC", "/admin/oidc"],
       ["Deployment configuration", "/admin/deployment"],
+      ["Cost price books", "/admin/cost-price-books"],
     ];
 
     for (const [name, href] of expectedRoutes) {

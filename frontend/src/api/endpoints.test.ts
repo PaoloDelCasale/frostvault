@@ -3,8 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureApiClient, resetApiClientForTests } from "./client";
 import {
   confirmFileRename,
+  activateAdminCostPriceBook,
   confirmFolderRename,
   confirmRecoveryCustody,
+  createAdminCostPriceBook,
+  fetchActiveAdminCostPriceBook,
+  fetchAdminCostPriceBooks,
   createVault,
   exportRecoverySecret,
   fetchI18nCatalog,
@@ -161,6 +165,122 @@ describe("foundation endpoint helpers", () => {
         reason: "operator renamed directory",
       }),
     });
+  });
+
+  it("cost price book helpers use the admin routes and shared mutation protections", async () => {
+    configureApiClient({ csrfToken: "cost-csrf" });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ items: [] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: null,
+          name: "builtin-defaults",
+          currency: "EUR",
+          effective_at: "2026-01-01T00:00:00+00:00",
+          updated_at: null,
+          assumptions: { region: "eu-south-1" },
+          storage_rates: { STANDARD: 0.023 },
+          restore_rates: { GLACIER: { Bulk: 0.0025 } },
+          is_active: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ id: 8, name: "July", is_active: false }, 201),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ id: 8, name: "July", is_active: true }),
+      );
+
+    await expect(fetchAdminCostPriceBooks()).resolves.toEqual({ items: [] });
+    await expect(fetchActiveAdminCostPriceBook()).resolves.toMatchObject({
+      id: null,
+      is_active: true,
+    });
+    await createAdminCostPriceBook({
+      name: "July",
+      currency: "EUR",
+      effective_at: "2026-07-01T00:00:00+00:00",
+      assumptions: { region: "eu-south-1", note: "test" },
+      storage_rates: { CUSTOM: 0.01 },
+      restore_rates: { CUSTOM: { AnyTier: 0.02 } },
+      reason: "update rates",
+    });
+    await activateAdminCostPriceBook(8, { reason: "activate rates" });
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/admin/cost-price-books",
+      "/api/admin/cost-price-books/active",
+      "/api/admin/cost-price-books",
+      "/api/admin/cost-price-books/8/activate",
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toMatchObject({
+      assumptions: { region: "eu-south-1", note: "test" },
+      storage_rates: { CUSTOM: 0.01 },
+      restore_rates: { CUSTOM: { AnyTier: 0.02 } },
+      reason: "update rates",
+    });
+    for (const call of fetchMock.mock.calls.slice(2)) {
+      expect(new Headers(call[1]?.headers).get("X-CSRF-Token")).toBe("cost-csrf");
+    }
+  });
+
+  it("activation keeps the shared local reauthentication retry behavior", async () => {
+    const requestPassword = vi.fn(async () => "recent-password");
+    configureApiClient({
+      csrfToken: "cost-csrf",
+      getAuthMethod: () => "local",
+      requestPassword,
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: "reauth_required" }, 403))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ id: 8, is_active: true }));
+
+    await expect(
+      activateAdminCostPriceBook(8, { reason: "activate rates" }),
+    ).resolves.toMatchObject({ id: 8, is_active: true });
+
+    expect(requestPassword).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/admin/cost-price-books/8/activate",
+      "/api/reauth",
+      "/api/admin/cost-price-books/8/activate",
+    ]);
+    for (const call of fetchMock.mock.calls) {
+      expect(new Headers(call[1]?.headers).get("X-CSRF-Token")).toBe("cost-csrf");
+    }
+  });
+
+  it("creation keeps the shared local reauthentication retry behavior", async () => {
+    const requestPassword = vi.fn(async () => "recent-password");
+    configureApiClient({
+      csrfToken: "cost-csrf",
+      getAuthMethod: () => "local",
+      requestPassword,
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: "reauth_required" }, 403))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ id: 9, is_active: false }, 201));
+
+    await expect(
+      createAdminCostPriceBook({
+        name: "August",
+        currency: "EUR",
+        effective_at: "2026-08-01T00:00:00+00:00",
+        assumptions: {},
+        storage_rates: {},
+        restore_rates: {},
+        reason: "add August rates",
+      }),
+    ).resolves.toMatchObject({ id: 9, is_active: false });
+
+    expect(requestPassword).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/admin/cost-price-books",
+      "/api/reauth",
+      "/api/admin/cost-price-books",
+    ]);
   });
 
   it("vault create and recovery helpers hit the agreed routes", async () => {

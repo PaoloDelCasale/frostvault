@@ -14,6 +14,10 @@ import type {
   AdminVaultRelocatePayload,
   AdminVaultRelocationResponse,
   AdminVaultsResponse,
+  CostPriceBook,
+  CostPriceBookActivatePayload,
+  CostPriceBookCreatePayload,
+  CostPriceBooksResponse,
   VaultDecommissionPreview,
   VaultDecommissionSelection,
   VaultDecommissionStartPayload,
@@ -351,6 +355,36 @@ export function rotateOidcSecret(clientSecret: string): Promise<OidcConfiguratio
 
 export function fetchSystemSettings(): Promise<SystemSettingsResponse> {
   return apiRequest<SystemSettingsResponse>("/api/admin/settings");
+}
+
+export function fetchAdminCostPriceBooks(): Promise<CostPriceBooksResponse> {
+  return apiRequest<CostPriceBooksResponse>("/api/admin/cost-price-books");
+}
+
+export function fetchActiveAdminCostPriceBook(): Promise<CostPriceBook> {
+  return apiRequest<CostPriceBook>("/api/admin/cost-price-books/active");
+}
+
+export function createAdminCostPriceBook(
+  payload: CostPriceBookCreatePayload,
+): Promise<CostPriceBook> {
+  return apiRequest<CostPriceBook>("/api/admin/cost-price-books", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function activateAdminCostPriceBook(
+  priceBookId: number,
+  payload: CostPriceBookActivatePayload,
+): Promise<CostPriceBook> {
+  return apiRequest<CostPriceBook>(
+    `/api/admin/cost-price-books/${priceBookId}/activate`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export function updateSystemSettings(
