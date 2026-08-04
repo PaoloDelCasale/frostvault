@@ -76,6 +76,12 @@ class JobMessagePersistenceTests(unittest.TestCase):
                 ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
                 """
             )
+            connection.execute(
+                """
+                INSERT INTO vault_members(vault_id, user_id, role)
+                VALUES (2, 1, 'owner')
+                """
+            )
             ArchiveCatalog(connection).observe_local_copy(
                 vault_id=2,
                 path="a.txt",
