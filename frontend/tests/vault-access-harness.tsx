@@ -77,6 +77,7 @@ export const defaultQuotas = {
 
 type HarnessOptions = {
   isAdmin?: boolean;
+  isVaultOwner?: boolean;
   vaultId?: number;
   vaultName?: string;
   onTransferred?: () => void;
@@ -146,6 +147,7 @@ export function renderVaultAccess(
           vaultId={options.vaultId ?? 1}
           vaultName={options.vaultName ?? "Test Archive"}
           isAdmin={options.isAdmin ?? true}
+          isVaultOwner={options.isVaultOwner ?? false}
           onTransferred={options.onTransferred}
         />
       </I18nProvider>

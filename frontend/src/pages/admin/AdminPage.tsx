@@ -26,6 +26,7 @@ import { Toast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 
+import { AdminAuditEventsSection } from "./AuditEventsSection";
 import { DisplayNameDialog } from "./DisplayNameDialog";
 import { IdentityDialog } from "./IdentityDialog";
 import { InvitesPanel } from "./InvitesPanel";
@@ -148,6 +149,7 @@ export function AdminPage() {
         if (
           pathname !== "/admin/cost-price-books" &&
           pathname !== "/admin/storage-cost-estimates" &&
+          pathname !== "/admin/audit-events" &&
           pathname !== "/admin/worker-errors" &&
           pathname !== "/admin/notifications" &&
           pathname !== "/admin/metadata-backups"
@@ -349,6 +351,7 @@ export function AdminPage() {
               ["admin.section_deployment", "/admin/deployment"],
               ["admin.section_price_books", "/admin/cost-price-books"],
               ["admin.section_storage_estimates", "/admin/storage-cost-estimates"],
+              ["admin.section_audit_events", "/admin/audit-events"],
               ["admin.section_worker_errors", "/admin/worker-errors"],
               ["admin.section_metadata_backups", "/admin/metadata-backups"],
             ].map(([labelKey, href]) => (
@@ -369,6 +372,8 @@ export function AdminPage() {
           <CostPriceBooksSection />
         ) : pathname === "/admin/storage-cost-estimates" ? (
           <StorageCostEstimatesSection />
+        ) : pathname === "/admin/audit-events" ? (
+          <AdminAuditEventsSection />
         ) : pathname === "/admin/worker-errors" ? (
           <WorkerErrorsSection />
         ) : pathname === "/admin/notifications" ? (

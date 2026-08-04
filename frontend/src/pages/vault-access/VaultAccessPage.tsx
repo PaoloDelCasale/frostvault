@@ -22,6 +22,7 @@ import { Toast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 
+import { VaultAuditEventsPanel } from "./AuditEventsPanel";
 import { CloudDeletionPanel } from "./CloudDeletionPanel";
 import { LifecyclePanel } from "./LifecyclePanel";
 import { OperationPolicyPanel } from "./OperationPolicyPanel";
@@ -34,6 +35,7 @@ export type VaultAccessPageProps = {
   vaultName: string;
   decommissionState?: "active" | "decommissioning" | "decommissioned";
   isAdmin?: boolean;
+  isVaultOwner?: boolean;
   onBack?: () => void;
   onTransferred?: () => void;
 };
@@ -50,6 +52,7 @@ export function VaultAccessPage({
   vaultName,
   decommissionState = "active",
   isAdmin = false,
+  isVaultOwner = false,
   onBack,
   onTransferred,
 }: VaultAccessPageProps) {
@@ -359,6 +362,8 @@ export function VaultAccessPage({
       </section>
         </>
       )}
+
+      {isVaultOwner ? <VaultAuditEventsPanel members={members} /> : null}
 
       <DecommissionVaultDialog
         open={decommissionOpen}
