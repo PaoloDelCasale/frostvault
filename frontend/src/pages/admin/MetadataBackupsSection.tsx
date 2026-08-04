@@ -6,6 +6,7 @@ import {
   downloadAdminMetadataBackup,
   fetchAdminMetadataBackups,
   runAdminMetadataBackup,
+  type MetadataBackupDownload,
   type MetadataBackupRun,
   type MetadataBackupStatus,
 } from "@/api";
@@ -28,7 +29,7 @@ export function metadataBackupOutcome(
 ): MetadataBackupOutcome {
   const status = run.status.toLowerCase();
   if (status === "failed") return "failed";
-  if (status === "pending") return "pending";
+  if (status === "pending" || status === "running") return "pending";
   if (ELIGIBLE_DOWNLOAD_STATUSES.has(status)) {
     return run.s3_key ? "full_off_host" : "local_only";
   }
@@ -59,6 +60,51 @@ function isValidChecksum(value: string | null): boolean {
 
 function timestamp(run: MetadataBackupRun): string {
   return run.created_at;
+}
+
+function sha256Hex(buffer: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buffer), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+/**
+ * Verify every integrity signal before an object URL is created. A missing or
+ * malformed signal is an integrity failure, not permission to continue.
+ */
+export async function verifyMetadataBackupIntegrity(
+  run: Pick<MetadataBackupRun, "digest_sha256">,
+  artifact: MetadataBackupDownload,
+  translate: (key: string) => string,
+): Promise<void> {
+  const expectedChecksum = run.digest_sha256?.trim().toLowerCase() ?? null;
+  if (!isValidChecksum(expectedChecksum)) {
+    throw new Error(translate("admin.metadata_backups_integrity_error"));
+  }
+
+  const responseChecksum = artifact.checksumSha256?.trim().toLowerCase() ?? null;
+  if (!isValidChecksum(responseChecksum)) {
+    throw new Error(translate("admin.metadata_backups_integrity_error"));
+  }
+  if (responseChecksum !== expectedChecksum) {
+    throw new Error(translate("admin.metadata_backups_checksum_mismatch"));
+  }
+
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle || typeof subtle.digest !== "function") {
+    throw new Error(translate("admin.metadata_backups_integrity_unavailable"));
+  }
+
+  let actualChecksum: string;
+  try {
+    const body = await artifact.blob.arrayBuffer();
+    actualChecksum = sha256Hex(await subtle.digest("SHA-256", body));
+  } catch {
+    throw new Error(translate("admin.metadata_backups_integrity_unavailable"));
+  }
+  if (actualChecksum !== expectedChecksum) {
+    throw new Error(translate("admin.metadata_backups_checksum_mismatch"));
+  }
 }
 
 export function MetadataBackupsSection() {
@@ -127,14 +173,7 @@ export function MetadataBackupsSection() {
     setDownloadError("");
     try {
       const artifact = await downloadAdminMetadataBackup(run.id);
-      const expectedChecksum = run.digest_sha256?.trim().toLowerCase() ?? null;
-      if (
-        isValidChecksum(expectedChecksum) &&
-        artifact.checksumSha256 &&
-        artifact.checksumSha256 !== expectedChecksum
-      ) {
-        throw new Error(t("admin.metadata_backups_checksum_mismatch"));
-      }
+      await verifyMetadataBackupIntegrity(run, artifact, t);
 
       if (typeof URL.createObjectURL !== "function") {
         throw new Error(t("admin.metadata_backups_download_error"));

@@ -296,6 +296,8 @@
   "admin.metadata_backups_downloading": "Preparazione download…",
   "admin.metadata_backups_download_error": "Impossibile scaricare l’artefatto del backup dei metadati.",
   "admin.metadata_backups_checksum_mismatch": "Il checksum dell’artefatto scaricato non corrisponde a quello registrato.",
+  "admin.metadata_backups_integrity_error": "Download interrotto: non è stato possibile verificare l’integrità dell’artefatto.",
+  "admin.metadata_backups_integrity_unavailable": "Questo browser non può verificare l’integrità dell’artefatto; il download è stato interrotto.",
   "admin.settings_loading": "Caricamento della configurazione di sistema…",
   "admin.defaults_heading": "Valori predefiniti gestiti a runtime",
   "admin.defaults_help": "Le modifiche si applicano secondo il ciclo di vita indicato per ogni impostazione.",

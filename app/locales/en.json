@@ -296,6 +296,8 @@
   "admin.metadata_backups_downloading": "Preparing download…",
   "admin.metadata_backups_download_error": "The metadata backup artifact could not be downloaded.",
   "admin.metadata_backups_checksum_mismatch": "The downloaded artifact checksum does not match the recorded checksum.",
+  "admin.metadata_backups_integrity_error": "Download stopped because the artifact integrity could not be verified.",
+  "admin.metadata_backups_integrity_unavailable": "This browser cannot verify the artifact integrity, so the download was stopped.",
   "admin.settings_loading": "Loading system configuration…",
   "admin.defaults_heading": "Runtime-managed defaults",
   "admin.defaults_help": "Changes apply according to the lifecycle shown for each setting.",
