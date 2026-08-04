@@ -126,6 +126,7 @@ export type StorageClassChangeRequest = components["schemas"]["StorageClassChang
 export type StorageClassOptionItem = components["schemas"]["StorageClassOptionItem"];
 export type StorageClassesResponse = components["schemas"]["StorageClassesResponse"];
 export type StorageEstimateRequest = components["schemas"]["StorageEstimateRequest"];
+export type StorageEstimateResponse = components["schemas"]["StorageEstimateResponse"];
 export type SystemSettingItem = components["schemas"]["SystemSettingItem"];
 export type SystemSettingValue = components["schemas"]["SystemSettingValue"];
 export type SystemSettingsResponse = components["schemas"]["SystemSettingsResponse"];

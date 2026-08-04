@@ -7,6 +7,7 @@ import {
   confirmFolderRename,
   confirmRecoveryCustody,
   createAdminCostPriceBook,
+  estimateAdminStorageCost,
   fetchActiveAdminCostPriceBook,
   fetchAdminCostPriceBooks,
   createVault,
@@ -222,6 +223,49 @@ describe("foundation endpoint helpers", () => {
     for (const call of fetchMock.mock.calls.slice(2)) {
       expect(new Headers(call[1]?.headers).get("X-CSRF-Token")).toBe("cost-csrf");
     }
+  });
+
+  it("requests each admin storage estimate through the typed mutation helper", async () => {
+    configureApiClient({ csrfToken: "estimate-csrf" });
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        kind: "storage_month",
+        size_bytes: 1073741824,
+        storage_class: "DEEP_ARCHIVE",
+        tier: null,
+        estimated_cost_eur: 0.00099,
+        estimated_hours: null,
+        currency: "EUR",
+        price_book_id: 12,
+        price_book_name: "August rates",
+        pricing_effective_at: "2026-08-01T00:00:00+00:00",
+        assumptions: {},
+      }),
+    );
+
+    await expect(
+      estimateAdminStorageCost({
+        size_bytes: 1073741824,
+        storage_class: "DEEP_ARCHIVE",
+      }),
+    ).resolves.toMatchObject({
+      price_book_id: 12,
+      price_book_name: "August rates",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/admin/cost-estimates/storage",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          size_bytes: 1073741824,
+          storage_class: "DEEP_ARCHIVE",
+        }),
+      }),
+    );
+    expect(
+      new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("X-CSRF-Token"),
+    ).toBe("estimate-csrf");
   });
 
   it("activation keeps the shared local reauthentication retry behavior", async () => {

@@ -2189,6 +2189,15 @@
             "null"
           ]
         },
+        "price_book_id": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "price_book_name": {
+          "type": "string"
+        },
         "pricing_note": {
           "type": "string"
         },
@@ -2203,7 +2212,9 @@
         "tier",
         "days",
         "estimated_cost_eur",
-        "estimated_hours"
+        "estimated_hours",
+        "price_book_id",
+        "price_book_name"
       ],
       "type": "object"
     },
@@ -2591,6 +2602,69 @@
       },
       "required": [
         "items"
+      ],
+      "type": "object"
+    },
+    "StorageEstimateResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "assumptions": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "estimated_cost_eur": {
+          "type": "number"
+        },
+        "estimated_hours": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "kind": {
+          "const": "storage_month",
+          "type": "string"
+        },
+        "price_book_id": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "price_book_name": {
+          "type": "string"
+        },
+        "pricing_effective_at": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "number"
+        },
+        "storage_class": {
+          "type": "string"
+        },
+        "tier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "size_bytes",
+        "storage_class",
+        "tier",
+        "estimated_cost_eur",
+        "estimated_hours",
+        "currency",
+        "price_book_id",
+        "price_book_name",
+        "pricing_effective_at",
+        "assumptions"
       ],
       "type": "object"
     },

@@ -36,6 +36,7 @@ import { RelocateVaultDialog } from "./RelocateVaultDialog";
 import { SettingsSection } from "./SettingsSection";
 import { SourceVolumesSection } from "./SourceVolumesSection";
 import { CostPriceBooksSection } from "./CostPriceBooksSection";
+import { StorageCostEstimatesSection } from "./StorageCostEstimatesSection";
 
 type NoticeState = {
   open: boolean;
@@ -141,7 +142,10 @@ export function AdminPage() {
           return;
         }
         setAuthorized(true);
-        if (pathname !== "/admin/cost-price-books") {
+        if (
+          pathname !== "/admin/cost-price-books" &&
+          pathname !== "/admin/storage-cost-estimates"
+        ) {
           await Promise.all([loadUsers(), loadVaults()]);
           try {
             await loadSourceVolumes();
@@ -337,6 +341,7 @@ export function AdminPage() {
               ["admin.section_oidc", "/admin/oidc"],
               ["admin.section_deployment", "/admin/deployment"],
               ["admin.section_price_books", "/admin/cost-price-books"],
+              ["admin.section_storage_estimates", "/admin/storage-cost-estimates"],
             ].map(([labelKey, href]) => (
               <li key={href}>
                 <a
@@ -353,6 +358,8 @@ export function AdminPage() {
 
         {pathname === "/admin/cost-price-books" ? (
           <CostPriceBooksSection />
+        ) : pathname === "/admin/storage-cost-estimates" ? (
+          <StorageCostEstimatesSection />
         ) : settingsMode ? (
           <SettingsSection mode={settingsMode} />
         ) : pathname === "/admin/oidc" ? (

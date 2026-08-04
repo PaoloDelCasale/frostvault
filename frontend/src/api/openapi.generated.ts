@@ -3103,6 +3103,8 @@ export interface components {
             days: number;
             estimated_cost_eur: number;
             estimated_hours: number;
+            price_book_id: number | null;
+            price_book_name: string;
             pricing_effective_at?: string | null;
             pricing_note?: string;
             restore_object_irreversible?: boolean;
@@ -3309,6 +3311,24 @@ export interface components {
              * @default STANDARD
              */
             storage_class: string;
+        };
+        StorageEstimateResponse: {
+            assumptions: {
+                [key: string]: unknown;
+            };
+            currency: string;
+            estimated_cost_eur: number;
+            estimated_hours: number | null;
+            /** @constant */
+            kind: "storage_month";
+            price_book_id: number | null;
+            price_book_name: string;
+            pricing_effective_at: string;
+            size_bytes: number;
+            storage_class: string;
+            tier: string | null;
+        } & {
+            [key: string]: unknown;
         };
         SystemSettingItem: {
             choices?: string[];
@@ -3871,7 +3891,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["StorageEstimateResponse"];
                 };
             };
             /** @description Validation Error */

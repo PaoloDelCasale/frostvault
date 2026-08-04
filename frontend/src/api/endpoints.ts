@@ -54,6 +54,8 @@ import type {
   ScanResponse,
   StatsResponse,
   StorageClassesResponse,
+  StorageEstimateRequest,
+  StorageEstimateResponse,
   SystemSettingsResponse,
   SystemSettingsUpdatePayload,
   UserLookupResult,
@@ -374,6 +376,15 @@ export function fetchSystemSettings(): Promise<SystemSettingsResponse> {
 
 export function fetchAdminCostPriceBooks(): Promise<CostPriceBooksResponse> {
   return apiRequest<CostPriceBooksResponse>("/api/admin/cost-price-books");
+}
+
+export function estimateAdminStorageCost(
+  payload: StorageEstimateRequest,
+): Promise<StorageEstimateResponse> {
+  return apiRequest<StorageEstimateResponse>("/api/admin/cost-estimates/storage", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function fetchActiveAdminCostPriceBook(): Promise<CostPriceBook> {

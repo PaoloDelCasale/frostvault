@@ -3268,6 +3268,8 @@ def recover_estimate(
                     "Internal estimate from configured price data; not an AWS Billing quote.",
                 )
             ),
+            "price_book_id": priced.price_book_id,
+            "price_book_name": priced.price_book_name,
             "pricing_effective_at": priced.pricing_effective_at,
             "assumptions": priced.assumptions,
             "restore_object_irreversible": True,
@@ -4494,7 +4496,10 @@ def admin_activate_cost_price_book(
     return active.as_dict()
 
 
-@app.post("/api/admin/cost-estimates/storage", response_model=JsonObjectResponse)
+@app.post(
+    "/api/admin/cost-estimates/storage",
+    response_model=response_model("StorageEstimateResponse"),
+)
 def admin_storage_cost_estimate(
     action: StorageEstimateRequest,
     _: dict[str, Any] = Depends(admin_user),

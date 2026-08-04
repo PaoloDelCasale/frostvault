@@ -80,6 +80,8 @@ class CostEstimate:
     pricing_effective_at: str
     assumptions: dict[str, Any]
     kind: str
+    price_book_id: int | None
+    price_book_name: str
     tier: str | None = None
     estimated_hours: float | None = None
     currency: str = "EUR"
@@ -93,6 +95,8 @@ class CostEstimate:
             "estimated_cost_eur": self.estimated_cost_eur,
             "estimated_hours": self.estimated_hours,
             "currency": self.currency,
+            "price_book_id": self.price_book_id,
+            "price_book_name": self.price_book_name,
             "pricing_effective_at": self.pricing_effective_at,
             "assumptions": dict(self.assumptions),
         }
@@ -245,6 +249,8 @@ def estimate_storage_month(
         estimated_cost_eur=round(gib * rate, 6),
         pricing_effective_at=book.effective_at,
         assumptions=dict(book.assumptions),
+        price_book_id=book.id,
+        price_book_name=book.name,
         currency=book.currency,
     )
 
@@ -270,6 +276,8 @@ def estimate_restore_cost(
         estimated_cost_eur=round(gib * rate, 6),
         estimated_hours=hours,
         pricing_effective_at=book.effective_at,
+        price_book_id=book.id,
+        price_book_name=book.name,
         assumptions={
             **dict(book.assumptions),
             "restore_days": max(1, int(days)),
