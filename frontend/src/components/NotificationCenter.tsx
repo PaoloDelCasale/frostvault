@@ -120,9 +120,9 @@ function preferenceIsEnabled(
   const saved = items.find(
     (item) => item.event === event && item.channel === channel,
   );
-  // In-app terminal notices are opt-in. Push preserves the server's legacy
-  // default until the user explicitly changes it.
-  return saved?.enabled ?? channel === "push";
+  // In-app notices are enabled by default to match the backend. Push keeps its
+  // existing enabled-by-default behavior until the user explicitly changes it.
+  return saved?.enabled ?? true;
 }
 
 function notificationContent(value: unknown): string {

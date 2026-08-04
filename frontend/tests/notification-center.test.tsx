@@ -151,21 +151,13 @@ describe("NotificationCenter", () => {
     expect(bell).toHaveFocus();
   });
 
-  it("loads personal preferences for the selected Vault and optimistically saves channel changes", async () => {
+  it("defaults absent in-app preferences to enabled and saves a first-click opt-out", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ unread_count: 0, items: [] }))
       .mockResolvedValueOnce(
         jsonResponse({
           items: [
-            {
-              id: 1,
-              user_id: 7,
-              vault_id: 9,
-              event: "job_completed",
-              channel: "in_app",
-              enabled: false,
-            },
             {
               id: 2,
               user_id: 7,
@@ -184,7 +176,7 @@ describe("NotificationCenter", () => {
           vault_id: 9,
           event: "job_completed",
           channel: "in_app",
-          enabled: true,
+          enabled: false,
         }),
       )
       .mockResolvedValueOnce(
@@ -196,7 +188,7 @@ describe("NotificationCenter", () => {
               vault_id: 9,
               event: "job_completed",
               channel: "in_app",
-              enabled: true,
+              enabled: false,
             },
           ],
         }),
@@ -210,13 +202,13 @@ describe("NotificationCenter", () => {
     const inApp = await within(dialog).findByRole("checkbox", {
       name: "Completed jobs: In-app",
     });
-    expect(inApp).not.toBeChecked();
+    expect(inApp).toBeChecked();
     expect(
       within(dialog).getByRole("checkbox", { name: "Completed jobs: Push" }),
     ).toBeChecked();
 
     await user.click(inApp);
-    expect(inApp).toBeChecked();
+    expect(inApp).not.toBeChecked();
     await waitFor(() => {
       expect(fetchMock.mock.calls.map((call) => call[0])).toContain(
         "/api/vault/notification-preferences",
@@ -230,7 +222,7 @@ describe("NotificationCenter", () => {
     expect(JSON.parse(String(preferencePost?.[1]?.body))).toEqual({
       event: "job_completed",
       channel: "in_app",
-      enabled: true,
+      enabled: false,
     });
   });
 
