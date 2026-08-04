@@ -68,6 +68,24 @@ import { translate } from "@/i18n/translate";
 
 const DEFAULT_PAGE_SIZE = 100;
 
+/**
+ * The rename-candidate route intentionally has a loose backend response model.
+ * These are the fields currently emitted by ArchiveCatalog; size is optional so
+ * the UI can show it if the contract grows without claiming evidence it lacks.
+ */
+export type RenameCandidate = {
+  missing_vault_file_id: string;
+  missing_path: string;
+  new_vault_file_id: string;
+  new_path: string;
+  digest: string;
+  decision: "auto" | "ambiguous" | string;
+  size?: number | null;
+};
+
+export type RenameCandidatesResponse = { items: RenameCandidate[] };
+export type RenameConfirmationResponse = Record<string, unknown>;
+
 export function fetchFiles(query: FilesQuery = {}): Promise<FilesResponse> {
   const params = new URLSearchParams();
   params.set("q", query.q ?? "");
@@ -82,6 +100,30 @@ export function fetchFileHistory(path: string): Promise<FileHistoryResponse> {
   return apiRequest<FileHistoryResponse>(
     `/api/file-history?path=${encodeURIComponent(path)}`,
   );
+}
+
+export function fetchRenameCandidates(): Promise<RenameCandidatesResponse> {
+  return apiRequest<RenameCandidatesResponse>("/api/rename-candidates");
+}
+
+export function confirmFileRename(payload: {
+  vault_file_id: string;
+  new_path: string;
+}): Promise<RenameConfirmationResponse> {
+  return apiRequest<RenameConfirmationResponse>("/api/confirm-rename", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function confirmFolderRename(payload: {
+  old_prefix: string;
+  new_prefix: string;
+}): Promise<RenameConfirmationResponse> {
+  return apiRequest<RenameConfirmationResponse>("/api/confirm-folder-rename", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function fetchMe(): Promise<MeResponse> {
