@@ -18,6 +18,8 @@ import {
   fetchVaults,
   relocateAdminVault,
   requestScan,
+  saveAdminSmtpEndpoint,
+  saveAdminWebhookEndpoint,
   selectVault,
 } from "./endpoints";
 
@@ -222,6 +224,86 @@ describe("foundation endpoint helpers", () => {
     });
     for (const call of fetchMock.mock.calls.slice(2)) {
       expect(new Headers(call[1]?.headers).get("X-CSRF-Token")).toBe("cost-csrf");
+    }
+  });
+
+  it("configures the webhook endpoint through the admin mutation helper", async () => {
+    configureApiClient({ csrfToken: "notification-csrf" });
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 4,
+        kind: "webhook",
+        name: "global-webhook",
+        enabled: true,
+      }),
+    );
+
+    await expect(
+      saveAdminWebhookEndpoint({
+        url: "https://hooks.example.test/frostvault",
+        enabled: true,
+        reason: "configure outbound alerts",
+      }),
+    ).resolves.toMatchObject({ id: 4, kind: "webhook", enabled: true });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/admin/notification-endpoints/webhook",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          url: "https://hooks.example.test/frostvault",
+          enabled: true,
+          reason: "configure outbound alerts",
+        }),
+      }),
+    );
+    expect(
+      new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("X-CSRF-Token"),
+    ).toBe("notification-csrf");
+  });
+
+  it("replays SMTP endpoint configuration once after recent reauthentication", async () => {
+    const requestPassword = vi.fn(async () => "reauth-password");
+    const password = "smtp-write-only-secret";
+    configureApiClient({
+      csrfToken: "notification-csrf",
+      getAuthMethod: () => "local",
+      requestPassword,
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: "reauth_required" }, 403))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(
+        jsonResponse({ id: 5, kind: "smtp", enabled: true }),
+      );
+
+    await expect(
+      saveAdminSmtpEndpoint({
+        host: "smtp.example.test",
+        port: 587,
+        username: "alerts",
+        password,
+        from_address: "alerts@example.test",
+        use_tls: true,
+        enabled: true,
+        reason: "configure email alerts",
+      }),
+    ).resolves.toMatchObject({ id: 5, kind: "smtp", enabled: true });
+
+    expect(requestPassword).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/admin/notification-endpoints/smtp",
+      "/api/reauth",
+      "/api/admin/notification-endpoints/smtp",
+    ]);
+    const replayBody = JSON.parse(
+      String(fetchMock.mock.calls[2]?.[1]?.body),
+    ) as Record<string, unknown>;
+    expect(replayBody.password).toBe(password);
+    for (const call of fetchMock.mock.calls) {
+      expect(new Headers(call[1]?.headers).get("X-CSRF-Token")).toBe(
+        "notification-csrf",
+      );
     }
   });
 

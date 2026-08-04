@@ -45,6 +45,8 @@ export {
   fetchAdminVaults,
   fetchAdminVaultDecommissionStatus,
   fetchAdminWorkerErrors,
+  saveAdminSmtpEndpoint,
+  saveAdminWebhookEndpoint,
   fetchAdminSourceVolumes,
   fetchAdminSourceAreas,
   assignAdminSourceArea,
@@ -109,6 +111,7 @@ export {
 export type {
   AdminWorkerError,
   AdminWorkerErrorsResponse,
+  NotificationEndpointResponse,
   CostPriceBook,
   CostPriceBookActivatePayload,
   CostPriceBookCreatePayload,
@@ -230,6 +233,7 @@ export type {
   RecoveryExportResponse,
   RestoreEstimate,
   ScanResponse,
+  SmtpEndpointAction,
   StatsResponse,
   StorageClassOptionItem,
   StorageClassesResponse,
@@ -252,6 +256,7 @@ export type {
   VaultSelectRequest,
   VaultSelectResponse,
   VaultsResponse,
+  WebhookEndpointAction,
 } from "./types";
 
 export type {

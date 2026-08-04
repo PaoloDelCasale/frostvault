@@ -52,6 +52,7 @@ import type {
   RecoveryExportRequest,
   RecoveryExportResponse,
   ScanResponse,
+  SmtpEndpointAction,
   StatsResponse,
   StorageClassesResponse,
   StorageEstimateRequest,
@@ -67,6 +68,7 @@ import type {
   VaultSelectRequest,
   VaultSelectResponse,
   VaultsResponse,
+  WebhookEndpointAction,
 } from "./types";
 import { translate } from "@/i18n/translate";
 
@@ -388,6 +390,37 @@ export function rotateOidcSecret(clientSecret: string): Promise<OidcConfiguratio
 
 export function fetchSystemSettings(): Promise<SystemSettingsResponse> {
   return apiRequest<SystemSettingsResponse>("/api/admin/settings");
+}
+
+export type NotificationEndpointResponse = {
+  id: number;
+  kind: "webhook" | "smtp";
+  enabled: boolean;
+  name?: string;
+};
+
+export function saveAdminWebhookEndpoint(
+  payload: WebhookEndpointAction,
+): Promise<NotificationEndpointResponse> {
+  return apiRequest<NotificationEndpointResponse>(
+    "/api/admin/notification-endpoints/webhook",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function saveAdminSmtpEndpoint(
+  payload: SmtpEndpointAction,
+): Promise<NotificationEndpointResponse> {
+  return apiRequest<NotificationEndpointResponse>(
+    "/api/admin/notification-endpoints/smtp",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export function fetchAdminWorkerErrors(): Promise<AdminWorkerErrorsResponse> {
