@@ -6,8 +6,9 @@ Issues live on GitHub Issues. See docs/agents/issue-tracker.md.
 Before working on a referenced issue, read its parent, native dependencies, and
 relevant sibling issues so the implementation does not contradict roadmap
 decisions made elsewhere.
-When creating an issue, also add it to the repository's GitHub Project and set
-its native parent, dependencies, phase, priority, effort, and initial status.
+Creating an issue does not require adding it to a GitHub Project. When the
+issue explicitly belongs to a Project, add it and set the applicable project
+fields. Set native parent and dependency relationships whenever applicable.
 
 ### Triage labels
 
