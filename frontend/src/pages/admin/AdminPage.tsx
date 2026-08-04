@@ -37,6 +37,7 @@ import { SettingsSection } from "./SettingsSection";
 import { SourceVolumesSection } from "./SourceVolumesSection";
 import { CostPriceBooksSection } from "./CostPriceBooksSection";
 import { StorageCostEstimatesSection } from "./StorageCostEstimatesSection";
+import { WorkerErrorsSection } from "./WorkerErrorsSection";
 
 type NoticeState = {
   open: boolean;
@@ -144,7 +145,8 @@ export function AdminPage() {
         setAuthorized(true);
         if (
           pathname !== "/admin/cost-price-books" &&
-          pathname !== "/admin/storage-cost-estimates"
+          pathname !== "/admin/storage-cost-estimates" &&
+          pathname !== "/admin/worker-errors"
         ) {
           await Promise.all([loadUsers(), loadVaults()]);
           try {
@@ -342,6 +344,7 @@ export function AdminPage() {
               ["admin.section_deployment", "/admin/deployment"],
               ["admin.section_price_books", "/admin/cost-price-books"],
               ["admin.section_storage_estimates", "/admin/storage-cost-estimates"],
+              ["admin.section_worker_errors", "/admin/worker-errors"],
             ].map(([labelKey, href]) => (
               <li key={href}>
                 <a
@@ -360,6 +363,8 @@ export function AdminPage() {
           <CostPriceBooksSection />
         ) : pathname === "/admin/storage-cost-estimates" ? (
           <StorageCostEstimatesSection />
+        ) : pathname === "/admin/worker-errors" ? (
+          <WorkerErrorsSection />
         ) : settingsMode ? (
           <SettingsSection mode={settingsMode} />
         ) : pathname === "/admin/oidc" ? (

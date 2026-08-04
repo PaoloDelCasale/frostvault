@@ -455,11 +455,13 @@ describe("AdminPage — administration navigation (issue #136 seam 1)", () => {
       ["Overview", "/admin"],
       ["Users and identities", "/admin/users"],
       ["Vaults", "/admin/vaults"],
+      ["Source Volumes", "/admin/sources"],
       ["Defaults", "/admin/defaults"],
       ["OIDC", "/admin/oidc"],
       ["Deployment configuration", "/admin/deployment"],
       ["Cost price books", "/admin/cost-price-books"],
       ["Storage cost estimates", "/admin/storage-cost-estimates"],
+      ["Worker errors", "/admin/worker-errors"],
     ];
 
     for (const [name, href] of expectedRoutes) {

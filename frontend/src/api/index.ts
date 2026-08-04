@@ -44,6 +44,7 @@ export {
   fetchAdminVaultQuotas,
   fetchAdminVaults,
   fetchAdminVaultDecommissionStatus,
+  fetchAdminWorkerErrors,
   fetchAdminSourceVolumes,
   fetchAdminSourceAreas,
   assignAdminSourceArea,
@@ -106,10 +107,14 @@ export {
   validateOidcDraft,
 } from "./endpoints";
 export type {
+  AdminWorkerError,
+  AdminWorkerErrorsResponse,
   CostPriceBook,
   CostPriceBookActivatePayload,
   CostPriceBookCreatePayload,
   CostPriceBooksResponse,
+  WorkerError,
+  WorkerErrorsResponse,
 } from "./endpoints";
 
 export { createLatestRequestScope } from "./latest";
