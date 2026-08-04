@@ -14,7 +14,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .audit_events import record_audit_event
-from .notifications import enqueue_notification
+from .notifications import (
+    enqueue_job_terminal_notification_best_effort,
+    enqueue_notification,
+)
 from .vault_governance import primary_owner
 
 
@@ -1162,6 +1165,7 @@ def finalize_purge_job(
                 job_id,
             ),
         )
+        enqueue_job_terminal_notification_best_effort(connection, job_id=job_id)
         record_audit_event(
             connection,
             event="cloud_deletion.purge_completed",
@@ -1195,6 +1199,7 @@ def finalize_purge_job(
         """,
         (message, updated_at, job_id),
     )
+    enqueue_job_terminal_notification_best_effort(connection, job_id=job_id)
     record_audit_event(
         connection,
         event="cloud_deletion.purge_partial_failure",

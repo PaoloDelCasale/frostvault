@@ -1318,13 +1318,9 @@ def set_job(
             ),
         )
         if status in {"completed", "failed"}:
-            try:
-                notification_service.enqueue_job_terminal_push(
-                    connection, job_id=job_id
-                )
-            except Exception:
-                # Push enqueue must never fail the Job status transition.
-                pass
+            notification_service.enqueue_job_terminal_notification_best_effort(
+                connection, job_id=job_id
+            )
 
 
 def schedule_upload_retry(
@@ -1541,6 +1537,9 @@ def reconcile_interrupted_jobs() -> dict[str, int]:
                                     job["id"],
                                 ),
                             )
+                            notification_service.enqueue_job_terminal_notification_best_effort(
+                                connection, job_id=int(job["id"])
+                            )
                             summary["failed"] += 1
                             continue
                         ArchiveCatalog(connection).mark_local_copy_missing(
@@ -1558,6 +1557,9 @@ def reconcile_interrupted_jobs() -> dict[str, int]:
                                 timestamp,
                                 job["id"],
                             ),
+                        )
+                        notification_service.enqueue_job_terminal_notification_best_effort(
+                            connection, job_id=int(job["id"])
                         )
                         summary["completed"] += 1
                         continue
@@ -1586,6 +1588,9 @@ def reconcile_interrupted_jobs() -> dict[str, int]:
                         timestamp,
                         job["id"],
                     ),
+                )
+                notification_service.enqueue_job_terminal_notification_best_effort(
+                    connection, job_id=int(job["id"])
                 )
                 summary["failed"] += 1
     return summary

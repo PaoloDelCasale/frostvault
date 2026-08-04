@@ -120,10 +120,37 @@ class JobMessagePersistenceTests(unittest.TestCase):
                 "SELECT status, message, message_key, message_params FROM jobs WHERE id=%s",
                 (self.job_id,),
             ).fetchone()
+            notification = connection.execute(
+                "SELECT event, in_app_enabled, dedupe_key FROM notifications "
+                "WHERE job_id=%s",
+                (self.job_id,),
+            ).fetchone()
         self.assertEqual(row["status"], "completed")
         self.assertEqual(row["message_key"], "job.upload_verified")
         self.assertEqual(row["message"], "Upload verified")
         self.assertEqual(row["message_params"], "{}")
+        self.assertEqual(notification["event"], "job_completed")
+        self.assertTrue(notification["in_app_enabled"])
+        self.assertEqual(
+            notification["dedupe_key"], f"job:{self.job_id}:job_completed"
+        )
+
+    def test_set_job_keeps_terminal_state_when_notification_sql_fails(self) -> None:
+        def fail_notification(connection, *, job_id):
+            del job_id
+            connection.execute("INSERT INTO missing_notification_table(id) VALUES (1)")
+
+        with patch(
+            "app.storage.notification_service.enqueue_job_terminal_push",
+            side_effect=fail_notification,
+        ):
+            set_job(self.job_id, "completed", message_key="job.upload_verified")
+
+        with SQLiteConnection(str(self.database_path)) as connection:
+            row = connection.execute(
+                "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
+            ).fetchone()
+        self.assertEqual(row["status"], "completed")
 
     def test_schedule_upload_retry_stores_transient_key(self) -> None:
         schedule_upload_retry(
