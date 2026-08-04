@@ -132,7 +132,7 @@ it("submits SMTP settings, clears the password after success, and never renders 
   await user.type(screen.getByLabelText(/smtp password/i), password);
   await user.type(
     screen.getByLabelText(/from address/i),
-    "alerts@example.test",
+    "alerts@example.com",
   );
   await user.type(
     screen.getAllByLabelText(/audit reason/i)[1]!,
@@ -146,7 +146,7 @@ it("submits SMTP settings, clears the password after success, and never renders 
     port: 2525,
     username: "alerts",
     password,
-    from_address: "alerts@example.test",
+    from_address: "alerts@example.com",
     use_tls: true,
     enabled: true,
     reason: "configure email",

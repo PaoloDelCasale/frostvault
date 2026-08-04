@@ -385,7 +385,7 @@ describe("foundation endpoint helpers", () => {
         port: 587,
         username: "alerts",
         password,
-        from_address: "alerts@example.test",
+        from_address: "alerts@example.com",
         use_tls: true,
         enabled: true,
         reason: "configure email alerts",
