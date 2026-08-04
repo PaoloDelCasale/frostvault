@@ -35,6 +35,7 @@ import { PasswordDialog } from "./PasswordDialog";
 import { RelocateVaultDialog } from "./RelocateVaultDialog";
 import { SettingsSection } from "./SettingsSection";
 import { SourceVolumesSection } from "./SourceVolumesSection";
+import { CostPriceBooksSection } from "./CostPriceBooksSection";
 
 type NoticeState = {
   open: boolean;
@@ -45,6 +46,7 @@ type NoticeState = {
 export function AdminPage() {
   const { t, ready } = useI18n();
   const id = useId();
+  const pathname = typeof window === "undefined" ? "/admin" : window.location.pathname;
 
   const [authorized, setAuthorized] = useState<boolean | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -139,13 +141,15 @@ export function AdminPage() {
           return;
         }
         setAuthorized(true);
-        await Promise.all([loadUsers(), loadVaults()]);
-        try {
-          await loadSourceVolumes();
-        } catch {
-          // Source Volume inventory is optional for the Users/Vaults forms;
-          // adoption mode simply stays unavailable when discovery fails.
-          if (!cancelled) setSourceVolumes([]);
+        if (pathname !== "/admin/cost-price-books") {
+          await Promise.all([loadUsers(), loadVaults()]);
+          try {
+            await loadSourceVolumes();
+          } catch {
+            // Source Volume inventory is optional for the Users/Vaults forms;
+            // adoption mode simply stays unavailable when discovery fails.
+            if (!cancelled) setSourceVolumes([]);
+          }
         }
       } catch (error) {
         if (!cancelled) {
@@ -161,7 +165,7 @@ export function AdminPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- initial load only
-  }, []);
+  }, [pathname]);
 
   async function handleCreateUser(event: FormEvent) {
     event.preventDefault();
@@ -289,7 +293,6 @@ export function AdminPage() {
   }
 
   const activeOwners = users.filter((u) => u.active);
-  const pathname = typeof window === "undefined" ? "/admin" : window.location.pathname;
   const settingsMode = pathname === "/admin/defaults"
     ? "defaults"
     : pathname === "/admin/deployment"
@@ -333,6 +336,7 @@ export function AdminPage() {
               ["admin.section_defaults", "/admin/defaults"],
               ["admin.section_oidc", "/admin/oidc"],
               ["admin.section_deployment", "/admin/deployment"],
+              ["admin.section_price_books", "/admin/cost-price-books"],
             ].map(([labelKey, href]) => (
               <li key={href}>
                 <a
@@ -347,7 +351,9 @@ export function AdminPage() {
           </ul>
         </nav>
 
-        {settingsMode ? (
+        {pathname === "/admin/cost-price-books" ? (
+          <CostPriceBooksSection />
+        ) : settingsMode ? (
           <SettingsSection mode={settingsMode} />
         ) : pathname === "/admin/oidc" ? (
           <OidcSection />
