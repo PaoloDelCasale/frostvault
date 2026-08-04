@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ReauthenticationRedirectError,
+  apiDownload,
   apiRequest,
   configureApiClient,
+  filenameFromContentDisposition,
   resetApiClientForTests,
 } from "./client";
 
@@ -117,6 +119,30 @@ describe("apiRequest Reauthentication", () => {
     );
   });
 
+  it("replays an authenticated binary download after local reauthentication", async () => {
+    configureApiClient({
+      getAuthMethod: () => "local",
+      requestPassword: async () => "recent-password",
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: "reauth_required" }, 403))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(new Response("bytes"));
+
+    const result = await apiDownload("/api/download", {}, "backup.bak.enc");
+
+    expect(result.filename).toBe("backup.bak.enc");
+    expect(await result.blob.text()).toBe("bytes");
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/download",
+      "/api/reauth",
+      "/api/download",
+    ]);
+    expect(
+      new Headers(fetchMock.mock.calls[2]?.[1]?.headers).get("X-CSRF-Token"),
+    ).toBeNull();
+  });
+
   it("surfaces a displayable error on failed Reauthentication without retrying forever", async () => {
     configureApiClient({
       getAuthMethod: () => "local",
@@ -139,6 +165,47 @@ describe("apiRequest Reauthentication", () => {
       "/api/admin/users",
       "/api/reauth",
     ]);
+  });
+});
+
+describe("apiDownload filename and checksum handling", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    resetApiClientForTests();
+    fetchMock.mockReset();
+    configureApiClient({ fetch: fetchMock });
+  });
+
+  afterEach(() => {
+    resetApiClientForTests();
+  });
+
+  it("prefers RFC 5987 names and sanitizes path/control characters", () => {
+    expect(
+      filenameFromContentDisposition(
+        "attachment; filename=\"fallback.bak.enc\"; filename*=UTF-8''..%2Fmetadata%20backup.bak.enc",
+      ),
+    ).toBe(".._metadata backup.bak.enc");
+    expect(filenameFromContentDisposition("attachment; filename=\"..\"", "backup.bak.enc")).toBe(
+      "backup.bak.enc",
+    );
+  });
+
+  it("returns the binary body and only accepts a valid SHA-256 header", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response("bytes", {
+        headers: {
+          "Content-Disposition": "attachment; filename=backup.bak.enc",
+          "X-Checksum-SHA256": "not-a-checksum",
+        },
+      }),
+    );
+
+    const result = await apiDownload("/download");
+    expect(result.filename).toBe("backup.bak.enc");
+    expect(result.checksumSha256).toBeNull();
+    expect(await result.blob.text()).toBe("bytes");
   });
 });
 

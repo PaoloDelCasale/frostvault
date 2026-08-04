@@ -9,6 +9,13 @@ export type ApiFetch = (
   init?: RequestInit,
 ) => Promise<Response>;
 
+export type ApiDownload = {
+  blob: Blob;
+  filename: string;
+  /** Normalized X-Checksum-SHA256, or null when the server omitted/invalidated it. */
+  checksumSha256: string | null;
+};
+
 export type ApiClientConfig = {
   fetch?: ApiFetch;
   csrfCookieName?: string;
@@ -213,11 +220,10 @@ async function parseBody(response: Response): Promise<unknown> {
   }
 }
 
-export async function apiRequest<T = unknown>(
-  url: string,
-  options: RequestInit = {},
-  allowReauthRetry = true,
-): Promise<T> {
+function requestOptions(options: RequestInit): RequestInit & {
+  method: string;
+  headers: Headers;
+} {
   const method = (options.method ?? "GET").toUpperCase();
   const headers = new Headers(options.headers);
   if (!headers.has("Content-Type") && options.body !== undefined) {
@@ -226,10 +232,22 @@ export async function apiRequest<T = unknown>(
   if (MUTATING_METHODS.has(method)) {
     headers.set("X-CSRF-Token", resolveCsrfToken());
   }
+  return { ...options, method, headers };
+}
 
-  const response = await resolveFetch()(url, { ...options, method, headers });
+/**
+ * Perform an authenticated request while keeping the shared session, CSRF,
+ * and reauthentication behavior in one place for both JSON and binary APIs.
+ */
+async function requestResponse(
+  url: string,
+  options: RequestInit,
+  allowReauthRetry: boolean,
+): Promise<Response> {
+  const response = await resolveFetch()(url, requestOptions(options));
+  if (response.ok) return response;
+
   const data = await parseBody(response);
-
   if (response.status === 401) {
     navigateTo(SIGN_IN_PATH);
     throw new ApiError("Authentication required.", { status: 401, body: data });
@@ -237,19 +255,102 @@ export async function apiRequest<T = unknown>(
 
   if (isReauthRequired(response.status, data) && allowReauthRetry) {
     await stepUpReauthentication();
-    return apiRequest<T>(url, options, false);
+    return requestResponse(url, options, false);
   }
 
-  if (!response.ok) {
-    const { message, messageKey } = errorMessageFromBody(data, response.status);
-    throw new ApiError(message, {
-      status: response.status,
-      messageKey,
-      body: data,
-    });
-  }
+  const { message, messageKey } = errorMessageFromBody(data, response.status);
+  throw new ApiError(message, {
+    status: response.status,
+    messageKey,
+    body: data,
+  });
+}
 
-  return data as T;
+export async function apiRequest<T = unknown>(
+  url: string,
+  options: RequestInit = {},
+  allowReauthRetry = true,
+): Promise<T> {
+  const response = await requestResponse(url, options, allowReauthRetry);
+  return (await parseBody(response)) as T;
+}
+
+function decodeExtendedFilename(value: string): string {
+  const encoded = /^([^']*)'[^']*'(.*)$/.exec(value)?.[2] ?? value;
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    // A malformed percent escape must not make the entire download fail. The
+    // subsequent filename sanitization still prevents path/control injection.
+    return encoded;
+  }
+}
+
+function stripFilenameControlCharacters(value: string): string {
+  return Array.from(value, (character) => {
+    const code = character.charCodeAt(0);
+    return code < 32 || code === 127 ? "_" : character;
+  }).join("");
+}
+
+function sanitizeDownloadFilename(value: string, fallback: string): string {
+  const sanitized = stripFilenameControlCharacters(value)
+    .replace(/[\\/<>:"|?*]/g, "_")
+    .trim()
+    .replace(/^\.+$/, "")
+    .slice(0, 255);
+  if (sanitized) return sanitized;
+  const safeFallback = stripFilenameControlCharacters(fallback)
+    .replace(/[\\/<>:"|?*]/g, "_")
+    .trim()
+    .replace(/^\.+$/, "")
+    .slice(0, 255);
+  return safeFallback || "download";
+}
+
+/** Parse and sanitize RFC 6266/RFC 5987 Content-Disposition filenames. */
+export function filenameFromContentDisposition(
+  header: string | null,
+  fallback = "download",
+): string {
+  if (!header) return sanitizeDownloadFilename(fallback, "download");
+
+  const extended = /(?:^|;)\s*filename\*\s*=\s*(?:"([^"]*)"|([^;]*))/i.exec(
+    header,
+  );
+  const regular = /(?:^|;)\s*filename\s*=\s*(?:"([^"]*)"|([^;]*))/i.exec(
+    header,
+  );
+  const raw = extended?.[1] ?? extended?.[2] ?? regular?.[1] ?? regular?.[2];
+  if (!raw) return sanitizeDownloadFilename(fallback, "download");
+
+  const unquoted = raw.replace(/\\([\\"])/g, "$1");
+  const decoded = extended ? decodeExtendedFilename(unquoted) : unquoted;
+  return sanitizeDownloadFilename(decoded, fallback);
+}
+
+function checksumFromHeader(value: string | null): string | null {
+  const checksum = value?.trim().toLowerCase() ?? "";
+  return /^[a-f0-9]{64}$/.test(checksum) ? checksum : null;
+}
+
+/** Fetch an authenticated binary response without exposing fetch to pages. */
+export async function apiDownload(
+  url: string,
+  options: RequestInit = {},
+  fallbackFilename = "download",
+): Promise<ApiDownload> {
+  const response = await requestResponse(url, options, true);
+  return {
+    blob: await response.blob(),
+    filename: filenameFromContentDisposition(
+      response.headers.get("Content-Disposition"),
+      fallbackFilename,
+    ),
+    checksumSha256: checksumFromHeader(
+      response.headers.get("X-Checksum-SHA256"),
+    ),
+  };
 }
 
 /**
