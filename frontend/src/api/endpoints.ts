@@ -14,10 +14,8 @@ import type {
   AdminVaultRelocatePayload,
   AdminVaultRelocationResponse,
   AdminVaultsResponse,
-  CostPriceBook,
-  CostPriceBookActivatePayload,
-  CostPriceBookCreatePayload,
-  CostPriceBooksResponse,
+  CostPriceBookActivate,
+  CostPriceBookCreate,
   VaultDecommissionPreview,
   VaultDecommissionSelection,
   VaultDecommissionStartPayload,
@@ -89,6 +87,23 @@ export type RenameCandidate = {
 
 export type RenameCandidatesResponse = { items: RenameCandidate[] };
 export type RenameConfirmationResponse = Record<string, unknown>;
+
+/** Response shape emitted by the admin price-book endpoints. */
+export type CostPriceBook = {
+  id: number | null;
+  name: string;
+  currency: string;
+  effective_at: string;
+  updated_at: string | null;
+  assumptions: Record<string, unknown>;
+  storage_rates: Record<string, number>;
+  restore_rates: Record<string, Record<string, number>>;
+  is_active: boolean;
+};
+
+export type CostPriceBooksResponse = { items: CostPriceBook[] };
+export type CostPriceBookCreatePayload = CostPriceBookCreate;
+export type CostPriceBookActivatePayload = CostPriceBookActivate;
 
 export function fetchFiles(query: FilesQuery = {}): Promise<FilesResponse> {
   const params = new URLSearchParams();

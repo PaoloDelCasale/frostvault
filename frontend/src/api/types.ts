@@ -36,31 +36,6 @@ export type ConfirmFolderRenameAction = components["schemas"]["ConfirmFolderRena
 export type ConfirmRenameAction = components["schemas"]["ConfirmRenameAction"];
 export type CostPriceBookActivate = components["schemas"]["CostPriceBookActivate"];
 export type CostPriceBookCreate = components["schemas"]["CostPriceBookCreate"];
-
-/** Response shape emitted by the admin price-book endpoints. */
-export type CostPriceBook = {
-  id: number | null;
-  name: string;
-  currency: string;
-  effective_at: string;
-  updated_at: string | null;
-  assumptions: Record<string, unknown>;
-  storage_rates: Record<string, number>;
-  restore_rates: Record<string, Record<string, number>>;
-  is_active: boolean;
-};
-
-export type CostPriceBooksResponse = { items: CostPriceBook[] };
-export type CostPriceBookCreatePayload = {
-  name: string;
-  currency: string;
-  effective_at: string;
-  assumptions: Record<string, unknown>;
-  storage_rates: Record<string, number>;
-  restore_rates: Record<string, Record<string, number>>;
-  reason: string;
-};
-export type CostPriceBookActivatePayload = { reason: string };
 export type DirectoryListItem = components["schemas"]["DirectoryListItem"];
 export type EncryptionMode = components["schemas"]["EncryptionMode"];
 export type FileAction = components["schemas"]["FileAction"];

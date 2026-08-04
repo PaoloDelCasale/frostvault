@@ -104,6 +104,12 @@ export {
   upsertLifecycleFolderOverride,
   validateOidcDraft,
 } from "./endpoints";
+export type {
+  CostPriceBook,
+  CostPriceBookActivatePayload,
+  CostPriceBookCreatePayload,
+  CostPriceBooksResponse,
+} from "./endpoints";
 
 export { createLatestRequestScope } from "./latest";
 export type { LatestRequestHandle, LatestRequestScope } from "./latest";
@@ -138,10 +144,6 @@ export type {
   AdminIdentity,
   AdminInvite,
   AdminInvitesResponse,
-  CostPriceBook,
-  CostPriceBookActivatePayload,
-  CostPriceBookCreatePayload,
-  CostPriceBooksResponse,
   AdminMembershipCreatePayload,
   AdminOwnerTransferPayload,
   AdminUser,
