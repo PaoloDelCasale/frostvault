@@ -7,9 +7,12 @@ import {
   confirmFolderRename,
   confirmRecoveryCustody,
   createAdminCostPriceBook,
+  downloadAdminMetadataBackup,
+  fetchAdminMetadataBackups,
   estimateAdminStorageCost,
   fetchActiveAdminCostPriceBook,
   fetchAdminCostPriceBooks,
+  runAdminMetadataBackup,
   createVault,
   exportRecoverySecret,
   fetchI18nCatalog,
@@ -166,6 +169,105 @@ describe("foundation endpoint helpers", () => {
         reason: "operator renamed directory",
       }),
     });
+  });
+
+  it("metadata backup helpers use typed admin routes without exposing filesystem paths", async () => {
+    configureApiClient({ csrfToken: "backup-csrf" });
+    const run = {
+      id: 4,
+      created_at: "2026-07-01T00:00:00+00:00",
+      finished_at: "2026-07-01T00:00:01+00:00",
+      reason: "manual",
+      backend: "sqlite",
+      status: "succeeded",
+      digest_sha256: "a".repeat(64),
+      database_sha256: "b".repeat(64),
+      local_path: "/data/backups/metadata-4.bak.enc",
+      s3_key: "system/backups/metadata-4.bak.enc",
+      size_bytes: 42,
+      error_message: null,
+      verified_at: null,
+    };
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: {
+            last_status: "succeeded",
+            last_run: run,
+            succeeded_count: 1,
+            failed_count: 0,
+          },
+          runs: [run],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ok: true,
+          reason: "manual",
+          path: "/data/backups/metadata-5.bak.enc",
+          local_path: "/data/backups/metadata-5.bak.enc",
+          digest_sha256: "c".repeat(64),
+          database_sha256: "d".repeat(64),
+          backend: "sqlite",
+          s3_key: null,
+          size_bytes: 43,
+          filename: "metadata-5.bak.enc",
+          created_at: "2026-07-01T00:00:02+00:00",
+        }),
+      );
+
+    const listed = await fetchAdminMetadataBackups();
+    expect(listed.runs[0]).toEqual({
+      id: 4,
+      created_at: run.created_at,
+      finished_at: run.finished_at,
+      reason: run.reason,
+      backend: run.backend,
+      status: run.status,
+      digest_sha256: run.digest_sha256,
+      database_sha256: run.database_sha256,
+      s3_key: run.s3_key,
+      size_bytes: run.size_bytes,
+      error_message: null,
+      verified_at: null,
+    });
+    expect(listed.runs[0]).not.toHaveProperty("local_path");
+    expect(listed.status.last_run).not.toHaveProperty("local_path");
+
+    const result = await runAdminMetadataBackup();
+    expect(result).not.toHaveProperty("path");
+    expect(result).not.toHaveProperty("local_path");
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      reason: "operator requested backup",
+    });
+    expect(
+      new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get("X-CSRF-Token"),
+    ).toBe("backup-csrf");
+  });
+
+  it("downloads metadata artifacts through the authenticated binary helper", async () => {
+    const checksum = "e".repeat(64);
+    fetchMock.mockResolvedValueOnce(
+      new Response("ciphertext", {
+        status: 200,
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "Content-Disposition": "attachment; filename*=UTF-8''metadata%20backup.bak.enc",
+          "X-Checksum-SHA256": checksum.toUpperCase(),
+        },
+      }),
+    );
+
+    const artifact = await downloadAdminMetadataBackup(9);
+    expect(artifact.filename).toBe("metadata backup.bak.enc");
+    expect(artifact.checksumSha256).toBe(checksum);
+    expect(await artifact.blob.text()).toBe("ciphertext");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/admin/metadata-backups/download/9",
+    );
+    expect(
+      new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("X-CSRF-Token"),
+    ).toBeNull();
   });
 
   it("cost price book helpers use the admin routes and shared mutation protections", async () => {

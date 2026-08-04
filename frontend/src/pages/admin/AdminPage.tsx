@@ -36,6 +36,7 @@ import { RelocateVaultDialog } from "./RelocateVaultDialog";
 import { SettingsSection } from "./SettingsSection";
 import { SourceVolumesSection } from "./SourceVolumesSection";
 import { CostPriceBooksSection } from "./CostPriceBooksSection";
+import { MetadataBackupsSection } from "./MetadataBackupsSection";
 import { StorageCostEstimatesSection } from "./StorageCostEstimatesSection";
 import { WorkerErrorsSection } from "./WorkerErrorsSection";
 
@@ -146,7 +147,8 @@ export function AdminPage() {
         if (
           pathname !== "/admin/cost-price-books" &&
           pathname !== "/admin/storage-cost-estimates" &&
-          pathname !== "/admin/worker-errors"
+          pathname !== "/admin/worker-errors" &&
+          pathname !== "/admin/metadata-backups"
         ) {
           await Promise.all([loadUsers(), loadVaults()]);
           try {
@@ -345,6 +347,7 @@ export function AdminPage() {
               ["admin.section_price_books", "/admin/cost-price-books"],
               ["admin.section_storage_estimates", "/admin/storage-cost-estimates"],
               ["admin.section_worker_errors", "/admin/worker-errors"],
+              ["admin.section_metadata_backups", "/admin/metadata-backups"],
             ].map(([labelKey, href]) => (
               <li key={href}>
                 <a
@@ -365,6 +368,8 @@ export function AdminPage() {
           <StorageCostEstimatesSection />
         ) : pathname === "/admin/worker-errors" ? (
           <WorkerErrorsSection />
+        ) : pathname === "/admin/metadata-backups" ? (
+          <MetadataBackupsSection />
         ) : settingsMode ? (
           <SettingsSection mode={settingsMode} />
         ) : pathname === "/admin/oidc" ? (

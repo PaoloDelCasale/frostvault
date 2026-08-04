@@ -462,6 +462,7 @@ describe("AdminPage — administration navigation (issue #136 seam 1)", () => {
       ["Cost price books", "/admin/cost-price-books"],
       ["Storage cost estimates", "/admin/storage-cost-estimates"],
       ["Worker errors", "/admin/worker-errors"],
+      ["Metadata backups", "/admin/metadata-backups"],
     ];
 
     for (const [name, href] of expectedRoutes) {
