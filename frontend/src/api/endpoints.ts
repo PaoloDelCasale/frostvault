@@ -107,6 +107,22 @@ export type CostPriceBooksResponse = { items: CostPriceBook[] };
 export type CostPriceBookCreatePayload = CostPriceBookCreate;
 export type CostPriceBookActivatePayload = CostPriceBookActivate;
 
+/** Persisted worker errors are currently exposed through a generic JSON response. */
+export type AdminWorkerError = {
+  id: number;
+  created_at: string;
+  component: string;
+  classification: string;
+  message: string;
+  vault_id: number | null;
+  detail: Record<string, unknown>;
+};
+
+export type AdminWorkerErrorsResponse = { items: AdminWorkerError[] };
+/** Short aliases for consumers that do not need to repeat the admin scope. */
+export type WorkerError = AdminWorkerError;
+export type WorkerErrorsResponse = AdminWorkerErrorsResponse;
+
 export function fetchFiles(query: FilesQuery = {}): Promise<FilesResponse> {
   const params = new URLSearchParams();
   params.set("q", query.q ?? "");
@@ -372,6 +388,10 @@ export function rotateOidcSecret(clientSecret: string): Promise<OidcConfiguratio
 
 export function fetchSystemSettings(): Promise<SystemSettingsResponse> {
   return apiRequest<SystemSettingsResponse>("/api/admin/settings");
+}
+
+export function fetchAdminWorkerErrors(): Promise<AdminWorkerErrorsResponse> {
+  return apiRequest<AdminWorkerErrorsResponse>("/api/admin/worker-errors");
 }
 
 export function fetchAdminCostPriceBooks(): Promise<CostPriceBooksResponse> {
