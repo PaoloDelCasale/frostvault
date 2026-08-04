@@ -235,6 +235,7 @@ export default function App() {
     <AppShell
       capabilities={capabilities}
       t={t}
+      queryClient={queryClient}
       handlers={{
         onManageAccess: () => navigate("/vault/access"),
         onAdministration: () => navigate("/admin"),
@@ -252,6 +253,10 @@ export default function App() {
         },
         onLocaleChange: (locale) => {
           void setLocale(locale).then(async () => {
+            await queryClient.invalidateQueries({
+              queryKey: apiQueryKeys.notifications,
+              refetchType: "active",
+            });
             const nextMe = await fetchMe();
             setMe(nextMe);
           });

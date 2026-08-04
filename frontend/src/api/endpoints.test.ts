@@ -17,6 +17,8 @@ import {
   exportRecoverySecret,
   fetchI18nCatalog,
   fetchMe,
+  fetchNotificationPreferences,
+  fetchNotifications,
   fetchRenameCandidates,
   fetchVaults,
   relocateAdminVault,
@@ -24,6 +26,8 @@ import {
   saveAdminSmtpEndpoint,
   saveAdminWebhookEndpoint,
   selectVault,
+  markNotificationRead,
+  setNotificationPreference,
 } from "./endpoints";
 
 function jsonResponse(data: unknown, status = 200): Response {
@@ -106,6 +110,75 @@ describe("foundation endpoint helpers", () => {
     });
     for (const call of fetchMock.mock.calls.slice(1)) {
       expect(new Headers(call[1]?.headers).get("X-CSRF-Token")).toBe("rename-csrf");
+    }
+  });
+
+  it("uses the notification inbox and personal preference contracts", async () => {
+    document.cookie = "frostvault_csrf=notification-csrf";
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ items: [], unread_count: 3 }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ items: [] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: 42,
+          user_id: 7,
+          vault_id: 9,
+          event: "job_completed",
+          channel: "in_app",
+          enabled: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: 10,
+          user_id: 7,
+          vault_id: 9,
+          event: "job_completed",
+          title: "Completed",
+          body: "archive.txt",
+          read: true,
+        }),
+      );
+
+    await expect(fetchNotifications()).resolves.toMatchObject({
+      items: [],
+      unread_count: 3,
+    });
+    await expect(fetchNotificationPreferences()).resolves.toMatchObject({
+      items: [],
+    });
+    await expect(
+      setNotificationPreference({
+        event: "job_completed",
+        channel: "in_app",
+        enabled: true,
+      }),
+    ).resolves.toMatchObject({ enabled: true });
+    await expect(markNotificationRead(10)).resolves.toMatchObject({
+      id: 10,
+      read: true,
+    });
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/notifications",
+      "/api/vault/notification-preferences",
+      "/api/vault/notification-preferences",
+      "/api/notifications/read",
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
+      event: "job_completed",
+      channel: "in_app",
+      enabled: true,
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
+      notification_id: 10,
+    });
+    for (const call of fetchMock.mock.calls.slice(2)) {
+      expect(new Headers(call[1]?.headers).get("X-CSRF-Token")).toBe(
+        "notification-csrf",
+      );
     }
   });
 
