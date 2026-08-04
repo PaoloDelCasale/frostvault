@@ -223,6 +223,7 @@ export default function App() {
           me.decommission_vault?.decommission_state ?? "active"
         }
         isAdmin={Boolean(me.is_admin)}
+        isVaultOwner={Boolean(me.vault?.is_vault_owner)}
         onBack={() => navigate("/")}
         onTransferred={() => navigate("/")}
       />

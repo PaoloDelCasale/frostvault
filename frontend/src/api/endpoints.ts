@@ -181,6 +181,28 @@ export type AdminWorkerErrorsResponse = { items: AdminWorkerError[] };
 export type WorkerError = AdminWorkerError;
 export type WorkerErrorsResponse = AdminWorkerErrorsResponse;
 
+/**
+ * Audit-event routes still use a generic JSON response. The server returns the
+ * newest 100 rows and intentionally exposes no query parameters, so clients
+ * must treat any filtering as local to this bounded loaded window.
+ */
+export type AuditEvent = {
+  id: number;
+  created_at: string;
+  event: string;
+  outcome: string | null;
+  actor_user_id: number | null;
+  vault_id: number | null;
+  job_id: number | null;
+  correlation_id: string | null;
+  visibility: string;
+  detail: Record<string, unknown>;
+};
+
+export type AuditEventsResponse = { events: AuditEvent[] };
+export type VaultAuditEventsResponse = AuditEventsResponse;
+export type AdminAuditEventsResponse = AuditEventsResponse;
+
 /** Safe metadata-backup fields exposed to the SPA; filesystem paths are omitted. */
 export type MetadataBackupRun = {
   id: number;
@@ -600,6 +622,16 @@ export function setVaultNotificationPreference(
 // need to repeat the Vault scope; both use the same authenticated routes.
 export const fetchNotificationPreferences = fetchVaultNotificationPreferences;
 export const setNotificationPreference = setVaultNotificationPreference;
+
+/** Fetch the newest bounded Vault-visible audit window; this endpoint has no filters. */
+export function fetchVaultAuditEvents(): Promise<VaultAuditEventsResponse> {
+  return apiRequest<VaultAuditEventsResponse>("/api/audit-events");
+}
+
+/** Fetch the newest bounded global audit window; this endpoint has no filters. */
+export function fetchAdminAuditEvents(): Promise<AdminAuditEventsResponse> {
+  return apiRequest<AdminAuditEventsResponse>("/api/admin/audit-events");
+}
 
 export function fetchAdminWorkerErrors(): Promise<AdminWorkerErrorsResponse> {
   return apiRequest<AdminWorkerErrorsResponse>("/api/admin/worker-errors");

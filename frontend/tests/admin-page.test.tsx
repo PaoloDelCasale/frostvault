@@ -462,6 +462,7 @@ describe("AdminPage — administration navigation (issue #136 seam 1)", () => {
       ["Deployment configuration", "/admin/deployment"],
       ["Cost price books", "/admin/cost-price-books"],
       ["Storage cost estimates", "/admin/storage-cost-estimates"],
+      ["Audit events", "/admin/audit-events"],
       ["Worker errors", "/admin/worker-errors"],
       ["Metadata backups", "/admin/metadata-backups"],
     ];
