@@ -1,0 +1,3537 @@
+{
+  "schemas": {
+    "AdminIdentitiesResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/AdminIdentity"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "AdminIdentity": {
+      "additionalProperties": true,
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "number"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "issuer",
+        "subject",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "AdminInvite": {
+      "additionalProperties": true,
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "created_by": {
+          "type": "number"
+        },
+        "expires_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "number"
+        },
+        "target_user_id": {
+          "type": "number"
+        },
+        "target_username": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "target_user_id",
+        "target_username",
+        "created_by",
+        "expires_at"
+      ],
+      "type": "object"
+    },
+    "AdminInvitesResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/AdminInvite"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "AdminMembershipCreatePayload": {
+      "additionalProperties": true,
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "operator",
+            "viewer"
+          ],
+          "type": "string"
+        },
+        "user_id": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "user_id",
+        "role",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "AdminOwnerTransferPayload": {
+      "additionalProperties": true,
+      "properties": {
+        "new_owner_user_id": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "new_owner_user_id",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "AdminUser": {
+      "additionalProperties": true,
+      "description": "Global administration endpoints (issue #69).",
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "has_password": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "number"
+        },
+        "identity_count": {
+          "type": "number"
+        },
+        "is_admin": {
+          "type": "boolean"
+        },
+        "username": {
+          "type": "string"
+        },
+        "vault_count": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "username",
+        "display_name",
+        "is_admin",
+        "active",
+        "vault_count",
+        "has_password",
+        "identity_count"
+      ],
+      "type": "object"
+    },
+    "AdminUserCreatePayload": {
+      "additionalProperties": true,
+      "properties": {
+        "display_name": {
+          "type": "string"
+        },
+        "is_admin": {
+          "type": "boolean"
+        },
+        "password": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "display_name",
+        "username",
+        "password",
+        "is_admin"
+      ],
+      "type": "object"
+    },
+    "AdminUserUpdatePayload": {
+      "additionalProperties": true,
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "is_admin": {
+          "type": "boolean"
+        },
+        "password": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "AdminUsersResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/AdminUser"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "AdminVault": {
+      "additionalProperties": true,
+      "properties": {
+        "decommission_state": {
+          "enum": [
+            "active",
+            "decommissioning",
+            "decommissioned"
+          ],
+          "type": "string"
+        },
+        "decommissioned_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "encryption_mode": {
+          "type": "string"
+        },
+        "id": {
+          "type": "number"
+        },
+        "member_count": {
+          "type": "number"
+        },
+        "name": {
+          "type": "string"
+        },
+        "root_released_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "s3_bucket": {
+          "type": "string"
+        },
+        "s3_prefix": {
+          "type": "string"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "source_root": {
+          "type": "string"
+        },
+        "uuid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "slug",
+        "name",
+        "source_root",
+        "s3_prefix",
+        "enabled",
+        "member_count"
+      ],
+      "type": "object"
+    },
+    "AdminVaultCreatePayload": {
+      "additionalProperties": true,
+      "properties": {
+        "creation_mode": {
+          "enum": [
+            "empty",
+            "adopt"
+          ],
+          "type": "string"
+        },
+        "encryption_mode": {
+          "enum": [
+            "plain",
+            "crypt"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "owner_user_id": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "relative_path": {
+          "type": "string"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "volume_alias": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "slug",
+        "owner_user_id",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "AdminVaultMember": {
+      "additionalProperties": true,
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "number"
+        },
+        "role": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "username",
+        "display_name",
+        "active",
+        "role"
+      ],
+      "type": "object"
+    },
+    "AdminVaultMembersResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/AdminVaultMember"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "AdminVaultRelocatePayload": {
+      "additionalProperties": true,
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "relative_path": {
+          "type": "string"
+        },
+        "volume_alias": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "volume_alias",
+        "relative_path",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "AdminVaultRelocationResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "full_scan_required": {
+          "type": "boolean"
+        },
+        "relocation_state": {
+          "enum": [
+            "scan_required",
+            "ready"
+          ],
+          "type": "string"
+        },
+        "source_root": {
+          "type": "string"
+        },
+        "vault_id": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "vault_id",
+        "source_root",
+        "relocation_state",
+        "full_scan_required"
+      ],
+      "type": "object"
+    },
+    "AdminVaultsResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/AdminVault"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "ArchiveListItem": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/VaultFileListItem"
+        },
+        {
+          "$ref": "#/components/schemas/DirectoryListItem"
+        }
+      ]
+    },
+    "ArchiveVersionItem": {
+      "additionalProperties": {},
+      "properties": {
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "object_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recoverable": {
+          "type": "boolean"
+        },
+        "size": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "storage_class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version_number": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "version_number",
+        "recoverable"
+      ],
+      "type": "object"
+    },
+    "ArchiveVersionSummary": {
+      "additionalProperties": {},
+      "properties": {
+        "object_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "storage_class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version_number": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "AuthMethod": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "CloudDeletionPreview": {
+      "additionalProperties": {},
+      "properties": {
+        "byte_count": {
+          "type": "number"
+        },
+        "delete_marker_count": {
+          "type": "number"
+        },
+        "delete_marker_explanation": {
+          "type": "string"
+        },
+        "object_count": {
+          "type": "number"
+        },
+        "version_count": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "object_count",
+        "version_count",
+        "delete_marker_count",
+        "byte_count"
+      ],
+      "type": "object"
+    },
+    "CloudDeletionSettings": {
+      "additionalProperties": true,
+      "properties": {
+        "accepted_single_identity_risk": {
+          "type": "string"
+        },
+        "delete_marker_explanation": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "generated_phrase": {
+          "type": "string"
+        },
+        "purge_delay_seconds": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "CloudPurgePayload": {
+      "additionalProperties": true,
+      "properties": {
+        "confirmation": {
+          "type": "string"
+        },
+        "generated_phrase": {
+          "type": "string"
+        },
+        "is_directory": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "confirmation",
+        "reason",
+        "generated_phrase"
+      ],
+      "type": "object"
+    },
+    "DirectoryListItem": {
+      "additionalProperties": true,
+      "description": "Directory aggregate as returned by /api/files browse mode.",
+      "properties": {
+        "available_actions": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "type": "object"
+        },
+        "cloud_size": {
+          "type": "number"
+        },
+        "item_count": {
+          "type": "number"
+        },
+        "lifecycle_pinned": {
+          "type": "boolean"
+        },
+        "lifecycle_pinned_partial": {
+          "type": "boolean"
+        },
+        "local_size": {
+          "type": "number"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "state_counts": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "type": "object"
+        },
+        "storage_class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "storage_class_count": {
+          "type": "number"
+        },
+        "total_size": {
+          "type": "number"
+        },
+        "type": {
+          "const": "directory",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "name",
+        "path",
+        "item_count",
+        "total_size",
+        "state"
+      ],
+      "type": "object"
+    },
+    "EncryptionMode": {
+      "enum": [
+        "plain",
+        "crypt"
+      ],
+      "type": "string"
+    },
+    "FileHistoryResponse": {
+      "additionalProperties": true,
+      "description": "Path History + Archive Versions for one Vault File (/api/file-history).",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "path_history": {
+          "items": {
+            "$ref": "#/components/schemas/PathHistoryEntry"
+          },
+          "type": "array"
+        },
+        "vault_file_id": {
+          "type": "string"
+        },
+        "versions": {
+          "items": {
+            "$ref": "#/components/schemas/ArchiveVersionSummary"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "vault_file_id",
+        "path",
+        "path_history",
+        "versions"
+      ],
+      "type": "object"
+    },
+    "FileOperationAction": {
+      "description": "Job / file-operation types (issue #67).",
+      "enum": [
+        "upload",
+        "recover",
+        "free-space",
+        "storage-class",
+        "cloud-archive",
+        "cloud-purge",
+        "rename"
+      ],
+      "type": "string"
+    },
+    "FileOperationPayload": {
+      "additionalProperties": true,
+      "properties": {
+        "archive_version_id": {
+          "type": "string"
+        },
+        "is_directory": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "restore_days": {
+          "type": "number"
+        },
+        "restore_tier": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "FileOperationResponse": {
+      "additionalProperties": {},
+      "properties": {
+        "archive_version_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "estimated_cost_eur": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "estimated_hours": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "group_id": {
+          "type": "string"
+        },
+        "item_count": {
+          "type": "number"
+        },
+        "job_ids": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "message": {
+          "type": "string"
+        },
+        "message_key": {
+          "type": "string"
+        },
+        "preview": {
+          "$ref": "#/components/schemas/CloudDeletionPreview"
+        },
+        "quota": {},
+        "restore_days": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "restore_tier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "total_bytes": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "group_id"
+      ],
+      "type": "object"
+    },
+    "FileVersionsResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "default_archive_version_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default_restore_days": {
+          "type": "number"
+        },
+        "default_restore_tier": {
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/ArchiveVersionItem"
+          },
+          "type": "array"
+        },
+        "path": {
+          "type": "string"
+        },
+        "recoverable_count": {
+          "type": "number"
+        },
+        "supported_restore_tiers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "path",
+        "items",
+        "recoverable_count",
+        "default_archive_version_id",
+        "supported_restore_tiers",
+        "default_restore_tier",
+        "default_restore_days"
+      ],
+      "type": "object"
+    },
+    "FilesQuery": {
+      "additionalProperties": true,
+      "properties": {
+        "directory": {
+          "type": "string"
+        },
+        "page": {
+          "type": "number"
+        },
+        "page_size": {
+          "type": "number"
+        },
+        "q": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "FilesResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "directory": {
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/ArchiveListItem"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "page": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "items",
+        "total",
+        "page",
+        "directory",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "FilesystemCheck": {
+      "additionalProperties": true,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "remediation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "status",
+        "message"
+      ],
+      "type": "object"
+    },
+    "FilesystemFinding": {
+      "additionalProperties": true,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "remediation": {
+          "description": "Present when the backend or a scan attaches remediation advice.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "FilesystemHealth": {
+      "additionalProperties": true,
+      "properties": {
+        "checks": {
+          "items": {
+            "$ref": "#/components/schemas/FilesystemCheck"
+          },
+          "type": "array"
+        },
+        "findings": {
+          "items": {
+            "$ref": "#/components/schemas/FilesystemFinding"
+          },
+          "type": "array"
+        },
+        "gid": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "root": {
+          "type": "string"
+        },
+        "source_volume": {
+          "additionalProperties": true,
+          "properties": {
+            "alias": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cloud_catalog_allowed": {
+              "type": "boolean"
+            },
+            "health": {
+              "type": "string"
+            },
+            "local_operations_allowed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "alias",
+            "health",
+            "local_operations_allowed",
+            "cloud_catalog_allowed"
+          ],
+          "type": "object"
+        },
+        "uid": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "ok",
+        "uid",
+        "gid",
+        "checks",
+        "findings"
+      ],
+      "type": "object"
+    },
+    "GlobPreviewResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "excluded": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "included": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "included",
+        "excluded"
+      ],
+      "type": "object"
+    },
+    "I18nCatalogResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "locale": {
+          "type": "string"
+        },
+        "locales": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "messages": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "locale",
+        "locales",
+        "messages"
+      ],
+      "type": "object"
+    },
+    "JobCancelPayload": {
+      "additionalProperties": true,
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "group_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "group_id",
+        "action"
+      ],
+      "type": "object"
+    },
+    "JobCancelResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "cancelled_count": {
+          "type": "number"
+        },
+        "message": {
+          "type": "string"
+        },
+        "message_key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message",
+        "cancelled_count"
+      ],
+      "type": "object"
+    },
+    "JobGroup": {
+      "additionalProperties": true,
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/FileOperationAction"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "cancelled_count": {
+          "type": "number"
+        },
+        "completed_count": {
+          "type": "number"
+        },
+        "estimated_cost_eur": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "estimated_hours": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "failed_count": {
+          "type": "number"
+        },
+        "id": {
+          "type": "string"
+        },
+        "item_count": {
+          "type": "number"
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "pending_until": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "percent": {
+          "type": "number"
+        },
+        "restore_days": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "restore_tier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/components/schemas/JobStatus"
+        },
+        "total_bytes": {
+          "type": "number"
+        },
+        "transferred_bytes": {
+          "type": "number"
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "action",
+        "status",
+        "total_bytes",
+        "transferred_bytes",
+        "item_count",
+        "completed_count",
+        "failed_count",
+        "cancelled_count",
+        "percent"
+      ],
+      "type": "object"
+    },
+    "JobRecord": {
+      "additionalProperties": true,
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/FileOperationAction"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "approved_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "estimated_cost_eur": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "estimated_hours": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "group_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "group_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "number"
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message_params": {},
+        "path": {
+          "type": "string"
+        },
+        "pending_until": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requested_at": {
+          "type": "string"
+        },
+        "restore_days": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "restore_tier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/components/schemas/JobStatus"
+        },
+        "total_bytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "transferred_bytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "action",
+        "status"
+      ],
+      "type": "object"
+    },
+    "JobStatus": {
+      "type": "string"
+    },
+    "JobsResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "groups": {
+          "items": {
+            "$ref": "#/components/schemas/JobGroup"
+          },
+          "type": "array"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/JobRecord"
+          },
+          "type": "array"
+        },
+        "locale": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "items",
+        "groups"
+      ],
+      "type": "object"
+    },
+    "LifecycleFolderOverride": {
+      "additionalProperties": true,
+      "properties": {
+        "folder_path": {
+          "type": "string"
+        },
+        "policy_id": {
+          "type": [
+            "number",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "folder_path",
+        "policy_id"
+      ],
+      "type": "object"
+    },
+    "LifecycleGuidedProfile": {
+      "additionalProperties": true,
+      "properties": {
+        "expiration_days": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "noncurrent_expiration_days": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "noncurrent_transitions": {
+          "items": {
+            "$ref": "#/components/schemas/LifecycleTransition"
+          },
+          "type": "array"
+        },
+        "transitions": {
+          "items": {
+            "$ref": "#/components/schemas/LifecycleTransition"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "LifecyclePolicy": {
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "profile": {
+          "$ref": "#/components/schemas/LifecycleProfile"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "LifecycleProfile": {
+      "additionalProperties": true,
+      "properties": {
+        "expiration_days": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "noncurrent_expiration_days": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "noncurrent_transitions": {
+          "items": {
+            "$ref": "#/components/schemas/LifecycleTransition"
+          },
+          "type": "array"
+        },
+        "transitions": {
+          "items": {
+            "$ref": "#/components/schemas/LifecycleTransition"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "transitions",
+        "noncurrent_transitions"
+      ],
+      "type": "object"
+    },
+    "LifecycleProfileSelection": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "properties": {
+            "guided_profile": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "guided_profile"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": true,
+          "properties": {
+            "profile": {
+              "$ref": "#/components/schemas/LifecycleProfile"
+            }
+          },
+          "required": [
+            "profile"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "LifecycleResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "default_policy_id": {
+          "type": [
+            "number",
+            "string",
+            "null"
+          ]
+        },
+        "folder_overrides": {
+          "items": {
+            "$ref": "#/components/schemas/LifecycleFolderOverride"
+          },
+          "type": "array"
+        },
+        "guided_profiles": {
+          "additionalProperties": {
+            "$ref": "#/components/schemas/LifecycleGuidedProfile"
+          },
+          "type": "object"
+        },
+        "policies": {
+          "items": {
+            "$ref": "#/components/schemas/LifecyclePolicy"
+          },
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "default_policy_id",
+        "folder_overrides",
+        "policies",
+        "guided_profiles"
+      ],
+      "type": "object"
+    },
+    "LifecycleTransition": {
+      "additionalProperties": true,
+      "properties": {
+        "days": {
+          "type": "number"
+        },
+        "storage_class": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "days",
+        "storage_class"
+      ],
+      "type": "object"
+    },
+    "LocaleUpdateResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "locale": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "message_key": {
+          "type": "string"
+        },
+        "messages": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "locale",
+        "message",
+        "message_key",
+        "messages"
+      ],
+      "type": "object"
+    },
+    "MeDecommissionVault": {
+      "additionalProperties": true,
+      "properties": {
+        "decommission_state": {
+          "enum": [
+            "decommissioning",
+            "decommissioned"
+          ],
+          "type": "string"
+        },
+        "id": {
+          "type": "number"
+        },
+        "name": {
+          "type": "string"
+        },
+        "root_released": {
+          "type": "boolean"
+        },
+        "root_released_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "slug": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "slug",
+        "name",
+        "decommission_state",
+        "root_released"
+      ],
+      "type": "object"
+    },
+    "MeResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "auth_method": {
+          "$ref": "#/components/schemas/AuthMethod"
+        },
+        "csrf_token": {
+          "type": "string"
+        },
+        "decommission_vault": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/MeDecommissionVault"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "number"
+        },
+        "is_admin": {
+          "type": "boolean"
+        },
+        "locale": {
+          "type": "string"
+        },
+        "locales": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "session_version": {
+          "type": "number"
+        },
+        "username": {
+          "type": "string"
+        },
+        "vault": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/MeVault"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "username",
+        "display_name",
+        "is_admin",
+        "active",
+        "session_version",
+        "csrf_token",
+        "auth_method",
+        "locale",
+        "locales",
+        "vault"
+      ],
+      "type": "object"
+    },
+    "MeVault": {
+      "additionalProperties": true,
+      "properties": {
+        "can_operate": {
+          "type": "boolean"
+        },
+        "cloud_deletion_enabled": {
+          "type": "boolean"
+        },
+        "delete_enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "number"
+        },
+        "is_vault_owner": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/components/schemas/VaultRole"
+        },
+        "slug": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "slug",
+        "name",
+        "role",
+        "can_operate",
+        "delete_enabled",
+        "cloud_deletion_enabled",
+        "is_vault_owner"
+      ],
+      "type": "object"
+    },
+    "OidcConfigurationResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "active": {
+          "$ref": "#/components/schemas/OidcConfigurationValues"
+        },
+        "configuration_status": {
+          "type": "string"
+        },
+        "draft": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/OidcConfigurationValues"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_validation": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "properties": {
+                "error": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "validated_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "active",
+        "draft",
+        "configuration_status",
+        "last_validation"
+      ],
+      "type": "object"
+    },
+    "OidcConfigurationValues": {
+      "additionalProperties": true,
+      "description": "Managed OIDC configuration (issues #134 and #136).",
+      "properties": {
+        "callback_url": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "client_secret_configured": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "login_transaction_ttl_seconds": {
+          "type": "number"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "validation_status": {
+          "type": "string"
+        },
+        "version": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "issuer",
+        "client_id",
+        "client_secret_configured",
+        "scopes",
+        "login_transaction_ttl_seconds"
+      ],
+      "type": "object"
+    },
+    "OidcDraftPayload": {
+      "additionalProperties": true,
+      "properties": {
+        "client_id": {
+          "type": "string"
+        },
+        "client_secret": {
+          "type": "string"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "login_transaction_ttl_seconds": {
+          "type": "number"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "issuer",
+        "client_id",
+        "client_secret",
+        "scopes",
+        "login_transaction_ttl_seconds"
+      ],
+      "type": "object"
+    },
+    "OperatingWindow": {
+      "additionalProperties": true,
+      "properties": {
+        "end": {
+          "type": "string"
+        },
+        "start": {
+          "type": "string"
+        },
+        "weekday": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "weekday",
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
+    "OperationPolicy": {
+      "additionalProperties": true,
+      "properties": {
+        "auto_local_cleanup": {
+          "type": "boolean"
+        },
+        "auto_upload": {
+          "type": "boolean"
+        },
+        "bandwidth_limit_kibps": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "exclude_globs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include_globs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "local_retention_days": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "operating_windows": {
+          "items": {
+            "$ref": "#/components/schemas/OperatingWindow"
+          },
+          "type": "array"
+        },
+        "stability_seconds": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "auto_upload",
+        "auto_local_cleanup",
+        "local_retention_days",
+        "stability_seconds",
+        "include_globs",
+        "exclude_globs",
+        "bandwidth_limit_kibps",
+        "operating_windows"
+      ],
+      "type": "object"
+    },
+    "PathHistoryEntry": {
+      "additionalProperties": true,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "valid_from": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "valid_to": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "QuotaDecision": {
+      "additionalProperties": true,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "projected": {
+          "type": "number"
+        },
+        "severity": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "QuotaEvaluation": {
+      "additionalProperties": true,
+      "properties": {
+        "allowed": {
+          "type": "boolean"
+        },
+        "decisions": {
+          "items": {
+            "$ref": "#/components/schemas/QuotaDecision"
+          },
+          "type": "array"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "QuotaLimits": {
+      "additionalProperties": true,
+      "properties": {
+        "concurrency_hard_limit": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "concurrency_soft_limit": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "restore_30d_hard_limit_bytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "restore_30d_soft_limit_bytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "storage_hard_limit_bytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "storage_soft_limit_bytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "QuotaUsage": {
+      "additionalProperties": true,
+      "properties": {
+        "concurrency": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "restore_30d_bytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "restore_request_unknown": {
+          "type": "boolean"
+        },
+        "storage_bytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "storage_unknown": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "RecoverEstimateResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "archive_version_id": {
+          "type": "string"
+        },
+        "estimate": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/RestoreEstimate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "high_impact": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "requires_restore": {
+          "type": "boolean"
+        },
+        "restore_object_irreversible": {
+          "type": "boolean"
+        },
+        "storage_class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "archive_version_id",
+        "requires_restore",
+        "restore_object_irreversible",
+        "high_impact",
+        "estimate"
+      ],
+      "type": "object"
+    },
+    "RecoveryConfirmRequest": {
+      "additionalProperties": true,
+      "properties": {
+        "acknowledged": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "acknowledged"
+      ],
+      "type": "object"
+    },
+    "RecoveryConfirmResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "recovery_custody_confirmed": {
+          "type": "boolean"
+        },
+        "recovery_custody_confirmed_at": {
+          "type": "string"
+        },
+        "vault_id": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "vault_id",
+        "recovery_custody_confirmed",
+        "recovery_custody_confirmed_at"
+      ],
+      "type": "object"
+    },
+    "RecoveryExportRequest": {
+      "additionalProperties": true,
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "RecoveryExportResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "recovery_export": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "recovery_export"
+      ],
+      "type": "object"
+    },
+    "RestoreEstimate": {
+      "additionalProperties": true,
+      "properties": {
+        "assumptions": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "days": {
+          "type": "number"
+        },
+        "estimated_cost_eur": {
+          "type": "number"
+        },
+        "estimated_hours": {
+          "type": "number"
+        },
+        "pricing_effective_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pricing_note": {
+          "type": "string"
+        },
+        "restore_object_irreversible": {
+          "type": "boolean"
+        },
+        "tier": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tier",
+        "days",
+        "estimated_cost_eur",
+        "estimated_hours"
+      ],
+      "type": "object"
+    },
+    "ScanResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "message_key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message",
+        "message_key"
+      ],
+      "type": "object"
+    },
+    "SourceAreaAssignPayload": {
+      "additionalProperties": true,
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "relative_path": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "number"
+        },
+        "volume_alias": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_id",
+        "volume_alias",
+        "relative_path",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "SourceAreaGrant": {
+      "additionalProperties": true,
+      "properties": {
+        "availability": {
+          "enum": [
+            "available",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "number"
+        },
+        "relative_path": {
+          "type": "string"
+        },
+        "usable": {
+          "type": "boolean"
+        },
+        "user_id": {
+          "type": "number"
+        },
+        "volume_alias": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "user_id",
+        "volume_alias",
+        "relative_path",
+        "created_at",
+        "availability",
+        "usable"
+      ],
+      "type": "object"
+    },
+    "SourceAreaListResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/SourceAreaGrant"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "SourceDirectoryBrowseResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/SourceDirectoryEntry"
+          },
+          "type": "array"
+        },
+        "relative_path": {
+          "type": "string"
+        },
+        "volume_alias": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "volume_alias",
+        "relative_path",
+        "items"
+      ],
+      "type": "object"
+    },
+    "SourceDirectoryEntry": {
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "navigable": {
+          "type": "boolean"
+        },
+        "occupation": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/SourceDirectoryOccupation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "relative_path": {
+          "type": "string"
+        },
+        "selectable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "relative_path",
+        "navigable",
+        "selectable",
+        "occupation"
+      ],
+      "type": "object"
+    },
+    "SourceDirectoryOccupation": {
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "const": "vault",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "owner_display_name": {
+          "type": "string"
+        },
+        "vault_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "SourceVolumeInventoryItem": {
+      "additionalProperties": true,
+      "properties": {
+        "access": {
+          "type": "string"
+        },
+        "alias": {
+          "type": "string"
+        },
+        "diagnostic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "diagnostic_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "health": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "source_area_count": {
+          "type": "number"
+        },
+        "vault_count": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "alias",
+        "path",
+        "access",
+        "health",
+        "vault_count",
+        "source_area_count",
+        "diagnostic"
+      ],
+      "type": "object"
+    },
+    "SourceVolumeInventoryResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/SourceVolumeInventoryItem"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "StatsResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "active_jobs": {
+          "type": "number"
+        },
+        "delete_enabled": {
+          "type": "boolean"
+        },
+        "filesystem": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/FilesystemHealth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime": {
+          "additionalProperties": {},
+          "properties": {
+            "filesystem": {
+              "additionalProperties": true,
+              "properties": {
+                "findings": {
+                  "items": {
+                    "$ref": "#/components/schemas/FilesystemFinding"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            "last_error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "states": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "type": "object"
+        },
+        "storage": {
+          "additionalProperties": true,
+          "properties": {
+            "cloud_bytes": {
+              "type": "number"
+            },
+            "local_bytes": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "local_bytes",
+            "cloud_bytes"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "states",
+        "storage",
+        "active_jobs",
+        "runtime",
+        "filesystem",
+        "delete_enabled"
+      ],
+      "type": "object"
+    },
+    "StorageClassOptionItem": {
+      "additionalProperties": true,
+      "properties": {
+        "availability_zones": {
+          "type": "string"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "min_duration_days": {
+          "type": "number"
+        },
+        "requires_restore": {
+          "type": "boolean"
+        },
+        "restore_hours_bulk": {
+          "type": "number"
+        },
+        "restore_hours_standard": {
+          "type": "number"
+        },
+        "restore_rate_eur_per_gib_bulk": {
+          "type": "number"
+        },
+        "restore_rate_eur_per_gib_standard": {
+          "type": "number"
+        },
+        "retrieval": {
+          "type": "string"
+        },
+        "retrieval_rate_eur_per_gib": {
+          "type": "number"
+        },
+        "storage_rate_eur_per_gib_month": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "currency",
+        "storage_rate_eur_per_gib_month",
+        "retrieval",
+        "min_duration_days",
+        "requires_restore",
+        "availability_zones"
+      ],
+      "type": "object"
+    },
+    "StorageClassesResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "assumptions": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/StorageClassOptionItem"
+          },
+          "type": "array"
+        },
+        "pricing_effective_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "SystemSettingItem": {
+      "additionalProperties": true,
+      "properties": {
+        "choices": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "configured": {
+          "type": "boolean"
+        },
+        "effective_value": {
+          "$ref": "#/components/schemas/SystemSettingValue"
+        },
+        "environment_variable": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "maximum_length": {
+          "type": "number"
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "minimum_length": {
+          "type": "number"
+        },
+        "mutability": {
+          "type": "string"
+        },
+        "restart_required": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "environment_variable",
+        "source",
+        "mutability",
+        "restart_required"
+      ],
+      "type": "object"
+    },
+    "SystemSettingValue": {
+      "description": "Administration settings endpoints (issues #132\u2013#136).",
+      "type": [
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
+    },
+    "SystemSettingsResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "groups": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/components/schemas/SystemSettingItem"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
+        "revision": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "revision",
+        "groups"
+      ],
+      "type": "object"
+    },
+    "SystemSettingsUpdatePayload": {
+      "additionalProperties": true,
+      "properties": {
+        "overrides": {
+          "additionalProperties": {
+            "$ref": "#/components/schemas/SystemSettingValue"
+          },
+          "type": "object"
+        },
+        "removals": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "revision": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "revision",
+        "overrides",
+        "removals"
+      ],
+      "type": "object"
+    },
+    "UserLookupResult": {
+      "additionalProperties": true,
+      "properties": {
+        "current_vault_role": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/VaultRole"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "number"
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "username",
+        "display_name",
+        "current_vault_role"
+      ],
+      "type": "object"
+    },
+    "VaultCreateRequest": {
+      "additionalProperties": true,
+      "properties": {
+        "creation_mode": {
+          "$ref": "#/components/schemas/VaultCreationMode"
+        },
+        "encryption_mode": {
+          "$ref": "#/components/schemas/EncryptionMode"
+        },
+        "name": {
+          "type": "string"
+        },
+        "relative_path": {
+          "type": "string"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "volume_alias": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "encryption_mode"
+      ],
+      "type": "object"
+    },
+    "VaultCreateResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "creation_mode": {
+          "$ref": "#/components/schemas/VaultCreationMode"
+        },
+        "encryption_mode": {
+          "$ref": "#/components/schemas/EncryptionMode"
+        },
+        "id": {
+          "type": "number"
+        },
+        "name": {
+          "type": "string"
+        },
+        "recovery_custody_confirmed": {
+          "type": "boolean"
+        },
+        "recovery_export": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/components/schemas/VaultRole"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "uuid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "uuid",
+        "slug",
+        "name",
+        "role",
+        "encryption_mode",
+        "recovery_custody_confirmed"
+      ],
+      "type": "object"
+    },
+    "VaultCreationMode": {
+      "enum": [
+        "empty",
+        "adopt"
+      ],
+      "type": "string"
+    },
+    "VaultDecommissionBlocker": {
+      "additionalProperties": true,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "count": {
+          "type": "number"
+        },
+        "message": {
+          "type": "string"
+        },
+        "message_key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "VaultDecommissionCounts": {
+      "additionalProperties": true,
+      "properties": {
+        "archive_versions": {
+          "type": "number"
+        },
+        "cloud_bytes": {
+          "type": "number"
+        },
+        "delete_markers": {
+          "type": "number"
+        },
+        "jobs": {
+          "type": "number"
+        },
+        "local_bytes": {
+          "type": "number"
+        },
+        "local_files": {
+          "type": "number"
+        },
+        "memberships": {
+          "type": "number"
+        },
+        "vault_files": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "vault_files",
+        "local_files",
+        "local_bytes",
+        "archive_versions",
+        "cloud_bytes",
+        "delete_markers",
+        "jobs",
+        "memberships"
+      ],
+      "type": "object"
+    },
+    "VaultDecommissionDisposition": {
+      "enum": [
+        "retain",
+        "remove",
+        "purge"
+      ],
+      "type": "string"
+    },
+    "VaultDecommissionJobProgress": {
+      "additionalProperties": true,
+      "properties": {
+        "active": {
+          "type": "number"
+        },
+        "cancelled": {
+          "type": "number"
+        },
+        "completed": {
+          "type": "number"
+        },
+        "failed": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "total",
+        "completed",
+        "failed",
+        "cancelled",
+        "active"
+      ],
+      "type": "object"
+    },
+    "VaultDecommissionPreview": {
+      "additionalProperties": true,
+      "properties": {
+        "blockers": {
+          "items": {
+            "$ref": "#/components/schemas/VaultDecommissionBlocker"
+          },
+          "type": "array"
+        },
+        "can_start": {
+          "type": "boolean"
+        },
+        "cloud_disposition": {
+          "enum": [
+            "retain",
+            "purge"
+          ],
+          "type": "string"
+        },
+        "counts": {
+          "$ref": "#/components/schemas/VaultDecommissionCounts"
+        },
+        "decommission_state": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "local_disposition": {
+          "enum": [
+            "retain",
+            "remove"
+          ],
+          "type": "string"
+        },
+        "records": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "recovery_material": {
+          "additionalProperties": true,
+          "properties": {
+            "custody_confirmed": {
+              "type": "boolean"
+            },
+            "disposition": {
+              "type": "string"
+            },
+            "encryption_mode": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "encryption_mode",
+            "custody_confirmed",
+            "disposition"
+          ],
+          "type": "object"
+        },
+        "root_identity_fingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "root_identity_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vault_id": {
+          "type": "number"
+        },
+        "vault_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "blockers",
+        "can_start",
+        "cloud_disposition",
+        "counts",
+        "decommission_state",
+        "enabled",
+        "fingerprint",
+        "local_disposition",
+        "vault_id",
+        "vault_name"
+      ],
+      "type": "object"
+    },
+    "VaultDecommissionSelection": {
+      "additionalProperties": true,
+      "properties": {
+        "cloud_disposition": {
+          "enum": [
+            "retain",
+            "purge"
+          ],
+          "type": "string"
+        },
+        "local_disposition": {
+          "enum": [
+            "retain",
+            "remove"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "local_disposition",
+        "cloud_disposition"
+      ],
+      "type": "object"
+    },
+    "VaultDecommissionStartPayload": {
+      "additionalProperties": true,
+      "properties": {
+        "cloud_disposition": {
+          "enum": [
+            "retain",
+            "purge"
+          ],
+          "type": "string"
+        },
+        "confirmation": {
+          "type": "string"
+        },
+        "local_disposition": {
+          "enum": [
+            "retain",
+            "remove"
+          ],
+          "type": "string"
+        },
+        "preview_fingerprint": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cloud_disposition",
+        "confirmation",
+        "local_disposition",
+        "preview_fingerprint",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "VaultDecommissionStatus": {
+      "additionalProperties": true,
+      "properties": {
+        "cloud_cancellable": {
+          "type": "boolean"
+        },
+        "cloud_disposition": {
+          "enum": [
+            "retain",
+            "purge"
+          ],
+          "type": "string"
+        },
+        "cloud_status": {
+          "type": "string"
+        },
+        "completed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "decommission_state": {
+          "type": "string"
+        },
+        "decommissioned_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "error_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error_message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "number"
+        },
+        "jobs": {
+          "additionalProperties": true,
+          "properties": {
+            "cloud": {
+              "$ref": "#/components/schemas/VaultDecommissionJobProgress"
+            },
+            "local": {
+              "$ref": "#/components/schemas/VaultDecommissionJobProgress"
+            }
+          },
+          "required": [
+            "local",
+            "cloud"
+          ],
+          "type": "object"
+        },
+        "local_disposition": {
+          "enum": [
+            "retain",
+            "remove"
+          ],
+          "type": "string"
+        },
+        "local_status": {
+          "type": "string"
+        },
+        "preview": {
+          "$ref": "#/components/schemas/VaultDecommissionPreview"
+        },
+        "progress_percent": {
+          "type": "number"
+        },
+        "requested_at": {
+          "type": "string"
+        },
+        "root_released": {
+          "type": "boolean"
+        },
+        "root_released_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "vault_id": {
+          "type": "number"
+        },
+        "vault_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cloud_disposition",
+        "cloud_status",
+        "decommission_state",
+        "enabled",
+        "id",
+        "jobs",
+        "local_disposition",
+        "local_status",
+        "preview",
+        "progress_percent",
+        "requested_at",
+        "root_released",
+        "state",
+        "updated_at",
+        "vault_id",
+        "vault_name"
+      ],
+      "type": "object"
+    },
+    "VaultFileListItem": {
+      "additionalProperties": true,
+      "description": "Vault File row as returned by /api/files (browse or search).",
+      "properties": {
+        "availability": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cleanup_eligible": {
+          "type": "boolean"
+        },
+        "cloud_exists": {
+          "type": [
+            "number",
+            "boolean"
+          ]
+        },
+        "cloud_size": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "integrity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lifecycle_pinned": {
+          "type": "boolean"
+        },
+        "local_exists": {
+          "type": [
+            "number",
+            "boolean"
+          ]
+        },
+        "local_file_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local_size": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "recover_eligible": {
+          "type": "boolean"
+        },
+        "recoverable_version_count": {
+          "type": "number"
+        },
+        "restore_expiry": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "restore_state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": "string"
+        },
+        "storage_class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "storage_class_eligible": {
+          "type": "boolean"
+        },
+        "type": {
+          "const": "file",
+          "type": "string"
+        },
+        "upload_eligible": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "name",
+        "path",
+        "state"
+      ],
+      "type": "object"
+    },
+    "VaultListItem": {
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "number"
+        },
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/components/schemas/VaultRole"
+        },
+        "slug": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "slug",
+        "name",
+        "role"
+      ],
+      "type": "object"
+    },
+    "VaultMember": {
+      "additionalProperties": true,
+      "description": "Vault access / governance types (issue #68).",
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "number"
+        },
+        "role": {
+          "$ref": "#/components/schemas/VaultRole"
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "username",
+        "display_name",
+        "role"
+      ],
+      "type": "object"
+    },
+    "VaultMembersResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/VaultMember"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "VaultQuotaUpdatePayload": {
+      "additionalProperties": true,
+      "properties": {
+        "concurrency_hard_limit": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "concurrency_soft_limit": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "restore_30d_hard_limit_bytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "restore_30d_soft_limit_bytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "storage_hard_limit_bytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "storage_soft_limit_bytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "storage_soft_limit_bytes",
+        "storage_hard_limit_bytes",
+        "concurrency_soft_limit",
+        "concurrency_hard_limit",
+        "restore_30d_soft_limit_bytes",
+        "restore_30d_hard_limit_bytes",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "VaultQuotasResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "evaluation": {
+          "$ref": "#/components/schemas/QuotaEvaluation"
+        },
+        "limits": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/QuotaLimits"
+            },
+            {
+              "additionalProperties": true,
+              "properties": {
+                "concurrency_hard_limit": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "concurrency_soft_limit": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "restore_30d_hard_limit_bytes": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "restore_30d_soft_limit_bytes": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "storage_hard_limit_bytes": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "storage_soft_limit_bytes": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            }
+          ]
+        },
+        "usage": {
+          "$ref": "#/components/schemas/QuotaUsage"
+        },
+        "vault_id": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "limits",
+        "usage"
+      ],
+      "type": "object"
+    },
+    "VaultRole": {
+      "description": "Hand-written response types for foundation endpoints (issue #60).",
+      "enum": [
+        "owner",
+        "operator",
+        "viewer"
+      ],
+      "type": "string"
+    },
+    "VaultSelectRequest": {
+      "additionalProperties": true,
+      "properties": {
+        "vault_id": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "vault_id"
+      ],
+      "type": "object"
+    },
+    "VaultSelectResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "vault_id": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "vault_id"
+      ],
+      "type": "object"
+    },
+    "VaultsResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/VaultListItem"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    }
+  }
+}

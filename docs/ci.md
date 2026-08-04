@@ -84,8 +84,12 @@ token to a workflow chosen by pull-request activity.
   tests.test_lookup_rate_limit.PostgreSQLSharedLookupRateLimitTests \
   tests.test_migrations_postgresql.PostgreSQLMigrationTests -v
 
-# Frontend SPA (from frontend/)
-npm ci && npm run lint && npm run test && npm run build
+# Export OpenAPI without a running server (from the repository root)
+.venv/bin/python scripts/export_openapi.py frontend/openapi.json
+
+# Frontend SPA and generated API types (from frontend/)
+npm ci && npm run generate:api && npm run lint && npm run test && npm run build
+# Generated artifacts are committed; CI fails if either schema or TypeScript drifts.
 
 # Playwright e2e (requires a built frontend/dist and Chromium)
 npx playwright install chromium
