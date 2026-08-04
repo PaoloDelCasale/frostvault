@@ -1,13 +1,15 @@
 export {
   ApiError,
   ReauthenticationRedirectError,
+  apiDownload,
   apiRequest,
   configureApiClient,
+  filenameFromContentDisposition,
   loginWithPassword,
   resetApiClientForTests,
   setCsrfToken,
 } from "./client";
-export type { ApiClientConfig, ApiFetch } from "./client";
+export type { ApiClientConfig, ApiDownload, ApiFetch } from "./client";
 
 export {
   DEFAULT_PAGE_SIZE,
@@ -45,6 +47,9 @@ export {
   fetchAdminVaults,
   fetchAdminVaultDecommissionStatus,
   fetchAdminWorkerErrors,
+  fetchAdminMetadataBackups,
+  runAdminMetadataBackup,
+  downloadAdminMetadataBackup,
   fetchAdminSourceVolumes,
   fetchAdminSourceAreas,
   assignAdminSourceArea,
@@ -109,6 +114,11 @@ export {
 export type {
   AdminWorkerError,
   AdminWorkerErrorsResponse,
+  MetadataBackupRun,
+  MetadataBackupRunResult,
+  MetadataBackupStatus,
+  MetadataBackupsResponse,
+  MetadataBackupDownload,
   CostPriceBook,
   CostPriceBookActivatePayload,
   CostPriceBookCreatePayload,
@@ -212,6 +222,7 @@ export type {
   LifecycleResponse,
   LocaleUpdateResponse,
   MeDecommissionVault,
+  MetadataBackupRunAction,
   MeResponse,
   MeVault,
   OidcConfigurationResponse,

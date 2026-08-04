@@ -1,4 +1,10 @@
-import { apiRequest, configureApiClient, setCsrfToken } from "./client";
+import {
+  apiDownload,
+  apiRequest,
+  configureApiClient,
+  setCsrfToken,
+} from "./client";
+import type { ApiDownload } from "./client";
 import type {
   AdminIdentitiesResponse,
   AdminInvitesResponse,
@@ -42,6 +48,7 @@ import type {
   LifecycleProfileSelection,
   LifecycleResponse,
   LocaleUpdateResponse,
+  MetadataBackupRunAction,
   MeResponse,
   OidcConfigurationResponse,
   OidcDraftPayload,
@@ -122,6 +129,87 @@ export type AdminWorkerErrorsResponse = { items: AdminWorkerError[] };
 /** Short aliases for consumers that do not need to repeat the admin scope. */
 export type WorkerError = AdminWorkerError;
 export type WorkerErrorsResponse = AdminWorkerErrorsResponse;
+
+/** Safe metadata-backup fields exposed to the SPA; filesystem paths are omitted. */
+export type MetadataBackupRun = {
+  id: number;
+  created_at: string;
+  finished_at: string | null;
+  reason: string;
+  backend: string;
+  status: string;
+  digest_sha256: string | null;
+  database_sha256: string | null;
+  s3_key: string | null;
+  size_bytes: number | null;
+  error_message: string | null;
+  verified_at: string | null;
+};
+
+export type MetadataBackupStatus = {
+  last_status: string;
+  last_run: MetadataBackupRun | null;
+  succeeded_count: number;
+  failed_count: number;
+};
+
+export type MetadataBackupsResponse = {
+  status: MetadataBackupStatus;
+  runs: MetadataBackupRun[];
+};
+
+export type MetadataBackupRunResult = {
+  ok: boolean;
+  reason: string;
+  digest_sha256: string;
+  database_sha256: string;
+  backend: string;
+  s3_key: string | null;
+  size_bytes: number;
+  filename: string;
+  created_at: string;
+};
+
+export type MetadataBackupDownload = ApiDownload;
+
+type MetadataBackupRunWire = MetadataBackupRun & {
+  local_path?: unknown;
+  path?: unknown;
+};
+
+type MetadataBackupRunResultWire = MetadataBackupRunResult & {
+  local_path?: unknown;
+  path?: unknown;
+};
+
+type MetadataBackupsResponseWire = {
+  status: Omit<MetadataBackupStatus, "last_run"> & {
+    last_run: MetadataBackupRunWire | null;
+  };
+  runs: MetadataBackupRunWire[];
+};
+
+function withoutMetadataBackupPaths<T extends Record<string, unknown>>(
+  value: T,
+): Omit<T, "local_path" | "path"> {
+  const safe = { ...value } as T & {
+    local_path?: unknown;
+    path?: unknown;
+  };
+  delete safe.local_path;
+  delete safe.path;
+  return safe as Omit<T, "local_path" | "path">;
+}
+
+function safeMetadataBackupRun(run: MetadataBackupRunWire): MetadataBackupRun {
+  return withoutMetadataBackupPaths(run) as MetadataBackupRun;
+}
+
+function safeMetadataBackupResult(
+  result: MetadataBackupRunResultWire,
+): MetadataBackupRunResult {
+  return withoutMetadataBackupPaths(result) as MetadataBackupRunResult;
+}
 
 export function fetchFiles(query: FilesQuery = {}): Promise<FilesResponse> {
   const params = new URLSearchParams();
@@ -392,6 +480,45 @@ export function fetchSystemSettings(): Promise<SystemSettingsResponse> {
 
 export function fetchAdminWorkerErrors(): Promise<AdminWorkerErrorsResponse> {
   return apiRequest<AdminWorkerErrorsResponse>("/api/admin/worker-errors");
+}
+
+export function fetchAdminMetadataBackups(): Promise<MetadataBackupsResponse> {
+  return apiRequest<MetadataBackupsResponseWire>(
+    "/api/admin/metadata-backups",
+  ).then((response) => ({
+    status: {
+      ...response.status,
+      last_run: response.status.last_run
+        ? safeMetadataBackupRun(response.status.last_run)
+        : null,
+    },
+    runs: (response.runs ?? []).map(safeMetadataBackupRun),
+  }));
+}
+
+export function runAdminMetadataBackup(
+  payload: MetadataBackupRunAction = { reason: "operator requested backup" },
+): Promise<MetadataBackupRunResult> {
+  return apiRequest<MetadataBackupRunResultWire>(
+    "/api/admin/metadata-backups/run",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  ).then(safeMetadataBackupResult);
+}
+
+export function downloadAdminMetadataBackup(
+  runId: number,
+): Promise<MetadataBackupDownload> {
+  if (!Number.isSafeInteger(runId) || runId < 1) {
+    return Promise.reject(new TypeError("Metadata backup run ID must be positive"));
+  }
+  return apiDownload(
+    `/api/admin/metadata-backups/download/${encodeURIComponent(String(runId))}`,
+    {},
+    `metadata-backup-${runId}.bak.enc`,
+  );
 }
 
 export function fetchAdminCostPriceBooks(): Promise<CostPriceBooksResponse> {
