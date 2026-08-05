@@ -210,6 +210,7 @@ from .storage import (
     scan_lock_for_vault,
     status_lock,
     safe_relative_path,
+    InvalidLogicalPath,
     scan_vault,
     s3_client,
     storage_class_requires_restore,
@@ -287,6 +288,38 @@ def _openapi_schema() -> dict[str, Any]:
 
 
 app.openapi = _openapi_schema
+
+
+# Deliberate API error contracts for domain validation. Keep these separate
+# from FastAPI's generic validation response so unrelated programming errors
+# still surface as 500s.
+LOGICAL_PATH_ERROR_RESPONSES = {
+    422: {
+        "description": "The logical path is empty, absolute, or traverses outside the Vault",
+        "content": {
+            "application/json": {
+                "schema": {
+                    "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+            }
+        },
+    }
+}
+SCOPED_NOT_FOUND_RESPONSES = {
+    404: {
+        "description": "The requested Vault-scoped resource is absent, stale, or foreign",
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["detail"],
+                    "properties": {"detail": {"type": "string"}},
+                    "additionalProperties": False,
+                }
+            }
+        },
+    }
+}
 
 
 def _request_locale(request: Any | None = None) -> str:
@@ -619,6 +652,21 @@ class ReauthRequired(HTTPException):
 async def _reauth_required_handler(_: Request, __: ReauthRequired) -> JSONResponse:
     # Stable marker the frontend keys on to trigger a step-up.
     return JSONResponse({"error": "reauth_required"}, status_code=403)
+
+
+@app.exception_handler(InvalidLogicalPath)
+async def _invalid_logical_path_handler(
+    request: Request, error: InvalidLogicalPath
+) -> JSONResponse:
+    message = translate(error.message_key, locale=_request_locale(request))
+    return JSONResponse(
+        {
+            "detail": message,
+            "message_key": error.message_key,
+            "message": message,
+        },
+        status_code=422,
+    )
 
 
 @app.exception_handler(InvalidSystemSetting)
@@ -965,12 +1013,12 @@ class RecoverApproveAction(BaseModel):
 
 class ConfirmRenameAction(BaseModel):
     vault_file_id: str = Field(min_length=36, max_length=36)
-    new_path: str = Field(min_length=1, max_length=1024)
+    new_path: str = Field(max_length=1024)
 
 
 class ConfirmFolderRenameAction(BaseModel):
-    old_prefix: str = Field(min_length=1, max_length=1024)
-    new_prefix: str = Field(min_length=1, max_length=1024)
+    old_prefix: str = Field(max_length=1024)
+    new_prefix: str = Field(max_length=1024)
 
 
 class GroupCancelAction(BaseModel):
@@ -1030,7 +1078,7 @@ class StorageClassChangeRequest(BaseModel):
 class LifecyclePinRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    path: str = Field(min_length=1, max_length=1024)
+    path: str = Field(max_length=1024)
     is_directory: bool = False
     pinned: bool
 
@@ -1281,13 +1329,19 @@ class StorageEstimateRequest(BaseModel):
     storage_class: str = Field(default="STANDARD", min_length=1, max_length=64)
 
 
-def normalize_directory(value: str) -> str:
-    """Return a safe, normalized catalog directory (the root is an empty string)."""
+def normalize_directory(value: str, *, api: bool = False) -> str:
+    """Return a safe catalog directory (the root is an empty string).
+
+    The default preserves the direct helper's historical ``HTTPException``
+    seam; routed API calls opt into the shared logical-path contract.
+    """
     if not value:
         return ""
     try:
         return safe_relative_path(value).as_posix().rstrip("/")
-    except ValueError as exc:
+    except InvalidLogicalPath as exc:
+        if api:
+            raise
         raise HTTPException(422, "Invalid folder") from exc
 
 
@@ -2331,7 +2385,7 @@ def select_vault(
 @app.get(
     "/api/files",
     response_model=response_model("FilesResponse"),
-    responses=OFFLINE_FILE_CACHE_FILES_RESPONSES,
+    responses={**OFFLINE_FILE_CACHE_FILES_RESPONSES, **LOGICAL_PATH_ERROR_RESPONSES},
 )
 def list_files(
     q: str = "",
@@ -2366,7 +2420,7 @@ def list_files(
         if request is not None
         else None
     )
-    directory = normalize_directory(directory)
+    directory = normalize_directory(directory, api=True)
     with db() as connection:
         rows = ArchiveCatalog(connection).list_file_rows(
             vault["id"],
@@ -2406,7 +2460,11 @@ def list_files(
     }
 
 
-@app.get("/api/file-history", response_model=response_model("FileHistoryResponse"))
+@app.get(
+    "/api/file-history",
+    response_model=response_model("FileHistoryResponse"),
+    responses={**LOGICAL_PATH_ERROR_RESPONSES, **SCOPED_NOT_FOUND_RESPONSES},
+)
 def file_history(
     path: str,
     vault: dict[str, Any] = Depends(current_vault),
@@ -2436,7 +2494,12 @@ def rename_candidates(vault: dict[str, Any] = Depends(current_vault)):
     return {"items": candidates}
 
 
-@app.post("/api/confirm-rename", status_code=202, response_model=JsonObjectResponse)
+@app.post(
+    "/api/confirm-rename",
+    status_code=202,
+    response_model=JsonObjectResponse,
+    responses={**LOGICAL_PATH_ERROR_RESPONSES, **SCOPED_NOT_FOUND_RESPONSES},
+)
 def confirm_rename(
     action: ConfirmRenameAction,
     user: dict[str, Any] = Depends(current_user),
@@ -2486,7 +2549,12 @@ def confirm_rename(
     }
 
 
-@app.post("/api/confirm-folder-rename", status_code=202, response_model=JsonObjectResponse)
+@app.post(
+    "/api/confirm-folder-rename",
+    status_code=202,
+    response_model=JsonObjectResponse,
+    responses={**LOGICAL_PATH_ERROR_RESPONSES, **SCOPED_NOT_FOUND_RESPONSES},
+)
 def confirm_folder_rename(
     action: ConfirmFolderRenameAction,
     user: dict[str, Any] = Depends(current_user),
@@ -3554,9 +3622,13 @@ def queue_jobs(
     return result
 
 
-@app.get("/api/files/versions", response_model=response_model("FileVersionsResponse"))
+@app.get(
+    "/api/files/versions",
+    response_model=response_model("FileVersionsResponse"),
+    responses=LOGICAL_PATH_ERROR_RESPONSES,
+)
 def file_versions(
-    path: str = Query(min_length=1),
+    path: str = Query(),
     vault: dict[str, Any] = Depends(current_vault),
 ):
     logical_path = safe_relative_path(path).as_posix()
@@ -3575,7 +3647,11 @@ def file_versions(
     }
 
 
-@app.post("/api/recover/estimate", response_model=response_model("RecoverEstimateResponse"))
+@app.post(
+    "/api/recover/estimate",
+    response_model=response_model("RecoverEstimateResponse"),
+    responses={**LOGICAL_PATH_ERROR_RESPONSES, **SCOPED_NOT_FOUND_RESPONSES},
+)
 def recover_estimate(
     action: RecoverEstimateRequest,
     vault: dict[str, Any] = Depends(current_vault),
@@ -3652,7 +3728,12 @@ def recover_estimate(
     }
 
 
-@app.post("/api/upload", status_code=202, response_model=JsonObjectResponse)
+@app.post(
+    "/api/upload",
+    status_code=202,
+    response_model=JsonObjectResponse,
+    responses=LOGICAL_PATH_ERROR_RESPONSES,
+)
 def upload(
     action: FileAction,
     request: Request,
@@ -3800,7 +3881,12 @@ def cancel_upload(
     return cancel_job_group(action.group_id, "upload", vault)
 
 
-@app.post("/api/recover", status_code=202, response_model=JsonObjectResponse)
+@app.post(
+    "/api/recover",
+    status_code=202,
+    response_model=JsonObjectResponse,
+    responses=LOGICAL_PATH_ERROR_RESPONSES,
+)
 def recover(
     action: FileAction,
     request: Request,
@@ -3870,7 +3956,12 @@ def approve_recover(
     }
 
 
-@app.post("/api/free-space", status_code=202, response_model=JsonObjectResponse)
+@app.post(
+    "/api/free-space",
+    status_code=202,
+    response_model=JsonObjectResponse,
+    responses=LOGICAL_PATH_ERROR_RESPONSES,
+)
 def free_space(
     action: FileAction,
     request: Request,
@@ -3898,7 +3989,12 @@ def get_storage_classes(
     return list_storage_class_options(book)
 
 
-@app.post("/api/storage-class", status_code=202, response_model=JsonObjectResponse)
+@app.post(
+    "/api/storage-class",
+    status_code=202,
+    response_model=JsonObjectResponse,
+    responses=LOGICAL_PATH_ERROR_RESPONSES,
+)
 def change_storage_class(
     action: StorageClassChangeRequest,
     request: Request,
@@ -3949,7 +4045,11 @@ def change_storage_class(
     return {**queued, **_api_message(request, "api.storage_class_started")}
 
 
-@app.put("/api/lifecycle-pin", response_model=JsonObjectResponse)
+@app.put(
+    "/api/lifecycle-pin",
+    response_model=JsonObjectResponse,
+    responses=LOGICAL_PATH_ERROR_RESPONSES,
+)
 def update_lifecycle_pin(
     action: LifecyclePinRequest,
     request: Request,

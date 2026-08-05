@@ -1286,10 +1286,20 @@ class ArchiveCatalog:
         )
 
     def mark_unseen_local_copies_missing(
-        self, *, vault_id: int, seen_at: str, observed_at: str
+        self,
+        *,
+        vault_id: int,
+        seen_at: str,
+        observed_at: str,
+        scan_started_at: str | None = None,
     ) -> None:
-        self.connection.execute(
-            """
+        """Mark only rows not changed after this scan generation began.
+
+        A watcher or another completed scan may legitimately update a Local
+        Copy while the walk is in progress.  Such a newer observation must not
+        be overwritten by the older scan's final missing transition.
+        """
+        query = """
             UPDATE local_copies
             SET presence='missing', observed_at=%s
             WHERE vault_file_id IN (
@@ -1297,9 +1307,12 @@ class ArchiveCatalog:
             )
               AND presence IN ('present', 'unsupported')
               AND (last_seen_at IS NULL OR last_seen_at<>%s)
-            """,
-            (observed_at, vault_id, seen_at),
-        )
+        """
+        params: list[Any] = [observed_at, vault_id, seen_at]
+        if scan_started_at is not None:
+            query += " AND (observed_at IS NULL OR observed_at<=%s)"
+            params.append(scan_started_at)
+        self.connection.execute(query, params)
 
     def mark_local_path_missing(
         self, *, vault_id: int, path: str, observed_at: str

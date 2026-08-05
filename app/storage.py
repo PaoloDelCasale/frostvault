@@ -30,6 +30,7 @@ from .i18n import DEFAULT_LOCALE, format_message_params, translate
 from .system_settings import effective_settings
 from .services.rclone_runtime import (
     decode_object_relative_path,
+    decode_object_relative_paths,
     encode_object_relative_path,
     vault_rclone_config,
 )
@@ -85,6 +86,11 @@ from .services.operation_policies import (
 
 
 runtime_status: dict[int, dict[str, Any]] = {}
+# Short-lived journals compensate committed observation batches if a pinned root
+# or scan generation fails before the final catalog transaction. They are
+# process-local; a crash remains conservative because no missing transition is
+# committed until the scan completes.
+_active_scan_journals: dict[tuple[int, str], dict[str, Any]] = {}
 scan_locks: dict[int, threading.Lock] = {}
 status_lock = threading.Lock()
 operation_process_lock = threading.Lock()
@@ -106,6 +112,11 @@ VERIFY_TEMPORARY_RE = re.compile(r"\..+\.verify-[0-9a-f]{32}\.tmp")
 UPLOAD_RETRY_BASE_SECONDS = 2
 UPLOAD_RETRY_CAP_SECONDS = 300
 UPLOAD_RETRY_MAX_ATTEMPTS = 8
+
+# Local scans deliberately keep filesystem work outside write transactions.
+# This is small enough to give other SQLite writers frequent admission while
+# avoiding one transaction per catalogued entry.
+LOCAL_SCAN_WRITE_BATCH_SIZE = 250
 
 # S3 CopyObject is limited to objects up to 5 GiB.  Multipart copy keeps the
 # source VersionId on every UploadPartCopy request and uses a deliberately
@@ -178,6 +189,20 @@ def upload_retry_delay_seconds(attempt: int) -> int:
         attempt = 1
     delay = UPLOAD_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
     return min(delay, UPLOAD_RETRY_CAP_SECONDS)
+
+
+class InvalidLogicalPath(ValueError):
+    """A caller supplied a path that cannot be a Vault-relative logical path.
+
+    This remains a ``ValueError`` subclass for direct-call compatibility, but
+    the API maps this dedicated domain exception rather than catching every
+    ``ValueError`` raised by application code.
+    """
+
+    message_key = "api.invalid_path"
+
+    def __init__(self) -> None:
+        super().__init__("Invalid path")
 
 
 class OperationCancelled(RuntimeError):
@@ -470,9 +495,18 @@ class _ThrottledByteProgress:
 
 
 def safe_relative_path(value: str) -> PurePosixPath:
-    candidate = PurePosixPath(value.replace("\\", "/"))
+    """Normalize one non-empty, traversal-safe Vault-relative logical path."""
+    if not isinstance(value, str) or "\x00" in value:
+        raise InvalidLogicalPath()
+    normalized = value.replace("\\", "/")
+    # PurePosixPath intentionally does not treat a Windows drive prefix as an
+    # absolute path. Reject it explicitly because callers may submit paths
+    # produced on another platform.
+    if re.match(r"^[A-Za-z]:/", normalized):
+        raise InvalidLogicalPath()
+    candidate = PurePosixPath(normalized)
     if candidate.is_absolute() or not candidate.parts or ".." in candidate.parts:
-        raise ValueError("Invalid path")
+        raise InvalidLogicalPath()
     return candidate
 
 
@@ -574,6 +608,19 @@ def vault_encrypts_names(vault: dict[str, Any]) -> bool:
     return vault.get("encryption_mode") == "crypt"
 
 
+_UNSET_DECODED_PATH = object()
+
+
+def _cloud_relative_key(key: str, prefix_value: str) -> str | None:
+    prefix = f"{prefix_value.strip('/')}/" if prefix_value.strip('/') else ""
+    if prefix and not key.startswith(prefix):
+        return None
+    relative = key[len(prefix):]
+    if not relative or relative.endswith('/'):
+        return None
+    return relative
+
+
 def object_key_to_path(
     key: str,
     prefix_value: str,
@@ -581,23 +628,30 @@ def object_key_to_path(
     *,
     encrypted_names: bool = False,
     runtime: Any | None = None,
+    decoded_relative_path: str | None | object = _UNSET_DECODED_PATH,
 ) -> str | None:
-    prefix = f"{prefix_value.strip('/')}/" if prefix_value.strip("/") else ""
-    if prefix and not key.startswith(prefix):
+    relative = _cloud_relative_key(key, prefix_value)
+    if relative is None:
         return None
-    relative = key[len(prefix):]
     if encrypted_names:
-        if not relative or relative.endswith("/") or runtime is None:
+        if runtime is None:
             return None
-        try:
-            relative = decode_object_relative_path(runtime, relative)
-        except RuntimeError:
+        if decoded_relative_path is _UNSET_DECODED_PATH:
+            try:
+                relative = decode_object_relative_path(runtime, relative)
+            except RuntimeError:
+                return None
+        elif decoded_relative_path is None:
+            # The batch decoder deliberately makes one bad key unknown rather
+            # than allowing a partial/ambiguous plaintext path into the catalog.
             return None
+        else:
+            relative = str(decoded_relative_path)
     elif is_crypt:
-        if not relative.endswith(".bin"):
+        if not relative.endswith('.bin'):
             return None
         relative = relative[:-4]
-    if not relative or relative.endswith("/"):
+    if not relative or relative.endswith('/'):
         return None
     try:
         return safe_relative_path(relative).as_posix()
@@ -679,11 +733,72 @@ def _scan_tree(
     *,
     root: Path,
     allow_chunk_commits: bool,
+    finalize_missing: bool = True,
+    scan_started_at: str | None = None,
+    scan_journal: dict[str, Any] | None = None,
 ) -> tuple[int, str | None]:
-    """Catalog one root, leaving transaction ownership to the caller."""
+    """Observe a root with short catalog-write transactions.
+
+    Directory traversal and metadata reads happen before each bounded write
+    batch.  The caller can defer the missing-copy transition until it has
+    proved that the complete scan still owns the enrolled root.
+    """
     vault_id = int(vault["id"])
     count = 0
-    catalog = ArchiveCatalog(connection)
+    scan_started_at = scan_started_at or scan_id
+    pending: list[tuple[str, str, int | None, int | None, str]] = []
+
+    def _persisted_scan(vault_row: dict[str, Any]) -> bool:
+        return "root_identity" in vault_row or "root_identity_version" in vault_row
+
+    def flush() -> None:
+        nonlocal count
+        if not pending:
+            return
+        if _persisted_scan(vault):
+            _current_verified_scan_row(connection, vault)
+        if scan_journal is not None:
+            entries = scan_journal.setdefault("entries", {})
+            for relative, _file_type, _size, _mtime_ns, _observed_at in pending:
+                if relative in entries:
+                    continue
+                entries[relative] = connection.execute(
+                    """
+                    SELECT vf.id AS vault_file_id,
+                           vf.status AS vault_file_status,
+                           vf.retired_at AS vault_file_retired_at,
+                           lc.presence, lc.file_type, lc.size, lc.mtime_ns,
+                           lc.plaintext_sha256, lc.matched_archive_version_id,
+                           lc.last_seen_at, lc.observed_at
+                    FROM vault_files vf
+                    JOIN file_paths fp
+                      ON fp.vault_file_id=vf.id
+                     AND fp.vault_id=vf.vault_id
+                     AND fp.path=%s
+                     AND fp.valid_to IS NULL
+                    LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
+                    WHERE vf.vault_id=%s
+                    """,
+                    (relative, vault_id),
+                ).fetchone()
+        catalog = ArchiveCatalog(connection)
+        for relative, file_type, size, mtime_ns, observed_at in pending:
+            catalog.observe_local_copy(
+                vault_id=vault_id,
+                path=relative,
+                file_type=file_type,
+                size=size,
+                mtime_ns=mtime_ns,
+                seen_at=scan_id,
+                observed_at=observed_at,
+            )
+        count += len(pending)
+        pending.clear()
+        if _persisted_scan(vault):
+            _current_verified_scan_row(connection, vault)
+        if allow_chunk_commits:
+            connection.commit()
+
     for entry in root.rglob("*"):
         try:
             if entry.is_symlink():
@@ -712,29 +827,35 @@ def _scan_tree(
         if is_restore_temporary_name(entry.name):
             continue
         relative = entry.relative_to(root).as_posix()
-        catalog.observe_local_copy(
-            vault_id=vault_id,
-            path=relative,
-            file_type=file_type,
-            size=entry_stat.st_size,
-            mtime_ns=entry_stat.st_mtime_ns,
-            seen_at=scan_id,
-            observed_at=now_iso(),
+        pending.append(
+            (
+                relative,
+                file_type,
+                entry_stat.st_size,
+                entry_stat.st_mtime_ns,
+                now_iso(),
+            )
         )
-        count += 1
-        if allow_chunk_commits and count % 1000 == 0:
-            connection.commit()
+        if len(pending) >= LOCAL_SCAN_WRITE_BATCH_SIZE:
+            flush()
+    flush()
+
+    if _persisted_scan(vault):
+        _current_verified_scan_row(connection, vault)
     access = source_layout.vault_local_access(vault["source_root"])
     alias = access.volume_alias
     safe_scan_result = access.local_operations_allowed or access.volume_health == "scan_required"
-    if safe_scan_result and (
+    if finalize_missing and safe_scan_result and (
         alias is None or source_layout.should_emit_local_copy_removals(alias)
     ):
-        catalog.mark_unseen_local_copies_missing(
+        ArchiveCatalog(connection).mark_unseen_local_copies_missing(
             vault_id=vault_id,
             seen_at=scan_id,
             observed_at=now_iso(),
+            scan_started_at=scan_started_at,
         )
+        if allow_chunk_commits:
+            connection.commit()
     completed_alias = (
         alias
         if safe_scan_result and alias and source_layout.requires_full_local_scan(alias)
@@ -749,6 +870,8 @@ def scan_tree(
     *,
     _connection: Any | None = None,
     _root: Path | None = None,
+    _finalize_missing: bool = True,
+    _scan_journal: dict[str, Any] | None = None,
 ) -> int:
     access = source_layout.vault_local_access(vault["source_root"])
     if not access.local_operations_allowed and access.volume_health != "scan_required":
@@ -760,12 +883,26 @@ def scan_tree(
         raise RuntimeError(f"Folder is not available in the container: {root}")
     if _connection is not None:
         count, _completed_alias = _scan_tree(
-            _connection, vault, scan_id, root=root, allow_chunk_commits=False
+            _connection,
+            vault,
+            scan_id,
+            root=root,
+            allow_chunk_commits=True,
+            finalize_missing=_finalize_missing,
+            scan_started_at=scan_id,
+            scan_journal=_scan_journal,
         )
         return count
     with db() as connection:
         count, completed_alias = _scan_tree(
-            connection, vault, scan_id, root=root, allow_chunk_commits=True
+            connection,
+            vault,
+            scan_id,
+            root=root,
+            allow_chunk_commits=True,
+            finalize_missing=_finalize_missing,
+            scan_started_at=scan_id,
+            scan_journal=_scan_journal,
         )
     if completed_alias:
         source_layout.note_full_local_scan_completed(completed_alias)
@@ -892,37 +1029,55 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
     if prefix:
         kwargs["Prefix"] = f"{prefix}/"
     count = 0
+    raw_versions: list[dict[str, Any]] = []
+    raw_markers: list[dict[str, Any]] = []
+
+    # Complete the provider listing before decoding. This lets one bounded
+    # decoder batch reuse a ciphertext name across every historical Version and
+    # Delete Marker, including entries split across paginator pages.
+    for page in paginator.paginate(**kwargs):
+        raw_versions.extend(page.get("Versions", []))
+        raw_markers.extend(page.get("DeleteMarkers", []))
+
+    decoded_paths: dict[str, str] = {}
+    decode_failures: set[str] = set()
+    runtime: Any | None = None
+    if encrypts_names:
+        with vault_rclone_config(vault) as runtime_config:
+            runtime = runtime_config
+            encrypted_relatives = [
+                relative
+                for item in [*raw_versions, *raw_markers]
+                for relative in [_cloud_relative_key(item["Key"], prefix)]
+                if relative is not None
+            ]
+            decoded_paths, decode_failures = decode_object_relative_paths(
+                runtime_config,
+                encrypted_relatives,
+            )
+
     versions: list[tuple[str, str, dict[str, Any]]] = []
     markers: list[tuple[str, str, dict[str, Any]]] = []
 
-    def _collect(runtime: Any | None = None) -> None:
-        for page in paginator.paginate(**kwargs):
-            for item in page.get("Versions", []):
-                logical_path = object_key_to_path(
-                    item["Key"],
-                    prefix,
-                    is_crypt,
-                    encrypted_names=encrypts_names,
-                    runtime=runtime,
-                )
-                if logical_path is not None:
-                    versions.append((logical_path, item["VersionId"], item))
-            for item in page.get("DeleteMarkers", []):
-                logical_path = object_key_to_path(
-                    item["Key"],
-                    prefix,
-                    is_crypt,
-                    encrypted_names=encrypts_names,
-                    runtime=runtime,
-                )
-                if logical_path is not None:
-                    markers.append((logical_path, item["VersionId"], item))
+    def _convert(
+        items: list[dict[str, Any]],
+        destination: list[tuple[str, str, dict[str, Any]]],
+    ) -> None:
+        for item in items:
+            decode = decoded_paths.get(_cloud_relative_key(item["Key"], prefix))
+            logical_path = object_key_to_path(
+                item["Key"],
+                prefix,
+                is_crypt,
+                encrypted_names=encrypts_names,
+                runtime=runtime,
+                decoded_relative_path=decode if encrypts_names else _UNSET_DECODED_PATH,
+            )
+            if logical_path is not None:
+                destination.append((logical_path, item["VersionId"], item))
 
-    if encrypts_names:
-        with vault_rclone_config(vault) as runtime:
-            _collect(runtime)
-    else:
-        _collect()
+    _convert(raw_versions, versions)
+    _convert(raw_markers, markers)
 
     def remote_timestamp(item: dict[str, Any]) -> str:
         value = item.get("LastModified")
@@ -991,11 +1146,14 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                 observed_at=now_iso(),
             )
             count += 1
-        catalog.mark_unseen_archive_versions_missing(
-            vault_id=vault["id"],
-            scan_id=scan_id,
-            scan_started_at=scan_id,
-        )
+        # An unknown encrypted key is not evidence that its prior catalog rows
+        # disappeared. Fail closed by retaining their last known availability.
+        if not decode_failures:
+            catalog.mark_unseen_archive_versions_missing(
+                vault_id=vault["id"],
+                scan_id=scan_id,
+                scan_started_at=scan_id,
+            )
     return count
 
 
@@ -1097,12 +1255,228 @@ def _current_verified_scan_row(connection: Any, vault: dict[str, Any]) -> dict[s
     return current
 
 
+def _scan_generation_is_current(vault_id: int, scan_id: str) -> bool:
+    """Reject a completion path superseded by a newer in-process scan."""
+    with status_lock:
+        status = runtime_status.get(int(vault_id))
+        if not status or "scan_id" not in status:
+            # Direct unit-test callers do not enter through scan_vault and have
+            # no runtime generation to compare.
+            return True
+        return status.get("scan_id") == scan_id
+
+
+def _unfingerprinted_local_rows(vault_id: int) -> list[dict[str, Any]]:
+    with db() as connection:
+        return connection.execute(
+            """
+            SELECT vf.id AS vault_file_id, fp.path, lc.size, lc.mtime_ns
+            FROM vault_files vf
+            JOIN file_paths fp
+              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+            JOIN local_copies lc ON lc.vault_file_id=vf.id
+            WHERE vf.vault_id=%s
+              AND vf.status='active'
+              AND lc.presence='present'
+              AND lc.file_type='regular'
+              AND lc.plaintext_sha256 IS NULL
+            ORDER BY lower(fp.path)
+            """,
+            (vault_id,),
+        ).fetchall()
+
+
+def _collect_local_fingerprint_updates(
+    vault: dict[str, Any], root: Path
+) -> list[dict[str, Any]]:
+    """Hash Local Copies without holding a database write transaction."""
+    updates: list[dict[str, Any]] = []
+    for row in _unfingerprinted_local_rows(int(vault["id"])):
+        try:
+            local_path = safe_local_path(str(root), row["path"])
+            if not local_path.is_file():
+                continue
+            digest, stat_result = hash_stable_regular_file(local_path)
+        except (OSError, ValueError, RuntimeError):
+            continue
+        updates.append(
+            {
+                "vault_file_id": row["vault_file_id"],
+                "path": row["path"],
+                "old_size": row["size"],
+                "old_mtime_ns": row["mtime_ns"],
+                "size": stat_result.st_size,
+                "mtime_ns": stat_result.st_mtime_ns,
+                "digest": digest,
+                "observed_at": now_iso(),
+            }
+        )
+    return updates
+
+
+def _apply_local_fingerprint_updates(
+    vault: dict[str, Any],
+    scan_id: str,
+    updates: list[dict[str, Any]],
+) -> None:
+    """Publish hashed observations in bounded compare-and-swap batches."""
+    persisted = "root_identity" in vault or "root_identity_version" in vault
+    for offset in range(0, len(updates), LOCAL_SCAN_WRITE_BATCH_SIZE):
+        batch = updates[offset : offset + LOCAL_SCAN_WRITE_BATCH_SIZE]
+        with db() as connection:
+            if persisted:
+                _current_verified_scan_row(connection, vault)
+                if not _scan_generation_is_current(int(vault["id"]), scan_id):
+                    raise _ScanRootMismatch("Local scan was superseded")
+            for update in batch:
+                # A watcher may have replaced the file after hashing. The
+                # predicate prevents a stale digest from overwriting it.
+                connection.execute(
+                    """
+                    UPDATE local_copies
+                    SET size=%s,
+                        mtime_ns=%s,
+                        plaintext_sha256=%s,
+                        matched_archive_version_id=NULL,
+                        last_seen_at=%s,
+                        observed_at=%s
+                    WHERE vault_file_id=%s
+                      AND presence='present'
+                      AND file_type='regular'
+                      AND plaintext_sha256 IS NULL
+                      AND (size=%s OR (size IS NULL AND %s IS NULL))
+                      AND (mtime_ns=%s OR (mtime_ns IS NULL AND %s IS NULL))
+                    """,
+                    (
+                        update["size"],
+                        update["mtime_ns"],
+                        update["digest"],
+                        scan_id,
+                        update["observed_at"],
+                        update["vault_file_id"],
+                        update["old_size"],
+                        update["old_size"],
+                        update["old_mtime_ns"],
+                        update["old_mtime_ns"],
+                    ),
+                )
+            if persisted:
+                _current_verified_scan_row(connection, vault)
+
+
+def _rollback_local_scan_journal(
+    vault_id: int, scan_id: str, journal: dict[str, Any]
+) -> None:
+    """Compensate observations committed before a scan lost its proof.
+
+    The compare-and-swap predicate leaves a newer watcher observation alone. A
+    newly-created scan-only Vault File is removed only when no cloud Version or
+    Job has attached to it in the meantime.
+    """
+    entries = journal.get("entries") or {}
+    if not entries:
+        return
+    try:
+        with db() as connection:
+            for path, snapshot in entries.items():
+                if snapshot is None:
+                    current = connection.execute(
+                        """
+                        SELECT vf.id AS vault_file_id
+                        FROM vault_files vf
+                        JOIN file_paths fp
+                          ON fp.vault_file_id=vf.id
+                         AND fp.vault_id=vf.vault_id
+                         AND fp.path=%s
+                         AND fp.valid_to IS NULL
+                        JOIN local_copies lc ON lc.vault_file_id=vf.id
+                        WHERE vf.vault_id=%s
+                          AND lc.last_seen_at=%s
+                          AND NOT EXISTS (
+                              SELECT 1 FROM archive_versions av
+                              WHERE av.vault_file_id=vf.id
+                          )
+                          AND NOT EXISTS (
+                              SELECT 1 FROM jobs j WHERE j.vault_file_id=vf.id
+                          )
+                        """,
+                        (path, vault_id, scan_id),
+                    ).fetchone()
+                    if current is None:
+                        continue
+                    file_id = current["vault_file_id"]
+                    connection.execute(
+                        "DELETE FROM local_copies WHERE vault_file_id=%s AND last_seen_at=%s",
+                        (file_id, scan_id),
+                    )
+                    connection.execute(
+                        """
+                        DELETE FROM file_paths
+                        WHERE vault_file_id=%s AND vault_id=%s
+                          AND path=%s AND valid_to IS NULL
+                        """,
+                        (file_id, vault_id, path),
+                    )
+                    connection.execute(
+                        "DELETE FROM vault_files WHERE id=%s AND vault_id=%s",
+                        (file_id, vault_id),
+                    )
+                    continue
+
+                file_id = snapshot["vault_file_id"]
+                if snapshot.get("presence") is None:
+                    connection.execute(
+                        """
+                        DELETE FROM local_copies
+                        WHERE vault_file_id=%s AND last_seen_at=%s
+                        """,
+                        (file_id, scan_id),
+                    )
+                    continue
+                connection.execute(
+                    """
+                    UPDATE local_copies
+                    SET presence=%s,
+                        file_type=%s,
+                        size=%s,
+                        mtime_ns=%s,
+                        plaintext_sha256=%s,
+                        matched_archive_version_id=%s,
+                        last_seen_at=%s,
+                        observed_at=%s
+                    WHERE vault_file_id=%s AND last_seen_at=%s
+                    """,
+                    (
+                        snapshot["presence"],
+                        snapshot["file_type"],
+                        snapshot["size"],
+                        snapshot["mtime_ns"],
+                        snapshot["plaintext_sha256"],
+                        snapshot["matched_archive_version_id"],
+                        snapshot["last_seen_at"],
+                        snapshot["observed_at"],
+                        file_id,
+                        scan_id,
+                    ),
+                )
+    except Exception:
+        # Compensation is best effort. The scan is still reported as blocked,
+        # and no missing transition or relocation completion can commit.
+        return
+
+
 def _verified_local_scan(
     vault: dict[str, Any], scan_id: str
 ) -> tuple[int, dict[str, int], str | None]:
-    """Commit catalog, rename/jobs, and recovery state only after final identity proof."""
+    """Walk/hash outside writes, then publish bounded catalog stages.
+
+    Local observations are committed in short batches so ordinary SQLite
+    writers are not held behind directory traversal or hashing.  Missing
+    transitions, rename decisions, and relocation recovery remain in one final
+    transaction guarded by the enrolled root and scan generation.
+    """
     # Minimal in-memory Vaults are a longstanding unit-test seam. Persisted
-    # rows always contain identity columns and always use the atomic path.
+    # rows always contain identity columns and always use the staged path.
     if "root_identity" not in vault and "root_identity_version" not in vault:
         return scan_tree(vault, scan_id), apply_auto_renames(vault), None
 
@@ -1111,35 +1485,87 @@ def _verified_local_scan(
         raise RuntimeError(
             f"Local scan blocked by Source Volume health: {access.volume_health}"
         )
+    journal_key = (int(vault["id"]), scan_id)
+    scan_journal: dict[str, Any] = {"entries": {}}
+    _active_scan_journals[journal_key] = scan_journal
     with _pinned_verified_scan_root(vault) as pinned_root:
+        # The walk itself uses short catalog batches. Keeping this connection
+        # open preserves the old rollback seam when a test or an early failure
+        # writes directly before the final identity check; normal batches
+        # commit inside _scan_tree and release SQLite's write lock.
         with db() as connection:
             _current_verified_scan_row(connection, vault)
+            if not _scan_generation_is_current(int(vault["id"]), scan_id):
+                raise _ScanRootMismatch("Local scan was superseded")
             count = scan_tree(
                 vault,
                 scan_id,
                 _connection=connection,
                 _root=pinned_root,
-            )
-            alias = access.volume_alias
-            completed_alias = (
-                alias
-                if alias and source_layout.requires_full_local_scan(alias)
-                else None
+                _finalize_missing=False,
+                _scan_journal=scan_journal,
             )
             _current_verified_scan_row(connection, vault)
-            rename_summary = apply_auto_renames(
-                vault, _connection=connection, _root=pinned_root
+
+        # Hashing happens with no write transaction open. Publishing uses
+        # compare-and-swap predicates so watcher replacements win safely.
+        updates = _collect_local_fingerprint_updates(vault, pinned_root)
+        _apply_local_fingerprint_updates(vault, scan_id, updates)
+
+        alias = access.volume_alias
+        completed_alias = (
+            alias
+            if alias and source_layout.requires_full_local_scan(alias)
+            else None
+        )
+        with db() as connection:
+            _current_verified_scan_row(connection, vault)
+            if not _scan_generation_is_current(int(vault["id"]), scan_id):
+                raise _ScanRootMismatch("Local scan was superseded")
+            rename_summary = _apply_auto_renames(
+                connection,
+                vault,
+                root=pinned_root,
+                hash_missing=False,
             )
-            current = _current_verified_scan_row(connection, vault)
-            if current.get("relocation_state") == "scan_required":
+            rename_summary["hashed"] = len(updates)
+            _current_verified_scan_row(connection, vault)
+            final_access = source_layout.vault_local_access(vault["source_root"])
+            safe_scan_result = (
+                final_access.local_operations_allowed
+                or final_access.volume_health == "scan_required"
+            )
+            if safe_scan_result and (
+                final_access.volume_alias is None
+                or source_layout.should_emit_local_copy_removals(
+                    final_access.volume_alias
+                )
+            ):
+                ArchiveCatalog(connection).mark_unseen_local_copies_missing(
+                    vault_id=int(vault["id"]),
+                    seen_at=scan_id,
+                    observed_at=now_iso(),
+                    scan_started_at=scan_id,
+                )
+            _current_verified_scan_row(connection, vault)
+            was_relocation_scan = (
+                connection.execute(
+                    "SELECT relocation_state FROM vaults WHERE id=%s",
+                    (int(vault["id"]),),
+                ).fetchone()["relocation_state"]
+                == "scan_required"
+            )
+            if was_relocation_scan:
                 vault_relocation.complete_relocation_scan(
                     connection, int(vault["id"]), release_runtime=False
                 )
-        # Runtime gates are delayed until the DB transaction committed.
-        if current.get("relocation_state") == "scan_required":
+            current = _current_verified_scan_row(connection, vault)
+        # Runtime gates are delayed until the final transaction committed.
+        if was_relocation_scan:
             vault_relocation.release_relocation_scan_runtime(int(vault["id"]))
         if completed_alias:
             source_layout.note_full_local_scan_completed(completed_alias)
+        _active_scan_journals.pop(journal_key, None)
         return count, rename_summary, completed_alias
 
 
@@ -1174,10 +1600,9 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 status["last_error"] = f"Source scan blocked: {exc}"
             return {"local": -1, "root_identity_mismatch": 1}
 
-        with status_lock:
-            status.update(scanning=True, last_error=None)
-
         scan_id = now_iso()
+        with status_lock:
+            status.update(scanning=True, last_error=None, scan_id=scan_id)
         result: dict[str, int] = {}
         local_scan_identity_valid = True
         # Reset scan findings; live preflight still runs via /api/stats.
@@ -1200,11 +1625,25 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                     {f"rename_{key}": value for key, value in rename_summary.items()}
                 )
             except _ScanRootMismatch as exc:
+                journal = _active_scan_journals.pop(
+                    (int(vault["id"]), scan_id), None
+                )
+                if journal is not None:
+                    _rollback_local_scan_journal(
+                        int(vault["id"]), scan_id, journal
+                    )
                 local_scan_identity_valid = False
                 status["last_error"] = f"Source scan blocked: {exc}"
                 result["local"] = -1
                 result["root_identity_mismatch"] = 1
             except Exception as exc:
+                journal = _active_scan_journals.pop(
+                    (int(vault["id"]), scan_id), None
+                )
+                if journal is not None:
+                    _rollback_local_scan_journal(
+                        int(vault["id"]), scan_id, journal
+                    )
                 status["last_error"] = f"Source scan: {exc}"
                 result["local"] = -1
         else:
@@ -1271,8 +1710,14 @@ def _apply_auto_renames(
     *,
     root: Path,
     requested_by: int | None = None,
+    hash_missing: bool = True,
 ) -> dict[str, int]:
-    """Apply rename analysis inside the caller-owned transaction."""
+    """Apply rename analysis inside the caller-owned transaction.
+
+    ``hash_missing`` is false for the normal full-scan path: all filesystem
+    hashing has already completed outside this transaction and its digests were
+    published through compare-and-swap batches.
+    """
     from .audit import audit_log
 
     summary = {"hashed": 0, "confirmed": 0, "queued": 0, "ambiguous": 0}
@@ -1288,7 +1733,8 @@ def _apply_auto_renames(
             (vault["id"],),
         ).fetchone()
         requested_by = int(owner["user_id"]) if owner else None
-    present_rows = connection.execute(
+    if hash_missing:
+        present_rows = connection.execute(
             """
             SELECT vf.id AS vault_file_id, fp.path, lc.size, lc.mtime_ns
             FROM vault_files vf
@@ -1303,14 +1749,14 @@ def _apply_auto_renames(
             ORDER BY lower(fp.path)
             """,
             (vault["id"],),
-    ).fetchall()
-    for row in present_rows:
-            local_path = safe_local_path(str(root), row["path"])
-            if not local_path.is_file():
-                continue
+        ).fetchall()
+        for row in present_rows:
             try:
+                local_path = safe_local_path(str(root), row["path"])
+                if not local_path.is_file():
+                    continue
                 digest, stat_result = hash_stable_regular_file(local_path)
-            except (OSError, RuntimeError):
+            except (OSError, ValueError, RuntimeError):
                 continue
             catalog.set_local_fingerprint(
                 vault_id=vault["id"],
@@ -1388,16 +1834,27 @@ def apply_auto_renames(
     _connection: Any | None = None,
     _root: Path | None = None,
 ) -> dict[str, int]:
-    """Hash and auto-confirm renames as one database transaction."""
+    """Hash outside writes, then confirm renames atomically."""
     root = _root or Path(vault["source_root"]).resolve()
     if _connection is not None:
+        # Preserve the caller-owned transaction seam used by direct catalog
+        # callers and the relocation rollback tests.
         return _apply_auto_renames(
             _connection, vault, root=root, requested_by=requested_by
         )
+    scan_id = now_iso()
+    updates = _collect_local_fingerprint_updates(vault, root)
+    _apply_local_fingerprint_updates(vault, scan_id, updates)
     with db() as connection:
-        return _apply_auto_renames(
-            connection, vault, root=root, requested_by=requested_by
+        summary = _apply_auto_renames(
+            connection,
+            vault,
+            root=root,
+            requested_by=requested_by,
+            hash_missing=False,
         )
+    summary["hashed"] = len(updates)
+    return summary
 
 
 def run_rclone(

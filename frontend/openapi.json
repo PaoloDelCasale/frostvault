@@ -528,6 +528,27 @@
         ],
         "type": "object"
       },
+      "ApiErrorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "message_key": {
+            "const": "api.invalid_path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail",
+          "message_key",
+          "message"
+        ],
+        "type": "object"
+      },
       "ArchiveListItem": {
         "anyOf": [
           {
@@ -837,13 +858,11 @@
         "properties": {
           "new_prefix": {
             "maxLength": 1024,
-            "minLength": 1,
             "title": "New Prefix",
             "type": "string"
           },
           "old_prefix": {
             "maxLength": 1024,
-            "minLength": 1,
             "title": "Old Prefix",
             "type": "string"
           }
@@ -859,7 +878,6 @@
         "properties": {
           "new_path": {
             "maxLength": 1024,
-            "minLength": 1,
             "title": "New Path",
             "type": "string"
           },
@@ -2017,7 +2035,6 @@
           },
           "path": {
             "maxLength": 1024,
-            "minLength": 1,
             "title": "Path",
             "type": "string"
           },
@@ -7340,15 +7357,34 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "detail"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The requested Vault-scoped resource is absent, stale, or foreign"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
           }
         },
         "summary": "Confirm Folder Rename"
@@ -7378,15 +7414,34 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "detail"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The requested Vault-scoped resource is absent, stale, or foreign"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
           }
         },
         "summary": "Confirm Rename"
@@ -7417,15 +7472,34 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "detail"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The requested Vault-scoped resource is absent, stale, or foreign"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
           }
         },
         "summary": "File History"
@@ -7570,11 +7644,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
           }
         },
         "summary": "List Files"
@@ -7589,7 +7663,6 @@
             "name": "path",
             "required": true,
             "schema": {
-              "minLength": 1,
               "title": "Path",
               "type": "string"
             }
@@ -7610,11 +7683,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
           }
         },
         "summary": "File Versions"
@@ -7648,11 +7721,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
           }
         },
         "summary": "Free Space"
@@ -7788,11 +7861,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
           }
         },
         "summary": "Update Lifecycle Pin"
@@ -8092,11 +8165,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
           }
         },
         "summary": "Recover"
@@ -8164,15 +8237,34 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "detail"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The requested Vault-scoped resource is absent, stale, or foreign"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
           }
         },
         "summary": "Recover Estimate"
@@ -8329,11 +8421,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
           }
         },
         "summary": "Change Storage Class"
@@ -8385,11 +8477,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
           }
         },
         "summary": "Upload"

@@ -258,6 +258,48 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertEqual(observed["local_copy"]["presence"], "present")
             self.assertEqual(observed["local_copy"]["size"], 7)
 
+    def test_scan_missing_transition_preserves_a_newer_writer_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "catalog.db"
+            migrated = run_alembic(database_path)
+            self.assertEqual(migrated.returncode, 0, migrated.stderr)
+            with SQLiteConnection(str(database_path)) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO vaults(
+                        id, slug, name, source_root, s3_bucket, s3_prefix,
+                        rclone_remote
+                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                    """
+                )
+                ArchiveCatalog(connection).observe_local_copy(
+                    vault_id=2,
+                    path="concurrent.txt",
+                    file_type="regular",
+                    size=1,
+                    mtime_ns=1,
+                    observed_at="2026-07-21T10:00:01+00:00",
+                    seen_at="watcher-generation",
+                )
+                ArchiveCatalog(connection).mark_unseen_local_copies_missing(
+                    vault_id=2,
+                    seen_at="older-scan-generation",
+                    observed_at="2026-07-21T10:00:02+00:00",
+                    scan_started_at="2026-07-21T10:00:00+00:00",
+                )
+                observed = connection.execute(
+                    """
+                    SELECT lc.presence
+                    FROM local_copies lc
+                    JOIN vault_files vf ON vf.id=lc.vault_file_id
+                    JOIN file_paths fp ON fp.vault_file_id=vf.id
+                    WHERE vf.vault_id=2 AND fp.valid_to IS NULL
+                      AND fp.path='concurrent.txt'
+                    """
+                ).fetchone()
+
+            self.assertEqual(observed["presence"], "present")
+
     def test_cloud_scan_records_the_exact_s3_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "catalog.db"

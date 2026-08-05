@@ -121,6 +121,63 @@ class RuntimeRcloneConfigStorageTests(unittest.TestCase):
                     self.fail("a named fallback must never be created")
         self.assertFalse(self.runtime_directory.exists())
 
+    def test_filename_decoding_batches_and_reuses_repeated_keys(self) -> None:
+        runtime = rclone_runtime.RuntimeRcloneConfig(
+            path=self.root / "runtime.conf",
+            remote_name="vault",
+            config_text="",
+            secrets=None,
+        )
+        calls: list[list[str]] = []
+
+        def fake_run(command, **_kwargs):
+            values = list(command[command.index("vault:") + 1 :])
+            calls.append(values)
+            return SimpleNamespace(
+                returncode=0,
+                stdout="\n".join(f"decoded/{value}" for value in values),
+                stderr="secret-material-must-not-be-read",
+            )
+
+        with patch("app.services.rclone_runtime.subprocess.run", side_effect=fake_run):
+            decoded, failed = rclone_runtime.decode_object_relative_paths(
+                runtime,
+                ["a", "b", "a", "c"],
+            )
+
+        self.assertEqual(
+            decoded,
+            {"a": "decoded/a", "b": "decoded/b", "c": "decoded/c"},
+        )
+        self.assertEqual(failed, set())
+        self.assertEqual(calls, [["a", "b", "c"]])
+
+    def test_filename_decoding_failure_does_not_expose_process_output(self) -> None:
+        runtime = rclone_runtime.RuntimeRcloneConfig(
+            path=self.root / "runtime.conf",
+            remote_name="vault",
+            config_text="",
+            secrets=None,
+        )
+
+        def failed_run(_command, **_kwargs):
+            return SimpleNamespace(
+                returncode=1,
+                stdout="ciphertext-output",
+                stderr="password=secret-material",
+            )
+
+        with patch("app.services.rclone_runtime.subprocess.run", side_effect=failed_run):
+            decoded, failed = rclone_runtime.decode_object_relative_paths(
+                runtime,
+                ["encrypted-name"],
+            )
+
+        self.assertEqual(decoded, {})
+        self.assertEqual(failed, {"encrypted-name"})
+        with self.assertRaisesRegex(RuntimeError, "filename decoding failed"):
+            rclone_runtime.decode_object_relative_path(runtime, "encrypted-name")
+
     @unittest.skipUnless(shutil.which("rclone"), "rclone binary is required")
     def test_anonymous_memfd_config_is_accepted_by_rclone(self) -> None:
         with rclone_runtime.vault_rclone_config(self.vault) as runtime:

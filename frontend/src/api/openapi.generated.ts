@@ -2276,6 +2276,12 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        ApiErrorResponse: {
+            detail: string;
+            message: string;
+            /** @constant */
+            message_key: "api.invalid_path";
+        };
         ArchiveListItem: components["schemas"]["VaultFileListItem"] | components["schemas"]["DirectoryListItem"];
         ArchiveVersionItem: {
             created_at?: string | null;
@@ -5412,13 +5418,24 @@ export interface operations {
                     "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The requested Vault-scoped resource is absent, stale, or foreign */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                    };
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
@@ -5445,13 +5462,24 @@ export interface operations {
                     "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The requested Vault-scoped resource is absent, stale, or foreign */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                    };
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
@@ -5476,13 +5504,24 @@ export interface operations {
                     "application/json": components["schemas"]["FileHistoryResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The requested Vault-scoped resource is absent, stale, or foreign */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                    };
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
@@ -5532,13 +5571,13 @@ export interface operations {
                     };
                 };
             };
-            /** @description Validation Error */
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
@@ -5563,13 +5602,13 @@ export interface operations {
                     "application/json": components["schemas"]["FileVersionsResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
@@ -5596,13 +5635,13 @@ export interface operations {
                     "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
@@ -5713,13 +5752,13 @@ export interface operations {
                     "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
@@ -5991,13 +6030,13 @@ export interface operations {
                     "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
@@ -6057,13 +6096,24 @@ export interface operations {
                     "application/json": components["schemas"]["RecoverEstimateResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The requested Vault-scoped resource is absent, stale, or foreign */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                    };
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
@@ -6203,13 +6253,13 @@ export interface operations {
                     "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
@@ -6256,13 +6306,13 @@ export interface operations {
                     "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
