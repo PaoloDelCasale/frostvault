@@ -74,12 +74,12 @@ describe("offline file listing cache (seam 3)", () => {
     expect(cached?.savedAt).toMatch(/^\d{4}-/);
   });
 
-  it("purges User A's listing on logout before User B can cache or load files", () => {
+  it("purges User A's listing on logout before User B can cache or load files", async () => {
     const storage = memoryStorage();
     saveCachedFilesListing(userAVaultA, query, listingFor("user-a.txt"), storage);
 
     // User A signs out. The same browser then authenticates User B.
-    clearOfflineFileCache(storage);
+    await clearOfflineFileCache(storage);
     saveCachedFilesListing(userBVaultA, query, listingFor("user-b.txt"), storage);
 
     expect(loadCachedFilesListing(userAVaultA, query, storage)).toBeNull();
@@ -88,13 +88,13 @@ describe("offline file listing cache (seam 3)", () => {
     );
   });
 
-  it("does not reuse Vault A's listing after the same User switches to Vault B", () => {
+  it("does not reuse Vault A's listing after the same User switches to Vault B", async () => {
     const storage = memoryStorage();
     saveCachedFilesListing(userAVaultA, query, listingFor("vault-a.txt"), storage);
 
     // Vault selection changes before the next file listing is requested.
     expect(loadCachedFilesListing(userAVaultB, query, storage)).toBeNull();
-    clearOfflineFileCache(storage);
+    await clearOfflineFileCache(storage);
     saveCachedFilesListing(userAVaultB, query, listingFor("vault-b.txt"), storage);
 
     expect(loadCachedFilesListing(userAVaultA, query, storage)).toBeNull();

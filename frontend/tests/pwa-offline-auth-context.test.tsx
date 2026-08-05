@@ -10,6 +10,7 @@ import {
 } from "@/api";
 import App from "@/App";
 import { I18nProvider } from "@/i18n/I18nProvider";
+import { OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE } from "@/pwa/offlineFiles";
 
 const OFFLINE_FILE_STORAGE_PREFIX = "frostvault.files.cache.v2:";
 
@@ -28,7 +29,12 @@ function requestUrl(input: RequestInfo | URL): string {
       : input.url;
 }
 
-function meResponse(userId: number, vaultId: number, vaultName: string) {
+function meResponse(
+  userId: number,
+  vaultId: number,
+  vaultName: string,
+  csrfToken = `csrf-${userId}`,
+) {
   return {
     id: userId,
     username: `user-${userId}`,
@@ -36,7 +42,7 @@ function meResponse(userId: number, vaultId: number, vaultName: string) {
     is_admin: false,
     active: true,
     session_version: 1,
-    csrf_token: `csrf-${userId}`,
+    csrf_token: csrfToken,
     auth_method: "local",
     locale: "en",
     locales: ["en", "it"],
@@ -118,13 +124,43 @@ function renderApp() {
   const client = createAppQueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(
-    <ApiQueryProvider client={client}>
-      <I18nProvider>
-        <App />
-      </I18nProvider>
-    </ApiQueryProvider>,
-  );
+  return {
+    client,
+    ...render(
+      <ApiQueryProvider client={client}>
+        <I18nProvider>
+          <App />
+        </I18nProvider>
+      </ApiQueryProvider>,
+    ),
+  };
+}
+
+function installServiceWorkerMessageHarness() {
+  const listeners = new Set<(event: MessageEvent<unknown>) => void>();
+  vi.stubGlobal("navigator", {
+    ...navigator,
+    serviceWorker: {
+      addEventListener: (type: string, listener: (event: MessageEvent<unknown>) => void) => {
+        if (type === "message") listeners.add(listener);
+      },
+      removeEventListener: (
+        type: string,
+        listener: (event: MessageEvent<unknown>) => void,
+      ) => {
+        if (type === "message") listeners.delete(listener);
+      },
+      getRegistration: vi.fn(async () => undefined),
+    },
+  });
+  return {
+    invalidate(epoch: number) {
+      const event = new MessageEvent("message", {
+        data: { type: OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE, epoch },
+      });
+      for (const listener of listeners) listener(event);
+    },
+  };
 }
 
 describe("App offline cache authorization transitions", () => {
@@ -268,5 +304,128 @@ describe("App offline cache authorization transitions", () => {
     });
     expect(screen.getByText("Loading…")).toBeInTheDocument();
     expect(screen.queryByText("vault-a.txt")).not.toBeInTheDocument();
+  });
+
+  it("delivers one Worker invalidation payload to two mounted Apps and clears both file query clients", async () => {
+    const worker = installServiceWorkerMessageHarness();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url.startsWith("/api/i18n/catalog")) return jsonResponse(catalog);
+      if (url === "/api/me") return jsonResponse(meResponse(11, 101, "Vault A"));
+      if (url === "/api/vaults" && (!init?.method || init.method === "GET")) {
+        return jsonResponse({
+          items: [{ id: 101, slug: "vault-101", name: "Vault A", role: "owner" }],
+        });
+      }
+      if (url.startsWith("/api/files")) return jsonResponse(listing("shared-tab.txt"));
+      if (url === "/api/jobs") return jsonResponse({ items: [], groups: [] });
+      if (url === "/api/stats") {
+        return jsonResponse({
+          states: { both: 0, local_only: 0, cloud_only: 0 },
+          storage: { local_bytes: 0, cloud_bytes: 0 },
+          active_jobs: 0,
+          runtime: {},
+          filesystem: null,
+          delete_enabled: false,
+        });
+      }
+      return jsonResponse({ detail: `unexpected ${url}` }, 404);
+    });
+
+    const firstApp = renderApp();
+    const secondApp = renderApp();
+    await waitFor(() => {
+      expect(screen.getAllByText("shared-tab.txt")).toHaveLength(2);
+      expect(offlineFileStorageKeys()).not.toHaveLength(0);
+    });
+
+    worker.invalidate(7);
+
+    await waitFor(() => {
+      expect(screen.queryAllByTestId("file-browser")).toHaveLength(0);
+      expect(offlineFileStorageKeys()).toEqual([]);
+      expect(firstApp.client.getQueryCache().findAll({ queryKey: ["files"] })).toEqual([]);
+      expect(secondApp.client.getQueryCache().findAll({ queryKey: ["files"] })).toEqual([]);
+    });
+    expect(screen.getAllByText("Loading…")).toHaveLength(2);
+  });
+
+  it("preserves listings on unchanged locale/navigation refreshes but purges before a same-scope Session replacement", async () => {
+    const user = userEvent.setup();
+    let csrfToken = "session-a";
+    let meCalls = 0;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url.startsWith("/api/i18n/catalog")) return jsonResponse(catalog);
+      if (url === "/api/me") {
+        meCalls += 1;
+        return jsonResponse(meResponse(11, 101, "Vault A", csrfToken));
+      }
+      if (url === "/api/vaults" && (!init?.method || init.method === "GET")) {
+        return jsonResponse({
+          items: [{ id: 101, slug: "vault-101", name: "Vault A", role: "owner" }],
+        });
+      }
+      if (url === "/api/locale" && init?.method === "PUT") {
+        return jsonResponse({
+          locale: "it",
+          message: "Locale updated",
+          message_key: "api.locale_updated",
+          messages: catalog.messages,
+        });
+      }
+      if (url.startsWith("/api/notifications")) {
+        return jsonResponse({ items: [], unread_count: 0 });
+      }
+      if (url.startsWith("/api/files")) {
+        if (csrfToken === "session-b") throw new TypeError("offline after replacement");
+        return jsonResponse(listing("before-replacement.txt"));
+      }
+      if (url === "/api/jobs") return jsonResponse({ items: [], groups: [] });
+      if (url === "/api/stats") {
+        return jsonResponse({
+          states: { both: 0, local_only: 0, cloud_only: 0 },
+          storage: { local_bytes: 0, cloud_bytes: 0 },
+          active_jobs: 0,
+          runtime: {},
+          filesystem: null,
+          delete_enabled: false,
+        });
+      }
+      return jsonResponse({ detail: `unexpected ${url}` }, 404);
+    });
+
+    renderApp();
+    await waitFor(() => {
+      expect(screen.getAllByText("before-replacement.txt").length).toBeGreaterThan(0);
+      expect(offlineFileStorageKeys()).not.toHaveLength(0);
+    });
+
+    const languagePicker = screen.getAllByRole("combobox", {
+      name: "Language",
+    })[0]!;
+    await user.selectOptions(languagePicker, "it");
+    await waitFor(() => {
+      expect(meCalls).toBeGreaterThanOrEqual(2);
+      expect(offlineFileStorageKeys()).not.toHaveLength(0);
+    });
+
+    window.history.pushState({}, "", "/vaults/new");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => {
+      expect(meCalls).toBeGreaterThanOrEqual(3);
+      expect(offlineFileStorageKeys()).not.toHaveLength(0);
+    });
+
+    csrfToken = "session-b";
+    window.history.pushState({}, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => {
+      // The first changed-token response clears; the retry is a fresh /api/me
+      // under the post-clear epoch before the archive can mount again.
+      expect(meCalls).toBeGreaterThanOrEqual(5);
+      expect(offlineFileStorageKeys()).toEqual([]);
+    });
+    expect(screen.queryByText("before-replacement.txt")).not.toBeInTheDocument();
   });
 });

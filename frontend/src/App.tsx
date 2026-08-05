@@ -20,10 +20,13 @@ import {
   clearOfflineFileCache,
   invalidateLegacyCachedFilesListings,
   isOfflineCacheContext,
+  prepareOfflineFileCacheContext,
   runWithOfflineFileCacheBarrier,
   setOfflineFileCacheContext,
   subscribeToOfflineFileCacheInvalidation,
   type OfflineCacheContext,
+  type OfflineFileCacheFreshness,
+  type OfflineFileCacheLease,
 } from "@/pwa/offlineFiles";
 import { AppShell } from "@/layout/AppShell";
 import { shellLabel } from "@/layout/labels";
@@ -94,6 +97,42 @@ function offlineCacheContextFor(me: MeResponse): OfflineCacheContext | null {
   return isOfflineCacheContext(context) ? context : null;
 }
 
+type OfflineCacheAuthorization = Readonly<{
+  context: OfflineCacheContext;
+  // csrf_token is per Session and remains in memory only. It distinguishes a
+  // real Session replacement from ordinary refreshes of the same User/Vault.
+  sessionFingerprint: string;
+}>;
+
+type OfflineCacheSynchronization = "ready" | "retry" | "none";
+
+function offlineCacheAuthorizationFor(
+  me: MeResponse,
+): OfflineCacheAuthorization | null {
+  const context = offlineCacheContextFor(me);
+  if (!context) return null;
+  return {
+    context,
+    sessionFingerprint: [
+      me.session_version,
+      me.auth_method,
+      me.csrf_token,
+    ].join("\u0000"),
+  };
+}
+
+function sameOfflineCacheAuthorization(
+  left: OfflineCacheAuthorization | null,
+  right: OfflineCacheAuthorization | null,
+): boolean {
+  if (!left || !right) return left === right;
+  return (
+    left.context.userId === right.context.userId &&
+    left.context.vaultId === right.context.vaultId &&
+    left.sessionFingerprint === right.sessionFingerprint
+  );
+}
+
 export default function App() {
   const { t, setLocale } = useI18n();
   const { setUserId } = useTheme();
@@ -102,9 +141,10 @@ export default function App() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [vaults, setVaults] = useState<VaultListItem[]>([]);
   const [authChecked, setAuthChecked] = useState(pathname === "/login");
-  const [offlineCacheContext, setOfflineCacheContext] =
-    useState<OfflineCacheContext | null>(null);
-  const offlineCacheContextRef = useRef<OfflineCacheContext | null>(null);
+  const [offlineCacheLease, setOfflineCacheLease] =
+    useState<OfflineFileCacheLease | null>(null);
+  const offlineCacheAuthorizationRef =
+    useRef<OfflineCacheAuthorization | null>(null);
   const [refreshNotice, setRefreshNotice] = useState<{
     message: string;
     error: boolean;
@@ -116,8 +156,8 @@ export default function App() {
   }, []);
 
   const clearOfflineFileData = useCallback(() => {
-    offlineCacheContextRef.current = null;
-    setOfflineCacheContext(null);
+    offlineCacheAuthorizationRef.current = null;
+    setOfflineCacheLease(null);
     void queryClient.cancelQueries({ queryKey: ["files"] });
     queryClient.removeQueries({ queryKey: ["files"] });
   }, [queryClient]);
@@ -128,29 +168,75 @@ export default function App() {
   );
 
   const synchronizeOfflineCacheContext = useCallback(
-    (nextMe: MeResponse): OfflineCacheContext | null => {
+    async (
+      nextMe: MeResponse,
+      freshness: OfflineFileCacheFreshness,
+    ): Promise<OfflineCacheSynchronization> => {
       invalidateLegacyCachedFilesListings();
-      const nextContext = offlineCacheContextFor(nextMe);
-      const currentContext = offlineCacheContextRef.current;
-      if (currentContext) {
-        // /api/me does not expose a Session identifier. Once an active session
-        // is revalidated, discard prior listings even if its User and Vault
-        // match: this also covers a same-context session replacement.
-        clearOfflineFileCache();
-      }
-      if (!nextContext) return null;
+      const nextAuthorization = offlineCacheAuthorizationFor(nextMe);
+      const currentAuthorization = offlineCacheAuthorizationRef.current;
 
-      offlineCacheContextRef.current = nextContext;
-      setOfflineCacheContext(nextContext);
-      setOfflineFileCacheContext(nextContext);
-      return nextContext;
+      if (
+        !sameOfflineCacheAuthorization(
+          currentAuthorization,
+          nextAuthorization,
+        )
+      ) {
+        if (currentAuthorization) {
+          // A User, Vault, or per-Session CSRF token changed. The response that
+          // revealed that transition predates the clear, so fetch /api/me again
+          // under the new Worker epoch before granting a cache lease.
+          await clearOfflineFileCache();
+          return nextAuthorization ? "retry" : "none";
+        }
+        if (!nextAuthorization) {
+          clearOfflineFileData();
+          return "none";
+        }
+      }
+
+      if (!nextAuthorization) {
+        clearOfflineFileData();
+        return "none";
+      }
+
+      const lease = await setOfflineFileCacheContext(
+        nextAuthorization.context,
+        freshness,
+      );
+      if (!lease) {
+        // An invalidation raced with this /api/me. Do not render its response
+        // or persist its listing; the caller will obtain a new fresh response.
+        clearOfflineFileData();
+        return "retry";
+      }
+
+      offlineCacheAuthorizationRef.current = nextAuthorization;
+      setOfflineCacheLease(lease);
+      return "ready";
     },
-    [],
+    [clearOfflineFileData],
   );
 
   const refreshSession = useCallback(async () => {
-    const nextMe = await fetchMe();
-    synchronizeOfflineCacheContext(nextMe);
+    let nextMe: MeResponse | null = null;
+    let synchronized = false;
+
+    // A clear that races /api/me invalidates its freshness record. Retry with
+    // a response obtained after the current epoch instead of reviving a cache.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const freshness = await prepareOfflineFileCacheContext();
+      const candidate = await fetchMe();
+      nextMe = candidate;
+      const result = await synchronizeOfflineCacheContext(candidate, freshness);
+      if (result === "retry") continue;
+      synchronized = true;
+      break;
+    }
+
+    if (!nextMe) throw new Error("/api/me did not return a response");
+    if (!synchronized) clearOfflineFileData();
+
     setUserId(nextMe.id);
     setMe(nextMe);
     try {
@@ -160,7 +246,11 @@ export default function App() {
       setVaults([]);
     }
     return nextMe;
-  }, [setUserId, synchronizeOfflineCacheContext]);
+  }, [
+    clearOfflineFileData,
+    setUserId,
+    synchronizeOfflineCacheContext,
+  ]);
 
   const onRefreshList = useCallback(() => {
     void requestScan()
@@ -201,7 +291,7 @@ export default function App() {
 
   useEffect(() => {
     if (pathname === "/login") {
-      clearOfflineFileCache();
+      void clearOfflineFileCache();
       setAuthChecked(true);
       return;
     }
@@ -217,7 +307,7 @@ export default function App() {
       })
       .catch(() => {
         if (cancelled) return;
-        clearOfflineFileCache();
+        void clearOfflineFileCache();
         setUserId(null);
         setMe(null);
         setVaults([]);
@@ -286,7 +376,7 @@ export default function App() {
 
   // Do not leave the old FileBrowser mounted while a new authorization scope
   // is being resolved (for example, during a Vault switch).
-  if (!offlineCacheContext) {
+  if (!offlineCacheLease) {
     return (
       <div className="grid min-h-svh place-items-center bg-canvas text-sm text-muted">
         {shellLabel(t, "ui.loading", "Loading…")}
@@ -307,17 +397,26 @@ export default function App() {
         onNewVault: () => navigate("/vaults/new"),
         onRefreshList,
         onSignOut: () => {
-          // Clear identity and offline file data before /login can first-paint
-          // the departing user's palette or listing.
-          clearOfflineFileCache();
+          // Clearing local UI/cache state is synchronous; the server logout is
+          // held behind the Worker acknowledgement so an old write cannot win.
+          const clearBarrier = clearOfflineFileCache();
           setUserId(null);
           setMe(null);
           setVaults([]);
-          void logout()
-            .catch(() => undefined)
-            .finally(() => {
+          void (async () => {
+            try {
+              await clearBarrier;
+            } catch {
+              // Local invalidation has already happened; never keep the old UI.
+            }
+            try {
+              await logout();
+            } catch {
+              // Navigation still completes after a best-effort server logout.
+            } finally {
               window.location.assign("/login");
-            });
+            }
+          })();
         },
         onLocaleChange: (locale) => {
           void setLocale(locale).then(async () => {
@@ -356,10 +455,11 @@ export default function App() {
         t={t}
         fileList={
           <FileBrowser
-            key={`offline-${offlineCacheContext.userId}-${offlineCacheContext.vaultId}`}
+            key={`offline-${offlineCacheLease.context.userId}-${offlineCacheLease.context.vaultId}-${offlineCacheLease.generation}`}
             t={t}
-            userId={offlineCacheContext.userId}
-            vaultId={offlineCacheContext.vaultId}
+            userId={offlineCacheLease.context.userId}
+            vaultId={offlineCacheLease.context.vaultId}
+            offlineCacheLease={offlineCacheLease}
             vaultName={capabilities.vaultName}
             capabilities={{
               role: capabilities.role ?? "viewer",

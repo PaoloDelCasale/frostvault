@@ -17,6 +17,7 @@ import {
   loadCachedFilesListing,
   saveCachedFilesListing,
   type OfflineCacheContext,
+  type OfflineFileCacheLease,
 } from "@/pwa/offlineFiles";
 
 import type { VaultCapabilities } from "./actions";
@@ -41,6 +42,8 @@ export type FileBrowserProps = {
   userId?: number;
   /** Current Vault identity, used to isolate file and candidate query caches. */
   vaultId: number;
+  /** Present in the App so delayed effects cannot write after invalidation. */
+  offlineCacheLease?: OfflineFileCacheLease;
   vaultName: string;
 };
 
@@ -97,6 +100,7 @@ export function FileBrowser({
   capabilities,
   userId,
   vaultId,
+  offlineCacheLease,
   vaultName,
 }: FileBrowserProps) {
   const initial = readSearchParams();
@@ -166,31 +170,60 @@ export function FileBrowser({
 
   useEffect(() => {
     if (forceOfflineDemo && offlineCacheContext) {
-      saveCachedFilesListing(offlineCacheContext, query, demoRootListing);
+      saveCachedFilesListing(
+        offlineCacheContext,
+        query,
+        demoRootListing,
+        undefined,
+        offlineCacheLease,
+      );
     }
-  }, [forceOfflineDemo, offlineCacheContext, query]);
+  }, [forceOfflineDemo, offlineCacheContext, offlineCacheLease, query]);
 
   useEffect(() => {
     if (filesQuery.isSuccess && filesQuery.data && offlineCacheContext) {
-      saveCachedFilesListing(offlineCacheContext, query, filesQuery.data);
+      saveCachedFilesListing(
+        offlineCacheContext,
+        query,
+        filesQuery.data,
+        undefined,
+        offlineCacheLease,
+      );
     }
-  }, [filesQuery.isSuccess, filesQuery.data, offlineCacheContext, query]);
+  }, [
+    filesQuery.isSuccess,
+    filesQuery.data,
+    offlineCacheContext,
+    offlineCacheLease,
+    query,
+  ]);
 
   const offlineCached = useMemo(() => {
     if (!offlineCacheContext) return null;
     if (forceOfflineDemo) {
-      return loadCachedFilesListing(offlineCacheContext, query) ?? {
+      return loadCachedFilesListing(
+        offlineCacheContext,
+        query,
+        undefined,
+        offlineCacheLease,
+      ) ?? {
         data: demoRootListing,
         savedAt: new Date().toISOString(),
       };
     }
     if (filesQuery.isSuccess) return null;
     if (!(filesQuery.isError || isBrowserOffline())) return null;
-    return loadCachedFilesListing(offlineCacheContext, query);
+    return loadCachedFilesListing(
+      offlineCacheContext,
+      query,
+      undefined,
+      offlineCacheLease,
+    );
   }, [
     filesQuery.isSuccess,
     filesQuery.isError,
     offlineCacheContext,
+    offlineCacheLease,
     query,
     forceOfflineDemo,
   ]);
