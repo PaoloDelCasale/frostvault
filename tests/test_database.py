@@ -89,6 +89,10 @@ class DatabaseMigrationTests(unittest.TestCase):
                         "PRAGMA table_info(oidc_configuration)"
                     ).fetchall()
                 }
+                job_columns = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+                }
             self.assertEqual(
                 columns,
                 {
@@ -129,6 +133,9 @@ class DatabaseMigrationTests(unittest.TestCase):
                     "updated_by",
                     "updated_at",
                 },
+            )
+            self.assertLessEqual(
+                {"claim_token", "claimed_at", "claim_expires_at"}, job_columns
             )
 
     def test_current_catalog_migrates_without_losing_file_state(self) -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Sequence
 
 from .audit import audit_log
 from .services.vault_quotas import (
@@ -1531,6 +1531,472 @@ class ArchiveCatalog:
                 }
             )
         return result
+
+    @staticmethod
+    def _claimable_job_status_sql(
+        *,
+        prefix: str,
+        now: str,
+        restore_due_before: str,
+        include_restoring: bool = True,
+    ) -> tuple[str, list[Any]]:
+        """Return the durable scheduler-state predicate shared by claim/count.
+
+        A claim only starts work from an explicitly runnable state.  Intermediate
+        states (``uploading``, ``cleaning``, …) are deliberately absent: a stale
+        lease in one of those states must first pass restart reconciliation rather
+        than be run as though it were a fresh queued Job.
+        """
+        status = f"{prefix}status"
+        action = f"{prefix}action"
+        retry_after = f"{prefix}retry_after"
+        pending_until = f"{prefix}pending_until"
+        updated_at = f"{prefix}updated_at"
+        clauses = [
+            f"{status}='queued'",
+            f"({status}='retrying' AND ({retry_after} IS NULL OR {retry_after} <= %s))",
+            (
+                f"({action}='cloud-purge' AND {status}='pending_delay' "
+                f"AND {pending_until} IS NOT NULL AND {pending_until} <= %s)"
+            ),
+        ]
+        params: list[Any] = [now, now]
+        if include_restoring:
+            clauses.append(
+                f"({action} IN ('recover', 'storage-class') "
+                f"AND {status}='restoring' AND {updated_at} <= %s)"
+            )
+            params.append(restore_due_before)
+        return "(" + " OR ".join(clauses) + ")", params
+
+    @classmethod
+    def _claimable_job_predicate_sql(
+        cls,
+        *,
+        prefix: str,
+        now: str,
+        restore_due_before: str,
+    ) -> tuple[str, list[Any]]:
+        """Build the one durable claimability predicate for scheduler/metrics.
+
+        Keeping candidate selection, conditional acquisition, and queue depth on
+        this predicate prevents monitoring from reporting rows a worker cannot
+        acquire.  In particular, due ``restoring`` Jobs and expired leases use
+        exactly the same definition everywhere.
+        """
+        runnable_sql, params = cls._claimable_job_status_sql(
+            prefix=prefix,
+            now=now,
+            restore_due_before=restore_due_before,
+            include_restoring=True,
+        )
+        vault_id = f"{prefix}vault_id"
+        group_id = f"{prefix}group_id"
+        action = f"{prefix}action"
+        lease_token = f"{prefix}claim_token"
+        lease_expiry = f"{prefix}claim_expires_at"
+        predicate = f"""
+            {runnable_sql}
+            AND (
+                    {lease_token} IS NULL
+                 OR {lease_expiry} IS NULL
+                 OR {lease_expiry} <= %s
+            )
+            AND (
+                    {action} <> 'cloud-purge'
+                 OR (
+                        {group_id} IS NOT NULL
+                    AND NOT EXISTS (
+                        SELECT 1 FROM jobs purge_peer
+                        WHERE purge_peer.vault_id={vault_id}
+                          AND purge_peer.group_id={group_id}
+                          AND purge_peer.action='cloud-purge'
+                          AND purge_peer.status NOT IN ('completed', 'failed', 'cancelled')
+                          AND (
+                                (
+                                    purge_peer.status <> 'queued'
+                                AND NOT (
+                                    purge_peer.status='pending_delay'
+                                    AND purge_peer.pending_until IS NOT NULL
+                                    AND purge_peer.pending_until <= %s
+                                )
+                                )
+                            OR (
+                                    purge_peer.claim_token IS NOT NULL
+                                AND purge_peer.claim_expires_at IS NOT NULL
+                                AND purge_peer.claim_expires_at > %s
+                            )
+                          )
+                    )
+                 )
+            )
+        """
+        return predicate, [*params, now, now, now]
+
+    def list_claimable_jobs(
+        self,
+        *,
+        now: str,
+        restore_due_before: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Load scheduler candidates using the shared claimability definition."""
+        if limit <= 0:
+            return []
+        predicate, params = self._claimable_job_predicate_sql(
+            prefix="j.",
+            now=now,
+            restore_due_before=restore_due_before,
+        )
+        return self.connection.execute(
+            f"""
+            SELECT j.*, v.source_root, v.s3_bucket,
+                   v.s3_prefix, v.rclone_remote, v.encryption_mode,
+                   v.crypt_password_ciphertext, v.crypt_password2_ciphertext,
+                   v.uuid AS vault_uuid, v.name AS vault_name,
+                   v.cloud_deletion_enabled, v.decommission_state
+            FROM jobs j
+            JOIN vaults v ON v.id=j.vault_id
+            WHERE v.relocation_state='ready'
+              AND (
+                    (v.enabled=TRUE AND v.decommission_state='active'
+                     AND j.origin<>'decommission')
+                 OR (v.decommission_state='decommissioning'
+                     AND j.origin='decommission')
+              )
+              AND ({predicate})
+            ORDER BY j.requested_at ASC, j.id ASC
+            LIMIT {int(limit)}
+            """,
+            params,
+        ).fetchall()
+
+    @staticmethod
+    def _claim_is_available(row: dict[str, Any], *, now: str) -> bool:
+        token = row.get("claim_token")
+        expiry = row.get("claim_expires_at")
+        # A partially written legacy/malformed claim never blocks recovery.
+        return not token or not expiry or str(expiry) <= now
+
+    @staticmethod
+    def _purge_job_is_runnable(row: dict[str, Any], *, now: str) -> bool:
+        status = row.get("status")
+        if status == "queued":
+            return True
+        return (
+            status == "pending_delay"
+            and row.get("pending_until") is not None
+            and str(row["pending_until"]) <= now
+        )
+
+    def _job_claim_backend(self) -> str:
+        return str(getattr(self.connection, "backend", "postgresql") or "postgresql")
+
+    def claim_job(
+        self,
+        *,
+        job_id: int,
+        claim_token: str,
+        claimed_at: str,
+        claim_expires_at: str,
+        now: str,
+        restore_due_before: str,
+    ) -> dict[str, Any] | None:
+        """Atomically lease one runnable Job.
+
+        The conditional UPDATE is the acquisition primitive for both SQLite and
+        PostgreSQL.  SQLite serializes writers; PostgreSQL locks the matching
+        row while it rechecks the predicate.  A loser therefore observes no
+        returned row instead of executing a stale in-memory selection.
+        """
+        if not claim_token:
+            raise ValueError("A Job claim token is required")
+        claimable_sql, claimable_params = self._claimable_job_predicate_sql(
+            prefix="",
+            now=now,
+            restore_due_before=restore_due_before,
+        )
+        return self.connection.execute(
+            f"""
+            UPDATE jobs
+            SET claim_token=%s,
+                claimed_at=%s,
+                claim_expires_at=%s
+            WHERE id=%s
+              AND action<>'cloud-purge'
+              AND ({claimable_sql})
+            RETURNING id, status, claim_token, claimed_at, claim_expires_at,
+                      updated_at
+            """,
+            (
+                claim_token,
+                claimed_at,
+                claim_expires_at,
+                job_id,
+                *claimable_params,
+            ),
+        ).fetchone()
+
+    def claim_purge_group(
+        self,
+        *,
+        lead_job_id: int,
+        claim_token: str,
+        claimed_at: str,
+        claim_expires_at: str,
+        now: str,
+        message: str,
+        message_key: str,
+    ) -> list[dict[str, Any]]:
+        """Lease every active Job in one cloud-purge group as one operation.
+
+        A permanent purge may span many Vault Files.  Its group is only
+        executable when every non-terminal member is due and unclaimed (or its
+        prior lease has expired).  SQLite obtains the writer reservation before
+        inspecting the group; PostgreSQL locks the group rows in deterministic
+        ``requested_at, id`` order.  This prevents two workers from splitting a
+        destructive group between themselves.
+        """
+        if not claim_token:
+            raise ValueError("A Job claim token is required")
+        backend = self._job_claim_backend()
+        raw_connection = getattr(self.connection, "connection", None)
+        if (
+            backend == "sqlite"
+            and raw_connection is not None
+            and not getattr(raw_connection, "in_transaction", False)
+        ):
+            self.connection.begin_immediate()
+
+        lock = " FOR UPDATE" if backend != "sqlite" else ""
+        # Do not lock the nominated lead first on PostgreSQL: two schedulers can
+        # nominate different members of the same group.  Both instead acquire
+        # the full group below in requested_at/id order, avoiding an AB/BA row
+        # lock deadlock while still rechecking the durable group identity.
+        lead = self.connection.execute(
+            """
+            SELECT vault_id, group_id
+            FROM jobs
+            WHERE id=%s AND action='cloud-purge'
+            """,
+            (lead_job_id,),
+        ).fetchone()
+        if lead is None or not lead.get("group_id"):
+            return []
+        if backend != "sqlite":
+            # Do not block a scheduler thread behind another worker's whole
+            # destructive group.  The transaction-scoped advisory lock is a
+            # stable provider-independent key; a loser simply tries another
+            # fair candidate on the next poll, while row locks below still
+            # protect cancellation and non-cooperating writers.
+            advisory = self.connection.execute(
+                """
+                SELECT pg_try_advisory_xact_lock(
+                    hashtextextended(%s, 0)
+                ) AS acquired
+                """,
+                (f"frostvault:cloud-purge:{lead['vault_id']}:{lead['group_id']}",),
+            ).fetchone()
+            if not advisory or not advisory["acquired"]:
+                return []
+        rows = self.connection.execute(
+            f"""
+            SELECT id, status, pending_until, claim_token, claim_expires_at,
+                   requested_at
+            FROM jobs
+            WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
+            ORDER BY requested_at ASC, id ASC{lock}
+            """,
+            (lead["vault_id"], lead["group_id"]),
+        ).fetchall()
+        active = [
+            row
+            for row in rows
+            if row["status"] not in TERMINAL_JOB_STATUSES
+        ]
+        if not active or any(
+            not self._claim_is_available(row, now=now)
+            or not self._purge_job_is_runnable(row, now=now)
+            for row in active
+        ):
+            return []
+
+        ids = [int(row["id"]) for row in active]
+        placeholders = ", ".join(["%s"] * len(ids))
+        claimed = self.connection.execute(
+            f"""
+            UPDATE jobs
+            SET status='cleaning',
+                message=%s,
+                message_key=%s,
+                message_params=NULL,
+                claim_token=%s,
+                claimed_at=%s,
+                claim_expires_at=%s,
+                updated_at=%s
+            WHERE id IN ({placeholders})
+            RETURNING id, vault_file_id, requested_by, status, claim_token,
+                      claimed_at, claim_expires_at, requested_at
+            """,
+            (
+                message,
+                message_key,
+                claim_token,
+                claimed_at,
+                claim_expires_at,
+                claimed_at,
+                *ids,
+            ),
+        ).fetchall()
+        # RETURNING order is not a SQL contract.  Preserve the scheduler's
+        # deterministic ordering for the selected lead and tests.
+        return sorted(
+            claimed,
+            key=lambda row: (str(row.get("requested_at") or ""), int(row["id"])),
+        )
+
+    def renew_job_claim(
+        self,
+        *,
+        job_id: int,
+        claim_token: str,
+        now: str,
+        claim_expires_at: str,
+    ) -> dict[str, Any] | None:
+        """Renew a live claim, returning no row after cancellation or takeover."""
+        return self.connection.execute(
+            """
+            UPDATE jobs
+            SET claim_expires_at=%s
+            WHERE id=%s
+              AND claim_token=%s
+              AND claim_expires_at IS NOT NULL
+              AND claim_expires_at > %s
+              AND status NOT IN ('completed', 'failed', 'cancelled')
+            RETURNING id, status, claim_token, claimed_at, claim_expires_at,
+                      updated_at
+            """,
+            (claim_expires_at, job_id, claim_token, now),
+        ).fetchone()
+
+    def renew_purge_group_claim(
+        self,
+        *,
+        vault_id: int,
+        group_id: str,
+        claim_token: str,
+        expected_job_ids: Sequence[int],
+        now: str,
+        claim_expires_at: str,
+    ) -> bool:
+        """Hold every member of a claimed purge group through one DB step."""
+        rows = self.connection.execute(
+            """
+            UPDATE jobs
+            SET claim_expires_at=%s
+            WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
+              AND status='cleaning'
+              AND claim_token=%s
+              AND claim_expires_at IS NOT NULL
+              AND claim_expires_at > %s
+            RETURNING id
+            """,
+            (
+                claim_expires_at,
+                vault_id,
+                group_id,
+                claim_token,
+                now,
+            ),
+        ).fetchall()
+        return {int(row["id"]) for row in rows} == {
+            int(job_id) for job_id in expected_job_ids
+        }
+
+    def load_claimed_purge_group(
+        self,
+        *,
+        lead_job_id: int,
+        claim_token: str,
+        now: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Load a complete, still-live cloud-purge claim and its pending items."""
+        lead = self.connection.execute(
+            """
+            SELECT vault_id, group_id
+            FROM jobs
+            WHERE id=%s AND action='cloud-purge'
+            """,
+            (lead_job_id,),
+        ).fetchone()
+        if lead is None or not lead.get("group_id"):
+            return [], []
+        all_active = self.connection.execute(
+            """
+            SELECT id, status, claim_token, claim_expires_at,
+                   vault_file_id, requested_by
+            FROM jobs
+            WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
+              AND status NOT IN ('completed', 'failed', 'cancelled')
+            ORDER BY requested_at ASC, id ASC
+            """,
+            (lead["vault_id"], lead["group_id"]),
+        ).fetchall()
+        if not all_active or any(
+            row["status"] != "cleaning"
+            or row.get("claim_token") != claim_token
+            or not row.get("claim_expires_at")
+            or str(row["claim_expires_at"]) <= now
+            for row in all_active
+        ):
+            return [], []
+        job_ids = [int(row["id"]) for row in all_active]
+        placeholders = ", ".join(["%s"] * len(job_ids))
+        items = self.connection.execute(
+            f"""
+            SELECT * FROM cloud_deletion_items
+            WHERE job_id IN ({placeholders})
+              AND status IN ('pending', 'failed')
+            ORDER BY id
+            """,
+            job_ids,
+        ).fetchall()
+        return all_active, items
+
+    def claimable_queue_depth(
+        self,
+        *,
+        now: str,
+        restore_due_before: str,
+    ) -> int:
+        """Count runnable, currently unleased queued Job rows.
+
+        This is intentionally a backlog metric, not a concurrency-limited
+        scheduler batch.  Leased work and stale intermediate states are absent;
+        expired queued and due restoring leases are reclaimable and included.
+        """
+        predicate, params = self._claimable_job_predicate_sql(
+            prefix="j.",
+            now=now,
+            restore_due_before=restore_due_before,
+        )
+        row = self.connection.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM jobs j
+            JOIN vaults v ON v.id=j.vault_id
+            WHERE v.relocation_state='ready'
+              AND (
+                    (v.enabled=TRUE AND v.decommission_state='active'
+                     AND j.origin<>'decommission')
+                 OR (v.decommission_state='decommissioning'
+                     AND j.origin='decommission')
+              )
+              AND ({predicate})
+            """,
+            params,
+        ).fetchone()
+        return int(row["total"] or 0) if row is not None else 0
 
     def summary(self, vault_id: int) -> dict[str, Any]:
         rows = self.list_file_rows(vault_id)

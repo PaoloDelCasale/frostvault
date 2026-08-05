@@ -88,6 +88,24 @@ class JobQueueConnection(RecordingConnection):
         if "SELECT status FROM jobs" in sql and params:
             job = self.jobs_by_id.get(int(params[0]))
             return JobQueueResult([{"status": job["status"]}] if job else [])
+        if "UPDATE jobs" in sql and "SET claim_token=%s" in sql:
+            # Scheduler claim shape: token, claimed_at, expiry, id, predicates.
+            job = self.jobs_by_id.get(int(params[3]))
+            if job is None:
+                return JobQueueResult([])
+            job.update(
+                claim_token=params[0],
+                claimed_at=params[1],
+                claim_expires_at=params[2],
+            )
+            return JobQueueResult([dict(job)])
+        if "UPDATE jobs" in sql and "SET claim_expires_at=%s" in sql:
+            # process_job renews the scheduler claim before dispatch.
+            job = self.jobs_by_id.get(int(params[1]))
+            if job is None or job.get("claim_token") != params[2]:
+                return JobQueueResult([])
+            job["claim_expires_at"] = params[0]
+            return JobQueueResult([dict(job)])
         if "j.status='queued'" in sql:
             return JobQueueResult(self.queued_jobs)
         return JobQueueResult([])
@@ -782,6 +800,80 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertTrue(
                 any("status='completed'" in sql and params[-1] == 21 for sql, params in job_updates)
             )
+
+    def test_restart_fails_unproven_storage_class_claim_closed(self) -> None:
+        """Issue #193: a copy-stage Job without provider proof is not retried."""
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "app.db"
+            migrated = run_alembic(database_path)
+            self.assertEqual(migrated.returncode, 0, migrated.stderr)
+            with SQLiteConnection(str(database_path)) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO vaults(
+                        id, slug, name, source_root, s3_bucket, s3_prefix,
+                        rclone_remote
+                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                    """
+                )
+                catalog = ArchiveCatalog(connection)
+                file_id = catalog.observe_local_copy(
+                    vault_id=2,
+                    path="report.txt",
+                    file_type="regular",
+                    size=10,
+                    mtime_ns=1,
+                    observed_at="2026-07-21T10:00:00+00:00",
+                )
+                version_id = catalog.record_archive_version(
+                    vault_id=2,
+                    path="report.txt",
+                    object_key="docs/report.txt",
+                    provider_version_id="s3-v1",
+                    size=10,
+                    storage_class="STANDARD",
+                    etag="etag",
+                    uploaded_at="2026-07-21T10:00:00+00:00",
+                    observed_at="2026-07-21T10:00:00+00:00",
+                    scan_id="scan",
+                )
+                job_id = connection.execute(
+                    """
+                    INSERT INTO jobs(
+                        vault_id, vault_file_id, archive_version_id, path,
+                        action, status, requested_at, updated_at,
+                        target_storage_class, claim_token, claimed_at,
+                        claim_expires_at
+                    ) VALUES (
+                        2, %s, %s, 'report.txt',
+                        'storage-class', 'uploading',
+                        '2026-07-21T10:01:00+00:00', '2026-07-21T10:01:00+00:00',
+                        'STANDARD_IA', 'dead-worker',
+                        '2026-07-21T10:01:00+00:00', '2000-01-01T00:00:00+00:00'
+                    ) RETURNING id
+                    """,
+                    (file_id, version_id),
+                ).fetchone()["id"]
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite", sqlite_path=str(database_path)
+            )
+            with patch("app.database.settings", database_settings):
+                summary = reconcile_interrupted_jobs()
+
+            self.assertEqual(summary, {"completed": 0, "requeued": 0, "failed": 1})
+            with SQLiteConnection(str(database_path)) as connection:
+                job = connection.execute(
+                    """
+                    SELECT status, claim_token, claimed_at, claim_expires_at
+                    FROM jobs WHERE id=%s
+                    """,
+                    (job_id,),
+                ).fetchone()
+            self.assertEqual(job["status"], "failed")
+            self.assertIsNone(job["claim_token"])
+            self.assertIsNone(job["claimed_at"])
+            self.assertIsNone(job["claim_expires_at"])
 
     def test_bug_006_startup_preserves_free_space_claims(self) -> None:
         """[BUG-006][Req: REQ-009] free-space claims survive startup cleanup+reconcile.

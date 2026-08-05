@@ -6,8 +6,8 @@ import sys
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -174,6 +174,20 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 "updated_by",
                 "updated_at",
             },
+        )
+        session_columns = {
+            column["name"]
+            for column in sa.inspect(self.engine).get_columns("sessions")
+        }
+        self.assertLessEqual(
+            {"offline_cache_generation", "offline_cache_nonce"},
+            session_columns,
+        )
+        claim_columns = {
+            column["name"] for column in sa.inspect(self.engine).get_columns("jobs")
+        }
+        self.assertLessEqual(
+            {"claim_token", "claimed_at", "claim_expires_at"}, claim_columns
         )
         invite_columns = {
             column["name"] for column in sa.inspect(self.engine).get_columns("invites")
@@ -793,6 +807,192 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertEqual(source_copy["plaintext_sha256"], "b" * 64)
         self.assertEqual(active, 2)
         self.assertEqual(current_paths, 2)
+
+    def test_issue_193_postgresql_claim_is_atomic_across_two_workers(self) -> None:
+        upgraded = run_alembic()
+        self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO vaults(
+                    id, slug, name, source_root, s3_bucket, s3_prefix,
+                    rclone_remote
+                ) VALUES (9, 'claims', 'Claims', '/source', 'bucket', 'claims', 'remote')
+                """
+            )
+            catalog = ArchiveCatalog(connection)
+            file_id = catalog.observe_local_copy(
+                vault_id=9,
+                path="one.txt",
+                file_type="regular",
+                size=1,
+                mtime_ns=1,
+                observed_at="2026-08-01T10:00:00+00:00",
+            )
+            job_id = connection.execute(
+                """
+                INSERT INTO jobs(
+                    vault_id, vault_file_id, path, action, status,
+                    requested_at, updated_at
+                ) VALUES (
+                    9, %s, 'one.txt', 'upload', 'queued',
+                    '2026-08-01T10:00:00+00:00', '2026-08-01T10:00:00+00:00'
+                ) RETURNING id
+                """,
+                (file_id,),
+            ).fetchone()["id"]
+
+        start = threading.Barrier(2)
+
+        def claim_once(worker: int) -> str | None:
+            connection = self._connection()
+            try:
+                with connection:
+                    start.wait(timeout=20)
+                    claimed = ArchiveCatalog(connection).claim_job(
+                        job_id=int(job_id),
+                        claim_token=f"postgres-worker-{worker}",
+                        claimed_at="2026-08-01T10:01:00+00:00",
+                        claim_expires_at="2026-08-01T10:06:00+00:00",
+                        now="2026-08-01T10:01:00+00:00",
+                        restore_due_before="2026-08-01T10:00:00+00:00",
+                    )
+                    return claimed["claim_token"] if claimed else None
+            finally:
+                connection.close()
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            outcomes = list(workers.map(claim_once, range(2)))
+
+        self.assertEqual(sum(outcome is not None for outcome in outcomes), 1)
+        with self._connection() as connection:
+            job = connection.execute(
+                """
+                SELECT status, claim_token, claim_expires_at
+                FROM jobs WHERE id=%s
+                """,
+                (job_id,),
+            ).fetchone()
+        self.assertEqual(job["status"], "queued")
+        self.assertIn(job["claim_token"], {outcome for outcome in outcomes if outcome})
+        self.assertEqual(job["claim_expires_at"], "2026-08-01T10:06:00+00:00")
+
+    def test_issue_193_postgresql_expired_takeover_cancel_and_group_contention(self) -> None:
+        upgraded = run_alembic()
+        self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO vaults(
+                    id, slug, name, source_root, s3_bucket, s3_prefix,
+                    rclone_remote
+                ) VALUES (10, 'claim-groups', 'Claim Groups', '/source',
+                          'bucket', 'claims', 'remote')
+                """
+            )
+            catalog = ArchiveCatalog(connection)
+            file_ids = [
+                catalog.observe_local_copy(
+                    vault_id=10,
+                    path=path,
+                    file_type="regular",
+                    size=1,
+                    mtime_ns=index,
+                    observed_at="2026-08-02T10:00:00+00:00",
+                )
+                for index, path in enumerate(
+                    ("ordinary.txt", "group-one.txt", "group-two.txt"), start=1
+                )
+            ]
+            ordinary_job_id = connection.execute(
+                """
+                INSERT INTO jobs(
+                    vault_id, vault_file_id, path, action, status,
+                    requested_at, updated_at, claim_token, claimed_at,
+                    claim_expires_at
+                ) VALUES (
+                    10, %s, 'ordinary.txt', 'upload', 'queued',
+                    '2026-08-02T10:00:00+00:00', '2026-08-02T10:00:00+00:00',
+                    'dead-worker', '2026-08-02T10:00:00+00:00',
+                    '2000-01-01T00:00:00+00:00'
+                ) RETURNING id
+                """,
+                (file_ids[0],),
+            ).fetchone()["id"]
+            group_job_ids: list[int] = []
+            for file_id, path in zip(file_ids[1:], ("group-one.txt", "group-two.txt")):
+                group_job_ids.append(
+                    int(
+                        connection.execute(
+                            """
+                            INSERT INTO jobs(
+                                vault_id, vault_file_id, path, action, status,
+                                requested_at, updated_at, group_id
+                            ) VALUES (
+                                10, %s, %s, 'cloud-purge', 'queued',
+                                '2026-08-02T10:00:00+00:00', '2026-08-02T10:00:00+00:00',
+                                'postgres-group'
+                            ) RETURNING id
+                            """,
+                            (file_id, path),
+                        ).fetchone()["id"]
+                    )
+                )
+
+            taken = catalog.claim_job(
+                job_id=int(ordinary_job_id),
+                claim_token="takeover-worker",
+                claimed_at="2026-08-02T10:01:00+00:00",
+                claim_expires_at="2026-08-02T10:06:00+00:00",
+                now="2026-08-02T10:01:00+00:00",
+                restore_due_before="2026-08-02T10:00:00+00:00",
+            )
+            self.assertIsNotNone(taken)
+            connection.execute(
+                "UPDATE jobs SET status='cancelled' WHERE id=%s",
+                (ordinary_job_id,),
+            )
+            self.assertIsNone(
+                catalog.renew_job_claim(
+                    job_id=int(ordinary_job_id),
+                    claim_token="takeover-worker",
+                    now="2026-08-02T10:02:00+00:00",
+                    claim_expires_at="2026-08-02T10:07:00+00:00",
+                )
+            )
+
+        start = threading.Barrier(2)
+
+        def claim_group(worker: int) -> list[int]:
+            connection = self._connection()
+            try:
+                with connection:
+                    start.wait(timeout=20)
+                    rows = ArchiveCatalog(connection).claim_purge_group(
+                        lead_job_id=group_job_ids[0],
+                        claim_token=f"group-worker-{worker}",
+                        claimed_at="2026-08-02T10:03:00+00:00",
+                        claim_expires_at="2026-08-02T10:08:00+00:00",
+                        now="2026-08-02T10:03:00+00:00",
+                        message="deleting",
+                        message_key="job.cloud_purge_deleting",
+                    )
+                    return [int(row["id"]) for row in rows]
+            finally:
+                connection.close()
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            outcomes = list(workers.map(claim_group, range(2)))
+        self.assertEqual(sorted(len(outcome) for outcome in outcomes), [0, 2])
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT status, claim_token FROM jobs
+                WHERE group_id='postgres-group' ORDER BY id
+                """
+            ).fetchall()
+        self.assertEqual([row["status"] for row in rows], ["cleaning", "cleaning"])
+        self.assertEqual(len({row["claim_token"] for row in rows}), 1)
 
     def test_auth_backoff_concurrent_threshold_results_keep_matching_deadlines(
         self,

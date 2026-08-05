@@ -153,6 +153,99 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         self.assertEqual(copy_kwargs["StorageClass"], "STANDARD_IA")
         self.assertEqual(copy_kwargs["Key"], "docs/report.txt")
 
+    def test_restart_completes_catalogued_storage_class_destination_after_provider_check(self) -> None:
+        with SQLiteConnection(str(self.path)) as connection:
+            ArchiveCatalog(connection).update_version_storage_placement(
+                self.version_id,
+                provider_version_id="s3-v2",
+                storage_class="STANDARD_IA",
+                etag="etag2",
+                observed_at="2026-07-21T12:01:00+00:00",
+            )
+            connection.execute(
+                """
+                UPDATE jobs
+                SET status='uploading', claim_token='dead-worker',
+                    claimed_at='2026-07-21T12:01:00+00:00',
+                    claim_expires_at='2000-01-01T00:00:00+00:00'
+                WHERE id=%s
+                """,
+                (self.job_id,),
+            )
+        client = Mock()
+        client.head_object.return_value = {
+            "VersionId": "s3-v2",
+            "StorageClass": "STANDARD_IA",
+            "ContentLength": 12,
+            "ETag": '"etag2"',
+        }
+        database_settings = SimpleNamespace(
+            db_backend="sqlite", sqlite_path=str(self.path)
+        )
+        with (
+            patch("app.database.settings", database_settings),
+            patch("app.storage.s3_client", return_value=client),
+        ):
+            summary = storage_module.reconcile_interrupted_jobs()
+
+        self.assertEqual(summary, {"completed": 1, "requeued": 0, "failed": 0})
+        with SQLiteConnection(str(self.path)) as connection:
+            job = connection.execute(
+                "SELECT status, claim_token FROM jobs WHERE id=%s", (self.job_id,)
+            ).fetchone()
+        self.assertEqual(job["status"], "completed")
+        self.assertIsNone(job["claim_token"])
+        client.copy_object.assert_not_called()
+
+    def test_restart_after_copy_before_catalog_fails_closed_without_second_copy(self) -> None:
+        """Issue #193: an unrecorded CopyObject result is never blindly retried."""
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                """
+                UPDATE jobs
+                SET status='uploading', claim_token='dead-worker',
+                    claimed_at='2026-07-21T12:01:00+00:00',
+                    claim_expires_at='2000-01-01T00:00:00+00:00'
+                WHERE id=%s
+                """,
+                (self.job_id,),
+            )
+        client = Mock()
+        # This is exactly the crash window: S3 made a new current target
+        # VersionId, but the catalog still pins s3-v1/STANDARD.
+        client.head_object.return_value = {
+            "VersionId": "s3-v2",
+            "StorageClass": "STANDARD_IA",
+            "ContentLength": 12,
+            "ETag": '"etag"',
+        }
+        database_settings = SimpleNamespace(
+            db_backend="sqlite", sqlite_path=str(self.path)
+        )
+        with (
+            patch("app.database.settings", database_settings),
+            patch("app.storage.s3_client", return_value=client),
+        ):
+            summary = storage_module.reconcile_interrupted_jobs()
+
+        self.assertEqual(summary, {"completed": 0, "requeued": 0, "failed": 1})
+        with SQLiteConnection(str(self.path)) as connection:
+            job = connection.execute(
+                "SELECT status, message FROM jobs WHERE id=%s", (self.job_id,)
+            ).fetchone()
+            version = connection.execute(
+                """
+                SELECT provider_version_id, storage_class
+                FROM archive_versions WHERE id=%s
+                """,
+                (self.version_id,),
+            ).fetchone()
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("manual review", (job["message"] or "").lower())
+        self.assertEqual(version["provider_version_id"], "s3-v1")
+        self.assertEqual(version["storage_class"], "STANDARD")
+        client.copy_object.assert_not_called()
+
     def test_unrestored_deep_archive_requests_restore_and_enters_restoring(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
