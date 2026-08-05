@@ -103,20 +103,18 @@ def read_schema_revision(connection: Any) -> str | None:
 
 
 def initialize_database() -> None:
-    # Named fallback configs are only used when anonymous procfs-backed storage
-    # is unavailable. Cleanup runs before workers can start and is safe to repeat.
+    # Runtime configs are anonymous memfds. Startup only reports retained legacy
+    # named residue; it never deletes a pathname after a crash.
     cleanup = cleanup_runtime_configs()
     if any(
         (
-            cleanup.skipped_active,
             cleanup.skipped_foreign,
             cleanup.skipped_unsafe,
             cleanup.skipped_raced,
         )
     ):
         _logger.warning(
-            "Rclone runtime cleanup deferred: active=%d untrusted=%d unsafe=%d raced=%d",
-            cleanup.skipped_active,
+            "Rclone legacy runtime residue retained: untrusted=%d unsafe=%d raced=%d",
             cleanup.skipped_foreign,
             cleanup.skipped_unsafe,
             cleanup.skipped_raced,
