@@ -10,6 +10,7 @@ from psycopg.rows import dict_row
 
 from .config import settings
 from .security import hash_password
+from .services.rclone_runtime import cleanup_runtime_configs
 
 
 INTEGRITY_ERRORS = (UniqueViolation, sqlite3.IntegrityError)
@@ -100,6 +101,9 @@ def read_schema_revision(connection: Any) -> str | None:
 
 
 def initialize_database() -> None:
+    # Named fallback configs are only used when anonymous procfs-backed storage
+    # is unavailable. Cleanup runs before workers can start and is safe to repeat.
+    cleanup_runtime_configs()
     with db() as connection:
         revision = read_schema_revision(connection)
         if revision != HEAD_SCHEMA_REVISION:
