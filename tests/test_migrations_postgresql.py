@@ -7,6 +7,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ import sqlalchemy as sa
 import psycopg
 from psycopg.rows import dict_row
 
+from app import backoff
 from app.catalog import ArchiveCatalog, VaultFileNotFound
 from app.config import settings
 from app.invites import (
@@ -791,3 +793,52 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertEqual(source_copy["plaintext_sha256"], "b" * 64)
         self.assertEqual(active, 2)
         self.assertEqual(current_paths, 2)
+
+    def test_auth_backoff_concurrent_threshold_results_keep_matching_deadlines(
+        self,
+    ) -> None:
+        """A real PostgreSQL row lock preserves each count/deadline pair."""
+        upgraded = run_alembic()
+        self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+        attempts = backoff.THRESHOLD + 2
+        now = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
+        start = threading.Barrier(attempts)
+
+        def record() -> tuple[int, str | None]:
+            with self._connection() as connection:
+                start.wait(timeout=20)
+                return backoff.record_failure(
+                    connection,
+                    scope="ip",
+                    key="concurrent-backoff",
+                )
+
+        with patch.object(backoff, "_now", return_value=now):
+            with ThreadPoolExecutor(max_workers=attempts) as pool:
+                results = list(pool.map(lambda _: record(), range(attempts)))
+
+        expected = [
+            (
+                count,
+                (
+                    now
+                    + timedelta(seconds=backoff._backoff_seconds(count))
+                ).isoformat()
+                if backoff._backoff_seconds(count)
+                else None,
+            )
+            for count in range(1, attempts + 1)
+        ]
+        self.assertEqual(sorted(results), expected)
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT failure_count, next_allowed_at
+                FROM auth_backoff
+                WHERE scope='ip' AND key='concurrent-backoff'
+                """
+            ).fetchone()
+        self.assertEqual(
+            (row["failure_count"], row["next_allowed_at"]),
+            expected[-1],
+        )

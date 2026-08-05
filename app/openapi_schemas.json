@@ -230,7 +230,7 @@
       "type": "object"
     },
     "AdminVault": {
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
         "decommission_state": {
           "enum": [
@@ -259,6 +259,9 @@
           "type": "number"
         },
         "name": {
+          "type": "string"
+        },
+        "rclone_remote": {
           "type": "string"
         },
         "root_released_at": {

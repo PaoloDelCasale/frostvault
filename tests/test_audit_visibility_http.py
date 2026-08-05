@@ -36,6 +36,7 @@ class AuditVisibilityHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             self.admin_id = self._create_user(connection, "admin", is_admin=True)
             self.owner_id = self._create_user(connection, "owner")
+            self.operator_id = self._create_user(connection, "operator")
             self.viewer_id = self._create_user(connection, "viewer")
             self.outsider_id = self._create_user(connection, "outsider")
             self.vault_id = connection.execute(
@@ -53,6 +54,11 @@ class AuditVisibilityHttpTests(unittest.TestCase):
             )
             connection.execute(
                 "INSERT INTO vault_members(vault_id, user_id, role) "
+                "VALUES (%s, %s, 'operator')",
+                (self.vault_id, self.operator_id),
+            )
+            connection.execute(
+                "INSERT INTO vault_members(vault_id, user_id, role) "
                 "VALUES (%s, %s, 'viewer')",
                 (self.vault_id, self.viewer_id),
             )
@@ -64,6 +70,15 @@ class AuditVisibilityHttpTests(unittest.TestCase):
                 outcome="success",
                 visibility="vault",
                 role="viewer",
+            )
+            audit_events.record_audit_event(
+                connection,
+                event="vault_root_relocated",
+                actor_user_id=self.admin_id,
+                vault_id=self.vault_id,
+                outcome="success",
+                visibility="owner",
+                source_root="/sources/private-path",
             )
             audit_events.record_audit_event(
                 connection,
@@ -108,14 +123,30 @@ class AuditVisibilityHttpTests(unittest.TestCase):
         self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
         self.client.cookies.set("frostvault_csrf", csrf_token)
 
-    def test_vault_member_sees_vault_events_but_not_admin_only_events(self) -> None:
+    def test_viewer_sees_vault_events_but_not_owner_or_admin_events(self) -> None:
         self._authenticate(self.viewer_id)
         response = self.client.get("/api/audit-events")
         self.assertEqual(response.status_code, 200, response.text)
-        events = response.json()["events"]
-        names = {item["event"] for item in events}
+        names = {item["event"] for item in response.json()["events"]}
         self.assertIn("vault_membership_changed", names)
+        self.assertNotIn("vault_root_relocated", names)
         self.assertNotIn("break_glass_failed", names)
+
+    def test_operator_sees_vault_events_but_not_owner_events(self) -> None:
+        self._authenticate(self.operator_id)
+        response = self.client.get("/api/audit-events")
+        self.assertEqual(response.status_code, 200, response.text)
+        names = {item["event"] for item in response.json()["events"]}
+        self.assertIn("vault_membership_changed", names)
+        self.assertNotIn("vault_root_relocated", names)
+
+    def test_primary_owner_sees_vault_and_owner_events(self) -> None:
+        self._authenticate(self.owner_id)
+        response = self.client.get("/api/audit-events")
+        self.assertEqual(response.status_code, 200, response.text)
+        names = {item["event"] for item in response.json()["events"]}
+        self.assertIn("vault_membership_changed", names)
+        self.assertIn("vault_root_relocated", names)
 
     def test_outsider_cannot_read_vault_audit_events(self) -> None:
         self._authenticate(self.outsider_id)
@@ -129,6 +160,7 @@ class AuditVisibilityHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         names = {item["event"] for item in response.json()["events"]}
         self.assertIn("vault_membership_changed", names)
+        self.assertIn("vault_root_relocated", names)
         self.assertIn("break_glass_failed", names)
 
     def test_owner_cannot_use_admin_audit_endpoint(self) -> None:

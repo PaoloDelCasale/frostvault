@@ -35,6 +35,8 @@ from .i18n import (
 from .backoff import (
     BackoffError,
     guard as backoff_guard,
+    reauth_account_key,
+    reauth_ip_key,
     record_failure,
     record_success,
 )
@@ -159,7 +161,9 @@ from .services.vaults import (
     VaultCreationError,
     VaultProvisioningUnavailable,
     VaultSlugTaken,
+    create_admin_vault,
     create_vault_for_user,
+    list_admin_vaults,
 )
 from .sessions import (
     create_session,
@@ -1317,25 +1321,96 @@ def reauth(
     request: Request,
     user: dict[str, Any] = Depends(current_user),
 ):
-    """Break-glass Reauthentication: re-enter the local password.
+    """Local-password Reauthentication with an isolated durable backoff.
 
     OIDC users have no password hash and must step up through the provider
-    (see ``/auth/oidc/reauth``).
+    (see ``/auth/oidc/reauth``). Its account/IP counters deliberately use
+    namespaced keys so a Reauthentication success cannot reset Local Sign-in,
+    Invite, or OIDC-related throttling state.
     """
     client_ip = _client_ip(request)
     if not is_break_glass_allowed(client_ip):
         raise HTTPException(403, "Password reauthentication is not allowed here")
+
+    backoff_keys = (
+        ("ip", reauth_ip_key(client_ip or "unknown")),
+        ("account", reauth_account_key(int(user["id"]))),
+    )
+    retry_after: int | None = None
+    password_valid = False
+
+    # Like Local Sign-in, every counter and audit event must commit before an
+    # HTTP error is raised. Otherwise a rejected request rolls back the very
+    # state intended to throttle it.
     with db() as connection:
-        row = connection.execute(
-            "SELECT password_hash FROM users WHERE id=%s", (user["id"],)
-        ).fetchone()
-        if (
-            not row
-            or not row["password_hash"]
-            or not verify_password(row["password_hash"], action.password)
-        ):
-            raise HTTPException(401, "Incorrect password")
-        mark_reauthenticated(connection, request.state.session["id"])
+        delays: list[int] = []
+        for scope, key in backoff_keys:
+            try:
+                backoff_guard(connection, scope=scope, key=key)
+            except BackoffError as blocked:
+                delays.append(blocked.retry_after)
+        retry_after = max(delays) if delays else None
+
+        if retry_after is None:
+            row = connection.execute(
+                "SELECT password_hash FROM users WHERE id=%s", (user["id"],)
+            ).fetchone()
+            password_valid = bool(
+                row
+                and row["password_hash"]
+                and verify_password(row["password_hash"], action.password)
+            )
+            if not password_valid:
+                for scope, key in backoff_keys:
+                    record_failure(connection, scope=scope, key=key)
+                # The attempt that reaches the threshold is itself throttled;
+                # choose the longest active dimension for an accurate retry.
+                delays = []
+                for scope, key in backoff_keys:
+                    try:
+                        backoff_guard(connection, scope=scope, key=key)
+                    except BackoffError as blocked:
+                        delays.append(blocked.retry_after)
+                retry_after = max(delays) if delays else None
+                audit_log(
+                    "reauth_failed",
+                    connection=connection,
+                    actor_user_id=user["id"],
+                    outcome="failure",
+                    flow="reauth",
+                    ip=client_ip,
+                )
+            else:
+                for scope, key in backoff_keys:
+                    record_success(connection, scope=scope, key=key)
+                mark_reauthenticated(connection, request.state.session["id"])
+                audit_log(
+                    "reauth_succeeded",
+                    connection=connection,
+                    actor_user_id=user["id"],
+                    outcome="success",
+                    flow="reauth",
+                    ip=client_ip,
+                )
+
+        if retry_after is not None:
+            audit_log(
+                "auth_backoff_blocked",
+                connection=connection,
+                actor_user_id=user["id"],
+                flow="reauth",
+                ip=client_ip,
+                retry_after=retry_after,
+            )
+
+    if retry_after is not None:
+        raise HTTPException(
+            429,
+            "Too many attempts; try again later",
+            headers={"Retry-After": str(retry_after)},
+        )
+    if not password_valid:
+        raise HTTPException(401, "Incorrect password")
     return {"message": "Reauthenticated"}
 
 
@@ -1754,7 +1829,9 @@ def create_own_vault(
     except VaultCreationError as exc:
         raise HTTPException(409, str(exc)) from exc
     if action.creation_mode == "adopt":
-        background_tasks.add_task(scan_vault, dict(vault))
+        # scan_vault reloads the authoritative row; do not hand a background
+        # task the self-service recovery ciphertexts.
+        background_tasks.add_task(scan_vault, {"id": vault["id"]})
     payload: dict[str, Any] = {
         "id": vault["id"],
         "uuid": vault["uuid"],
@@ -2332,9 +2409,13 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
 
 @app.get("/api/audit-events", response_model=JsonObjectResponse)
 def vault_audit_events(vault: dict[str, Any] = Depends(current_vault)):
-    """List audit events visible to members of the current vault."""
+    """List audit events visible to the current Vault membership role."""
     with db() as connection:
-        events = audit_event_store.list_vault_audit_events(connection, vault["id"])
+        events = audit_event_store.list_vault_audit_events(
+            connection,
+            vault["id"],
+            include_owner=is_owner(vault["role"]),
+        )
     return {"events": events}
 
 
@@ -4147,14 +4228,7 @@ def browse_my_source_volume(
 @app.get("/api/admin/vaults", response_model=response_model("AdminVaultsResponse"))
 def admin_vaults(_: dict[str, Any] = Depends(admin_user)):
     with db() as connection:
-        rows = connection.execute(
-            """
-            SELECT v.*, COUNT(vm.user_id) AS member_count
-            FROM vaults v LEFT JOIN vault_members vm ON vm.vault_id=v.id
-            GROUP BY v.id ORDER BY lower(v.name)
-            """
-        ).fetchall()
-    return {"items": rows}
+        return {"items": list_admin_vaults(connection)}
 
 
 @app.post("/api/admin/vaults/{vault_id}/decommission/preview", response_model=response_model("VaultDecommissionPreview"))
@@ -4228,7 +4302,7 @@ def create_vault(
         raise HTTPException(404, "Owner not found")
 
     try:
-        vault = create_vault_for_user(
+        vault = create_admin_vault(
             action.owner_user_id,
             action.name,
             action.slug,
@@ -4236,7 +4310,6 @@ def create_vault(
             creation_mode=action.creation_mode,
             volume_alias=action.volume_alias,
             relative_path=action.relative_path,
-            actor_is_admin=True,
         )
     except VaultSlugTaken as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -4250,7 +4323,9 @@ def create_vault(
         raise HTTPException(409, str(exc)) from exc
 
     if action.creation_mode == "adopt":
-        background_tasks.add_task(scan_vault, dict(vault))
+        # The admin service result is a public projection; scan_vault needs
+        # only this opaque identifier and reloads the persisted Vault itself.
+        background_tasks.add_task(scan_vault, {"id": vault["id"]})
 
     notify_owner_of_admin_action(
         "vault_created",
