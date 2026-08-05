@@ -42,7 +42,10 @@ run.
 credentials: an off-host success has `status=succeeded` (or later `verified`)
 and a non-empty `s3_key`; a local-only artifact success has the same successful
 status, a `local_path`, and no `s3_key`; a blocked attempt is recorded as
-`status=failed`. When local-only development has no usable
+`status=failed` with a typed non-secret `pre_upgrade_blocked:*` reason. Automatic
+startup commits that failure record in a dedicated transaction only after the
+attempted backup transaction rolls back, so the evidence survives while no
+unrelated migration work can commit. When local-only development has no usable
 `ARCHIVE_MASTER_KEY`, no artifact can exist, so automatic migration reports the
 explicit allowed local-only state in startup output rather than creating a
 misleading successful backup record.

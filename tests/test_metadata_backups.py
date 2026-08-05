@@ -551,37 +551,28 @@ class PreUpgradeBackupGateTests(unittest.TestCase):
                 self.assertEqual(ctx.exception.reason, reason)
                 self.assertNotIn("credential-adjacent", str(ctx.exception))
 
-    def test_configured_store_missing_key_blocks_and_records_failure(self) -> None:
+    def test_configured_store_missing_key_returns_typed_block(self) -> None:
         configured = SimpleNamespace(
             vault_s3_bucket="production-backups",
             archive_master_key="",
             db_backend="sqlite",
             sqlite_path=str(self.db_path),
         )
-        with SQLiteConnection(str(self.db_path)) as connection:
-            with self.assertRaises(
-                metadata_backups.PreUpgradeBackupBlockedError
-            ) as ctx:
-                metadata_backups.run_pre_upgrade_backup_gate(
-                    backup_dir=self.backup_dir,
-                    settings_obj=configured,
-                    config_snapshot={},
-                    object_store=self.store,
-                    retention=5,
-                    connection=connection,
-                )
-            record = connection.execute(
-                "SELECT status, s3_key, error_message FROM metadata_backup_runs "
-                "ORDER BY id DESC LIMIT 1"
-            ).fetchone()
+        with self.assertRaises(
+            metadata_backups.PreUpgradeBackupBlockedError
+        ) as ctx:
+            metadata_backups.run_pre_upgrade_backup_gate(
+                backup_dir=self.backup_dir,
+                settings_obj=configured,
+                config_snapshot={},
+                object_store=self.store,
+                retention=5,
+            )
 
         self.assertEqual(
             ctx.exception.reason,
             metadata_backups.PreUpgradeBackupBlockReason.MASTER_KEY_REQUIRED,
         )
-        self.assertEqual(record["status"], "failed")
-        self.assertIsNone(record["s3_key"])
-        self.assertIn("ARCHIVE_MASTER_KEY", record["error_message"])
 
     def test_local_only_without_key_is_an_explicit_allowed_outcome(self) -> None:
         local_only = SimpleNamespace(

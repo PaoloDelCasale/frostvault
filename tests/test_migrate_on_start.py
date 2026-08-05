@@ -3,19 +3,78 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from alembic.script.revision import RangeNotAncestorError
+from cryptography.fernet import Fernet
 
+from app.config import settings as configured_settings
 from app.database import HEAD_SCHEMA_REVISION, SQLiteConnection, initialize_database
-from app.migrate_on_start import SchemaMigrationError, ensure_schema_current
+from app.migrate_on_start import (
+    SchemaMigrationError,
+    _upgrade_existing_with_backup,
+    ensure_schema_current,
+)
 from app.services import metadata_backups
 from tests.test_database import run_alembic
 
 
 class MigrateOnStartTests(unittest.TestCase):
+    def _seed_backup_admin(self, path: Path) -> int:
+        with SQLiteConnection(str(path)) as connection:
+            return connection.execute(
+                """
+                INSERT INTO users(username, display_name, password_hash, is_admin)
+                VALUES ('backup-admin', 'Backup Admin', 'hash', TRUE)
+                RETURNING id
+                """
+            ).fetchone()["id"]
+
+    def _assert_durable_pre_upgrade_failure(
+        self,
+        path: Path,
+        *,
+        admin_id: int,
+        block_reason: metadata_backups.PreUpgradeBackupBlockReason,
+    ) -> None:
+        expected_message = metadata_backups.pre_upgrade_backup_failure_message(
+            block_reason
+        )
+        with SQLiteConnection(str(path)) as connection:
+            run = connection.execute(
+                """
+                SELECT reason, status, error_message
+                FROM metadata_backup_runs
+                ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+            run_count = connection.execute(
+                "SELECT COUNT(*) AS total FROM metadata_backup_runs"
+            ).fetchone()["total"]
+            notification = connection.execute(
+                """
+                SELECT event, body FROM notifications
+                WHERE user_id=%s
+                ORDER BY id DESC LIMIT 1
+                """,
+                (admin_id,),
+            ).fetchone()
+            notification_count = connection.execute(
+                "SELECT COUNT(*) AS total FROM notifications WHERE user_id=%s",
+                (admin_id,),
+            ).fetchone()["total"]
+
+        self.assertEqual(run_count, 1)
+        self.assertEqual(notification_count, 1)
+        self.assertEqual(run["reason"], "pre_upgrade")
+        self.assertEqual(run["status"], "failed")
+        self.assertEqual(run["error_message"], expected_message)
+        self.assertEqual(notification["event"], "metadata_backup_failed")
+        self.assertIn(expected_message, notification["body"])
+
     def test_disabled_auto_migrate_is_a_no_op(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "stale.db")
@@ -111,28 +170,26 @@ class MigrateOnStartTests(unittest.TestCase):
                 self.assertEqual(ensure_schema_current(), "upgraded")
             self.assertEqual(calls, ["backup_upgrade"])
 
-    def test_configured_unreachable_store_blocks_before_alembic(self) -> None:
+    def test_unavailable_store_failure_is_durable_after_startup_block(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "blocked.db"
+            path = Path(directory) / "unavailable-store.db"
             result = run_alembic(path)
             self.assertEqual(result.returncode, 0, result.stderr)
-            test_settings = SimpleNamespace(
+            admin_id = self._seed_backup_admin(path)
+            test_settings = replace(
+                configured_settings,
                 auto_migrate=True,
                 db_backend="sqlite",
                 sqlite_path=str(path),
                 metadata_backup_dir=str(Path(directory) / "backups"),
                 metadata_backup_retention=14,
                 vault_s3_bucket="production-backups",
-                archive_master_key="not-disclosed",
+                archive_master_key=Fernet.generate_key().decode("ascii"),
             )
 
             with (
                 patch("app.migrate_on_start.settings", test_settings),
                 patch("app.database.settings", test_settings),
-                patch(
-                    "app.migrate_on_start.read_schema_revision",
-                    return_value="0021_local_retention",
-                ),
                 patch(
                     "app.migrate_on_start.metadata_backups.default_object_store",
                     side_effect=metadata_backups.ObjectStoreUnavailableError(
@@ -141,18 +198,25 @@ class MigrateOnStartTests(unittest.TestCase):
                 ),
                 patch("app.migrate_on_start._alembic_upgrade") as upgrade,
             ):
-                with self.assertRaises(SchemaMigrationError) as ctx:
-                    ensure_schema_current()
-            self.assertIn("unavailable", str(ctx.exception).lower())
-            self.assertNotIn("not-disclosed", str(ctx.exception))
+                with self.assertRaisesRegex(SchemaMigrationError, "unavailable"):
+                    _upgrade_existing_with_backup()
             upgrade.assert_not_called()
+            self._assert_durable_pre_upgrade_failure(
+                path,
+                admin_id=admin_id,
+                block_reason=(
+                    metadata_backups.PreUpgradeBackupBlockReason.OFF_HOST_UNAVAILABLE
+                ),
+            )
 
-    def test_configured_store_missing_key_blocks_before_alembic(self) -> None:
+    def test_missing_key_failure_is_durable_after_startup_block(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "missing-key.db"
             result = run_alembic(path)
             self.assertEqual(result.returncode, 0, result.stderr)
-            test_settings = SimpleNamespace(
+            admin_id = self._seed_backup_admin(path)
+            test_settings = replace(
+                configured_settings,
                 auto_migrate=True,
                 db_backend="sqlite",
                 sqlite_path=str(path),
@@ -166,23 +230,21 @@ class MigrateOnStartTests(unittest.TestCase):
                 patch("app.migrate_on_start.settings", test_settings),
                 patch("app.database.settings", test_settings),
                 patch(
-                    "app.migrate_on_start.read_schema_revision",
-                    return_value="0021_local_retention",
-                ),
-                patch(
                     "app.migrate_on_start.metadata_backups.default_object_store",
                     return_value=object(),
                 ),
-                patch(
-                    "app.migrate_on_start.metadata_backups.build_config_snapshot",
-                    return_value={},
-                ),
                 patch("app.migrate_on_start._alembic_upgrade") as upgrade,
             ):
-                with self.assertRaises(SchemaMigrationError) as ctx:
-                    ensure_schema_current()
-            self.assertIn("ARCHIVE_MASTER_KEY", str(ctx.exception))
+                with self.assertRaisesRegex(SchemaMigrationError, "ARCHIVE_MASTER_KEY"):
+                    _upgrade_existing_with_backup()
             upgrade.assert_not_called()
+            self._assert_durable_pre_upgrade_failure(
+                path,
+                admin_id=admin_id,
+                block_reason=(
+                    metadata_backups.PreUpgradeBackupBlockReason.MASTER_KEY_REQUIRED
+                ),
+            )
 
     def test_local_only_missing_key_is_explicit_and_still_upgrades(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -280,6 +342,11 @@ class MigrateOnStartTests(unittest.TestCase):
                     ensure_schema_current()
             backup.assert_not_called()
             upgrade.assert_not_called()
+            with SQLiteConnection(str(path)) as connection:
+                records = connection.execute(
+                    "SELECT COUNT(*) AS total FROM metadata_backup_runs"
+                ).fetchone()["total"]
+            self.assertEqual(records, 0)
 
     def test_divergent_alembic_graph_blocks_before_backup_or_alembic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

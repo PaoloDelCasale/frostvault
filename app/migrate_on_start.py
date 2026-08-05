@@ -149,6 +149,42 @@ def _alembic_upgrade(revision: str = "head") -> None:
         )
 
 
+def _persist_pre_upgrade_backup_failure(
+    block_reason: metadata_backups.PreUpgradeBackupBlockReason,
+) -> None:
+    """Commit failure evidence after the attempted backup transaction rolls back.
+
+    Recording and notification use fresh transactions. The failed backup's
+    original ``db()`` context has already rolled back by the time this helper
+    runs, so these writes cannot commit unrelated pre-upgrade work.
+    """
+    error_message = metadata_backups.pre_upgrade_backup_failure_message(
+        block_reason
+    )
+    try:
+        with db() as connection:
+            metadata_backups.record_pre_upgrade_backup_failure(
+                connection,
+                backend=settings.db_backend,
+                block_reason=block_reason,
+            )
+    except Exception:
+        # Failure evidence must never make an unsafe startup failure look like
+        # a successful migration. The primary exception remains fail-closed.
+        return
+
+    try:
+        with db() as connection:
+            metadata_backups.notify_admins_of_backup_failure(
+                connection,
+                reason="pre_upgrade",
+                error_message=error_message,
+            )
+    except Exception:
+        # Notification is best-effort, after the durable run record commits.
+        return
+
+
 def _upgrade_existing_with_backup() -> None:
     backup_dir = Path(settings.metadata_backup_dir)
     try:
@@ -164,17 +200,24 @@ def _upgrade_existing_with_backup() -> None:
                 connection=connection,
             )
     except metadata_backups.PreUpgradeBackupBlockedError as exc:
+        _persist_pre_upgrade_backup_failure(exc.reason)
         raise SchemaMigrationError(
             f"{exc}. Schema upgrade blocked. " + _manual_recovery_guidance()
         ) from None
     except metadata_backups.BackupError:
         # The typed gate should normalize all expected backup failures. Keep an
         # unexpected backup failure fail-closed without exposing its raw detail.
+        _persist_pre_upgrade_backup_failure(
+            metadata_backups.PreUpgradeBackupBlockReason.BACKUP_FAILED
+        )
         raise SchemaMigrationError(
             "Pre-upgrade metadata backup failed. Schema upgrade blocked. "
             + _manual_recovery_guidance()
         ) from None
     except Exception:  # noqa: BLE001 - settings/driver errors must not leak at startup
+        _persist_pre_upgrade_backup_failure(
+            metadata_backups.PreUpgradeBackupBlockReason.BACKUP_FAILED
+        )
         raise SchemaMigrationError(
             "Unable to complete the pre-upgrade backup gate. Schema upgrade blocked. "
             + _manual_recovery_guidance()

@@ -693,6 +693,34 @@ def record_backup_run(
     return _row_run(row)
 
 
+def pre_upgrade_backup_failure_message(
+    block_reason: PreUpgradeBackupBlockReason,
+) -> str:
+    """Return the durable, non-secret identifier for a blocked upgrade backup."""
+    return f"pre_upgrade_blocked:{block_reason.value}"
+
+
+def record_pre_upgrade_backup_failure(
+    connection: Any,
+    *,
+    backend: str,
+    block_reason: PreUpgradeBackupBlockReason,
+) -> dict[str, Any]:
+    """Record one typed, terminal pre-upgrade backup failure.
+
+    The caller owns a dedicated transaction so this failure evidence can commit
+    after the attempted upgrade transaction has rolled back, without committing
+    unrelated migration work.
+    """
+    return record_backup_run(
+        connection,
+        reason="pre_upgrade",
+        backend=backend,
+        status="failed",
+        error_message=pre_upgrade_backup_failure_message(block_reason),
+    )
+
+
 def list_backup_artifacts(
     connection: Any, *, limit: int = 50
 ) -> list[dict[str, Any]]:
