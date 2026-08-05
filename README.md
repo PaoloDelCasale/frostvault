@@ -115,6 +115,36 @@ locations.
 
 ## Setup
 
+### Compose identity and fresh host data directory
+
+The published image bakes in the default Unraid account `archive` (`99:100`).
+It does **not** create users or groups when it starts. Both Compose manifests
+instead launch the process directly as the numeric
+`user: "${PUID:-99}:${PGID:-100}"` identity, so non-default numeric overrides
+need no matching account in the image. This preserves the read-only root
+filesystem, `cap_drop: [ALL]`, and `no-new-privileges` contract.
+
+Before the first Compose start, create the repository's `./data` bind source on
+the host with the identity selected in `.env`. A missing bind source may be
+created by Docker as root, which prevents the non-root service from creating
+its database and migration/backup files:
+
+```bash
+# Use the same values in .env. These are the Unraid defaults.
+# Omit `sudo` when your shell is already root, as is typical on Unraid.
+PUID=99
+PGID=100
+mkdir -p ./data
+sudo chown "${PUID}:${PGID}" ./data
+sudo chmod 0750 ./data
+```
+
+This is a one-time fresh-directory preflight, not a recursive ownership reset
+of an existing catalog. It deliberately changes only `./data`: prepare
+`SOURCES_ROOT` under its own access policy and do not use it as a workaround for
+source permissions. Full Linux, Unraid, Docker Desktop, and invalid-identity
+guidance is in [docs/filesystem-permissions.md](docs/filesystem-permissions.md).
+
 ### Local development with SQLite
 
 The local configuration uses:
@@ -141,8 +171,9 @@ Local setup:
    root credentials.
 5. Copy `config/rclone.local.conf.example` to `config/rclone.conf`, enter the
    same bucket, and generate the obscured Rclone password.
-6. Pull the published image and start the application (schema migrations run
-   automatically on start when `AUTO_MIGRATE=1`, the default):
+6. Run the [fresh `./data` preflight](#compose-identity-and-fresh-host-data-directory),
+   then pull the published image and start the application (schema migrations
+   run automatically on start when `AUTO_MIGRATE=1`, the default):
 
    ```bash
    docker compose pull
@@ -191,7 +222,9 @@ instead of trying other credentials available on the computer.
    starts an asynchronous local scan.
 
 3. Copy `.env.example` to `.env` and configure paths, bucket, credentials, and
-   the bootstrap administrator. For a network deployment set `COOKIE_SECURE=true`
+   the bootstrap administrator. Before the first Compose start, run the
+   [fresh `./data` preflight](#compose-identity-and-fresh-host-data-directory)
+   using the same `PUID`/`PGID` values. For a network deployment set `COOKIE_SECURE=true`
    and provide `ALLOWED_HOSTS` (the hostnames the panel answers to) and
    `TRUSTED_PROXIES` (CIDRs of your reverse proxies); the app refuses to start
    in production without them. Set `OIDC_ENABLED=true` and configure
@@ -266,6 +299,8 @@ modes at the same time.
 
 ## Run
 
+After completing the [fresh `./data` preflight](#compose-identity-and-fresh-host-data-directory):
+
 ```bash
 docker compose pull
 docker compose up -d
@@ -284,9 +319,11 @@ Container Registry (a standard deploy does not build the image locally).
 For production behind Traefik, use `compose.traefik.yaml` so the app is not
 published on host ports. See [docs/traefik.md](docs/traefik.md).
 
-The container runs as `PUID`/`PGID` (default `99:100`). Permission the host
-source and data directories for that identity; see
-[docs/filesystem-permissions.md](docs/filesystem-permissions.md).
+The image bakes in default `99:100`; Compose runs directly as numeric
+`PUID`/`PGID` and never creates an account at runtime. Permission the host
+source and data directories for that identity before start; see
+[docs/filesystem-permissions.md](docs/filesystem-permissions.md) for the
+required `./data` preflight and valid-override behavior.
 
 On first startup, the application creates the administrator defined by
 `BOOTSTRAP_ADMIN_*` and, when configured, the first vault. Manage subsequent

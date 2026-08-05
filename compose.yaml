@@ -9,17 +9,22 @@ services:
     environment:
       PUID: ${PUID:-99}
       PGID: ${PGID:-100}
+    # cap_drop: ALL deliberately removes the privileges needed to switch IDs.
+    # Start as the configured identity; the image includes the 99:100 default.
+    user: "${PUID:-99}:${PGID:-100}"
     ports:
       - "127.0.0.1:${APP_PORT:-8080}:8080"
     volumes:
-      # Host directories must be writable by PUID:PGID. The entrypoint never
-      # chowns vault sources; permission the host paths explicitly.
+      # Before first up, create ./data on the host as PUID:PGID with mode 0750.
+      # The entrypoint never chowns vault sources or creates runtime accounts.
       - "${SOURCES_ROOT}:/sources:rw"
-      - "./data:/data"
+      - "./data:/data:rw"
       - "./config:/config/rclone:ro"
+    # Create writable ephemeral directories with the runtime identity because
+    # cap_drop: ALL prevents the entrypoint from chowning them at startup.
     tmpfs:
-      - /tmp
-      - /run
+      - "/tmp:uid=${PUID:-99},gid=${PGID:-100},mode=1777"
+      - "/run:uid=${PUID:-99},gid=${PGID:-100},mode=0755"
     read_only: true
     cap_drop:
       - ALL
