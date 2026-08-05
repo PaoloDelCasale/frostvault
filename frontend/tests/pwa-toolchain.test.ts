@@ -21,7 +21,8 @@ describe("PWA toolchain (seams 1–2)", () => {
     expect(main).toMatch(/registerFrostVaultServiceWorker/);
     const sw = readFileSync(path.join(root, "src/sw.ts"), "utf8");
     expect(sw).toMatch(/precacheAndRoute/);
-    expect(sw).toMatch(/frostvault-file-listing/);
+    expect(sw).toMatch(/offlineFileServiceWorkerCacheName/);
+    expect(sw).not.toMatch(/cacheName:\s*"frostvault-file-listing"/);
     expect(sw).toMatch(/addEventListener\(\s*"push"/);
   });
 });

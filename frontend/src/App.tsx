@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -16,6 +16,13 @@ import {
 import { DEMO_MODE_ENABLED, getDemoSearchParam } from "@/demoGate";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/theme";
+import {
+  clearOfflineFileCache,
+  invalidateLegacyCachedFilesListings,
+  isOfflineCacheContext,
+  setOfflineFileCacheContext,
+  type OfflineCacheContext,
+} from "@/pwa/offlineFiles";
 import { AppShell } from "@/layout/AppShell";
 import { shellLabel } from "@/layout/labels";
 import { Toast } from "@/components/Toast";
@@ -79,6 +86,12 @@ function currentPathname(): string {
   return window.location.pathname;
 }
 
+function offlineCacheContextFor(me: MeResponse): OfflineCacheContext | null {
+  if (!me.vault) return null;
+  const context = { userId: me.id, vaultId: me.vault.id };
+  return isOfflineCacheContext(context) ? context : null;
+}
+
 export default function App() {
   const { t, setLocale } = useI18n();
   const { setUserId } = useTheme();
@@ -87,6 +100,9 @@ export default function App() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [vaults, setVaults] = useState<VaultListItem[]>([]);
   const [authChecked, setAuthChecked] = useState(pathname === "/login");
+  const [offlineCacheContext, setOfflineCacheContext] =
+    useState<OfflineCacheContext | null>(null);
+  const offlineCacheContextRef = useRef<OfflineCacheContext | null>(null);
   const [refreshNotice, setRefreshNotice] = useState<{
     message: string;
     error: boolean;
@@ -97,8 +113,38 @@ export default function App() {
     setPathname(path);
   }, []);
 
+  const clearOfflineFileData = useCallback(() => {
+    clearOfflineFileCache();
+    offlineCacheContextRef.current = null;
+    setOfflineCacheContext(null);
+    void queryClient.cancelQueries({ queryKey: ["files"] });
+    queryClient.removeQueries({ queryKey: ["files"] });
+  }, [queryClient]);
+
+  const synchronizeOfflineCacheContext = useCallback(
+    (nextMe: MeResponse): OfflineCacheContext | null => {
+      invalidateLegacyCachedFilesListings();
+      const nextContext = offlineCacheContextFor(nextMe);
+      const currentContext = offlineCacheContextRef.current;
+      if (currentContext) {
+        // /api/me does not expose a Session identifier. Once an active session
+        // is revalidated, discard prior listings even if its User and Vault
+        // match: this also covers a same-context session replacement.
+        clearOfflineFileData();
+      }
+      if (!nextContext) return null;
+
+      offlineCacheContextRef.current = nextContext;
+      setOfflineCacheContext(nextContext);
+      setOfflineFileCacheContext(nextContext);
+      return nextContext;
+    },
+    [clearOfflineFileData],
+  );
+
   const refreshSession = useCallback(async () => {
     const nextMe = await fetchMe();
+    synchronizeOfflineCacheContext(nextMe);
     setUserId(nextMe.id);
     setMe(nextMe);
     try {
@@ -108,7 +154,7 @@ export default function App() {
       setVaults([]);
     }
     return nextMe;
-  }, [setUserId]);
+  }, [setUserId, synchronizeOfflineCacheContext]);
 
   const onRefreshList = useCallback(() => {
     void requestScan()
@@ -149,6 +195,7 @@ export default function App() {
 
   useEffect(() => {
     if (pathname === "/login") {
+      clearOfflineFileData();
       setAuthChecked(true);
       return;
     }
@@ -164,6 +211,7 @@ export default function App() {
       })
       .catch(() => {
         if (cancelled) return;
+        clearOfflineFileData();
         setUserId(null);
         setMe(null);
         setVaults([]);
@@ -177,7 +225,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [navigate, pathname, refreshSession, setUserId]);
+  }, [clearOfflineFileData, navigate, pathname, refreshSession, setUserId]);
 
   if (isVaultCreateRecoveryDemo()) {
     return <VaultCreateScreenshotFixture />;
@@ -230,6 +278,16 @@ export default function App() {
     );
   }
 
+  // Do not leave the old FileBrowser mounted while a new authorization scope
+  // is being resolved (for example, during a Vault switch).
+  if (!offlineCacheContext) {
+    return (
+      <div className="grid min-h-svh place-items-center bg-canvas text-sm text-muted">
+        {shellLabel(t, "ui.loading", "Loading…")}
+      </div>
+    );
+  }
+
   const capabilities = capabilitiesFromMe(me, vaults);
 
   return (
@@ -243,9 +301,12 @@ export default function App() {
         onNewVault: () => navigate("/vaults/new"),
         onRefreshList,
         onSignOut: () => {
-          // Clear the identity before reloading so /login cannot first-paint
-          // the departing user's palette.
+          // Clear identity and offline file data before /login can first-paint
+          // the departing user's palette or listing.
+          clearOfflineFileData();
           setUserId(null);
+          setMe(null);
+          setVaults([]);
           void logout()
             .catch(() => undefined)
             .finally(() => {
@@ -258,15 +319,20 @@ export default function App() {
               queryKey: apiQueryKeys.notifications,
               refetchType: "active",
             });
-            const nextMe = await fetchMe();
-            setMe(nextMe);
+            await refreshSession();
           });
         },
         onVaultChange: (vaultId) => {
+          clearOfflineFileData();
           void selectVault({ vault_id: vaultId })
             .then(() => refreshSession())
             .then(() => {
               window.location.assign("/");
+            })
+            .catch(() => {
+              // If selection failed, only restore the context that /api/me had
+              // already authorized; never reuse an unscoped listing.
+              synchronizeOfflineCacheContext(me);
             });
         },
       }}
@@ -277,8 +343,10 @@ export default function App() {
         t={t}
         fileList={
           <FileBrowser
+            key={`offline-${offlineCacheContext.userId}-${offlineCacheContext.vaultId}`}
             t={t}
-            vaultId={me.vault?.id ?? capabilities.currentVaultId ?? 0}
+            userId={offlineCacheContext.userId}
+            vaultId={offlineCacheContext.vaultId}
             vaultName={capabilities.vaultName}
             capabilities={{
               role: capabilities.role ?? "viewer",
