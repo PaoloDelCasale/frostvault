@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from .services.rclone_runtime import cleanup_runtime_configs
 
 INTEGRITY_ERRORS = (UniqueViolation, sqlite3.IntegrityError)
 HEAD_SCHEMA_REVISION = "0032_notification_inbox"
+_logger = logging.getLogger(__name__)
 
 
 class DatabaseSchemaError(RuntimeError):
@@ -103,7 +105,22 @@ def read_schema_revision(connection: Any) -> str | None:
 def initialize_database() -> None:
     # Named fallback configs are only used when anonymous procfs-backed storage
     # is unavailable. Cleanup runs before workers can start and is safe to repeat.
-    cleanup_runtime_configs()
+    cleanup = cleanup_runtime_configs()
+    if any(
+        (
+            cleanup.skipped_active,
+            cleanup.skipped_foreign,
+            cleanup.skipped_unsafe,
+            cleanup.skipped_raced,
+        )
+    ):
+        _logger.warning(
+            "Rclone runtime cleanup deferred: active=%d untrusted=%d unsafe=%d raced=%d",
+            cleanup.skipped_active,
+            cleanup.skipped_foreign,
+            cleanup.skipped_unsafe,
+            cleanup.skipped_raced,
+        )
     with db() as connection:
         revision = read_schema_revision(connection)
         if revision != HEAD_SCHEMA_REVISION:
