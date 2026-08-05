@@ -331,6 +331,10 @@ describe("VaultCreatePage", () => {
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith(recoveryExport);
     });
+    expect(await screen.findByText(en["ui.recovery.copied"])).toHaveAttribute(
+      "role",
+      "status",
+    );
 
     const createObjectURL = vi.fn(() => "blob:recovery-export");
     const revokeObjectURL = vi.fn();
@@ -367,6 +371,74 @@ describe("VaultCreatePage", () => {
     expect(downloaded).toBe(recoveryExport);
     expect(anchorClick).toHaveBeenCalled();
     createElSpy.mockRestore();
+  });
+
+  it("reports rejected recovery clipboard copies without implying success", async () => {
+    const user = userEvent.setup();
+    const recoveryExport = "recover-me-manually";
+    const writeText = vi
+      .fn()
+      .mockRejectedValue(new Error("clipboard permission denied"));
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/source-areas") {
+        return Promise.resolve(mockEmptySourceAreas());
+      }
+      if (url.startsWith("/api/i18n/catalog")) {
+        return Promise.resolve(mockCatalog(en));
+      }
+      if (url === "/api/vaults" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              id: 7,
+              uuid: "crypt-uuid",
+              slug: "secret",
+              name: "Secret",
+              role: "owner",
+              encryption_mode: "crypt",
+              recovery_custody_confirmed: false,
+              recovery_export: recoveryExport,
+            },
+            201,
+          ),
+        );
+      }
+      return Promise.reject(new Error(`unexpected request ${url}`));
+    });
+
+    renderPage();
+    await screen.findByRole("heading", { name: en["ui.vault_create.title"] });
+    await user.type(
+      screen.getByRole("textbox", { name: en["ui.vault_create.name"] }),
+      "Secret",
+    );
+    await user.click(
+      screen.getByRole("radio", { name: en["ui.vault_create.encryption_crypt"] }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: en["ui.vault_create.submit"] }),
+    );
+    await screen.findByRole("heading", { name: en["ui.recovery.title"] });
+
+    await user.click(screen.getByRole("button", { name: en["ui.recovery.copy"] }));
+
+    const failure = await screen.findByRole("alert");
+    expect(failure).toHaveTextContent(en["ui.recovery.copy_failed"]);
+    expect(failure).not.toHaveTextContent(recoveryExport);
+    expect(writeText).toHaveBeenCalledWith(recoveryExport);
+    expect(screen.queryByText(en["ui.recovery.copied"])).not.toBeInTheDocument();
+    expect(screen.getByTestId("recovery-export-material")).toHaveTextContent(
+      recoveryExport,
+    );
+    expect(
+      screen.getByRole("button", { name: en["ui.recovery.download"] }),
+    ).toBeEnabled();
   });
 
   it("confirms recovery custody only after an irreversibility dialog", async () => {

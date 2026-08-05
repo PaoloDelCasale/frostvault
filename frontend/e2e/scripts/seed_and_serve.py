@@ -153,6 +153,7 @@ def _seed(paths: dict[str, Path]) -> dict:
             readme_id,
             new_path="reports/readme.txt",
             changed_at="2026-07-01T12:00:00+00:00",
+            vault_id=primary_id,
         )
         catalog.record_archive_version(
             vault_id=primary_id,
