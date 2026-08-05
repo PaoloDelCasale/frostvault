@@ -1158,6 +1158,7 @@ def _apply_auto_renames(
                 vault_file_id=candidate["missing_vault_file_id"],
                 new_path=candidate["new_path"],
                 changed_at=changed_at,
+                vault_id=vault["id"],
             )
             audit_log(
                 "vault_file_renamed",
