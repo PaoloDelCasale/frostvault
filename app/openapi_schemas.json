@@ -1629,7 +1629,7 @@
           "type": "string"
         },
         "offline_cache_generation": {
-          "description": "Opaque server-side Session and selected Vault generation for offline file-cache authorization.",
+          "description": "Opaque persisted Session cache authorization. It combines a monotonic per-Session generation with an unguessable nonce and rotates on Session replacement/revocation/expiry/OIDC token rotation and Vault selection.",
           "type": "string"
         },
         "decommission_vault": {

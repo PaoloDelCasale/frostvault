@@ -81,6 +81,81 @@ export function beginOfflineAuthTransition(): Promise<OfflineFileCacheTransition
   return beginOfflineFileCacheTransition();
 }
 
+export type OfflineAuthMutationOptions = Readonly<{
+  /** A test or embedding seam for the authoritative post-mutation /api/me. */
+  fetchAuthority?: () => Promise<MeResponse>;
+  /**
+   * Redirecting mutations (successful logout and OIDC provider navigation)
+   * leave this document before it can obtain fresh authority. Their landing
+   * page performs the ordinary reconciliation instead.
+   */
+  reconcile?: boolean;
+}>;
+
+export type OfflineAuthMutationResult<T> = Readonly<{
+  result: T;
+  transition: OfflineFileCacheTransition;
+  /** Null means the mutation succeeded but fresh authority was unavailable. */
+  reconciliation: OfflineAuthReconciliation | null;
+}>;
+
+/**
+ * Coordinate one authentication/Vault mutation through the only safe order:
+ * close local cache authority, run the bounded server mutation, fetch fresh
+ * /api/me authority, then reconcile that authority with the Worker.
+ *
+ * A definitive mutation failure gets one best-effort reconciliation so an
+ * unchanged Session can recover. A timeout intentionally stays closed because
+ * its server request may still commit after this page gives up waiting. A
+ * successful mutation whose authority fetch fails also stays closed while the
+ * caller can safely continue network-only or load a new document.
+ */
+export async function runOfflineAuthMutation<T>(
+  mutation: () => Promise<T>,
+  options: OfflineAuthMutationOptions = {},
+): Promise<OfflineAuthMutationResult<T>> {
+  const transition = await beginOfflineAuthTransition();
+  let result: T;
+  try {
+    result = await withinAuthTransitionTimeout(mutation());
+  } catch (error) {
+    if (!(error instanceof AuthTransitionTimeoutError)) {
+      await reconcileOfflineAuthTransition({
+        transition,
+        fetchAuthority: options.fetchAuthority,
+      }).catch(() => undefined);
+    }
+    throw error;
+  }
+
+  if (options.reconcile === false) {
+    return { result, transition, reconciliation: null };
+  }
+
+  const reconciliation = await reconcileOfflineAuthTransition({
+    transition,
+    fetchAuthority: options.fetchAuthority,
+  }).catch(() => null);
+  return { result, transition, reconciliation };
+}
+
+/**
+ * Start the OIDC half of a step-up through the shared transition coordinator.
+ * The provider callback rotates the server Session after this document leaves;
+ * the returned SPA then runs the fresh-/api/me reconciliation through App.
+ */
+export async function startOidcReauthenticationTransition(
+  redirect: () => void,
+): Promise<OfflineFileCacheTransition> {
+  const outcome = await runOfflineAuthMutation(
+    async () => {
+      redirect();
+    },
+    { reconcile: false },
+  );
+  return outcome.transition;
+}
+
 /**
  * Reconcile a post-mutation Session/Vault with the Worker in one place.
  *

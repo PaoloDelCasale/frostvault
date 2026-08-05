@@ -8,10 +8,8 @@ import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 import { useTheme } from "@/theme";
 import {
-  AuthTransitionTimeoutError,
   beginOfflineAuthTransition,
-  reconcileOfflineAuthTransition,
-  withinAuthTransitionTimeout,
+  runOfflineAuthMutation,
 } from "@/pwa/authTransition";
 
 type LoginPageProps = {
@@ -44,36 +42,22 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
     event.preventDefault();
     setError(null);
     setSubmitting(true);
-    const transition = await beginOfflineAuthTransition();
     try {
-      await withinAuthTransitionTimeout(loginWithPassword(username, password));
+      // One coordinator owns close → login mutation → fresh /api/me → Worker
+      // reconciliation. A missing Worker/authority remains network-only.
+      const outcome = await runOfflineAuthMutation(() =>
+        loginWithPassword(username, password),
+      );
+      setUserId(outcome.reconciliation?.me.id ?? null);
+      onNavigate("/");
     } catch (err) {
-      if (!(err instanceof AuthTransitionTimeoutError)) {
-        // A rejected login leaves the prior server Session authoritative. It
-        // may reopen only after one shared fresh /api/me reconciliation.
-        await reconcileOfflineAuthTransition({ transition }).catch(() => undefined);
-      }
       if (err instanceof ApiError && err.status === 403) {
         setError(t("login.local_unavailable"));
       } else {
         setError(t("login.failed"));
       }
       setSubmitting(false);
-      return;
     }
-
-    try {
-      // The shared helper probes the Worker before fresh /api/me and only
-      // completes this capability after the newly authenticated Session is
-      // authoritative. A missing Worker remains deliberately network-only.
-      const reconciliation = await reconcileOfflineAuthTransition({ transition });
-      setUserId(reconciliation.me.id);
-    } catch {
-      // Authentication succeeded. Keep the first paint identity-safe and let
-      // the destination retry /api/me. A failed reconciliation stays closed.
-      setUserId(null);
-    }
-    onNavigate("/");
   }
 
   return (

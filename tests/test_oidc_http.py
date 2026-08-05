@@ -28,7 +28,7 @@ class OidcHttpTests(unittest.TestCase):
         self.provider = FakeOidcProvider()
         self.subject = "subject-123"
         with SQLiteConnection(str(database_path)) as connection:
-            user_id = connection.execute(
+            self.user_id = connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash, is_admin)
                 VALUES ('alice', 'Alice', 'hash', TRUE)
@@ -40,7 +40,7 @@ class OidcHttpTests(unittest.TestCase):
                 INSERT INTO user_identities(user_id, issuer, subject, created_at)
                 VALUES (%s, %s, %s, '2026-07-21T00:00:00+00:00')
                 """,
-                (user_id, self.provider.issuer, self.subject),
+                (self.user_id, self.provider.issuer, self.subject),
             )
 
         self.test_settings = replace(
@@ -86,6 +86,26 @@ class OidcHttpTests(unittest.TestCase):
             return connection.execute(
                 "SELECT state, nonce FROM oidc_login ORDER BY rowid DESC LIMIT 1"
             ).fetchone()
+
+    def _add_vault_membership(self) -> int:
+        with SQLiteConnection(str(self.database_path)) as connection:
+            vault_id = connection.execute(
+                """
+                INSERT INTO vaults(
+                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
+                ) VALUES ('oidc-cache-vault', 'OIDC Cache Vault', '/source', 'bucket',
+                          'oidc-cache', 'remote')
+                RETURNING id
+                """
+            ).fetchone()["id"]
+            connection.execute(
+                """
+                INSERT INTO vault_members(vault_id, user_id, role)
+                VALUES (%s, %s, 'owner')
+                """,
+                (vault_id, self.user_id),
+            )
+        return vault_id
 
     def test_login_endpoint_redirects_to_provider_and_persists_state(self) -> None:
         self._use_oidc_client()
@@ -200,6 +220,48 @@ class OidcHttpTests(unittest.TestCase):
             datetime.fromisoformat(self._reauth_at()),
             datetime(2020, 1, 1, tzinfo=timezone.utc),
         )
+
+    def test_oidc_step_up_rotates_persisted_cache_authorization(self) -> None:
+        self._sign_in()
+        self._add_vault_membership()
+        before = self.client.get("/api/me")
+        self.assertEqual(before.status_code, 200, before.text)
+        before_generation = before.json()["offline_cache_generation"]
+
+        allowed = self.client.get(
+            "/api/files",
+            headers={
+                main.OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER: before_generation
+            },
+        )
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+
+        self._use_oidc_client()
+        step_up = self.client.get("/auth/oidc/reauth")
+        self.assertEqual(step_up.status_code, 303)
+        pending = self._latest_login()
+        id_token = self.provider.make_id_token(
+            nonce=pending["nonce"], subject=self.subject
+        )
+        self._use_oidc_client(id_token=id_token)
+        callback = self.client.get(
+            "/auth/oidc/callback",
+            params={"state": pending["state"], "code": "auth-code"},
+        )
+        self.assertEqual(callback.status_code, 303, callback.text)
+
+        after = self.client.get("/api/me")
+        self.assertEqual(after.status_code, 200, after.text)
+        after_generation = after.json()["offline_cache_generation"]
+        self.assertTrue(before_generation != after_generation)
+
+        stale = self.client.get(
+            "/api/files",
+            headers={
+                main.OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER: before_generation
+            },
+        )
+        self.assertEqual(stale.status_code, 409, stale.text)
 
     def test_bug_011_oidc_rejects_foreign_identity_session_switch(self) -> None:
         """[BUG-011][Req: REQ-023] active Session must not be replaced by foreign Identity.

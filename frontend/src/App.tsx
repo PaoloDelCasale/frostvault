@@ -27,7 +27,9 @@ import {
   beginOfflineAuthTransition,
   offlineCacheContextForMe,
   reconcileOfflineAuthTransition,
+  runOfflineAuthMutation,
   withinAuthTransitionTimeout,
+  type OfflineAuthReconciliation,
 } from "@/pwa/authTransition";
 import { AppShell } from "@/layout/AppShell";
 import { shellLabel } from "@/layout/labels";
@@ -143,11 +145,8 @@ export default function App() {
     queryClient.removeQueries({ queryKey: ["files"] });
   }, [queryClient]);
 
-  const refreshSession = useCallback(
-    async (initialTransition?: OfflineFileCacheTransition) => {
-      const reconciliation = await reconcileOfflineAuthTransition({
-        transition: initialTransition,
-      });
+  const applyOfflineAuthReconciliation = useCallback(
+    async (reconciliation: OfflineAuthReconciliation): Promise<MeResponse> => {
       const nextAuthorization = reconciliation.context;
       if (
         !reconciliation.lease ||
@@ -177,6 +176,16 @@ export default function App() {
       return nextMe;
     },
     [clearOfflineFileData, setUserId],
+  );
+
+  const refreshSession = useCallback(
+    async (initialTransition?: OfflineFileCacheTransition) => {
+      const reconciliation = await reconcileOfflineAuthTransition({
+        transition: initialTransition,
+      });
+      return applyOfflineAuthReconciliation(reconciliation);
+    },
+    [applyOfflineAuthReconciliation],
   );
 
   useEffect(() => {
@@ -406,13 +415,16 @@ export default function App() {
         onVaultChange: (vaultId) => {
           void (async () => {
             clearOfflineFileData();
-            const transition = await beginOfflineAuthTransition();
             try {
-              // begin is bounded and its acknowledgement is explicitly local
-              // evidence only. The server mutation still starts if no Worker
-              // replied; the durable cache barrier remains closed in that case.
-              await withinAuthTransitionTimeout(selectVault({ vault_id: vaultId }));
-              await refreshSession(transition);
+              // The coordinator owns close → selection mutation → fresh
+              // /api/me → Worker reconciliation. A missing Worker remains
+              // deliberately network-only rather than delaying the mutation.
+              const outcome = await runOfflineAuthMutation(() =>
+                selectVault({ vault_id: vaultId }),
+              );
+              if (outcome.reconciliation) {
+                await applyOfflineAuthReconciliation(outcome.reconciliation);
+              }
               window.location.assign("/");
             } catch (error) {
               if (error instanceof AuthTransitionTimeoutError) {
@@ -422,7 +434,7 @@ export default function App() {
               }
               // A definitive mutation failure still requires a fresh /api/me
               // before the old context can be registered again.
-              await refreshSession(transition).catch(() => undefined);
+              await refreshSession().catch(() => undefined);
             }
           })();
         },
