@@ -179,6 +179,134 @@ describe("apiRequest Reauthentication", () => {
     expect(requestCounts.get("/api/admin/second")).toBe(2);
   });
 
+  it("uses one completed local reauthentication for a delayed 403 in the original request cohort", async () => {
+    let resolveSecondResponse: (response: Response) => void;
+    const delayedSecondResponse = new Promise<Response>((resolve) => {
+      resolveSecondResponse = resolve;
+    });
+    const requestCounts = new Map<string, number>();
+    const requestPassword = vi.fn(async () => "recent-password");
+
+    configureApiClient({
+      getAuthMethod: () => "local",
+      requestPassword,
+    });
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      const count = (requestCounts.get(url) ?? 0) + 1;
+      requestCounts.set(url, count);
+      if (url === "/api/reauth") return Promise.resolve(jsonResponse({ ok: true }));
+      if (url === "/api/admin/second" && count === 1) {
+        return delayedSecondResponse;
+      }
+      if (count === 1) {
+        return Promise.resolve(jsonResponse({ error: "reauth_required" }, 403));
+      }
+      return Promise.resolve(jsonResponse({ url }));
+    });
+
+    const first = apiRequest<{ url: string }>("/api/admin/first", {
+      method: "POST",
+      body: "{}",
+    });
+    const second = apiRequest<{ url: string }>("/api/admin/second", {
+      method: "POST",
+      body: "{}",
+    });
+
+    await expect(first).resolves.toEqual({ url: "/api/admin/first" });
+    expect(requestPassword).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(1);
+
+    resolveSecondResponse!(jsonResponse({ error: "reauth_required" }, 403));
+
+    await expect(second).resolves.toEqual({ url: "/api/admin/second" });
+    expect(requestPassword).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(1);
+    expect(requestCounts.get("/api/admin/first")).toBe(2);
+    expect(requestCounts.get("/api/admin/second")).toBe(2);
+  });
+
+  it("shares a throttled outcome with a delayed 403 and lets a later request retry", async () => {
+    let resolveSecondResponse: (response: Response) => void;
+    const delayedSecondResponse = new Promise<Response>((resolve) => {
+      resolveSecondResponse = resolve;
+    });
+    const requestCounts = new Map<string, number>();
+    const requestPassword = vi.fn(async () => "recent-password");
+    let reauthenticationAttempts = 0;
+
+    configureApiClient({
+      getAuthMethod: () => "local",
+      requestPassword,
+    });
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      const count = (requestCounts.get(url) ?? 0) + 1;
+      requestCounts.set(url, count);
+      if (url === "/api/reauth") {
+        reauthenticationAttempts += 1;
+        return Promise.resolve(
+          reauthenticationAttempts === 1
+            ? jsonResponse({ detail: "Try again later" }, 429)
+            : jsonResponse({ ok: true }),
+        );
+      }
+      if (url === "/api/admin/second" && count === 1) {
+        return delayedSecondResponse;
+      }
+      if (count === 1) {
+        return Promise.resolve(jsonResponse({ error: "reauth_required" }, 403));
+      }
+      return Promise.resolve(jsonResponse({ url }));
+    });
+
+    const firstFailure = apiRequest("/api/admin/first", {
+      method: "POST",
+      body: "{}",
+    }).then(
+      () => {
+        throw new Error("Expected reauthentication to fail.");
+      },
+      (error: unknown) => error,
+    );
+    const secondFailure = apiRequest("/api/admin/second", {
+      method: "POST",
+      body: "{}",
+    }).then(
+      () => {
+        throw new Error("Expected reauthentication to fail.");
+      },
+      (error: unknown) => error,
+    );
+
+    const firstError = await firstFailure;
+    expect(firstError).toMatchObject({
+      status: 429,
+      messageKey: "ui.reauth_failed",
+    });
+    expect(requestPassword).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(1);
+
+    resolveSecondResponse!(jsonResponse({ error: "reauth_required" }, 403));
+
+    await expect(secondFailure).resolves.toBe(firstError);
+    expect(requestPassword).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(1);
+    expect(requestCounts.get("/api/admin/first")).toBe(1);
+    expect(requestCounts.get("/api/admin/second")).toBe(1);
+
+    await expect(
+      apiRequest<{ url: string }>("/api/admin/retry", {
+        method: "POST",
+        body: "{}",
+      }),
+    ).resolves.toEqual({ url: "/api/admin/retry" });
+    expect(requestPassword).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(2);
+    expect(requestCounts.get("/api/admin/retry")).toBe(2);
+  });
+
   it("rejects all concurrent callers after a throttled reauthentication and permits a later retry", async () => {
     const requestCounts = new Map<string, number>();
     const requestPassword = vi.fn(async () => "recent-password");

@@ -57,8 +57,25 @@ export class ApiError extends Error {
   }
 }
 
+type LocalReauthenticationGeneration = {
+  id: number;
+  outcome: Promise<boolean>;
+  settled: boolean;
+};
+
+type ReauthenticationRequest = {
+  generationIdAtStart: number;
+  activeGenerationAtStart: LocalReauthenticationGeneration | null;
+};
+
 let config: ApiClientConfig = {};
-let localReauthenticationInFlight: Promise<boolean> | null = null;
+let localReauthenticationInFlight: LocalReauthenticationGeneration | null = null;
+let latestLocalReauthenticationGenerationId = 0;
+const localReauthenticationGenerations = new Map<
+  number,
+  LocalReauthenticationGeneration
+>();
+const reauthenticationRequests = new Set<ReauthenticationRequest>();
 
 export function configureApiClient(next: ApiClientConfig): void {
   config = { ...config, ...next };
@@ -67,6 +84,9 @@ export function configureApiClient(next: ApiClientConfig): void {
 export function resetApiClientForTests(): void {
   config = {};
   localReauthenticationInFlight = null;
+  latestLocalReauthenticationGenerationId = 0;
+  localReauthenticationGenerations.clear();
+  reauthenticationRequests.clear();
 }
 
 export function setCsrfToken(token: string | null): void {
@@ -205,27 +225,81 @@ async function submitLocalReauthentication(): Promise<boolean> {
   return true;
 }
 
-function localReauthentication(): Promise<boolean> {
-  if (localReauthenticationInFlight) return localReauthenticationInFlight;
-
-  const attempt = submitLocalReauthentication();
-  localReauthenticationInFlight = attempt;
-  void attempt.then(
-    () => {
-      if (localReauthenticationInFlight === attempt) {
-        localReauthenticationInFlight = null;
-      }
-    },
-    () => {
-      if (localReauthenticationInFlight === attempt) {
-        localReauthenticationInFlight = null;
-      }
-    },
-  );
-  return attempt;
+/**
+ * A request snapshots the latest generation when it starts. If its initial
+ * 403 arrives late, it still consumes the first local reauthentication that
+ * began after that snapshot rather than opening a second password prompt.
+ */
+function beginReauthenticationRequest(): ReauthenticationRequest {
+  const request = {
+    generationIdAtStart: latestLocalReauthenticationGenerationId,
+    activeGenerationAtStart: localReauthenticationInFlight,
+  };
+  reauthenticationRequests.add(request);
+  return request;
 }
 
-async function stepUpReauthentication(): Promise<boolean> {
+function matchingLocalReauthenticationGeneration(
+  request: ReauthenticationRequest,
+): LocalReauthenticationGeneration | null {
+  if (request.activeGenerationAtStart) {
+    return request.activeGenerationAtStart;
+  }
+  for (const generation of localReauthenticationGenerations.values()) {
+    if (generation.id > request.generationIdAtStart) return generation;
+  }
+  return null;
+}
+
+function discardSettledLocalReauthenticationGenerations(): void {
+  for (const [id, generation] of localReauthenticationGenerations) {
+    if (!generation.settled) continue;
+    const hasCohortRequest = [...reauthenticationRequests].some(
+      (request) => matchingLocalReauthenticationGeneration(request) === generation,
+    );
+    if (!hasCohortRequest) localReauthenticationGenerations.delete(id);
+  }
+}
+
+function finishReauthenticationRequest(request: ReauthenticationRequest): void {
+  reauthenticationRequests.delete(request);
+  discardSettledLocalReauthenticationGenerations();
+}
+
+function finishLocalReauthenticationGeneration(
+  generation: LocalReauthenticationGeneration,
+): void {
+  generation.settled = true;
+  if (localReauthenticationInFlight === generation) {
+    localReauthenticationInFlight = null;
+  }
+  discardSettledLocalReauthenticationGenerations();
+}
+
+function localReauthentication(
+  request: ReauthenticationRequest,
+): Promise<boolean> {
+  const matchingGeneration = matchingLocalReauthenticationGeneration(request);
+  if (matchingGeneration) return matchingGeneration.outcome;
+
+  const outcome = Promise.resolve().then(submitLocalReauthentication);
+  const generation = {
+    id: ++latestLocalReauthenticationGenerationId,
+    outcome,
+    settled: false,
+  };
+  localReauthenticationGenerations.set(generation.id, generation);
+  localReauthenticationInFlight = generation;
+  void outcome.then(
+    () => finishLocalReauthenticationGeneration(generation),
+    () => finishLocalReauthenticationGeneration(generation),
+  );
+  return outcome;
+}
+
+async function stepUpReauthentication(
+  request: ReauthenticationRequest,
+): Promise<boolean> {
   const authMethod = config.getAuthMethod?.();
   if (authMethod === "oidc") {
     const returnTo = encodeURIComponent(currentReturnTo());
@@ -233,7 +307,7 @@ async function stepUpReauthentication(): Promise<boolean> {
     throw new ReauthenticationRedirectError();
   }
 
-  return localReauthentication();
+  return localReauthentication(request);
 }
 
 async function parseBody(response: Response): Promise<unknown> {
@@ -270,10 +344,11 @@ function requestOptions(options: RequestInit): RequestInit & {
  * Perform an authenticated request while keeping the shared session, CSRF,
  * and reauthentication behavior in one place for both JSON and binary APIs.
  */
-async function requestResponse(
+async function requestResponseInCohort(
   url: string,
   options: RequestInit,
   allowReauthRetry: boolean,
+  reauthenticationRequest: ReauthenticationRequest | null,
 ): Promise<Response> {
   const response = await resolveFetch()(url, requestOptions(options));
   if (response.ok) return response;
@@ -285,8 +360,16 @@ async function requestResponse(
   }
 
   if (isReauthRequired(response.status, data) && allowReauthRetry) {
-    await stepUpReauthentication();
-    return requestResponse(url, options, false);
+    if (!reauthenticationRequest) {
+      throw new Error("A reauthentication request cohort is required.");
+    }
+    await stepUpReauthentication(reauthenticationRequest);
+    return requestResponseInCohort(
+      url,
+      options,
+      false,
+      reauthenticationRequest,
+    );
   }
 
   const { message, messageKey } = errorMessageFromBody(data, response.status);
@@ -295,6 +378,28 @@ async function requestResponse(
     messageKey,
     body: data,
   });
+}
+
+async function requestResponse(
+  url: string,
+  options: RequestInit,
+  allowReauthRetry: boolean,
+): Promise<Response> {
+  const reauthenticationRequest = allowReauthRetry
+    ? beginReauthenticationRequest()
+    : null;
+  try {
+    return await requestResponseInCohort(
+      url,
+      options,
+      allowReauthRetry,
+      reauthenticationRequest,
+    );
+  } finally {
+    if (reauthenticationRequest) {
+      finishReauthenticationRequest(reauthenticationRequest);
+    }
+  }
 }
 
 export async function apiRequest<T = unknown>(
