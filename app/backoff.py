@@ -115,12 +115,13 @@ def record_failure(
         VALUES (%s, %s, 1, NULL, %s)
         ON CONFLICT(scope, key) DO UPDATE SET
             failure_count=CASE
-                WHEN updated_at <= %s THEN 1
-                ELSE failure_count + 1
+                WHEN auth_backoff.updated_at <= %s THEN 1
+                ELSE auth_backoff.failure_count + 1
             END,
             next_allowed_at=CASE
-                WHEN updated_at <= %s OR failure_count < %s THEN NULL
-                ELSE CASE failure_count
+                WHEN auth_backoff.updated_at <= %s
+                     OR auth_backoff.failure_count < %s THEN NULL
+                ELSE CASE auth_backoff.failure_count
                     WHEN %s THEN %s
                     WHEN %s THEN %s
                     WHEN %s THEN %s
