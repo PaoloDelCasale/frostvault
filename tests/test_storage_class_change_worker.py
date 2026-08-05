@@ -110,12 +110,20 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
     def test_successful_change_updates_catalog_storage_class_and_version_id(self) -> None:
         client = Mock()
         client.head_object = Mock(
-            return_value={
-                "StorageClass": "STANDARD",
-                "VersionId": "s3-v1",
-                "ContentLength": 12,
-                "ETag": '"etag"',
-            }
+            side_effect=[
+                {
+                    "StorageClass": "STANDARD",
+                    "VersionId": "s3-v1",
+                    "ContentLength": 12,
+                    "ETag": '"etag"',
+                },
+                {
+                    "StorageClass": "STANDARD_IA",
+                    "VersionId": "s3-v2",
+                    "ContentLength": 12,
+                    "ETag": '"etag2"',
+                },
+            ]
         )
         client.copy_object = Mock(
             return_value={"VersionId": "s3-v2", "CopyObjectResult": {"ETag": '"etag2"'}}
@@ -135,13 +143,13 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             storage_module.process_job(job)
 
         with SQLiteConnection(str(self.path)) as connection:
+            job = connection.execute(
+                "SELECT status, message_key, archive_version_id FROM jobs WHERE id=%s",
+                (self.job_id,),
+            ).fetchone()
             version = connection.execute(
                 "SELECT storage_class, provider_version_id, id FROM archive_versions WHERE id=%s",
-                (self.version_id,),
-            ).fetchone()
-            job = connection.execute(
-                "SELECT status, message_key FROM jobs WHERE id=%s",
-                (self.job_id,),
+                (job["archive_version_id"],),
             ).fetchone()
         self.assertEqual(version["id"], self.version_id)
         self.assertEqual(version["storage_class"], "STANDARD_IA")
@@ -149,6 +157,8 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         self.assertEqual(job["status"], "completed")
         self.assertEqual(job["message_key"], "job.storage_class_completed")
         client.copy_object.assert_called_once()
+        client.delete_object.assert_not_called()
+        self.assertEqual(client.head_object.call_args_list[1].kwargs["VersionId"], "s3-v2")
         copy_kwargs = client.copy_object.call_args.kwargs
         self.assertEqual(copy_kwargs["StorageClass"], "STANDARD_IA")
         self.assertEqual(copy_kwargs["Key"], "docs/report.txt")
@@ -246,6 +256,200 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         self.assertEqual(version["storage_class"], "STANDARD")
         client.copy_object.assert_not_called()
 
+    def _large_copy_fixture(self, *, destination: dict | None = None) -> tuple[Mock, int]:
+        size = storage_module.S3_SINGLE_COPY_MAX_BYTES + 1
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                "UPDATE archive_versions SET size=%s WHERE id=%s",
+                (size, self.version_id),
+            )
+            connection.execute(
+                "UPDATE jobs SET total_bytes=%s WHERE id=%s",
+                (size, self.job_id),
+            )
+        client = Mock()
+        client.head_object = Mock(
+            side_effect=[
+                {
+                    "StorageClass": "STANDARD",
+                    "VersionId": "s3-v1",
+                    "ContentLength": size,
+                    "ETag": '"etag"',
+                },
+                destination
+                or {
+                    "StorageClass": "STANDARD_IA",
+                    "VersionId": "s3-v2",
+                    "ContentLength": size,
+                    "ETag": '"multipart-etag"',
+                },
+            ]
+        )
+        client.create_multipart_upload.return_value = {"UploadId": "upload-1"}
+        client.upload_part_copy.side_effect = lambda **_: {
+            "CopyPartResult": {"ETag": '"part-etag"'}
+        }
+        client.complete_multipart_upload.return_value = {"VersionId": "s3-v2"}
+        client.abort_multipart_upload = Mock()
+        return client, size
+
+    def test_oversized_change_uses_exact_version_multipart_copy(self) -> None:
+        client, size = self._large_copy_fixture()
+        database_settings = SimpleNamespace(
+            db_backend="sqlite",
+            sqlite_path=str(self.path),
+        )
+        with (
+            patch("app.database.settings", database_settings),
+            patch("app.storage.settings", database_settings),
+            patch("app.storage.validate_cloud_vault"),
+            patch("app.storage.s3_client", return_value=client),
+        ):
+            storage_module.process_job(dict(self._job_row()))
+
+        self.assertGreater(client.upload_part_copy.call_count, 1)
+        self.assertEqual(client.upload_part_copy.call_count, 41)
+        self.assertEqual(client.complete_multipart_upload.call_count, 1)
+        client.copy_object.assert_not_called()
+        client.abort_multipart_upload.assert_not_called()
+        for call in client.upload_part_copy.call_args_list:
+            self.assertEqual(call.kwargs["CopySource"]["VersionId"], "s3-v1")
+            self.assertEqual(call.kwargs["CopySource"]["Key"], "docs/report.txt")
+        first = client.upload_part_copy.call_args_list[0].kwargs["CopySourceRange"]
+        last = client.upload_part_copy.call_args_list[-1].kwargs["CopySourceRange"]
+        self.assertEqual(first, f"bytes=0-{128 * 1024 * 1024 - 1}")
+        self.assertEqual(last, f"bytes={40 * 128 * 1024 * 1024}-{size - 1}")
+
+    def test_multipart_copy_aborts_after_part_failure(self) -> None:
+        client, _size = self._large_copy_fixture()
+        client.upload_part_copy.side_effect = RuntimeError("copy part failed")
+        client.abort_multipart_upload.side_effect = RuntimeError("abort failed")
+        database_settings = SimpleNamespace(
+            db_backend="sqlite",
+            sqlite_path=str(self.path),
+        )
+        with (
+            patch("app.database.settings", database_settings),
+            patch("app.storage.settings", database_settings),
+            patch("app.storage.validate_cloud_vault"),
+            patch("app.storage.s3_client", return_value=client),
+        ):
+            storage_module.process_job(dict(self._job_row()))
+
+        client.abort_multipart_upload.assert_called_once_with(
+            Bucket="bucket", Key="docs/report.txt", UploadId="upload-1"
+        )
+        client.complete_multipart_upload.assert_not_called()
+        with SQLiteConnection(str(self.path)) as connection:
+            job = connection.execute(
+                "SELECT status, message FROM jobs WHERE id=%s", (self.job_id,)
+            ).fetchone()
+            version = connection.execute(
+                "SELECT provider_version_id, storage_class FROM archive_versions WHERE id=%s",
+                (self.version_id,),
+            ).fetchone()
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("abort", (job["message"] or "").lower())
+        self.assertEqual(version["provider_version_id"], "s3-v1")
+        self.assertEqual(version["storage_class"], "STANDARD")
+        client.delete_object.assert_not_called()
+
+    def test_multipart_copy_aborts_when_cancelled_between_parts(self) -> None:
+        client, _size = self._large_copy_fixture()
+
+        def cancel_after_first_part(**_: object) -> dict:
+            storage_module.cancel_jobs([self.job_id])
+            return {"CopyPartResult": {"ETag": '"part-etag"'}}
+
+        client.upload_part_copy.side_effect = cancel_after_first_part
+        database_settings = SimpleNamespace(
+            db_backend="sqlite",
+            sqlite_path=str(self.path),
+        )
+        try:
+            with (
+                patch("app.database.settings", database_settings),
+                patch("app.storage.settings", database_settings),
+                patch("app.storage.validate_cloud_vault"),
+                patch("app.storage.s3_client", return_value=client),
+            ):
+                storage_module.process_job(dict(self._job_row()))
+        finally:
+            with storage_module.operation_process_lock:
+                storage_module.cancelled_jobs.discard(self.job_id)
+
+        client.abort_multipart_upload.assert_called_once()
+        client.complete_multipart_upload.assert_not_called()
+        with SQLiteConnection(str(self.path)) as connection:
+            job = connection.execute(
+                "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
+            ).fetchone()
+        self.assertEqual(job["status"], "cancelled")
+        client.delete_object.assert_not_called()
+
+    def test_readback_mismatch_does_not_publish_storage_class(self) -> None:
+        client, _size = self._large_copy_fixture(
+            destination={
+                "StorageClass": "STANDARD",
+                "VersionId": "s3-v2",
+                "ContentLength": 12,
+            }
+        )
+        # Use the small path for a focused destination verification failure.
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                "UPDATE archive_versions SET size=12 WHERE id=%s",
+                (self.version_id,),
+            )
+            connection.execute(
+                "UPDATE jobs SET total_bytes=12 WHERE id=%s",
+                (self.job_id,),
+            )
+        client.head_object.side_effect = [
+            {
+                "StorageClass": "STANDARD",
+                "VersionId": "s3-v1",
+                "ContentLength": 12,
+                "ETag": '"etag"',
+            },
+            {
+                "StorageClass": "STANDARD",
+                "VersionId": "s3-v2",
+                "ContentLength": 12,
+            },
+        ]
+        client.create_multipart_upload.reset_mock()
+        client.upload_part_copy.reset_mock()
+        client.complete_multipart_upload.reset_mock()
+        client.copy_object = Mock(
+            return_value={"VersionId": "s3-v2", "CopyObjectResult": {"ETag": '"etag2"'}}
+        )
+        database_settings = SimpleNamespace(
+            db_backend="sqlite",
+            sqlite_path=str(self.path),
+        )
+        with (
+            patch("app.database.settings", database_settings),
+            patch("app.storage.settings", database_settings),
+            patch("app.storage.validate_cloud_vault"),
+            patch("app.storage.s3_client", return_value=client),
+        ):
+            storage_module.process_job(dict(self._job_row()))
+
+        client.copy_object.assert_called_once()
+        client.delete_object.assert_not_called()
+        with SQLiteConnection(str(self.path)) as connection:
+            job = connection.execute(
+                "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
+            ).fetchone()
+            version = connection.execute(
+                "SELECT provider_version_id, storage_class FROM archive_versions WHERE id=%s",
+                (self.version_id,),
+            ).fetchone()
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(version["provider_version_id"], "s3-v1")
+        self.assertEqual(version["storage_class"], "STANDARD")
+
     def test_unrestored_deep_archive_requests_restore_and_enters_restoring(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
@@ -332,15 +536,23 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             )
         client = Mock()
         client.head_object = Mock(
-            return_value={
-                "StorageClass": "DEEP_ARCHIVE",
-                "VersionId": "s3-v1",
-                "ContentLength": 12,
-                "Restore": (
-                    'ongoing-request="false", '
-                    'expiry-date="Wed, 01 Apr 2026 00:00:00 GMT"'
-                ),
-            }
+            side_effect=[
+                {
+                    "StorageClass": "DEEP_ARCHIVE",
+                    "VersionId": "s3-v1",
+                    "ContentLength": 12,
+                    "Restore": (
+                        'ongoing-request="false", '
+                        'expiry-date="Wed, 01 Apr 2026 00:00:00 GMT"'
+                    ),
+                },
+                {
+                    "StorageClass": "STANDARD",
+                    "VersionId": "s3-v2",
+                    "ContentLength": 12,
+                    "ETag": '"etag2"',
+                },
+            ]
         )
         client.copy_object = Mock(
             return_value={"VersionId": "s3-v2", "CopyObjectResult": {"ETag": '"etag2"'}}
@@ -363,16 +575,16 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
 
         self.assertTrue(processed)
         with SQLiteConnection(str(self.path)) as connection:
+            job = connection.execute(
+                "SELECT status, message_key, archive_version_id FROM jobs WHERE id=%s",
+                (self.job_id,),
+            ).fetchone()
             version = connection.execute(
                 """
                 SELECT storage_class, provider_version_id, restore_state
                 FROM archive_versions WHERE id=%s
                 """,
-                (self.version_id,),
-            ).fetchone()
-            job = connection.execute(
-                "SELECT status, message_key FROM jobs WHERE id=%s",
-                (self.job_id,),
+                (job["archive_version_id"],),
             ).fetchone()
             local = connection.execute(
                 "SELECT presence FROM local_copies WHERE vault_file_id=%s",
@@ -386,6 +598,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         self.assertEqual(job["message_key"], "job.storage_class_completed")
         client.restore_object.assert_not_called()
         client.copy_object.assert_called_once()
+        client.delete_object.assert_not_called()
         self.assertEqual(client.copy_object.call_args.kwargs["StorageClass"], "STANDARD")
 
 

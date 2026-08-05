@@ -107,6 +107,15 @@ UPLOAD_RETRY_BASE_SECONDS = 2
 UPLOAD_RETRY_CAP_SECONDS = 300
 UPLOAD_RETRY_MAX_ATTEMPTS = 8
 
+# S3 CopyObject is limited to objects up to 5 GiB.  Multipart copy keeps the
+# source VersionId on every UploadPartCopy request and uses a deliberately
+# conservative part size so even the largest supported object stays below the
+# provider's 10,000-part limit.
+S3_SINGLE_COPY_MAX_BYTES = 5 * 1024**3
+S3_MULTIPART_COPY_MIN_PART_BYTES = 5 * 1024**2
+S3_MULTIPART_COPY_PART_BYTES = 128 * 1024**2
+S3_MULTIPART_COPY_MAX_PARTS = 10_000
+
 # A claim is intentionally durable rather than process-local.  Five minutes is
 # long enough for ordinary provider calls while status/progress checkpoints renew
 # it during transfers; a dead process becomes recoverable on the next restart.
@@ -1694,16 +1703,16 @@ def set_job_progress(
 
 
 def _remove_abandoned_restore_files(target: Path) -> None:
-    """Remove temporary recovery files left behind by a stopped process."""
-    prefix = f".{target.name}.restore-"
+    """Remove only application-owned recovery files left by a stopped worker."""
     try:
         for entry in target.parent.iterdir():
-            if entry.name.startswith(prefix):
-                try:
-                    entry.unlink(missing_ok=True)
-                except OSError:
-                    # A stale temporary file must not prevent the job from being retried.
-                    pass
+            if RESTORE_TEMPORARY_RE.fullmatch(entry.name) is None:
+                continue
+            try:
+                entry.unlink(missing_ok=True)
+            except OSError:
+                # A stale temporary file must not prevent the job from being retried.
+                pass
     except OSError:
         # The worker will create the parent directory when it retries the job.
         pass
@@ -1856,6 +1865,109 @@ def _fail_storage_class_reconciliation(
         )
         return "failed"
     return "skipped"
+
+
+def _reconcile_recover_job(
+    connection: Any,
+    job: dict[str, Any],
+    *,
+    target_path: Path,
+    target: dict[str, Any] | None,
+    timestamp: str,
+) -> str:
+    """Reconcile a recovery destination without ever deleting its final path."""
+
+    def transition(status: str, message: str, *, complete: bool = False) -> str:
+        changed = _reconcile_job_transition(
+            connection,
+            job_id=int(job["id"]),
+            status=status,
+            message=message,
+            timestamp=timestamp,
+            reset_progress=status == "queued",
+            complete_progress=complete,
+        )
+        if not changed:
+            return "skipped"
+        if status in {"completed", "failed"}:
+            notification_service.enqueue_job_terminal_notification_best_effort(
+                connection, job_id=int(job["id"])
+            )
+        return "requeued" if status == "queued" else status
+
+    # An absent destination is the only state where retrying is safe.  Any
+    # existing final entry, including a directory or symlink, is preserved.
+    if not os.path.lexists(target_path):
+        return transition(
+            "queued",
+            "Recovery interrupted by restart; destination is absent and recovery will retry",
+        )
+
+    if target_path.is_symlink() or not target_path.is_file():
+        return transition(
+            "failed",
+            "Recovery destination conflict preserved after restart; the final path is not a regular file",
+        )
+
+    expected_digest = (target or {}).get("version_sha256") or job.get(
+        "version_sha256"
+    )
+    archive_version_id = (target or {}).get("archive_version_id") or job.get(
+        "archive_version_id"
+    )
+    if not expected_digest or not archive_version_id:
+        return transition(
+            "failed",
+            "Recovery destination preserved after restart; its Archive Version digest could not be verified",
+        )
+    expected_digest = str(expected_digest).lower()
+    if len(expected_digest) != 64:
+        return transition(
+            "failed",
+            "Recovery destination preserved after restart; its Archive Version digest is invalid",
+        )
+    try:
+        int(expected_digest, 16)
+        recovered_digest, recovered_stat = hash_stable_regular_file(target_path)
+    except (OSError, ValueError, RuntimeError) as exc:
+        return transition(
+            "failed",
+            f"Recovery destination conflict preserved after restart; digest verification failed: {exc}",
+        )
+
+    if recovered_digest != expected_digest:
+        return transition(
+            "failed",
+            "Recovery destination conflict preserved after restart; its digest does not match the Archive Version",
+        )
+
+    # Claim the terminal Job before publishing the Local Copy in this same
+    # transaction.  A live worker that renews the lease wins the compare-and-
+    # swap and this transaction commits no catalog observation.
+    outcome = transition(
+        "completed",
+        "Recovered Local Copy verified and adopted after restart",
+        complete=True,
+    )
+    if outcome != "completed":
+        return outcome
+    catalog = ArchiveCatalog(connection)
+    catalog.observe_local_copy(
+        vault_id=int(job["vault_id"]),
+        path=str(job["path"]),
+        file_type="regular",
+        size=recovered_stat.st_size,
+        mtime_ns=recovered_stat.st_mtime_ns,
+        observed_at=timestamp,
+        seen_at=timestamp,
+    )
+    catalog.set_local_fingerprint(
+        vault_id=int(job["vault_id"]),
+        path=str(job["path"]),
+        plaintext_sha256=expected_digest,
+        matched_archive_version_id=str(archive_version_id),
+    )
+    return outcome
 
 
 def _reconcile_storage_class_job(
@@ -2212,27 +2324,19 @@ def reconcile_interrupted_jobs() -> dict[str, int]:
                     source_root = Path(job["source_root"])
                     if not source_root.is_dir():
                         raise RuntimeError("Source folder is unavailable")
-                    target = safe_local_entry_path(job["source_root"], job["path"])
-                    _remove_abandoned_restore_files(target)
-                    # Issue #194 owns the final-destination decision.  Preserve
-                    # the current conservative behavior here while the lease
-                    # foundation only ensures a live worker is never reset.
-                    if target.is_file() and not target.is_symlink():
-                        try:
-                            target.unlink()
-                        except OSError:
-                            pass
-                    outcome = (
-                        "requeued"
-                        if _reconcile_job_transition(
-                            connection,
-                            job_id=int(job["id"]),
-                            status="queued",
-                            message="Recovery interrupted by restart; digest verification will rerun",
-                            timestamp=timestamp,
-                            reset_progress=True,
-                        )
-                        else "skipped"
+                    target_path = safe_local_entry_path(
+                        job["source_root"], job["path"]
+                    )
+                    _remove_abandoned_restore_files(target_path)
+                    recovery_target = ArchiveCatalog(connection).get_job_target(
+                        int(job["id"])
+                    )
+                    outcome = _reconcile_recover_job(
+                        connection,
+                        job,
+                        target_path=target_path,
+                        target=recovery_target,
+                        timestamp=timestamp,
                     )
                 elif job["action"] == "free-space":
                     source_root = Path(job["source_root"])
@@ -3117,6 +3221,195 @@ def process_free_space(job: dict[str, Any]) -> None:
         )
 
 
+def _multipart_copy_storage_class(
+    client: Any,
+    *,
+    job: dict[str, Any],
+    bucket: str,
+    object_key: str,
+    source_version_id: str,
+    target_class: str,
+    size_bytes: int,
+    source_head: dict[str, Any],
+) -> str | None:
+    """Copy one exact S3 Version with multipart UploadPartCopy operations."""
+    if size_bytes <= S3_SINGLE_COPY_MAX_BYTES:
+        raise ValueError("Multipart storage-class copy requires an oversized object")
+
+    part_size = max(
+        S3_MULTIPART_COPY_MIN_PART_BYTES,
+        S3_MULTIPART_COPY_PART_BYTES,
+        (size_bytes + S3_MULTIPART_COPY_MAX_PARTS - 1)
+        // S3_MULTIPART_COPY_MAX_PARTS,
+    )
+    part_count = (size_bytes + part_size - 1) // part_size
+    if part_count > S3_MULTIPART_COPY_MAX_PARTS:
+        raise RuntimeError("S3 multipart copy would exceed the part limit")
+
+    create_kwargs: dict[str, Any] = {
+        "Bucket": bucket,
+        "Key": object_key,
+        "StorageClass": target_class,
+    }
+    # Multipart initiation does not have CopyObject's metadata directives.  Set
+    # the source headers that S3 exposes so the new representation does not
+    # unexpectedly lose content metadata while its bytes are copied.
+    for field in (
+        "CacheControl",
+        "ContentDisposition",
+        "ContentEncoding",
+        "ContentLanguage",
+        "ContentType",
+        "Expires",
+        "Metadata",
+    ):
+        if source_head.get(field) is not None:
+            create_kwargs[field] = source_head[field]
+
+    upload_id: str | None = None
+    try:
+        initiated = client.create_multipart_upload(**create_kwargs)
+        upload_id = initiated.get("UploadId")
+        if not upload_id:
+            raise RuntimeError("S3 did not return a multipart UploadId")
+
+        parts: list[dict[str, Any]] = []
+        copy_source = {
+            "Bucket": bucket,
+            "Key": object_key,
+            "VersionId": source_version_id,
+        }
+        for part_number in range(1, part_count + 1):
+            ensure_job_active(job["id"], "Storage class change stopped")
+            start = (part_number - 1) * part_size
+            end = min(size_bytes, start + part_size) - 1
+            result = client.upload_part_copy(
+                Bucket=bucket,
+                Key=object_key,
+                UploadId=upload_id,
+                PartNumber=part_number,
+                CopySource=copy_source,
+                CopySourceRange=f"bytes={start}-{end}",
+            )
+            copy_result = result.get("CopyPartResult") or {}
+            etag = copy_result.get("ETag") or result.get("ETag")
+            if not etag:
+                raise RuntimeError(
+                    f"S3 did not return an ETag for multipart part {part_number}"
+                )
+            parts.append({"PartNumber": part_number, "ETag": etag})
+
+        ensure_job_active(job["id"], "Storage class change stopped")
+        completed = client.complete_multipart_upload(
+            Bucket=bucket,
+            Key=object_key,
+            UploadId=upload_id,
+            MultipartUpload={"Parts": parts},
+        )
+        # Completion makes the upload no longer abortable.  A missing VersionId
+        # is handled by the destination read-back, not by guessing the source.
+        upload_id = None
+        return completed.get("VersionId")
+    except BaseException as exc:
+        if upload_id:
+            try:
+                client.abort_multipart_upload(
+                    Bucket=bucket,
+                    Key=object_key,
+                    UploadId=upload_id,
+                )
+            except Exception as abort_exc:
+                raise RuntimeError(
+                    "Multipart storage-class copy failed and its upload could not be aborted"
+                ) from abort_exc
+        raise
+
+
+def _copy_storage_class_version(
+    client: Any,
+    *,
+    job: dict[str, Any],
+    bucket: str,
+    object_key: str,
+    source_version_id: str,
+    target_class: str,
+    source_size: int,
+    source_head: dict[str, Any],
+) -> str | None:
+    """Use CopyObject for small objects and exact multipart copy for large ones."""
+    if source_size > S3_SINGLE_COPY_MAX_BYTES:
+        return _multipart_copy_storage_class(
+            client,
+            job=job,
+            bucket=bucket,
+            object_key=object_key,
+            source_version_id=source_version_id,
+            target_class=target_class,
+            size_bytes=source_size,
+            source_head=source_head,
+        )
+    copy_result = client.copy_object(
+        Bucket=bucket,
+        Key=object_key,
+        CopySource={
+            "Bucket": bucket,
+            "Key": object_key,
+            "VersionId": source_version_id,
+        },
+        StorageClass=target_class,
+        MetadataDirective="COPY",
+        TaggingDirective="COPY",
+    )
+    return copy_result.get("VersionId")
+
+
+def _verify_storage_class_destination(
+    client: Any,
+    *,
+    bucket: str,
+    object_key: str,
+    source_version_id: str,
+    candidate_version_id: str | None,
+    target_class: str,
+    expected_size: int,
+) -> tuple[str, str | None]:
+    """Read back the exact destination before publishing catalog state."""
+    kwargs: dict[str, Any] = {"Bucket": bucket, "Key": object_key}
+    if candidate_version_id:
+        kwargs["VersionId"] = candidate_version_id
+    destination = client.head_object(**kwargs)
+    observed_version_id = destination.get("VersionId") or candidate_version_id
+    if not observed_version_id:
+        raise RuntimeError(
+            "Storage class copy did not produce a verifiable S3 VersionId"
+        )
+    if candidate_version_id and str(observed_version_id) != str(candidate_version_id):
+        raise RuntimeError(
+            "Storage class copy read-back returned a different S3 VersionId"
+        )
+    if str(observed_version_id) == str(source_version_id):
+        raise RuntimeError(
+            "Storage class copy read-back still points at the source S3 VersionId"
+        )
+    if destination.get("DeleteMarker"):
+        raise RuntimeError("Storage class copy read-back returned a Delete Marker")
+    observed_class = (destination.get("StorageClass") or "STANDARD").upper()
+    if observed_class != target_class:
+        raise RuntimeError(
+            "Storage class copy read-back returned the wrong storage class"
+        )
+    content_length = destination.get("ContentLength")
+    if content_length is None or int(content_length) != int(expected_size):
+        raise RuntimeError(
+            "Storage class copy read-back returned the wrong object size"
+        )
+    return str(observed_version_id), (
+        str(destination.get("ETag")).strip('"')
+        if destination.get("ETag")
+        else None
+    )
+
+
 def process_storage_class(job: dict[str, Any]) -> None:
     """Restore if needed, then copy an Archive Version onto a new storage class.
 
@@ -3145,6 +3438,12 @@ def process_storage_class(job: dict[str, Any]) -> None:
         Key=target["object_key"],
         VersionId=target["provider_version_id"],
     )
+    if head.get("DeleteMarker"):
+        raise RuntimeError("The scheduled Archive Version is a Delete Marker")
+    if head.get("VersionId") and str(head["VersionId"]) != str(
+        target["provider_version_id"]
+    ):
+        raise RuntimeError("The provider returned a different source VersionId")
     # AWS omits StorageClass on STANDARD; never prefer a stale colder catalog class.
     head_class = (head.get("StorageClass") or "STANDARD").upper()
     if storage_class_requires_restore(head_class):
@@ -3217,37 +3516,41 @@ def process_storage_class(job: dict[str, Any]) -> None:
         message_params={"storage_class": target_class},
     )
     ensure_job_active(job["id"], "Storage class change stopped")
-    copy_source = {
-        "Bucket": job["s3_bucket"],
-        "Key": target["object_key"],
-        "VersionId": target["provider_version_id"],
-    }
-    copy_result = client.copy_object(
-        Bucket=job["s3_bucket"],
-        Key=target["object_key"],
-        CopySource=copy_source,
-        StorageClass=target_class,
-        MetadataDirective="COPY",
-        TaggingDirective="COPY",
-    )
-    new_version_id = copy_result.get("VersionId")
-    if not new_version_id:
-        # Unversioned buckets keep the same logical object; fall back to head.
-        new_head = client.head_object(
-            Bucket=job["s3_bucket"],
-            Key=target["object_key"],
-        )
-        new_version_id = new_head.get("VersionId") or target["provider_version_id"]
-        etag = (new_head.get("ETag") or "").strip('"') or None
-        recorded_class = (new_head.get("StorageClass") or target_class).upper()
-    else:
-        etag = None
-        copy_etag = (copy_result.get("CopyObjectResult") or {}).get("ETag")
-        if copy_etag:
-            etag = str(copy_etag).strip('"')
-        recorded_class = target_class
+    # The provider's exact-Version HEAD is authoritative for the copy limit;
+    # catalog size may be stale after an external rewrite or prior scan.
+    source_size = head.get("ContentLength")
+    if source_size is None:
+        source_size = target.get("cloud_size")
+    if source_size is None:
+        raise RuntimeError("S3 did not return the Archive Version size")
+    try:
+        source_size = int(source_size)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("S3 returned an invalid Archive Version size") from exc
+    if source_size < 0:
+        raise RuntimeError("S3 returned a negative Archive Version size")
 
+    new_version_id = _copy_storage_class_version(
+        client,
+        job=job,
+        bucket=job["s3_bucket"],
+        object_key=target["object_key"],
+        source_version_id=str(target["provider_version_id"]),
+        target_class=target_class,
+        source_size=source_size,
+        source_head=head,
+    )
     ensure_job_active(job["id"], "Storage class change stopped")
+    new_version_id, etag = _verify_storage_class_destination(
+        client,
+        bucket=job["s3_bucket"],
+        object_key=target["object_key"],
+        source_version_id=str(target["provider_version_id"]),
+        candidate_version_id=(str(new_version_id) if new_version_id else None),
+        target_class=target_class,
+        expected_size=source_size,
+    )
+    ensure_job_active(job["id"], "Storage class claim was lost")
     timestamp = now_iso()
     with db() as connection:
         ensure_job_claim_owned_in_transaction(
@@ -3255,34 +3558,22 @@ def process_storage_class(job: dict[str, Any]) -> None:
             job,
             "Storage class claim was lost",
         )
-        ArchiveCatalog(connection).update_version_storage_placement(
-            target["archive_version_id"],
-            provider_version_id=str(new_version_id),
-            storage_class=recorded_class,
+        ArchiveCatalog(connection).publish_storage_class_copy(
+            job_id=int(job["id"]),
+            archive_version_id=str(target["archive_version_id"]),
+            provider_version_id=new_version_id,
+            storage_class=target_class,
             etag=etag,
             observed_at=timestamp,
         )
 
-    # Drop the previous provider version when copy created a new VersionId so the
-    # catalog keeps one recoverable identity without orphaning billed versions.
-    if str(new_version_id) != str(target["provider_version_id"]):
-        ensure_job_active(job["id"], "Storage class claim was lost")
-        try:
-            client.delete_object(
-                Bucket=job["s3_bucket"],
-                Key=target["object_key"],
-                VersionId=target["provider_version_id"],
-            )
-        except Exception:
-            # Catalog already points at the new version; orphan cleanup is best-effort.
-            pass
-        ensure_job_active(job["id"], "Storage class claim was lost")
-
+    # The prior exact VersionId is intentionally retained.  Only the dedicated
+    # Cloud Purge workflow may permanently delete provider versions.
     set_job(
         job["id"],
         "completed",
         message_key="job.storage_class_completed",
-        message_params={"storage_class": recorded_class},
+        message_params={"storage_class": target_class},
     )
 
 

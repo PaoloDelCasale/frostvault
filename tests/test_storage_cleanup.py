@@ -697,19 +697,20 @@ class StorageCleanupTests(unittest.TestCase):
         self.assertEqual(processed, 3)
         self.assertEqual(max_active, 3)
 
-    def test_restart_reconciles_completed_and_incomplete_recoveries(self) -> None:
+    def test_restart_preserves_final_recovery_destination_and_requeues_absent_work(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source"
             complete = source / "docs" / "complete.txt"
             incomplete = source / "docs" / "incomplete.txt"
             complete.parent.mkdir(parents=True)
             complete.write_bytes(b"complete")
+            restore_token = "a" * 32
             abandoned = incomplete.with_name(
-                f".{incomplete.name}.restore-abandoned.tmp"
+                f".{incomplete.name}.restore-{restore_token}.tmp"
             )
             abandoned.write_bytes(b"partial")
             rclone_partial = incomplete.with_name(
-                f".{incomplete.name}.restore-abandoned.tmp.random.partial"
+                f".{incomplete.name}.restore-{restore_token}.tmp.random.partial"
             )
             rclone_partial.write_bytes(b"partial")
             jobs = [
@@ -742,16 +743,16 @@ class StorageCleanupTests(unittest.TestCase):
             ):
                 summary = reconcile_interrupted_jobs()
 
-            self.assertEqual(summary, {"completed": 0, "requeued": 2, "failed": 0})
+            self.assertEqual(summary, {"completed": 0, "requeued": 1, "failed": 1})
             self.assertFalse(abandoned.exists())
             self.assertFalse(rclone_partial.exists())
-            self.assertFalse(complete.exists())
+            self.assertTrue(complete.exists())
             queued_ids = [
                 params[-1]
                 for sql, params in connection.statements
                 if "UPDATE jobs SET status='queued'" in sql
             ]
-            self.assertEqual(sorted(queued_ids), [10, 11])
+            self.assertEqual(sorted(queued_ids), [11])
 
     def test_restart_requeues_upload_and_completes_finished_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

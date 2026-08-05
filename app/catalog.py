@@ -358,6 +358,50 @@ class ArchiveCatalog:
             ),
         )
 
+    def publish_storage_class_copy(
+        self,
+        *,
+        job_id: int,
+        archive_version_id: str,
+        provider_version_id: str,
+        storage_class: str,
+        etag: str | None,
+        observed_at: str,
+    ) -> str:
+        """Publish a verified placement while keeping one Archive Version identity.
+
+        S3 retains the prior exact VersionId as a noncurrent provider version;
+        the catalog continues to represent the logical Archive Version with one
+        row, as required by the manual storage-class Job contract.  A later
+        cloud scan can rediscover the retained provider version, and the
+        dedicated Cloud Purge workflow remains the only permanent deletion
+        path.
+        """
+        if not provider_version_id:
+            raise ValueError("A provider VersionId is required")
+        source = self.connection.execute(
+            """
+            SELECT vault_file_id, provider_version_id
+            FROM archive_versions
+            WHERE id=%s
+            """,
+            (archive_version_id,),
+        ).fetchone()
+        if source is None:
+            raise LookupError("Archive Version is no longer available")
+        self.update_version_storage_placement(
+            archive_version_id,
+            provider_version_id=str(provider_version_id),
+            storage_class=storage_class,
+            etag=etag,
+            observed_at=observed_at,
+        )
+        self.connection.execute(
+            "UPDATE jobs SET archive_version_id=%s WHERE id=%s",
+            (archive_version_id, job_id),
+        )
+        return archive_version_id
+
     def mark_local_copy_missing(
         self, vault_file_id: str, *, observed_at: str
     ) -> None:

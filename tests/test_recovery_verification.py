@@ -33,7 +33,11 @@ from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
 from app.main import cancel_job_group, queue_jobs
 from app.services.rclone_runtime import RuntimeRcloneConfig
-from app.storage import download_exact_version_plaintext, process_jobs_once
+from app.storage import (
+    download_exact_version_plaintext,
+    process_jobs_once,
+    reconcile_interrupted_jobs,
+)
 from tests.test_database import run_alembic
 
 
@@ -229,6 +233,183 @@ def _run_plain_recover(
 
 
 class PlainRecoveryVerificationTests(unittest.TestCase):
+    def _interrupt_recovery(
+        self,
+        database_path: Path,
+        *,
+        relative_path: str,
+    ) -> int:
+        database_settings = SimpleNamespace(
+            db_backend="sqlite",
+            sqlite_path=str(database_path),
+        )
+        with patch("app.database.settings", database_settings):
+            queued = queue_jobs(relative_path, "recover", 2, 1)
+            with SQLiteConnection(str(database_path)) as connection:
+                connection.execute(
+                    """
+                    UPDATE jobs
+                    SET status='verifying', claim_token='dead-worker',
+                        claimed_at='2026-07-21T12:00:00+00:00',
+                        claim_expires_at='2000-01-01T00:00:00+00:00'
+                    WHERE id=%s
+                    """,
+                    (queued["job_ids"][0],),
+                )
+        return queued["job_ids"][0]
+
+    def test_restart_adopts_matching_destination_without_deleting_local_copy(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"archived-plaintext"
+            source, database_path, version_id = _prepare_cloud_only_version(
+                root,
+                relative_path="report.txt",
+                payload=payload,
+                object_key="docs/report.txt",
+            )
+            job_id = self._interrupt_recovery(
+                database_path, relative_path="report.txt"
+            )
+            destination = source / "report.txt"
+            destination.write_bytes(payload)
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite", sqlite_path=str(database_path)
+            )
+            with patch("app.database.settings", database_settings):
+                summary = reconcile_interrupted_jobs()
+
+            self.assertEqual(summary, {"completed": 1, "requeued": 0, "failed": 0})
+            self.assertEqual(destination.read_bytes(), payload)
+            with SQLiteConnection(str(database_path)) as connection:
+                observed = ArchiveCatalog(connection).get_file_by_path(
+                    2, "report.txt"
+                )
+                local = connection.execute(
+                    """
+                    SELECT presence, plaintext_sha256,
+                           matched_archive_version_id
+                    FROM local_copies WHERE vault_file_id=%s
+                    """,
+                    (observed["id"],),
+                ).fetchone()
+                job = connection.execute(
+                    "SELECT status, message FROM jobs WHERE id=%s", (job_id,)
+                ).fetchone()
+            self.assertEqual(local["presence"], "present")
+            self.assertEqual(local["plaintext_sha256"], _sha256_hex(payload))
+            self.assertEqual(local["matched_archive_version_id"], version_id)
+            self.assertEqual(job["status"], "completed")
+            self.assertIn("adopted", (job["message"] or "").lower())
+
+    def test_restart_preserves_mismatching_destination_as_explicit_conflict(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"archived-plaintext"
+            source, database_path, _version_id = _prepare_cloud_only_version(
+                root,
+                relative_path="report.txt",
+                payload=payload,
+                object_key="docs/report.txt",
+            )
+            job_id = self._interrupt_recovery(
+                database_path, relative_path="report.txt"
+            )
+            destination = source / "report.txt"
+            conflict = b"user-created-conflict"
+            destination.write_bytes(conflict)
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite", sqlite_path=str(database_path)
+            )
+            with patch("app.database.settings", database_settings):
+                summary = reconcile_interrupted_jobs()
+
+            self.assertEqual(summary, {"completed": 0, "requeued": 0, "failed": 1})
+            self.assertEqual(destination.read_bytes(), conflict)
+            with SQLiteConnection(str(database_path)) as connection:
+                observed = ArchiveCatalog(connection).get_file_by_path(
+                    2, "report.txt"
+                )
+                job = connection.execute(
+                    "SELECT status, message FROM jobs WHERE id=%s", (job_id,)
+                ).fetchone()
+            self.assertEqual(observed["local_copy"]["presence"], "missing")
+            self.assertEqual(job["status"], "failed")
+            self.assertIn("conflict", (job["message"] or "").lower())
+
+    def test_restart_requeues_absent_destination_and_removes_only_owned_temps(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"archived-plaintext"
+            source, database_path, _version_id = _prepare_cloud_only_version(
+                root,
+                relative_path="report.txt",
+                payload=payload,
+                object_key="docs/report.txt",
+            )
+            job_id = self._interrupt_recovery(
+                database_path, relative_path="report.txt"
+            )
+            target = source / "report.txt"
+            owned = target.with_name(f".report.txt.restore-{'a' * 32}.tmp")
+            foreign = target.with_name(".report.txt.restore-not-owned.tmp")
+            owned.write_bytes(b"partial")
+            foreign.write_bytes(b"keep")
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite", sqlite_path=str(database_path)
+            )
+            with patch("app.database.settings", database_settings):
+                summary = reconcile_interrupted_jobs()
+
+            self.assertEqual(summary, {"completed": 0, "requeued": 1, "failed": 0})
+            self.assertFalse(target.exists())
+            self.assertFalse(owned.exists())
+            self.assertEqual(foreign.read_bytes(), b"keep")
+            with SQLiteConnection(str(database_path)) as connection:
+                job = connection.execute(
+                    "SELECT status FROM jobs WHERE id=%s", (job_id,)
+                ).fetchone()
+            self.assertEqual(job["status"], "queued")
+
+    def test_restart_preserves_a_symlink_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"archived-plaintext"
+            source, database_path, _version_id = _prepare_cloud_only_version(
+                root,
+                relative_path="report.txt",
+                payload=payload,
+                object_key="docs/report.txt",
+            )
+            job_id = self._interrupt_recovery(
+                database_path, relative_path="report.txt"
+            )
+            destination = source / "report.txt"
+            destination.symlink_to(source / "outside.txt")
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite", sqlite_path=str(database_path)
+            )
+            with patch("app.database.settings", database_settings):
+                summary = reconcile_interrupted_jobs()
+
+            self.assertEqual(summary["failed"], 1)
+            self.assertTrue(destination.is_symlink())
+            with SQLiteConnection(str(database_path)) as connection:
+                job = connection.execute(
+                    "SELECT status FROM jobs WHERE id=%s", (job_id,)
+                ).fetchone()
+            self.assertEqual(job["status"], "failed")
+
     def test_recover_verifies_digest_before_replacing_local_copy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
