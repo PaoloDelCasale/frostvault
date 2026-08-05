@@ -15,25 +15,88 @@ blocked from upload and cleanup, and are listed in vault filesystem health.
 | `PUID` | `99` | Numeric user id inside the container |
 | `PGID` | `100` | Numeric group id inside the container |
 
-Override both when the host directories are owned by a different account. The
-entrypoint creates a matching user/group when starting as root, then drops
-privileges with `gosu`. Writable mounts are limited to `/sources`, `/data`, and
-tmpfs `/tmp` + `/run` on a read-only root filesystem.
+The image bakes in the one documented default account, `archive` (`99:100`).
+It **never creates users or groups at runtime**. Both supplied Compose manifests
+set `user: "${PUID:-99}:${PGID:-100}"`, so Docker starts the entrypoint directly
+as that numeric identity; an override does not need a matching `/etc/passwd` or
+`/etc/group` entry. This is required because the manifests keep
+`read_only: true`, `cap_drop: [ALL]`, and `no-new-privileges`.
+
+A direct `docker run` that does not set `--user` begins as root because the
+image does not declare `USER`; the entrypoint can use `gosu` to drop to a
+valid numeric override when the normal set-ID capabilities are available. That
+convenience path is not used by Compose and must not be used to work around
+bind-mount permissions.
+Writable mounts are limited to `/sources`, `/data`, and tmpfs `/tmp` + `/run` on
+a read-only root filesystem.
+
+### Compose `./data` preflight
+
+Before the **first** `docker compose up` (or `docker compose -f
+compose.traefik.yaml up`), create the repository's `./data` bind source on the
+host and give that directory to exactly the identity selected in `.env`. Docker
+would otherwise create a missing bind source as root, and the non-root Compose
+process could not create the SQLite database, migration files, or backup
+directory.
+
+For the default Unraid identity (omit `sudo` when your shell is already root,
+as is typical on Unraid):
+
+```bash
+mkdir -p ./data
+sudo chown 99:100 ./data
+sudo chmod 0750 ./data
+```
+
+For an override, use the same numbers in `.env` and in the host command (do not
+source `.env` as shell code):
+
+```bash
+PUID=1000
+PGID=1000
+mkdir -p ./data
+sudo chown "${PUID}:${PGID}" ./data
+sudo chmod 0750 ./data
+```
+
+These commands intentionally affect only the fresh `./data` directory; they
+are not a recursive repair recipe for an existing catalog. They do **not**
+change `SOURCES_ROOT` or any content under `/sources`. Prepare Source Volumes
+according to their own access policy before deployment, then preserve their
+ownership and modes while FrostVault runs.
+
+### Valid identity values and Compose errors
+
+Set both values to canonical, non-root decimal IDs from `1` through
+`2147483647`, with no sign, whitespace, or leading zero. `0` is rejected by the
+entrypoint even though Docker can start a root process. Values above
+`2147483647` are rejected by current Docker daemons while processing Compose's
+`user` field. An unknown non-numeric `PUID` or `PGID` is likewise rejected by
+Docker during its user/group lookup before `/entrypoint.sh` runs; a non-numeric
+value that happens to name an existing account reaches the entrypoint and is
+then rejected there. Therefore a malformed Compose identity does not always
+produce the entrypoint's error message. Compose expands the value but does not
+validate it: `docker compose config` can render a malformed `user` successfully,
+then the Docker daemon rejects it when the service starts. Fix `.env` and use
+`docker compose config` to inspect the rendered value; do not add capabilities
+or run as root to bypass the rejection.
 
 ## Linux (native bind mounts)
 
 ```bash
 export PUID=1000
 export PGID=1000
-sudo mkdir -p /srv/archive/sources /srv/archive/data
-sudo chown -R 1000:1000 /srv/archive/sources /srv/archive/data
+sudo mkdir -p /srv/archive/sources
+# Apply only to a Source Volume whose access policy intentionally uses 1000:1000.
+sudo chown -R 1000:1000 /srv/archive/sources
 sudo chmod -R u+rwX,g+rX /srv/archive/sources
 # Ensure new files inherit group write if multiple operators share the tree:
 # sudo chmod -R g+w /srv/archive/sources && sudo chmod g+s /srv/archive/sources
 ```
 
-Point `SOURCES_ROOT` at `/srv/archive/sources` and keep `./data` (or another
-host path) owned by the same `PUID:PGID`.
+Point `SOURCES_ROOT` at `/srv/archive/sources`. Separately run the fresh
+`./data` preflight above before Compose starts; do not rely on the container to
+create or repair that directory.
 
 ## Unraid (SMB / nobody:users)
 
@@ -45,10 +108,12 @@ PGID=100
 ```
 
 Map the array share into `/sources` and a cache or pool path into `/data`.
-In the Unraid share settings, grant read/write to the user or group that maps
-to `99:100`. Do not run the container as root to “fix” SMB permission errors;
-fix the share ACLs instead. The panel reports unreadable files and unwritable
-directories without rewriting modes.
+Before Compose starts, create/own/mode the repository's `./data` directory with
+the `99:100` preflight above (or use an equivalently prepared cache/pool bind
+source). In the Unraid share settings, grant read/write to the user or group
+that maps to `99:100`. Do not run the container as root to “fix” SMB permission
+errors; fix the share ACLs instead. The panel reports unreadable files and
+unwritable directories without rewriting modes.
 
 ## Docker Desktop (macOS / Windows)
 
@@ -63,10 +128,14 @@ PGID=100
 SOURCES_ROOT=./local-data/sources
 ```
 
-If local scans report permission failures, align `PUID`/`PGID` with
-`ls -ln` ownership as seen *inside* a temporary root shell, then recreate the
-container. Avoid `chmod -R 777`; prefer owner/group write for the archive
-identity only.
+The Desktop file-sharing layer may not expose host `chown` semantics, but
+`./data` must still exist before `docker compose up` and be writable as
+`99:100` from inside the container. Verify that with a temporary container or
+the first start; fix the shared-folder permission in Docker Desktop rather than
+adding root/capabilities. If local scans report permission failures, align
+`PUID`/`PGID` with `ls -ln` ownership as seen *inside* a temporary root shell,
+then recreate the container. Avoid `chmod -R 777`; prefer owner/group write for
+the archive identity only.
 
 ## Diagnostics
 
