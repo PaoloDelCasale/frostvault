@@ -488,7 +488,7 @@ describe("App offline cache authorization transitions", () => {
     ).toBe(true);
   });
 
-  it("unmounts the old FileBrowser as soon as another client closes the generation", async () => {
+  it("keeps the authenticated shell landmark mounted while another client closes the generation", async () => {
     const worker = installServiceWorkerProtocolHarness();
     const current: "a" | "b" = "a";
     installDefaultApi(() => current);
@@ -498,9 +498,69 @@ describe("App offline cache authorization transitions", () => {
 
     worker.invalidate(true);
     await waitFor(() => {
+      expect(
+        screen.getByRole("link", { name: /skip to main content/i }),
+      ).toBeInTheDocument();
+      expect(document.getElementById("main-content")).toBeInTheDocument();
       expect(screen.queryByTestId("file-browser")).not.toBeInTheDocument();
       expect(offlineFileStorageKeys()).toEqual([]);
-      expect(app.client.getQueryCache().findAll({ queryKey: ["files"] })).toEqual([]);
+      expect(
+        app.client.getQueryCache().findAll({ queryKey: ["files"] }),
+      ).toEqual([]);
+    });
+  });
+
+  it("restores file-list readiness after a completed Worker reconciliation", async () => {
+    const worker = installServiceWorkerProtocolHarness();
+    const current: "a" | "b" = "a";
+    installDefaultApi(() => current);
+    renderApp();
+    await screen.findAllByText("vault-a.txt");
+
+    worker.invalidate(false);
+    await waitFor(() => {
+      expect(screen.getByTestId("file-browser")).toBeInTheDocument();
+      expect(screen.getAllByText("vault-a.txt").length).toBeGreaterThan(0);
+      expect(
+        screen.getByRole("link", { name: /skip to main content/i }),
+      ).toBeInTheDocument();
+      expect(document.getElementById("main-content")).toBeInTheDocument();
+    });
+  });
+
+  it("retries a reconciliation when Worker control changes before authority settles", async () => {
+    const worker = installServiceWorkerProtocolHarness();
+    const current: "a" | "b" = "a";
+    let vaultsRequested = false;
+    let releaseVaults!: () => void;
+    const vaultsReady = new Promise<void>((resolve) => {
+      releaseVaults = resolve;
+    });
+    const fetchMock = installDefaultApi(() => current);
+    const original = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (
+        requestUrl(input) === "/api/vaults" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        vaultsRequested = true;
+        await vaultsReady;
+      }
+      return original!(input, init);
+    });
+
+    renderApp();
+    await waitFor(() => expect(vaultsRequested).toBe(true));
+    worker.controllerChange();
+    releaseVaults();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("file-browser")).toBeInTheDocument();
+      expect(screen.getAllByText("vault-a.txt").length).toBeGreaterThan(0);
+      expect(
+        screen.getByRole("link", { name: /skip to main content/i }),
+      ).toBeInTheDocument();
+      expect(document.getElementById("main-content")).toBeInTheDocument();
     });
   });
 

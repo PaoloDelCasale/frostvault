@@ -429,6 +429,7 @@ function closeCacheBarrier(
     generation?: OfflineFileCacheGeneration | null;
     preserveTransition?: boolean;
     dispatch?: boolean;
+    invalidationState?: OfflineFileCacheInvalidation["state"];
     storage?: Storage;
   } = {},
 ): OfflineFileCacheInvalidation {
@@ -451,7 +452,10 @@ function closeCacheBarrier(
     transitionId,
   };
   writeCacheBarrier(barrier, storage);
-  const invalidation = nextInvalidation(generation, "closed");
+  const invalidation = nextInvalidation(
+    generation,
+    options.invalidationState ?? "closed",
+  );
   if (options.dispatch !== false) dispatchOfflineFileCacheInvalidated(invalidation);
   return invalidation;
 }
@@ -562,7 +566,7 @@ function handleServiceWorkerControllerChange(): void {
   knownServiceWorkerGeneration = null;
   // controllerchange is globally observable, but an ordinary Worker process
   // restart is not. Both start from a durable local closed barrier.
-  closeCacheBarrier({ generation: null });
+  closeCacheBarrier({ generation: null, invalidationState: "unknown" });
 }
 
 function isInvalidationMessage(
