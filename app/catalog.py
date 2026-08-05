@@ -519,7 +519,9 @@ class ArchiveCatalog:
                 lc.plaintext_sha256 AS digest
             FROM vault_files vf
             JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+              ON fp.vault_file_id=vf.id
+             AND fp.vault_id=vf.vault_id
+             AND fp.valid_to IS NULL
             JOIN local_copies lc ON lc.vault_file_id=vf.id
             WHERE vf.vault_id=%s
               AND vf.status='active'
@@ -563,23 +565,279 @@ class ArchiveCatalog:
                     )
         return candidates
 
-    def confirm_file_rename(
+    def _rename_backend(self) -> str:
+        return str(getattr(self.connection, "backend", "postgresql") or "postgresql")
+
+    def _reserve_rename_confirmation(self, vault_id: int) -> None:
+        """Serialize a confirmation before its candidate is inspected.
+
+        SQLite must reserve its single writer before the candidate SELECT; a
+        deferred transaction would let two confirmations read the same pair
+        and make one fail later with ``database is locked``. PostgreSQL locks
+        one deterministic Vault row before locking the two candidate rows.
+        Scanner writes that use the same Vault lock serialize normally, while
+        the conditional writes below still fail closed for any writer that
+        does not take it.
+        """
+        if self._rename_backend() == "sqlite":
+            raw_connection = getattr(self.connection, "connection", None)
+            if raw_connection is None or not raw_connection.in_transaction:
+                self.connection.begin_immediate()
+            query = """
+                SELECT id FROM vaults
+                WHERE id=%s AND decommission_state='active'
+            """
+        else:
+            query = """
+                SELECT id FROM vaults
+                WHERE id=%s AND decommission_state='active'
+                FOR UPDATE
+            """
+        if self.connection.execute(query, (vault_id,)).fetchone() is None:
+            raise VaultFileNotFound()
+
+    @staticmethod
+    def _snapshot_value_condition(
+        column: str, value: Any, *, casefold: bool = False
+    ) -> tuple[str, list[Any]]:
+        if value is None:
+            return f"{column} IS NULL", []
+        if casefold:
+            return f"lower({column})=lower(%s)", [value]
+        return f"{column}=%s", [value]
+
+    @classmethod
+    def _local_copy_snapshot_conditions(
+        cls,
+        alias: str,
+        snapshot: dict[str, Any],
+        prefix: str,
+    ) -> tuple[list[str], list[Any]]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        for column in (
+            "presence",
+            "file_type",
+            "size",
+            "mtime_ns",
+            "plaintext_sha256",
+            "matched_archive_version_id",
+            "last_seen_at",
+            "observed_at",
+        ):
+            condition, values = cls._snapshot_value_condition(
+                f"{alias}.{column}",
+                snapshot[f"{prefix}_{column}"],
+                casefold=column == "plaintext_sha256",
+            )
+            conditions.append(condition)
+            params.extend(values)
+        return conditions, params
+
+    @classmethod
+    def _file_snapshot_conditions(
+        cls,
+        alias: str,
+        *,
+        vault_file_id: str,
+        vault_id: int,
+        status: str,
+        retired_at: str | None,
+    ) -> tuple[list[str], list[Any]]:
+        conditions = [f"{alias}.id=%s", f"{alias}.vault_id=%s"]
+        params: list[Any] = [vault_file_id, vault_id]
+        for column, value in (("status", status), ("retired_at", retired_at)):
+            condition, values = cls._snapshot_value_condition(
+                f"{alias}.{column}", value
+            )
+            conditions.append(condition)
+            params.extend(values)
+        return conditions, params
+
+    @classmethod
+    def _path_snapshot_conditions(
+        cls,
+        alias: str,
+        *,
+        vault_file_id: str,
+        vault_id: int,
+        state: tuple[str, str, str | None],
+    ) -> tuple[list[str], list[Any]]:
+        path, valid_from, valid_to = state
+        conditions = [
+            f"{alias}.vault_file_id=%s",
+            f"{alias}.vault_id=%s",
+            f"{alias}.path=%s",
+            f"{alias}.valid_from=%s",
+        ]
+        params: list[Any] = [vault_file_id, vault_id, path, valid_from]
+        valid_to_condition, valid_to_params = cls._snapshot_value_condition(
+            f"{alias}.valid_to", valid_to
+        )
+        conditions.append(valid_to_condition)
+        params.extend(valid_to_params)
+        return conditions, params
+
+    def _rename_pair_predicate(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        missing_path: tuple[str, str, str | None],
+        provisional_status: str,
+        provisional_retired_at: str | None,
+        provisional_path: tuple[str, str, str | None],
+        provisional_copy_present: bool,
+    ) -> tuple[str, list[Any]]:
+        """Describe exactly the candidate state expected by one CAS mutation."""
+        missing_file_conditions, missing_file_params = self._file_snapshot_conditions(
+            "missing",
+            vault_file_id=snapshot["missing_vault_file_id"],
+            vault_id=snapshot["vault_id"],
+            status=snapshot["missing_status"],
+            retired_at=snapshot["missing_retired_at"],
+        )
+        missing_path_conditions, missing_path_params = self._path_snapshot_conditions(
+            "missing_path",
+            vault_file_id=snapshot["missing_vault_file_id"],
+            vault_id=snapshot["vault_id"],
+            state=missing_path,
+        )
+        missing_copy_conditions, missing_copy_params = (
+            self._local_copy_snapshot_conditions("missing_copy", snapshot, "missing")
+        )
+        missing_where = " AND ".join(
+            [
+                *missing_file_conditions,
+                *missing_path_conditions,
+                *missing_copy_conditions,
+            ]
+        )
+        missing_sql = f"""
+            EXISTS (
+                SELECT 1
+                FROM vault_files missing
+                JOIN file_paths missing_path
+                  ON missing_path.vault_file_id=missing.id
+                 AND missing_path.vault_id=missing.vault_id
+                JOIN local_copies missing_copy
+                  ON missing_copy.vault_file_id=missing.id
+                WHERE {missing_where}
+            )
+        """
+
+        provisional_file_conditions, provisional_file_params = (
+            self._file_snapshot_conditions(
+                "provisional",
+                vault_file_id=snapshot["provisional_vault_file_id"],
+                vault_id=snapshot["vault_id"],
+                status=provisional_status,
+                retired_at=provisional_retired_at,
+            )
+        )
+        provisional_path_conditions, provisional_path_params = (
+            self._path_snapshot_conditions(
+                "provisional_path",
+                vault_file_id=snapshot["provisional_vault_file_id"],
+                vault_id=snapshot["vault_id"],
+                state=provisional_path,
+            )
+        )
+        provisional_joins = [
+            "FROM vault_files provisional",
+            "JOIN file_paths provisional_path",
+            "  ON provisional_path.vault_file_id=provisional.id",
+            " AND provisional_path.vault_id=provisional.vault_id",
+        ]
+        provisional_conditions = [
+            *provisional_file_conditions,
+            *provisional_path_conditions,
+        ]
+        provisional_params = [
+            *provisional_file_params,
+            *provisional_path_params,
+        ]
+        if provisional_copy_present:
+            provisional_copy_conditions, provisional_copy_params = (
+                self._local_copy_snapshot_conditions(
+                    "provisional_copy", snapshot, "provisional"
+                )
+            )
+            provisional_joins.extend(
+                [
+                    "JOIN local_copies provisional_copy",
+                    "  ON provisional_copy.vault_file_id=provisional.id",
+                ]
+            )
+            provisional_conditions.extend(provisional_copy_conditions)
+            provisional_params.extend(provisional_copy_params)
+        else:
+            provisional_conditions.append(
+                "NOT EXISTS ("
+                "SELECT 1 FROM local_copies consumed_copy "
+                "WHERE consumed_copy.vault_file_id=provisional.id"
+                ")"
+            )
+        provisional_sql = f"""
+            EXISTS (
+                SELECT 1
+                {' '.join(provisional_joins)}
+                WHERE {' AND '.join(provisional_conditions)}
+            )
+        """
+        return (
+            f"({missing_sql}) AND ({provisional_sql})",
+            [
+                *missing_file_params,
+                *missing_path_params,
+                *missing_copy_params,
+                *provisional_params,
+            ],
+        )
+
+    def _require_one_rename_mutation(self, result: Any) -> None:
+        """Fail closed when a conditional candidate mutation loses its CAS."""
+        if getattr(result, "rowcount", None) != 1:
+            self.connection.execute("ROLLBACK TO SAVEPOINT rename_confirmation_cas")
+            self.connection.execute("RELEASE SAVEPOINT rename_confirmation_cas")
+            raise VaultFileNotFound()
+
+    def _load_rename_candidate(
         self,
         *,
         vault_file_id: str,
         new_path: str,
-        changed_at: str,
         vault_id: int,
-    ) -> str:
-        """Keep one Vault File identity only for a current Vault-local candidate."""
-        provisional = self.connection.execute(
-            """
-            SELECT provisional.id AS vault_file_id,
-                   provisional_copy.presence, provisional_copy.file_type,
-                   provisional_copy.size, provisional_copy.mtime_ns,
-                   provisional_copy.plaintext_sha256,
-                   provisional_copy.matched_archive_version_id,
-                   provisional_copy.last_seen_at, provisional_copy.observed_at
+    ) -> dict[str, Any] | None:
+        query = """
+            SELECT
+                missing.id AS missing_vault_file_id,
+                missing.status AS missing_status,
+                missing.retired_at AS missing_retired_at,
+                missing_path.path AS missing_path,
+                missing_path.valid_from AS missing_path_valid_from,
+                missing_copy.presence AS missing_presence,
+                missing_copy.file_type AS missing_file_type,
+                missing_copy.size AS missing_size,
+                missing_copy.mtime_ns AS missing_mtime_ns,
+                missing_copy.plaintext_sha256 AS missing_plaintext_sha256,
+                missing_copy.matched_archive_version_id
+                    AS missing_matched_archive_version_id,
+                missing_copy.last_seen_at AS missing_last_seen_at,
+                missing_copy.observed_at AS missing_observed_at,
+                provisional.id AS provisional_vault_file_id,
+                provisional.status AS provisional_status,
+                provisional.retired_at AS provisional_retired_at,
+                provisional_path.path AS provisional_path,
+                provisional_path.valid_from AS provisional_path_valid_from,
+                provisional_copy.presence AS provisional_presence,
+                provisional_copy.file_type AS provisional_file_type,
+                provisional_copy.size AS provisional_size,
+                provisional_copy.mtime_ns AS provisional_mtime_ns,
+                provisional_copy.plaintext_sha256 AS provisional_plaintext_sha256,
+                provisional_copy.matched_archive_version_id
+                    AS provisional_matched_archive_version_id,
+                provisional_copy.last_seen_at AS provisional_last_seen_at,
+                provisional_copy.observed_at AS provisional_observed_at
             FROM vault_files missing
             JOIN file_paths missing_path
               ON missing_path.vault_file_id=missing.id
@@ -610,73 +868,244 @@ class ArchiveCatalog:
               AND provisional_copy.plaintext_sha256 IS NOT NULL
               AND lower(provisional_copy.plaintext_sha256)
                   = lower(missing_copy.plaintext_sha256)
-            """,
+        """
+        if self._rename_backend() != "sqlite":
+            query += """
+                FOR UPDATE OF
+                    missing, missing_path, missing_copy,
+                    provisional, provisional_path, provisional_copy
+            """
+        snapshot = self.connection.execute(
+            query,
             (vault_file_id, vault_id, vault_id, new_path),
         ).fetchone()
-        if provisional is None:
-            raise VaultFileNotFound()
+        if snapshot is not None:
+            snapshot["vault_id"] = vault_id
+        return snapshot
 
-        self.connection.execute(
-            """
-            UPDATE file_paths SET valid_to=%s
-            WHERE vault_file_id=%s AND vault_id=%s AND valid_to IS NULL
-            """,
-            (changed_at, provisional["vault_file_id"], vault_id),
-        )
-        self.connection.execute(
-            """
-            DELETE FROM local_copies
-            WHERE vault_file_id IN (
-                SELECT id FROM vault_files WHERE id=%s AND vault_id=%s
-            )
-            """,
-            (provisional["vault_file_id"], vault_id),
-        )
-        self.connection.execute(
-            """
-            UPDATE vault_files
-            SET status='retired', retired_at=%s
-            WHERE id=%s AND vault_id=%s
-            """,
-            (changed_at, provisional["vault_file_id"], vault_id),
-        )
+    def confirm_file_rename(
+        self,
+        *,
+        vault_file_id: str,
+        new_path: str,
+        changed_at: str,
+        vault_id: int,
+    ) -> str:
+        """Atomically consume one current, Vault-local rename candidate.
 
-        self.rename_file(
-            vault_file_id,
+        Every state transition is a conditional compare-and-swap against the
+        full candidate snapshot. A competing confirmation or scanner update
+        therefore changes a rowcount to zero and raises ``VaultFileNotFound``;
+        the caller's transaction rolls back all earlier transitions.
+        """
+        self._reserve_rename_confirmation(vault_id)
+        snapshot = self._load_rename_candidate(
+            vault_file_id=vault_file_id,
             new_path=new_path,
-            changed_at=changed_at,
             vault_id=vault_id,
         )
+        if snapshot is None:
+            raise VaultFileNotFound()
+        # The endpoint maps VaultFileNotFound to its non-oracular 404 outside
+        # the transaction. Keep this scoped rollback too, so direct catalog
+        # callers cannot accidentally commit a partial candidate consumption.
+        self.connection.execute("SAVEPOINT rename_confirmation_cas")
 
-        self.connection.execute(
-            """
-            INSERT INTO local_copies(
-                vault_file_id, presence, file_type, size, mtime_ns,
-                plaintext_sha256, matched_archive_version_id,
-                last_seen_at, observed_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT(vault_file_id) DO UPDATE SET
-                presence=excluded.presence,
-                file_type=excluded.file_type,
-                size=excluded.size,
-                mtime_ns=excluded.mtime_ns,
-                plaintext_sha256=excluded.plaintext_sha256,
-                matched_archive_version_id=excluded.matched_archive_version_id,
-                last_seen_at=excluded.last_seen_at,
-                observed_at=excluded.observed_at
+        missing_current = (
+            snapshot["missing_path"],
+            snapshot["missing_path_valid_from"],
+            None,
+        )
+        missing_closed = (
+            snapshot["missing_path"],
+            snapshot["missing_path_valid_from"],
+            changed_at,
+        )
+        missing_renamed = (new_path, changed_at, None)
+        provisional_current = (
+            snapshot["provisional_path"],
+            snapshot["provisional_path_valid_from"],
+            None,
+        )
+        provisional_closed = (
+            snapshot["provisional_path"],
+            snapshot["provisional_path_valid_from"],
+            changed_at,
+        )
+        provisional_id = snapshot["provisional_vault_file_id"]
+
+        active_pair, active_pair_params = self._rename_pair_predicate(
+            snapshot,
+            missing_path=missing_current,
+            provisional_status="active",
+            provisional_retired_at=snapshot["provisional_retired_at"],
+            provisional_path=provisional_current,
+            provisional_copy_present=True,
+        )
+        claimed = self.connection.execute(
+            f"""
+            UPDATE vault_files
+            SET status='retired', retired_at=%s
+            WHERE id=%s
+              AND vault_id=%s
+              AND status='active'
+              AND ({active_pair})
+            """,
+            (changed_at, provisional_id, vault_id, *active_pair_params),
+        )
+        self._require_one_rename_mutation(claimed)
+
+        claimed_current_pair, claimed_current_params = self._rename_pair_predicate(
+            snapshot,
+            missing_path=missing_current,
+            provisional_status="retired",
+            provisional_retired_at=changed_at,
+            provisional_path=provisional_current,
+            provisional_copy_present=True,
+        )
+        closed_provisional = self.connection.execute(
+            f"""
+            UPDATE file_paths
+            SET valid_to=%s
+            WHERE vault_file_id=%s
+              AND vault_id=%s
+              AND path=%s
+              AND valid_from=%s
+              AND valid_to IS NULL
+              AND ({claimed_current_pair})
+            """,
+            (
+                changed_at,
+                provisional_id,
+                vault_id,
+                snapshot["provisional_path"],
+                snapshot["provisional_path_valid_from"],
+                *claimed_current_params,
+            ),
+        )
+        self._require_one_rename_mutation(closed_provisional)
+
+        claimed_closed_pair, claimed_closed_params = self._rename_pair_predicate(
+            snapshot,
+            missing_path=missing_current,
+            provisional_status="retired",
+            provisional_retired_at=changed_at,
+            provisional_path=provisional_closed,
+            provisional_copy_present=True,
+        )
+        consumed_copy = self.connection.execute(
+            f"""
+            DELETE FROM local_copies
+            WHERE vault_file_id=%s
+              AND ({claimed_closed_pair})
+            """,
+            (provisional_id, *claimed_closed_params),
+        )
+        self._require_one_rename_mutation(consumed_copy)
+
+        consumed_pair, consumed_pair_params = self._rename_pair_predicate(
+            snapshot,
+            missing_path=missing_current,
+            provisional_status="retired",
+            provisional_retired_at=changed_at,
+            provisional_path=provisional_closed,
+            provisional_copy_present=False,
+        )
+        closed_missing = self.connection.execute(
+            f"""
+            UPDATE file_paths
+            SET valid_to=%s
+            WHERE vault_file_id=%s
+              AND vault_id=%s
+              AND path=%s
+              AND valid_from=%s
+              AND valid_to IS NULL
+              AND ({consumed_pair})
+            """,
+            (
+                changed_at,
+                vault_file_id,
+                vault_id,
+                snapshot["missing_path"],
+                snapshot["missing_path_valid_from"],
+                *consumed_pair_params,
+            ),
+        )
+        self._require_one_rename_mutation(closed_missing)
+
+        closed_pair, closed_pair_params = self._rename_pair_predicate(
+            snapshot,
+            missing_path=missing_closed,
+            provisional_status="retired",
+            provisional_retired_at=changed_at,
+            provisional_path=provisional_closed,
+            provisional_copy_present=False,
+        )
+        inserted_path = self.connection.execute(
+            f"""
+            INSERT INTO file_paths(
+                vault_file_id, vault_id, path, valid_from, valid_to
+            )
+            SELECT %s, %s, %s, %s, NULL
+            WHERE ({closed_pair})
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM file_paths current_path
+                  WHERE current_path.vault_id=%s
+                    AND current_path.path=%s
+                    AND current_path.valid_to IS NULL
+              )
+            ON CONFLICT DO NOTHING
             """,
             (
                 vault_file_id,
-                provisional["presence"],
-                provisional["file_type"],
-                provisional["size"],
-                provisional["mtime_ns"],
-                provisional["plaintext_sha256"],
-                provisional["matched_archive_version_id"],
-                provisional["last_seen_at"] or changed_at,
-                provisional["observed_at"] or changed_at,
+                vault_id,
+                new_path,
+                changed_at,
+                *closed_pair_params,
+                vault_id,
+                new_path,
             ),
         )
+        self._require_one_rename_mutation(inserted_path)
+
+        renamed_pair, renamed_pair_params = self._rename_pair_predicate(
+            snapshot,
+            missing_path=missing_renamed,
+            provisional_status="retired",
+            provisional_retired_at=changed_at,
+            provisional_path=provisional_closed,
+            provisional_copy_present=False,
+        )
+        restored_copy = self.connection.execute(
+            f"""
+            UPDATE local_copies
+            SET presence=%s,
+                file_type=%s,
+                size=%s,
+                mtime_ns=%s,
+                plaintext_sha256=%s,
+                matched_archive_version_id=%s,
+                last_seen_at=%s,
+                observed_at=%s
+            WHERE vault_file_id=%s
+              AND ({renamed_pair})
+            """,
+            (
+                snapshot["provisional_presence"],
+                snapshot["provisional_file_type"],
+                snapshot["provisional_size"],
+                snapshot["provisional_mtime_ns"],
+                snapshot["provisional_plaintext_sha256"],
+                snapshot["provisional_matched_archive_version_id"],
+                snapshot["provisional_last_seen_at"] or changed_at,
+                snapshot["provisional_observed_at"] or changed_at,
+                vault_file_id,
+                *renamed_pair_params,
+            ),
+        )
+        self._require_one_rename_mutation(restored_copy)
+        self.connection.execute("RELEASE SAVEPOINT rename_confirmation_cas")
         return vault_file_id
 
     def confirm_folder_rename(
@@ -694,6 +1123,7 @@ class ArchiveCatalog:
             raise ValueError("Folder rename prefixes must be non-empty")
         if old_prefix == new_prefix:
             return []
+        self._reserve_rename_confirmation(vault_id)
         escaped = (
             old_prefix.replace("\\", "\\\\")
             .replace("%", "\\%")
@@ -704,7 +1134,9 @@ class ArchiveCatalog:
             SELECT vf.id AS vault_file_id, fp.path
             FROM vault_files vf
             JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+              ON fp.vault_file_id=vf.id
+             AND fp.vault_id=vf.vault_id
+             AND fp.valid_to IS NULL
             WHERE vf.vault_id=%s
               AND vf.status='active'
               AND (fp.path=%s OR fp.path LIKE %s ESCAPE '\\')

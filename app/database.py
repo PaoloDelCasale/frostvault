@@ -34,6 +34,11 @@ class SQLiteResult:
     def fetchall(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self.cursor.fetchall()]
 
+    @property
+    def rowcount(self) -> int:
+        """Expose SQLite DML cardinality like psycopg's cursor result."""
+        return self.cursor.rowcount
+
 
 class SQLiteConnection:
     backend = "sqlite"
