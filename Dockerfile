@@ -36,6 +36,24 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client-16 \
     && rm -rf /var/lib/apt/lists/*
 
+# The Compose templates run without CAP_SETUID/CAP_SETGID, so the documented
+# Unraid default must exist before the read-only runtime starts. Overrides use
+# numeric IDs directly in the entrypoint and never mutate /etc at startup.
+RUN set -eux; \
+    if getent passwd archive >/dev/null; then \
+        echo "archive user is unexpectedly already present in the base image" >&2; \
+        exit 1; \
+    fi; \
+    if getent passwd 99 >/dev/null; then \
+        echo "default PUID 99 is unexpectedly already allocated in the base image" >&2; \
+        exit 1; \
+    fi; \
+    if ! getent group 100 >/dev/null; then \
+        groupadd --gid 100 archive; \
+    fi; \
+    useradd --system --uid 99 --gid 100 \
+        --home-dir /app --shell /usr/sbin/nologin --no-create-home archive
+
 COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone
 
 WORKDIR /app
@@ -50,6 +68,7 @@ COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod 755 /entrypoint.sh
 
 ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
     PUID=99 \
     PGID=100 \
     FRONTEND_DIST_DIR=/app/frontend/dist
