@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 
 import { createAppQueryClient } from "@/api";
@@ -16,6 +16,11 @@ type AppShellProps = {
   t?: (key: string, params?: Record<string, unknown>) => string;
   /** Shared app client; optional for isolated shell stories and tests. */
   queryClient?: QueryClient;
+  /**
+   * Keep the document shell mounted while fresh authentication authority is
+   * being resolved, but do not render capabilities from the previous Session.
+   */
+  authReconciliationPending?: boolean;
   children: ReactNode;
 };
 
@@ -24,9 +29,14 @@ export function AppShell({
   handlers,
   t,
   queryClient: providedQueryClient,
+  authReconciliationPending = false,
   children,
 }: AppShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    if (authReconciliationPending) setDrawerOpen(false);
+  }, [authReconciliationPending]);
   const fallbackQueryClient = useMemo(() => createAppQueryClient(), []);
   const queryClient = providedQueryClient ?? fallbackQueryClient;
   const skipToMainLabel = shellLabel(
@@ -44,6 +54,7 @@ export function AppShell({
     "ui.vault_navigation",
     "Vault navigation",
   );
+  const loadingLabel = shellLabel(t, "ui.loading", "Loading…");
 
   return (
     <div className="min-h-svh bg-canvas text-ink">
@@ -68,51 +79,53 @@ export function AppShell({
               FrostVault
             </p>
             <h1 className="truncate text-xl font-bold tracking-tight md:text-2xl">
-              {capabilities.vaultName}
+              {authReconciliationPending ? loadingLabel : capabilities.vaultName}
             </h1>
           </div>
 
-          <div className="flex items-center gap-2">
-            <NotificationCenter
-              currentVaultId={capabilities.currentVaultId}
-              vaultName={capabilities.vaultName}
-              locale={capabilities.locale}
-              t={t}
-              queryClient={queryClient}
-            />
-
-            <div className="md:hidden">
-              <AppDrawer
-                open={drawerOpen}
-                onOpenChange={setDrawerOpen}
-                capabilities={capabilities}
-                handlers={handlers}
+          {!authReconciliationPending ? (
+            <div className="flex items-center gap-2">
+              <NotificationCenter
+                currentVaultId={capabilities.currentVaultId}
+                vaultName={capabilities.vaultName}
+                locale={capabilities.locale}
                 t={t}
-                trigger={
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    className="min-h-11 min-w-11"
-                    aria-label={openNavigationLabel}
-                  >
-                    ☰
-                  </Button>
-                }
+                queryClient={queryClient}
               />
+
+              <div className="md:hidden">
+                <AppDrawer
+                  open={drawerOpen}
+                  onOpenChange={setDrawerOpen}
+                  capabilities={capabilities}
+                  handlers={handlers}
+                  t={t}
+                  trigger={
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="min-h-11 min-w-11"
+                      aria-label={openNavigationLabel}
+                    >
+                      ☰
+                    </Button>
+                  }
+                />
+              </div>
+
+              <nav
+                aria-label={vaultNavigationLabel}
+                className="hidden md:flex md:flex-wrap md:items-center md:justify-end md:gap-2"
+              >
+                <ShellNavItems
+                  capabilities={capabilities}
+                  handlers={handlers}
+                  t={t}
+                  className="flex flex-row flex-wrap items-end gap-2"
+                />
+              </nav>
             </div>
-
-            <nav
-              aria-label={vaultNavigationLabel}
-              className="hidden md:flex md:flex-wrap md:items-center md:justify-end md:gap-2"
-            >
-              <ShellNavItems
-                capabilities={capabilities}
-                handlers={handlers}
-                t={t}
-                className="flex flex-row flex-wrap items-end gap-2"
-              />
-            </nav>
-          </div>
+          ) : null}
         </div>
       </header>
 

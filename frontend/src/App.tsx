@@ -140,8 +140,11 @@ export default function App() {
   const clearOfflineFileData = useCallback(() => {
     offlineCacheAuthorizationRef.current = null;
     setOfflineCacheLease(null);
-    // During a Worker transition, replace only the archive content. AppShell
-    // stays mounted so its skip link and #main-content landmark never detach.
+    // While fresh authority is unknown, discard every capability-derived
+    // collection as well as archive bytes. AppShell stays mounted so its skip
+    // link and #main-content landmark never detach, but it must not expose the
+    // previous Session's Vault selector or privileged actions.
+    setVaults([]);
     setOfflineCacheTransitioning(true);
     void queryClient.cancelQueries({ queryKey: ["files"] });
     queryClient.removeQueries({ queryKey: ["files"] });
@@ -415,6 +418,7 @@ export default function App() {
   return (
     <AppShell
       capabilities={capabilities}
+      authReconciliationPending={offlineCacheTransitioning}
       t={t}
       queryClient={queryClient}
       handlers={{
@@ -518,7 +522,7 @@ export default function App() {
         />
       )}
       <Toast
-        open={Boolean(refreshNotice)}
+        open={Boolean(refreshNotice) && !offlineCacheTransitioning}
         message={refreshNotice?.message ?? ""}
         variant={refreshNotice?.error ? "error" : "success"}
         onClose={() => setRefreshNotice(null)}
