@@ -1,6 +1,7 @@
-import type { ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/i18n/useI18n";
 
 type RecoveryExportPanelProps = {
   recoveryExport: string;
@@ -18,6 +19,9 @@ type RecoveryExportPanelProps = {
 };
 
 async function copyToClipboard(material: string): Promise<void> {
+  if (typeof navigator.clipboard?.writeText !== "function") {
+    throw new Error();
+  }
   await navigator.clipboard.writeText(material);
 }
 
@@ -49,6 +53,27 @@ export function RecoveryExportPanel({
   onCopy,
   onDownload,
 }: RecoveryExportPanelProps) {
+  const { t } = useI18n();
+  const [copyFeedback, setCopyFeedback] = useState<"success" | "failure" | null>(
+    null,
+  );
+  const copyAttempt = useRef(0);
+
+  async function handleCopy() {
+    const attempt = ++copyAttempt.current;
+    setCopyFeedback(null);
+    try {
+      await (onCopy ?? copyToClipboard)(recoveryExport);
+      if (attempt === copyAttempt.current) {
+        setCopyFeedback("success");
+      }
+    } catch {
+      if (attempt === copyAttempt.current) {
+        setCopyFeedback("failure");
+      }
+    }
+  }
+
   return (
     <div className="mt-6 grid gap-3.5">
       <h2 className="m-0 text-xl font-bold text-ink">{title}</h2>
@@ -76,9 +101,7 @@ export function RecoveryExportPanel({
         <Button
           type="button"
           variant="secondary"
-          onClick={() => {
-            void (onCopy ?? copyToClipboard)(recoveryExport);
-          }}
+          onClick={() => void handleCopy()}
         >
           {copyLabel}
         </Button>
@@ -94,6 +117,24 @@ export function RecoveryExportPanel({
           {downloadLabel}
         </Button>
       </div>
+      {copyFeedback ? (
+        <p
+          className={
+            copyFeedback === "failure"
+              ? "rounded-[10px] bg-red-soft px-3.5 py-3 text-sm text-ink"
+              : "rounded-[10px] bg-green-soft px-3.5 py-3 text-sm text-ink"
+          }
+          role={copyFeedback === "failure" ? "alert" : "status"}
+          aria-live={copyFeedback === "failure" ? "assertive" : "polite"}
+          aria-atomic="true"
+        >
+          {t(
+            copyFeedback === "failure"
+              ? "ui.recovery.copy_failed"
+              : "ui.recovery.copied",
+          )}
+        </p>
+      ) : null}
       {children}
     </div>
   );

@@ -57,6 +57,7 @@ export function MembersDialog({
   const quotaSaveScope = useRef(createLatestRequestScope());
   const membershipScope = useRef(createLatestRequestScope());
   const transferScope = useRef(createLatestRequestScope());
+  const recoveryCopyAttempt = useRef(0);
 
   const [members, setMembers] = useState<AdminVaultMember[]>([]);
   const [membersLoaded, setMembersLoaded] = useState(false);
@@ -80,6 +81,9 @@ export function MembersDialog({
   const [memberReason, setMemberReason] = useState("");
   const [recoveryReason, setRecoveryReason] = useState("");
   const [recoveryExport, setRecoveryExport] = useState("");
+  const [recoveryCopyFeedback, setRecoveryCopyFeedback] = useState<
+    "success" | "failure" | null
+  >(null);
   const [memberActionsOpen, setMemberActionsOpen] = useState(false);
   const [memberActionsTarget, setMemberActionsTarget] =
     useState<AdminVaultMember | null>(null);
@@ -107,6 +111,8 @@ export function MembersDialog({
     setTransferReason("");
     setTransferConfirm("");
     setRecoveryExport("");
+    recoveryCopyAttempt.current += 1;
+    setRecoveryCopyFeedback(null);
     setRecoveryReason("");
     setQuotaSaving(false);
     // Invalidate in-flight saves/transfers when selection changes.
@@ -345,6 +351,8 @@ export function MembersDialog({
     if (reason.length < 3) return;
     try {
       const data = await exportAdminVaultRecovery(vaultId, reason);
+      recoveryCopyAttempt.current += 1;
+      setRecoveryCopyFeedback(null);
       setRecoveryExport(data.recovery_export);
     } catch (error) {
       onNotice(
@@ -356,8 +364,18 @@ export function MembersDialog({
 
   async function copyRecovery() {
     if (!recoveryExport) return;
-    await navigator.clipboard.writeText(recoveryExport);
-    onNotice(t("admin.recovery_copied"));
+    const attempt = ++recoveryCopyAttempt.current;
+    setRecoveryCopyFeedback(null);
+    try {
+      await navigator.clipboard.writeText(recoveryExport);
+      if (attempt === recoveryCopyAttempt.current) {
+        setRecoveryCopyFeedback("success");
+      }
+    } catch {
+      if (attempt === recoveryCopyAttempt.current) {
+        setRecoveryCopyFeedback("failure");
+      }
+    }
   }
 
   function downloadRecovery() {
@@ -743,6 +761,28 @@ export function MembersDialog({
                       {t("admin.recovery_download")}
                     </Button>
                   </div>
+                  {recoveryCopyFeedback ? (
+                    <p
+                      className={
+                        recoveryCopyFeedback === "failure"
+                          ? "rounded-[10px] bg-red-soft px-3 py-2 text-sm text-ink"
+                          : "rounded-[10px] bg-green-soft px-3 py-2 text-sm text-ink"
+                      }
+                      role={
+                        recoveryCopyFeedback === "failure" ? "alert" : "status"
+                      }
+                      aria-live={
+                        recoveryCopyFeedback === "failure" ? "assertive" : "polite"
+                      }
+                      aria-atomic="true"
+                    >
+                      {t(
+                        recoveryCopyFeedback === "failure"
+                          ? "admin.recovery_copy_failed"
+                          : "admin.recovery_copied",
+                      )}
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
             </section>
