@@ -1,12 +1,32 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from app import backoff
 from app.database import SQLiteConnection
 from tests.test_database import run_alembic
+
+
+REPOSITORY_ROOT = Path(__file__).parents[1]
+
+
+class _LegacyReadBarrierConnection:
+    """Force the old read-then-write implementation into its lost-update race."""
+
+    def __init__(self, connection: SQLiteConnection, barrier: threading.Barrier):
+        self._connection = connection
+        self._barrier = barrier
+
+    def execute(self, sql: str, params=()):
+        if sql.lstrip().startswith("SELECT * FROM auth_backoff"):
+            self._barrier.wait(timeout=10)
+        return self._connection.execute(sql, params)
 
 
 class BackoffTestBase(unittest.TestCase):
@@ -43,6 +63,21 @@ class BackoffTests(BackoffTestBase):
                 backoff.guard(connection, scope="ip", key="k")
         self.assertGreater(caught.exception.retry_after, 0)
         self.assertLessEqual(caught.exception.retry_after, 30)
+
+    def test_guard_derives_a_deadline_if_an_atomic_write_is_interrupted(self) -> None:
+        """A committed increment still throttles if its deadline write never runs."""
+        now = backoff._now().isoformat()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO auth_backoff(scope, key, failure_count, next_allowed_at, updated_at)
+                VALUES (%s, %s, %s, NULL, %s)
+                """,
+                ("ip", "interrupted", backoff.THRESHOLD, now),
+            )
+        with self.connect() as connection:
+            with self.assertRaises(backoff.BackoffError):
+                backoff.guard(connection, scope="ip", key="interrupted")
 
     def test_backoff_doubles_after_the_threshold(self) -> None:
         self._fail(6)
@@ -86,6 +121,53 @@ class BackoffTests(BackoffTestBase):
                 "SELECT failure_count FROM auth_backoff WHERE scope='ip' AND key='k'"
             ).fetchone()
         self.assertEqual(row["failure_count"], 1)
+
+    def test_concurrent_sqlite_failures_are_all_counted_atomically(self) -> None:
+        """Each connection increments one shared counter without a lost update."""
+        attempts = 8
+        start = threading.Barrier(attempts, timeout=60)
+        legacy_read = threading.Barrier(attempts, timeout=60)
+
+        def record() -> None:
+            start.wait()
+            with self.connect() as connection:
+                backoff.record_failure(
+                    _LegacyReadBarrierConnection(connection, legacy_read),
+                    scope="ip",
+                    key="concurrent",
+                )
+
+        with ThreadPoolExecutor(max_workers=attempts) as pool:
+            list(pool.map(lambda _: record(), range(attempts)))
+
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT failure_count FROM auth_backoff WHERE scope='ip' AND key='concurrent'"
+            ).fetchone()
+        self.assertEqual(row["failure_count"], attempts)
+
+    def test_threshold_persists_across_a_process_restart(self) -> None:
+        """The durable counter continues throttling after a fresh interpreter starts."""
+        self._fail(backoff.THRESHOLD)
+        check = """
+from app import backoff
+from app.database import SQLiteConnection
+import sys
+with SQLiteConnection(sys.argv[1]) as connection:
+    try:
+        backoff.guard(connection, scope='ip', key='k')
+    except backoff.BackoffError:
+        raise SystemExit(0)
+raise SystemExit(1)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", check, str(self.database_path)],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

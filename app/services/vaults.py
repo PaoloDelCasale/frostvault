@@ -32,6 +32,7 @@ import os
 import re
 import shutil
 import uuid
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 from ..config import settings
@@ -121,11 +122,20 @@ def list_admin_vaults(connection: Any) -> list[dict[str, Any]]:
     return [project_admin_vault(row) for row in rows]
 
 
+@dataclass(frozen=True)
+class _SecretVaultCreation:
+    """Internal creation result; only self-service receives its ciphertexts."""
+
+    vault: dict[str, Any]
+    password_ciphertext: str | None
+    password2_ciphertext: str | None
+
+
 def _slugify(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
 
 
-def create_vault_for_user(
+def _create_vault(
     user_id: int,
     name: str,
     slug: str | None = None,
@@ -135,8 +145,9 @@ def create_vault_for_user(
     volume_alias: str | None = None,
     relative_path: str | None = None,
     actor_is_admin: bool = False,
-) -> dict[str, Any]:
-    """Create a vault owned solely by ``user_id`` and return the new row.
+    return_ciphertexts: bool = False,
+) -> dict[str, Any] | _SecretVaultCreation:
+    """Create a Vault while retaining sealed material inside this service.
 
     ``creation_mode`` is ``empty`` (default) or ``adopt``. Adoption requires
     ``volume_alias`` and ``relative_path`` under an authorized Source Area
@@ -236,7 +247,6 @@ def create_vault_for_user(
                 RETURNING
                     id, uuid, slug, name, source_root, s3_bucket, s3_prefix,
                     rclone_remote, enabled, encryption_mode,
-                    crypt_password_ciphertext, crypt_password2_ciphertext,
                     recovery_custody_confirmed_at, decommission_state,
                     decommissioned_at, root_released_at
                 """,
@@ -285,4 +295,69 @@ def create_vault_for_user(
         if directory_created:
             shutil.rmtree(source_root, ignore_errors=True)
         raise
+    if return_ciphertexts:
+        return _SecretVaultCreation(
+            vault=vault,
+            password_ciphertext=password_ciphertext,
+            password2_ciphertext=password2_ciphertext,
+        )
     return vault
+
+
+def create_vault_for_user(
+    user_id: int,
+    name: str,
+    slug: str | None = None,
+    encryption_mode: str = "plain",
+    *,
+    creation_mode: str = "empty",
+    volume_alias: str | None = None,
+    relative_path: str | None = None,
+    actor_is_admin: bool = False,
+) -> dict[str, Any]:
+    """Create a self-service Vault with its recovery ciphertexts in-process."""
+    created = _create_vault(
+        user_id,
+        name,
+        slug,
+        encryption_mode,
+        creation_mode=creation_mode,
+        volume_alias=volume_alias,
+        relative_path=relative_path,
+        actor_is_admin=actor_is_admin,
+        return_ciphertexts=True,
+    )
+    if not isinstance(created, _SecretVaultCreation):  # pragma: no cover - invariant
+        raise RuntimeError("Self-service Vault creation lost its recovery material")
+    return {
+        **created.vault,
+        "crypt_password_ciphertext": created.password_ciphertext,
+        "crypt_password2_ciphertext": created.password2_ciphertext,
+    }
+
+
+def create_admin_vault(
+    owner_user_id: int,
+    name: str,
+    slug: str | None = None,
+    encryption_mode: str = "plain",
+    *,
+    creation_mode: str = "empty",
+    volume_alias: str | None = None,
+    relative_path: str | None = None,
+) -> dict[str, Any]:
+    """Create an administrator-requested Vault without exporting ciphertexts."""
+    created = _create_vault(
+        owner_user_id,
+        name,
+        slug,
+        encryption_mode,
+        creation_mode=creation_mode,
+        volume_alias=volume_alias,
+        relative_path=relative_path,
+        actor_is_admin=True,
+        return_ciphertexts=False,
+    )
+    if not isinstance(created, dict):  # pragma: no cover - invariant
+        raise RuntimeError("Admin Vault creation received recovery material")
+    return project_admin_vault(created, member_count=1)

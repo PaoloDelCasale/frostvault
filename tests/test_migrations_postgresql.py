@@ -14,6 +14,7 @@ import sqlalchemy as sa
 import psycopg
 from psycopg.rows import dict_row
 
+from app import backoff
 from app.catalog import ArchiveCatalog, VaultFileNotFound
 from app.config import settings
 from app.invites import (
@@ -791,3 +792,31 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertEqual(source_copy["plaintext_sha256"], "b" * 64)
         self.assertEqual(active, 2)
         self.assertEqual(current_paths, 2)
+
+    def test_auth_backoff_concurrent_failure_increment_is_atomic(self) -> None:
+        """A real PostgreSQL row lock preserves every concurrent failure."""
+        upgraded = run_alembic()
+        self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+        attempts = 8
+        start = threading.Barrier(attempts)
+
+        def record() -> None:
+            with self._connection() as connection:
+                start.wait(timeout=20)
+                backoff.record_failure(
+                    connection,
+                    scope="ip",
+                    key="concurrent-backoff",
+                )
+
+        with ThreadPoolExecutor(max_workers=attempts) as pool:
+            list(pool.map(lambda _: record(), range(attempts)))
+
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT failure_count FROM auth_backoff
+                WHERE scope='ip' AND key='concurrent-backoff'
+                """
+            ).fetchone()
+        self.assertEqual(row["failure_count"], attempts)

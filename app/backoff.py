@@ -65,6 +65,16 @@ def _backoff_seconds(failure_count: int) -> int:
     return min(delay, CAP_SECONDS)
 
 
+def _next_allowed(row: dict[str, Any]) -> datetime | None:
+    """Read a stored deadline, or derive it after an interrupted write."""
+    if row["next_allowed_at"]:
+        return _parse(row["next_allowed_at"])
+    delay = _backoff_seconds(int(row["failure_count"]))
+    if not delay:
+        return None
+    return _parse(row["updated_at"]) + timedelta(seconds=delay)
+
+
 def guard(connection: Any, *, scope: str, key: str) -> None:
     """Raise :class:`BackoffError` while ``(scope, key)`` is still blocked."""
     row = _load(connection, scope, key)
@@ -73,36 +83,54 @@ def guard(connection: Any, *, scope: str, key: str) -> None:
     now = _now()
     if _is_decayed(row, now):
         return
-    if not row["next_allowed_at"]:
-        return
-    next_allowed = _parse(row["next_allowed_at"])
-    if now < next_allowed:
+    next_allowed = _next_allowed(row)
+    if next_allowed and now < next_allowed:
         raise BackoffError(math.ceil((next_allowed - now).total_seconds()))
 
 
-def record_failure(connection: Any, *, scope: str, key: str) -> None:
-    """Count one failure and extend the backoff once the threshold is reached."""
+def record_failure(connection: Any, *, scope: str, key: str) -> int:
+    """Atomically count one failure and return the committed counter value.
+
+    The ``ON CONFLICT ... DO UPDATE`` is a write on the conflicting row, so
+    SQLite serializes it and PostgreSQL holds that row lock for the enclosing
+    transaction. The resulting count is returned by the same statement rather
+    than being calculated from a stale Python-side read.
+    """
     now = _now()
-    row = _load(connection, scope, key)
-    if row and not _is_decayed(row, now):
-        failure_count = int(row["failure_count"]) + 1
-    else:
-        failure_count = 1
+    now_iso = now.isoformat()
+    decay_cutoff = (now - timedelta(seconds=DECAY_SECONDS)).isoformat()
+    row = connection.execute(
+        """
+        INSERT INTO auth_backoff(scope, key, failure_count, next_allowed_at, updated_at)
+        VALUES (%s, %s, 1, NULL, %s)
+        ON CONFLICT(scope, key) DO UPDATE SET
+            failure_count=CASE
+                WHEN updated_at <= %s THEN 1
+                ELSE failure_count + 1
+            END,
+            next_allowed_at=NULL,
+            updated_at=excluded.updated_at
+        RETURNING failure_count
+        """,
+        (scope, key, now_iso, decay_cutoff),
+    ).fetchone()
+    failure_count = int(row["failure_count"])
     delay = _backoff_seconds(failure_count)
     next_allowed_at = (
         (now + timedelta(seconds=delay)).isoformat() if delay else None
     )
+    # The UPSERT above holds the row lock in normal transaction-backed callers.
+    # Matching the returned counter also prevents an autocommit caller from
+    # overwriting a newer concurrent failure's longer backoff.
     connection.execute(
         """
-        INSERT INTO auth_backoff(scope, key, failure_count, next_allowed_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT(scope, key) DO UPDATE SET
-            failure_count=excluded.failure_count,
-            next_allowed_at=excluded.next_allowed_at,
-            updated_at=excluded.updated_at
+        UPDATE auth_backoff
+        SET next_allowed_at=%s
+        WHERE scope=%s AND key=%s AND failure_count=%s AND updated_at=%s
         """,
-        (scope, key, failure_count, next_allowed_at, now.isoformat()),
+        (next_allowed_at, scope, key, failure_count, now_iso),
     )
+    return failure_count
 
 
 def record_success(connection: Any, *, scope: str, key: str) -> None:

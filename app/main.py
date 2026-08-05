@@ -161,9 +161,9 @@ from .services.vaults import (
     VaultCreationError,
     VaultProvisioningUnavailable,
     VaultSlugTaken,
+    create_admin_vault,
     create_vault_for_user,
     list_admin_vaults,
-    project_admin_vault,
 )
 from .sessions import (
     create_session,
@@ -1829,7 +1829,9 @@ def create_own_vault(
     except VaultCreationError as exc:
         raise HTTPException(409, str(exc)) from exc
     if action.creation_mode == "adopt":
-        background_tasks.add_task(scan_vault, dict(vault))
+        # scan_vault reloads the authoritative row; do not hand a background
+        # task the self-service recovery ciphertexts.
+        background_tasks.add_task(scan_vault, {"id": vault["id"]})
     payload: dict[str, Any] = {
         "id": vault["id"],
         "uuid": vault["uuid"],
@@ -4300,7 +4302,7 @@ def create_vault(
         raise HTTPException(404, "Owner not found")
 
     try:
-        vault = create_vault_for_user(
+        vault = create_admin_vault(
             action.owner_user_id,
             action.name,
             action.slug,
@@ -4308,7 +4310,6 @@ def create_vault(
             creation_mode=action.creation_mode,
             volume_alias=action.volume_alias,
             relative_path=action.relative_path,
-            actor_is_admin=True,
         )
     except VaultSlugTaken as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -4322,7 +4323,9 @@ def create_vault(
         raise HTTPException(409, str(exc)) from exc
 
     if action.creation_mode == "adopt":
-        background_tasks.add_task(scan_vault, dict(vault))
+        # The admin service result is a public projection; scan_vault needs
+        # only this opaque identifier and reloads the persisted Vault itself.
+        background_tasks.add_task(scan_vault, {"id": vault["id"]})
 
     notify_owner_of_admin_action(
         "vault_created",
@@ -4331,7 +4334,7 @@ def create_vault(
         actor_id=admin["id"],
         reason=action.reason,
     )
-    return project_admin_vault(vault, member_count=1)
+    return vault
 
 
 _VAULT_RELOCATION_ERROR_STATUS: dict[str, tuple[int, str]] = {
