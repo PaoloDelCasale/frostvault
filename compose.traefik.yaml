@@ -31,6 +31,8 @@ services:
     # Start as the configured identity; the image includes the 99:100 default.
     user: "${PUID:-99}:${PGID:-100}"
     volumes:
+      # Before first up, create ./data on the host as PUID:PGID with mode 0750.
+      # The entrypoint never chowns vault sources or creates runtime accounts.
       - "${SOURCES_ROOT}:/sources:rw"
       - "./data:/data:rw"
       - "./config:/config/rclone:ro"

@@ -15,8 +15,8 @@ services:
     ports:
       - "127.0.0.1:${APP_PORT:-8080}:8080"
     volumes:
-      # Host directories must be writable by PUID:PGID. The entrypoint never
-      # chowns vault sources; permission the host paths explicitly.
+      # Before first up, create ./data on the host as PUID:PGID with mode 0750.
+      # The entrypoint never chowns vault sources or creates runtime accounts.
       - "${SOURCES_ROOT}:/sources:rw"
       - "./data:/data:rw"
       - "./config:/config/rclone:ro"

@@ -3,21 +3,25 @@ read-only-rootfs startup (issue #196), and production image packaging for
 PostgreSQL metadata backups (issue #7).
 
 Seam: deployment manifests (Dockerfile, compose.yaml, Traefik reference compose).
-Static checks read public config files only. The image smoke test builds and runs
-only when a usable Docker daemon is available.
+Static checks read public config files only. The Compose smoke test builds and
+runs only when usable Docker and Docker Compose daemons are available.
 """
 from __future__ import annotations
 
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 import yaml
+
+from app.database import HEAD_SCHEMA_REVISION
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_PATH = REPO_ROOT / "compose.yaml"
@@ -51,6 +55,25 @@ def _docker_available() -> bool:
 
 
 DOCKER_AVAILABLE = _docker_available()
+
+
+def _docker_compose_available() -> bool:
+    if not DOCKER_AVAILABLE or not DOCKER:
+        return False
+    try:
+        completed = subprocess.run(
+            [DOCKER, "compose", "version"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+DOCKER_COMPOSE_AVAILABLE = _docker_compose_available()
 
 
 class ContainerHardeningComposeTests(unittest.TestCase):
@@ -190,40 +213,27 @@ class EntrypointHardeningTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    DOCKER_AVAILABLE,
-    "Docker daemon unavailable; read-only image smoke test skipped",
+    DOCKER_COMPOSE_AVAILABLE,
+    "Docker Compose with a usable Docker daemon is required for this smoke test",
 )
 class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
-    """Exercise the packaged entrypoint with the same hardening as Compose."""
+    """Run the supplied Compose service through the packaged entrypoint and app."""
+
+    _case_number = 0
 
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
         cls.image = f"frostvault-read-only-smoke:{os.getpid()}"
-        cls._temporary_dir = tempfile.TemporaryDirectory(
-            prefix="frostvault-read-only-smoke-"
-        )
-        try:
-            cls._docker("build", "--tag", cls.image, REPO_ROOT, timeout=900)
-        except BaseException:
-            cls._temporary_dir.cleanup()
-            raise
+        cls._docker("build", "--tag", cls.image, REPO_ROOT, timeout=900)
 
     @classmethod
     def tearDownClass(cls) -> None:
         try:
-            cls._docker(
-                "image",
-                "rm",
-                "--force",
-                cls.image,
-                check=False,
-                timeout=60,
-            )
+            cls._docker("image", "rm", "--force", cls.image, check=False, timeout=60)
         except OSError:
             pass
         finally:
-            cls._temporary_dir.cleanup()
             super().tearDownClass()
 
     @classmethod
@@ -253,171 +263,315 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
             )
         return completed
 
-    def _runtime_args(
-        self,
+    @classmethod
+    def _prepare_host_directory(
+        cls,
+        path: Path,
         uid: int,
         gid: int,
-        data_dir: Path,
-        sources_dir: Path,
-    ) -> list[str]:
-        return [
-            "run",
-            "--rm",
-            "--read-only",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges:true",
-            "--user",
-            f"{uid}:{gid}",
-            "--tmpfs",
-            f"/tmp:uid={uid},gid={gid},mode=1777",
-            "--tmpfs",
-            f"/run:uid={uid},gid={gid},mode=0755",
-            "-v",
-            f"{data_dir}:/data:rw",
-            "-v",
-            f"{sources_dir}:/sources:rw",
-            "-e",
-            f"PUID={uid}",
-            "-e",
-            f"PGID={gid}",
-            "-e",
-            "AUTO_MIGRATE=0",
-            "-e",
-            "DB_BACKEND=sqlite",
-            "-e",
-            "SQLITE_PATH=/data/frostvault.db",
+        mode: int = 0o750,
+    ) -> None:
+        """Perform the documented host-side preflight before Compose starts."""
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chown(path, uid, gid)
+            path.chmod(mode)
+        except PermissionError:
+            # CI runners may not be able to chown directly. This setup-only
+            # helper mutates the bind source before the hardened runtime starts.
+            cls._docker(
+                "run",
+                "--rm",
+                "--user",
+                "0:0",
+                "-v",
+                f"{path}:/host:rw",
+                "--entrypoint",
+                "sh",
+                cls.image,
+                "-ceu",
+                f"chown {uid}:{gid} /host && chmod {mode:o} /host",
+            )
+
+    @staticmethod
+    def _metadata(path: Path) -> tuple[int, int, int]:
+        item = path.stat()
+        return item.st_uid, item.st_gid, stat.S_IMODE(item.st_mode)
+
+    @classmethod
+    def _next_case_names(cls) -> tuple[str, str]:
+        cls._case_number += 1
+        token = f"{os.getpid()}-{cls._case_number}"
+        return f"frostvaultreadonly{os.getpid()}{cls._case_number}", f"frostvault-read-only-{token}"
+
+    @staticmethod
+    def _write_environment(root: Path, values: dict[str, str]) -> None:
+        (root / ".env").write_text(
+            "".join(f"{key}={value}\n" for key, value in values.items()),
+            encoding="utf-8",
+        )
+
+    def _new_compose_project(
+        self,
+        uid: int = 99,
+        gid: int = 100,
+        *,
+        extra_environment: dict[str, str] | None = None,
+    ) -> tuple[tempfile.TemporaryDirectory, Path, str, str, Path, Path]:
+        temporary = tempfile.TemporaryDirectory(prefix="frostvault-read-only-compose-")
+        root = Path(temporary.name)
+        shutil.copy2(COMPOSE_PATH, root / "compose.yaml")
+        data_dir = root / "data"
+        sources_dir = root / "sources"
+        config_dir = root / "config"
+        self._prepare_host_directory(data_dir, uid, gid)
+        self._prepare_host_directory(sources_dir, uid, gid)
+        config_dir.mkdir()
+        project_name, container_name = self._next_case_names()
+        (root / "override.yaml").write_text(
+            "\n".join(
+                (
+                    "services:",
+                    "  frostvault:",
+                    f"    image: {self.image}",
+                    f"    container_name: {container_name}",
+                    '    restart: "no"',
+                    "",
+                )
+            ),
+            encoding="utf-8",
+        )
+        environment = {
+            "PUID": str(uid),
+            "PGID": str(gid),
+            "SOURCES_ROOT": str(sources_dir),
+            # Compose `up` does not conflict with an operator's port while the
+            # smoke test probes the service with docker exec.
+            "APP_PORT": "0",
+        }
+        if extra_environment:
+            environment.update(extra_environment)
+        self._write_environment(root, environment)
+        return temporary, root, project_name, container_name, data_dir, sources_dir
+
+    def _compose(
+        self,
+        root: Path,
+        project_name: str,
+        *args: str,
+        check: bool = True,
+        timeout: int = 120,
+    ) -> subprocess.CompletedProcess[str]:
+        assert DOCKER is not None
+        environment = os.environ.copy()
+        for name in ("PUID", "PGID", "SOURCES_ROOT", "APP_PORT"):
+            environment.pop(name, None)
+        command = [
+            DOCKER,
+            "compose",
+            "--project-name",
+            project_name,
+            "-f",
+            "compose.yaml",
+            "-f",
+            "override.yaml",
+            *args,
         ]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=root,
+                env=environment,
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self.fail(f"docker compose command timed out: {command!r}: {exc}")
+        if check and completed.returncode != 0:
+            self.fail(
+                "docker compose command failed: "
+                f"{command!r}\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+            )
+        return completed
 
-    def _run_runtime_case(self, uid: int, gid: int) -> None:
-        case_root = Path(self._temporary_dir.name) / f"{uid}-{gid}"
-        data_dir = case_root / "data"
-        sources_dir = case_root / "sources"
-        data_dir.mkdir(parents=True)
-        sources_dir.mkdir()
-        source_stat = sources_dir.stat()
-        source_metadata = (
-            source_stat.st_uid,
-            source_stat.st_gid,
-            stat.S_IMODE(source_stat.st_mode),
-        )
-
-        # Bind mounts arrive with host ownership. Prepare only /data using a
-        # separate privileged setup container; the runtime itself drops every
-        # capability and must not change /sources.
-        self._docker(
-            "run",
-            "--rm",
-            "-v",
-            f"{data_dir}:/data:rw",
-            "--entrypoint",
-            "sh",
-            self.image,
-            "-ceu",
-            f"chown {uid}:{gid} /data",
-        )
-
-        runtime_args = self._runtime_args(uid, gid, data_dir, sources_dir)
-        self._docker(
-            *runtime_args,
-            self.image,
-            "sh",
-            "-ceu",
-            (
-                f'test "$(id -u)" = "{uid}"\n'
-                f'test "$(id -g)" = "{gid}"\n'
-                "test ! -w /etc\n"
-                "touch /tmp/frostvault-smoke /run/frostvault-smoke\n"
-                f'printf "%s:%s\\n" "$(id -u)" "$(id -g)" > /data/runtime-{uid}-{gid}\n'
-            ),
-        )
-        self._docker(
-            *runtime_args,
-            self.image,
-            "python",
-            "-m",
-            "alembic",
-            "upgrade",
-            "head",
-            timeout=240,
+    def _down(self, root: Path, project_name: str) -> None:
+        self._compose(
+            root,
+            project_name,
+            "down",
+            "--volumes",
+            "--remove-orphans",
+            check=False,
+            timeout=120,
         )
 
-        self.assertEqual(
-            (data_dir / f"runtime-{uid}-{gid}").read_text(encoding="utf-8"),
-            f"{uid}:{gid}\n",
-        )
-        self.assertTrue((data_dir / "frostvault.db").is_file())
-        after_source_stat = sources_dir.stat()
-        self.assertEqual(
-            (
-                after_source_stat.st_uid,
-                after_source_stat.st_gid,
-                stat.S_IMODE(after_source_stat.st_mode),
-            ),
-            source_metadata,
-            "runtime must not change Source Volume ownership or modes",
-        )
-
-    def _run_root_entrypoint_case(self, uid: int, gid: int) -> None:
-        case_root = Path(self._temporary_dir.name) / f"root-{uid}-{gid}"
-        data_dir = case_root / "data"
-        sources_dir = case_root / "sources"
-        data_dir.mkdir(parents=True)
-        sources_dir.mkdir()
-        source_stat = sources_dir.stat()
-        source_metadata = (
-            source_stat.st_uid,
-            source_stat.st_gid,
-            stat.S_IMODE(source_stat.st_mode),
-        )
-
-        # This is the direct-docker-run path: the entrypoint starts as root,
-        # then drops to a numeric ID without writing /etc on a read-only root.
-        self._docker(
-            "run",
-            "--rm",
-            "--read-only",
-            "--tmpfs",
-            "/tmp",
-            "--tmpfs",
-            "/run",
-            "-v",
-            f"{data_dir}:/data:rw",
-            "-v",
-            f"{sources_dir}:/sources:rw",
-            "-e",
-            f"PUID={uid}",
-            "-e",
-            f"PGID={gid}",
-            "-e",
-            "AUTO_MIGRATE=0",
-            self.image,
-            "sh",
-            "-ceu",
-            (
-                f'test "$(id -u)" = "{uid}"\n'
-                f'test "$(id -g)" = "{gid}"\n'
-                "test ! -w /etc\n"
-                "touch /tmp/frostvault-root-smoke /run/frostvault-root-smoke\n"
-                f'printf "%s:%s\\n" "$(id -u)" "$(id -g)" > /data/root-{uid}-{gid}\n'
-            ),
+    def _wait_for_ready(self, container_name: str) -> None:
+        deadline = time.monotonic() + 60
+        last_output = ""
+        while time.monotonic() < deadline:
+            probe = self._docker(
+                "exec",
+                container_name,
+                "curl",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--max-time",
+                "1",
+                "http://127.0.0.1:8080/ready",
+                check=False,
+                timeout=10,
+            )
+            last_output = probe.stdout + probe.stderr
+            if probe.returncode == 0:
+                self.assertIn('"status":"ready"', probe.stdout)
+                return
+            running = self._docker(
+                "inspect",
+                "--format",
+                "{{.State.Running}}",
+                container_name,
+                check=False,
+            )
+            if running.stdout.strip() != "true":
+                logs = self._docker("logs", container_name, check=False)
+                self.fail(
+                    "Compose service stopped before readiness. "
+                    f"probe={last_output!r}\nlogs:\n{logs.stdout}{logs.stderr}"
+                )
+            time.sleep(0.5)
+        logs = self._docker("logs", container_name, check=False)
+        self.fail(
+            "Compose service did not become ready. "
+            f"last probe={last_output!r}\nlogs:\n{logs.stdout}{logs.stderr}"
         )
 
-        self.assertEqual(
-            (data_dir / f"root-{uid}-{gid}").read_text(encoding="utf-8"),
-            f"{uid}:{gid}\n",
+    def _run_fresh_compose_application(self, uid: int, gid: int) -> None:
+        username = f"smoke-{uid}"
+        temporary, root, project_name, container_name, data_dir, sources_dir = (
+            self._new_compose_project(
+                uid,
+                gid,
+                extra_environment={
+                    "DB_BACKEND": "sqlite",
+                    "SQLITE_PATH": "/data/frostvault.db",
+                    "AUTO_MIGRATE": "1",
+                    "BOOTSTRAP_ADMIN_USERNAME": username,
+                    "BOOTSTRAP_ADMIN_PASSWORD": "Smoke-only-password-196",
+                    "BOOTSTRAP_ADMIN_DISPLAY_NAME": "SmokeAdmin",
+                    "FILESYSTEM_WATCH_ENABLED": "false",
+                },
+            )
         )
-        after_source_stat = sources_dir.stat()
-        self.assertEqual(
-            (
-                after_source_stat.st_uid,
-                after_source_stat.st_gid,
-                stat.S_IMODE(after_source_stat.st_mode),
-            ),
-            source_metadata,
-            "root entrypoint must not change Source Volume ownership or modes",
-        )
+        try:
+            # This is the documented preflight, done before `compose up`; the
+            # non-root service must not repair either bind source at runtime.
+            expected_metadata = (uid, gid, 0o750)
+            self.assertEqual(self._metadata(data_dir), expected_metadata)
+            source_metadata = self._metadata(sources_dir)
+            self.assertEqual(source_metadata, expected_metadata)
+
+            self._compose(root, project_name, "up", "--detach", timeout=180)
+            self._wait_for_ready(container_name)
+
+            identity = self._docker(
+                "exec",
+                container_name,
+                "sh",
+                "-ceu",
+                'printf "%s:%s" "$(id -u)" "$(id -g)"',
+            )
+            self.assertEqual(identity.stdout, f"{uid}:{gid}")
+            self._docker(
+                "exec",
+                container_name,
+                "sh",
+                "-ceu",
+                "test ! -w /etc && test -w /tmp && test -w /run && test -w /data",
+            )
+            managed_identity = self._docker(
+                "exec",
+                container_name,
+                "stat",
+                "-c",
+                "%u:%g",
+                "/sources/managed",
+            )
+            self.assertEqual(managed_identity.stdout.strip(), f"{uid}:{gid}")
+
+            database_path = data_dir / "frostvault.db"
+            self.assertTrue(database_path.is_file())
+            with sqlite3.connect(database_path) as connection:
+                revision = connection.execute(
+                    "SELECT version_num FROM alembic_version"
+                ).fetchone()
+                admin = connection.execute(
+                    "SELECT username, is_admin FROM users"
+                ).fetchone()
+            self.assertEqual(revision, (HEAD_SCHEMA_REVISION,))
+            self.assertEqual(admin, (username, 1))
+
+            logs = self._docker("logs", container_name)
+            combined_logs = logs.stdout + logs.stderr
+            self.assertIn(
+                "AUTO_MIGRATE: ensuring database schema is current before uvicorn",
+                combined_logs,
+            )
+            self.assertIn("AUTO_MIGRATE: bootstrapped", combined_logs)
+            self.assertIn("Application startup complete.", combined_logs)
+            self.assertEqual(self._metadata(data_dir), expected_metadata)
+            self.assertEqual(
+                self._metadata(sources_dir),
+                source_metadata,
+                "the runtime must not chown or chmod the Source Volume root",
+            )
+            managed_metadata = self._metadata(sources_dir / "managed")
+            self.assertEqual(managed_metadata[:2], (uid, gid))
+        finally:
+            self._down(root, project_name)
+            temporary.cleanup()
+
+    def _run_compose_identity_case(
+        self,
+        puid: str,
+        pgid: str,
+    ) -> tuple[subprocess.CompletedProcess[str], str]:
+        temporary, root, project_name, _, _, _ = self._new_compose_project()
+        try:
+            self._write_environment(
+                root,
+                {
+                    "PUID": puid,
+                    "PGID": pgid,
+                    "SOURCES_ROOT": str(root / "sources"),
+                    "APP_PORT": "0",
+                },
+            )
+            rendered = self._compose(root, project_name, "config", check=False)
+            rendered_output = rendered.stdout + rendered.stderr
+            self.assertEqual(rendered.returncode, 0, rendered_output)
+            self.assertRegex(
+                rendered.stdout,
+                rf"(?m)^\s*user:\s*['\"]?{re.escape(f'{puid}:{pgid}')}",
+            )
+            completed = self._compose(
+                root,
+                project_name,
+                "run",
+                "--rm",
+                "--no-deps",
+                "frostvault",
+                "sh",
+                "-c",
+                "printf compose-command-ran",
+                check=False,
+            )
+            return completed, completed.stdout + completed.stderr
+        finally:
+            self._down(root, project_name)
+            temporary.cleanup()
 
     def test_image_bakes_the_default_identity(self) -> None:
         completed = self._docker(
@@ -432,36 +586,49 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
         )
         self.assertEqual(completed.stdout, "")
 
-    def test_default_and_overridden_identities_work_with_read_only_rootfs(self) -> None:
+    def test_fresh_compose_deployment_runs_the_app_with_default_and_override(self) -> None:
         for uid, gid in ((99, 100), (12345, 12346)):
             with self.subTest(uid=uid, gid=gid):
-                self._run_runtime_case(uid, gid)
+                self._run_fresh_compose_application(uid, gid)
 
-    def test_root_entrypoint_supports_default_and_overridden_identities_read_only(self) -> None:
-        for uid, gid in ((99, 100), (12345, 12346)):
-            with self.subTest(uid=uid, gid=gid):
-                self._run_root_entrypoint_case(uid, gid)
+    def test_compose_rejects_unknown_non_numeric_puid_and_pgid_before_entrypoint(self) -> None:
+        cases = (
+            ("not-a-number", "100", "user"),
+            ("99", "not-a-number", "group"),
+        )
+        for puid, pgid, principal in cases:
+            with self.subTest(PUID=puid, PGID=pgid):
+                completed, output = self._run_compose_identity_case(puid, pgid)
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertNotIn("compose-command-ran", output)
+                self.assertNotIn("ERROR:", output)
+                self.assertRegex(
+                    output,
+                    rf"(?i)(unable to find {principal}|{principal}.*not.*found|no matching entries)",
+                )
 
-    def test_invalid_override_fails_before_starting_the_command(self) -> None:
-        completed = self._docker(
-            "run",
-            "--rm",
-            "--read-only",
-            "-e",
-            "PUID=not-a-number",
-            "-e",
-            "PGID=100",
-            self.image,
-            "sh",
-            "-c",
-            "true",
-            check=False,
-        )
-        self.assertEqual(completed.returncode, 64)
-        self.assertIn(
-            "PUID must be a canonical positive decimal ID from 1 through 2147483647",
-            completed.stderr,
-        )
+    def test_compose_root_overrides_reach_entrypoint_rejection(self) -> None:
+        for puid, pgid, name in (("0", "100", "PUID"), ("99", "0", "PGID")):
+            with self.subTest(PUID=puid, PGID=pgid):
+                completed, output = self._run_compose_identity_case(puid, pgid)
+                self.assertEqual(completed.returncode, 64, output)
+                self.assertIn(
+                    f"{name} must be a canonical positive decimal ID from 1 through 2147483647",
+                    output,
+                )
+                self.assertNotIn("compose-command-ran", output)
+
+    def test_compose_rejects_out_of_range_puid_and_pgid_before_entrypoint(self) -> None:
+        for puid, pgid in (("2147483648", "100"), ("99", "2147483648")):
+            with self.subTest(PUID=puid, PGID=pgid):
+                completed, output = self._run_compose_identity_case(puid, pgid)
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertNotIn("compose-command-ran", output)
+                self.assertNotIn("ERROR:", output)
+                self.assertRegex(
+                    output,
+                    r"(?i)(range|outside.*(?:uid|gid)|invalid.*(?:uid|gid))",
+                )
 
 
 class TraefikReferenceDeploymentTests(unittest.TestCase):
@@ -501,6 +668,20 @@ class PermissionAndTraefikDocumentationTests(unittest.TestCase):
         self.assertRegex(docs, r"(?i)unraid")
         self.assertRegex(docs, r"(?i)docker desktop")
         self.assertRegex(docs, r"(?i)never changes ownership|never chown")
+        self.assertIn("never creates users or groups at runtime", docs)
+        self.assertIn('user: "${PUID:-99}:${PGID:-100}"', docs)
+        self.assertIn("mkdir -p ./data", docs)
+        self.assertIn('sudo chown "${PUID}:${PGID}" ./data', docs)
+        self.assertIn("sudo chmod 0750 ./data", docs)
+        self.assertIn("2147483647", docs)
+        self.assertRegex(docs, r"(?is)Docker.*before.*entrypoint")
+
+    def test_readme_requires_fresh_data_preflight_before_compose_start(self) -> None:
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("Compose identity and fresh host data directory", readme)
+        self.assertIn("mkdir -p ./data", readme)
+        self.assertIn('sudo chown "${PUID}:${PGID}" ./data', readme)
+        self.assertIn("never creates an account at runtime", readme)
 
     def test_traefik_docs_describe_private_upstream(self) -> None:
         docs = (REPO_ROOT / "docs" / "traefik.md").read_text(encoding="utf-8")

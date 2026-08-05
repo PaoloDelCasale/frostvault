@@ -1,7 +1,8 @@
 #!/bin/sh
 # Start as a configurable non-root archive identity without ever changing
-# /etc at runtime. The image bakes in the documented Unraid default (99:100);
-# numeric overrides are safe because gosu accepts UID:GID directly.
+# /etc at runtime. Compose starts directly as numeric PUID:PGID; the image
+# bakes in only the documented Unraid default (99:100). A root docker-run
+# fallback uses gosu with numeric IDs, never runtime account creation.
 # Do not chown vault sources.
 set -eu
 

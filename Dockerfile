@@ -36,9 +36,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client-16 \
     && rm -rf /var/lib/apt/lists/*
 
-# The Compose templates run without CAP_SETUID/CAP_SETGID, so the documented
-# Unraid default must exist before the read-only runtime starts. Overrides use
-# numeric IDs directly in the entrypoint and never mutate /etc at startup.
+# The Compose templates run without CAP_SETUID/CAP_SETGID and start directly
+# as numeric PUID:PGID, so the documented Unraid default must exist before the
+# read-only runtime starts. Overrides need no account and never mutate /etc.
 RUN set -eux; \
     if getent passwd archive >/dev/null; then \
         echo "archive user is unexpectedly already present in the base image" >&2; \
