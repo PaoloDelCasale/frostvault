@@ -120,6 +120,17 @@ class OpenApiResponseContractTests(unittest.TestCase):
         ]
         self.assertEqual(detail["enum"], ["Offline cache authorization changed"])
 
+    def test_admin_vault_schema_is_a_closed_non_secret_contract(self) -> None:
+        vault = app.openapi()["components"]["schemas"]["AdminVault"]
+        self.assertFalse(vault["additionalProperties"])
+        self.assertIn("rclone_remote", vault["properties"])
+        self.assertTrue(
+            {
+                "crypt_password_ciphertext",
+                "crypt_password2_ciphertext",
+            }.isdisjoint(vault["properties"])
+        )
+
     def test_committed_openapi_document_matches_the_application(self) -> None:
         committed = json.loads(
             (ROOT / "frontend" / "openapi.json").read_text(encoding="utf-8")

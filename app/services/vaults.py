@@ -32,7 +32,8 @@ import os
 import re
 import shutil
 import uuid
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Mapping
 
 from ..config import settings
 from ..database import INTEGRITY_ERRORS, db
@@ -70,12 +71,71 @@ _SLUG_PATTERN = re.compile(r"[a-z0-9-]+")
 _ENCRYPTION_MODES = frozenset({"plain", "crypt"})
 _CREATION_MODES = frozenset({"empty", "adopt"})
 
+# This is deliberately an allowlist rather than a denylist. Admin Vault
+# responses must remain safe when new persistence-only columns are added, in
+# particular credential material for a storage backend.
+_ADMIN_VAULT_PUBLIC_FIELDS = (
+    "id",
+    "uuid",
+    "slug",
+    "name",
+    "source_root",
+    "s3_bucket",
+    "s3_prefix",
+    "rclone_remote",
+    "enabled",
+    "encryption_mode",
+    "decommission_state",
+    "decommissioned_at",
+    "root_released_at",
+)
+
+
+def project_admin_vault(
+    vault: Mapping[str, Any], *, member_count: int | None = None
+) -> dict[str, Any]:
+    """Return the stable, non-secret administrative Vault representation.
+
+    The projection intentionally fails closed: any column not named in
+    ``_ADMIN_VAULT_PUBLIC_FIELDS`` is absent from the HTTP representation.
+    """
+    if member_count is None:
+        member_count = int(vault["member_count"])
+    return {
+        **{field: vault[field] for field in _ADMIN_VAULT_PUBLIC_FIELDS},
+        "member_count": member_count,
+    }
+
+
+def list_admin_vaults(connection: Any) -> list[dict[str, Any]]:
+    """List Vaults through the same explicit public allowlist as creation."""
+    rows = connection.execute(
+        """
+        SELECT v.id, v.uuid, v.slug, v.name, v.source_root, v.s3_bucket,
+               v.s3_prefix, v.rclone_remote, v.enabled, v.encryption_mode,
+               v.decommission_state, v.decommissioned_at, v.root_released_at,
+               COUNT(vm.user_id) AS member_count
+        FROM vaults v LEFT JOIN vault_members vm ON vm.vault_id=v.id
+        GROUP BY v.id ORDER BY lower(v.name)
+        """
+    ).fetchall()
+    return [project_admin_vault(row) for row in rows]
+
+
+@dataclass(frozen=True)
+class _SecretVaultCreation:
+    """Internal creation result; only self-service receives its ciphertexts."""
+
+    vault: dict[str, Any]
+    password_ciphertext: str | None
+    password2_ciphertext: str | None
+
 
 def _slugify(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
 
 
-def create_vault_for_user(
+def _create_vault(
     user_id: int,
     name: str,
     slug: str | None = None,
@@ -85,8 +145,9 @@ def create_vault_for_user(
     volume_alias: str | None = None,
     relative_path: str | None = None,
     actor_is_admin: bool = False,
-) -> dict[str, Any]:
-    """Create a vault owned solely by ``user_id`` and return the new row.
+    return_ciphertexts: bool = False,
+) -> dict[str, Any] | _SecretVaultCreation:
+    """Create a Vault while retaining sealed material inside this service.
 
     ``creation_mode`` is ``empty`` (default) or ``adopt``. Adoption requires
     ``volume_alias`` and ``relative_path`` under an authorized Source Area
@@ -183,7 +244,11 @@ def create_vault_for_user(
                     crypt_password_ciphertext, crypt_password2_ciphertext
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING *
+                RETURNING
+                    id, uuid, slug, name, source_root, s3_bucket, s3_prefix,
+                    rclone_remote, enabled, encryption_mode,
+                    recovery_custody_confirmed_at, decommission_state,
+                    decommissioned_at, root_released_at
                 """,
                 (
                     vault_uuid,
@@ -230,4 +295,69 @@ def create_vault_for_user(
         if directory_created:
             shutil.rmtree(source_root, ignore_errors=True)
         raise
+    if return_ciphertexts:
+        return _SecretVaultCreation(
+            vault=vault,
+            password_ciphertext=password_ciphertext,
+            password2_ciphertext=password2_ciphertext,
+        )
     return vault
+
+
+def create_vault_for_user(
+    user_id: int,
+    name: str,
+    slug: str | None = None,
+    encryption_mode: str = "plain",
+    *,
+    creation_mode: str = "empty",
+    volume_alias: str | None = None,
+    relative_path: str | None = None,
+    actor_is_admin: bool = False,
+) -> dict[str, Any]:
+    """Create a self-service Vault with its recovery ciphertexts in-process."""
+    created = _create_vault(
+        user_id,
+        name,
+        slug,
+        encryption_mode,
+        creation_mode=creation_mode,
+        volume_alias=volume_alias,
+        relative_path=relative_path,
+        actor_is_admin=actor_is_admin,
+        return_ciphertexts=True,
+    )
+    if not isinstance(created, _SecretVaultCreation):  # pragma: no cover - invariant
+        raise RuntimeError("Self-service Vault creation lost its recovery material")
+    return {
+        **created.vault,
+        "crypt_password_ciphertext": created.password_ciphertext,
+        "crypt_password2_ciphertext": created.password2_ciphertext,
+    }
+
+
+def create_admin_vault(
+    owner_user_id: int,
+    name: str,
+    slug: str | None = None,
+    encryption_mode: str = "plain",
+    *,
+    creation_mode: str = "empty",
+    volume_alias: str | None = None,
+    relative_path: str | None = None,
+) -> dict[str, Any]:
+    """Create an administrator-requested Vault without exporting ciphertexts."""
+    created = _create_vault(
+        owner_user_id,
+        name,
+        slug,
+        encryption_mode,
+        creation_mode=creation_mode,
+        volume_alias=volume_alias,
+        relative_path=relative_path,
+        actor_is_admin=True,
+        return_ciphertexts=False,
+    )
+    if not isinstance(created, dict):  # pragma: no cover - invariant
+        raise RuntimeError("Admin Vault creation received recovery material")
+    return project_admin_vault(created, member_count=1)

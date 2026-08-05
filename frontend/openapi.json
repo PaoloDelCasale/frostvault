@@ -311,7 +311,7 @@
         "type": "object"
       },
       "AdminVault": {
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
           "decommission_state": {
             "enum": [
@@ -340,6 +340,9 @@
             "type": "number"
           },
           "name": {
+            "type": "string"
+          },
+          "rclone_remote": {
             "type": "string"
           },
           "root_released_at": {
@@ -7143,7 +7146,7 @@
     },
     "/api/audit-events": {
       "get": {
-        "description": "List audit events visible to members of the current vault.",
+        "description": "List audit events visible to the current Vault membership role.",
         "operationId": "vault_audit_events_api_audit_events_get",
         "responses": {
           "200": {
@@ -8024,7 +8027,7 @@
     },
     "/api/reauth": {
       "post": {
-        "description": "Break-glass Reauthentication: re-enter the local password.\n\nOIDC users have no password hash and must step up through the provider\n(see ``/auth/oidc/reauth``).",
+        "description": "Local-password Reauthentication with an isolated durable backoff.\n\nOIDC users have no password hash and must step up through the provider\n(see ``/auth/oidc/reauth``). Its account/IP counters deliberately use\nnamespaced keys so a Reauthentication success cannot reset Local Sign-in,\nInvite, or OIDC-related throttling state.",
         "operationId": "reauth_api_reauth_post",
         "requestBody": {
           "content": {

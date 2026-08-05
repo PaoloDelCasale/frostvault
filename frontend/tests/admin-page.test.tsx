@@ -790,6 +790,64 @@ describe("AdminPage — members dialog load (seam 5)", () => {
   });
 });
 
+describe("AdminPage — recovery export clipboard feedback (#203)", () => {
+  beforeEach(() => {
+    resetApiClientForTests();
+  });
+
+  it("reports rejected copies without implying success or hiding fallback", async () => {
+    const user = userEvent.setup();
+    const recoveryExport = "RECOVERY-SECRET-MATERIAL";
+    const writeText = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("clipboard permission denied"))
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const harness = await renderAdmin();
+
+    await openVaultMembers(user, "Vault B");
+    harness.memberGets.get(2)!.resolve(jsonResponse(membersB));
+    harness.quotaGets
+      .find((q) => q.vaultId === 2 && q.method === "GET")!
+      .deferred.resolve(unlimitedQuotaResponse(2));
+
+    await user.type(
+      screen.getByLabelText(messages["admin.recovery_reason"]),
+      "save the export offline",
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: messages["admin.recovery_export_submit"],
+      }),
+    );
+    await screen.findByText(recoveryExport);
+
+    const copyButton = screen.getByRole("button", {
+      name: messages["admin.recovery_copy"],
+    });
+    const downloadButton = screen.getByRole("button", {
+      name: messages["admin.recovery_download"],
+    });
+    await user.click(copyButton);
+
+    const failure = await screen.findByRole("alert");
+    expect(failure).toHaveTextContent(messages["admin.recovery_copy_failed"]);
+    expect(failure).not.toHaveTextContent(recoveryExport);
+    expect(writeText).toHaveBeenCalledWith(recoveryExport);
+    expect(screen.queryByText(messages["admin.recovery_copied"])).not.toBeInTheDocument();
+    expect(screen.getByText(recoveryExport)).toBeInTheDocument();
+    expect(downloadButton).toBeEnabled();
+
+    await user.click(copyButton);
+    expect(
+      await screen.findByText(messages["admin.recovery_copied"]),
+    ).toHaveAttribute("role", "status");
+  });
+});
+
 describe("AdminPage — quota save (seam 6)", () => {
   beforeEach(() => {
     resetApiClientForTests();

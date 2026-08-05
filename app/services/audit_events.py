@@ -161,18 +161,35 @@ def list_vault_audit_events(
     connection: Any,
     vault_id: int,
     *,
+    include_owner: bool = False,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    """Return vault-visible audit events newest first."""
-    rows = connection.execute(
-        """
-        SELECT * FROM audit_events
-        WHERE vault_id=%s AND visibility IN ('vault', 'owner')
-        ORDER BY id DESC
-        LIMIT %s
-        """,
-        (vault_id, max(1, min(limit, 500))),
-    ).fetchall()
+    """Return only the audit rows visible to this Vault membership role.
+
+    ``owner`` visibility is intentionally evaluated in this persistence query,
+    not left to a client-side display decision. Callers may set
+    ``include_owner`` only after resolving the authenticated member's role.
+    """
+    if include_owner:
+        rows = connection.execute(
+            """
+            SELECT * FROM audit_events
+            WHERE vault_id=%s AND visibility IN ('vault', 'owner')
+            ORDER BY id DESC
+            LIMIT %s
+            """,
+            (vault_id, max(1, min(limit, 500))),
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            """
+            SELECT * FROM audit_events
+            WHERE vault_id=%s AND visibility='vault'
+            ORDER BY id DESC
+            LIMIT %s
+            """,
+            (vault_id, max(1, min(limit, 500))),
+        ).fetchall()
     return [_row_to_event(row) for row in rows]
 
 

@@ -14,6 +14,22 @@ CAP_SECONDS = 15 * 60
 # A quiet period this long makes a key forget its accumulated failures.
 DECAY_SECONDS = 60 * 60
 
+# ``auth_backoff`` deliberately has only the stable ``ip`` and ``account``
+# dimensions. Reauthentication uses namespaced keys inside those dimensions so
+# its counters persist independently from Local Sign-in and Invite counters.
+_REAUTH_IP_KEY_PREFIX = "reauth:ip:"
+_REAUTH_ACCOUNT_KEY_PREFIX = "reauth:account:"
+
+
+def reauth_ip_key(client_ip: str) -> str:
+    """Return the Local Reauthentication-only IP counter key."""
+    return f"{_REAUTH_IP_KEY_PREFIX}{client_ip}"
+
+
+def reauth_account_key(user_id: int) -> str:
+    """Return the Local Reauthentication-only account counter key."""
+    return f"{_REAUTH_ACCOUNT_KEY_PREFIX}{user_id}"
+
 
 class BackoffError(Exception):
     """Raised when a throttled ``(scope, key)`` must wait before retrying."""
@@ -49,6 +65,16 @@ def _backoff_seconds(failure_count: int) -> int:
     return min(delay, CAP_SECONDS)
 
 
+def _next_allowed(row: dict[str, Any]) -> datetime | None:
+    """Read a stored deadline, or derive it after an interrupted write."""
+    if row["next_allowed_at"]:
+        return _parse(row["next_allowed_at"])
+    delay = _backoff_seconds(int(row["failure_count"]))
+    if not delay:
+        return None
+    return _parse(row["updated_at"]) + timedelta(seconds=delay)
+
+
 def guard(connection: Any, *, scope: str, key: str) -> None:
     """Raise :class:`BackoffError` while ``(scope, key)`` is still blocked."""
     row = _load(connection, scope, key)
@@ -57,36 +83,82 @@ def guard(connection: Any, *, scope: str, key: str) -> None:
     now = _now()
     if _is_decayed(row, now):
         return
-    if not row["next_allowed_at"]:
-        return
-    next_allowed = _parse(row["next_allowed_at"])
-    if now < next_allowed:
+    next_allowed = _next_allowed(row)
+    if next_allowed and now < next_allowed:
         raise BackoffError(math.ceil((next_allowed - now).total_seconds()))
 
 
-def record_failure(connection: Any, *, scope: str, key: str) -> None:
-    """Count one failure and extend the backoff once the threshold is reached."""
+def record_failure(
+    connection: Any, *, scope: str, key: str
+) -> tuple[int, str | None]:
+    """Atomically count one failure and return its committed count and deadline.
+
+    The ``ON CONFLICT ... DO UPDATE`` is a write on the conflicting row, so
+    SQLite serializes it and PostgreSQL holds that row lock for the enclosing
+    transaction. Both the incremented count and the matching deadline are
+    returned by the same statement rather than being calculated from a stale
+    Python-side read.
+    """
     now = _now()
-    row = _load(connection, scope, key)
-    if row and not _is_decayed(row, now):
-        failure_count = int(row["failure_count"]) + 1
-    else:
-        failure_count = 1
-    delay = _backoff_seconds(failure_count)
-    next_allowed_at = (
-        (now + timedelta(seconds=delay)).isoformat() if delay else None
+    now_iso = now.isoformat()
+    decay_cutoff = (now - timedelta(seconds=DECAY_SECONDS)).isoformat()
+    # Keep timestamp arithmetic out of the UPSERT: SQLite and PostgreSQL do not
+    # share a timestamp-addition expression, while the stored values are text.
+    # The final value is the capped deadline for every count beyond this range.
+    deadline_values = tuple(
+        (now + timedelta(seconds=_backoff_seconds(count))).isoformat()
+        for count in range(THRESHOLD, THRESHOLD + 7)
     )
-    connection.execute(
+    row = connection.execute(
         """
         INSERT INTO auth_backoff(scope, key, failure_count, next_allowed_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s)
+        VALUES (%s, %s, 1, NULL, %s)
         ON CONFLICT(scope, key) DO UPDATE SET
-            failure_count=excluded.failure_count,
-            next_allowed_at=excluded.next_allowed_at,
+            failure_count=CASE
+                WHEN auth_backoff.updated_at <= %s THEN 1
+                ELSE auth_backoff.failure_count + 1
+            END,
+            next_allowed_at=CASE
+                WHEN auth_backoff.updated_at <= %s
+                     OR auth_backoff.failure_count < %s THEN NULL
+                ELSE CASE auth_backoff.failure_count
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                    ELSE %s
+                END
+            END,
             updated_at=excluded.updated_at
+        RETURNING failure_count, next_allowed_at
         """,
-        (scope, key, failure_count, next_allowed_at, now.isoformat()),
-    )
+        (
+            scope,
+            key,
+            now_iso,
+            decay_cutoff,
+            decay_cutoff,
+            THRESHOLD - 1,
+            THRESHOLD - 1,
+            deadline_values[0],
+            THRESHOLD,
+            deadline_values[1],
+            THRESHOLD + 1,
+            deadline_values[2],
+            THRESHOLD + 2,
+            deadline_values[3],
+            THRESHOLD + 3,
+            deadline_values[4],
+            THRESHOLD + 4,
+            deadline_values[5],
+            deadline_values[6],
+        ),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("auth_backoff failure UPSERT returned no row")
+    return int(row["failure_count"]), row["next_allowed_at"]
 
 
 def record_success(connection: Any, *, scope: str, key: str) -> None:

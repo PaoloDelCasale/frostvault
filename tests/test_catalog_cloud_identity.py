@@ -73,10 +73,35 @@ class CloudRediscoveryIdentityTests(unittest.TestCase):
                 scan_id="2026-07-21T10:01:00+00:00",
                 origin="upload",
             )
+            digest = "a" * 64
+            catalog.set_local_fingerprint(
+                vault_id=2,
+                path=old_path,
+                plaintext_sha256=digest,
+                matched_archive_version_id=version_id,
+            )
+            catalog.mark_local_copy_missing(
+                file_id, observed_at="2026-07-21T11:00:00+00:00"
+            )
+            catalog.observe_local_copy(
+                vault_id=2,
+                path=new_path,
+                file_type="regular",
+                size=32,
+                mtime_ns=1_000,
+                observed_at="2026-07-21T11:00:00+00:00",
+            )
+            catalog.set_local_fingerprint(
+                vault_id=2,
+                path=new_path,
+                plaintext_sha256=digest,
+                matched_archive_version_id=None,
+            )
             catalog.confirm_file_rename(
                 vault_file_id=file_id,
                 new_path=new_path,
                 changed_at="2026-07-21T11:00:00+00:00",
+                vault_id=2,
             )
             self.assertEqual(
                 catalog.get_file_by_path(2, new_path)["id"],
@@ -159,10 +184,35 @@ class CloudRediscoveryIdentityTests(unittest.TestCase):
                 scan_id="2026-07-21T10:01:00+00:00",
                 origin="upload",
             )
+            digest = "b" * 64
+            catalog.set_local_fingerprint(
+                vault_id=2,
+                path=old_path,
+                plaintext_sha256=digest,
+                matched_archive_version_id=None,
+            )
+            catalog.mark_local_copy_missing(
+                file_id, observed_at="2026-07-21T11:00:00+00:00"
+            )
+            catalog.observe_local_copy(
+                vault_id=2,
+                path=new_path,
+                file_type="regular",
+                size=16,
+                mtime_ns=2_000,
+                observed_at="2026-07-21T11:00:00+00:00",
+            )
+            catalog.set_local_fingerprint(
+                vault_id=2,
+                path=new_path,
+                plaintext_sha256=digest,
+                matched_archive_version_id=None,
+            )
             catalog.confirm_file_rename(
                 vault_file_id=file_id,
                 new_path=new_path,
                 changed_at="2026-07-21T11:00:00+00:00",
+                vault_id=2,
             )
 
             new_version_id = catalog.record_archive_version(

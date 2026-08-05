@@ -3,8 +3,11 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,7 +15,8 @@ import sqlalchemy as sa
 import psycopg
 from psycopg.rows import dict_row
 
-from app.catalog import ArchiveCatalog
+from app import backoff
+from app.catalog import ArchiveCatalog, VaultFileNotFound
 from app.config import settings
 from app.invites import (
     InviteError,
@@ -61,6 +65,57 @@ class PostgreSQLMigrationTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.engine.dispose()
+
+    def _connection(self) -> psycopg.Connection:
+        return psycopg.connect(
+            POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://"),
+            row_factory=dict_row,
+        )
+
+    def _seed_rename_candidate(self) -> str:
+        digest = "a" * 64
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO vaults(
+                    id, slug, name, source_root, s3_bucket, s3_prefix,
+                    rclone_remote
+                ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                """
+            )
+            catalog = ArchiveCatalog(connection)
+            missing_id = catalog.observe_local_copy(
+                vault_id=2,
+                path="concurrent/old.txt",
+                file_type="regular",
+                size=9,
+                mtime_ns=100,
+                observed_at="2026-07-21T10:00:00+00:00",
+            )
+            catalog.set_local_fingerprint(
+                vault_id=2,
+                path="concurrent/old.txt",
+                plaintext_sha256=digest,
+                matched_archive_version_id=None,
+            )
+            catalog.mark_local_copy_missing(
+                missing_id, observed_at="2026-07-21T11:00:00+00:00"
+            )
+            catalog.observe_local_copy(
+                vault_id=2,
+                path="concurrent/new.txt",
+                file_type="regular",
+                size=9,
+                mtime_ns=100,
+                observed_at="2026-07-21T11:00:00+00:00",
+            )
+            catalog.set_local_fingerprint(
+                vault_id=2,
+                path="concurrent/new.txt",
+                plaintext_sha256=digest,
+                matched_archive_version_id=None,
+            )
+        return missing_id
 
     def test_fresh_database_upgrades_and_rolls_back_losslessly(self) -> None:
         upgraded = run_alembic()
@@ -584,3 +639,206 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 "SELECT is_admin FROM users WHERE id=%s", (admin_id,)
             ).fetchone()
             self.assertTrue(still_admin["is_admin"])
+
+    def test_issue_188_concurrent_confirms_consume_one_candidate_once(self) -> None:
+        upgraded = run_alembic()
+        self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+        missing_id = self._seed_rename_candidate()
+        start = threading.Barrier(2)
+
+        def confirm_once(_: int) -> str:
+            connection = self._connection()
+            try:
+                try:
+                    with connection:
+                        start.wait(timeout=20)
+                        ArchiveCatalog(connection).confirm_file_rename(
+                            vault_file_id=missing_id,
+                            new_path="concurrent/new.txt",
+                            changed_at="2026-07-21T11:05:00+00:00",
+                            vault_id=2,
+                        )
+                except VaultFileNotFound:
+                    return "not_found"
+                return "confirmed"
+            finally:
+                connection.close()
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            outcomes = list(workers.map(confirm_once, range(2)))
+
+        self.assertEqual(outcomes.count("confirmed"), 1, outcomes)
+        self.assertEqual(outcomes.count("not_found"), 1, outcomes)
+        with self._connection() as connection:
+            catalog = ArchiveCatalog(connection)
+            current = catalog.get_file_by_path(2, "concurrent/new.txt")
+            history = catalog.list_path_history(missing_id, vault_id=2)
+            retired = connection.execute(
+                "SELECT COUNT(*) AS total FROM vault_files WHERE status='retired'"
+            ).fetchone()["total"]
+            copies = connection.execute(
+                "SELECT COUNT(*) AS total FROM local_copies"
+            ).fetchone()["total"]
+
+        self.assertIsNotNone(current)
+        self.assertEqual(current["id"], missing_id)
+        self.assertEqual(
+            [entry["path"] for entry in history],
+            ["concurrent/old.txt", "concurrent/new.txt"],
+        )
+        self.assertEqual(retired, 1)
+        self.assertEqual(copies, 1)
+
+    def test_issue_188_scan_state_change_wins_before_confirmation_claim(self) -> None:
+        upgraded = run_alembic()
+        self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+        missing_id = self._seed_rename_candidate()
+        scanner_updated = threading.Event()
+        release_scanner = threading.Event()
+        scanner_done = threading.Event()
+        scanner_errors: list[BaseException] = []
+
+        def scanner_state_change() -> None:
+            connection = self._connection()
+            try:
+                with connection:
+                    connection.execute(
+                        """
+                        UPDATE local_copies
+                        SET presence='present', plaintext_sha256=%s, observed_at=%s
+                        WHERE vault_file_id=%s
+                        """,
+                        ("b" * 64, "2026-07-21T12:00:00+00:00", missing_id),
+                    )
+                    scanner_updated.set()
+                    if not release_scanner.wait(timeout=20):
+                        raise TimeoutError("test did not release scanner transaction")
+            except BaseException as exc:  # Preserve failures from the worker thread.
+                scanner_errors.append(exc)
+            finally:
+                connection.close()
+                scanner_done.set()
+
+        scanner = threading.Thread(target=scanner_state_change)
+        scanner.start()
+        self.addCleanup(release_scanner.set)
+        self.addCleanup(scanner.join)
+        self.assertTrue(scanner_updated.wait(timeout=20))
+
+        reservation_attempted = threading.Event()
+        original_reservation = ArchiveCatalog._reserve_rename_confirmation
+
+        def note_reservation(catalog: ArchiveCatalog, vault_id: int) -> None:
+            reservation_attempted.set()
+            original_reservation(catalog, vault_id)
+
+        confirmation_outcome: list[str] = []
+
+        def confirm_while_scanner_holds_copy_lock() -> None:
+            connection = self._connection()
+            try:
+                try:
+                    with connection:
+                        ArchiveCatalog(connection).confirm_file_rename(
+                            vault_file_id=missing_id,
+                            new_path="concurrent/new.txt",
+                            changed_at="2026-07-21T12:01:00+00:00",
+                            vault_id=2,
+                        )
+                except VaultFileNotFound:
+                    confirmation_outcome.append("not_found")
+                else:
+                    confirmation_outcome.append("confirmed")
+            finally:
+                connection.close()
+
+        confirmer = threading.Thread(target=confirm_while_scanner_holds_copy_lock)
+        try:
+            with patch.object(
+                ArchiveCatalog,
+                "_reserve_rename_confirmation",
+                autospec=True,
+                side_effect=note_reservation,
+            ):
+                confirmer.start()
+                self.assertTrue(reservation_attempted.wait(timeout=20))
+                release_scanner.set()
+                self.assertTrue(scanner_done.wait(timeout=20))
+                confirmer.join(timeout=20)
+        finally:
+            release_scanner.set()
+            scanner.join(timeout=20)
+            confirmer.join(timeout=20)
+
+        self.assertFalse(scanner.is_alive())
+        self.assertFalse(confirmer.is_alive())
+        self.assertEqual(scanner_errors, [])
+        self.assertEqual(confirmation_outcome, ["not_found"])
+        with self._connection() as connection:
+            source_copy = connection.execute(
+                """
+                SELECT presence, plaintext_sha256
+                FROM local_copies WHERE vault_file_id=%s
+                """,
+                (missing_id,),
+            ).fetchone()
+            active = connection.execute(
+                "SELECT COUNT(*) AS total FROM vault_files WHERE status='active'"
+            ).fetchone()["total"]
+            current_paths = connection.execute(
+                "SELECT COUNT(*) AS total FROM file_paths WHERE valid_to IS NULL"
+            ).fetchone()["total"]
+
+        self.assertEqual(source_copy["presence"], "present")
+        self.assertEqual(source_copy["plaintext_sha256"], "b" * 64)
+        self.assertEqual(active, 2)
+        self.assertEqual(current_paths, 2)
+
+    def test_auth_backoff_concurrent_threshold_results_keep_matching_deadlines(
+        self,
+    ) -> None:
+        """A real PostgreSQL row lock preserves each count/deadline pair."""
+        upgraded = run_alembic()
+        self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+        attempts = backoff.THRESHOLD + 2
+        now = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
+        start = threading.Barrier(attempts)
+
+        def record() -> tuple[int, str | None]:
+            with self._connection() as connection:
+                start.wait(timeout=20)
+                return backoff.record_failure(
+                    connection,
+                    scope="ip",
+                    key="concurrent-backoff",
+                )
+
+        with patch.object(backoff, "_now", return_value=now):
+            with ThreadPoolExecutor(max_workers=attempts) as pool:
+                results = list(pool.map(lambda _: record(), range(attempts)))
+
+        expected = [
+            (
+                count,
+                (
+                    now
+                    + timedelta(seconds=backoff._backoff_seconds(count))
+                ).isoformat()
+                if backoff._backoff_seconds(count)
+                else None,
+            )
+            for count in range(1, attempts + 1)
+        ]
+        self.assertEqual(sorted(results), expected)
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT failure_count, next_allowed_at
+                FROM auth_backoff
+                WHERE scope='ip' AND key='concurrent-backoff'
+                """
+            ).fetchone()
+        self.assertEqual(
+            (row["failure_count"], row["next_allowed_at"]),
+            expected[-1],
+        )

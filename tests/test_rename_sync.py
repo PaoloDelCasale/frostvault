@@ -126,6 +126,7 @@ def _prepare_renamed_plain_file(
             vault_file_id=file_id,
             new_path=new_path,
             changed_at="2026-07-21T11:05:00+00:00",
+            vault_id=2,
         )
     return source, database_path, file_id
 
@@ -257,11 +258,12 @@ class RenameMatchingTests(unittest.TestCase):
                     vault_file_id=old_id,
                     new_path="reports/new-name.txt",
                     changed_at="2026-07-21T11:05:00+00:00",
+                    vault_id=2,
                 )
 
                 renamed = catalog.get_file_by_path(2, "reports/new-name.txt")
                 old_path = catalog.get_file_by_path(2, "reports/old-name.txt")
-                history = catalog.list_path_history(confirmed_id)
+                history = catalog.list_path_history(confirmed_id, vault_id=2)
 
             self.assertEqual(confirmed_id, old_id)
             self.assertEqual(renamed["id"], old_id)
@@ -743,7 +745,7 @@ class FolderRenameTests(unittest.TestCase):
                     new_relative = old_relative.replace("docs/", "archive/", 1)
                     observed = catalog.get_file_by_path(2, new_relative)
                     missing = catalog.get_file_by_path(2, old_relative)
-                    history = catalog.list_path_history(file_id)
+                    history = catalog.list_path_history(file_id, vault_id=2)
                     self.assertEqual(observed["id"], file_id)
                     self.assertIsNone(missing)
                     self.assertEqual(
@@ -803,10 +805,11 @@ class FolderRenameTests(unittest.TestCase):
                             vault_file_id=file_id,
                             new_path=new_path,
                             changed_at="2026-07-21T11:05:00+00:00",
+                            vault_id=2,
                         )
                         history = [
                             entry["path"]
-                            for entry in catalog.list_path_history(confirmed)
+                            for entry in catalog.list_path_history(confirmed, vault_id=2)
                         ]
                         observed = catalog.get_file_by_path(2, new_path)
                     self.assertEqual(confirmed, file_id)
@@ -917,6 +920,7 @@ class CryptRenameTests(unittest.TestCase):
                     vault_file_id=file_id,
                     new_path=new_path,
                     changed_at="2026-07-21T11:05:00+00:00",
+                    vault_id=2,
                 )
 
             fake_config = RuntimeRcloneConfig(

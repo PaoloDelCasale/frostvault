@@ -13,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from app import main
@@ -22,6 +23,7 @@ from app.security import hash_password
 from app.services import health as health_service
 from app.services import source_layout
 from app.services import metrics as metrics_service
+from app.services.vault_crypto import CryptSecrets, encrypt_vault_secrets
 from tests.test_database import run_alembic
 
 
@@ -72,6 +74,37 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
         metrics_service.reset_for_tests()
         self.client = TestClient(main.app, client=("127.0.0.1", 50000))
 
+    def _insert_crypt_vault(self, master_key: str):
+        stored = encrypt_vault_secrets(
+            CryptSecrets(
+                password="health-check-password",
+                password2="health-check-password2",
+            ),
+            master_key,
+        )
+        with SQLiteConnection(str(self.database_path)) as connection:
+            connection.execute(
+                """
+                INSERT INTO vaults(
+                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote,
+                    encryption_mode, crypt_password_ciphertext,
+                    crypt_password2_ciphertext
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, 'crypt', %s, %s)
+                """,
+                (
+                    "crypt-health",
+                    "Crypt health",
+                    "/sources/managed/crypt-health",
+                    "archive",
+                    "vaults/crypt-health",
+                    "base",
+                    stored.password_ciphertext,
+                    stored.password2_ciphertext,
+                ),
+            )
+        return stored
+
     def test_liveness_stays_ok_even_when_dependencies_are_down(self) -> None:
         with patch(
             "app.services.health.check_database",
@@ -101,6 +134,69 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
         self.assertTrue(body["checks"]["database"])
         self.assertTrue(body["checks"]["worker"])
         self.assertTrue(body["checks"]["config"])
+        self.assertTrue(body["checks"]["crypt_custody"])
+        self.assertEqual(body["crypt_custody"], "not_required")
+
+    def test_readiness_reports_crypt_custody_when_usable(self) -> None:
+        master_key = Fernet.generate_key().decode("ascii")
+        self._insert_crypt_vault(master_key)
+        with patch(
+            "app.services.health.settings",
+            replace(self.test_settings, archive_master_key=master_key),
+        ):
+            response = self.client.get("/ready")
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertTrue(body["checks"]["crypt_custody"])
+        self.assertEqual(body["crypt_custody"], "ready")
+        self.assertNotIn(master_key, response.text)
+
+    def test_readiness_fails_closed_for_missing_crypt_master_key(self) -> None:
+        master_key = Fernet.generate_key().decode("ascii")
+        stored = self._insert_crypt_vault(master_key)
+        with patch(
+            "app.services.health.settings",
+            replace(self.test_settings, archive_master_key=""),
+        ):
+            response = self.client.get("/ready")
+        self.assertEqual(response.status_code, 503, response.text)
+        body = response.json()
+        self.assertFalse(body["checks"]["crypt_custody"])
+        self.assertEqual(body["crypt_custody"], "missing_master_key")
+        self.assertNotIn(stored.password_ciphertext, response.text)
+        self.assertNotIn(stored.password2_ciphertext, response.text)
+
+    def test_readiness_fails_closed_for_malformed_crypt_master_key(self) -> None:
+        stored = self._insert_crypt_vault(Fernet.generate_key().decode("ascii"))
+        malformed_key = "not-a-valid-fernet-key"
+        with patch(
+            "app.services.health.settings",
+            replace(self.test_settings, archive_master_key=malformed_key),
+        ):
+            response = self.client.get("/ready")
+        self.assertEqual(response.status_code, 503, response.text)
+        body = response.json()
+        self.assertFalse(body["checks"]["crypt_custody"])
+        self.assertEqual(body["crypt_custody"], "invalid_master_key")
+        self.assertNotIn(malformed_key, response.text)
+        self.assertNotIn(stored.password_ciphertext, response.text)
+        self.assertNotIn(stored.password2_ciphertext, response.text)
+
+    def test_readiness_fails_closed_for_undecryptable_crypt_rows(self) -> None:
+        stored = self._insert_crypt_vault(Fernet.generate_key().decode("ascii"))
+        incompatible_key = Fernet.generate_key().decode("ascii")
+        with patch(
+            "app.services.health.settings",
+            replace(self.test_settings, archive_master_key=incompatible_key),
+        ):
+            response = self.client.get("/ready")
+        self.assertEqual(response.status_code, 503, response.text)
+        body = response.json()
+        self.assertFalse(body["checks"]["crypt_custody"])
+        self.assertEqual(body["crypt_custody"], "undecryptable")
+        self.assertNotIn(incompatible_key, response.text)
+        self.assertNotIn(stored.password_ciphertext, response.text)
+        self.assertNotIn(stored.password2_ciphertext, response.text)
 
     def test_metrics_expose_low_cardinality_prometheus_counters(self) -> None:
         metrics_service.inc("jobs_completed_total", action="upload")
