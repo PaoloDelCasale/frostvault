@@ -116,12 +116,14 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
                     "VersionId": "s3-v1",
                     "ContentLength": 12,
                     "ETag": '"etag"',
+                    "ChecksumSHA256": "copy-checksum",
                 },
                 {
                     "StorageClass": "STANDARD_IA",
                     "VersionId": "s3-v2",
                     "ContentLength": 12,
                     "ETag": '"etag2"',
+                    "ChecksumSHA256": "copy-checksum",
                 },
             ]
         )
@@ -275,6 +277,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
                     "VersionId": "s3-v1",
                     "ContentLength": size,
                     "ETag": '"etag"',
+                    "ChecksumSHA256": "copy-checksum",
                 },
                 destination
                 or {
@@ -282,6 +285,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
                     "VersionId": "s3-v2",
                     "ContentLength": size,
                     "ETag": '"multipart-etag"',
+                    "ChecksumSHA256": "copy-checksum",
                 },
             ]
         )
@@ -291,6 +295,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         }
         client.complete_multipart_upload.return_value = {"VersionId": "s3-v2"}
         client.abort_multipart_upload = Mock()
+        client.get_object_tagging.return_value = {"TagSet": []}
         return client, size
 
     def test_oversized_change_uses_exact_version_multipart_copy(self) -> None:
@@ -319,6 +324,36 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         last = client.upload_part_copy.call_args_list[-1].kwargs["CopySourceRange"]
         self.assertEqual(first, f"bytes=0-{128 * 1024 * 1024 - 1}")
         self.assertEqual(last, f"bytes={40 * 128 * 1024 * 1024}-{size - 1}")
+
+    def test_multipart_copy_preserves_source_tags(self) -> None:
+        client, _size = self._large_copy_fixture()
+        client.get_object_tagging.return_value = {
+            "TagSet": [
+                {"Key": "policy", "Value": "archive"},
+                {"Key": "owner", "Value": "vault"},
+            ]
+        }
+        database_settings = SimpleNamespace(
+            db_backend="sqlite",
+            sqlite_path=str(self.path),
+        )
+        with (
+            patch("app.database.settings", database_settings),
+            patch("app.storage.settings", database_settings),
+            patch("app.storage.validate_cloud_vault"),
+            patch("app.storage.s3_client", return_value=client),
+        ):
+            storage_module.process_job(dict(self._job_row()))
+
+        client.get_object_tagging.assert_called_once_with(
+            Bucket="bucket",
+            Key="docs/report.txt",
+            VersionId="s3-v1",
+        )
+        self.assertEqual(
+            client.create_multipart_upload.call_args.kwargs["Tagging"],
+            "policy=archive&owner=vault",
+        )
 
     def test_multipart_copy_aborts_after_part_failure(self) -> None:
         client, _size = self._large_copy_fixture()
@@ -387,6 +422,50 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         self.assertEqual(job["status"], "cancelled")
         client.delete_object.assert_not_called()
 
+    def test_same_size_corrupt_destination_is_not_published_verified(self) -> None:
+        size = storage_module.S3_SINGLE_COPY_MAX_BYTES + 1
+        client, _size = self._large_copy_fixture(
+            destination={
+                "StorageClass": "STANDARD_IA",
+                "VersionId": "s3-v2",
+                "ContentLength": size,
+                "ETag": '"same-size-corruption"',
+                "ChecksumSHA256": "destination-checksum",
+            }
+        )
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                "UPDATE archive_versions SET integrity='verified' WHERE id=%s",
+                (self.version_id,),
+            )
+        database_settings = SimpleNamespace(
+            db_backend="sqlite",
+            sqlite_path=str(self.path),
+        )
+        with (
+            patch("app.database.settings", database_settings),
+            patch("app.storage.settings", database_settings),
+            patch("app.storage.validate_cloud_vault"),
+            patch("app.storage.s3_client", return_value=client),
+        ):
+            storage_module.process_job(dict(self._job_row()))
+
+        with SQLiteConnection(str(self.path)) as connection:
+            job = connection.execute(
+                "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
+            ).fetchone()
+            version = connection.execute(
+                """
+                SELECT provider_version_id, storage_class, integrity
+                FROM archive_versions WHERE id=%s
+                """,
+                (self.version_id,),
+            ).fetchone()
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(version["provider_version_id"], "s3-v1")
+        self.assertEqual(version["storage_class"], "STANDARD")
+        self.assertEqual(version["integrity"], "verified")
+
     def test_readback_mismatch_does_not_publish_storage_class(self) -> None:
         client, _size = self._large_copy_fixture(
             destination={
@@ -411,6 +490,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
                 "VersionId": "s3-v1",
                 "ContentLength": 12,
                 "ETag": '"etag"',
+                "ChecksumSHA256": "copy-checksum",
             },
             {
                 "StorageClass": "STANDARD",
@@ -545,12 +625,14 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
                         'ongoing-request="false", '
                         'expiry-date="Wed, 01 Apr 2026 00:00:00 GMT"'
                     ),
+                    "ChecksumSHA256": "copy-checksum",
                 },
                 {
                     "StorageClass": "STANDARD",
                     "VersionId": "s3-v2",
                     "ContentLength": 12,
                     "ETag": '"etag2"',
+                    "ChecksumSHA256": "copy-checksum",
                 },
             ]
         )

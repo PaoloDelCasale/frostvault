@@ -31,10 +31,10 @@ RUNTIME_DIRECTORY_NAME = "frostvault-rclone-runtime"
 _LEGACY_RUNTIME_ROOT_MODE = 0o700
 _RUNTIME_CONFIG_MODE = 0o600
 
-# Filename decoding accepts multiple arguments. Keep both the argument batch
-# and the recovery/split budget hard bounded so a cloud listing cannot create an
-# unbounded subprocess storm. A failed key is isolated conservatively; keys
-# beyond the budget remain unknown to the catalog.
+# Filename decoding accepts multiple arguments. Keep both the argument page
+# and each page's recovery/split budget hard bounded so a cloud listing cannot
+# create an unbounded subprocess storm. The budget is reset for every page;
+# exhausting it leaves only that page's unattempted keys unresolved.
 RCLONE_DECODE_BATCH_SIZE = 256
 RCLONE_DECODE_PROCESS_BUDGET = 32
 RCLONE_DECODE_TIMEOUT_SECONDS = 30
@@ -371,14 +371,14 @@ def decode_object_relative_paths(
     *,
     max_processes: int = RCLONE_DECODE_PROCESS_BUDGET,
 ) -> tuple[dict[str, str], set[str]]:
-    """Decode many encrypted names with a bounded process budget.
+    """Decode many encrypted names with bounded page/split work.
 
     Rclone's backend command accepts multiple filename arguments and emits one
-    decoded name per line. A failed batch is recursively split only while the
-    hard process budget permits it; this preserves successful keys while
-    keeping a malformed/foreign key unknown. Error output is intentionally
-    discarded because it may contain ciphertext or backend configuration
-    details.
+    decoded name per line. A failed page is recursively split within its hard
+    process budget; the budget is reset only at the next page so large
+    listings do not classify later valid keys as failures. Error output
+    is intentionally discarded because it may contain ciphertext or backend
+    configuration details.
     """
     unique = list(dict.fromkeys(str(value) for value in encrypted_relatives if value))
     if not unique or max_processes <= 0:
@@ -390,6 +390,9 @@ def decode_object_relative_paths(
 
     def run_batch(values: Sequence[str]) -> dict[str, str] | None:
         nonlocal process_count
+        # ``max_processes`` is a hard per-page ceiling. Once exhausted, the
+        # caller must classify this group as unresolved instead of starting a
+        # new subprocess or resetting the page budget.
         if process_count >= max_processes:
             return None
         process_count += 1
@@ -432,6 +435,9 @@ def decode_object_relative_paths(
         if not values:
             return
         if process_count >= max_processes:
+            # No subprocess remains for this group on the current page. Keep
+            # every unattempted key explicitly unknown and never recurse past
+            # the resource boundary.
             failed.update(values)
             return
         result = run_batch(values)
@@ -446,10 +452,10 @@ def decode_object_relative_paths(
         decode_group(values[midpoint:])
 
     for offset in range(0, len(unique), RCLONE_DECODE_BATCH_SIZE):
+        # A page is the resource boundary: valid keys on later pages must not
+        # inherit split failures from an earlier page.
+        process_count = 0
         decode_group(unique[offset : offset + RCLONE_DECODE_BATCH_SIZE])
-        if process_count >= max_processes and offset + RCLONE_DECODE_BATCH_SIZE < len(unique):
-            failed.update(unique[offset + RCLONE_DECODE_BATCH_SIZE :])
-            break
     return decoded, failed
 
 

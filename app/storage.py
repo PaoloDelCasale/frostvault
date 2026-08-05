@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import configparser
 import hashlib
 import json
@@ -16,6 +17,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
+from urllib.parse import urlencode
 
 import boto3
 from boto3.s3.transfer import TransferConfig
@@ -126,6 +128,9 @@ S3_SINGLE_COPY_MAX_BYTES = 5 * 1024**3
 S3_MULTIPART_COPY_MIN_PART_BYTES = 5 * 1024**2
 S3_MULTIPART_COPY_PART_BYTES = 128 * 1024**2
 S3_MULTIPART_COPY_MAX_PARTS = 10_000
+S3_COPY_CHECKSUM_ALGORITHM = "SHA256"
+S3_COPY_CHECKSUM_TYPE = "FULL_OBJECT"
+S3_OBJECT_HASH_CHUNK_BYTES = 1024 * 1024
 
 # A claim is intentionally durable rather than process-local.  Five minutes is
 # long enough for ordinary provider calls while status/progress checkpoints renew
@@ -3678,6 +3683,104 @@ def process_free_space(job: dict[str, Any]) -> None:
         )
 
 
+def _head_object_with_checksum(client: Any, **kwargs: Any) -> dict[str, Any]:
+    """Read a version with provider checksum fields when supported.
+
+    Some S3-compatible providers reject ``ChecksumMode``. Falling back to a
+    normal HEAD keeps the operation portable; the caller then obtains an
+    equivalent proof by hashing the exact VersionId instead of publishing on
+    size/ETag metadata alone.
+    """
+    try:
+        return client.head_object(**kwargs, ChecksumMode="ENABLED")
+    except Exception:
+        return client.head_object(**kwargs)
+
+
+def _full_object_sha256_checksum(head: dict[str, Any]) -> str | None:
+    checksum = head.get("ChecksumSHA256")
+    if not checksum:
+        return None
+    checksum_type = str(head.get("ChecksumType") or "FULL_OBJECT").upper()
+    if checksum_type != S3_COPY_CHECKSUM_TYPE:
+        return None
+    return str(checksum)
+
+
+def _sha256_s3_version(
+    client: Any,
+    *,
+    bucket: str,
+    object_key: str,
+    version_id: str,
+    job_id: int | None = None,
+) -> str:
+    """Hash one exact provider VersionId and return its S3 checksum encoding."""
+    response = client.get_object(
+        Bucket=bucket,
+        Key=object_key,
+        VersionId=version_id,
+    )
+    body = response.get("Body") if isinstance(response, dict) else None
+    if body is None:
+        raise RuntimeError("S3 did not return a body for integrity verification")
+    digest = hashlib.sha256()
+    try:
+        iter_chunks = getattr(body, "iter_chunks", None)
+        if callable(iter_chunks):
+            chunks = iter_chunks(chunk_size=S3_OBJECT_HASH_CHUNK_BYTES)
+        else:
+            read = getattr(body, "read", None)
+            if not callable(read):
+                raise RuntimeError("S3 returned an unreadable body")
+
+            def read_chunks():
+                while True:
+                    chunk = read(S3_OBJECT_HASH_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    yield chunk
+
+            chunks = read_chunks()
+        for chunk in chunks:
+            if not isinstance(chunk, (bytes, bytearray, memoryview)):
+                raise RuntimeError("S3 returned a non-binary body")
+            digest.update(chunk)
+            if job_id is not None:
+                ensure_job_active(job_id, "Storage class change stopped")
+    finally:
+        close = getattr(body, "close", None)
+        if callable(close):
+            close()
+    return base64.b64encode(digest.digest()).decode("ascii")
+
+
+def _source_object_tagging(
+    client: Any,
+    *,
+    bucket: str,
+    object_key: str,
+    version_id: str,
+) -> str | None:
+    """Return source Version tags in CreateMultipartUpload's wire format."""
+    response = client.get_object_tagging(
+        Bucket=bucket,
+        Key=object_key,
+        VersionId=version_id,
+    )
+    if not isinstance(response, dict):
+        raise RuntimeError("S3 returned an invalid object-tag response")
+    tag_set = response.get("TagSet") or []
+    if not isinstance(tag_set, (list, tuple)):
+        raise RuntimeError("S3 returned an invalid object-tag set")
+    tags: list[tuple[str, str]] = []
+    for tag in tag_set:
+        if not isinstance(tag, dict) or tag.get("Key") is None or tag.get("Value") is None:
+            raise RuntimeError("S3 returned an invalid object tag")
+        tags.append((str(tag["Key"]), str(tag["Value"])))
+    return urlencode(tags) if tags else None
+
+
 def _multipart_copy_storage_class(
     client: Any,
     *,
@@ -3703,11 +3806,23 @@ def _multipart_copy_storage_class(
     if part_count > S3_MULTIPART_COPY_MAX_PARTS:
         raise RuntimeError("S3 multipart copy would exceed the part limit")
 
+    tagging = _source_object_tagging(
+        client,
+        bucket=bucket,
+        object_key=object_key,
+        version_id=source_version_id,
+    )
     create_kwargs: dict[str, Any] = {
         "Bucket": bucket,
         "Key": object_key,
         "StorageClass": target_class,
+        "ChecksumAlgorithm": S3_COPY_CHECKSUM_ALGORITHM,
+        "ChecksumType": S3_COPY_CHECKSUM_TYPE,
     }
+    if tagging:
+        # UploadPartCopy does not inherit tags from its source Version. The
+        # tag set must be supplied when the multipart upload is initiated.
+        create_kwargs["Tagging"] = tagging
     # Multipart initiation does not have CopyObject's metadata directives.  Set
     # the source headers that S3 exposes so the new representation does not
     # unexpectedly lose content metadata while its bytes are copied.
@@ -3754,7 +3869,18 @@ def _multipart_copy_storage_class(
                 raise RuntimeError(
                     f"S3 did not return an ETag for multipart part {part_number}"
                 )
-            parts.append({"PartNumber": part_number, "ETag": etag})
+            part = {"PartNumber": part_number, "ETag": etag}
+            for checksum_name in (
+                "ChecksumCRC32",
+                "ChecksumCRC32C",
+                "ChecksumSHA1",
+                "ChecksumSHA256",
+                "ChecksumCRC64NVME",
+            ):
+                checksum = copy_result.get(checksum_name)
+                if checksum:
+                    part[checksum_name] = checksum
+            parts.append(part)
 
         ensure_job_active(job["id"], "Storage class change stopped")
         completed = client.complete_multipart_upload(
@@ -3762,6 +3888,7 @@ def _multipart_copy_storage_class(
             Key=object_key,
             UploadId=upload_id,
             MultipartUpload={"Parts": parts},
+            ChecksumType=S3_COPY_CHECKSUM_TYPE,
         )
         # Completion makes the upload no longer abortable.  A missing VersionId
         # is handled by the destination read-back, not by guessing the source.
@@ -3816,6 +3943,7 @@ def _copy_storage_class_version(
         StorageClass=target_class,
         MetadataDirective="COPY",
         TaggingDirective="COPY",
+        ChecksumAlgorithm=S3_COPY_CHECKSUM_ALGORITHM,
     )
     return copy_result.get("VersionId")
 
@@ -3829,12 +3957,22 @@ def _verify_storage_class_destination(
     candidate_version_id: str | None,
     target_class: str,
     expected_size: int,
+    expected_sha256_checksum: str | None = None,
+    job_id: int | None = None,
 ) -> tuple[str, str | None]:
-    """Read back the exact destination before publishing catalog state."""
+    """Read back the exact destination before publishing catalog state.
+
+    Size and ETag are useful metadata checks but are not content proofs (in
+    particular, multipart ETags are not object digests). The destination must
+    expose the same full-object SHA-256 checksum as the source, or be streamed
+    and hashed when the provider does not expose checksum metadata.
+    """
+    if not expected_sha256_checksum:
+        raise RuntimeError("Storage class copy lacks a source integrity proof")
     kwargs: dict[str, Any] = {"Bucket": bucket, "Key": object_key}
     if candidate_version_id:
         kwargs["VersionId"] = candidate_version_id
-    destination = client.head_object(**kwargs)
+    destination = _head_object_with_checksum(client, **kwargs)
     observed_version_id = destination.get("VersionId") or candidate_version_id
     if not observed_version_id:
         raise RuntimeError(
@@ -3859,6 +3997,19 @@ def _verify_storage_class_destination(
     if content_length is None or int(content_length) != int(expected_size):
         raise RuntimeError(
             "Storage class copy read-back returned the wrong object size"
+        )
+    destination_checksum = _full_object_sha256_checksum(destination)
+    if destination_checksum is None:
+        destination_checksum = _sha256_s3_version(
+            client,
+            bucket=bucket,
+            object_key=object_key,
+            version_id=str(observed_version_id),
+            job_id=job_id,
+        )
+    if destination_checksum != expected_sha256_checksum:
+        raise RuntimeError(
+            "Storage class copy read-back failed its content-integrity check"
         )
     return str(observed_version_id), (
         str(destination.get("ETag")).strip('"')
@@ -3890,7 +4041,8 @@ def process_storage_class(job: dict[str, Any]) -> None:
         raise RuntimeError("No available Archive Version for storage class change")
 
     client = s3_client()
-    head = client.head_object(
+    head = _head_object_with_checksum(
+        client,
         Bucket=job["s3_bucket"],
         Key=target["object_key"],
         VersionId=target["provider_version_id"],
@@ -3987,6 +4139,16 @@ def process_storage_class(job: dict[str, Any]) -> None:
     if source_size < 0:
         raise RuntimeError("S3 returned a negative Archive Version size")
 
+    source_checksum = _full_object_sha256_checksum(head)
+    if source_checksum is None:
+        source_checksum = _sha256_s3_version(
+            client,
+            bucket=job["s3_bucket"],
+            object_key=target["object_key"],
+            version_id=str(target["provider_version_id"]),
+            job_id=int(job["id"]),
+        )
+    ensure_job_active(job["id"], "Storage class claim was lost")
     new_version_id = _copy_storage_class_version(
         client,
         job=job,
@@ -4006,6 +4168,8 @@ def process_storage_class(job: dict[str, Any]) -> None:
         candidate_version_id=(str(new_version_id) if new_version_id else None),
         target_class=target_class,
         expected_size=source_size,
+        expected_sha256_checksum=source_checksum,
+        job_id=int(job["id"]),
     )
     ensure_job_active(job["id"], "Storage class claim was lost")
     timestamp = now_iso()
