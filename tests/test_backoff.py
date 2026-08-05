@@ -6,7 +6,9 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from app import backoff
 from app.database import SQLiteConnection
@@ -127,10 +129,11 @@ class BackoffTests(BackoffTestBase):
         attempts = 8
         start = threading.Barrier(attempts, timeout=60)
         legacy_read = threading.Barrier(attempts, timeout=60)
+        connections = [self.connect() for _ in range(attempts)]
 
-        def record() -> None:
-            start.wait()
-            with self.connect() as connection:
+        def record(connection: SQLiteConnection) -> None:
+            with connection:
+                start.wait()
                 backoff.record_failure(
                     _LegacyReadBarrierConnection(connection, legacy_read),
                     scope="ip",
@@ -138,13 +141,59 @@ class BackoffTests(BackoffTestBase):
                 )
 
         with ThreadPoolExecutor(max_workers=attempts) as pool:
-            list(pool.map(lambda _: record(), range(attempts)))
+            list(pool.map(record, connections))
 
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT failure_count FROM auth_backoff WHERE scope='ip' AND key='concurrent'"
             ).fetchone()
         self.assertEqual(row["failure_count"], attempts)
+
+    def test_concurrent_threshold_failures_return_matching_deadlines(self) -> None:
+        """Every committed SQLite result pairs its count with its deadline."""
+        attempts = backoff.THRESHOLD + 2
+        now = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
+        start = threading.Barrier(attempts, timeout=60)
+        connections = [self.connect() for _ in range(attempts)]
+
+        def record(connection: SQLiteConnection) -> tuple[int, str | None]:
+            with connection:
+                start.wait()
+                return backoff.record_failure(
+                    connection,
+                    scope="ip",
+                    key="concurrent-threshold",
+                )
+
+        with patch.object(backoff, "_now", return_value=now):
+            with ThreadPoolExecutor(max_workers=attempts) as pool:
+                results = list(pool.map(record, connections))
+
+        expected = [
+            (
+                count,
+                (
+                    now
+                    + timedelta(seconds=backoff._backoff_seconds(count))
+                ).isoformat()
+                if backoff._backoff_seconds(count)
+                else None,
+            )
+            for count in range(1, attempts + 1)
+        ]
+        self.assertEqual(sorted(results), expected)
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT failure_count, next_allowed_at
+                FROM auth_backoff
+                WHERE scope='ip' AND key='concurrent-threshold'
+                """
+            ).fetchone()
+        self.assertEqual(
+            (row["failure_count"], row["next_allowed_at"]),
+            expected[-1],
+        )
 
     def test_threshold_persists_across_a_process_restart(self) -> None:
         """The durable counter continues throttling after a fresh interpreter starts."""

@@ -88,17 +88,27 @@ def guard(connection: Any, *, scope: str, key: str) -> None:
         raise BackoffError(math.ceil((next_allowed - now).total_seconds()))
 
 
-def record_failure(connection: Any, *, scope: str, key: str) -> int:
-    """Atomically count one failure and return the committed counter value.
+def record_failure(
+    connection: Any, *, scope: str, key: str
+) -> tuple[int, str | None]:
+    """Atomically count one failure and return its committed count and deadline.
 
     The ``ON CONFLICT ... DO UPDATE`` is a write on the conflicting row, so
     SQLite serializes it and PostgreSQL holds that row lock for the enclosing
-    transaction. The resulting count is returned by the same statement rather
-    than being calculated from a stale Python-side read.
+    transaction. Both the incremented count and the matching deadline are
+    returned by the same statement rather than being calculated from a stale
+    Python-side read.
     """
     now = _now()
     now_iso = now.isoformat()
     decay_cutoff = (now - timedelta(seconds=DECAY_SECONDS)).isoformat()
+    # Keep timestamp arithmetic out of the UPSERT: SQLite and PostgreSQL do not
+    # share a timestamp-addition expression, while the stored values are text.
+    # The final value is the capped deadline for every count beyond this range.
+    deadline_values = tuple(
+        (now + timedelta(seconds=_backoff_seconds(count))).isoformat()
+        for count in range(THRESHOLD, THRESHOLD + 7)
+    )
     row = connection.execute(
         """
         INSERT INTO auth_backoff(scope, key, failure_count, next_allowed_at, updated_at)
@@ -108,29 +118,46 @@ def record_failure(connection: Any, *, scope: str, key: str) -> int:
                 WHEN updated_at <= %s THEN 1
                 ELSE failure_count + 1
             END,
-            next_allowed_at=NULL,
+            next_allowed_at=CASE
+                WHEN updated_at <= %s OR failure_count < %s THEN NULL
+                ELSE CASE failure_count
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                    ELSE %s
+                END
+            END,
             updated_at=excluded.updated_at
-        RETURNING failure_count
+        RETURNING failure_count, next_allowed_at
         """,
-        (scope, key, now_iso, decay_cutoff),
+        (
+            scope,
+            key,
+            now_iso,
+            decay_cutoff,
+            decay_cutoff,
+            THRESHOLD - 1,
+            THRESHOLD - 1,
+            deadline_values[0],
+            THRESHOLD,
+            deadline_values[1],
+            THRESHOLD + 1,
+            deadline_values[2],
+            THRESHOLD + 2,
+            deadline_values[3],
+            THRESHOLD + 3,
+            deadline_values[4],
+            THRESHOLD + 4,
+            deadline_values[5],
+            deadline_values[6],
+        ),
     ).fetchone()
-    failure_count = int(row["failure_count"])
-    delay = _backoff_seconds(failure_count)
-    next_allowed_at = (
-        (now + timedelta(seconds=delay)).isoformat() if delay else None
-    )
-    # The UPSERT above holds the row lock in normal transaction-backed callers.
-    # Matching the returned counter also prevents an autocommit caller from
-    # overwriting a newer concurrent failure's longer backoff.
-    connection.execute(
-        """
-        UPDATE auth_backoff
-        SET next_allowed_at=%s
-        WHERE scope=%s AND key=%s AND failure_count=%s AND updated_at=%s
-        """,
-        (next_allowed_at, scope, key, failure_count, now_iso),
-    )
-    return failure_count
+    if row is None:
+        raise RuntimeError("auth_backoff failure UPSERT returned no row")
+    return int(row["failure_count"]), row["next_allowed_at"]
 
 
 def record_success(connection: Any, *, scope: str, key: str) -> None:
