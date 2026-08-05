@@ -420,18 +420,21 @@ class DefaultObjectStoreFailClosedTests(unittest.TestCase):
                 side_effect=RuntimeError("AWS credentials are not configured"),
             ),
         ):
-            with self.assertRaises(metadata_backups.BackupError) as ctx:
+            with self.assertRaises(
+                metadata_backups.ObjectStoreUnavailableError
+            ) as ctx:
                 metadata_backups.default_object_store()
         self.assertIn("unavailable", str(ctx.exception).lower())
+        self.assertNotIn("AWS credentials", str(ctx.exception))
 
-    def test_bug_010_unset_bucket_returns_none(self) -> None:
-        """Unset bucket remains the only path that returns None (local-only OK)."""
-        unset = replace(
-            __import__("app.config", fromlist=["settings"]).settings,
-            vault_s3_bucket="",
-        )
-        with patch.object(metadata_backups, "settings", unset):
-            self.assertIsNone(metadata_backups.default_object_store())
+    def test_bug_010_unset_or_placeholder_bucket_returns_none(self) -> None:
+        """Unset and documented placeholder buckets deliberately mean local-only."""
+        base = __import__("app.config", fromlist=["settings"]).settings
+        for bucket in ("", "example-bucket", "REPLACE-WITH-A-BUCKET"):
+            with self.subTest(bucket=bucket):
+                configured = replace(base, vault_s3_bucket=bucket)
+                with patch.object(metadata_backups, "settings", configured):
+                    self.assertIsNone(metadata_backups.default_object_store())
 
 
 class PreUpgradeBackupGateTests(unittest.TestCase):
@@ -476,6 +479,177 @@ class PreUpgradeBackupGateTests(unittest.TestCase):
             )
         self.assertIn("ARCHIVE_MASTER_KEY", str(ctx.exception))
         self.assertEqual(list(self.backup_dir.glob("*.bak.enc")), [])
+
+    def test_configured_unreachable_store_returns_typed_blocked_outcome(self) -> None:
+        configured = SimpleNamespace(
+            vault_s3_bucket="production-backups",
+            archive_master_key=self.master_key,
+            db_backend="sqlite",
+            sqlite_path=str(self.db_path),
+        )
+        with patch.object(
+            metadata_backups,
+            "default_object_store",
+            side_effect=metadata_backups.ObjectStoreUnavailableError(
+                "Configured metadata backup object store is unavailable"
+            ),
+        ):
+            with self.assertRaises(
+                metadata_backups.PreUpgradeBackupBlockedError
+            ) as ctx:
+                metadata_backups.run_pre_upgrade_backup_gate(
+                    backup_dir=self.backup_dir,
+                    settings_obj=configured,
+                    config_snapshot={},
+                    retention=5,
+                )
+        self.assertEqual(
+            ctx.exception.reason,
+            metadata_backups.PreUpgradeBackupBlockReason.OFF_HOST_UNAVAILABLE,
+        )
+        self.assertNotIn(self.master_key, str(ctx.exception))
+
+    def test_configured_store_upload_and_readback_failures_are_blocked(self) -> None:
+        configured = SimpleNamespace(
+            vault_s3_bucket="production-backups",
+            archive_master_key=self.master_key,
+            db_backend="sqlite",
+            sqlite_path=str(self.db_path),
+        )
+
+        class FailingUploadStore(RecordingObjectStore):
+            def put_bytes(self, key: str, body: bytes) -> None:
+                raise RuntimeError("credential-adjacent upload detail")
+
+        class CorruptReadbackStore(RecordingObjectStore):
+            def get_bytes(self, key: str) -> bytes:
+                if key.endswith(".sha256"):
+                    return super().get_bytes(key)
+                return b"corrupt"
+
+        for store, reason in (
+            (
+                FailingUploadStore(),
+                metadata_backups.PreUpgradeBackupBlockReason.OFF_HOST_UPLOAD_FAILED,
+            ),
+            (
+                CorruptReadbackStore(),
+                metadata_backups.PreUpgradeBackupBlockReason.OFF_HOST_VERIFICATION_FAILED,
+            ),
+        ):
+            with self.subTest(reason=reason):
+                with self.assertRaises(
+                    metadata_backups.PreUpgradeBackupBlockedError
+                ) as ctx:
+                    metadata_backups.run_pre_upgrade_backup_gate(
+                        backup_dir=self.backup_dir,
+                        settings_obj=configured,
+                        config_snapshot={},
+                        object_store=store,
+                        retention=5,
+                    )
+                self.assertEqual(ctx.exception.reason, reason)
+                self.assertNotIn("credential-adjacent", str(ctx.exception))
+
+    def test_configured_store_missing_key_blocks_and_records_failure(self) -> None:
+        configured = SimpleNamespace(
+            vault_s3_bucket="production-backups",
+            archive_master_key="",
+            db_backend="sqlite",
+            sqlite_path=str(self.db_path),
+        )
+        with SQLiteConnection(str(self.db_path)) as connection:
+            with self.assertRaises(
+                metadata_backups.PreUpgradeBackupBlockedError
+            ) as ctx:
+                metadata_backups.run_pre_upgrade_backup_gate(
+                    backup_dir=self.backup_dir,
+                    settings_obj=configured,
+                    config_snapshot={},
+                    object_store=self.store,
+                    retention=5,
+                    connection=connection,
+                )
+            record = connection.execute(
+                "SELECT status, s3_key, error_message FROM metadata_backup_runs "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+
+        self.assertEqual(
+            ctx.exception.reason,
+            metadata_backups.PreUpgradeBackupBlockReason.MASTER_KEY_REQUIRED,
+        )
+        self.assertEqual(record["status"], "failed")
+        self.assertIsNone(record["s3_key"])
+        self.assertIn("ARCHIVE_MASTER_KEY", record["error_message"])
+
+    def test_local_only_without_key_is_an_explicit_allowed_outcome(self) -> None:
+        local_only = SimpleNamespace(
+            vault_s3_bucket="",
+            archive_master_key="",
+            db_backend="sqlite",
+            sqlite_path=str(self.db_path),
+        )
+        with patch.object(metadata_backups, "run_pre_upgrade_backup") as backup:
+            outcome = metadata_backups.run_pre_upgrade_backup_gate(
+                backup_dir=self.backup_dir,
+                settings_obj=local_only,
+                retention=5,
+            )
+
+        self.assertEqual(
+            outcome.state,
+            metadata_backups.PreUpgradeBackupState.LOCAL_ONLY_ALLOWED,
+        )
+        self.assertIsNone(outcome.backup)
+        backup.assert_not_called()
+
+    def test_backup_records_distinguish_off_host_and_local_only_success(self) -> None:
+        local_only = SimpleNamespace(
+            vault_s3_bucket="",
+            archive_master_key=self.master_key,
+            db_backend="sqlite",
+            sqlite_path=str(self.db_path),
+        )
+        off_host = SimpleNamespace(
+            vault_s3_bucket="production-backups",
+            archive_master_key=self.master_key,
+            db_backend="sqlite",
+            sqlite_path=str(self.db_path),
+        )
+        with SQLiteConnection(str(self.db_path)) as connection:
+            local_outcome = metadata_backups.run_pre_upgrade_backup_gate(
+                backup_dir=self.backup_dir,
+                settings_obj=local_only,
+                config_snapshot={},
+                retention=5,
+                connection=connection,
+            )
+            off_host_outcome = metadata_backups.run_pre_upgrade_backup_gate(
+                backup_dir=self.backup_dir,
+                settings_obj=off_host,
+                config_snapshot={},
+                object_store=self.store,
+                retention=5,
+                connection=connection,
+            )
+            records = connection.execute(
+                "SELECT status, local_path, s3_key FROM metadata_backup_runs "
+                "ORDER BY id"
+            ).fetchall()
+
+        self.assertEqual(
+            local_outcome.state,
+            metadata_backups.PreUpgradeBackupState.LOCAL_ONLY_ALLOWED,
+        )
+        self.assertEqual(
+            off_host_outcome.state,
+            metadata_backups.PreUpgradeBackupState.OFF_HOST_SUCCEEDED,
+        )
+        self.assertEqual([record["status"] for record in records], ["succeeded", "succeeded"])
+        self.assertTrue(records[0]["local_path"])
+        self.assertIsNone(records[0]["s3_key"])
+        self.assertTrue(records[1]["s3_key"].startswith("system/backups/"))
 
 
 class BackupOrchestrationNotificationTests(unittest.TestCase):

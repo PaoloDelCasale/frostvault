@@ -14,18 +14,101 @@ import sqlite3
 import subprocess
 import tarfile
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from ..config import Settings, settings
+from ..config import Settings, is_placeholder, settings
 from ..system_settings import SETTINGS_BY_KEY, effective_settings, resolve_system_settings
-from .vault_crypto import MasterKeyError
 
 
 S3_BACKUP_PREFIX = "system/backups/"
+
+
+class BackupError(RuntimeError):
+    """Raised when a metadata backup or restore verification fails."""
+
+
+class BackupConfigurationError(BackupError):
+    """A deployment setting prevents a required metadata backup."""
+
+
+class MissingMasterKeyError(BackupConfigurationError):
+    """The deployment has not supplied a usable backup encryption key."""
+
+
+class InvalidMasterKeyError(BackupConfigurationError):
+    """The deployment supplied an invalid backup encryption key."""
+
+
+class ObjectStoreUnavailableError(BackupConfigurationError):
+    """A configured object store could not be initialized."""
+
+
+class ObjectStoreUploadError(BackupError):
+    """An encrypted artifact could not be uploaded to configured off-host storage."""
+
+
+class ObjectStoreVerificationError(BackupError):
+    """An uploaded encrypted artifact could not be read back and verified."""
+
+
+class PreUpgradeBackupState(str, Enum):
+    """Successful, explicit states of the automatic pre-upgrade backup gate."""
+
+    OFF_HOST_SUCCEEDED = "off_host_succeeded"
+    LOCAL_ONLY_ALLOWED = "local_only_allowed"
+
+
+class PreUpgradeBackupBlockReason(str, Enum):
+    """Machine-readable reasons that prohibit an automatic schema upgrade."""
+
+    OFF_HOST_UNAVAILABLE = "off_host_unavailable"
+    MASTER_KEY_REQUIRED = "master_key_required"
+    MASTER_KEY_INVALID = "master_key_invalid"
+    OFF_HOST_UPLOAD_FAILED = "off_host_upload_failed"
+    OFF_HOST_VERIFICATION_FAILED = "off_host_verification_failed"
+    BACKUP_FAILED = "backup_failed"
+
+
+class PreUpgradeBackupBlockedError(BackupError):
+    """A typed pre-upgrade gate failure that must prevent Alembic execution."""
+
+    _MESSAGES = {
+        PreUpgradeBackupBlockReason.OFF_HOST_UNAVAILABLE: (
+            "Configured off-host metadata backup storage is unavailable"
+        ),
+        PreUpgradeBackupBlockReason.MASTER_KEY_REQUIRED: (
+            "ARCHIVE_MASTER_KEY is required for configured off-host metadata backups"
+        ),
+        PreUpgradeBackupBlockReason.MASTER_KEY_INVALID: (
+            "ARCHIVE_MASTER_KEY is invalid for metadata backups"
+        ),
+        PreUpgradeBackupBlockReason.OFF_HOST_UPLOAD_FAILED: (
+            "Configured off-host metadata backup upload failed"
+        ),
+        PreUpgradeBackupBlockReason.OFF_HOST_VERIFICATION_FAILED: (
+            "Configured off-host metadata backup verification failed"
+        ),
+        PreUpgradeBackupBlockReason.BACKUP_FAILED: "Pre-upgrade metadata backup failed",
+    }
+
+    def __init__(self, reason: PreUpgradeBackupBlockReason):
+        self.reason = reason
+        super().__init__(self._MESSAGES[reason])
+
+
+@dataclass(frozen=True)
+class PreUpgradeBackupOutcome:
+    """The explicit successful state returned by the pre-upgrade backup gate."""
+
+    state: PreUpgradeBackupState
+    backup: dict[str, Any] | None = None
+
 
 class ObjectStore(Protocol):
     """System boundary for durable backup object storage (S3 or compatible)."""
@@ -75,29 +158,50 @@ class Boto3ObjectStore:
         self._client.delete_object(Bucket=self._bucket, Key=key)
 
 
-def default_object_store() -> ObjectStore | None:
-    """Build the configured S3 object store, or None when the bucket is unset.
+def off_host_backup_configured(settings_obj: Settings | Any | None = None) -> bool:
+    """Whether deployment configuration requires an off-host backup copy.
 
-    When a bucket *is* configured, client/credential failures raise
-    ``BackupError`` instead of returning ``None`` so callers cannot silently
-    record a successful local-only backup while believing off-host storage was
-    used.
+    Empty and documented placeholder buckets intentionally model local-only
+    development. Any other bucket value is a production storage commitment,
+    not an optional optimization.
     """
-    bucket = (settings.vault_s3_bucket or "").strip()
-    if not bucket:
+    cfg = settings_obj if settings_obj is not None else settings
+    bucket = str(getattr(cfg, "vault_s3_bucket", "") or "").strip()
+    return bool(bucket) and not is_placeholder(bucket, "example-bucket")
+
+
+def backup_master_key_configured(master_key: str | None) -> bool:
+    """Whether a non-placeholder encryption key was supplied at all.
+
+    This deliberately does not validate the key. A non-empty malformed key is
+    a configuration error when a backup is attempted, rather than silently
+    opting out of a backup.
+    """
+    key = (master_key or "").strip()
+    return bool(key) and not is_placeholder(key)
+
+
+def default_object_store(
+    *, settings_obj: Settings | Any | None = None
+) -> ObjectStore | None:
+    """Build the configured S3 object store, or ``None`` for local-only mode.
+
+    A non-placeholder bucket is configured off-host storage. Initialization
+    errors are typed and intentionally omit provider exception details, which
+    can contain deployment identifiers or credential-adjacent data.
+    """
+    cfg = settings_obj if settings_obj is not None else settings
+    bucket = str(getattr(cfg, "vault_s3_bucket", "") or "").strip()
+    if not off_host_backup_configured(cfg):
         return None
     try:
         from ..storage import s3_client
 
         return Boto3ObjectStore(s3_client(), bucket)
-    except Exception as exc:  # noqa: BLE001 - normalize to BackupError
-        raise BackupError(
-            f"Configured metadata backup object store is unavailable: {exc}"
-        ) from exc
-
-
-class BackupError(RuntimeError):
-    """Raised when a metadata backup or restore verification fails."""
+    except Exception:  # noqa: BLE001 - normalize an external boundary
+        raise ObjectStoreUnavailableError(
+            "Configured metadata backup object store is unavailable"
+        ) from None
 
 
 def now_iso() -> str:
@@ -106,14 +210,14 @@ def now_iso() -> str:
 
 def _fernet(master_key: str) -> Fernet:
     key = (master_key or "").strip()
-    if not key:
-        raise MasterKeyError("ARCHIVE_MASTER_KEY is not configured")
+    if not backup_master_key_configured(key):
+        raise MissingMasterKeyError("ARCHIVE_MASTER_KEY is not configured")
     try:
         return Fernet(key.encode("ascii"))
-    except (ValueError, TypeError) as exc:
-        raise MasterKeyError(
+    except (ValueError, TypeError):
+        raise InvalidMasterKeyError(
             "ARCHIVE_MASTER_KEY must be a url-safe base64-encoded 32-byte key"
-        ) from exc
+        ) from None
 
 
 def build_config_snapshot(
@@ -175,13 +279,12 @@ def _dump_postgres_bytes() -> bytes:
             check=False,
             capture_output=True,
         )
-    except FileNotFoundError as exc:
+    except FileNotFoundError:
         raise BackupError(
             "pg_dump is required for PostgreSQL metadata backups"
-        ) from exc
+        ) from None
     if completed.returncode != 0:
-        detail = (completed.stderr or b"").decode("utf-8", errors="replace").strip()
-        raise BackupError(f"pg_dump failed: {detail or 'unknown error'}")
+        raise BackupError("pg_dump failed")
     if not completed.stdout:
         raise BackupError("pg_dump produced an empty backup")
     return completed.stdout
@@ -296,8 +399,8 @@ def decrypt_backup_file(path: str | Path, master_key: str | None = None) -> dict
     ciphertext = Path(path).read_bytes()
     try:
         plaintext = _fernet(key).decrypt(ciphertext)
-    except InvalidToken as exc:
-        raise BackupError("Unable to decrypt backup with the provided master key") from exc
+    except InvalidToken:
+        raise BackupError("Unable to decrypt backup with the provided master key") from None
     return unpack_backup_payload(plaintext)
 
 
@@ -340,19 +443,39 @@ def store_backup_to_object_store(
     object_store: ObjectStore,
     prefix: str = S3_BACKUP_PREFIX,
 ) -> dict[str, Any]:
-    """Upload an encrypted local artifact under the system backups prefix."""
+    """Upload and read-back verify an encrypted artifact in off-host storage."""
     normalized = _normalize_prefix(prefix)
     filename = artifact.get("filename") or Path(artifact["path"]).name
     key = f"{normalized}{filename}"
+    sidecar_key = key + ".sha256"
     body = Path(artifact["path"]).read_bytes()
-    object_store.put_bytes(key, body)
-    object_store.put_bytes(
-        key + ".sha256",
-        f"{artifact['digest_sha256']}\n".encode("utf-8"),
-    )
+    digest = str(artifact["digest_sha256"])
+    sidecar = f"{digest}\n".encode("utf-8")
+    try:
+        object_store.put_bytes(key, body)
+        object_store.put_bytes(sidecar_key, sidecar)
+    except Exception:  # noqa: BLE001 - external storage boundary
+        raise ObjectStoreUploadError(
+            "Configured metadata backup upload failed"
+        ) from None
+
+    try:
+        uploaded = object_store.get_bytes(key)
+        uploaded_sidecar = object_store.get_bytes(sidecar_key)
+    except Exception:  # noqa: BLE001 - external storage boundary
+        raise ObjectStoreVerificationError(
+            "Configured metadata backup verification failed"
+        ) from None
+    if (
+        hashlib.sha256(uploaded).hexdigest() != digest
+        or uploaded_sidecar != sidecar
+    ):
+        raise ObjectStoreVerificationError(
+            "Configured metadata backup verification failed"
+        )
     return {
         "key": key,
-        "digest_sha256": artifact["digest_sha256"],
+        "digest_sha256": digest,
         "size_bytes": len(body),
     }
 
@@ -442,8 +565,7 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
         capture_output=True,
     )
     if list_result.returncode != 0:
-        detail = (list_result.stderr or b"").decode("utf-8", errors="replace").strip()
-        raise BackupError(f"PostgreSQL dump failed verification: {detail or 'unknown'}")
+        raise BackupError("PostgreSQL dump failed verification")
 
     temp_db_name = f"metadata_backup_verify_{os.getpid()}"
     created = subprocess.run(
@@ -470,10 +592,7 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
         )
         if restored.returncode not in {0, 1}:
             # pg_restore uses 1 for warnings; >1 is hard failure.
-            detail = (restored.stderr or b"").decode("utf-8", errors="replace").strip()
-            raise BackupError(
-                f"PostgreSQL isolated restore failed: {detail or 'unknown'}"
-            )
+            raise BackupError("PostgreSQL isolated restore failed")
         counted = subprocess.run(
             [
                 "psql",
@@ -498,12 +617,8 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
                 vault_count = int(parts[1])
                 schema_revision = parts[2] or None
         if user_count is None or vault_count is None or not schema_revision:
-            detail = ""
-            if getattr(counted, "stderr", None):
-                detail = str(counted.stderr).strip()
             raise BackupError(
-                "PostgreSQL isolated restore did not prove schema tables: "
-                f"{detail or 'count query failed or returned nulls'}"
+                "PostgreSQL isolated restore did not prove schema tables"
             )
         return {
             "ok": True,
@@ -716,7 +831,20 @@ def run_metadata_backup(
             )
         return result
     except Exception as exc:
-        message = str(exc) or type(exc).__name__
+        # Do not persist or notify arbitrary provider/process exception text:
+        # those boundaries can include deployment identifiers or credentials.
+        # Typed backup errors carry the deliberately safe operator message.
+        if isinstance(
+            exc,
+            (
+                BackupConfigurationError,
+                ObjectStoreUploadError,
+                ObjectStoreVerificationError,
+            ),
+        ):
+            message = str(exc)
+        else:
+            message = "Metadata backup operation failed"
         if connection is not None:
             try:
                 record_backup_run(
@@ -734,9 +862,7 @@ def run_metadata_backup(
                 pass
         if isinstance(exc, BackupError):
             raise
-        if isinstance(exc, MasterKeyError):
-            raise BackupError(str(exc)) from exc
-        raise BackupError(message) from exc
+        raise BackupError(message) from None
 
 
 def run_pre_upgrade_backup(
@@ -748,9 +874,15 @@ def run_pre_upgrade_backup(
     config_snapshot: dict[str, Any] | None = None,
     object_store: ObjectStore | None = None,
     retention: int | None = None,
+    s3_prefix: str = S3_BACKUP_PREFIX,
     connection: Any | None = None,
 ) -> dict[str, Any]:
-    """Create a pre-upgrade backup or raise BackupError to block schema upgrades."""
+    """Create one concrete pre-upgrade artifact and raise on any failure.
+
+    This lower-level operation does not decide whether a deployment may use
+    local-only development behavior. Call ``run_pre_upgrade_backup_gate`` for
+    the automatic-migration policy.
+    """
     return run_metadata_backup(
         connection,
         reason="pre_upgrade",
@@ -761,7 +893,102 @@ def run_pre_upgrade_backup(
         config_snapshot=config_snapshot,
         object_store=object_store,
         retention=retention,
+        s3_prefix=s3_prefix,
     )
+
+
+def _pre_upgrade_block_reason(exc: BackupError) -> PreUpgradeBackupBlockReason:
+    if isinstance(exc, ObjectStoreUnavailableError):
+        return PreUpgradeBackupBlockReason.OFF_HOST_UNAVAILABLE
+    if isinstance(exc, MissingMasterKeyError):
+        return PreUpgradeBackupBlockReason.MASTER_KEY_REQUIRED
+    if isinstance(exc, InvalidMasterKeyError):
+        return PreUpgradeBackupBlockReason.MASTER_KEY_INVALID
+    if isinstance(exc, ObjectStoreUploadError):
+        return PreUpgradeBackupBlockReason.OFF_HOST_UPLOAD_FAILED
+    if isinstance(exc, ObjectStoreVerificationError):
+        return PreUpgradeBackupBlockReason.OFF_HOST_VERIFICATION_FAILED
+    return PreUpgradeBackupBlockReason.BACKUP_FAILED
+
+
+def run_pre_upgrade_backup_gate(
+    *,
+    backup_dir: str | Path,
+    settings_obj: Settings | Any | None = None,
+    master_key: str | None = None,
+    db_backend: str | None = None,
+    sqlite_path: str | None = None,
+    config_snapshot: dict[str, Any] | None = None,
+    object_store: ObjectStore | None = None,
+    retention: int | None = None,
+    s3_prefix: str = S3_BACKUP_PREFIX,
+    connection: Any | None = None,
+) -> PreUpgradeBackupOutcome:
+    """Resolve and enforce the typed automatic pre-upgrade backup policy.
+
+    A configured non-placeholder object-store bucket requires an encrypted
+    local artifact, off-host upload, and read-back verification. Any failure
+    yields ``PreUpgradeBackupBlockedError``. With no configured off-host store,
+    an absent/placeholder master key explicitly returns ``LOCAL_ONLY_ALLOWED``
+    so first-boot and local development remain intentional rather than being
+    inferred from exception text.
+    """
+    cfg = settings_obj if settings_obj is not None else settings
+    off_host_required = off_host_backup_configured(cfg)
+    effective_master_key = (
+        master_key
+        if master_key is not None
+        else str(getattr(cfg, "archive_master_key", "") or "")
+    )
+
+    if not off_host_required and not backup_master_key_configured(effective_master_key):
+        return PreUpgradeBackupOutcome(PreUpgradeBackupState.LOCAL_ONLY_ALLOWED)
+
+    try:
+        if off_host_required and object_store is None:
+            object_store = default_object_store(settings_obj=cfg)
+        if off_host_required and object_store is None:
+            raise ObjectStoreUnavailableError(
+                "Configured metadata backup object store is unavailable"
+            )
+        if config_snapshot is None:
+            config_snapshot = build_config_snapshot(cfg, connection=connection)
+        result = run_pre_upgrade_backup(
+            backup_dir=backup_dir,
+            master_key=effective_master_key,
+            db_backend=(
+                db_backend
+                if db_backend is not None
+                else getattr(cfg, "db_backend", None)
+            ),
+            sqlite_path=(
+                sqlite_path
+                if sqlite_path is not None
+                else getattr(cfg, "sqlite_path", None)
+            ),
+            config_snapshot=config_snapshot,
+            object_store=object_store,
+            retention=retention,
+            s3_prefix=s3_prefix,
+            connection=connection,
+        )
+        if off_host_required and not result.get("s3_key"):
+            raise ObjectStoreVerificationError(
+                "Configured metadata backup verification failed"
+            )
+    except BackupError as exc:
+        raise PreUpgradeBackupBlockedError(_pre_upgrade_block_reason(exc)) from None
+    except Exception:  # noqa: BLE001 - prevent external details reaching startup logs
+        raise PreUpgradeBackupBlockedError(
+            PreUpgradeBackupBlockReason.BACKUP_FAILED
+        ) from None
+
+    state = (
+        PreUpgradeBackupState.OFF_HOST_SUCCEEDED
+        if result.get("s3_key")
+        else PreUpgradeBackupState.LOCAL_ONLY_ALLOWED
+    )
+    return PreUpgradeBackupOutcome(state, backup=result)
 
 
 def open_backup_artifact(

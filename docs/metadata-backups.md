@@ -38,6 +38,15 @@ Retention is controlled by `METADATA_BACKUP_RETENTION` (default 14). Older local
 `.bak.enc` files and their `.sha256` sidecars are deleted after each successful
 run.
 
+`metadata_backup_runs` makes the delivery outcome inspectable without storing
+credentials: an off-host success has `status=succeeded` (or later `verified`)
+and a non-empty `s3_key`; a local-only artifact success has the same successful
+status, a `local_path`, and no `s3_key`; a blocked attempt is recorded as
+`status=failed`. When local-only development has no usable
+`ARCHIVE_MASTER_KEY`, no artifact can exist, so automatic migration reports the
+explicit allowed local-only state in startup output rather than creating a
+misleading successful backup record.
+
 ## Scheduling and manual controls
 
 - Background worker: interval `METADATA_BACKUP_INTERVAL_SECONDS` (default 24h).
@@ -57,8 +66,8 @@ errors / metrics.
 
 ## Pre-upgrade gate
 
-Application-managed schema upgrades must not run without a successful backup
-when backup secrets are configured:
+Application-managed schema upgrades must not run without the safety copy their
+deployment promises:
 
 ```bash
 # Creates a pre_upgrade backup (local + S3 when configured), then alembic upgrade.
@@ -71,10 +80,36 @@ python -m app.backup_upgrade --skip-upgrade
 A failed backup exits non-zero and **does not** run Alembic. Prefer this wrapper
 over a bare `alembic upgrade head` in production release procedures.
 
-With `AUTO_MIGRATE=1` (default), container and native app starts call the same
-gate automatically for databases that are behind `HEAD_SCHEMA_REVISION`. Fresh /
-unversioned databases skip the backup and run `alembic upgrade head` only. Set
-`AUTO_MIGRATE=0` to keep upgrades fully manual.
+### Automatic startup policy
+
+With `AUTO_MIGRATE=1` (default), an existing database passes two gates before
+any backup or Alembic mutation:
+
+1. FrostVault loads the local Alembic graph, requires exactly one head matching
+   `HEAD_SCHEMA_REVISION`, and proves the recorded database revision is a known
+   ancestor of that head. A database ahead of the image, an unknown revision,
+   a divergent migration graph, or multiple database revision rows stops
+   startup before a backup is attempted.
+2. A non-empty, non-placeholder `VAULT_S3_BUCKET` means off-host metadata
+   storage is configured. The pre-upgrade artifact must be encrypted, uploaded,
+   and read back with its ciphertext digest and `.sha256` sidecar verified.
+   Object-store initialization, missing/invalid `ARCHIVE_MASTER_KEY`, upload,
+   or verification failures all block Alembic. FrostVault reports only a safe
+   failure category; it never prints provider exception text or credentials.
+
+An empty or documented placeholder bucket is the explicit **local-only
+development** mode. If it has a usable `ARCHIVE_MASTER_KEY`, startup makes and
+records a local encrypted artifact before upgrading. If it has no usable key,
+startup reports an allowed local-only outcome and may upgrade without an
+artifact; this keeps first boot and local development intentional without ever
+silently weakening a configured off-host deployment.
+
+Fresh/unversioned databases have no existing state to back up, but FrostVault
+still validates that the local Alembic graph has one expected head before it
+runs `alembic upgrade head`. Set `AUTO_MIGRATE=0` to keep upgrades fully manual.
+It does not make an ahead, unknown, or divergent database compatible: deploy
+the image containing its revision, or restore a compatible metadata backup,
+before a deliberate manual recovery.
 
 ## Restore flow — SQLite
 
