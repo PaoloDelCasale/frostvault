@@ -8,11 +8,10 @@ runs only when usable Docker and Docker Compose daemons are available.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
-import sqlite3
-import stat
 import subprocess
 import tempfile
 import time
@@ -74,6 +73,85 @@ def _docker_compose_available() -> bool:
 
 
 DOCKER_COMPOSE_AVAILABLE = _docker_compose_available()
+
+
+_SHELL_VARIABLE = r"[A-Za-z_][A-Za-z0-9_]*"
+
+
+def _references_shell_variable(text: str, variable: str) -> bool:
+    """Return whether a shell fragment expands ``variable``.
+
+    This intentionally recognizes the simple expansions used by the entrypoint,
+    including braced forms with a shell parameter operator. It is a conservative
+    static guard, not a replacement for a shell parser.
+    """
+    escaped = re.escape(variable)
+    return bool(
+        re.search(
+            rf"\$(?:{escaped}\b|\{{{escaped}(?:[^}}]*)\}})",
+            text,
+        )
+    )
+
+
+def _source_permission_mutations(shell: str) -> list[str]:
+    """Find chmod/chown operations that can target ``/sources``.
+
+    Besides literal arguments, follow simple assignment and ``for … in`` flows
+    so adding ``/sources`` to a loop or passing it through a variable cannot
+    evade the entrypoint hardening check.
+    """
+    normalized = re.sub(r"\\\n", " ", shell)
+    normalized = re.sub(r"(?m)^\s*#.*$", "", normalized)
+    assignment_pattern = re.compile(
+        rf"(?m)(?:^|[;\n])\s*(?:export\s+|readonly\s+|local\s+)?"
+        rf"(?P<name>{_SHELL_VARIABLE})=(?P<value>[^;\n]*)"
+    )
+    loop_pattern = re.compile(
+        rf"\bfor\s+(?P<name>{_SHELL_VARIABLE})\s+in\s+"
+        rf"(?P<values>.*?)(?:;\s*|\n\s*)do\b",
+        re.DOTALL,
+    )
+    assignments = list(assignment_pattern.finditer(normalized))
+    loops = list(loop_pattern.finditer(normalized))
+    source_variables: set[str] = set()
+
+    # Resolve direct source-valued assignments, then aliases and loop variables
+    # until no new source-bearing variable is found.
+    changed = True
+    while changed:
+        changed = False
+        for assignment in assignments:
+            value = assignment.group("value")
+            if "/sources" in value or any(
+                _references_shell_variable(value, variable)
+                for variable in source_variables
+            ):
+                if assignment.group("name") not in source_variables:
+                    source_variables.add(assignment.group("name"))
+                    changed = True
+        for loop in loops:
+            values = loop.group("values")
+            if "/sources" in values or any(
+                _references_shell_variable(values, variable)
+                for variable in source_variables
+            ):
+                if loop.group("name") not in source_variables:
+                    source_variables.add(loop.group("name"))
+                    changed = True
+
+    mutations: list[str] = []
+    for command in re.finditer(
+        r"(?m)(?<![A-Za-z0-9_])(?P<command>chown|chmod)\b(?P<args>[^;\n]*)",
+        normalized,
+    ):
+        arguments = command.group("args")
+        if "/sources" in arguments or any(
+            _references_shell_variable(arguments, variable)
+            for variable in source_variables
+        ):
+            mutations.append(command.group(0).strip())
+    return mutations
 
 
 class ContainerHardeningComposeTests(unittest.TestCase):
@@ -209,7 +287,19 @@ class EntrypointHardeningTests(unittest.TestCase):
         entrypoint = ENTRYPOINT_PATH.read_text(encoding="utf-8")
         self.assertIn("for path in /tmp /run /data", entrypoint)
         self.assertIn("Never change ownership or", entrypoint)
-        self.assertNotRegex(entrypoint, r"(?m)^\s*chown\s+.*?/sources")
+        self.assertEqual(_source_permission_mutations(entrypoint), [])
+
+    def test_source_permission_guard_catches_literals_variables_and_loops(self) -> None:
+        unsafe_snippets = (
+            "chown 99:100 /sources",
+            "chmod 0770 /sources/managed",
+            "for path in /tmp /sources /data; do\n  chown 99:100 \"${path}\"\ndone",
+            "source_root=/sources\nchmod 0750 \"${source_root}/managed\"",
+            "source_paths=\"/data /sources\"\nfor path in ${source_paths}; do\n  chmod g+w \"${path}\"\ndone",
+        )
+        for snippet in unsafe_snippets:
+            with self.subTest(snippet=snippet):
+                self.assertTrue(_source_permission_mutations(snippet))
 
 
 @unittest.skipUnless(
@@ -293,10 +383,109 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
                 f"chown {uid}:{gid} /host && chmod {mode:o} /host",
             )
 
-    @staticmethod
-    def _metadata(path: Path) -> tuple[int, int, int]:
-        item = path.stat()
-        return item.st_uid, item.st_gid, stat.S_IMODE(item.st_mode)
+    @classmethod
+    def _inspect_host_metadata(cls, path: Path) -> tuple[int, int, int]:
+        """Read protected bind-source metadata without changing it.
+
+        The smoke runner may not traverse a directory after its documented
+        ``PUID:PGID``/``0750`` preflight. A read-only, short-lived root helper
+        can inspect the exact bind source without relaxing its permissions.
+        """
+        completed = cls._docker(
+            "run",
+            "--rm",
+            "--read-only",
+            "--user",
+            "0:0",
+            "-v",
+            f"{path}:/host:ro",
+            "--entrypoint",
+            "sh",
+            cls.image,
+            "-ceu",
+            'stat -c "%u:%g:%a" /host',
+        )
+        try:
+            uid_text, gid_text, mode_text = completed.stdout.strip().split(":")
+            uid = int(uid_text, 10)
+            gid = int(gid_text, 10)
+            mode = int(mode_text, 8)
+        except ValueError as exc:
+            raise AssertionError(
+                f"unexpected metadata helper output for {path}: {completed.stdout!r}"
+            ) from exc
+        return uid, gid, mode
+
+    @classmethod
+    def _inspect_sqlite_database(cls, data_dir: Path) -> tuple[str, tuple[str, int]]:
+        """Query a temporary copy of the protected SQLite bind source.
+
+        SQLite uses a WAL sidecar while the application is running. The caller
+        stops Compose first; this helper then copies the database and any
+        sidecars from a read-only bind into tmpfs, so inspection cannot mutate
+        the asserted host directory or its metadata.
+        """
+        completed = cls._docker(
+            "run",
+            "--rm",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:mode=1777",
+            "--user",
+            "0:0",
+            "-v",
+            f"{data_dir}:/data:ro",
+            "--entrypoint",
+            "python",
+            cls.image,
+            "-c",
+            "\n".join(
+                (
+                    "import glob",
+                    "import json",
+                    "import shutil",
+                    "import sqlite3",
+                    "for source in glob.glob('/data/frostvault.db*'):",
+                    "    shutil.copy2(source, '/tmp')",
+                    "with sqlite3.connect('file:/tmp/frostvault.db?mode=ro', uri=True) as connection:",
+                    "    revision = connection.execute('SELECT version_num FROM alembic_version').fetchone()[0]",
+                    "    admin = connection.execute('SELECT username, is_admin FROM users').fetchone()",
+                    "print(json.dumps({'revision': revision, 'admin': admin}))",
+                )
+            ),
+        )
+        try:
+            payload = json.loads(completed.stdout)
+            revision = str(payload["revision"])
+            username, is_admin = payload["admin"]
+            return revision, (str(username), int(is_admin))
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise AssertionError(
+                f"unexpected database helper output: {completed.stdout!r}"
+            ) from exc
+
+    @classmethod
+    def _cleanup_compose_project(cls, root: Path) -> None:
+        """Remove inaccessible test bind sources through a bounded helper."""
+        cls._docker(
+            "run",
+            "--rm",
+            "--user",
+            "0:0",
+            "-v",
+            f"{root}:/host:rw",
+            "--entrypoint",
+            "sh",
+            cls.image,
+            "-ceu",
+            "\n".join(
+                (
+                    "# /host is one generated TemporaryDirectory, not the repository.",
+                    "rm -rf -- /host/data /host/sources /host/config",
+                    "rm -f -- /host/compose.yaml /host/override.yaml /host/.env",
+                )
+            ),
+        )
 
     @classmethod
     def _next_case_names(cls) -> tuple[str, str]:
@@ -316,6 +505,9 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
         uid: int = 99,
         gid: int = 100,
         *,
+        source_owner_uid: int | None = None,
+        source_gid: int | None = None,
+        source_mode: int = 0o750,
         extra_environment: dict[str, str] | None = None,
     ) -> tuple[tempfile.TemporaryDirectory, Path, str, str, Path, Path]:
         temporary = tempfile.TemporaryDirectory(prefix="frostvault-read-only-compose-")
@@ -325,7 +517,12 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
         sources_dir = root / "sources"
         config_dir = root / "config"
         self._prepare_host_directory(data_dir, uid, gid)
-        self._prepare_host_directory(sources_dir, uid, gid)
+        self._prepare_host_directory(
+            sources_dir,
+            uid if source_owner_uid is None else source_owner_uid,
+            gid if source_gid is None else source_gid,
+            source_mode,
+        )
         config_dir.mkdir()
         project_name, container_name = self._next_case_names()
         (root / "override.yaml").write_text(
@@ -450,10 +647,19 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
 
     def _run_fresh_compose_application(self, uid: int, gid: int) -> None:
         username = f"smoke-{uid}"
+        # Keep the Source Volume root deliberately unlike the runtime account:
+        # group access lets the app create /sources/managed, while an accidental
+        # chown/chmod by the runtime would be observable in the recorded tuple.
+        source_owner_uid = uid + 1
+        source_metadata = (source_owner_uid, gid, 0o770)
+        self.assertNotEqual(source_owner_uid, uid)
         temporary, root, project_name, container_name, data_dir, sources_dir = (
             self._new_compose_project(
                 uid,
                 gid,
+                source_owner_uid=source_owner_uid,
+                source_gid=gid,
+                source_mode=0o770,
                 extra_environment={
                     "DB_BACKEND": "sqlite",
                     "SQLITE_PATH": "/data/frostvault.db",
@@ -466,12 +672,12 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
             )
         )
         try:
-            # This is the documented preflight, done before `compose up`; the
-            # non-root service must not repair either bind source at runtime.
-            expected_metadata = (uid, gid, 0o750)
-            self.assertEqual(self._metadata(data_dir), expected_metadata)
-            source_metadata = self._metadata(sources_dir)
-            self.assertEqual(source_metadata, expected_metadata)
+            # This is the documented preflight, done before `compose up`. Use
+            # read-only helpers because a non-root runner cannot inspect its
+            # own 0750 PUID:PGID data bind source after preflight.
+            data_metadata = (uid, gid, 0o750)
+            self.assertEqual(self._inspect_host_metadata(data_dir), data_metadata)
+            self.assertEqual(self._inspect_host_metadata(sources_dir), source_metadata)
 
             self._compose(root, project_name, "up", "--detach", timeout=180)
             self._wait_for_ready(container_name)
@@ -491,46 +697,33 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
                 "-ceu",
                 "test ! -w /etc && test -w /tmp && test -w /run && test -w /data",
             )
-            managed_identity = self._docker(
-                "exec",
-                container_name,
-                "stat",
-                "-c",
-                "%u:%g",
-                "/sources/managed",
-            )
-            self.assertEqual(managed_identity.stdout.strip(), f"{uid}:{gid}")
-
-            database_path = data_dir / "frostvault.db"
-            self.assertTrue(database_path.is_file())
-            with sqlite3.connect(database_path) as connection:
-                revision = connection.execute(
-                    "SELECT version_num FROM alembic_version"
-                ).fetchone()
-                admin = connection.execute(
-                    "SELECT username, is_admin FROM users"
-                ).fetchone()
-            self.assertEqual(revision, (HEAD_SCHEMA_REVISION,))
-            self.assertEqual(admin, (username, 1))
 
             logs = self._docker("logs", container_name)
             combined_logs = logs.stdout + logs.stderr
+            # Stop before copying SQLite's WAL database. The read-only helper
+            # below uses only a tmpfs copy and never changes host metadata.
+            self._down(root, project_name)
+            revision, admin = self._inspect_sqlite_database(data_dir)
+            self.assertEqual(revision, HEAD_SCHEMA_REVISION)
+            self.assertEqual(admin, (username, 1))
+
             self.assertIn(
                 "AUTO_MIGRATE: ensuring database schema is current before uvicorn",
                 combined_logs,
             )
             self.assertIn("AUTO_MIGRATE: bootstrapped", combined_logs)
             self.assertIn("Application startup complete.", combined_logs)
-            self.assertEqual(self._metadata(data_dir), expected_metadata)
+            self.assertEqual(self._inspect_host_metadata(data_dir), data_metadata)
             self.assertEqual(
-                self._metadata(sources_dir),
+                self._inspect_host_metadata(sources_dir),
                 source_metadata,
                 "the runtime must not chown or chmod the Source Volume root",
             )
-            managed_metadata = self._metadata(sources_dir / "managed")
+            managed_metadata = self._inspect_host_metadata(sources_dir / "managed")
             self.assertEqual(managed_metadata[:2], (uid, gid))
         finally:
             self._down(root, project_name)
+            self._cleanup_compose_project(root)
             temporary.cleanup()
 
     def _run_compose_identity_case(
@@ -571,6 +764,7 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
             return completed, completed.stdout + completed.stderr
         finally:
             self._down(root, project_name)
+            self._cleanup_compose_project(root)
             temporary.cleanup()
 
     def test_image_bakes_the_default_identity(self) -> None:
