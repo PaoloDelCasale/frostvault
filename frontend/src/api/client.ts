@@ -1,4 +1,5 @@
 import type { AuthMethod } from "./types";
+import { startOidcReauthenticationTransition } from "@/pwa/authTransition";
 
 const CSRF_COOKIE_NAME = "frostvault_csrf";
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -200,6 +201,24 @@ function reauthenticationFailure(status = 403): ApiError {
   return new ApiError(message, { status, messageKey: key });
 }
 
+async function stepUpReauthentication(
+  request: ReauthenticationRequest,
+): Promise<boolean> {
+  const authMethod = config.getAuthMethod?.();
+  if (authMethod === "oidc") {
+    const returnTo = encodeURIComponent(currentReturnTo());
+    // OIDC rotates the Session after the provider callback. The shared
+    // coordinator closes this document first; App reconciles fresh /api/me
+    // authority when the callback returns to the SPA.
+    await startOidcReauthenticationTransition(() => {
+      navigateTo(`/auth/oidc/reauth?return_to=${returnTo}`);
+    });
+    throw new ReauthenticationRedirectError();
+  }
+
+  return localReauthentication(request);
+}
+
 async function submitLocalReauthentication(): Promise<boolean> {
   let password: string | null;
   try {
@@ -295,19 +314,6 @@ function localReauthentication(
     () => finishLocalReauthenticationGeneration(generation),
   );
   return outcome;
-}
-
-async function stepUpReauthentication(
-  request: ReauthenticationRequest,
-): Promise<boolean> {
-  const authMethod = config.getAuthMethod?.();
-  if (authMethod === "oidc") {
-    const returnTo = encodeURIComponent(currentReturnTo());
-    navigateTo(`/auth/oidc/reauth?return_to=${returnTo}`);
-    throw new ReauthenticationRedirectError();
-  }
-
-  return localReauthentication(request);
 }
 
 async function parseBody(response: Response): Promise<unknown> {

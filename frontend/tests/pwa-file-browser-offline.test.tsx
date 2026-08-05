@@ -9,7 +9,7 @@ import {
 } from "@/api";
 import type { FilesResponse } from "@/api/types";
 import { FileBrowser } from "@/pages/archive/FileBrowser";
-import { saveCachedFilesListing } from "@/pwa";
+import { saveCachedFilesListing } from "@/pwa/offlineFiles";
 
 const messages: Record<string, string> = {
   "ui.search_placeholder": "Search",
@@ -45,6 +45,12 @@ function t(key: string): string {
   return messages[key] ?? key;
 }
 
+const offlineContext = {
+  userId: 7,
+  vaultId: 1,
+  authorizationGeneration: "offline-session-a",
+};
+
 const listing: FilesResponse = {
   mode: "browse",
   directory: "",
@@ -74,8 +80,17 @@ describe("FileBrowser offline shell and stale listing (seams 2–3)", () => {
     localStorage.clear();
   });
 
-  it("shows the offline shell when the network is down and nothing is cached", async () => {
+  it("shows the offline shell when only another User's listing is cached", async () => {
     vi.stubGlobal("navigator", { ...navigator, onLine: false });
+    saveCachedFilesListing(
+      {
+        userId: offlineContext.userId + 1,
+        vaultId: offlineContext.vaultId,
+        authorizationGeneration: "offline-session-b",
+      },
+      { directory: "", page: 1, page_size: 100 },
+      listing,
+    );
     configureApiClient({
       fetchImpl: async () => {
         throw new TypeError("Failed to fetch");
@@ -86,7 +101,9 @@ describe("FileBrowser offline shell and stale listing (seams 2–3)", () => {
       <ApiQueryProvider client={client}>
         <FileBrowser
           t={t}
-          vaultId={1}
+          userId={offlineContext.userId}
+          vaultId={offlineContext.vaultId}
+          authorizationGeneration={offlineContext.authorizationGeneration}
           vaultName="Docs"
           capabilities={{
             can_operate: true,
@@ -107,7 +124,11 @@ describe("FileBrowser offline shell and stale listing (seams 2–3)", () => {
 
   it("shows a stale listing banner when a cached listing is reused offline", async () => {
     vi.stubGlobal("navigator", { ...navigator, onLine: false });
-    saveCachedFilesListing({ directory: "", page: 1, page_size: 100 }, listing);
+    saveCachedFilesListing(
+      offlineContext,
+      { directory: "", page: 1, page_size: 100 },
+      listing,
+    );
     configureApiClient({
       fetchImpl: async () => {
         throw new TypeError("Failed to fetch");
@@ -118,7 +139,9 @@ describe("FileBrowser offline shell and stale listing (seams 2–3)", () => {
       <ApiQueryProvider client={client}>
         <FileBrowser
           t={t}
-          vaultId={1}
+          userId={offlineContext.userId}
+          vaultId={offlineContext.vaultId}
+          authorizationGeneration={offlineContext.authorizationGeneration}
           vaultName="Docs"
           capabilities={{
             can_operate: true,

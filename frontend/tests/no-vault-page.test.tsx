@@ -94,10 +94,15 @@ describe("NoVaultPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("signs out via POST /api/logout then navigates to sign-in", async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({ message_key: "api.signed_out", message: "Signed out" }),
-    );
+  it("closes local file data before POST /api/logout then navigates to sign-in", async () => {
+    const staleCacheKey = "frostvault.files.cache.v3:prior-session";
+    localStorage.setItem(staleCacheKey, "prior-user-listing");
+    fetchMock.mockImplementationOnce(() => {
+      expect(localStorage.getItem(staleCacheKey)).toBeNull();
+      return Promise.resolve(
+        jsonResponse({ message_key: "api.signed_out", message: "Signed out" }),
+      );
+    });
     renderPage("en");
     window.localStorage.setItem(THEME_ACTIVE_USER_STORAGE_KEY, "42");
     navigate.mockImplementation(() => {

@@ -13,9 +13,13 @@ import type { FilesResponse } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import {
   isBrowserOffline,
+  isOfflineCacheContext,
   loadCachedFilesListing,
+  offlineFileCacheRequestHeaders,
   saveCachedFilesListing,
-} from "@/pwa";
+  type OfflineCacheContext,
+  type OfflineFileCacheLease,
+} from "@/pwa/offlineFiles";
 
 import type { VaultCapabilities } from "./actions";
 import { demoRootListing } from "./demoFiles";
@@ -35,8 +39,17 @@ type Translate = (key: string, params?: Record<string, string | number>) => stri
 export type FileBrowserProps = {
   t: Translate;
   capabilities: VaultCapabilities;
-  /** Current Vault identity, used to isolate the candidate query cache. */
+  /** Authenticated User identity. Listings are not persisted without it. */
+  userId?: number;
+  /** Current Vault identity, used to isolate file and candidate query caches. */
   vaultId: number;
+  /** Server-issued Session/Vault generation; App supplies it even network-only. */
+  authorizationGeneration?: string;
+  /**
+   * App passes a lease or explicit null. Undefined is retained for isolated
+   * component consumers that exercise the serialization seam without a Worker.
+   */
+  offlineCacheLease?: OfflineFileCacheLease | null;
   vaultName: string;
 };
 
@@ -91,7 +104,10 @@ function writeSearchParams(
 export function FileBrowser({
   t,
   capabilities,
+  userId,
   vaultId,
+  authorizationGeneration,
+  offlineCacheLease,
   vaultName,
 }: FileBrowserProps) {
   const initial = readSearchParams();
@@ -122,6 +138,41 @@ export function FileBrowser({
     }),
     [q, state, directory, page],
   );
+  const offlineCacheContext = useMemo<OfflineCacheContext | null>(() => {
+    const context = {
+      userId,
+      vaultId,
+      authorizationGeneration:
+        offlineCacheLease?.context.authorizationGeneration ?? authorizationGeneration,
+    };
+    return isOfflineCacheContext(context) ? context : null;
+  }, [authorizationGeneration, offlineCacheLease, userId, vaultId]);
+  const fileQueryKey = [
+    "files",
+    offlineCacheContext?.userId ?? "no-user",
+    offlineCacheContext?.vaultId ?? "no-vault",
+    offlineCacheContext?.authorizationGeneration ?? "no-authorization",
+    query.q ?? "",
+    query.state ?? "",
+    query.directory ?? "",
+    query.page ?? 1,
+    query.page_size ?? DEFAULT_PAGE_SIZE,
+  ] as const;
+  const offlineCacheHeaders = offlineFileCacheRequestHeaders(
+    offlineCacheLease,
+    offlineCacheContext,
+  );
+  const offlineCacheRequestOptions = useMemo<RequestInit | undefined>(
+    () => (offlineCacheHeaders ? { headers: offlineCacheHeaders } : undefined),
+    [offlineCacheHeaders],
+  );
+  // The undefined branch is an isolated component-test seam. The mounted App
+  // always supplies null or a verified lease, so production persistence and
+  // Worker caching remain fail-closed.
+  const canUseOfflineCache =
+    offlineCacheLease === undefined
+      ? Boolean(offlineCacheContext)
+      : Boolean(offlineCacheHeaders);
 
   const queryClient = useQueryClient();
   // Share the jobs cache with FileOperationsHost so the list can poll while
@@ -138,35 +189,85 @@ export function FileBrowser({
   }, [activeJobCount, queryClient]);
 
   const filesQuery = useQuery({
-    ...filesQueryOptions(query),
+    ...filesQueryOptions(query, offlineCacheRequestOptions),
+    queryKey: fileQueryKey,
     refetchInterval: filesRefetchIntervalFromJobs(jobsQuery.data),
   });
   const forceOfflineDemo =
     DEMO_MODE_ENABLED && getDemoSearchParam("offline") === "1";
 
   useEffect(() => {
-    if (forceOfflineDemo) {
-      saveCachedFilesListing(query, demoRootListing);
+    if (forceOfflineDemo && offlineCacheContext && canUseOfflineCache) {
+      saveCachedFilesListing(
+        offlineCacheContext,
+        query,
+        demoRootListing,
+        undefined,
+        offlineCacheLease ?? undefined,
+      );
     }
-  }, [forceOfflineDemo, query]);
+  }, [
+    forceOfflineDemo,
+    offlineCacheContext,
+    canUseOfflineCache,
+    offlineCacheLease,
+    query,
+  ]);
 
   useEffect(() => {
-    if (filesQuery.isSuccess && filesQuery.data) {
-      saveCachedFilesListing(query, filesQuery.data);
+    if (
+      filesQuery.isSuccess &&
+      filesQuery.data &&
+      offlineCacheContext &&
+      canUseOfflineCache
+    ) {
+      saveCachedFilesListing(
+        offlineCacheContext,
+        query,
+        filesQuery.data,
+        undefined,
+        offlineCacheLease ?? undefined,
+      );
     }
-  }, [filesQuery.isSuccess, filesQuery.data, query]);
+  }, [
+    filesQuery.isSuccess,
+    filesQuery.data,
+    offlineCacheContext,
+    canUseOfflineCache,
+    offlineCacheLease,
+    query,
+  ]);
 
   const offlineCached = useMemo(() => {
+    if (!offlineCacheContext || !canUseOfflineCache) return null;
     if (forceOfflineDemo) {
-      return loadCachedFilesListing(query) ?? {
+      return loadCachedFilesListing(
+        offlineCacheContext,
+        query,
+        undefined,
+        offlineCacheLease ?? undefined,
+      ) ?? {
         data: demoRootListing,
         savedAt: new Date().toISOString(),
       };
     }
     if (filesQuery.isSuccess) return null;
     if (!(filesQuery.isError || isBrowserOffline())) return null;
-    return loadCachedFilesListing(query);
-  }, [filesQuery.isSuccess, filesQuery.isError, query, forceOfflineDemo]);
+    return loadCachedFilesListing(
+      offlineCacheContext,
+      query,
+      undefined,
+      offlineCacheLease ?? undefined,
+    );
+  }, [
+    filesQuery.isSuccess,
+    filesQuery.isError,
+    offlineCacheContext,
+    canUseOfflineCache,
+    offlineCacheLease,
+    query,
+    forceOfflineDemo,
+  ]);
 
   const displayData: FilesResponse | undefined = forceOfflineDemo
     ? offlineCached?.data

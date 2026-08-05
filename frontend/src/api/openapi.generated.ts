@@ -921,7 +921,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Files */
+        /**
+         * List Files
+         * @description List Vault Files with an optional persisted offline-cache authorization.
+         *
+         *     A request carrying X-FrostVault-Offline-Cache-Authorization is checked
+         *     against the durable Session row before and after the catalog query. A 409
+         *     is intentionally not cacheable authority: discard it, refetch /api/me,
+         *     then retry only with that newly issued generation.
+         */
         get: operations["list_files_api_files_get"];
         put?: never;
         post?: never;
@@ -2830,6 +2838,8 @@ export interface components {
             is_admin: boolean;
             locale: string;
             locales: string[];
+            /** @description Opaque persisted Session cache authorization. It combines a monotonic per-Session generation with an unguessable nonce and rotates on Session replacement/revocation/expiry/OIDC token rotation and Vault selection. */
+            offline_cache_generation: string;
             session_version: number;
             username: string;
             vault: components["schemas"]["MeVault"] | null;
@@ -5486,19 +5496,40 @@ export interface operations {
                 page?: number;
                 page_size?: number;
             };
-            header?: never;
+            header?: {
+                /** @description Optional opaque cache authorization from GET /api/me. A bundled PWA sends it only for a current offline-cache lease. If the persisted Session authorization changed because of logout, expiry, OIDC token rotation, or Vault selection, this endpoint returns 409 and the value must not be reused. */
+                "X-FrostVault-Offline-Cache-Authorization"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description File listing with the persisted cache authorization used to validate it. */
             200: {
                 headers: {
+                    /** @description Includes X-FrostVault-Offline-Cache-Authorization so an intermediary cache cannot reuse a listing across authorizations. */
+                    Vary?: string;
+                    /** @description The current opaque persisted cache authorization. Workbox may cache a 200 response only when it exactly matches the request header and the active /api/me authorization. */
+                    "X-FrostVault-Offline-Cache-Authorization"?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["FilesResponse"];
+                };
+            };
+            /** @description The supplied cache authorization is stale, or the Session/Vault changed while the listing was built. Discard the payload and fetch fresh /api/me authority before retrying. */
+            409: {
+                headers: {
+                    /** @description Always no-store; a stale authorization conflict is never reusable. */
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        detail: "Offline cache authorization changed";
+                    };
                 };
             };
             /** @description Validation Error */

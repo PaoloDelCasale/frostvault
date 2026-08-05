@@ -13,7 +13,16 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -166,8 +175,10 @@ from .services.vaults import (
     list_admin_vaults,
 )
 from .sessions import (
+    SessionTransitionError,
     create_session,
     csrf_token_for,
+    current_offline_cache_generation,
     is_reauth_recent,
     mark_reauthenticated,
     resolve_session,
@@ -423,6 +434,73 @@ def _set_csrf_cookie(response: Response, csrf_token: str) -> None:
     )
 
 
+OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER = "X-FrostVault-Offline-Cache-Authorization"
+OFFLINE_FILE_CACHE_AUTHORIZATION_DESCRIPTION = (
+    "Optional opaque cache authorization from GET /api/me. A bundled PWA sends "
+    "it only for a current offline-cache lease. If the persisted Session "
+    "authorization changed because of logout, expiry, OIDC token rotation, or "
+    "Vault selection, this endpoint returns 409 and the value must not be reused."
+)
+OFFLINE_FILE_CACHE_FILES_RESPONSES = {
+    200: {
+        "description": "File listing with the persisted cache authorization used to validate it.",
+        "headers": {
+            OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER: {
+                "description": (
+                    "The current opaque persisted cache authorization. Workbox may "
+                    "cache a 200 response only when it exactly matches the request "
+                    "header and the active /api/me authorization."
+                ),
+                "schema": {"type": "string", "minLength": 1},
+            },
+            "Vary": {
+                "description": (
+                    "Includes X-FrostVault-Offline-Cache-Authorization so an "
+                    "intermediary cache cannot reuse a listing across authorizations."
+                ),
+                "schema": {"type": "string"},
+            },
+        },
+    },
+    409: {
+        "description": (
+            "The supplied cache authorization is stale, or the Session/Vault "
+            "changed while the listing was built. Discard the payload and fetch "
+            "fresh /api/me authority before retrying."
+        ),
+        "headers": {
+            "Cache-Control": {
+                "description": "Always no-store; a stale authorization conflict is never reusable.",
+                "schema": {"type": "string", "enum": ["no-store"]},
+            }
+        },
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["detail"],
+                    "properties": {
+                        "detail": {
+                            "type": "string",
+                            "enum": ["Offline cache authorization changed"],
+                        }
+                    },
+                }
+            }
+        },
+    },
+}
+
+
+def _offline_cache_authorization_changed() -> HTTPException:
+    """Return the non-cacheable conflict used by guarded file listings."""
+    return HTTPException(
+        409,
+        "Offline cache authorization changed",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def current_user(request: Request) -> dict[str, Any]:
     token = _read_session_cookie(request)
     if not token:
@@ -433,6 +511,88 @@ def current_user(request: Request) -> dict[str, Any]:
         raise HTTPException(401, "Invalid session")
     request.state.session = session
     return session["user"]
+
+
+def _offline_file_cache_generation(request: Request, vault_id: int | None) -> str:
+    """Read the live persisted cache authorization for this Session/Vault."""
+    with db() as connection:
+        generation = current_offline_cache_generation(
+            connection,
+            request.state.session["id"],
+            vault_id,
+        )
+    if not generation:
+        raise HTTPException(401, "Invalid session")
+    return generation
+
+
+def _validate_offline_file_cache_generation(
+    request: Request,
+    vault_id: int,
+    supplied: str | None = None,
+) -> str:
+    """Validate the supplied header against the persisted Session generation.
+
+    The header is optional for ordinary API consumers. When the bundled PWA
+    supplies it, this lookup deliberately bypasses ``request.state.session``:
+    a separate process may have committed logout, expiry, OIDC token rotation,
+    or Vault selection after authentication dependency resolution.
+    """
+    with db() as connection:
+        expected = current_offline_cache_generation(
+            connection,
+            request.state.session["id"],
+            vault_id,
+        )
+        # A concrete Vault mismatch is a 409 transition, not an expired or
+        # revoked credential. Querying without the Vault constraint separates
+        # those two cases without trusting the process-local request snapshot.
+        session_generation = (
+            current_offline_cache_generation(
+                connection,
+                request.state.session["id"],
+                None,
+            )
+            if expected is None
+            else expected
+        )
+    if expected is None:
+        if session_generation is None:
+            raise HTTPException(401, "Invalid session")
+        raise _offline_cache_authorization_changed()
+    if supplied is None:
+        supplied = request.headers.get(OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER)
+    if supplied and not secrets.compare_digest(supplied, expected):
+        raise _offline_cache_authorization_changed()
+    return expected
+
+
+def _offline_file_cache_generation_is_current(
+    request: Request,
+    vault_id: int,
+    expected: str,
+) -> bool:
+    with db() as connection:
+        current = current_offline_cache_generation(
+            connection,
+            request.state.session["id"],
+            vault_id,
+        )
+    return bool(current and secrets.compare_digest(current, expected))
+
+
+def _set_offline_file_cache_generation(response: Response, generation: str) -> None:
+    response.headers[OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER] = generation
+    # CacheStorage is separated by generation as well, but this makes an
+    # accidental HTTP cache key conservative for non-Workbox clients too.
+    vary = [
+        value.strip()
+        for value in response.headers.get("Vary", "").split(",")
+        if value.strip()
+    ]
+    if OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER not in vary:
+        vary.append(OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER)
+    response.headers["Vary"] = ", ".join(vary)
 
 
 def admin_user(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
@@ -616,8 +776,19 @@ def current_vault(
         if not vault:
             raise HTTPException(403, "No vault is assigned to this user")
         if session.get("vault_id") != vault["id"]:
-            set_session_vault(connection, session["id"], vault["id"])
-            session["vault_id"] = vault["id"]
+            updated = set_session_vault(
+                connection,
+                session["id"],
+                vault["id"],
+                expected_generation=session["offline_cache_generation"],
+                expected_nonce=session["offline_cache_nonce"],
+            )
+            if not updated:
+                # A concurrent logout, OIDC rotation, expiry, or Vault choice
+                # won after current_user resolved this request. Do not let this
+                # older process overwrite the newer persisted transition.
+                raise _offline_cache_authorization_changed()
+            session.update(updated)
     return vault
 
 
@@ -1596,8 +1767,16 @@ def oidc_callback(
             # Step-up reauthentication: the user proved their identity again for
             # the same account, so refresh the reauth window and rotate the token
             # instead of minting a brand-new Session.
-            mark_reauthenticated(connection, existing["id"])
-            raw_token = rotate_session(connection, existing["id"])
+            try:
+                raw_token = rotate_session(
+                    connection,
+                    existing["id"],
+                    reauthenticated=True,
+                )
+            except SessionTransitionError as error:
+                # A concurrent logout or expiry wins over an OIDC callback;
+                # never issue a freshly rotated cookie for a dead Session.
+                raise HTTPException(401, "Invalid session") from error
             csrf_token = existing["csrf_token"]
         elif existing and existing["user"]["id"] != user_id:
             # Do not silently switch the browser into another User when the
@@ -1734,6 +1913,10 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
     return {
         **user,
         "csrf_token": csrf_token,
+        "offline_cache_generation": _offline_file_cache_generation(
+            request,
+            vault["id"] if vault is not None else None,
+        ),
         "auth_method": request.state.session.get("auth_method"),
         "locale": _request_locale(request),
         "locales": list(available_locales()),
@@ -2128,14 +2311,28 @@ def select_vault(
             """,
             (action.vault_id, user["id"]),
         ).fetchone()
-    if not allowed:
-        raise HTTPException(403, "Vault access denied")
-    with db() as connection:
-        set_session_vault(connection, request.state.session["id"], action.vault_id)
+        if not allowed:
+            raise HTTPException(403, "Vault access denied")
+        updated = set_session_vault(
+            connection,
+            request.state.session["id"],
+            action.vault_id,
+            expected_generation=request.state.session["offline_cache_generation"],
+            expected_nonce=request.state.session["offline_cache_nonce"],
+        )
+    if not updated:
+        # The row transition is conditional on the Session snapshot observed by
+        # current_user, so another process cannot be silently overwritten.
+        raise HTTPException(409, "Offline cache authorization changed")
+    request.state.session.update(updated)
     return {**_api_message(request, "api.vault_selected")}
 
 
-@app.get("/api/files", response_model=response_model("FilesResponse"))
+@app.get(
+    "/api/files",
+    response_model=response_model("FilesResponse"),
+    responses=OFFLINE_FILE_CACHE_FILES_RESPONSES,
+)
 def list_files(
     q: str = "",
     state: str = "",
@@ -2143,7 +2340,32 @@ def list_files(
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=10, le=500),
     vault: dict[str, Any] = Depends(current_vault),
+    request: Request = None,
+    response: Response = None,
+    offline_cache_authorization: str | None = Header(
+        default=None,
+        alias=OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER,
+        description=OFFLINE_FILE_CACHE_AUTHORIZATION_DESCRIPTION,
+    ),
 ):
+    """List Vault Files with an optional persisted offline-cache authorization.
+
+    A request carrying X-FrostVault-Offline-Cache-Authorization is checked
+    against the durable Session row before and after the catalog query. A 409
+    is intentionally not cacheable authority: discard it, refetch /api/me,
+    then retry only with that newly issued generation.
+    """
+    # Defaults retain the direct catalog test seam; routed requests always
+    # receive FastAPI's Request/Response instances and enforce the guard.
+    expected_cache_generation = (
+        _validate_offline_file_cache_generation(
+            request,
+            vault["id"],
+            offline_cache_authorization,
+        )
+        if request is not None
+        else None
+    )
     directory = normalize_directory(directory)
     with db() as connection:
         rows = ArchiveCatalog(connection).list_file_rows(
@@ -2163,6 +2385,18 @@ def list_files(
             total = len(entries)
             offset = (page - 1) * page_size
             items = entries[offset:offset + page_size]
+
+    # The list query may have overlapped a logout or Vault selection. Do not
+    # return a cacheable old payload after the server-side Session transitioned.
+    if request is not None and expected_cache_generation is not None:
+        if not _offline_file_cache_generation_is_current(
+            request,
+            vault["id"],
+            expected_cache_generation,
+        ):
+            raise _offline_cache_authorization_changed()
+        if response is not None:
+            _set_offline_file_cache_generation(response, expected_cache_generation)
     return {
         "items": items,
         "total": total,

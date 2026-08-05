@@ -338,6 +338,49 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertEqual(old[0]["availability"], "missing")
             self.assertEqual(new[0]["availability"], "available")
 
+    def test_offline_cache_generation_migration_backfills_existing_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "offline-cache-generation.db"
+            baseline = run_alembic(path, "0032_notification_inbox")
+            self.assertEqual(baseline.returncode, 0, baseline.stderr)
+            with SQLiteConnection(str(path)) as connection:
+                user_id = connection.execute(
+                    """
+                    INSERT INTO users(username, display_name, password_hash, is_admin)
+                    VALUES ('cache-owner', 'Cache Owner', 'hash', FALSE)
+                    RETURNING id
+                    """
+                ).fetchone()["id"]
+                connection.execute(
+                    """
+                    INSERT INTO sessions(
+                        id, user_id, token_hash, auth_method, csrf_token,
+                        session_version, created_at, last_seen_at,
+                        idle_expires_at, absolute_expires_at
+                    ) VALUES (
+                        'legacy-cache-session', %s, 'legacy-token-hash', 'local',
+                        'legacy-csrf', 1, '2026-01-01T00:00:00+00:00',
+                        '2026-01-01T00:00:00+00:00',
+                        '2099-01-01T00:00:00+00:00',
+                        '2099-01-01T00:00:00+00:00'
+                    )
+                    """,
+                    (user_id,),
+                )
+
+            upgraded = run_alembic(path)
+            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+            with SQLiteConnection(str(path)) as connection:
+                row = connection.execute(
+                    """
+                    SELECT offline_cache_generation, offline_cache_nonce
+                    FROM sessions WHERE id='legacy-cache-session'
+                    """
+                ).fetchone()
+
+            self.assertEqual(row["offline_cache_generation"], 1)
+            self.assertGreaterEqual(len(row["offline_cache_nonce"]), 32)
+
     def test_lossless_schema_can_downgrade_and_upgrade_again(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "rollback.db"

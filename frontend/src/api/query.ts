@@ -99,10 +99,13 @@ export const statsQueryOptions = {
   refetchInterval: statsRefetchInterval,
 };
 
-export function filesQueryOptions(query: FilesQuery) {
+export function filesQueryOptions(
+  query: FilesQuery,
+  options?: RequestInit,
+) {
   return {
     queryKey: apiQueryKeys.files(query),
-    queryFn: () => fetchFiles(query),
+    queryFn: () => fetchFiles(query, options),
   };
 }
 

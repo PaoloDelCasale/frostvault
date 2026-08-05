@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
   ApiError,
   apiQueryKeys,
-  fetchMe,
   fetchVaults,
   logout,
   ReauthenticationRedirectError,
@@ -16,6 +15,22 @@ import {
 import { DEMO_MODE_ENABLED, getDemoSearchParam } from "@/demoGate";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/theme";
+import {
+  subscribeToOfflineFileCacheInvalidation,
+  verifyOfflineFileCacheLease,
+  type OfflineCacheContext,
+  type OfflineFileCacheLease,
+  type OfflineFileCacheTransition,
+} from "@/pwa/offlineFiles";
+import {
+  AuthTransitionTimeoutError,
+  beginOfflineAuthTransition,
+  offlineCacheContextForMe,
+  reconcileOfflineAuthTransition,
+  runOfflineAuthMutation,
+  withinAuthTransitionTimeout,
+  type OfflineAuthReconciliation,
+} from "@/pwa/authTransition";
 import { AppShell } from "@/layout/AppShell";
 import { shellLabel } from "@/layout/labels";
 import { Toast } from "@/components/Toast";
@@ -79,6 +94,18 @@ function currentPathname(): string {
   return window.location.pathname;
 }
 
+function sameOfflineCacheAuthorization(
+  left: OfflineCacheContext | null,
+  right: OfflineCacheContext | null,
+): boolean {
+  if (!left || !right) return left === right;
+  return (
+    left.userId === right.userId &&
+    left.vaultId === right.vaultId &&
+    left.authorizationGeneration === right.authorizationGeneration
+  );
+}
+
 export default function App() {
   const { t, setLocale } = useI18n();
   const { setUserId } = useTheme();
@@ -87,6 +114,19 @@ export default function App() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [vaults, setVaults] = useState<VaultListItem[]>([]);
   const [authChecked, setAuthChecked] = useState(pathname === "/login");
+  const [offlineCacheLease, setOfflineCacheLease] =
+    useState<OfflineFileCacheLease | null>(null);
+  const [offlineCacheTransitioning, setOfflineCacheTransitioning] =
+    useState(false);
+  const offlineCacheAuthorizationRef =
+    useRef<OfflineCacheContext | null>(null);
+  const refreshSessionRef = useRef<
+    (transition?: OfflineFileCacheTransition) => Promise<MeResponse>
+  >(async () => {
+    throw new Error("Session refresh is not initialized");
+  });
+  const refreshSessionInFlightRef = useRef<Promise<MeResponse> | null>(null);
+  const refreshSessionQueuedRef = useRef(false);
   const [refreshNotice, setRefreshNotice] = useState<{
     message: string;
     error: boolean;
@@ -97,18 +137,151 @@ export default function App() {
     setPathname(path);
   }, []);
 
-  const refreshSession = useCallback(async () => {
-    const nextMe = await fetchMe();
-    setUserId(nextMe.id);
-    setMe(nextMe);
-    try {
-      const listed = await fetchVaults();
-      setVaults(listed.items ?? []);
-    } catch {
-      setVaults([]);
-    }
-    return nextMe;
-  }, [setUserId]);
+  const clearOfflineFileData = useCallback(() => {
+    offlineCacheAuthorizationRef.current = null;
+    setOfflineCacheLease(null);
+    // While fresh authority is unknown, discard every capability-derived
+    // collection as well as archive bytes. AppShell stays mounted so its skip
+    // link and #main-content landmark never detach, but it must not expose the
+    // previous Session's Vault selector or privileged actions.
+    setVaults([]);
+    setOfflineCacheTransitioning(true);
+    void queryClient.cancelQueries({ queryKey: ["files"] });
+    queryClient.removeQueries({ queryKey: ["files"] });
+  }, [queryClient]);
+
+  const applyOfflineAuthReconciliation = useCallback(
+    async (reconciliation: OfflineAuthReconciliation): Promise<MeResponse> => {
+      const nextAuthorization = reconciliation.context;
+      if (
+        !reconciliation.lease ||
+        !sameOfflineCacheAuthorization(
+          offlineCacheAuthorizationRef.current,
+          nextAuthorization,
+        )
+      ) {
+        // The shared helper has already purged persisted listings. Removing
+        // React Query data here prevents a prior Session's in-memory response
+        // from surviving while this fresh authority renders network-only.
+        clearOfflineFileData();
+      }
+      offlineCacheAuthorizationRef.current = nextAuthorization;
+      setOfflineCacheLease(reconciliation.lease);
+      setOfflineCacheTransitioning(false);
+
+      const nextMe = reconciliation.me;
+      setUserId(nextMe.id);
+      setMe(nextMe);
+      try {
+        const listed = await withinAuthTransitionTimeout(fetchVaults());
+        setVaults(listed.items ?? []);
+      } catch {
+        setVaults([]);
+      }
+      return nextMe;
+    },
+    [clearOfflineFileData, setUserId],
+  );
+
+  const refreshSession = useCallback(
+    (initialTransition?: OfflineFileCacheTransition): Promise<MeResponse> => {
+      // Worker broadcasts can arrive while the initial /api/me reconciliation
+      // is still running. Coalesce those notifications so they cannot race
+      // each other and repeatedly detach the authenticated archive content.
+      const existing = refreshSessionInFlightRef.current;
+      if (existing) {
+        // An invalidation can arrive after reconciliation has updated the
+        // authenticated shell but before its final authority fetch settles.
+        // Remember that request so the closed barrier is reconciled again
+        // instead of leaving the archive content in its transition placeholder.
+        refreshSessionQueuedRef.current = true;
+        return existing;
+      }
+
+      const operation = (async () => {
+        const reconciliation = await reconcileOfflineAuthTransition({
+          transition: initialTransition,
+        });
+        return applyOfflineAuthReconciliation(reconciliation);
+      })();
+      refreshSessionInFlightRef.current = operation;
+      void operation.then(
+        () => {
+          if (refreshSessionInFlightRef.current !== operation) return;
+          refreshSessionInFlightRef.current = null;
+          if (!refreshSessionQueuedRef.current) return;
+          refreshSessionQueuedRef.current = false;
+          void refreshSession().catch(() => undefined);
+        },
+        () => {
+          if (refreshSessionInFlightRef.current === operation) {
+            refreshSessionInFlightRef.current = null;
+            refreshSessionQueuedRef.current = false;
+          }
+        },
+      );
+      return operation;
+    },
+    [applyOfflineAuthReconciliation],
+  );
+
+  useEffect(() => {
+    refreshSessionRef.current = refreshSession;
+  }, [refreshSession]);
+
+  useEffect(
+    () =>
+      subscribeToOfflineFileCacheInvalidation((invalidation) => {
+        clearOfflineFileData();
+        if (
+          (invalidation.state !== "reconcile" &&
+            invalidation.state !== "unknown") ||
+          pathname === "/login"
+        ) {
+          return;
+        }
+        // Another page completed a transition, or the Worker controller
+        // changed and its prior capability is unknowable. This page has no
+        // authority to reuse its context, so it obtains a fresh /api/me before
+        // any lease. refreshSession is single-flight and queues a follow-up
+        // when this event races the initial reconciliation.
+        void refreshSessionRef.current().catch(() => undefined);
+      }),
+    [clearOfflineFileData, pathname],
+  );
+
+  useEffect(() => {
+    if (!offlineCacheLease || pathname === "/login") return;
+    let cancelled = false;
+    const verifyLease = () => {
+      void verifyOfflineFileCacheLease(
+        offlineCacheLease,
+        offlineCacheLease.context,
+      ).then((valid) => {
+        if (cancelled || valid) return;
+        clearOfflineFileData();
+        // Render fresh authority network-only while the shared helper rebuilds
+        // a replacement capability. A previously painted fully offline view
+        // can remain visibly stale until this bounded probe runs, but it can
+        // neither serve nor persist data after the probe detects a new boot.
+        setOfflineCacheTransitioning(false);
+        void refreshSessionRef.current().catch(() => undefined);
+      });
+    };
+    verifyLease();
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "hidden") verifyLease();
+    };
+    window.addEventListener("focus", verifyLease);
+    window.addEventListener("online", verifyLease);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", verifyLease);
+      window.removeEventListener("online", verifyLease);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [clearOfflineFileData, offlineCacheLease, pathname]);
 
   const onRefreshList = useCallback(() => {
     void requestScan()
@@ -164,6 +337,10 @@ export default function App() {
       })
       .catch(() => {
         if (cancelled) return;
+        // No request/ACK wait is allowed to leave stale persisted data alive.
+        // The bounded helper records a local close even if no Worker exists.
+        void beginOfflineAuthTransition();
+        clearOfflineFileData();
         setUserId(null);
         setMe(null);
         setVaults([]);
@@ -177,7 +354,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [navigate, pathname, refreshSession, setUserId]);
+  }, [clearOfflineFileData, navigate, pathname, refreshSession, setUserId]);
 
   if (isVaultCreateRecoveryDemo()) {
     return <VaultCreateScreenshotFixture />;
@@ -230,11 +407,18 @@ export default function App() {
     );
   }
 
+  const offlineCacheContext = offlineCacheLease?.context ?? offlineCacheContextForMe(me);
+  if (!offlineCacheContext) return <NoVaultPage />;
+
   const capabilities = capabilitiesFromMe(me, vaults);
+  const cacheKey = offlineCacheLease
+    ? `offline-${offlineCacheLease.context.userId}-${offlineCacheLease.context.vaultId}-${offlineCacheLease.context.authorizationGeneration}-${offlineCacheLease.generation.bootId}-${offlineCacheLease.generation.counter}-${offlineCacheLease.clientGeneration}`
+    : `network-only-${offlineCacheContext.userId}-${offlineCacheContext.vaultId}-${offlineCacheContext.authorizationGeneration}`;
 
   return (
     <AppShell
       capabilities={capabilities}
+      authReconciliationPending={offlineCacheTransitioning}
       t={t}
       queryClient={queryClient}
       handlers={{
@@ -243,14 +427,28 @@ export default function App() {
         onNewVault: () => navigate("/vaults/new"),
         onRefreshList,
         onSignOut: () => {
-          // Clear the identity before reloading so /login cannot first-paint
-          // the departing user's palette.
-          setUserId(null);
-          void logout()
-            .catch(() => undefined)
-            .finally(() => {
+          void (async () => {
+            clearOfflineFileData();
+            const transition = await beginOfflineAuthTransition();
+            setUserId(null);
+            setMe(null);
+            setVaults([]);
+            try {
+              await withinAuthTransitionTimeout(logout());
+              // Logout deliberately leaves the Worker/local barrier closed.
+              // The next sign-in must establish a fresh server generation;
+              // there is no empty-context acknowledgement that could reopen an
+              // old Session after an unresponsive Worker.
+            } catch (error) {
+              if (!(error instanceof AuthTransitionTimeoutError)) {
+                // A known failed logout may recover only through a new /api/me
+                // reconciliation; otherwise this browser remains network-only.
+                await refreshSession(transition).catch(() => undefined);
+              }
+            } finally {
               window.location.assign("/login");
-            });
+            }
+          })();
         },
         onLocaleChange: (locale) => {
           void setLocale(locale).then(async () => {
@@ -258,41 +456,73 @@ export default function App() {
               queryKey: apiQueryKeys.notifications,
               refetchType: "active",
             });
-            const nextMe = await fetchMe();
-            setMe(nextMe);
+            await refreshSession();
           });
         },
         onVaultChange: (vaultId) => {
-          void selectVault({ vault_id: vaultId })
-            .then(() => refreshSession())
-            .then(() => {
+          void (async () => {
+            clearOfflineFileData();
+            try {
+              // The coordinator owns close → selection mutation → fresh
+              // /api/me → Worker reconciliation. A missing Worker remains
+              // deliberately network-only rather than delaying the mutation.
+              const outcome = await runOfflineAuthMutation(() =>
+                selectVault({ vault_id: vaultId }),
+              );
+              if (outcome.reconciliation) {
+                await applyOfflineAuthReconciliation(outcome.reconciliation);
+              }
               window.location.assign("/");
-            });
+            } catch (error) {
+              if (error instanceof AuthTransitionTimeoutError) {
+                // The server request may still commit. Do not reopen based on
+                // an earlier /api/me; stay closed/network-only instead.
+                return;
+              }
+              // A definitive mutation failure still requires a fresh /api/me
+              // before the old context can be registered again.
+              await refreshSession().catch(() => undefined);
+            }
+          })();
         },
       }}
     >
-      <ArchivePage
-        vaultName={capabilities.vaultName}
-        displayName={me.display_name}
-        t={t}
-        fileList={
-          <FileBrowser
-            t={t}
-            vaultId={me.vault?.id ?? capabilities.currentVaultId ?? 0}
-            vaultName={capabilities.vaultName}
-            capabilities={{
-              role: capabilities.role ?? "viewer",
-              can_operate: capabilities.canOperate,
-              delete_enabled: me.vault?.delete_enabled ?? false,
-              cloud_deletion_enabled:
-                me.vault?.cloud_deletion_enabled ?? false,
-              is_vault_owner: capabilities.isVaultOwner,
-            }}
-          />
-        }
-      />
+      {offlineCacheTransitioning ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="grid min-h-[12rem] place-items-center text-sm text-muted"
+        >
+          {shellLabel(t, "ui.loading", "Loading…")}
+        </div>
+      ) : (
+        <ArchivePage
+          vaultName={capabilities.vaultName}
+          displayName={me.display_name}
+          t={t}
+          fileList={
+            <FileBrowser
+              key={cacheKey}
+              t={t}
+              userId={offlineCacheContext.userId}
+              vaultId={offlineCacheContext.vaultId}
+              authorizationGeneration={offlineCacheContext.authorizationGeneration}
+              offlineCacheLease={offlineCacheLease}
+              vaultName={capabilities.vaultName}
+              capabilities={{
+                role: capabilities.role ?? "viewer",
+                can_operate: capabilities.canOperate,
+                delete_enabled: me.vault?.delete_enabled ?? false,
+                cloud_deletion_enabled:
+                  me.vault?.cloud_deletion_enabled ?? false,
+                is_vault_owner: capabilities.isVaultOwner,
+              }}
+            />
+          }
+        />
+      )}
       <Toast
-        open={Boolean(refreshNotice)}
+        open={Boolean(refreshNotice) && !offlineCacheTransitioning}
         message={refreshNotice?.message ?? ""}
         variant={refreshNotice?.error ? "error" : "success"}
         onClose={() => setRefreshNotice(null)}

@@ -213,6 +213,7 @@ it("routes the pathname-only admin navigation to storage estimates", async () =>
         active: true,
         session_version: 1,
         csrf_token: "csrf",
+        offline_cache_generation: "admin-cost-session-vault-1",
         auth_method: "local",
         locale: "en",
         locales: ["en", "it"],
