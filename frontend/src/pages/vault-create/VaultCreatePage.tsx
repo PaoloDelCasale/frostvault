@@ -21,6 +21,7 @@ import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
+import { runWithOfflineFileCacheBarrier } from "@/pwa/offlineFiles";
 
 import { RecoveryExportPanel } from "./RecoveryExportPanel";
 
@@ -119,7 +120,9 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
         setCustodyConfirmed(false);
         return;
       }
-      await selectVault({ vault_id: vault.id });
+      await runWithOfflineFileCacheBarrier(() =>
+        selectVault({ vault_id: vault.id }),
+      );
       navigateTo("/", onNavigate);
     } catch (err) {
       const message =
@@ -139,7 +142,9 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
     setRecoveryError(null);
     setConfirming(true);
     try {
-      await selectVault({ vault_id: createdVault.id });
+      await runWithOfflineFileCacheBarrier(() =>
+        selectVault({ vault_id: createdVault.id }),
+      );
       await confirmRecoveryCustody({ acknowledged: true });
       setCustodyConfirmed(true);
       navigateTo("/", onNavigate);

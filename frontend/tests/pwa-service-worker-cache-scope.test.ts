@@ -190,6 +190,38 @@ describe("service-worker file-listing cache authorization scope", () => {
     expect(userBCache).not.toBe(userACache);
   });
 
+  it("makes every controlled client network-only after another client clears until fresh auth", async () => {
+    const userAVault = { userId: 11, vaultId: 101 };
+    const userBVault = { userId: 22, vaultId: 202 };
+    const userBCache = offlineFileServiceWorkerCacheName(userBVault);
+
+    await sendMessage(
+      { type: OFFLINE_FILE_CACHE_CONTEXT_MESSAGE, context: userAVault },
+      "client-a",
+    );
+    await sendMessage(
+      { type: OFFLINE_FILE_CACHE_CONTEXT_MESSAGE, context: userBVault },
+      "client-b",
+    );
+    await handleListing("client-b");
+    expect(workbox.strategies.at(-1)?.cacheName).toBe(userBCache);
+
+    // User A's logout/transition must invalidate Client B as well.
+    await sendMessage({ type: CLEAR_OFFLINE_FILE_CACHE_MESSAGE }, "client-a");
+    await handleListing("client-b");
+    expect(workbox.networkOnlyHandles).toBe(1);
+    expect(workbox.strategies).toHaveLength(1);
+
+    // Only a fresh /api/me-driven context message may re-enable caching for B.
+    await sendMessage(
+      { type: OFFLINE_FILE_CACHE_CONTEXT_MESSAGE, context: userBVault },
+      "client-b",
+    );
+    await handleListing("client-b");
+    expect(workbox.strategies.at(-1)?.cacheName).toBe(userBCache);
+    expect(workbox.strategies).toHaveLength(2);
+  });
+
   it("uses separate cache namespaces when one User switches Vaults", async () => {
     const vaultA = { userId: 11, vaultId: 101 };
     const vaultB = { userId: 11, vaultId: 202 };

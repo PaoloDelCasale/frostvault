@@ -105,8 +105,10 @@ self.addEventListener("message", (event) => {
   }
   if (!isClearMessage(event.data)) return;
 
-  const clientId = clientIdFromMessage(event);
-  if (clientId) fileListingContexts.delete(clientId);
+  // A logout or Vault/session transition in one tab invalidates every
+  // controlled client's authority to reuse a credentialed listing. Until each
+  // client sends a context after its own fresh /api/me, use NetworkOnly.
+  fileListingContexts.clear();
   fileListingStrategies.clear();
   event.waitUntil(purgeFileListingCaches());
 });

@@ -10,6 +10,8 @@ export const OFFLINE_FILE_CACHE_CONTEXT_MESSAGE =
   "frostvault.offline-file-cache-context";
 export const CLEAR_OFFLINE_FILE_CACHE_MESSAGE =
   "frostvault.clear-offline-file-cache";
+export const OFFLINE_FILE_CACHE_INVALIDATED_EVENT =
+  "frostvault.offline-file-cache-invalidated";
 
 /** The complete authorization scope required to read an offline file listing. */
 export type OfflineCacheContext = Readonly<{
@@ -128,10 +130,36 @@ export function setOfflineFileCacheContext(context: OfflineCacheContext): void {
   });
 }
 
+function notifyOfflineFileCacheInvalidated(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(OFFLINE_FILE_CACHE_INVALIDATED_EVENT));
+}
+
+/** Subscribe to local authorization transitions before a fresh /api/me restores data. */
+export function subscribeToOfflineFileCacheInvalidation(
+  listener: () => void,
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  window.addEventListener(OFFLINE_FILE_CACHE_INVALIDATED_EVENT, listener);
+  return () => window.removeEventListener(OFFLINE_FILE_CACHE_INVALIDATED_EVENT, listener);
+}
+
 /** Purge file listings locally and in the service worker on logout or scope changes. */
 export function clearOfflineFileCache(storage: Storage = localStorage): void {
   clearCachedFilesListings(storage);
+  notifyOfflineFileCacheInvalidated();
   postServiceWorkerMessage({ type: CLEAR_OFFLINE_FILE_CACHE_MESSAGE });
+}
+
+/**
+ * Start an authorization transition before an API operation changes the active
+ * Vault. The caller may restore a context only after a fresh /api/me response.
+ */
+export function runWithOfflineFileCacheBarrier<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  clearOfflineFileCache();
+  return operation();
 }
 
 /** Persist the last successful file listing for this authorization scope. */

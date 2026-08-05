@@ -20,7 +20,9 @@ import {
   clearOfflineFileCache,
   invalidateLegacyCachedFilesListings,
   isOfflineCacheContext,
+  runWithOfflineFileCacheBarrier,
   setOfflineFileCacheContext,
+  subscribeToOfflineFileCacheInvalidation,
   type OfflineCacheContext,
 } from "@/pwa/offlineFiles";
 import { AppShell } from "@/layout/AppShell";
@@ -114,12 +116,16 @@ export default function App() {
   }, []);
 
   const clearOfflineFileData = useCallback(() => {
-    clearOfflineFileCache();
     offlineCacheContextRef.current = null;
     setOfflineCacheContext(null);
     void queryClient.cancelQueries({ queryKey: ["files"] });
     queryClient.removeQueries({ queryKey: ["files"] });
   }, [queryClient]);
+
+  useEffect(
+    () => subscribeToOfflineFileCacheInvalidation(clearOfflineFileData),
+    [clearOfflineFileData],
+  );
 
   const synchronizeOfflineCacheContext = useCallback(
     (nextMe: MeResponse): OfflineCacheContext | null => {
@@ -130,7 +136,7 @@ export default function App() {
         // /api/me does not expose a Session identifier. Once an active session
         // is revalidated, discard prior listings even if its User and Vault
         // match: this also covers a same-context session replacement.
-        clearOfflineFileData();
+        clearOfflineFileCache();
       }
       if (!nextContext) return null;
 
@@ -139,7 +145,7 @@ export default function App() {
       setOfflineFileCacheContext(nextContext);
       return nextContext;
     },
-    [clearOfflineFileData],
+    [],
   );
 
   const refreshSession = useCallback(async () => {
@@ -195,7 +201,7 @@ export default function App() {
 
   useEffect(() => {
     if (pathname === "/login") {
-      clearOfflineFileData();
+      clearOfflineFileCache();
       setAuthChecked(true);
       return;
     }
@@ -211,7 +217,7 @@ export default function App() {
       })
       .catch(() => {
         if (cancelled) return;
-        clearOfflineFileData();
+        clearOfflineFileCache();
         setUserId(null);
         setMe(null);
         setVaults([]);
@@ -225,7 +231,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [clearOfflineFileData, navigate, pathname, refreshSession, setUserId]);
+  }, [navigate, pathname, refreshSession, setUserId]);
 
   if (isVaultCreateRecoveryDemo()) {
     return <VaultCreateScreenshotFixture />;
@@ -303,7 +309,7 @@ export default function App() {
         onSignOut: () => {
           // Clear identity and offline file data before /login can first-paint
           // the departing user's palette or listing.
-          clearOfflineFileData();
+          clearOfflineFileCache();
           setUserId(null);
           setMe(null);
           setVaults([]);
@@ -323,17 +329,24 @@ export default function App() {
           });
         },
         onVaultChange: (vaultId) => {
-          clearOfflineFileData();
-          void selectVault({ vault_id: vaultId })
-            .then(() => refreshSession())
-            .then(() => {
-              window.location.assign("/");
-            })
-            .catch(() => {
-              // If selection failed, only restore the context that /api/me had
-              // already authorized; never reuse an unscoped listing.
-              synchronizeOfflineCacheContext(me);
-            });
+          void runWithOfflineFileCacheBarrier(() =>
+            selectVault({ vault_id: vaultId }),
+          ).then(
+            () => {
+              // The server now selected the new Vault. A failed refresh must
+              // leave the barrier in place rather than reviving the old one.
+              void refreshSession()
+                .then(() => {
+                  window.location.assign("/");
+                })
+                .catch(() => undefined);
+            },
+            () => {
+              // Selection itself failed, so only a fresh /api/me may restore
+              // the still-current Vault context.
+              void refreshSession().catch(() => undefined);
+            },
+          );
         },
       }}
     >
