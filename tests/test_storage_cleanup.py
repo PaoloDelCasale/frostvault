@@ -801,8 +801,8 @@ class StorageCleanupTests(unittest.TestCase):
                 any("status='completed'" in sql and params[-1] == 21 for sql, params in job_updates)
             )
 
-    def test_restart_requeues_expired_storage_class_claim(self) -> None:
-        """Issue #193: a copy-stage storage-class Job cannot remain stranded."""
+    def test_restart_fails_unproven_storage_class_claim_closed(self) -> None:
+        """Issue #193: a copy-stage Job without provider proof is not retried."""
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "app.db"
             migrated = run_alembic(database_path)
@@ -861,7 +861,7 @@ class StorageCleanupTests(unittest.TestCase):
             with patch("app.database.settings", database_settings):
                 summary = reconcile_interrupted_jobs()
 
-            self.assertEqual(summary, {"completed": 0, "requeued": 1, "failed": 0})
+            self.assertEqual(summary, {"completed": 0, "requeued": 0, "failed": 1})
             with SQLiteConnection(str(database_path)) as connection:
                 job = connection.execute(
                     """
@@ -870,7 +870,7 @@ class StorageCleanupTests(unittest.TestCase):
                     """,
                     (job_id,),
                 ).fetchone()
-            self.assertEqual(job["status"], "queued")
+            self.assertEqual(job["status"], "failed")
             self.assertIsNone(job["claim_token"])
             self.assertIsNone(job["claimed_at"])
             self.assertIsNone(job["claim_expires_at"])

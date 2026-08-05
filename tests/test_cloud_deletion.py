@@ -1226,6 +1226,239 @@ class ClaimLeaseSchedulerTests(_CloudDeletionTestCase):
             self.assertTrue(jobs[0]["claim_token"])
 
 
+class ClaimLeaseTakeoverTests(_CloudDeletionTestCase):
+    def test_takeover_after_delete_does_not_publish_stale_marker_or_repeat_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path, vault_id, file_id = _prepare_vault_with_versions(
+                Path(directory), cloud_deletion_enabled=True, version_count=1
+            )
+            timestamp = storage_module.now_iso()
+            with SQLiteConnection(str(database_path)) as connection:
+                scheduled = cloud_deletion.schedule_cloud_archive(
+                    connection,
+                    vault_id=vault_id,
+                    paths=["report.txt"],
+                    is_directory=False,
+                    actor_user_id=1,
+                    requested_at=timestamp,
+                )
+                claimed = ArchiveCatalog(connection).claim_job(
+                    job_id=scheduled.job_ids[0],
+                    claim_token="first-worker",
+                    claimed_at=timestamp,
+                    claim_expires_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+                    now=timestamp,
+                    restore_due_before=timestamp,
+                )
+                self.assertIsNotNone(claimed)
+                job = connection.execute(
+                    """
+                    SELECT j.*, v.source_root, v.s3_bucket, v.s3_prefix,
+                           v.rclone_remote, v.encryption_mode,
+                           v.crypt_password_ciphertext, v.crypt_password2_ciphertext,
+                           v.uuid AS vault_uuid, v.name AS vault_name,
+                           v.cloud_deletion_enabled, v.decommission_state
+                    FROM jobs j JOIN vaults v ON v.id=j.vault_id
+                    WHERE j.id=%s
+                    """,
+                    (scheduled.job_ids[0],),
+                ).fetchone()
+
+            delete_started = threading.Event()
+            allow_delete = threading.Event()
+            client = Mock()
+            client.head_object.return_value = {"VersionId": "s3-v1", "ContentLength": 10}
+
+            def stalled_delete(**_kwargs):
+                delete_started.set()
+                self.assertTrue(allow_delete.wait(timeout=10))
+                return {"VersionId": "marker-after-takeover", "DeleteMarker": True}
+
+            client.delete_object.side_effect = stalled_delete
+            database_settings = SimpleNamespace(
+                db_backend="sqlite", sqlite_path=str(database_path)
+            )
+            runtime = SimpleNamespace(restore_poll_interval=0)
+            result: list[bool] = []
+            with (
+                patch("app.database.settings", database_settings),
+                patch("app.storage._runtime_settings", return_value=runtime),
+                patch("app.storage.validate_cloud_vault"),
+                patch("app.storage.s3_client", return_value=client),
+            ):
+                worker = threading.Thread(
+                    target=lambda: result.append(storage_module.process_job(dict(job)))
+                )
+                worker.start()
+                self.assertTrue(delete_started.wait(timeout=10))
+                with SQLiteConnection(str(database_path)) as connection:
+                    connection.execute(
+                        """
+                        UPDATE jobs
+                        SET claim_token='takeover-worker',
+                            claimed_at=%s,
+                            claim_expires_at=%s
+                        WHERE id=%s
+                        """,
+                        (
+                            storage_module.now_iso(),
+                            (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+                            scheduled.job_ids[0],
+                        ),
+                    )
+                allow_delete.set()
+                worker.join(timeout=10)
+                self.assertFalse(worker.is_alive())
+
+            self.assertEqual(result, [False])
+            with SQLiteConnection(str(database_path)) as connection:
+                before = connection.execute(
+                    "SELECT status FROM jobs WHERE id=%s", (scheduled.job_ids[0],)
+                ).fetchone()
+                marker_count = connection.execute(
+                    "SELECT COUNT(*) AS total FROM delete_markers WHERE vault_file_id=%s",
+                    (file_id,),
+                ).fetchone()["total"]
+                completed_audits = connection.execute(
+                    """
+                    SELECT COUNT(*) AS total FROM audit_events
+                    WHERE event='cloud_deletion.archive_completed'
+                    """
+                ).fetchone()["total"]
+                connection.execute(
+                    "UPDATE jobs SET claim_expires_at='2000-01-01T00:00:00+00:00' WHERE id=%s",
+                    (scheduled.job_ids[0],),
+                )
+            self.assertEqual(before["status"], "cleaning")
+            self.assertEqual(marker_count, 0)
+            self.assertEqual(completed_audits, 0)
+
+            client.list_object_versions.return_value = {
+                "Versions": [],
+                "DeleteMarkers": [
+                    {
+                        "Key": "docs/report.txt",
+                        "VersionId": "marker-after-takeover",
+                        "IsLatest": True,
+                    }
+                ],
+                "IsTruncated": False,
+            }
+            with (
+                patch("app.database.settings", database_settings),
+                patch("app.storage.s3_client", return_value=client),
+            ):
+                summary = storage_module.reconcile_interrupted_jobs()
+
+            self.assertEqual(summary, {"completed": 1, "requeued": 0, "failed": 0})
+            self.assertEqual(client.delete_object.call_count, 1)
+            with SQLiteConnection(str(database_path)) as connection:
+                after = connection.execute(
+                    "SELECT status FROM jobs WHERE id=%s", (scheduled.job_ids[0],)
+                ).fetchone()
+                marker_count = connection.execute(
+                    "SELECT COUNT(*) AS total FROM delete_markers WHERE vault_file_id=%s",
+                    (file_id,),
+                ).fetchone()["total"]
+            self.assertEqual(after["status"], "completed")
+            self.assertEqual(marker_count, 1)
+
+    def test_cancellation_during_stalled_delete_does_not_publish_stale_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path, vault_id, file_id = _prepare_vault_with_versions(
+                Path(directory), cloud_deletion_enabled=True, version_count=1
+            )
+            timestamp = storage_module.now_iso()
+            with SQLiteConnection(str(database_path)) as connection:
+                scheduled = cloud_deletion.schedule_cloud_archive(
+                    connection,
+                    vault_id=vault_id,
+                    paths=["report.txt"],
+                    is_directory=False,
+                    actor_user_id=1,
+                    requested_at=timestamp,
+                )
+                ArchiveCatalog(connection).claim_job(
+                    job_id=scheduled.job_ids[0],
+                    claim_token="cancelled-worker",
+                    claimed_at=timestamp,
+                    claim_expires_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+                    now=timestamp,
+                    restore_due_before=timestamp,
+                )
+                job = connection.execute(
+                    """
+                    SELECT j.*, v.source_root, v.s3_bucket, v.s3_prefix,
+                           v.rclone_remote, v.encryption_mode,
+                           v.crypt_password_ciphertext, v.crypt_password2_ciphertext,
+                           v.uuid AS vault_uuid, v.name AS vault_name,
+                           v.cloud_deletion_enabled, v.decommission_state
+                    FROM jobs j JOIN vaults v ON v.id=j.vault_id
+                    WHERE j.id=%s
+                    """,
+                    (scheduled.job_ids[0],),
+                ).fetchone()
+
+            entered = threading.Event()
+            release = threading.Event()
+            client = Mock()
+            client.head_object.return_value = {"VersionId": "s3-v1"}
+
+            def stalled_delete(**_kwargs):
+                entered.set()
+                self.assertTrue(release.wait(timeout=10))
+                return {"VersionId": "marker-cancelled", "DeleteMarker": True}
+
+            client.delete_object.side_effect = stalled_delete
+            database_settings = SimpleNamespace(
+                db_backend="sqlite", sqlite_path=str(database_path)
+            )
+            result: list[bool] = []
+            with (
+                patch("app.database.settings", database_settings),
+                patch("app.storage._runtime_settings", return_value=SimpleNamespace(restore_poll_interval=0)),
+                patch("app.storage.validate_cloud_vault"),
+                patch("app.storage.s3_client", return_value=client),
+            ):
+                worker = threading.Thread(
+                    target=lambda: result.append(storage_module.process_job(dict(job)))
+                )
+                worker.start()
+                self.assertTrue(entered.wait(timeout=10))
+                with SQLiteConnection(str(database_path)) as connection:
+                    cancelled = cloud_deletion.cancel_cloud_deletion(
+                        connection,
+                        vault_id=vault_id,
+                        group_id=scheduled.group_id,
+                        actor_user_id=1,
+                        cancelled_at=storage_module.now_iso(),
+                    )
+                self.assertEqual(cancelled.cancelled_count, 1)
+                release.set()
+                worker.join(timeout=10)
+                self.assertFalse(worker.is_alive())
+
+            self.assertEqual(result, [False])
+            self.assertEqual(client.delete_object.call_count, 1)
+            with SQLiteConnection(str(database_path)) as connection:
+                state = connection.execute(
+                    "SELECT status FROM jobs WHERE id=%s", (scheduled.job_ids[0],)
+                ).fetchone()["status"]
+                marker_count = connection.execute(
+                    "SELECT COUNT(*) AS total FROM delete_markers WHERE vault_file_id=%s",
+                    (file_id,),
+                ).fetchone()["total"]
+                completed_audits = connection.execute(
+                    """
+                    SELECT COUNT(*) AS total FROM audit_events
+                    WHERE event='cloud_deletion.archive_completed'
+                    """
+                ).fetchone()["total"]
+            self.assertEqual(state, "cancelled")
+            self.assertEqual(marker_count, 0)
+            self.assertEqual(completed_audits, 0)
+
+
 class ClaimLeaseRestartTests(_CloudDeletionTestCase):
     def test_restart_completes_cloud_archive_from_catalogued_delete_marker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

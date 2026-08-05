@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -360,6 +361,56 @@ class FairSchedulerIntegrationTests(unittest.TestCase):
             ).fetchone()["status"]
         self.assertEqual(status, "cancelled")
 
+    def test_heartbeat_lease_loss_fences_the_worker_terminal_write(self) -> None:
+        job_id = self._insert_upload_job(vault_id=10, path="a.txt")
+        timestamp = storage_module.now_iso()
+        with SQLiteConnection(str(self.path)) as connection:
+            claimed = ArchiveCatalog(connection).claim_job(
+                job_id=job_id,
+                claim_token="heartbeat-worker",
+                claimed_at=timestamp,
+                claim_expires_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+                now=timestamp,
+                restore_due_before=timestamp,
+            )
+            self.assertIsNotNone(claimed)
+            job = connection.execute(
+                """
+                SELECT j.*, v.source_root
+                FROM jobs j JOIN vaults v ON v.id=j.vault_id
+                WHERE j.id=%s
+                """,
+                (job_id,),
+            ).fetchone()
+
+        runtime = SimpleNamespace(restore_poll_interval=0)
+
+        def wait_for_heartbeat_loss(active: dict) -> None:
+            time.sleep(0.25)
+            storage_module.ensure_job_active(active["id"], "claim lost")
+
+        with (
+            patch("app.storage._runtime_settings", return_value=runtime),
+            patch(
+                "app.storage.db",
+                side_effect=lambda: SQLiteConnection(str(self.path)),
+            ),
+            patch("app.storage.JOB_CLAIM_LEASE_SECONDS", 0.01),
+            patch("app.storage._renew_claim_if_owned", return_value=None),
+            patch(
+                "app.storage.source_layout.vault_local_access",
+                return_value=SimpleNamespace(local_operations_allowed=True),
+            ),
+            patch("app.storage.process_upload", side_effect=wait_for_heartbeat_loss),
+        ):
+            self.assertFalse(process_job(dict(job)))
+
+        with SQLiteConnection(str(self.path)) as connection:
+            status = connection.execute(
+                "SELECT status FROM jobs WHERE id=%s", (job_id,)
+            ).fetchone()["status"]
+        self.assertEqual(status, "queued")
+
     def test_queue_depth_counts_unleased_backlog_not_concurrency_batch(self) -> None:
         first = self._insert_upload_job(vault_id=10, path="a.txt")
         self._insert_upload_job(vault_id=10, path="b.txt")
@@ -375,6 +426,24 @@ class FairSchedulerIntegrationTests(unittest.TestCase):
                 """,
                 (first,),
             )
+            connection.execute(
+                """
+                INSERT INTO jobs(
+                    vault_id, vault_file_id, path, action, status,
+                    requested_by, requested_at, updated_at,
+                    claim_token, claimed_at, claim_expires_at
+                )
+                SELECT 20, id, 'b.txt', 'recover', 'restoring',
+                       1, '2000-01-01T00:00:00+00:00',
+                       '2000-01-01T00:00:00+00:00',
+                       'dead-restorer', '2000-01-01T00:00:00+00:00',
+                       '2000-01-01T00:05:00+00:00'
+                FROM vault_files
+                WHERE vault_id=20
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            )
         runtime = SimpleNamespace(restore_poll_interval=0)
         with (
             patch("app.storage._runtime_settings", return_value=runtime),
@@ -383,7 +452,7 @@ class FairSchedulerIntegrationTests(unittest.TestCase):
                 side_effect=lambda: SQLiteConnection(str(self.path)),
             ),
         ):
-            self.assertEqual(claimable_queue_depth(), 2)
+            self.assertEqual(claimable_queue_depth(), 3)
 
 
 if __name__ == "__main__":

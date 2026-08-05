@@ -1569,6 +1569,108 @@ class ArchiveCatalog:
             params.append(restore_due_before)
         return "(" + " OR ".join(clauses) + ")", params
 
+    @classmethod
+    def _claimable_job_predicate_sql(
+        cls,
+        *,
+        prefix: str,
+        now: str,
+        restore_due_before: str,
+    ) -> tuple[str, list[Any]]:
+        """Build the one durable claimability predicate for scheduler/metrics.
+
+        Keeping candidate selection, conditional acquisition, and queue depth on
+        this predicate prevents monitoring from reporting rows a worker cannot
+        acquire.  In particular, due ``restoring`` Jobs and expired leases use
+        exactly the same definition everywhere.
+        """
+        runnable_sql, params = cls._claimable_job_status_sql(
+            prefix=prefix,
+            now=now,
+            restore_due_before=restore_due_before,
+            include_restoring=True,
+        )
+        vault_id = f"{prefix}vault_id"
+        group_id = f"{prefix}group_id"
+        action = f"{prefix}action"
+        lease_token = f"{prefix}claim_token"
+        lease_expiry = f"{prefix}claim_expires_at"
+        predicate = f"""
+            {runnable_sql}
+            AND (
+                    {lease_token} IS NULL
+                 OR {lease_expiry} IS NULL
+                 OR {lease_expiry} <= %s
+            )
+            AND (
+                    {action} <> 'cloud-purge'
+                 OR (
+                        {group_id} IS NOT NULL
+                    AND NOT EXISTS (
+                        SELECT 1 FROM jobs purge_peer
+                        WHERE purge_peer.vault_id={vault_id}
+                          AND purge_peer.group_id={group_id}
+                          AND purge_peer.action='cloud-purge'
+                          AND purge_peer.status NOT IN ('completed', 'failed', 'cancelled')
+                          AND (
+                                (
+                                    purge_peer.status <> 'queued'
+                                AND NOT (
+                                    purge_peer.status='pending_delay'
+                                    AND purge_peer.pending_until IS NOT NULL
+                                    AND purge_peer.pending_until <= %s
+                                )
+                                )
+                            OR (
+                                    purge_peer.claim_token IS NOT NULL
+                                AND purge_peer.claim_expires_at IS NOT NULL
+                                AND purge_peer.claim_expires_at > %s
+                            )
+                          )
+                    )
+                 )
+            )
+        """
+        return predicate, [*params, now, now, now]
+
+    def list_claimable_jobs(
+        self,
+        *,
+        now: str,
+        restore_due_before: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Load scheduler candidates using the shared claimability definition."""
+        if limit <= 0:
+            return []
+        predicate, params = self._claimable_job_predicate_sql(
+            prefix="j.",
+            now=now,
+            restore_due_before=restore_due_before,
+        )
+        return self.connection.execute(
+            f"""
+            SELECT j.*, v.source_root, v.s3_bucket,
+                   v.s3_prefix, v.rclone_remote, v.encryption_mode,
+                   v.crypt_password_ciphertext, v.crypt_password2_ciphertext,
+                   v.uuid AS vault_uuid, v.name AS vault_name,
+                   v.cloud_deletion_enabled, v.decommission_state
+            FROM jobs j
+            JOIN vaults v ON v.id=j.vault_id
+            WHERE v.relocation_state='ready'
+              AND (
+                    (v.enabled=TRUE AND v.decommission_state='active'
+                     AND j.origin<>'decommission')
+                 OR (v.decommission_state='decommissioning'
+                     AND j.origin='decommission')
+              )
+              AND ({predicate})
+            ORDER BY j.requested_at ASC, j.id ASC
+            LIMIT {int(limit)}
+            """,
+            params,
+        ).fetchall()
+
     @staticmethod
     def _claim_is_available(row: dict[str, Any], *, now: str) -> bool:
         token = row.get("claim_token")
@@ -1609,7 +1711,7 @@ class ArchiveCatalog:
         """
         if not claim_token:
             raise ValueError("A Job claim token is required")
-        runnable_sql, runnable_params = self._claimable_job_status_sql(
+        claimable_sql, claimable_params = self._claimable_job_predicate_sql(
             prefix="",
             now=now,
             restore_due_before=restore_due_before,
@@ -1621,12 +1723,8 @@ class ArchiveCatalog:
                 claimed_at=%s,
                 claim_expires_at=%s
             WHERE id=%s
-              AND {runnable_sql}
-              AND (
-                    claim_token IS NULL
-                 OR claim_expires_at IS NULL
-                 OR claim_expires_at <= %s
-              )
+              AND action<>'cloud-purge'
+              AND ({claimable_sql})
             RETURNING id, status, claim_token, claimed_at, claim_expires_at,
                       updated_at
             """,
@@ -1635,8 +1733,7 @@ class ArchiveCatalog:
                 claimed_at,
                 claim_expires_at,
                 job_id,
-                *runnable_params,
-                now,
+                *claimable_params,
             ),
         ).fetchone()
 
@@ -1686,6 +1783,22 @@ class ArchiveCatalog:
         ).fetchone()
         if lead is None or not lead.get("group_id"):
             return []
+        if backend != "sqlite":
+            # Do not block a scheduler thread behind another worker's whole
+            # destructive group.  The transaction-scoped advisory lock is a
+            # stable provider-independent key; a loser simply tries another
+            # fair candidate on the next poll, while row locks below still
+            # protect cancellation and non-cooperating writers.
+            advisory = self.connection.execute(
+                """
+                SELECT pg_try_advisory_xact_lock(
+                    hashtextextended(%s, 0)
+                ) AS acquired
+                """,
+                (f"frostvault:cloud-purge:{lead['vault_id']}:{lead['group_id']}",),
+            ).fetchone()
+            if not advisory or not advisory["acquired"]:
+                return []
         rows = self.connection.execute(
             f"""
             SELECT id, status, pending_until, claim_token, claim_expires_at,
@@ -1860,13 +1973,12 @@ class ArchiveCatalog:
 
         This is intentionally a backlog metric, not a concurrency-limited
         scheduler batch.  Leased work and stale intermediate states are absent;
-        expired queued leases are reclaimable and therefore included.
+        expired queued and due restoring leases are reclaimable and included.
         """
-        runnable_sql, runnable_params = self._claimable_job_status_sql(
+        predicate, params = self._claimable_job_predicate_sql(
             prefix="j.",
             now=now,
             restore_due_before=restore_due_before,
-            include_restoring=False,
         )
         row = self.connection.execute(
             f"""
@@ -1880,40 +1992,9 @@ class ArchiveCatalog:
                  OR (v.decommission_state='decommissioning'
                      AND j.origin='decommission')
               )
-              AND {runnable_sql}
-              AND (
-                    j.claim_token IS NULL
-                 OR j.claim_expires_at IS NULL
-                 OR j.claim_expires_at <= %s
-              )
-              AND (
-                    j.action <> 'cloud-purge'
-                 OR (
-                        j.group_id IS NOT NULL
-                    AND NOT EXISTS (
-                        SELECT 1 FROM jobs purge_peer
-                        WHERE purge_peer.vault_id=j.vault_id
-                          AND purge_peer.group_id=j.group_id
-                          AND purge_peer.action='cloud-purge'
-                          AND purge_peer.status NOT IN ('completed', 'failed', 'cancelled')
-                          AND (
-                                purge_peer.status <> 'queued'
-                            AND NOT (
-                                purge_peer.status='pending_delay'
-                                AND purge_peer.pending_until IS NOT NULL
-                                AND purge_peer.pending_until <= %s
-                            )
-                            OR (
-                                purge_peer.claim_token IS NOT NULL
-                            AND purge_peer.claim_expires_at IS NOT NULL
-                            AND purge_peer.claim_expires_at > %s
-                            )
-                          )
-                    )
-                 )
-              )
+              AND ({predicate})
             """,
-            (*runnable_params, now, now, now),
+            params,
         ).fetchone()
         return int(row["total"] or 0) if row is not None else 0
 
