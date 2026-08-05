@@ -270,12 +270,13 @@ class DatabaseMigrationTests(unittest.TestCase):
                     file_id,
                     new_path="test/fotodefinitiva.jpg",
                     changed_at="2026-07-21T11:00:00+00:00",
+                    vault_id=2,
                 )
                 renamed = catalog.get_file_by_path(
                     2, "test/fotodefinitiva.jpg"
                 )
                 old_path = catalog.get_file_by_path(2, "test/fototest.jpg")
-                history = catalog.list_path_history(file_id)
+                history = catalog.list_path_history(file_id, vault_id=2)
 
             self.assertEqual(renamed["id"], file_id)
             self.assertIsNone(old_path)

@@ -250,6 +250,7 @@ class PlainRenamePrefixedRemoteTests(unittest.TestCase):
                     vault_file_id=file_id,
                     new_path=new_path,
                     changed_at="2026-07-21T11:05:00+00:00",
+                    vault_id=2,
                 )
 
             rclone_calls: list[tuple[str, ...]] = []

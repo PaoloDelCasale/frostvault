@@ -474,34 +474,30 @@ class ArchiveCatalog:
         *,
         new_path: str,
         changed_at: str,
-        vault_id: int | None = None,
+        vault_id: int,
     ) -> None:
-        vault_scope = ""
-        params: list[Any] = [vault_file_id]
-        if vault_id is not None:
-            vault_scope = " AND vf.vault_id=%s"
-            params.append(vault_id)
         current = self.connection.execute(
-            f"""
-            SELECT vf.vault_id, fp.path
+            """
+            SELECT fp.path
             FROM vault_files vf
             JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            WHERE vf.id=%s AND vf.status='active'{vault_scope}
+              ON fp.vault_file_id=vf.id
+             AND fp.vault_id=vf.vault_id
+             AND fp.valid_to IS NULL
+            WHERE vf.id=%s AND vf.vault_id=%s AND vf.status='active'
             """,
-            params,
+            (vault_file_id, vault_id),
         ).fetchone()
         if current is None:
             raise VaultFileNotFound()
         if current["path"] == new_path:
             return
-        expected_vault_id = vault_id if vault_id is not None else current["vault_id"]
         self.connection.execute(
             """
             UPDATE file_paths SET valid_to=%s
             WHERE vault_file_id=%s AND vault_id=%s AND valid_to IS NULL
             """,
-            (changed_at, vault_file_id, expected_vault_id),
+            (changed_at, vault_file_id, vault_id),
         )
         self.connection.execute(
             """
@@ -509,7 +505,7 @@ class ArchiveCatalog:
                 vault_file_id, vault_id, path, valid_from, valid_to
             ) VALUES (%s, %s, %s, %s, NULL)
             """,
-            (vault_file_id, expected_vault_id, new_path, changed_at),
+            (vault_file_id, vault_id, new_path, changed_at),
         )
 
     def list_rename_candidates(self, vault_id: int) -> list[dict[str, Any]]:
@@ -573,118 +569,114 @@ class ArchiveCatalog:
         vault_file_id: str,
         new_path: str,
         changed_at: str,
-        vault_id: int | None = None,
+        vault_id: int,
     ) -> str:
-        """Keep one Vault File identity and absorb a provisional new-path file.
-
-        User-facing confirmations pass their selected ``vault_id`` so a supplied
-        Vault File ID cannot resolve outside that Vault. The optional fallback
-        is retained only for trusted scanner callers that already enumerate one
-        Vault's candidates.
-        """
-        vault_scope = ""
-        params: list[Any] = [vault_file_id]
-        if vault_id is not None:
-            vault_scope = " AND vf.vault_id=%s"
-            params.append(vault_id)
-        current = self.connection.execute(
-            f"""
-            SELECT vf.vault_id, fp.path
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            WHERE vf.id=%s AND vf.status='active'{vault_scope}
-            """,
-            params,
-        ).fetchone()
-        if current is None:
-            raise VaultFileNotFound()
-        # A previously confirmed candidate retains this Vault File identity but
-        # no longer identifies a pending rename. Treat its replay as stale.
-        if current["path"] == new_path:
-            raise VaultFileNotFound()
-        expected_vault_id = vault_id if vault_id is not None else current["vault_id"]
-
+        """Keep one Vault File identity only for a current Vault-local candidate."""
         provisional = self.connection.execute(
             """
-            SELECT vf.id AS vault_file_id,
-                   lc.presence, lc.file_type, lc.size, lc.mtime_ns,
-                   lc.plaintext_sha256, lc.matched_archive_version_id,
-                   lc.last_seen_at, lc.observed_at
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-            WHERE vf.vault_id=%s AND vf.status='active' AND fp.path=%s
+            SELECT provisional.id AS vault_file_id,
+                   provisional_copy.presence, provisional_copy.file_type,
+                   provisional_copy.size, provisional_copy.mtime_ns,
+                   provisional_copy.plaintext_sha256,
+                   provisional_copy.matched_archive_version_id,
+                   provisional_copy.last_seen_at, provisional_copy.observed_at
+            FROM vault_files missing
+            JOIN file_paths missing_path
+              ON missing_path.vault_file_id=missing.id
+             AND missing_path.vault_id=missing.vault_id
+             AND missing_path.valid_to IS NULL
+            JOIN local_copies missing_copy
+              ON missing_copy.vault_file_id=missing.id
+            JOIN vault_files provisional
+              ON provisional.vault_id=missing.vault_id
+             AND provisional.status='active'
+            JOIN file_paths provisional_path
+              ON provisional_path.vault_file_id=provisional.id
+             AND provisional_path.vault_id=provisional.vault_id
+             AND provisional_path.valid_to IS NULL
+            JOIN local_copies provisional_copy
+              ON provisional_copy.vault_file_id=provisional.id
+            WHERE missing.id=%s
+              AND missing.vault_id=%s
+              AND missing.status='active'
+              AND missing_copy.file_type='regular'
+              AND missing_copy.presence='missing'
+              AND missing_copy.plaintext_sha256 IS NOT NULL
+              AND provisional.id<>missing.id
+              AND provisional.vault_id=%s
+              AND provisional_path.path=%s
+              AND provisional_copy.file_type='regular'
+              AND provisional_copy.presence='present'
+              AND provisional_copy.plaintext_sha256 IS NOT NULL
+              AND lower(provisional_copy.plaintext_sha256)
+                  = lower(missing_copy.plaintext_sha256)
             """,
-            (expected_vault_id, new_path),
+            (vault_file_id, vault_id, vault_id, new_path),
         ).fetchone()
+        if provisional is None:
+            raise VaultFileNotFound()
 
-        local_update = None
-        if provisional is not None and provisional["vault_file_id"] != vault_file_id:
-            local_update = provisional
-            self.connection.execute(
-                """
-                UPDATE file_paths SET valid_to=%s
-                WHERE vault_file_id=%s AND vault_id=%s AND valid_to IS NULL
-                """,
-                (changed_at, provisional["vault_file_id"], expected_vault_id),
+        self.connection.execute(
+            """
+            UPDATE file_paths SET valid_to=%s
+            WHERE vault_file_id=%s AND vault_id=%s AND valid_to IS NULL
+            """,
+            (changed_at, provisional["vault_file_id"], vault_id),
+        )
+        self.connection.execute(
+            """
+            DELETE FROM local_copies
+            WHERE vault_file_id IN (
+                SELECT id FROM vault_files WHERE id=%s AND vault_id=%s
             )
-            self.connection.execute(
-                """
-                DELETE FROM local_copies
-                WHERE vault_file_id IN (
-                    SELECT id FROM vault_files WHERE id=%s AND vault_id=%s
-                )
-                """,
-                (provisional["vault_file_id"], expected_vault_id),
-            )
-            self.connection.execute(
-                """
-                UPDATE vault_files
-                SET status='retired', retired_at=%s
-                WHERE id=%s AND vault_id=%s
-                """,
-                (changed_at, provisional["vault_file_id"], expected_vault_id),
-            )
+            """,
+            (provisional["vault_file_id"], vault_id),
+        )
+        self.connection.execute(
+            """
+            UPDATE vault_files
+            SET status='retired', retired_at=%s
+            WHERE id=%s AND vault_id=%s
+            """,
+            (changed_at, provisional["vault_file_id"], vault_id),
+        )
 
         self.rename_file(
             vault_file_id,
             new_path=new_path,
             changed_at=changed_at,
-            vault_id=expected_vault_id,
+            vault_id=vault_id,
         )
 
-        if local_update is not None and local_update["presence"] is not None:
-            self.connection.execute(
-                """
-                INSERT INTO local_copies(
-                    vault_file_id, presence, file_type, size, mtime_ns,
-                    plaintext_sha256, matched_archive_version_id,
-                    last_seen_at, observed_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(vault_file_id) DO UPDATE SET
-                    presence=excluded.presence,
-                    file_type=excluded.file_type,
-                    size=excluded.size,
-                    mtime_ns=excluded.mtime_ns,
-                    plaintext_sha256=excluded.plaintext_sha256,
-                    matched_archive_version_id=excluded.matched_archive_version_id,
-                    last_seen_at=excluded.last_seen_at,
-                    observed_at=excluded.observed_at
-                """,
-                (
-                    vault_file_id,
-                    local_update["presence"],
-                    local_update["file_type"],
-                    local_update["size"],
-                    local_update["mtime_ns"],
-                    local_update["plaintext_sha256"],
-                    local_update["matched_archive_version_id"],
-                    local_update["last_seen_at"] or changed_at,
-                    local_update["observed_at"] or changed_at,
-                ),
-            )
+        self.connection.execute(
+            """
+            INSERT INTO local_copies(
+                vault_file_id, presence, file_type, size, mtime_ns,
+                plaintext_sha256, matched_archive_version_id,
+                last_seen_at, observed_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(vault_file_id) DO UPDATE SET
+                presence=excluded.presence,
+                file_type=excluded.file_type,
+                size=excluded.size,
+                mtime_ns=excluded.mtime_ns,
+                plaintext_sha256=excluded.plaintext_sha256,
+                matched_archive_version_id=excluded.matched_archive_version_id,
+                last_seen_at=excluded.last_seen_at,
+                observed_at=excluded.observed_at
+            """,
+            (
+                vault_file_id,
+                provisional["presence"],
+                provisional["file_type"],
+                provisional["size"],
+                provisional["mtime_ns"],
+                provisional["plaintext_sha256"],
+                provisional["matched_archive_version_id"],
+                provisional["last_seen_at"] or changed_at,
+                provisional["observed_at"] or changed_at,
+            ),
+        )
         return vault_file_id
 
     def confirm_folder_rename(
@@ -739,22 +731,18 @@ class ArchiveCatalog:
         return renamed_ids
 
     def list_path_history(
-        self, vault_file_id: str, *, vault_id: int | None = None
+        self, vault_file_id: str, *, vault_id: int
     ) -> list[dict[str, Any]]:
-        vault_scope = ""
-        params: list[Any] = [vault_file_id]
-        if vault_id is not None:
-            vault_scope = " AND vf.vault_id=%s"
-            params.append(vault_id)
         return self.connection.execute(
-            f"""
+            """
             SELECT fp.path, fp.valid_from, fp.valid_to
             FROM file_paths fp
-            JOIN vault_files vf ON vf.id=fp.vault_file_id
-            WHERE fp.vault_file_id=%s{vault_scope}
+            JOIN vault_files vf
+              ON vf.id=fp.vault_file_id AND fp.vault_id=vf.vault_id
+            WHERE fp.vault_file_id=%s AND vf.vault_id=%s
             ORDER BY fp.valid_from, fp.id
             """,
-            params,
+            (vault_file_id, vault_id),
         ).fetchall()
 
     def record_delete_marker(

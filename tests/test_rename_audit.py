@@ -322,6 +322,52 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             ),
         )
 
+    def test_issue_188_rejects_candidate_stale_after_source_state_changes(
+        self,
+    ) -> None:
+        """A candidate must still pair a missing source with its new Local Copy."""
+        old_id = self._seed_digest_rename(
+            old_path="stale-state/old.txt",
+            new_path="stale-state/new.txt",
+        )
+        self._authenticate()
+        self._select_vault()
+
+        candidates = self.client.get("/api/rename-candidates")
+        self.assertEqual(candidates.status_code, 200, candidates.text)
+        candidate = next(
+            item
+            for item in candidates.json()["items"]
+            if item["missing_vault_file_id"] == old_id
+        )
+
+        with SQLiteConnection(str(self.database_path)) as connection:
+            connection.execute(
+                """
+                UPDATE local_copies
+                SET presence='present'
+                WHERE vault_file_id=%s
+                """,
+                (old_id,),
+            )
+
+        refreshed_candidates = self.client.get("/api/rename-candidates")
+        self.assertEqual(refreshed_candidates.status_code, 200, refreshed_candidates.text)
+        self.assertNotIn(candidate, refreshed_candidates.json()["items"])
+
+        before = self._rename_state()
+        response = self.client.post(
+            "/api/confirm-rename",
+            json={
+                "vault_file_id": candidate["missing_vault_file_id"],
+                "new_path": candidate["new_path"],
+            },
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(response.json(), {"detail": "Vault File not found"})
+        self.assertEqual(self._rename_state(), before)
+
     def test_bug_009_folder_rename_audit_persists_to_audit_events(self) -> None:
         """[BUG-009][Req: REQ-021] Folder rename must durable-audit."""
         folder_old = self._seed_digest_rename(

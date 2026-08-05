@@ -263,7 +263,7 @@ class RenameMatchingTests(unittest.TestCase):
 
                 renamed = catalog.get_file_by_path(2, "reports/new-name.txt")
                 old_path = catalog.get_file_by_path(2, "reports/old-name.txt")
-                history = catalog.list_path_history(confirmed_id)
+                history = catalog.list_path_history(confirmed_id, vault_id=2)
 
             self.assertEqual(confirmed_id, old_id)
             self.assertEqual(renamed["id"], old_id)
@@ -745,7 +745,7 @@ class FolderRenameTests(unittest.TestCase):
                     new_relative = old_relative.replace("docs/", "archive/", 1)
                     observed = catalog.get_file_by_path(2, new_relative)
                     missing = catalog.get_file_by_path(2, old_relative)
-                    history = catalog.list_path_history(file_id)
+                    history = catalog.list_path_history(file_id, vault_id=2)
                     self.assertEqual(observed["id"], file_id)
                     self.assertIsNone(missing)
                     self.assertEqual(
@@ -809,7 +809,7 @@ class FolderRenameTests(unittest.TestCase):
                         )
                         history = [
                             entry["path"]
-                            for entry in catalog.list_path_history(confirmed)
+                            for entry in catalog.list_path_history(confirmed, vault_id=2)
                         ]
                         observed = catalog.get_file_by_path(2, new_path)
                     self.assertEqual(confirmed, file_id)

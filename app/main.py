@@ -2189,12 +2189,15 @@ def confirm_folder_rename(
     new_prefix = safe_relative_path(action.new_prefix).as_posix()
     with db() as connection:
         catalog = ArchiveCatalog(connection)
-        renamed_ids = catalog.confirm_folder_rename(
-            vault_id=vault["id"],
-            old_prefix=old_prefix,
-            new_prefix=new_prefix,
-            changed_at=now_iso(),
-        )
+        try:
+            renamed_ids = catalog.confirm_folder_rename(
+                vault_id=vault["id"],
+                old_prefix=old_prefix,
+                new_prefix=new_prefix,
+                changed_at=now_iso(),
+            )
+        except VaultFileNotFound as exc:
+            raise HTTPException(404, "Vault File not found") from exc
         audit_log(
             "vault_folder_renamed",
             connection=connection,
