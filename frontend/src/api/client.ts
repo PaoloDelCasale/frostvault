@@ -22,7 +22,7 @@ export type ApiClientConfig = {
   /** Cached CSRF from /api/me; cookie is used when this is empty. */
   csrfToken?: string | null;
   getAuthMethod?: () => AuthMethod | undefined;
-  /** Break-glass Login password dialog. Return null to cancel. */
+  /** Break-glass Login password dialog. Return null or reject to cancel. */
   requestPassword?: () => Promise<string | null>;
   /** Navigation for OIDC Reauthentication and 401 → sign-in. */
   navigate?: (url: string) => void;
@@ -58,6 +58,7 @@ export class ApiError extends Error {
 }
 
 let config: ApiClientConfig = {};
+let localReauthenticationInFlight: Promise<boolean> | null = null;
 
 export function configureApiClient(next: ApiClientConfig): void {
   config = { ...config, ...next };
@@ -65,6 +66,7 @@ export function configureApiClient(next: ApiClientConfig): void {
 
 export function resetApiClientForTests(): void {
   config = {};
+  localReauthenticationInFlight = null;
 }
 
 export function setCsrfToken(token: string | null): void {
@@ -172,21 +174,23 @@ function errorMessageFromBody(
   return { message: fallback };
 }
 
-async function stepUpReauthentication(): Promise<boolean> {
-  const authMethod = config.getAuthMethod?.();
-  if (authMethod === "oidc") {
-    const returnTo = encodeURIComponent(currentReturnTo());
-    navigateTo(`/auth/oidc/reauth?return_to=${returnTo}`);
-    throw new ReauthenticationRedirectError();
-  }
+function reauthenticationFailure(status = 403): ApiError {
+  const key = "ui.reauth_failed";
+  const message = config.translate?.(key) ?? "Reauthentication failed.";
+  return new ApiError(message, { status, messageKey: key });
+}
 
-  const password = await (config.requestPassword?.() ?? Promise.resolve(null));
-  if (!password) {
-    throw new ApiError("Reauthentication required for this action.", {
-      status: 403,
-      messageKey: "ui.reauth_failed",
-    });
+async function submitLocalReauthentication(): Promise<boolean> {
+  let password: string | null;
+  try {
+    password = await (config.requestPassword?.() ?? Promise.resolve(null));
+  } catch {
+    // The password gate rejects on cancel or unmount. Keep that UI lifecycle
+    // detail out of API callers, which consistently receive a displayable
+    // reauthentication failure instead.
+    throw reauthenticationFailure();
   }
+  if (!password) throw reauthenticationFailure();
 
   const headers = new Headers({
     "Content-Type": "application/json",
@@ -197,12 +201,39 @@ async function stepUpReauthentication(): Promise<boolean> {
     headers,
     body: JSON.stringify({ password }),
   });
-  if (!response.ok) {
-    const key = "ui.reauth_failed";
-    const message = config.translate?.(key) ?? "Reauthentication failed.";
-    throw new ApiError(message, { status: response.status, messageKey: key });
-  }
+  if (!response.ok) throw reauthenticationFailure(response.status);
   return true;
+}
+
+function localReauthentication(): Promise<boolean> {
+  if (localReauthenticationInFlight) return localReauthenticationInFlight;
+
+  const attempt = submitLocalReauthentication();
+  localReauthenticationInFlight = attempt;
+  void attempt.then(
+    () => {
+      if (localReauthenticationInFlight === attempt) {
+        localReauthenticationInFlight = null;
+      }
+    },
+    () => {
+      if (localReauthenticationInFlight === attempt) {
+        localReauthenticationInFlight = null;
+      }
+    },
+  );
+  return attempt;
+}
+
+async function stepUpReauthentication(): Promise<boolean> {
+  const authMethod = config.getAuthMethod?.();
+  if (authMethod === "oidc") {
+    const returnTo = encodeURIComponent(currentReturnTo());
+    navigateTo(`/auth/oidc/reauth?return_to=${returnTo}`);
+    throw new ReauthenticationRedirectError();
+  }
+
+  return localReauthentication();
 }
 
 async function parseBody(response: Response): Promise<unknown> {

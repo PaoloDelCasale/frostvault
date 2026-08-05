@@ -119,6 +119,124 @@ describe("apiRequest Reauthentication", () => {
     );
   });
 
+  it("coalesces concurrent local reauthentication into one password submission and replays each request once", async () => {
+    let resolvePassword: (password: string | null) => void;
+    const password = new Promise<string | null>((resolve) => {
+      resolvePassword = resolve;
+    });
+    const requestPassword = vi.fn(() => password);
+    const requestCounts = new Map<string, number>();
+
+    configureApiClient({
+      getAuthMethod: () => "local",
+      requestPassword,
+    });
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      const count = (requestCounts.get(url) ?? 0) + 1;
+      requestCounts.set(url, count);
+      if (url === "/api/reauth") {
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      if (count === 1) {
+        return Promise.resolve(jsonResponse({ error: "reauth_required" }, 403));
+      }
+      return Promise.resolve(jsonResponse({ url }));
+    });
+
+    const requests = Promise.all([
+      apiRequest<{ url: string }>("/api/admin/first", {
+        method: "POST",
+        body: "{}",
+      }),
+      apiRequest<{ url: string }>("/api/admin/second", {
+        method: "POST",
+        body: "{}",
+      }),
+    ]);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requestPassword).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/admin/first",
+      "/api/admin/second",
+    ]);
+
+    resolvePassword!("correct horse battery staple");
+
+    await expect(requests).resolves.toEqual([
+      { url: "/api/admin/first" },
+      { url: "/api/admin/second" },
+    ]);
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/admin/first",
+      "/api/admin/second",
+      "/api/reauth",
+      "/api/admin/first",
+      "/api/admin/second",
+    ]);
+    expect(requestCounts.get("/api/admin/first")).toBe(2);
+    expect(requestCounts.get("/api/admin/second")).toBe(2);
+  });
+
+  it("rejects all concurrent callers after a throttled reauthentication and permits a later retry", async () => {
+    const requestCounts = new Map<string, number>();
+    const requestPassword = vi.fn(async () => "recent-password");
+
+    configureApiClient({
+      getAuthMethod: () => "local",
+      requestPassword,
+    });
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      const count = (requestCounts.get(url) ?? 0) + 1;
+      requestCounts.set(url, count);
+      if (url === "/api/reauth") {
+        return Promise.resolve(
+          count === 1
+            ? jsonResponse({ detail: "Try again later" }, 429)
+            : jsonResponse({ ok: true }),
+        );
+      }
+      if (count === 1) {
+        return Promise.resolve(jsonResponse({ error: "reauth_required" }, 403));
+      }
+      return Promise.resolve(jsonResponse({ url }));
+    });
+
+    const failures = await Promise.allSettled([
+      apiRequest("/api/admin/first", { method: "POST", body: "{}" }),
+      apiRequest("/api/admin/second", { method: "POST", body: "{}" }),
+    ]);
+
+    expect(failures).toHaveLength(2);
+    for (const failure of failures) {
+      expect(failure).toMatchObject({
+        status: "rejected",
+        reason: {
+          status: 429,
+          messageKey: "ui.reauth_failed",
+        },
+      });
+    }
+    if (failures[0]?.status === "rejected" && failures[1]?.status === "rejected") {
+      expect(failures[0].reason).toBe(failures[1].reason);
+    }
+    expect(requestPassword).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(1);
+
+    await expect(
+      apiRequest<{ url: string }>("/api/admin/retry", {
+        method: "POST",
+        body: "{}",
+      }),
+    ).resolves.toEqual({ url: "/api/admin/retry" });
+
+    expect(requestPassword).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(2);
+    expect(requestCounts.get("/api/admin/retry")).toBe(2);
+  });
+
   it("replays an authenticated binary download after local reauthentication", async () => {
     configureApiClient({
       getAuthMethod: () => "local",
