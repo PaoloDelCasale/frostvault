@@ -25,7 +25,9 @@ class OpenApiResponseContractTests(unittest.TestCase):
         for route in app.routes:
             if not isinstance(route, APIRoute):
                 continue
-            if not (route.path.startswith("/api/") or route.path in {"/health", "/ready"}):
+            if not (
+                route.path.startswith("/api/") or route.path in {"/health", "/ready"}
+            ):
                 continue
             if route.path in RAW_JSON_EXCEPTIONS:
                 continue
@@ -94,8 +96,45 @@ class OpenApiResponseContractTests(unittest.TestCase):
         self.assertIn("price_book_name", estimate["required"])
         self.assertIn("pricing_effective_at", estimate["required"])
 
+    def test_files_documents_offline_cache_authorization_headers_and_conflict(self) -> None:
+        operation = app.openapi()["paths"]["/api/files"]["get"]
+        authorization = next(
+            parameter
+            for parameter in operation["parameters"]
+            if parameter["in"] == "header"
+            and parameter["name"] == "X-FrostVault-Offline-Cache-Authorization"
+        )
+        self.assertFalse(authorization["required"])
+        self.assertIn("GET /api/me", authorization["description"])
+
+        success_headers = operation["responses"]["200"]["headers"]
+        self.assertIn("X-FrostVault-Offline-Cache-Authorization", success_headers)
+        self.assertIn("Vary", success_headers)
+        conflict = operation["responses"]["409"]
+        self.assertIn("stale", conflict["description"])
+        self.assertEqual(
+            conflict["headers"]["Cache-Control"]["schema"]["enum"], ["no-store"]
+        )
+        detail = conflict["content"]["application/json"]["schema"]["properties"][
+            "detail"
+        ]
+        self.assertEqual(detail["enum"], ["Offline cache authorization changed"])
+
+    def test_admin_vault_schema_is_a_closed_non_secret_contract(self) -> None:
+        vault = app.openapi()["components"]["schemas"]["AdminVault"]
+        self.assertFalse(vault["additionalProperties"])
+        self.assertIn("rclone_remote", vault["properties"])
+        self.assertTrue(
+            {
+                "crypt_password_ciphertext",
+                "crypt_password2_ciphertext",
+            }.isdisjoint(vault["properties"])
+        )
+
     def test_committed_openapi_document_matches_the_application(self) -> None:
-        committed = json.loads((ROOT / "frontend" / "openapi.json").read_text(encoding="utf-8"))
+        committed = json.loads(
+            (ROOT / "frontend" / "openapi.json").read_text(encoding="utf-8")
+        )
         self.assertEqual(committed, app.openapi())
 
     def test_all_api_response_models_are_nonfiltering_contracts(self) -> None:

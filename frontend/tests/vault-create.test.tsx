@@ -86,6 +86,7 @@ describe("VaultCreatePage", () => {
 
   it("posts a valid creation payload then navigates to the new vault archive", async () => {
     const user = userEvent.setup();
+    const staleOfflineKey = "frostvault.files.cache.v2:stale-listing";
     fetchMock.mockImplementation(
       withSourceAreas((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -110,12 +111,14 @@ describe("VaultCreatePage", () => {
         );
       }
       if (url === "/api/vaults/select" && init?.method === "POST") {
+        expect(localStorage.getItem(staleOfflineKey)).toBeNull();
         return Promise.resolve(jsonResponse({ vault_id: 42 }));
       }
       return Promise.reject(new Error(`unexpected request ${url}`));
     }),
     );
 
+    localStorage.setItem(staleOfflineKey, "stale");
     renderPage();
     await screen.findByRole("heading", { name: en["ui.vault_create.title"] });
 

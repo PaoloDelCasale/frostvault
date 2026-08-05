@@ -21,6 +21,7 @@ import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
+import { runOfflineAuthMutation } from "@/pwa/authTransition";
 
 import { RecoveryExportPanel } from "./RecoveryExportPanel";
 
@@ -36,6 +37,11 @@ function navigateTo(url: string, onNavigate?: (url: string) => void): void {
     return;
   }
   window.location.assign(url);
+}
+
+/** Keep the Worker closed through selection and reconcile only fresh authority. */
+async function selectVaultWithOfflineTransition(vaultId: number): Promise<void> {
+  await runOfflineAuthMutation(() => selectVault({ vault_id: vaultId }));
 }
 
 export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProps) {
@@ -119,7 +125,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
         setCustodyConfirmed(false);
         return;
       }
-      await selectVault({ vault_id: vault.id });
+      await selectVaultWithOfflineTransition(vault.id);
       navigateTo("/", onNavigate);
     } catch (err) {
       const message =
@@ -139,7 +145,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
     setRecoveryError(null);
     setConfirming(true);
     try {
-      await selectVault({ vault_id: createdVault.id });
+      await selectVaultWithOfflineTransition(createdVault.id);
       await confirmRecoveryCustody({ acknowledged: true });
       setCustodyConfirmed(true);
       navigateTo("/", onNavigate);

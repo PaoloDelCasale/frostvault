@@ -1,7 +1,7 @@
 """Add durable worker claim leases to Jobs (issue #193).
 
-Revision ID: 0033_job_claim_leases
-Revises: 0032_notification_inbox
+Revision ID: 0034_job_claim_leases
+Revises: 0033_offline_cache_generation
 """
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision: str = "0033_job_claim_leases"
-down_revision: str | None = "0032_notification_inbox"
+revision: str = "0034_job_claim_leases"
+down_revision: str | None = "0033_offline_cache_generation"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

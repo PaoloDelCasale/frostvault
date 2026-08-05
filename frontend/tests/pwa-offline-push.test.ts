@@ -3,11 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearPushPermissionDenied,
   ensurePushSubscription,
-  loadCachedFilesListing,
   rememberPushPermissionDenied,
-  saveCachedFilesListing,
   wasPushPermissionDenied,
 } from "@/pwa";
+import {
+  clearOfflineFileCache,
+  loadCachedFilesListing,
+  saveCachedFilesListing,
+} from "@/pwa/offlineFiles";
 import type { FilesResponse } from "@/api/types";
 
 function memoryStorage(): Storage {
@@ -51,12 +54,76 @@ const sampleListing: FilesResponse = {
 };
 
 describe("offline file listing cache (seam 3)", () => {
+  const query = { directory: "" };
+  const userAVaultA = {
+    userId: 11,
+    vaultId: 101,
+    authorizationGeneration: "session-a-vault-a",
+  };
+  const userBVaultA = {
+    userId: 22,
+    vaultId: 101,
+    authorizationGeneration: "session-b-vault-a",
+  };
+  const userAVaultB = {
+    userId: 11,
+    vaultId: 202,
+    authorizationGeneration: "session-a-vault-b",
+  };
+
+  function listingFor(path: string): FilesResponse {
+    return {
+      ...sampleListing,
+      items: [{ ...sampleListing.items[0]!, name: path, path }],
+    };
+  }
+
   it("returns cached listing and marks it available for stale UI", () => {
     const storage = memoryStorage();
-    saveCachedFilesListing({ directory: "" }, sampleListing, storage);
-    const cached = loadCachedFilesListing({ directory: "" }, storage);
+    saveCachedFilesListing(userAVaultA, query, sampleListing, storage);
+    const cached = loadCachedFilesListing(userAVaultA, query, storage);
     expect(cached?.data.items[0]?.path).toBe("readme.txt");
     expect(cached?.savedAt).toMatch(/^\d{4}-/);
+  });
+
+  it("purges User A's listing on logout before User B can cache or load files", async () => {
+    const storage = memoryStorage();
+    saveCachedFilesListing(userAVaultA, query, listingFor("user-a.txt"), storage);
+
+    // User A signs out. The same browser then authenticates User B.
+    await clearOfflineFileCache(storage);
+    saveCachedFilesListing(userBVaultA, query, listingFor("user-b.txt"), storage);
+
+    expect(loadCachedFilesListing(userAVaultA, query, storage)).toBeNull();
+    expect(loadCachedFilesListing(userBVaultA, query, storage)?.data.items[0]?.path).toBe(
+      "user-b.txt",
+    );
+  });
+
+  it("does not reuse Vault A's listing after the same User switches to Vault B", async () => {
+    const storage = memoryStorage();
+    saveCachedFilesListing(userAVaultA, query, listingFor("vault-a.txt"), storage);
+
+    // Vault selection changes before the next file listing is requested.
+    expect(loadCachedFilesListing(userAVaultB, query, storage)).toBeNull();
+    await clearOfflineFileCache(storage);
+    saveCachedFilesListing(userAVaultB, query, listingFor("vault-b.txt"), storage);
+
+    expect(loadCachedFilesListing(userAVaultA, query, storage)).toBeNull();
+    expect(loadCachedFilesListing(userAVaultB, query, storage)?.data.items[0]?.path).toBe(
+      "vault-b.txt",
+    );
+  });
+
+  it("invalidates legacy query-only entries instead of reusing them", () => {
+    const storage = memoryStorage();
+    storage.setItem(
+      "frostvault.files.cache.v1:|||1|100",
+      JSON.stringify({ data: listingFor("legacy.txt"), savedAt: "2026-01-01T00:00:00Z" }),
+    );
+
+    expect(loadCachedFilesListing(userAVaultA, query, storage)).toBeNull();
+    expect(storage.length).toBe(0);
   });
 });
 

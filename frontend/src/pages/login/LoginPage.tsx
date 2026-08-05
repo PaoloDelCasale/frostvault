@@ -1,6 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
 
-import { fetchMe } from "@/api";
 import { ApiError, loginWithPassword } from "@/api/client";
 import { AuthCard } from "@/components/AuthCard";
 import { ThemeControl } from "@/components/ThemeControl";
@@ -8,6 +7,10 @@ import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 import { useTheme } from "@/theme";
+import {
+  beginOfflineAuthTransition,
+  runOfflineAuthMutation,
+} from "@/pwa/authTransition";
 
 type LoginPageProps = {
   /** Navigation after successful local sign-in (defaults to location.assign). */
@@ -23,20 +26,30 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
   const { setUserId } = useTheme();
 
   useEffect(() => {
-    // A login screen has no trusted identity. Never reuse a previous user's override.
+    // A login screen has no trusted identity. Never reuse a previous user's
+    // theme or offline listing; a bounded close also tells same-browser tabs
+    // that an expired/replaced Session may no longer use cached file data.
     setUserId(null);
+    void beginOfflineAuthTransition();
   }, [setUserId]);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [redirectingOidc, setRedirectingOidc] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
     setSubmitting(true);
     try {
-      await loginWithPassword(username, password);
+      // One coordinator owns close → login mutation → fresh /api/me → Worker
+      // reconciliation. A missing Worker/authority remains network-only.
+      const outcome = await runOfflineAuthMutation(() =>
+        loginWithPassword(username, password),
+      );
+      setUserId(outcome.reconciliation?.me.id ?? null);
+      onNavigate("/");
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
         setError(t("login.local_unavailable"));
@@ -44,20 +57,7 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
         setError(t("login.failed"));
       }
       setSubmitting(false);
-      return;
     }
-
-    try {
-      // Resolve the authenticated identity before a full navigation so the
-      // parser-blocking bootstrap can select this user's palette immediately.
-      const me = await fetchMe();
-      setUserId(me.id);
-    } catch {
-      // Authentication succeeded. Keep the first paint identity-safe and let
-      // the destination retry /api/me rather than reporting a login failure.
-      setUserId(null);
-    }
-    onNavigate("/");
   }
 
   return (
@@ -114,11 +114,17 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
               type="button"
               variant="secondary"
               className="w-full"
+              disabled={submitting || redirectingOidc}
               onClick={() => {
-                // OIDC does not identify the next user yet; never carry this
-                // session's marker across the authentication redirect.
-                setUserId(null);
-                onNavigate("/auth/oidc/login");
+                void (async () => {
+                  setRedirectingOidc(true);
+                  // OIDC does not identify the next user yet. Await the
+                  // bounded local/Worker close before leaving this document;
+                  // a timeout still records local closure and navigates.
+                  await beginOfflineAuthTransition();
+                  setUserId(null);
+                  onNavigate("/auth/oidc/login");
+                })();
               }}
             >
               {t("login.oidc")}

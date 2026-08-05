@@ -6,6 +6,7 @@ import sys
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +15,7 @@ import sqlalchemy as sa
 import psycopg
 from psycopg.rows import dict_row
 
+from app import backoff
 from app.catalog import ArchiveCatalog, VaultFileNotFound
 from app.config import settings
 from app.invites import (
@@ -172,6 +174,14 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 "updated_by",
                 "updated_at",
             },
+        )
+        session_columns = {
+            column["name"]
+            for column in sa.inspect(self.engine).get_columns("sessions")
+        }
+        self.assertLessEqual(
+            {"offline_cache_generation", "offline_cache_nonce"},
+            session_columns,
         )
         claim_columns = {
             column["name"] for column in sa.inspect(self.engine).get_columns("jobs")
@@ -983,3 +993,52 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual([row["status"] for row in rows], ["cleaning", "cleaning"])
         self.assertEqual(len({row["claim_token"] for row in rows}), 1)
+
+    def test_auth_backoff_concurrent_threshold_results_keep_matching_deadlines(
+        self,
+    ) -> None:
+        """A real PostgreSQL row lock preserves each count/deadline pair."""
+        upgraded = run_alembic()
+        self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+        attempts = backoff.THRESHOLD + 2
+        now = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
+        start = threading.Barrier(attempts)
+
+        def record() -> tuple[int, str | None]:
+            with self._connection() as connection:
+                start.wait(timeout=20)
+                return backoff.record_failure(
+                    connection,
+                    scope="ip",
+                    key="concurrent-backoff",
+                )
+
+        with patch.object(backoff, "_now", return_value=now):
+            with ThreadPoolExecutor(max_workers=attempts) as pool:
+                results = list(pool.map(lambda _: record(), range(attempts)))
+
+        expected = [
+            (
+                count,
+                (
+                    now
+                    + timedelta(seconds=backoff._backoff_seconds(count))
+                ).isoformat()
+                if backoff._backoff_seconds(count)
+                else None,
+            )
+            for count in range(1, attempts + 1)
+        ]
+        self.assertEqual(sorted(results), expected)
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT failure_count, next_allowed_at
+                FROM auth_backoff
+                WHERE scope='ip' AND key='concurrent-backoff'
+                """
+            ).fetchone()
+        self.assertEqual(
+            (row["failure_count"], row["next_allowed_at"]),
+            expected[-1],
+        )

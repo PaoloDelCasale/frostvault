@@ -311,7 +311,7 @@
         "type": "object"
       },
       "AdminVault": {
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
           "decommission_state": {
             "enum": [
@@ -340,6 +340,9 @@
             "type": "number"
           },
           "name": {
+            "type": "string"
+          },
+          "rclone_remote": {
             "type": "string"
           },
           "root_released_at": {
@@ -2372,6 +2375,10 @@
             },
             "type": "array"
           },
+          "offline_cache_generation": {
+            "description": "Opaque persisted Session cache authorization. It combines a monotonic per-Session generation with an unguessable nonce and rotates on Session replacement/revocation/expiry/OIDC token rotation and Vault selection.",
+            "type": "string"
+          },
           "session_version": {
             "type": "number"
           },
@@ -2397,6 +2404,7 @@
           "active",
           "session_version",
           "csrf_token",
+          "offline_cache_generation",
           "auth_method",
           "locale",
           "locales",
@@ -7138,7 +7146,7 @@
     },
     "/api/audit-events": {
       "get": {
-        "description": "List audit events visible to members of the current vault.",
+        "description": "List audit events visible to the current Vault membership role.",
         "operationId": "vault_audit_events_api_audit_events_get",
         "responses": {
           "200": {
@@ -7425,6 +7433,7 @@
     },
     "/api/files": {
       "get": {
+        "description": "List Vault Files with an optional persisted offline-cache authorization.\n\nA request carrying X-FrostVault-Offline-Cache-Authorization is checked\nagainst the durable Session row before and after the catalog query. A 409\nis intentionally not cacheable authority: discard it, refetch /api/me,\nthen retry only with that newly issued generation.",
         "operationId": "list_files_api_files_get",
         "parameters": [
           {
@@ -7479,6 +7488,24 @@
               "title": "Page Size",
               "type": "integer"
             }
+          },
+          {
+            "description": "Optional opaque cache authorization from GET /api/me. A bundled PWA sends it only for a current offline-cache lease. If the persisted Session authorization changed because of logout, expiry, OIDC token rotation, or Vault selection, this endpoint returns 409 and the value must not be reused.",
+            "in": "header",
+            "name": "X-FrostVault-Offline-Cache-Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional opaque cache authorization from GET /api/me. A bundled PWA sends it only for a current offline-cache lease. If the persisted Session authorization changed because of logout, expiry, OIDC token rotation, or Vault selection, this endpoint returns 409 and the value must not be reused.",
+              "title": "X-Frostvault-Offline-Cache-Authorization"
+            }
           }
         ],
         "responses": {
@@ -7490,7 +7517,54 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "File listing with the persisted cache authorization used to validate it.",
+            "headers": {
+              "Vary": {
+                "description": "Includes X-FrostVault-Offline-Cache-Authorization so an intermediary cache cannot reuse a listing across authorizations.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-FrostVault-Offline-Cache-Authorization": {
+                "description": "The current opaque persisted cache authorization. Workbox may cache a 200 response only when it exactly matches the request header and the active /api/me authorization.",
+                "schema": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "detail": {
+                      "enum": [
+                        "Offline cache authorization changed"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "detail"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The supplied cache authorization is stale, or the Session/Vault changed while the listing was built. Discard the payload and fetch fresh /api/me authority before retrying.",
+            "headers": {
+              "Cache-Control": {
+                "description": "Always no-store; a stale authorization conflict is never reusable.",
+                "schema": {
+                  "enum": [
+                    "no-store"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {
@@ -7953,7 +8027,7 @@
     },
     "/api/reauth": {
       "post": {
-        "description": "Break-glass Reauthentication: re-enter the local password.\n\nOIDC users have no password hash and must step up through the provider\n(see ``/auth/oidc/reauth``).",
+        "description": "Local-password Reauthentication with an isolated durable backoff.\n\nOIDC users have no password hash and must step up through the provider\n(see ``/auth/oidc/reauth``). Its account/IP counters deliberately use\nnamespaced keys so a Reauthentication success cannot reset Local Sign-in,\nInvite, or OIDC-related throttling state.",
         "operationId": "reauth_api_reauth_post",
         "requestBody": {
           "content": {

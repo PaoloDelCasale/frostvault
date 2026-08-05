@@ -303,6 +303,7 @@ export function installDemoFilesFetch(): void {
         active: true,
         session_version: 1,
         csrf_token: "demo",
+        offline_cache_generation: "demo-session-vault-1",
         auth_method: "local",
         locale: "en",
         locales: ["en", "it"],

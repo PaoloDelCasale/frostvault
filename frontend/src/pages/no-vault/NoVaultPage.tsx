@@ -6,6 +6,12 @@ import { ThemeControl } from "@/components/ThemeControl";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 import { useTheme } from "@/theme";
+import {
+  AuthTransitionTimeoutError,
+  beginOfflineAuthTransition,
+  reconcileOfflineAuthTransition,
+  withinAuthTransitionTimeout,
+} from "@/pwa/authTransition";
 
 type NoVaultPageProps = {
   onNavigate?: (url: string) => void;
@@ -21,13 +27,19 @@ export function NoVaultPage({ onNavigate = defaultNavigate }: NoVaultPageProps) 
   const [signingOut, setSigningOut] = useState(false);
 
   async function handleSignOut() {
-    // The next page is unauthenticated; clear the marker before navigation.
-    setUserId(null);
+    // No-Vault still owns a live Session, so it must use the same bounded
+    // transition as the archive sign-out path before navigating away.
     setSigningOut(true);
+    const transition = await beginOfflineAuthTransition();
+    setUserId(null);
     try {
-      await logout();
-    } catch {
-      // Still leave the session UI even if logout fails network-side.
+      await withinAuthTransitionTimeout(logout());
+      // A successful logout deliberately leaves the cache barrier closed.
+    } catch (error) {
+      if (!(error instanceof AuthTransitionTimeoutError)) {
+        // A known failure can reopen only after the shared fresh /api/me path.
+        await reconcileOfflineAuthTransition({ transition }).catch(() => undefined);
+      }
     }
     onNavigate("/login");
   }
