@@ -120,6 +120,58 @@ class VaultEncryptionHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
 
+    def test_admin_vault_responses_use_only_the_public_projection(self) -> None:
+        """Issue #189: key-set assertions never render encrypted values."""
+        expected_keys = {
+            "id",
+            "uuid",
+            "slug",
+            "name",
+            "source_root",
+            "s3_bucket",
+            "s3_prefix",
+            "rclone_remote",
+            "enabled",
+            "encryption_mode",
+            "decommission_state",
+            "decommissioned_at",
+            "root_released_at",
+            "member_count",
+        }
+        self._authenticate(self.admin_id, reauth=True)
+        created_response = self.client.post(
+            "/api/admin/vaults",
+            json={
+                "name": "Admin Crypt",
+                "slug": "admin-crypt",
+                "owner_user_id": self.owner_id,
+                "encryption_mode": "crypt",
+                "reason": "provision encrypted archive",
+            },
+            headers={"X-CSRF-Token": self._csrf()},
+        )
+        self.assertEqual(created_response.status_code, 201)
+        created = created_response.json()
+        self.assertEqual(set(created), expected_keys)
+        self.assertEqual(created["member_count"], 1)
+
+        # An unreviewed future persistence-only column must not cross the
+        # administrative HTTP boundary either.
+        with SQLiteConnection(str(self.database_path)) as connection:
+            connection.execute(
+                "ALTER TABLE vaults ADD COLUMN future_secret_ciphertext TEXT"
+            )
+            connection.execute(
+                "UPDATE vaults SET future_secret_ciphertext=%s WHERE id=%s",
+                ("opaque", created["id"]),
+            )
+
+        listed_response = self.client.get("/api/admin/vaults")
+        self.assertEqual(listed_response.status_code, 200)
+        listed = listed_response.json()["items"]
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(set(listed[0]), expected_keys)
+
     def test_create_page_serves_spa_and_api_accepts_encryption_mode(self) -> None:
         self._authenticate(self.owner_id)
         page = self.client.get("/vaults/new")

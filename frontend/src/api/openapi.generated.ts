@@ -781,7 +781,7 @@ export interface paths {
         };
         /**
          * Vault Audit Events
-         * @description List audit events visible to members of the current vault.
+         * @description List audit events visible to the current Vault membership role.
          */
         get: operations["vault_audit_events_api_audit_events_get"];
         put?: never;
@@ -1189,10 +1189,12 @@ export interface paths {
         put?: never;
         /**
          * Reauth
-         * @description Break-glass Reauthentication: re-enter the local password.
+         * @description Local-password Reauthentication with an isolated durable backoff.
          *
          *     OIDC users have no password hash and must step up through the provider
-         *     (see ``/auth/oidc/reauth``).
+         *     (see ``/auth/oidc/reauth``). Its account/IP counters deliberately use
+         *     namespaced keys so a Reauthentication success cannot reset Local Sign-in,
+         *     Invite, or OIDC-related throttling state.
          */
         post: operations["reauth_api_reauth_post"];
         delete?: never;
@@ -2209,14 +2211,13 @@ export interface components {
             id: number;
             member_count: number;
             name: string;
+            rclone_remote?: string;
             root_released_at?: string | null;
             s3_bucket?: string;
             s3_prefix: string;
             slug: string;
             source_root: string;
             uuid?: string;
-        } & {
-            [key: string]: unknown;
         };
         AdminVaultCreatePayload: {
             /** @enum {string} */

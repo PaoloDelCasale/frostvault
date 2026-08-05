@@ -32,7 +32,7 @@ import os
 import re
 import shutil
 import uuid
-from typing import Any
+from typing import Any, Mapping
 
 from ..config import settings
 from ..database import INTEGRITY_ERRORS, db
@@ -69,6 +69,56 @@ class VaultAdoptionError(VaultCreationError):
 _SLUG_PATTERN = re.compile(r"[a-z0-9-]+")
 _ENCRYPTION_MODES = frozenset({"plain", "crypt"})
 _CREATION_MODES = frozenset({"empty", "adopt"})
+
+# This is deliberately an allowlist rather than a denylist. Admin Vault
+# responses must remain safe when new persistence-only columns are added, in
+# particular credential material for a storage backend.
+_ADMIN_VAULT_PUBLIC_FIELDS = (
+    "id",
+    "uuid",
+    "slug",
+    "name",
+    "source_root",
+    "s3_bucket",
+    "s3_prefix",
+    "rclone_remote",
+    "enabled",
+    "encryption_mode",
+    "decommission_state",
+    "decommissioned_at",
+    "root_released_at",
+)
+
+
+def project_admin_vault(
+    vault: Mapping[str, Any], *, member_count: int | None = None
+) -> dict[str, Any]:
+    """Return the stable, non-secret administrative Vault representation.
+
+    The projection intentionally fails closed: any column not named in
+    ``_ADMIN_VAULT_PUBLIC_FIELDS`` is absent from the HTTP representation.
+    """
+    if member_count is None:
+        member_count = int(vault["member_count"])
+    return {
+        **{field: vault[field] for field in _ADMIN_VAULT_PUBLIC_FIELDS},
+        "member_count": member_count,
+    }
+
+
+def list_admin_vaults(connection: Any) -> list[dict[str, Any]]:
+    """List Vaults through the same explicit public allowlist as creation."""
+    rows = connection.execute(
+        """
+        SELECT v.id, v.uuid, v.slug, v.name, v.source_root, v.s3_bucket,
+               v.s3_prefix, v.rclone_remote, v.enabled, v.encryption_mode,
+               v.decommission_state, v.decommissioned_at, v.root_released_at,
+               COUNT(vm.user_id) AS member_count
+        FROM vaults v LEFT JOIN vault_members vm ON vm.vault_id=v.id
+        GROUP BY v.id ORDER BY lower(v.name)
+        """
+    ).fetchall()
+    return [project_admin_vault(row) for row in rows]
 
 
 def _slugify(value: str) -> str:
@@ -183,7 +233,12 @@ def create_vault_for_user(
                     crypt_password_ciphertext, crypt_password2_ciphertext
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING *
+                RETURNING
+                    id, uuid, slug, name, source_root, s3_bucket, s3_prefix,
+                    rclone_remote, enabled, encryption_mode,
+                    crypt_password_ciphertext, crypt_password2_ciphertext,
+                    recovery_custody_confirmed_at, decommission_state,
+                    decommissioned_at, root_released_at
                 """,
                 (
                     vault_uuid,

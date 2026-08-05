@@ -14,6 +14,22 @@ CAP_SECONDS = 15 * 60
 # A quiet period this long makes a key forget its accumulated failures.
 DECAY_SECONDS = 60 * 60
 
+# ``auth_backoff`` deliberately has only the stable ``ip`` and ``account``
+# dimensions. Reauthentication uses namespaced keys inside those dimensions so
+# its counters persist independently from Local Sign-in and Invite counters.
+_REAUTH_IP_KEY_PREFIX = "reauth:ip:"
+_REAUTH_ACCOUNT_KEY_PREFIX = "reauth:account:"
+
+
+def reauth_ip_key(client_ip: str) -> str:
+    """Return the Local Reauthentication-only IP counter key."""
+    return f"{_REAUTH_IP_KEY_PREFIX}{client_ip}"
+
+
+def reauth_account_key(user_id: int) -> str:
+    """Return the Local Reauthentication-only account counter key."""
+    return f"{_REAUTH_ACCOUNT_KEY_PREFIX}{user_id}"
+
 
 class BackoffError(Exception):
     """Raised when a throttled ``(scope, key)`` must wait before retrying."""
