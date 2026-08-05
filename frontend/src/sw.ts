@@ -7,55 +7,91 @@ import { NetworkFirst, NetworkOnly } from "workbox-strategies";
 
 import {
   CLEAR_OFFLINE_FILE_CACHE_MESSAGE,
-  OFFLINE_FILE_CACHE_CLEAR_ACK_MESSAGE,
+  OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
   OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
   OFFLINE_FILE_CACHE_CONTEXT_MESSAGE,
-  OFFLINE_FILE_CACHE_EPOCH_MESSAGE,
-  OFFLINE_FILE_CACHE_EPOCH_REQUEST_MESSAGE,
+  OFFLINE_FILE_CACHE_FINISH_TRANSITION_MESSAGE,
+  OFFLINE_FILE_CACHE_GENERATION_HEADER,
+  OFFLINE_FILE_CACHE_GENERATION_MESSAGE,
+  OFFLINE_FILE_CACHE_GENERATION_REQUEST_MESSAGE,
   OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE,
+  OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE,
   OFFLINE_FILE_SERVICE_WORKER_CACHE_PREFIX,
   isOfflineCacheContext,
-  isOfflineFileCacheEpoch,
+  isOfflineFileCacheGeneration,
+  offlineFileCacheGenerationKey,
   offlineFileServiceWorkerCacheName,
+  sameOfflineFileCacheGeneration,
   type OfflineCacheContext,
+  type OfflineFileCacheGeneration,
 } from "./pwa/offlineFiles";
 
 declare let self: ServiceWorkerGlobalScope;
 
 const LEGACY_FILE_LISTING_CACHE_NAME = "frostvault-file-listing";
+const WORKER_WAIT_TIMEOUT_MS = 1_000;
 
 type ClientFileListingContext = Readonly<{
   context: OfflineCacheContext;
-  epoch: number;
+  generation: OfflineFileCacheGeneration;
 }>;
 
 type ContextMessage = Readonly<{
   type: typeof OFFLINE_FILE_CACHE_CONTEXT_MESSAGE;
   requestId: string;
-  epoch: number;
+  generation: OfflineFileCacheGeneration;
   context: OfflineCacheContext;
+  transitionId?: string;
 }>;
 
-type ClearMessage = Readonly<{
-  type: typeof CLEAR_OFFLINE_FILE_CACHE_MESSAGE;
-  requestId?: string;
+type BeginTransitionMessage = Readonly<{
+  type: typeof OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE;
+  requestId: string;
+  transitionId: string;
 }>;
 
-type EpochRequestMessage = Readonly<{
-  type: typeof OFFLINE_FILE_CACHE_EPOCH_REQUEST_MESSAGE;
+type FinishTransitionMessage = Readonly<{
+  type: typeof OFFLINE_FILE_CACHE_FINISH_TRANSITION_MESSAGE;
+  requestId: string;
+  generation: OfflineFileCacheGeneration;
+  transitionId: string;
+}>;
+
+type GenerationRequestMessage = Readonly<{
+  type: typeof OFFLINE_FILE_CACHE_GENERATION_REQUEST_MESSAGE;
   requestId: string;
 }>;
 
 const fileListingContexts = new Map<string, ClientFileListingContext>();
 const fileListingStrategies = new Map<string, NetworkFirst>();
-const fileListingCompletions = new Map<number, Set<Promise<void>>>();
+const activeTransitionIds = new Set<string>();
 const uncachedFileListingStrategy = new NetworkOnly();
 
-// This is authoritative while the Worker is alive. A context message must name
-// the current epoch and wait for its clear barrier to finish before it can cache.
-let fileListingEpoch = 0;
-let readyFileListingEpoch = 0;
-let clearFileListingBarrier: Promise<void> = Promise.resolve();
+const workerBootId = createWorkerBootId();
+let fileListingGeneration: OfflineFileCacheGeneration = {
+  bootId: workerBootId,
+  counter: 0,
+};
+
+function createWorkerBootId(): string {
+  const values = new Uint32Array(4);
+  try {
+    self.crypto.getRandomValues(values);
+    return Array.from(values, (value) => value.toString(36)).join("-");
+  } catch {
+    // Web Crypto is required by supported Service Worker hosts. The fallback
+    // protects test/degraded hosts from an accidental counter-only collision.
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+}
+
+function nextGeneration(): OfflineFileCacheGeneration {
+  fileListingGeneration = {
+    bootId: workerBootId,
+    counter: fileListingGeneration.counter + 1,
+  };
+  return fileListingGeneration;
+}
 
 function isRequestId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -82,45 +118,68 @@ function postToMessageSource(
   }
 }
 
-function cacheContextFor(event: ExtendableEvent): ClientFileListingContext | null {
-  const clientId = (event as FetchEvent).clientId;
-  if (!clientId) return null;
-  const authorization = fileListingContexts.get(clientId) ?? null;
-  if (!authorization || authorization.epoch !== fileListingEpoch) return null;
-  return authorization;
-}
-
 function isContextMessage(value: unknown): value is ContextMessage {
   if (!value || typeof value !== "object") return false;
   const message = value as {
     type?: unknown;
     requestId?: unknown;
-    epoch?: unknown;
+    generation?: unknown;
     context?: unknown;
+    transitionId?: unknown;
   };
   return (
     message.type === OFFLINE_FILE_CACHE_CONTEXT_MESSAGE &&
     isRequestId(message.requestId) &&
-    isOfflineFileCacheEpoch(message.epoch) &&
-    isOfflineCacheContext(message.context)
+    isOfflineFileCacheGeneration(message.generation) &&
+    isOfflineCacheContext(message.context) &&
+    (message.transitionId === undefined || isRequestId(message.transitionId))
   );
 }
 
-function isClearMessage(value: unknown): value is ClearMessage {
+function isBeginTransitionMessage(value: unknown): value is BeginTransitionMessage {
   if (!value || typeof value !== "object") return false;
-  const message = value as { type?: unknown; requestId?: unknown };
+  const message = value as {
+    type?: unknown;
+    requestId?: unknown;
+    transitionId?: unknown;
+  };
   return (
-    message.type === CLEAR_OFFLINE_FILE_CACHE_MESSAGE &&
-    (message.requestId === undefined || isRequestId(message.requestId))
+    message.type === OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE &&
+    isRequestId(message.requestId) &&
+    isRequestId(message.transitionId)
   );
 }
 
-function isEpochRequestMessage(value: unknown): value is EpochRequestMessage {
+function isFinishTransitionMessage(value: unknown): value is FinishTransitionMessage {
+  if (!value || typeof value !== "object") return false;
+  const message = value as {
+    type?: unknown;
+    requestId?: unknown;
+    generation?: unknown;
+    transitionId?: unknown;
+  };
+  return (
+    message.type === OFFLINE_FILE_CACHE_FINISH_TRANSITION_MESSAGE &&
+    isRequestId(message.requestId) &&
+    isOfflineFileCacheGeneration(message.generation) &&
+    isRequestId(message.transitionId)
+  );
+}
+
+function isGenerationRequestMessage(value: unknown): value is GenerationRequestMessage {
   if (!value || typeof value !== "object") return false;
   const message = value as { type?: unknown; requestId?: unknown };
   return (
-    message.type === OFFLINE_FILE_CACHE_EPOCH_REQUEST_MESSAGE &&
+    message.type === OFFLINE_FILE_CACHE_GENERATION_REQUEST_MESSAGE &&
     isRequestId(message.requestId)
+  );
+}
+
+function isLegacyClearMessage(value: unknown): boolean {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      (value as { type?: unknown }).type === CLEAR_OFFLINE_FILE_CACHE_MESSAGE,
   );
 }
 
@@ -137,40 +196,130 @@ async function purgeFileListingCaches(): Promise<void> {
   );
 }
 
-async function notifyWindowClients(epoch: number): Promise<void> {
+/** Never hold an event, ACK, or later transition on a hung CacheStorage task. */
+function settleWithin<T>(
+  promise: Promise<T>,
+  timeoutMs = WORKER_WAIT_TIMEOUT_MS,
+): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = setTimeout(finish, timeoutMs);
+    void promise.then(finish, finish);
+  });
+}
+
+function schedulePurge(event?: ExtendableEvent): void {
+  const boundedPurge = settleWithin(purgeFileListingCaches());
+  if (event) event.waitUntil(boundedPurge);
+}
+
+async function notifyWindowClients(
+  generation: OfflineFileCacheGeneration,
+  closed: boolean,
+  excludedClientId?: string | null,
+): Promise<void> {
   const windows = await self.clients.matchAll({
     type: "window",
     includeUncontrolled: true,
   });
   for (const client of windows) {
+    if (client.id === excludedClientId) continue;
     client.postMessage({
       type: OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE,
-      epoch,
+      generation,
+      closed,
     });
   }
 }
 
-function strategyKey(context: OfflineCacheContext, epoch: number): string {
-  return `${epoch}:${offlineFileServiceWorkerCacheName(context)}`;
+function notifyBounded(
+  event: ExtendableEvent | undefined,
+  generation: OfflineFileCacheGeneration,
+  closed: boolean,
+  excludedClientId?: string | null,
+): void {
+  const notification = settleWithin(
+    notifyWindowClients(generation, closed, excludedClientId),
+  );
+  if (event) event.waitUntil(notification);
+}
+
+function globallyInvalidate(
+  event: ExtendableEvent | undefined,
+  closed: boolean,
+  excludedClientId?: string | null,
+): OfflineFileCacheGeneration {
+  const generation = nextGeneration();
+  fileListingContexts.clear();
+  fileListingStrategies.clear();
+  schedulePurge(event);
+  notifyBounded(event, generation, closed, excludedClientId);
+  return generation;
+}
+
+function cacheContextFor(
+  event: ExtendableEvent,
+  request: Request,
+): ClientFileListingContext | null {
+  const clientId = (event as FetchEvent).clientId;
+  if (!clientId) return null;
+  const authorization = fileListingContexts.get(clientId) ?? null;
+  if (!authorization) return null;
+  if (!sameOfflineFileCacheGeneration(authorization.generation, fileListingGeneration)) {
+    return null;
+  }
+  // This lease header lets a page fall back to NetworkOnly even if an old
+  // Worker was too unhealthy to acknowledge the client's transition message.
+  if (
+    request.headers.get(OFFLINE_FILE_CACHE_GENERATION_HEADER) !==
+    offlineFileCacheGenerationKey(authorization.generation)
+  ) {
+    return null;
+  }
+  return authorization;
+}
+
+function strategyKey(
+  context: OfflineCacheContext,
+  generation: OfflineFileCacheGeneration,
+): string {
+  return `${offlineFileCacheGenerationKey(generation)}:${offlineFileServiceWorkerCacheName(
+    context,
+    generation,
+  )}`;
+}
+
+function cacheWritesAreAllowed(generation: OfflineFileCacheGeneration): boolean {
+  return (
+    activeTransitionIds.size === 0 &&
+    sameOfflineFileCacheGeneration(generation, fileListingGeneration)
+  );
 }
 
 function fileListingStrategyFor(
   context: OfflineCacheContext,
-  epoch: number,
+  generation: OfflineFileCacheGeneration,
 ): NetworkFirst {
-  const key = strategyKey(context, epoch);
+  const key = strategyKey(context, generation);
   const existing = fileListingStrategies.get(key);
   if (existing) return existing;
 
   const strategy = new NetworkFirst({
-    cacheName: offlineFileServiceWorkerCacheName(context),
+    cacheName: offlineFileServiceWorkerCacheName(context, generation),
     networkTimeoutSeconds: 3,
     plugins: [
       {
         cacheWillUpdate: async ({ response }: { response: Response }) => {
-          // A response that started under an older epoch may still arrive after
-          // a clear. Refuse its cache write before the clear barrier purges.
-          if (epoch !== fileListingEpoch) return null;
+          // Workbox invokes this immediately before CacheStorage.put. A response
+          // that started before a transition can therefore never recreate an
+          // old cache after its generation was closed/replaced.
+          if (!cacheWritesAreAllowed(generation)) return null;
           return response.status === 200 || response.status === 0
             ? response
             : null;
@@ -186,31 +335,11 @@ function fileListingStrategyFor(
   return strategy;
 }
 
-function trackFileListingCompletion(
-  epoch: number,
-  completion: Promise<unknown>,
-): void {
-  const settled: Promise<void> = completion.then(
-    () => undefined,
-    () => undefined,
-  );
-  const pending = fileListingCompletions.get(epoch) ?? new Set<Promise<void>>();
-  fileListingCompletions.set(epoch, pending);
-  pending.add(settled);
-  void settled.then(() => {
-    pending.delete(settled);
-    if (pending.size === 0) fileListingCompletions.delete(epoch);
-  });
-}
-
-async function waitForOlderFileListingWrites(epoch: number): Promise<void> {
-  while (true) {
-    const pending = Array.from(fileListingCompletions.entries())
-      .filter(([generation]) => generation < epoch)
-      .flatMap(([, completions]) => Array.from(completions));
-    if (pending.length === 0) return;
-    await Promise.all(pending);
-  }
+function observeCacheCompletion(completion: Promise<unknown>): void {
+  // Do not await an in-flight fetch while closing a transition. Its cache write
+  // is independently generation-checked, and this bounded observer consumes a
+  // late rejection without retaining a transition barrier forever.
+  void settleWithin(completion);
 }
 
 async function handleFileListing({
@@ -220,47 +349,144 @@ async function handleFileListing({
   event: ExtendableEvent;
   request: Request;
 }): Promise<Response> {
-  const authorization = cacheContextFor(event);
+  const authorization = cacheContextFor(event, request);
   if (!authorization) {
     return uncachedFileListingStrategy.handle({ event, request });
   }
 
   const strategy = fileListingStrategyFor(
     authorization.context,
-    authorization.epoch,
+    authorization.generation,
   );
   const [response, completion] = strategy.handleAll({ event, request });
-  trackFileListingCompletion(authorization.epoch, completion);
+  observeCacheCompletion(completion);
   return response;
 }
 
-function clearFileListingCaches(
+function postGeneration(
   event: ExtendableMessageEvent,
-  message: ClearMessage,
+  requestId: string,
 ): void {
-  const epoch = ++fileListingEpoch;
-  fileListingContexts.clear();
-  fileListingStrategies.clear();
+  postToMessageSource(event, {
+    type: OFFLINE_FILE_CACHE_GENERATION_MESSAGE,
+    requestId,
+    generation: fileListingGeneration,
+    closed: activeTransitionIds.size > 0,
+  });
+}
 
-  const work = clearFileListingBarrier
-    .catch(() => undefined)
-    .then(async () => {
-      await waitForOlderFileListingWrites(epoch);
-      await purgeFileListingCaches();
-      if (fileListingEpoch === epoch) readyFileListingEpoch = epoch;
-      await notifyWindowClients(epoch);
-    });
-  clearFileListingBarrier = work;
+function postTransitionAcknowledgement(
+  event: ExtendableMessageEvent,
+  requestId: string,
+  accepted: boolean,
+  transitionComplete: boolean,
+): void {
+  postToMessageSource(event, {
+    type: OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE,
+    requestId,
+    generation: fileListingGeneration,
+    accepted,
+    closed: activeTransitionIds.size > 0,
+    transitionComplete,
+  });
+}
 
-  event.waitUntil(
-    work.then(() => {
-      if (!message.requestId) return;
-      postToMessageSource(event, {
-        type: OFFLINE_FILE_CACHE_CLEAR_ACK_MESSAGE,
-        requestId: message.requestId,
-        epoch,
+function postContextAcknowledgement(
+  event: ExtendableMessageEvent,
+  requestId: string,
+  accepted: boolean,
+  transitionComplete: boolean,
+): void {
+  postToMessageSource(event, {
+    type: OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
+    requestId,
+    generation: fileListingGeneration,
+    accepted,
+    closed: activeTransitionIds.size > 0,
+    transitionComplete,
+  });
+}
+
+function beginTransition(
+  event: ExtendableMessageEvent,
+  message: BeginTransitionMessage,
+): void {
+  if (!activeTransitionIds.has(message.transitionId)) {
+    activeTransitionIds.add(message.transitionId);
+    globallyInvalidate(event, true);
+  }
+  // This ACK is deliberately sent after state closure but before asynchronous
+  // cleanup. The Worker remains closed through the server mutation itself.
+  postTransitionAcknowledgement(event, message.requestId, true, false);
+}
+
+function completeTransitionWithContext(
+  event: ExtendableMessageEvent,
+  message: ContextMessage,
+): void {
+  const clientId = clientIdFromMessage(event);
+  let accepted = false;
+  let transitionComplete = false;
+
+  if (
+    clientId &&
+    sameOfflineFileCacheGeneration(message.generation, fileListingGeneration)
+  ) {
+    if (activeTransitionIds.size === 0 && !message.transitionId) {
+      fileListingContexts.set(clientId, {
+        context: message.context,
+        generation: fileListingGeneration,
       });
-    }),
+      accepted = true;
+    } else if (
+      message.transitionId &&
+      activeTransitionIds.has(message.transitionId)
+    ) {
+      activeTransitionIds.delete(message.transitionId);
+      if (activeTransitionIds.size === 0) {
+        // Rotate once more before reopening. Any /api/me response captured
+        // while closed now has an unusable generation, including other tabs'.
+        const generation = globallyInvalidate(event, false, clientId);
+        fileListingContexts.set(clientId, {
+          context: message.context,
+          generation,
+        });
+        accepted = true;
+        transitionComplete = true;
+      }
+    }
+  }
+
+  postContextAcknowledgement(
+    event,
+    message.requestId,
+    accepted,
+    transitionComplete,
+  );
+}
+
+function finishTransition(
+  event: ExtendableMessageEvent,
+  message: FinishTransitionMessage,
+): void {
+  let accepted = false;
+  let transitionComplete = false;
+  if (
+    sameOfflineFileCacheGeneration(message.generation, fileListingGeneration) &&
+    activeTransitionIds.has(message.transitionId)
+  ) {
+    activeTransitionIds.delete(message.transitionId);
+    if (activeTransitionIds.size === 0) {
+      globallyInvalidate(event, false);
+      accepted = true;
+      transitionComplete = true;
+    }
+  }
+  postTransitionAcknowledgement(
+    event,
+    message.requestId,
+    accepted,
+    transitionComplete,
   );
 }
 
@@ -269,44 +495,38 @@ precacheAndRoute(self.__WB_MANIFEST);
 void self.skipWaiting();
 clientsClaim();
 
-// v1 used one shared URL-keyed runtime cache. It is unsafe for credentialed
-// APIs, so delete it even when Workbox's precache cleanup has nothing to do.
+// An activate/update uses a fresh boot id and broadcasts a new generation.
+// Existing pages clear their leases on both this message and controllerchange.
 self.addEventListener("activate", (event) => {
-  event.waitUntil(purgeFileListingCaches());
+  globallyInvalidate(event, false);
 });
 
 self.addEventListener("message", (event) => {
-  if (isEpochRequestMessage(event.data)) {
-    postToMessageSource(event, {
-      type: OFFLINE_FILE_CACHE_EPOCH_MESSAGE,
-      requestId: event.data.requestId,
-      epoch: fileListingEpoch,
-    });
+  if (isGenerationRequestMessage(event.data)) {
+    postGeneration(event, event.data.requestId);
+    return;
+  }
+  if (isBeginTransitionMessage(event.data)) {
+    beginTransition(event, event.data);
     return;
   }
   if (isContextMessage(event.data)) {
-    const clientId = clientIdFromMessage(event);
-    const accepted = Boolean(
-      clientId &&
-        event.data.epoch === fileListingEpoch &&
-        event.data.epoch === readyFileListingEpoch,
-    );
-    if (accepted && clientId) {
-      fileListingContexts.set(clientId, {
-        context: event.data.context,
-        epoch: event.data.epoch,
-      });
-    }
-    postToMessageSource(event, {
-      type: OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
-      requestId: event.data.requestId,
-      epoch: fileListingEpoch,
-      accepted,
-    });
+    completeTransitionWithContext(event, event.data);
     return;
   }
-  if (isClearMessage(event.data)) {
-    clearFileListingCaches(event, event.data);
+  if (isFinishTransitionMessage(event.data)) {
+    finishTransition(event, event.data);
+    return;
+  }
+  if (isLegacyClearMessage(event.data)) {
+    // A page running the prior protocol can only make the Worker safer: it
+    // closes globally, but lacks a capability to reopen it.
+    const requestId = `legacy-${Date.now()}-${Math.random()}`;
+    beginTransition(event, {
+      type: OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
+      requestId,
+      transitionId: requestId,
+    });
   }
 });
 

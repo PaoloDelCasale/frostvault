@@ -10,9 +10,22 @@ import {
 } from "@/api";
 import App from "@/App";
 import { I18nProvider } from "@/i18n/I18nProvider";
-import { OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE } from "@/pwa/offlineFiles";
+import {
+  OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
+  OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
+  OFFLINE_FILE_CACHE_CONTEXT_MESSAGE,
+  OFFLINE_FILE_CACHE_FINISH_TRANSITION_MESSAGE,
+  OFFLINE_FILE_CACHE_GENERATION_MESSAGE,
+  OFFLINE_FILE_CACHE_GENERATION_REQUEST_MESSAGE,
+  OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE,
+  OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE,
+} from "@/pwa/offlineFiles";
 
 const OFFLINE_FILE_STORAGE_PREFIX = "frostvault.files.cache.v2:";
+
+type WorkerGeneration = { bootId: string; counter: number };
+type ServiceWorkerListener = (event: MessageEvent<unknown>) => void;
+type ControllerChangeListener = () => void;
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -120,6 +133,128 @@ function offlineFileStorageKeys(): string[] {
   ).filter((key): key is string => key?.startsWith(OFFLINE_FILE_STORAGE_PREFIX) ?? false);
 }
 
+function installServiceWorkerProtocolHarness() {
+  const messageListeners = new Set<ServiceWorkerListener>();
+  const controllerChangeListeners = new Set<ControllerChangeListener>();
+  const posted: Array<Record<string, unknown>> = [];
+  let generation: WorkerGeneration = { bootId: "app-worker", counter: 1 };
+  const activeTransitions = new Set<string>();
+
+  function deliver(message: Record<string, unknown>) {
+    const event = new MessageEvent("message", { data: message });
+    for (const listener of messageListeners) listener(event);
+  }
+
+  const worker = {
+    postMessage: vi.fn((message: Record<string, unknown>) => {
+      posted.push(message);
+      const requestId = message.requestId;
+      if (typeof requestId !== "string") return;
+      if (message.type === OFFLINE_FILE_CACHE_GENERATION_REQUEST_MESSAGE) {
+        deliver({
+          type: OFFLINE_FILE_CACHE_GENERATION_MESSAGE,
+          requestId,
+          generation,
+          closed: activeTransitions.size > 0,
+        });
+        return;
+      }
+      if (message.type === OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE) {
+        const transitionId = message.transitionId;
+        if (typeof transitionId === "string" && !activeTransitions.has(transitionId)) {
+          activeTransitions.add(transitionId);
+          generation = { ...generation, counter: generation.counter + 1 };
+        }
+        deliver({
+          type: OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE,
+          requestId,
+          generation,
+          accepted: true,
+          closed: true,
+          transitionComplete: false,
+        });
+        return;
+      }
+      if (message.type === OFFLINE_FILE_CACHE_CONTEXT_MESSAGE) {
+        const transitionId = message.transitionId;
+        let accepted = false;
+        let transitionComplete = false;
+        if (activeTransitions.size === 0 && !transitionId) {
+          accepted = true;
+        } else if (
+          typeof transitionId === "string" &&
+          activeTransitions.delete(transitionId) &&
+          activeTransitions.size === 0
+        ) {
+          generation = { ...generation, counter: generation.counter + 1 };
+          accepted = true;
+          transitionComplete = true;
+        }
+        deliver({
+          type: OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
+          requestId,
+          generation,
+          accepted,
+          closed: activeTransitions.size > 0,
+          transitionComplete,
+        });
+        return;
+      }
+      if (message.type === OFFLINE_FILE_CACHE_FINISH_TRANSITION_MESSAGE) {
+        const transitionId = message.transitionId;
+        const accepted =
+          typeof transitionId === "string" &&
+          activeTransitions.delete(transitionId) &&
+          activeTransitions.size === 0;
+        if (accepted) generation = { ...generation, counter: generation.counter + 1 };
+        deliver({
+          type: OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE,
+          requestId,
+          generation,
+          accepted,
+          closed: activeTransitions.size > 0,
+          transitionComplete: accepted,
+        });
+      }
+    }),
+  };
+
+  vi.stubGlobal("navigator", {
+    ...navigator,
+    serviceWorker: {
+      controller: worker,
+      addEventListener: (type: string, listener: ServiceWorkerListener) => {
+        if (type === "message") messageListeners.add(listener);
+        if (type === "controllerchange") {
+          controllerChangeListeners.add(listener as unknown as ControllerChangeListener);
+        }
+      },
+      removeEventListener: (type: string, listener: ServiceWorkerListener) => {
+        if (type === "message") messageListeners.delete(listener);
+        if (type === "controllerchange") {
+          controllerChangeListeners.delete(listener as unknown as ControllerChangeListener);
+        }
+      },
+      getRegistration: vi.fn(async () => undefined),
+    },
+  });
+
+  return {
+    posted,
+    invalidate(closed: boolean) {
+      generation = { ...generation, counter: generation.counter + 1 };
+      deliver({
+        type: OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE,
+        generation,
+        closed,
+      });
+    },
+    controllerChange() {
+      for (const listener of controllerChangeListeners) listener();
+    },
+  };
+}
+
 function renderApp() {
   const client = createAppQueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -136,40 +271,67 @@ function renderApp() {
   };
 }
 
-function installServiceWorkerMessageHarness() {
-  const listeners = new Set<(event: MessageEvent<unknown>) => void>();
-  vi.stubGlobal("navigator", {
-    ...navigator,
-    serviceWorker: {
-      addEventListener: (type: string, listener: (event: MessageEvent<unknown>) => void) => {
-        if (type === "message") listeners.add(listener);
-      },
-      removeEventListener: (
-        type: string,
-        listener: (event: MessageEvent<unknown>) => void,
-      ) => {
-        if (type === "message") listeners.delete(listener);
-      },
-      getRegistration: vi.fn(async () => undefined),
-    },
-  });
-  return {
-    invalidate(epoch: number) {
-      const event = new MessageEvent("message", {
-        data: { type: OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE, epoch },
+function installDefaultApi(
+  session: () => "a" | "b",
+  timeline?: string[],
+) {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = requestUrl(input);
+    if (url.startsWith("/api/i18n/catalog")) return jsonResponse(catalog);
+    if (url === "/api/me") {
+      timeline?.push("me");
+      return jsonResponse(
+        session() === "a"
+          ? meResponse(11, 101, "Vault A")
+          : meResponse(11, 202, "Vault B"),
+      );
+    }
+    if (url === "/api/vaults" && (!init?.method || init.method === "GET")) {
+      return jsonResponse({
+        items: [
+          { id: 101, slug: "vault-101", name: "Vault A", role: "owner" },
+          { id: 202, slug: "vault-202", name: "Vault B", role: "owner" },
+        ],
       });
-      for (const listener of listeners) listener(event);
-    },
-  };
+    }
+    if (url === "/api/vaults/select" && init?.method === "POST") {
+      timeline?.push("select");
+      return jsonResponse({ vault_id: 202 });
+    }
+    if (url === "/api/locale" && init?.method === "PUT") {
+      return jsonResponse({
+        locale: "it",
+        message: "Locale updated",
+        message_key: "api.locale_updated",
+        messages: catalog.messages,
+      });
+    }
+    if (url.startsWith("/api/notifications")) {
+      return jsonResponse({ items: [], unread_count: 0 });
+    }
+    if (url.startsWith("/api/files")) {
+      return jsonResponse(listing(session() === "a" ? "vault-a.txt" : "vault-b.txt"));
+    }
+    if (url === "/api/jobs") return jsonResponse({ items: [], groups: [] });
+    if (url === "/api/stats") {
+      return jsonResponse({
+        states: { both: 0, local_only: 0, cloud_only: 0 },
+        storage: { local_bytes: 0, cloud_bytes: 0 },
+        active_jobs: 0,
+        runtime: {},
+        filesystem: null,
+        delete_enabled: false,
+      });
+    }
+    return jsonResponse({ detail: `unexpected ${url}` }, 404);
+  });
+  configureApiClient({ fetch: fetchMock });
+  return fetchMock;
 }
 
 describe("App offline cache authorization transitions", () => {
-  const fetchMock = vi.fn();
-
   beforeEach(() => {
     resetApiClientForTests();
-    fetchMock.mockReset();
-    configureApiClient({ fetch: fetchMock });
     localStorage.clear();
     window.history.replaceState({}, "", "/");
   });
@@ -180,252 +342,106 @@ describe("App offline cache authorization transitions", () => {
     vi.unstubAllGlobals();
   });
 
-  it("clears User A's listing on logout before a new App authenticates User B", async () => {
+  it("keeps offline listing availability across an unchanged context refresh", async () => {
+    const worker = installServiceWorkerProtocolHarness();
+    let current: "a" | "b" = "a";
+    installDefaultApi(() => current);
     const user = userEvent.setup();
-    let session: "a" | "b" = "a";
-    const logoutPending = new Promise<Response>(() => undefined);
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = requestUrl(input);
-      if (url.startsWith("/api/i18n/catalog")) return jsonResponse(catalog);
-      if (url === "/api/me") {
-        return jsonResponse(
-          session === "a"
-            ? meResponse(11, 101, "Vault A")
-            : meResponse(22, 202, "Vault B"),
-        );
-      }
-      if (url === "/api/vaults" && (!init?.method || init.method === "GET")) {
-        return jsonResponse({
-          items:
-            session === "a"
-              ? [{ id: 101, slug: "vault-101", name: "Vault A", role: "owner" }]
-              : [{ id: 202, slug: "vault-202", name: "Vault B", role: "owner" }],
-        });
-      }
-      if (url.startsWith("/api/files")) {
-        if (session === "b") throw new TypeError("offline");
-        return jsonResponse(listing("user-a.txt"));
-      }
-      if (url === "/api/jobs") return jsonResponse({ items: [], groups: [] });
-      if (url === "/api/stats") {
-        return jsonResponse({
-          states: { both: 0, local_only: 0, cloud_only: 0 },
-          storage: { local_bytes: 0, cloud_bytes: 0 },
-          active_jobs: 0,
-          runtime: {},
-          filesystem: null,
-          delete_enabled: false,
-        });
-      }
-      if (url === "/api/logout" && init?.method === "POST") return logoutPending;
-      return jsonResponse({ detail: `unexpected ${url}` }, 404);
-    });
-
-    const firstApp = renderApp();
-    await waitFor(() => {
-      expect(screen.getAllByText("user-a.txt").length).toBeGreaterThan(0);
-      expect(offlineFileStorageKeys()).not.toHaveLength(0);
-    });
-
-    await user.click(screen.getAllByRole("button", { name: "Sign out" })[0]!);
-    await waitFor(() => {
-      expect(offlineFileStorageKeys()).toEqual([]);
-      expect(screen.queryByTestId("file-browser")).not.toBeInTheDocument();
-    });
-
-    firstApp.unmount();
-    session = "b";
-    vi.stubGlobal("navigator", { ...navigator, onLine: false });
-    renderApp();
-
-    expect(await screen.findByTestId("offline-shell")).toHaveTextContent(
-      "You are offline.",
-    );
-    expect(screen.queryByText("user-a.txt")).not.toBeInTheDocument();
-  });
-
-  it("stays behind the barrier when Vault selection succeeds but fresh session loading fails", async () => {
-    const user = userEvent.setup();
-    let selectionSucceeded = false;
-    let meCalls = 0;
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = requestUrl(input);
-      if (url.startsWith("/api/i18n/catalog")) return jsonResponse(catalog);
-      if (url === "/api/me") {
-        meCalls += 1;
-        return selectionSucceeded
-          ? jsonResponse({ detail: "session refresh failed" }, 500)
-          : jsonResponse(meResponse(11, 101, "Vault A"));
-      }
-      if (url === "/api/vaults" && (!init?.method || init.method === "GET")) {
-        return jsonResponse({
-          items: [
-            { id: 101, slug: "vault-101", name: "Vault A", role: "owner" },
-            { id: 202, slug: "vault-202", name: "Vault B", role: "owner" },
-          ],
-        });
-      }
-      if (url === "/api/vaults/select" && init?.method === "POST") {
-        selectionSucceeded = true;
-        return jsonResponse({ vault_id: 202 });
-      }
-      if (url.startsWith("/api/files")) return jsonResponse(listing("vault-a.txt"));
-      if (url === "/api/jobs") return jsonResponse({ items: [], groups: [] });
-      if (url === "/api/stats") {
-        return jsonResponse({
-          states: { both: 0, local_only: 0, cloud_only: 0 },
-          storage: { local_bytes: 0, cloud_bytes: 0 },
-          active_jobs: 0,
-          runtime: {},
-          filesystem: null,
-          delete_enabled: false,
-        });
-      }
-      return jsonResponse({ detail: `unexpected ${url}` }, 404);
-    });
 
     renderApp();
     await waitFor(() => {
       expect(screen.getAllByText("vault-a.txt").length).toBeGreaterThan(0);
       expect(offlineFileStorageKeys()).not.toHaveLength(0);
     });
+    const beginsBeforeLocale = worker.posted.filter(
+      (message) => message.type === OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
+    ).length;
 
+    await user.selectOptions(
+      screen.getAllByRole("combobox", { name: "Language" })[0]!,
+      "it",
+    );
     await waitFor(() => {
-      expect(screen.getAllByRole("option", { name: "Vault B" }).length).toBeGreaterThan(0);
-    });
-    const vaultPicker = screen.getAllByRole("combobox", { name: "Vault" })[0]!;
-    await user.selectOptions(vaultPicker, "202");
-
-    await waitFor(() => {
-      expect(selectionSucceeded).toBe(true);
-      expect(meCalls).toBeGreaterThan(1);
-      expect(offlineFileStorageKeys()).toEqual([]);
-      expect(screen.queryByTestId("file-browser")).not.toBeInTheDocument();
-    });
-    expect(screen.getByText("Loading…")).toBeInTheDocument();
-    expect(screen.queryByText("vault-a.txt")).not.toBeInTheDocument();
-  });
-
-  it("delivers one Worker invalidation payload to two mounted Apps and clears both file query clients", async () => {
-    const worker = installServiceWorkerMessageHarness();
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = requestUrl(input);
-      if (url.startsWith("/api/i18n/catalog")) return jsonResponse(catalog);
-      if (url === "/api/me") return jsonResponse(meResponse(11, 101, "Vault A"));
-      if (url === "/api/vaults" && (!init?.method || init.method === "GET")) {
-        return jsonResponse({
-          items: [{ id: 101, slug: "vault-101", name: "Vault A", role: "owner" }],
-        });
-      }
-      if (url.startsWith("/api/files")) return jsonResponse(listing("shared-tab.txt"));
-      if (url === "/api/jobs") return jsonResponse({ items: [], groups: [] });
-      if (url === "/api/stats") {
-        return jsonResponse({
-          states: { both: 0, local_only: 0, cloud_only: 0 },
-          storage: { local_bytes: 0, cloud_bytes: 0 },
-          active_jobs: 0,
-          runtime: {},
-          filesystem: null,
-          delete_enabled: false,
-        });
-      }
-      return jsonResponse({ detail: `unexpected ${url}` }, 404);
-    });
-
-    const firstApp = renderApp();
-    const secondApp = renderApp();
-    await waitFor(() => {
-      expect(screen.getAllByText("shared-tab.txt")).toHaveLength(2);
       expect(offlineFileStorageKeys()).not.toHaveLength(0);
+      expect(screen.getAllByText("vault-a.txt").length).toBeGreaterThan(0);
     });
-
-    worker.invalidate(7);
-
-    await waitFor(() => {
-      expect(screen.queryAllByTestId("file-browser")).toHaveLength(0);
-      expect(offlineFileStorageKeys()).toEqual([]);
-      expect(firstApp.client.getQueryCache().findAll({ queryKey: ["files"] })).toEqual([]);
-      expect(secondApp.client.getQueryCache().findAll({ queryKey: ["files"] })).toEqual([]);
-    });
-    expect(screen.getAllByText("Loading…")).toHaveLength(2);
+    expect(
+      worker.posted.filter(
+        (message) => message.type === OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
+      ),
+    ).toHaveLength(beginsBeforeLocale);
+    current = "b";
   });
 
-  it("preserves listings on unchanged locale/navigation refreshes but purges before a same-scope Session replacement", async () => {
-    const user = userEvent.setup();
-    let csrfToken = "session-a";
-    let meCalls = 0;
+  it("begins a global close before Vault mutation and registers only the post-selection context", async () => {
+    const worker = installServiceWorkerProtocolHarness();
+    let current: "a" | "b" = "a";
+    const timeline: string[] = [];
+    let transitionStart = 0;
+    const fetchMock = installDefaultApi(() => current, timeline);
+    const originalSelect = fetchMock.getMockImplementation();
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input);
-      if (url.startsWith("/api/i18n/catalog")) return jsonResponse(catalog);
-      if (url === "/api/me") {
-        meCalls += 1;
-        return jsonResponse(meResponse(11, 101, "Vault A", csrfToken));
+      if (url === "/api/vaults/select" && init?.method === "POST") {
+        const beganBeforeMutation = worker.posted
+          .slice(transitionStart)
+          .some(
+            (message) =>
+              message.type === OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
+          );
+        timeline.push(beganBeforeMutation ? "begin-then-select" : "select-too-early");
+        current = "b";
+        return jsonResponse({ vault_id: 202 });
       }
-      if (url === "/api/vaults" && (!init?.method || init.method === "GET")) {
-        return jsonResponse({
-          items: [{ id: 101, slug: "vault-101", name: "Vault A", role: "owner" }],
-        });
-      }
-      if (url === "/api/locale" && init?.method === "PUT") {
-        return jsonResponse({
-          locale: "it",
-          message: "Locale updated",
-          message_key: "api.locale_updated",
-          messages: catalog.messages,
-        });
-      }
-      if (url.startsWith("/api/notifications")) {
-        return jsonResponse({ items: [], unread_count: 0 });
-      }
-      if (url.startsWith("/api/files")) {
-        if (csrfToken === "session-b") throw new TypeError("offline after replacement");
-        return jsonResponse(listing("before-replacement.txt"));
-      }
-      if (url === "/api/jobs") return jsonResponse({ items: [], groups: [] });
-      if (url === "/api/stats") {
-        return jsonResponse({
-          states: { both: 0, local_only: 0, cloud_only: 0 },
-          storage: { local_bytes: 0, cloud_bytes: 0 },
-          active_jobs: 0,
-          runtime: {},
-          filesystem: null,
-          delete_enabled: false,
-        });
-      }
-      return jsonResponse({ detail: `unexpected ${url}` }, 404);
+      return originalSelect!(input, init);
     });
+    const user = userEvent.setup();
 
     renderApp();
-    await waitFor(() => {
-      expect(screen.getAllByText("before-replacement.txt").length).toBeGreaterThan(0);
-      expect(offlineFileStorageKeys()).not.toHaveLength(0);
-    });
+    await screen.findAllByText("vault-a.txt");
+    const baseline = worker.posted.length;
+    transitionStart = baseline;
+    await user.selectOptions(
+      screen.getAllByRole("combobox", { name: "Vault" })[0]!,
+      "202",
+    );
 
-    const languagePicker = screen.getAllByRole("combobox", {
-      name: "Language",
-    })[0]!;
-    await user.selectOptions(languagePicker, "it");
     await waitFor(() => {
-      expect(meCalls).toBeGreaterThanOrEqual(2);
-      expect(offlineFileStorageKeys()).not.toHaveLength(0);
+      expect(timeline).toContain("begin-then-select");
+      expect(screen.getAllByText("vault-b.txt").length).toBeGreaterThan(0);
     });
-
-    window.history.pushState({}, "", "/vaults/new");
-    window.dispatchEvent(new PopStateEvent("popstate"));
-    await waitFor(() => {
-      expect(meCalls).toBeGreaterThanOrEqual(3);
-      expect(offlineFileStorageKeys()).not.toHaveLength(0);
+    const transitionMessages = worker.posted.slice(baseline);
+    const beginIndex = transitionMessages.findIndex(
+      (message) => message.type === OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
+    );
+    const completion = transitionMessages.find(
+      (message) =>
+        message.type === OFFLINE_FILE_CACHE_CONTEXT_MESSAGE &&
+        typeof message.transitionId === "string",
+    );
+    expect(beginIndex).toBeGreaterThanOrEqual(0);
+    expect(timeline).not.toContain("select-too-early");
+    expect(completion).toMatchObject({
+      context: { userId: 11, vaultId: 202 },
+      transitionId: expect.any(String),
     });
+    expect(offlineFileStorageKeys()).not.toHaveLength(0);
+  });
 
-    csrfToken = "session-b";
-    window.history.pushState({}, "", "/");
-    window.dispatchEvent(new PopStateEvent("popstate"));
+  it("unmounts the old FileBrowser as soon as another client closes the generation", async () => {
+    const worker = installServiceWorkerProtocolHarness();
+    let current: "a" | "b" = "a";
+    installDefaultApi(() => current);
+    const app = renderApp();
+    await screen.findAllByText("vault-a.txt");
+    expect(offlineFileStorageKeys()).not.toHaveLength(0);
+
+    worker.invalidate(true);
     await waitFor(() => {
-      // The first changed-token response clears; the retry is a fresh /api/me
-      // under the post-clear epoch before the archive can mount again.
-      expect(meCalls).toBeGreaterThanOrEqual(5);
+      expect(screen.queryByTestId("file-browser")).not.toBeInTheDocument();
       expect(offlineFileStorageKeys()).toEqual([]);
+      expect(app.client.getQueryCache().findAll({ queryKey: ["files"] })).toEqual([]);
     });
-    expect(screen.queryByText("before-replacement.txt")).not.toBeInTheDocument();
+    current = "b";
   });
 });

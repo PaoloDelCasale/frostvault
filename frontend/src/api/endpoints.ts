@@ -284,14 +284,17 @@ function safeMetadataBackupResult(
   return withoutMetadataBackupPaths(result) as MetadataBackupRunResult;
 }
 
-export function fetchFiles(query: FilesQuery = {}): Promise<FilesResponse> {
+export function fetchFiles(
+  query: FilesQuery = {},
+  options?: RequestInit,
+): Promise<FilesResponse> {
   const params = new URLSearchParams();
   params.set("q", query.q ?? "");
   params.set("state", query.state ?? "");
   params.set("directory", query.directory ?? "");
   params.set("page", String(query.page ?? 1));
   params.set("page_size", String(query.page_size ?? DEFAULT_PAGE_SIZE));
-  return apiRequest<FilesResponse>(`/api/files?${params.toString()}`);
+  return apiRequest<FilesResponse>(`/api/files?${params.toString()}`, options);
 }
 
 export function fetchFileHistory(path: string): Promise<FileHistoryResponse> {

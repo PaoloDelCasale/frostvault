@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  CLEAR_OFFLINE_FILE_CACHE_MESSAGE,
-  OFFLINE_FILE_CACHE_CLEAR_ACK_MESSAGE,
+  OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
   OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
   OFFLINE_FILE_CACHE_CONTEXT_MESSAGE,
+  OFFLINE_FILE_CACHE_GENERATION_HEADER,
+  OFFLINE_FILE_CACHE_GENERATION_MESSAGE,
+  OFFLINE_FILE_CACHE_GENERATION_REQUEST_MESSAGE,
   OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE,
+  OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE,
+  offlineFileCacheGenerationKey,
   offlineFileServiceWorkerCacheName,
+  type OfflineFileCacheGeneration,
 } from "@/pwa/offlineFiles";
 
 type CapturedRoute = {
@@ -14,9 +19,13 @@ type CapturedRoute = {
   handler: unknown;
 };
 
+type CacheWriteGuard = (options: {
+  response: Response;
+}) => Promise<Response | null>;
+
 type CapturedStrategy = {
   cacheName: string;
-  plugins: unknown[];
+  cacheWriteGuard: CacheWriteGuard;
 };
 
 type TestWindowClient = {
@@ -35,15 +44,25 @@ type ListingHandler = (options: {
   request: Request;
 }) => Promise<Response>;
 
-type CacheWriteGuard = (options: {
-  response: Response;
-}) => Promise<Response | null>;
+type MemoryCache = {
+  put: (request: Request, response: Response) => Promise<void>;
+  match: (request: Request) => Promise<Response | undefined>;
+};
+
+function deferred<T>() {
+  let resolve: (value: T | PromiseLike<T>) => void = () => undefined;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
 
 const workbox = vi.hoisted(() => ({
   routes: [] as CapturedRoute[],
   strategies: [] as CapturedStrategy[],
   networkOnlyHandles: 0,
-  nextCompletion: null as Promise<void> | null,
+  nextPayload: "authorized-payload",
+  nextCompletionGate: null as Promise<void> | null,
 }));
 
 vi.mock("workbox-core", () => ({ clientsClaim: vi.fn() }));
@@ -61,35 +80,45 @@ vi.mock("workbox-routing", () => ({
 }));
 vi.mock("workbox-strategies", () => ({
   NetworkFirst: class NetworkFirst {
-    constructor(options: { cacheName: string; plugins?: unknown[] }) {
-      workbox.strategies.push({
-        cacheName: options.cacheName,
-        plugins: options.plugins ?? [],
-      });
+    constructor(options: {
+      cacheName: string;
+      plugins?: Array<{ cacheWillUpdate?: CacheWriteGuard }>;
+    }) {
+      const cacheWriteGuard = options.plugins?.find(
+        (plugin): plugin is { cacheWillUpdate: CacheWriteGuard } =>
+          typeof plugin.cacheWillUpdate === "function",
+      )?.cacheWillUpdate;
+      if (!cacheWriteGuard) throw new Error("missing cache write guard");
+      workbox.strategies.push({ cacheName: options.cacheName, cacheWriteGuard });
     }
 
-    handleAll = vi.fn(() => {
-      const completion = workbox.nextCompletion ?? Promise.resolve();
-      workbox.nextCompletion = null;
-      return [
-        Promise.resolve(new Response(null, { status: 200 })),
-        completion,
-      ] as const;
+    handleAll = vi.fn(({ request }: { request: Request }) => {
+      const response = new Response(workbox.nextPayload, { status: 200 });
+      const gate = workbox.nextCompletionGate ?? Promise.resolve();
+      workbox.nextCompletionGate = null;
+      const strategy = workbox.strategies.at(-1);
+      if (!strategy) throw new Error("missing captured strategy");
+      const completion = gate.then(async () => {
+        const cacheable = await strategy.cacheWriteGuard({ response });
+        if (!cacheable) return;
+        const cache = await caches.open(strategy.cacheName);
+        await cache.put(request, cacheable.clone());
+      });
+      return [Promise.resolve(response), completion] as const;
     });
   },
   NetworkOnly: class NetworkOnly {
     handle = vi.fn(async () => {
       workbox.networkOnlyHandles += 1;
-      return new Response(null, { status: 200 });
+      return new Response("network-only", { status: 200 });
     });
   },
 }));
 
 let workerListeners: Map<string, Array<(event: unknown) => void>>;
-let cacheNames: string[];
-let deletedCacheNames: string[];
 let windowClients: TestWindowClient[];
 let clientsById: Map<string, TestWindowClient>;
+let memoryCaches: Map<string, Map<string, Response>>;
 let requestSequence: number;
 
 function clientFor(id: string): TestWindowClient {
@@ -98,6 +127,20 @@ function clientFor(id: string): TestWindowClient {
   const client = { id, postMessage: vi.fn() };
   clientsById.set(id, client);
   return client;
+}
+
+function memoryCache(name: string): MemoryCache {
+  const entries = memoryCaches.get(name) ?? new Map<string, Response>();
+  memoryCaches.set(name, entries);
+  return {
+    async put(request, response) {
+      entries.set(request.url, response.clone());
+    },
+    async match(request) {
+      const response = entries.get(request.url);
+      return response?.clone();
+    },
+  };
 }
 
 function messageListener(): WorkerMessageListener {
@@ -117,38 +160,30 @@ function nextRequestId(): string {
   return `request-${requestSequence}`;
 }
 
-function contextMessage(
-  context: { userId: number; vaultId: number },
-  epoch = 0,
-) {
-  return {
-    type: OFFLINE_FILE_CACHE_CONTEXT_MESSAGE,
-    requestId: nextRequestId(),
-    epoch,
-    context,
-  };
+function messagesOfType(
+  client: TestWindowClient,
+  type: string,
+): Array<Record<string, unknown>> {
+  return client.postMessage.mock.calls
+    .map(([message]) => message)
+    .filter(
+      (message): message is Record<string, unknown> =>
+        Boolean(message) &&
+        typeof message === "object" &&
+        (message as { type?: unknown }).type === type,
+    );
 }
 
-function clearMessage() {
-  return {
-    type: CLEAR_OFFLINE_FILE_CACHE_MESSAGE,
-    requestId: nextRequestId(),
-  };
+function latestMessage(
+  client: TestWindowClient,
+  type: string,
+): Record<string, unknown> {
+  const message = messagesOfType(client, type).at(-1);
+  if (!message) throw new Error(`client ${client.id} did not receive ${type}`);
+  return message;
 }
 
-async function activateWorker(): Promise<void> {
-  const listener = workerListeners.get("activate")?.[0];
-  if (!listener) throw new Error("service worker did not register an activate listener");
-  let pending: Promise<unknown> | undefined;
-  listener({
-    waitUntil: (work: Promise<unknown>) => {
-      pending = work;
-    },
-  });
-  await pending;
-}
-
-function dispatchMessage(data: unknown, clientId = "client-1") {
+function dispatchMessage(data: unknown, clientId = "client-a") {
   let pending: Promise<unknown> | undefined;
   const source = clientFor(clientId);
   messageListener()({
@@ -161,39 +196,82 @@ function dispatchMessage(data: unknown, clientId = "client-1") {
   return { pending, source };
 }
 
-async function sendMessage(data: unknown, clientId = "client-1"): Promise<TestWindowClient> {
-  const dispatched = dispatchMessage(data, clientId);
-  await dispatched.pending;
-  return dispatched.source;
+async function activateWorker(): Promise<void> {
+  const listener = workerListeners.get("activate")?.[0];
+  if (!listener) throw new Error("service worker did not register an activate listener");
+  const event = { waitUntil: vi.fn() };
+  listener(event);
+  await Promise.all(event.waitUntil.mock.calls.map(([work]) => work));
 }
 
-async function handleListing(clientId = "client-1"): Promise<Response> {
+function requestGeneration(clientId = "client-a"): OfflineFileCacheGeneration {
+  const requestId = nextRequestId();
+  const { source } = dispatchMessage(
+    { type: OFFLINE_FILE_CACHE_GENERATION_REQUEST_MESSAGE, requestId },
+    clientId,
+  );
+  const message = latestMessage(source, OFFLINE_FILE_CACHE_GENERATION_MESSAGE);
+  expect(message.requestId).toBe(requestId);
+  return message.generation as OfflineFileCacheGeneration;
+}
+
+function registerContext(
+  clientId: string,
+  context: { userId: number; vaultId: number },
+  generation: OfflineFileCacheGeneration,
+  transitionId?: string,
+): Record<string, unknown> {
+  const requestId = nextRequestId();
+  const { source } = dispatchMessage(
+    {
+      type: OFFLINE_FILE_CACHE_CONTEXT_MESSAGE,
+      requestId,
+      generation,
+      context,
+      ...(transitionId ? { transitionId } : {}),
+    },
+    clientId,
+  );
+  const acknowledgement = latestMessage(
+    source,
+    OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
+  );
+  expect(acknowledgement.requestId).toBe(requestId);
+  return acknowledgement;
+}
+
+function beginTransition(clientId = "client-a", transitionId = "transition-a") {
+  const requestId = nextRequestId();
+  const dispatched = dispatchMessage(
+    {
+      type: OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
+      requestId,
+      transitionId,
+    },
+    clientId,
+  );
+  const acknowledgement = latestMessage(
+    dispatched.source,
+    OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE,
+  );
+  expect(acknowledgement.requestId).toBe(requestId);
+  return { ...dispatched, acknowledgement };
+}
+
+async function handleListing(
+  clientId: string,
+  generation: OfflineFileCacheGeneration,
+): Promise<Response> {
   return listingHandler()({
     event: { clientId },
-    request: new Request("https://frostvault.test/api/files?page=1"),
+    request: new Request("https://frostvault.test/api/files?page=1", {
+      headers: {
+        [OFFLINE_FILE_CACHE_GENERATION_HEADER]: offlineFileCacheGenerationKey(
+          generation,
+        ),
+      },
+    }),
   });
-}
-
-function cacheWriteGuard(): CacheWriteGuard {
-  const strategy = workbox.strategies.at(-1);
-  if (!strategy) throw new Error("service worker did not create a cache strategy");
-  const plugin = strategy.plugins.find(
-    (candidate): candidate is { cacheWillUpdate: CacheWriteGuard } =>
-      Boolean(candidate) &&
-      typeof candidate === "object" &&
-      "cacheWillUpdate" in candidate &&
-      typeof candidate.cacheWillUpdate === "function",
-  );
-  if (!plugin) throw new Error("service worker did not guard cache writes");
-  return plugin.cacheWillUpdate;
-}
-
-function deferred<T>() {
-  let resolve: (value: T | PromiseLike<T>) => void = () => undefined;
-  const promise = new Promise<T>((nextResolve) => {
-    resolve = nextResolve;
-  });
-  return { promise, resolve };
 }
 
 describe("service-worker file-listing cache authorization scope", () => {
@@ -202,20 +280,18 @@ describe("service-worker file-listing cache authorization scope", () => {
     workbox.routes.length = 0;
     workbox.strategies.length = 0;
     workbox.networkOnlyHandles = 0;
-    workbox.nextCompletion = null;
+    workbox.nextPayload = "authorized-payload";
+    workbox.nextCompletionGate = null;
     workerListeners = new Map();
-    cacheNames = ["frostvault-file-listing"];
-    deletedCacheNames = [];
     windowClients = [];
     clientsById = new Map();
+    memoryCaches = new Map();
     requestSequence = 0;
 
     vi.stubGlobal("caches", {
-      keys: vi.fn(async () => [...cacheNames]),
-      delete: vi.fn(async (cacheName: string) => {
-        deletedCacheNames.push(cacheName);
-        return true;
-      }),
+      keys: vi.fn(async () => [...memoryCaches.keys()]),
+      delete: vi.fn(async (name: string) => memoryCaches.delete(name)),
+      open: vi.fn(async (name: string) => memoryCache(name)),
     });
     vi.stubGlobal("self", {
       __WB_MANIFEST: [],
@@ -240,139 +316,134 @@ describe("service-worker file-listing cache authorization scope", () => {
     vi.clearAllMocks();
   });
 
-  it("deletes the legacy shared runtime cache on activation", async () => {
+  it("uses a generation-scoped CacheStorage payload for an unchanged authorization context", async () => {
+    const client = clientFor("client-a");
+    windowClients = [client];
     await activateWorker();
+    const generation = requestGeneration();
+    const context = { userId: 11, vaultId: 101 };
 
-    expect(deletedCacheNames).toEqual(["frostvault-file-listing"]);
-  });
+    expect(registerContext("client-a", context, generation)).toMatchObject({
+      accepted: true,
+      closed: false,
+      transitionComplete: false,
+    });
+    workbox.nextPayload = "first-authorized-listing";
+    const response = await handleListing("client-a", generation);
+    expect(await response.text()).toBe("first-authorized-listing");
+    await Promise.resolve();
+    await Promise.resolve();
 
-  it("does not use a URL-only cache before the client supplies an auth context", async () => {
-    await handleListing("unidentified-client");
+    const cacheName = offlineFileServiceWorkerCacheName(context, generation);
+    const cached = await memoryCache(cacheName).match(
+      new Request("https://frostvault.test/api/files?page=1"),
+    );
+    expect(await cached?.text()).toBe("first-authorized-listing");
 
-    expect(workbox.networkOnlyHandles).toBe(1);
-    expect(workbox.strategies).toHaveLength(0);
-  });
-
-  it("uses separate cache namespaces when one User switches Vaults", async () => {
-    const vaultA = { userId: 11, vaultId: 101 };
-    const vaultB = { userId: 11, vaultId: 202 };
-    const vaultACache = offlineFileServiceWorkerCacheName(vaultA);
-    const vaultBCache = offlineFileServiceWorkerCacheName(vaultB);
-
-    await sendMessage(contextMessage(vaultA));
-    await handleListing();
-    await sendMessage(contextMessage(vaultB));
-    await handleListing();
-
+    // A normal refresh of unchanged User/Vault authorization remains available
+    // and uses the same current-generation namespace rather than clearing it.
+    expect(registerContext("client-a", context, generation)).toMatchObject({
+      accepted: true,
+      closed: false,
+    });
     expect(workbox.strategies.map((strategy) => strategy.cacheName)).toEqual([
-      vaultACache,
-      vaultBCache,
+      cacheName,
     ]);
-    expect(vaultBCache).not.toBe(vaultACache);
   });
 
-  it("broadcasts an invalidation payload to every WindowClient and clears each context", async () => {
-    const userAVault = { userId: 11, vaultId: 101 };
-    const userBVault = { userId: 22, vaultId: 202 };
+  it("keeps other WindowClients closed and rejects old-context registration until the mutating client completes", async () => {
     const clientA = clientFor("client-a");
     const clientB = clientFor("client-b");
     windowClients = [clientA, clientB];
+    await activateWorker();
+    const beforeMutation = requestGeneration("client-a");
+    const oldContext = { userId: 11, vaultId: 101 };
+    const otherContext = { userId: 22, vaultId: 202 };
 
-    await sendMessage(contextMessage(userAVault), "client-a");
-    await sendMessage(contextMessage(userBVault), "client-b");
-    await handleListing("client-b");
-    expect(workbox.strategies.at(-1)?.cacheName).toBe(
-      offlineFileServiceWorkerCacheName(userBVault),
-    );
-
-    const clear = clearMessage();
-    await sendMessage(clear, "client-a");
-
-    const invalidation = {
-      type: OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE,
-      epoch: 1,
-    };
-    expect(clientA.postMessage).toHaveBeenCalledWith(invalidation);
-    expect(clientB.postMessage).toHaveBeenCalledWith(invalidation);
-    expect(clientA.postMessage).toHaveBeenCalledWith({
-      type: OFFLINE_FILE_CACHE_CLEAR_ACK_MESSAGE,
-      requestId: clear.requestId,
-      epoch: 1,
-    });
-
-    await handleListing("client-b");
-    expect(workbox.networkOnlyHandles).toBe(1);
-  });
-
-  it("rejects a delayed pre-clear context message until a fresh current-epoch context arrives", async () => {
-    const userBVault = { userId: 22, vaultId: 202 };
-
-    await sendMessage(contextMessage(userBVault), "client-b");
-    await sendMessage(clearMessage(), "client-a");
-
-    const stale = contextMessage(userBVault, 0);
-    const staleClient = await sendMessage(stale, "client-b");
-    expect(staleClient.postMessage).toHaveBeenLastCalledWith({
-      type: OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
-      requestId: stale.requestId,
-      epoch: 1,
-      accepted: false,
-    });
-    await handleListing("client-b");
-    expect(workbox.networkOnlyHandles).toBe(1);
-
-    const fresh = contextMessage(userBVault, 1);
-    const freshClient = await sendMessage(fresh, "client-b");
-    expect(freshClient.postMessage).toHaveBeenLastCalledWith({
-      type: OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
-      requestId: fresh.requestId,
-      epoch: 1,
+    expect(registerContext("client-a", oldContext, beforeMutation)).toMatchObject({
       accepted: true,
     });
-    await handleListing("client-b");
-    expect(workbox.strategies.at(-1)?.cacheName).toBe(
-      offlineFileServiceWorkerCacheName(userBVault),
+    expect(registerContext("client-b", otherContext, beforeMutation)).toMatchObject({
+      accepted: true,
+    });
+
+    const started = beginTransition("client-a", "vault-change-a");
+    expect(started.acknowledgement).toMatchObject({
+      accepted: true,
+      closed: true,
+      transitionComplete: false,
+    });
+    const closedGeneration = started.acknowledgement
+      .generation as OfflineFileCacheGeneration;
+    expect(closedGeneration).not.toEqual(beforeMutation);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(latestMessage(clientB, OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE)).toMatchObject({
+      generation: closedGeneration,
+      closed: true,
+    });
+
+    // Neither a delayed pre-mutation response nor a fresh probe by another
+    // tab owns the opaque transition capability, so both registrations fail.
+    expect(registerContext("client-b", otherContext, beforeMutation)).toMatchObject({
+      accepted: false,
+      closed: true,
+    });
+    expect(registerContext("client-b", otherContext, closedGeneration)).toMatchObject({
+      accepted: false,
+      closed: true,
+    });
+    const noLeaseResponse = await handleListing("client-b", closedGeneration);
+    expect(await noLeaseResponse.text()).toBe("network-only");
+    expect(workbox.networkOnlyHandles).toBe(1);
+
+    const completed = registerContext(
+      "client-a",
+      { userId: 11, vaultId: 202 },
+      closedGeneration,
+      "vault-change-a",
     );
+    expect(completed).toMatchObject({
+      accepted: true,
+      closed: false,
+      transitionComplete: true,
+    });
+    const reopenedGeneration = completed.generation as OfflineFileCacheGeneration;
+    expect(reopenedGeneration).not.toEqual(closedGeneration);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(latestMessage(clientB, OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE)).toMatchObject({
+      generation: reopenedGeneration,
+      closed: false,
+    });
   });
 
-  it("waits for delayed old-epoch fetch work and refuses its late cache payload before acknowledging", async () => {
-    const userAVault = { userId: 11, vaultId: 101 };
-    await sendMessage(contextMessage(userAVault));
+  it("does not wait for a hung old fetch and prevents its actual CacheStorage put after begin", async () => {
+    const client = clientFor("client-a");
+    windowClients = [client];
+    await activateWorker();
+    const generation = requestGeneration();
+    const context = { userId: 11, vaultId: 101 };
+    registerContext("client-a", context, generation);
 
     const delayedCompletion = deferred<void>();
-    const delayedPayload = deferred<Response>();
-    const cacheWrites: Response[] = [];
-    workbox.nextCompletion = delayedCompletion.promise;
-    await handleListing();
-    const guard = cacheWriteGuard();
-    const oldFetch = delayedPayload.promise.then(async (response) => {
-      const cacheable = await guard({ response });
-      if (cacheable) cacheWrites.push(cacheable);
-      delayedCompletion.resolve();
-    });
+    workbox.nextPayload = "late-old-payload";
+    workbox.nextCompletionGate = delayedCompletion.promise;
+    await handleListing("client-a", generation);
+    const cacheName = offlineFileServiceWorkerCacheName(context, generation);
+    const request = new Request("https://frostvault.test/api/files?page=1");
 
-    const clear = clearMessage();
-    const dispatched = dispatchMessage(clear);
+    const started = beginTransition("client-a", "hung-fetch-transition");
+    // The ACK is synchronous state closure; it is not held behind Workbox's
+    // completion promise, so the server mutation can start immediately.
+    expect(started.acknowledgement).toMatchObject({ accepted: true, closed: true });
+    expect(await memoryCache(cacheName).match(request)).toBeUndefined();
+
+    delayedCompletion.resolve();
     await Promise.resolve();
-
-    // The clear cannot purge or acknowledge while an old request is still
-    // completing. Its delayed response reaches the epoch guard before the
-    // simulated cache write, so it cannot recreate a cache after the purge.
-    expect(deletedCacheNames).toEqual([]);
-    expect(dispatched.source.postMessage).not.toHaveBeenCalledWith(
-      expect.objectContaining({ type: OFFLINE_FILE_CACHE_CLEAR_ACK_MESSAGE }),
-    );
-
-    delayedPayload.resolve(new Response("old", { status: 200 }));
-    await oldFetch;
-    await dispatched.pending;
-
-    expect(cacheWrites).toEqual([]);
-    expect(deletedCacheNames).toContain("frostvault-file-listing");
-    expect(dispatched.source.postMessage).toHaveBeenCalledWith({
-      type: OFFLINE_FILE_CACHE_CLEAR_ACK_MESSAGE,
-      requestId: clear.requestId,
-      epoch: 1,
-    });
+    await Promise.resolve();
+    // cacheWillUpdate runs directly before put and sees the closed/new
+    // generation, so the real fake CacheStorage never receives stale bytes.
+    expect(await memoryCache(cacheName).match(request)).toBeUndefined();
   });
 });

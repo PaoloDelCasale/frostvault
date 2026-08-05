@@ -116,7 +116,9 @@ describe("LoginPage local sign-in", () => {
     fireEvent.click(screen.getByRole("button", { name: en["login.submit"] }));
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // Login closes the old cache generation, then obtains fresh /api/me
+      // before navigation can reopen a context for this new Session.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("/api/login");

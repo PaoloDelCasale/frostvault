@@ -10,18 +10,38 @@ export const OFFLINE_FILE_CACHE_CONTEXT_MESSAGE =
   "frostvault.offline-file-cache-context";
 export const CLEAR_OFFLINE_FILE_CACHE_MESSAGE =
   "frostvault.clear-offline-file-cache";
-export const OFFLINE_FILE_CACHE_EPOCH_REQUEST_MESSAGE =
-  "frostvault.offline-file-cache-epoch-request";
-export const OFFLINE_FILE_CACHE_EPOCH_MESSAGE =
-  "frostvault.offline-file-cache-epoch";
+export const OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE =
+  "frostvault.offline-file-cache-begin-transition";
+export const OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE =
+  "frostvault.offline-file-cache-transition-ack";
+export const OFFLINE_FILE_CACHE_FINISH_TRANSITION_MESSAGE =
+  "frostvault.offline-file-cache-finish-transition";
+export const OFFLINE_FILE_CACHE_GENERATION_REQUEST_MESSAGE =
+  "frostvault.offline-file-cache-generation-request";
+export const OFFLINE_FILE_CACHE_GENERATION_MESSAGE =
+  "frostvault.offline-file-cache-generation";
 export const OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE =
   "frostvault.offline-file-cache-context-ack";
-export const OFFLINE_FILE_CACHE_CLEAR_ACK_MESSAGE =
-  "frostvault.offline-file-cache-clear-ack";
 export const OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE =
   "frostvault.offline-file-cache-invalidated";
 export const OFFLINE_FILE_CACHE_INVALIDATED_EVENT =
   "frostvault.offline-file-cache-invalidated";
+export const OFFLINE_FILE_CACHE_GENERATION_HEADER =
+  "X-FrostVault-Offline-Cache-Generation";
+
+/** Compatibility names for messages emitted by the first #192 protocol. */
+export const OFFLINE_FILE_CACHE_EPOCH_REQUEST_MESSAGE =
+  OFFLINE_FILE_CACHE_GENERATION_REQUEST_MESSAGE;
+export const OFFLINE_FILE_CACHE_EPOCH_MESSAGE =
+  OFFLINE_FILE_CACHE_GENERATION_MESSAGE;
+export const OFFLINE_FILE_CACHE_CLEAR_ACK_MESSAGE =
+  OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE;
+
+/** Every Worker process gets a new boot id, even when its counter restarts at zero. */
+export type OfflineFileCacheGeneration = Readonly<{
+  bootId: string;
+  counter: number;
+}>;
 
 /** The complete authorization scope required to read an offline file listing. */
 export type OfflineCacheContext = Readonly<{
@@ -29,22 +49,31 @@ export type OfflineCacheContext = Readonly<{
   vaultId: number;
 }>;
 
-/** A fresh /api/me request may use its captured epoch only once it still matches. */
+/** A /api/me response can only authorize the exact Worker generation it observed. */
 export type OfflineFileCacheFreshness = Readonly<{
-  epoch: number;
-  generation: number;
+  generation: OfflineFileCacheGeneration | null;
+  clientGeneration: number;
 }>;
 
 /** A current authorization lease prevents late UI effects from restoring old data. */
 export type OfflineFileCacheLease = Readonly<{
   context: OfflineCacheContext;
-  epoch: number;
-  generation: number;
+  generation: OfflineFileCacheGeneration;
+  clientGeneration: number;
+}>;
+
+/**
+ * A capability held only by the tab which closed the Worker during a session or
+ * Vault mutation. It is intentionally not included in invalidation broadcasts.
+ */
+export type OfflineFileCacheTransition = Readonly<{
+  id: string;
 }>;
 
 export type OfflineFileCacheInvalidation = Readonly<{
-  epoch: number;
-  generation: number;
+  generation: OfflineFileCacheGeneration | null;
+  clientGeneration: number;
+  state: "closed" | "open" | "unknown";
 }>;
 
 export type CachedFilesListing = {
@@ -55,71 +84,119 @@ export type CachedFilesListing = {
 type ContextMessage = {
   type: typeof OFFLINE_FILE_CACHE_CONTEXT_MESSAGE;
   requestId: string;
-  epoch: number;
+  generation: OfflineFileCacheGeneration;
   context: OfflineCacheContext;
+  transitionId?: string;
 };
 
-type ClearMessage = {
-  type: typeof CLEAR_OFFLINE_FILE_CACHE_MESSAGE;
+type BeginTransitionMessage = {
+  type: typeof OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE;
   requestId: string;
+  transitionId: string;
 };
 
-type EpochRequestMessage = {
-  type: typeof OFFLINE_FILE_CACHE_EPOCH_REQUEST_MESSAGE;
+type FinishTransitionMessage = {
+  type: typeof OFFLINE_FILE_CACHE_FINISH_TRANSITION_MESSAGE;
+  requestId: string;
+  generation: OfflineFileCacheGeneration;
+  transitionId: string;
+};
+
+type GenerationRequestMessage = {
+  type: typeof OFFLINE_FILE_CACHE_GENERATION_REQUEST_MESSAGE;
   requestId: string;
 };
 
 type OutboundServiceWorkerMessage =
   | ContextMessage
-  | ClearMessage
-  | EpochRequestMessage;
+  | BeginTransitionMessage
+  | FinishTransitionMessage
+  | GenerationRequestMessage;
 
-type EpochMessage = {
-  type: typeof OFFLINE_FILE_CACHE_EPOCH_MESSAGE;
+type GenerationMessage = {
+  type: typeof OFFLINE_FILE_CACHE_GENERATION_MESSAGE;
   requestId: string;
-  epoch: number;
+  generation: OfflineFileCacheGeneration;
+  closed: boolean;
 };
 
 type ContextAcknowledgement = {
   type: typeof OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE;
   requestId: string;
-  epoch: number;
+  generation: OfflineFileCacheGeneration;
   accepted: boolean;
+  closed: boolean;
+  transitionComplete: boolean;
 };
 
-type ClearAcknowledgement = {
-  type: typeof OFFLINE_FILE_CACHE_CLEAR_ACK_MESSAGE;
+type TransitionAcknowledgement = {
+  type: typeof OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE;
   requestId: string;
-  epoch: number;
+  generation: OfflineFileCacheGeneration;
+  accepted: boolean;
+  closed: boolean;
+  transitionComplete: boolean;
 };
 
 type ServiceWorkerReply =
-  | EpochMessage
+  | GenerationMessage
   | ContextAcknowledgement
-  | ClearAcknowledgement;
+  | TransitionAcknowledgement;
 
 type PendingServiceWorkerReply = {
   expectedType: ServiceWorkerReply["type"];
-  resolve: (reply: ServiceWorkerReply) => void;
+  resolve: (reply: ServiceWorkerReply | null) => void;
+  timeout: ReturnType<typeof setTimeout>;
 };
 
-let knownServiceWorkerEpoch = 0;
-let offlineFileCacheGeneration = 0;
+/** A Worker reply must never stall a session transition indefinitely. */
+export const OFFLINE_FILE_CACHE_REPLY_TIMEOUT_MS = 1_000;
+
+let knownServiceWorkerGeneration: OfflineFileCacheGeneration | null = null;
+let offlineFileCacheClientGeneration = 0;
 let serviceWorkerMessageSequence = 0;
 let serviceWorkerMessageContainer: ServiceWorkerContainer | null = null;
+let serviceWorkerControllerChangeContainer: ServiceWorkerContainer | null = null;
 const pendingServiceWorkerReplies = new Map<string, PendingServiceWorkerReply>();
 
 function isPositiveSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
-/** Epoch zero is the initial Service Worker generation. */
+/** Epoch zero was valid in the pre-nonce protocol and remains accepted for migration parsing. */
 export function isOfflineFileCacheEpoch(value: unknown): value is number {
   return (
     typeof value === "number" &&
     Number.isSafeInteger(value) &&
     value >= 0
   );
+}
+
+function isNonce(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 256;
+}
+
+export function isOfflineFileCacheGeneration(
+  value: unknown,
+): value is OfflineFileCacheGeneration {
+  if (!value || typeof value !== "object") return false;
+  const generation = value as { bootId?: unknown; counter?: unknown };
+  return isNonce(generation.bootId) && isOfflineFileCacheEpoch(generation.counter);
+}
+
+export function sameOfflineFileCacheGeneration(
+  left: OfflineFileCacheGeneration | null | undefined,
+  right: OfflineFileCacheGeneration | null | undefined,
+): boolean {
+  if (!left || !right) return false;
+  return left.bootId === right.bootId && left.counter === right.counter;
+}
+
+/** Stable header/cache suffix representation; boot id prevents restart collisions. */
+export function offlineFileCacheGenerationKey(
+  generation: OfflineFileCacheGeneration,
+): string {
+  return `${encodeURIComponent(generation.bootId)}.${generation.counter}`;
 }
 
 export function isOfflineCacheContext(
@@ -140,11 +217,13 @@ function cacheScope(context: OfflineCacheContext): string {
   return `user-${context.userId}:vault-${context.vaultId}`;
 }
 
-/** CacheStorage names must include both parts of the authorization context. */
+/** CacheStorage names include auth scope and the non-reusable Worker generation. */
 export function offlineFileServiceWorkerCacheName(
   context: OfflineCacheContext,
+  generation?: OfflineFileCacheGeneration,
 ): string {
-  return `${OFFLINE_FILE_SERVICE_WORKER_CACHE_PREFIX}${cacheScope(context)}`;
+  const base = `${OFFLINE_FILE_SERVICE_WORKER_CACHE_PREFIX}${cacheScope(context)}`;
+  return generation ? `${base}:generation-${offlineFileCacheGenerationKey(generation)}` : base;
 }
 
 function cacheKey(context: OfflineCacheContext, query: FilesQuery): string {
@@ -161,11 +240,15 @@ function cacheKey(context: OfflineCacheContext, query: FilesQuery): string {
 }
 
 function removeEntriesWithPrefixes(storage: Storage, prefixes: string[]): void {
-  for (let index = storage.length - 1; index >= 0; index -= 1) {
-    const key = storage.key(index);
-    if (key && prefixes.some((prefix) => key.startsWith(prefix))) {
-      storage.removeItem(key);
+  try {
+    for (let index = storage.length - 1; index >= 0; index -= 1) {
+      const key = storage.key(index);
+      if (key && prefixes.some((prefix) => key.startsWith(prefix))) {
+        storage.removeItem(key);
+      }
     }
+  } catch {
+    // Storage can be disabled by browser privacy settings. No cache is safer.
   }
 }
 
@@ -199,6 +282,20 @@ function nextServiceWorkerRequestId(): string {
   return `offline-file-cache-${serviceWorkerMessageSequence}`;
 }
 
+function createTransitionId(): string {
+  const values = new Uint32Array(4);
+  try {
+    const crypto = globalThis.crypto;
+    if (!crypto?.getRandomValues) throw new Error("Web Crypto is unavailable");
+    crypto.getRandomValues(values);
+    return Array.from(values, (value) => value.toString(36)).join("-");
+  } catch {
+    // Browsers supporting Service Workers have Web Crypto. This fallback still
+    // prevents accidental cross-tab token collisions in degraded test hosts.
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+}
+
 function isRequestId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
@@ -208,31 +305,44 @@ function isServiceWorkerReply(value: unknown): value is ServiceWorkerReply {
   const message = value as {
     type?: unknown;
     requestId?: unknown;
-    epoch?: unknown;
+    generation?: unknown;
     accepted?: unknown;
+    closed?: unknown;
+    transitionComplete?: unknown;
   };
   if (
     !isRequestId(message.requestId) ||
-    !isOfflineFileCacheEpoch(message.epoch)
+    !isOfflineFileCacheGeneration(message.generation) ||
+    typeof message.closed !== "boolean"
   ) {
     return false;
   }
-  if (message.type === OFFLINE_FILE_CACHE_EPOCH_MESSAGE) return true;
-  if (message.type === OFFLINE_FILE_CACHE_CLEAR_ACK_MESSAGE) return true;
+  if (message.type === OFFLINE_FILE_CACHE_GENERATION_MESSAGE) return true;
   return (
-    message.type === OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE &&
-    typeof message.accepted === "boolean"
+    (message.type === OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE ||
+      message.type === OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE) &&
+    typeof message.accepted === "boolean" &&
+    typeof message.transitionComplete === "boolean"
   );
 }
 
 function isInvalidationMessage(
   value: unknown,
-): value is { type: typeof OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE; epoch: number } {
+): value is {
+  type: typeof OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE;
+  generation: OfflineFileCacheGeneration;
+  closed: boolean;
+} {
   if (!value || typeof value !== "object") return false;
-  const message = value as { type?: unknown; epoch?: unknown };
+  const message = value as {
+    type?: unknown;
+    generation?: unknown;
+    closed?: unknown;
+  };
   return (
     message.type === OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE &&
-    isOfflineFileCacheEpoch(message.epoch)
+    isOfflineFileCacheGeneration(message.generation) &&
+    typeof message.closed === "boolean"
   );
 }
 
@@ -249,67 +359,123 @@ function dispatchOfflineFileCacheInvalidated(
 }
 
 function invalidateOfflineFileCacheClient(
-  epoch: number,
+  generation: OfflineFileCacheGeneration | null,
+  state: OfflineFileCacheInvalidation["state"],
   storage: Storage = localStorage,
+  dispatch = true,
 ): OfflineFileCacheInvalidation {
-  knownServiceWorkerEpoch = epoch;
-  offlineFileCacheGeneration += 1;
+  knownServiceWorkerGeneration = generation;
+  offlineFileCacheClientGeneration += 1;
   clearCachedFilesListings(storage);
   const invalidation = {
-    epoch: knownServiceWorkerEpoch,
-    generation: offlineFileCacheGeneration,
+    generation: knownServiceWorkerGeneration,
+    clientGeneration: offlineFileCacheClientGeneration,
+    state,
   };
-  dispatchOfflineFileCacheInvalidated(invalidation);
+  if (dispatch) dispatchOfflineFileCacheInvalidated(invalidation);
   return invalidation;
 }
 
-function observeServiceWorkerEpoch(epoch: number): void {
-  if (epoch === knownServiceWorkerEpoch) return;
-  // A changed epoch means this page missed an invalidation or a Worker restart.
-  // In either case, discard every local listing before a new /api/me can grant a
-  // fresh lease for the Worker generation.
-  invalidateOfflineFileCacheClient(epoch);
+function observeServiceWorkerGeneration(
+  generation: OfflineFileCacheGeneration,
+  state: OfflineFileCacheInvalidation["state"],
+): void {
+  if (sameOfflineFileCacheGeneration(generation, knownServiceWorkerGeneration)) {
+    return;
+  }
+  // A boot id change is a restart/update even if its numeric counter repeats.
+  // This response was solicited by the current tab, so it need not trigger a
+  // second concurrent App refresh; worker broadcasts/controllerchange do.
+  invalidateOfflineFileCacheClient(generation, state, localStorage, false);
+}
+
+function settlePendingServiceWorkerReplies(): void {
+  for (const [requestId, pending] of pendingServiceWorkerReplies) {
+    clearTimeout(pending.timeout);
+    pendingServiceWorkerReplies.delete(requestId);
+    pending.resolve(null);
+  }
+}
+
+function handleServiceWorkerControllerChange(): void {
+  settlePendingServiceWorkerReplies();
+  // Controller changes are an invalidation even when the new Worker happens to
+  // start at the same numeric counter. The following generation probe obtains
+  // its fresh boot id before any context can be registered again.
+  invalidateOfflineFileCacheClient(null, "open");
 }
 
 function handleServiceWorkerMessage(event: MessageEvent<unknown>): void {
   const { data } = event;
   if (isInvalidationMessage(data)) {
-    // Always clear on a clear notification, even when the epoch is duplicated:
-    // the payload is the authoritative cross-tab invalidation signal.
-    invalidateOfflineFileCacheClient(data.epoch);
+    // A transition notification is authoritative even if this tab already saw
+    // the same generation through an acknowledgement.
+    invalidateOfflineFileCacheClient(
+      data.generation,
+      data.closed ? "closed" : "open",
+    );
     return;
   }
   if (!isServiceWorkerReply(data)) return;
 
   const pending = pendingServiceWorkerReplies.get(data.requestId);
   if (!pending || pending.expectedType !== data.type) return;
+  clearTimeout(pending.timeout);
   pendingServiceWorkerReplies.delete(data.requestId);
   pending.resolve(data);
 }
 
 function ensureServiceWorkerMessageListener(): void {
   const container = serviceWorkerContainer();
-  if (!container || serviceWorkerMessageContainer === container) return;
-  if (serviceWorkerMessageContainer) {
-    serviceWorkerMessageContainer.removeEventListener(
-      "message",
-      handleServiceWorkerMessage,
-    );
+  if (!container) return;
+  if (serviceWorkerMessageContainer !== container) {
+    if (serviceWorkerMessageContainer) {
+      serviceWorkerMessageContainer.removeEventListener(
+        "message",
+        handleServiceWorkerMessage,
+      );
+    }
+    container.addEventListener("message", handleServiceWorkerMessage);
+    serviceWorkerMessageContainer = container;
   }
-  container.addEventListener("message", handleServiceWorkerMessage);
-  serviceWorkerMessageContainer = container;
+  if (serviceWorkerControllerChangeContainer !== container) {
+    if (serviceWorkerControllerChangeContainer) {
+      serviceWorkerControllerChangeContainer.removeEventListener(
+        "controllerchange",
+        handleServiceWorkerControllerChange,
+      );
+    }
+    container.addEventListener("controllerchange", handleServiceWorkerControllerChange);
+    serviceWorkerControllerChangeContainer = container;
+  }
+}
+
+function settleWithin<T>(
+  promise: Promise<T>,
+  timeoutMs = OFFLINE_FILE_CACHE_REPLY_TIMEOUT_MS,
+): Promise<T | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: T | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(value);
+    };
+    const timeout = setTimeout(() => finish(null), timeoutMs);
+    void promise.then(
+      (value) => finish(value),
+      () => finish(null),
+    );
+  });
 }
 
 async function activeServiceWorker(): Promise<ServiceWorker | null> {
   const container = serviceWorkerContainer();
   if (!container) return null;
   if (container.controller) return container.controller;
-  try {
-    const registration = await container.getRegistration();
-    return registration?.active ?? null;
-  } catch {
-    return null;
-  }
+  const registration = await settleWithin(container.getRegistration());
+  return registration?.active ?? null;
 }
 
 async function requestServiceWorkerReply(
@@ -321,13 +487,21 @@ async function requestServiceWorkerReply(
   if (!worker) return null;
 
   return new Promise<ServiceWorkerReply | null>((resolve) => {
+    const timeout = setTimeout(() => {
+      const pending = pendingServiceWorkerReplies.get(message.requestId);
+      if (!pending) return;
+      pendingServiceWorkerReplies.delete(message.requestId);
+      resolve(null);
+    }, OFFLINE_FILE_CACHE_REPLY_TIMEOUT_MS);
     pendingServiceWorkerReplies.set(message.requestId, {
       expectedType,
       resolve,
+      timeout,
     });
     try {
       worker.postMessage(message);
     } catch {
+      clearTimeout(timeout);
       pendingServiceWorkerReplies.delete(message.requestId);
       resolve(null);
     }
@@ -335,41 +509,84 @@ async function requestServiceWorkerReply(
 }
 
 /**
- * Capture the current Worker epoch immediately before fetching /api/me.
- * A context can be activated only with this freshness record, and only if no
- * invalidation changes its client generation before the response is applied.
+ * Capture the current Worker generation immediately before fetching /api/me.
+ * A context may only be registered if this record remains current afterwards.
  */
 export async function prepareOfflineFileCacheContext(): Promise<OfflineFileCacheFreshness> {
   const requestId = nextServiceWorkerRequestId();
   const reply = await requestServiceWorkerReply(
-    { type: OFFLINE_FILE_CACHE_EPOCH_REQUEST_MESSAGE, requestId },
-    OFFLINE_FILE_CACHE_EPOCH_MESSAGE,
+    { type: OFFLINE_FILE_CACHE_GENERATION_REQUEST_MESSAGE, requestId },
+    OFFLINE_FILE_CACHE_GENERATION_MESSAGE,
   );
-  if (reply?.type === OFFLINE_FILE_CACHE_EPOCH_MESSAGE) {
-    observeServiceWorkerEpoch(reply.epoch);
+  if (reply?.type === OFFLINE_FILE_CACHE_GENERATION_MESSAGE) {
+    observeServiceWorkerGeneration(reply.generation, reply.closed ? "closed" : "open");
+  } else {
+    // An absent, old, or terminated Worker cannot be trusted to retain a
+    // context. Continue network-only after purging local data.
+    invalidateOfflineFileCacheClient(null, "unknown");
   }
   return {
-    epoch: knownServiceWorkerEpoch,
-    generation: offlineFileCacheGeneration,
+    generation: knownServiceWorkerGeneration,
+    clientGeneration: offlineFileCacheClientGeneration,
   };
 }
 
 function freshnessIsCurrent(freshness: OfflineFileCacheFreshness): boolean {
   return (
-    freshness.epoch === knownServiceWorkerEpoch &&
-    freshness.generation === offlineFileCacheGeneration
+    sameOfflineFileCacheGeneration(
+      freshness.generation,
+      knownServiceWorkerGeneration,
+    ) && freshness.clientGeneration === offlineFileCacheClientGeneration
   );
 }
 
 /**
- * Authorize the Worker cache only after a /api/me response collected with the
- * supplied current freshness record. A stale response cannot revive a context.
+ * Close the global authorization barrier before an operation changes a Session
+ * or selected Vault. The Worker acknowledges state closure, not cache cleanup;
+ * generation-scoped cache names and write guards make a delayed cleanup safe.
+ */
+export async function beginOfflineFileCacheTransition(
+  storage: Storage = localStorage,
+): Promise<OfflineFileCacheTransition> {
+  const transition = { id: createTransitionId() };
+  invalidateOfflineFileCacheClient(
+    knownServiceWorkerGeneration,
+    "closed",
+    storage,
+  );
+  const requestId = nextServiceWorkerRequestId();
+  const reply = await requestServiceWorkerReply(
+    {
+      type: OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
+      requestId,
+      transitionId: transition.id,
+    },
+    OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE,
+  );
+  if (reply?.type === OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE) {
+    observeServiceWorkerGeneration(reply.generation, "closed");
+  }
+  // A timed-out acknowledgement intentionally does not prevent the server
+  // mutation. The random transition id lets a Worker that did receive begin
+  // still accept the post-mutation completion; otherwise the client stays
+  // network-only.
+  return transition;
+}
+
+/**
+ * Authorize the Worker only after a fresh /api/me response. During an active
+ * transition only its initiating tab's opaque transition id may reopen it.
  */
 export async function setOfflineFileCacheContext(
   context: OfflineCacheContext,
   freshness: OfflineFileCacheFreshness,
+  transition?: OfflineFileCacheTransition,
 ): Promise<OfflineFileCacheLease | null> {
-  if (!isOfflineCacheContext(context) || !freshnessIsCurrent(freshness)) {
+  if (
+    !isOfflineCacheContext(context) ||
+    !freshness.generation ||
+    !freshnessIsCurrent(freshness)
+  ) {
     return null;
   }
   invalidateLegacyCachedFilesListings();
@@ -379,26 +596,67 @@ export async function setOfflineFileCacheContext(
     {
       type: OFFLINE_FILE_CACHE_CONTEXT_MESSAGE,
       requestId,
-      epoch: freshness.epoch,
+      generation: freshness.generation,
       context,
+      ...(transition ? { transitionId: transition.id } : {}),
     },
     OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
   );
-  if (reply?.type === OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE) {
-    if (reply.epoch !== knownServiceWorkerEpoch) {
-      observeServiceWorkerEpoch(reply.epoch);
-      return null;
-    }
-    if (!reply.accepted || !freshnessIsCurrent(freshness)) return null;
-  } else if (!freshnessIsCurrent(freshness)) {
+  if (reply?.type !== OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE) {
+    invalidateOfflineFileCacheClient(null, "unknown");
     return null;
   }
 
+  observeServiceWorkerGeneration(reply.generation, reply.closed ? "closed" : "open");
+  if (!reply.accepted) return null;
+
+  if (transition) {
+    if (!reply.transitionComplete || reply.closed) return null;
+  } else if (
+    reply.transitionComplete ||
+    !sameOfflineFileCacheGeneration(reply.generation, freshness.generation) ||
+    !freshnessIsCurrent(freshness)
+  ) {
+    // A normal registration must not turn a response collected before a
+    // transition/restart into authority for a later generation.
+    return null;
+  }
+
+  const generation = knownServiceWorkerGeneration;
+  if (!generation) return null;
   return {
     context,
-    epoch: freshness.epoch,
-    generation: freshness.generation,
+    generation,
+    clientGeneration: offlineFileCacheClientGeneration,
   };
+}
+
+/**
+ * Complete a transition which has a fresh authoritative /api/me response but
+ * no selected Vault. The Worker rotates again before reopening network-only,
+ * making every closed-generation response unusable.
+ */
+export async function finishOfflineFileCacheTransition(
+  transition: OfflineFileCacheTransition,
+  freshness: OfflineFileCacheFreshness,
+): Promise<boolean> {
+  if (!freshness.generation || !freshnessIsCurrent(freshness)) return false;
+  const requestId = nextServiceWorkerRequestId();
+  const reply = await requestServiceWorkerReply(
+    {
+      type: OFFLINE_FILE_CACHE_FINISH_TRANSITION_MESSAGE,
+      requestId,
+      transitionId: transition.id,
+      generation: freshness.generation,
+    },
+    OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE,
+  );
+  if (reply?.type !== OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE) {
+    invalidateOfflineFileCacheClient(null, "unknown");
+    return false;
+  }
+  observeServiceWorkerGeneration(reply.generation, reply.closed ? "closed" : "open");
+  return reply.accepted && reply.transitionComplete && !reply.closed;
 }
 
 /** True only while this lease still represents the current local generation. */
@@ -409,9 +667,23 @@ export function isOfflineFileCacheLeaseCurrent(
   return (
     lease.context.userId === context.userId &&
     lease.context.vaultId === context.vaultId &&
-    lease.epoch === knownServiceWorkerEpoch &&
-    lease.generation === offlineFileCacheGeneration
+    sameOfflineFileCacheGeneration(
+      lease.generation,
+      knownServiceWorkerGeneration,
+    ) &&
+    lease.clientGeneration === offlineFileCacheClientGeneration
   );
+}
+
+/** A missing lease sends /api/files through the Worker NetworkOnly path. */
+export function offlineFileCacheRequestHeader(
+  lease: OfflineFileCacheLease | null | undefined,
+  context: OfflineCacheContext | null,
+): string | null {
+  if (!lease || !context || !isOfflineFileCacheLeaseCurrent(lease, context)) {
+    return null;
+  }
+  return offlineFileCacheGenerationKey(lease.generation);
 }
 
 /** Subscribe every mounted App to Worker-originated authorization transitions. */
@@ -424,8 +696,9 @@ export function subscribeToOfflineFileCacheInvalidation(
     const detail = (event as CustomEvent<OfflineFileCacheInvalidation>).detail;
     listener(
       detail ?? {
-        epoch: knownServiceWorkerEpoch,
-        generation: offlineFileCacheGeneration,
+        generation: knownServiceWorkerGeneration,
+        clientGeneration: offlineFileCacheClientGeneration,
+        state: "unknown",
       },
     );
   };
@@ -435,44 +708,19 @@ export function subscribeToOfflineFileCacheInvalidation(
 }
 
 /**
- * Purge local listings and wait for the Service Worker's epoch acknowledgement.
- * The Worker acknowledges only after older-generation cache writes are unable
- * to recreate a listing cache.
+ * Legacy convenience API: local data is purged and a closed transition starts.
+ * Callers that mutate session/Vault state must complete it with a post-mutation
+ * /api/me response instead of treating this acknowledgement as an open barrier.
  */
 export async function clearOfflineFileCache(
   storage: Storage = localStorage,
 ): Promise<OfflineFileCacheInvalidation> {
-  const localInvalidation = invalidateOfflineFileCacheClient(
-    knownServiceWorkerEpoch,
-    storage,
-  );
-  const requestId = nextServiceWorkerRequestId();
-  const reply = await requestServiceWorkerReply(
-    { type: CLEAR_OFFLINE_FILE_CACHE_MESSAGE, requestId },
-    OFFLINE_FILE_CACHE_CLEAR_ACK_MESSAGE,
-  );
-  if (reply?.type !== OFFLINE_FILE_CACHE_CLEAR_ACK_MESSAGE) {
-    return localInvalidation;
-  }
-
-  if (reply.epoch > knownServiceWorkerEpoch) {
-    return invalidateOfflineFileCacheClient(reply.epoch, storage);
-  }
+  await beginOfflineFileCacheTransition(storage);
   return {
-    epoch: knownServiceWorkerEpoch,
-    generation: offlineFileCacheGeneration,
+    generation: knownServiceWorkerGeneration,
+    clientGeneration: offlineFileCacheClientGeneration,
+    state: "closed",
   };
-}
-
-/**
- * Start an authorization transition before an API operation changes the active
- * Vault. The operation runs only after the cache-clear acknowledgement barrier.
- */
-export async function runWithOfflineFileCacheBarrier<T>(
-  operation: () => Promise<T>,
-): Promise<T> {
-  await clearOfflineFileCache();
-  return operation();
 }
 
 /** Persist the last successful file listing for this authorization scope. */
@@ -490,10 +738,14 @@ export function saveCachedFilesListing(
     data,
     savedAt: new Date().toISOString(),
   };
-  storage.setItem(
-    STORAGE_PREFIX + cacheKey(context, query),
-    JSON.stringify(payload),
-  );
+  try {
+    storage.setItem(
+      STORAGE_PREFIX + cacheKey(context, query),
+      JSON.stringify(payload),
+    );
+  } catch {
+    // Quota/privacy failures simply leave this response network-only.
+  }
 }
 
 /** Load a listing only when it belongs to the current User, Vault, and lease. */
@@ -507,14 +759,23 @@ export function loadCachedFilesListing(
   if (lease && !isOfflineFileCacheLeaseCurrent(lease, context)) return null;
   invalidateLegacyCachedFilesListings(storage);
   const key = STORAGE_PREFIX + cacheKey(context, query);
-  const raw = storage.getItem(key);
+  let raw: string | null;
+  try {
+    raw = storage.getItem(key);
+  } catch {
+    return null;
+  }
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as CachedFilesListing;
     if (!parsed?.data || !Array.isArray(parsed.data.items)) return null;
     return parsed;
   } catch {
-    storage.removeItem(key);
+    try {
+      storage.removeItem(key);
+    } catch {
+      // The malformed entry is already unusable.
+    }
     return null;
   }
 }

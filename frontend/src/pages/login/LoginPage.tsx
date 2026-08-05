@@ -8,6 +8,41 @@ import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 import { useTheme } from "@/theme";
+import {
+  beginOfflineFileCacheTransition,
+  finishOfflineFileCacheTransition,
+  isOfflineCacheContext,
+  prepareOfflineFileCacheContext,
+  setOfflineFileCacheContext,
+} from "@/pwa/offlineFiles";
+
+const LOGIN_TRANSITION_TIMEOUT_MS = 5_000;
+
+class LoginTransitionTimeoutError extends Error {
+  constructor() {
+    super("Login transition request timed out");
+  }
+}
+
+function withinLoginTransitionTimeout<T>(work: Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      callback();
+    };
+    const timeout = setTimeout(
+      () => finish(() => reject(new LoginTransitionTimeoutError())),
+      LOGIN_TRANSITION_TIMEOUT_MS,
+    );
+    void work.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
+}
 
 type LoginPageProps = {
   /** Navigation after successful local sign-in (defaults to location.assign). */
@@ -35,9 +70,25 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
     event.preventDefault();
     setError(null);
     setSubmitting(true);
+    const transition = await beginOfflineFileCacheTransition();
     try {
-      await loginWithPassword(username, password);
+      await withinLoginTransitionTimeout(loginWithPassword(username, password));
     } catch (err) {
+      if (!(err instanceof LoginTransitionTimeoutError)) {
+        // A rejected login leaves the prior server Session authoritative. It
+        // may reopen only after a new /api/me; otherwise the Worker remains
+        // closed/network-only for the next attempt.
+        await (async () => {
+          const freshness = await prepareOfflineFileCacheContext();
+          const me = await withinLoginTransitionTimeout(fetchMe());
+          const context = me.vault ? { userId: me.id, vaultId: me.vault.id } : null;
+          if (context && isOfflineCacheContext(context)) {
+            await setOfflineFileCacheContext(context, freshness, transition);
+          } else {
+            await finishOfflineFileCacheTransition(transition, freshness);
+          }
+        })().catch(() => undefined);
+      }
       if (err instanceof ApiError && err.status === 403) {
         setError(t("login.local_unavailable"));
       } else {
@@ -48,13 +99,20 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
     }
 
     try {
-      // Resolve the authenticated identity before a full navigation so the
-      // parser-blocking bootstrap can select this user's palette immediately.
-      const me = await fetchMe();
+      // The Worker remains closed across login. This response is the first
+      // post-mutation authority allowed to register/reopen its cache context.
+      const freshness = await prepareOfflineFileCacheContext();
+      const me = await withinLoginTransitionTimeout(fetchMe());
+      const context = me.vault ? { userId: me.id, vaultId: me.vault.id } : null;
+      if (context && isOfflineCacheContext(context)) {
+        await setOfflineFileCacheContext(context, freshness, transition);
+      } else {
+        await finishOfflineFileCacheTransition(transition, freshness);
+      }
       setUserId(me.id);
     } catch {
       // Authentication succeeded. Keep the first paint identity-safe and let
-      // the destination retry /api/me rather than reporting a login failure.
+      // the destination retry /api/me. A failed reconciliation stays closed.
       setUserId(null);
     }
     onNavigate("/");
@@ -117,6 +175,7 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
               onClick={() => {
                 // OIDC does not identify the next user yet; never carry this
                 // session's marker across the authentication redirect.
+                void beginOfflineFileCacheTransition();
                 setUserId(null);
                 onNavigate("/auth/oidc/login");
               }}

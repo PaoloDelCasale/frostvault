@@ -5,6 +5,7 @@ import {
   browseMySourceVolume,
   confirmRecoveryCustody,
   createVault,
+  fetchMe,
   fetchMySourceAreas,
   selectVault,
 } from "@/api";
@@ -21,9 +22,43 @@ import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
-import { runWithOfflineFileCacheBarrier } from "@/pwa/offlineFiles";
+import {
+  beginOfflineFileCacheTransition,
+  finishOfflineFileCacheTransition,
+  isOfflineCacheContext,
+  prepareOfflineFileCacheContext,
+  setOfflineFileCacheContext,
+} from "@/pwa/offlineFiles";
 
 import { RecoveryExportPanel } from "./RecoveryExportPanel";
+
+const TRANSITION_REQUEST_TIMEOUT_MS = 5_000;
+
+class TransitionRequestTimeoutError extends Error {
+  constructor() {
+    super("Vault transition request timed out");
+  }
+}
+
+function withinTransitionTimeout<T>(work: Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      callback();
+    };
+    const timeout = setTimeout(
+      () => finish(() => reject(new TransitionRequestTimeoutError())),
+      TRANSITION_REQUEST_TIMEOUT_MS,
+    );
+    void work.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
+}
 
 export type VaultCreatePageProps = {
   displayName: string;
@@ -37,6 +72,39 @@ function navigateTo(url: string, onNavigate?: (url: string) => void): void {
     return;
   }
   window.location.assign(url);
+}
+
+async function reconcileVaultSelectionTransition(
+  transition: Awaited<ReturnType<typeof beginOfflineFileCacheTransition>>,
+): Promise<void> {
+  const freshness = await withinTransitionTimeout(
+    prepareOfflineFileCacheContext(),
+  );
+  const me = await withinTransitionTimeout(fetchMe());
+  const context = me.vault ? { userId: me.id, vaultId: me.vault.id } : null;
+  if (context && isOfflineCacheContext(context)) {
+    await setOfflineFileCacheContext(context, freshness, transition);
+  } else {
+    await finishOfflineFileCacheTransition(transition, freshness);
+  }
+}
+
+/** Keep the Worker closed throughout selectVault, then use only fresh /api/me. */
+async function selectVaultWithOfflineTransition(vaultId: number): Promise<void> {
+  const transition = await beginOfflineFileCacheTransition();
+  try {
+    await withinTransitionTimeout(selectVault({ vault_id: vaultId }));
+  } catch (error) {
+    if (!(error instanceof TransitionRequestTimeoutError)) {
+      // A definite mutation failure may reopen only after a fresh authoritative
+      // context. If that fetch fails, the closed Worker remains network-only.
+      await reconcileVaultSelectionTransition(transition).catch(() => undefined);
+    }
+    throw error;
+  }
+  // A post-mutation fetch failure intentionally leaves the transition closed;
+  // navigation remains safe because the next page has no offline lease.
+  await reconcileVaultSelectionTransition(transition).catch(() => undefined);
 }
 
 export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProps) {
@@ -120,9 +188,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
         setCustodyConfirmed(false);
         return;
       }
-      await runWithOfflineFileCacheBarrier(() =>
-        selectVault({ vault_id: vault.id }),
-      );
+      await selectVaultWithOfflineTransition(vault.id);
       navigateTo("/", onNavigate);
     } catch (err) {
       const message =
@@ -142,9 +208,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
     setRecoveryError(null);
     setConfirming(true);
     try {
-      await runWithOfflineFileCacheBarrier(() =>
-        selectVault({ vault_id: createdVault.id }),
-      );
+      await selectVaultWithOfflineTransition(createdVault.id);
       await confirmRecoveryCustody({ acknowledged: true });
       setCustodyConfirmed(true);
       navigateTo("/", onNavigate);
