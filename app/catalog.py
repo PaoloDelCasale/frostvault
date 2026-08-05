@@ -15,6 +15,10 @@ from .services.vault_recovery import require_upload_custody
 from .services.lifecycle_pins import is_path_pinned
 
 
+class VaultFileNotFound(LookupError):
+    """A Vault File could not be resolved in the expected Vault."""
+
+
 class ArchiveCatalog:
     """Keep versioned file invariants behind one persistence interface."""
 
@@ -470,39 +474,42 @@ class ArchiveCatalog:
         *,
         new_path: str,
         changed_at: str,
+        vault_id: int | None = None,
     ) -> None:
+        vault_scope = ""
+        params: list[Any] = [vault_file_id]
+        if vault_id is not None:
+            vault_scope = " AND vf.vault_id=%s"
+            params.append(vault_id)
         current = self.connection.execute(
-            """
-            SELECT fp.path
+            f"""
+            SELECT vf.vault_id, fp.path
             FROM vault_files vf
             JOIN file_paths fp
               ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            WHERE vf.id=%s AND vf.status='active'
+            WHERE vf.id=%s AND vf.status='active'{vault_scope}
             """,
-            (vault_file_id,),
+            params,
         ).fetchone()
         if current is None:
-            raise LookupError(f"Active Vault File not found: {vault_file_id}")
+            raise VaultFileNotFound()
         if current["path"] == new_path:
             return
+        expected_vault_id = vault_id if vault_id is not None else current["vault_id"]
         self.connection.execute(
             """
             UPDATE file_paths SET valid_to=%s
-            WHERE vault_file_id=%s AND valid_to IS NULL
+            WHERE vault_file_id=%s AND vault_id=%s AND valid_to IS NULL
             """,
-            (changed_at, vault_file_id),
+            (changed_at, vault_file_id, expected_vault_id),
         )
-        vault = self.connection.execute(
-            "SELECT vault_id FROM vault_files WHERE id=%s",
-            (vault_file_id,),
-        ).fetchone()
         self.connection.execute(
             """
             INSERT INTO file_paths(
                 vault_file_id, vault_id, path, valid_from, valid_to
             ) VALUES (%s, %s, %s, %s, NULL)
             """,
-            (vault_file_id, vault["vault_id"], new_path, changed_at),
+            (vault_file_id, expected_vault_id, new_path, changed_at),
         )
 
     def list_rename_candidates(self, vault_id: int) -> list[dict[str, Any]]:
@@ -566,22 +573,37 @@ class ArchiveCatalog:
         vault_file_id: str,
         new_path: str,
         changed_at: str,
+        vault_id: int | None = None,
     ) -> str:
-        """Keep one Vault File identity and absorb a provisional new-path file."""
+        """Keep one Vault File identity and absorb a provisional new-path file.
+
+        User-facing confirmations pass their selected ``vault_id`` so a supplied
+        Vault File ID cannot resolve outside that Vault. The optional fallback
+        is retained only for trusted scanner callers that already enumerate one
+        Vault's candidates.
+        """
+        vault_scope = ""
+        params: list[Any] = [vault_file_id]
+        if vault_id is not None:
+            vault_scope = " AND vf.vault_id=%s"
+            params.append(vault_id)
         current = self.connection.execute(
-            """
+            f"""
             SELECT vf.vault_id, fp.path
             FROM vault_files vf
             JOIN file_paths fp
               ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            WHERE vf.id=%s AND vf.status='active'
+            WHERE vf.id=%s AND vf.status='active'{vault_scope}
             """,
-            (vault_file_id,),
+            params,
         ).fetchone()
         if current is None:
-            raise LookupError(f"Active Vault File not found: {vault_file_id}")
+            raise VaultFileNotFound()
+        # A previously confirmed candidate retains this Vault File identity but
+        # no longer identifies a pending rename. Treat its replay as stale.
         if current["path"] == new_path:
-            return vault_file_id
+            raise VaultFileNotFound()
+        expected_vault_id = vault_id if vault_id is not None else current["vault_id"]
 
         provisional = self.connection.execute(
             """
@@ -595,7 +617,7 @@ class ArchiveCatalog:
             LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
             WHERE vf.vault_id=%s AND vf.status='active' AND fp.path=%s
             """,
-            (current["vault_id"], new_path),
+            (expected_vault_id, new_path),
         ).fetchone()
 
         local_update = None
@@ -604,25 +626,33 @@ class ArchiveCatalog:
             self.connection.execute(
                 """
                 UPDATE file_paths SET valid_to=%s
-                WHERE vault_file_id=%s AND valid_to IS NULL
+                WHERE vault_file_id=%s AND vault_id=%s AND valid_to IS NULL
                 """,
-                (changed_at, provisional["vault_file_id"]),
+                (changed_at, provisional["vault_file_id"], expected_vault_id),
             )
             self.connection.execute(
-                "DELETE FROM local_copies WHERE vault_file_id=%s",
-                (provisional["vault_file_id"],),
+                """
+                DELETE FROM local_copies
+                WHERE vault_file_id IN (
+                    SELECT id FROM vault_files WHERE id=%s AND vault_id=%s
+                )
+                """,
+                (provisional["vault_file_id"], expected_vault_id),
             )
             self.connection.execute(
                 """
                 UPDATE vault_files
                 SET status='retired', retired_at=%s
-                WHERE id=%s
+                WHERE id=%s AND vault_id=%s
                 """,
-                (changed_at, provisional["vault_file_id"]),
+                (changed_at, provisional["vault_file_id"], expected_vault_id),
             )
 
         self.rename_file(
-            vault_file_id, new_path=new_path, changed_at=changed_at
+            vault_file_id,
+            new_path=new_path,
+            changed_at=changed_at,
+            vault_id=expected_vault_id,
         )
 
         if local_update is not None and local_update["presence"] is not None:
@@ -703,19 +733,28 @@ class ArchiveCatalog:
                 vault_file_id=row["vault_file_id"],
                 new_path=new_path,
                 changed_at=changed_at,
+                vault_id=vault_id,
             )
             renamed_ids.append(row["vault_file_id"])
         return renamed_ids
 
-    def list_path_history(self, vault_file_id: str) -> list[dict[str, Any]]:
+    def list_path_history(
+        self, vault_file_id: str, *, vault_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        vault_scope = ""
+        params: list[Any] = [vault_file_id]
+        if vault_id is not None:
+            vault_scope = " AND vf.vault_id=%s"
+            params.append(vault_id)
         return self.connection.execute(
-            """
-            SELECT path, valid_from, valid_to
-            FROM file_paths
-            WHERE vault_file_id=%s
-            ORDER BY valid_from, id
+            f"""
+            SELECT fp.path, fp.valid_from, fp.valid_to
+            FROM file_paths fp
+            JOIN vault_files vf ON vf.id=fp.vault_file_id
+            WHERE fp.vault_file_id=%s{vault_scope}
+            ORDER BY fp.valid_from, fp.id
             """,
-            (vault_file_id,),
+            params,
         ).fetchall()
 
     def record_delete_marker(

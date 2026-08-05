@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import tempfile
 import unittest
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -95,10 +96,12 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             app=main.app, client=("127.0.0.1", 50000), follow_redirects=False
         )
 
-    def _authenticate(self) -> None:
+    def _authenticate(self, *, user_id: int | None = None) -> None:
         with SQLiteConnection(str(self.database_path)) as connection:
             raw_token = create_session(
-                connection, user_id=self.owner_id, auth_method="oidc"
+                connection,
+                user_id=self.owner_id if user_id is None else user_id,
+                auth_method="oidc",
             )
             csrf_token = csrf_token_for(connection, raw_token)
         self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
@@ -112,10 +115,10 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             or ""
         }
 
-    def _select_vault(self) -> None:
+    def _select_vault(self, vault_id: int | None = None) -> None:
         response = self.client.post(
             "/api/vaults/select",
-            json={"vault_id": self.vault_id},
+            json={"vault_id": self.vault_id if vault_id is None else vault_id},
             headers=self._headers(),
         )
         self.assertEqual(response.status_code, 200, response.text)
@@ -126,11 +129,13 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         old_path: str,
         new_path: str,
         digest: str = DIGEST_A,
+        vault_id: int | None = None,
     ) -> str:
+        target_vault_id = self.vault_id if vault_id is None else vault_id
         with SQLiteConnection(str(self.database_path)) as connection:
             catalog = ArchiveCatalog(connection)
             old_id = catalog.observe_local_copy(
-                vault_id=self.vault_id,
+                vault_id=target_vault_id,
                 path=old_path,
                 file_type="regular",
                 size=9,
@@ -138,7 +143,7 @@ class RenameAuditPersistenceTests(unittest.TestCase):
                 observed_at="2026-07-21T10:00:00+00:00",
             )
             catalog.set_local_fingerprint(
-                vault_id=self.vault_id,
+                vault_id=target_vault_id,
                 path=old_path,
                 plaintext_sha256=digest,
                 matched_archive_version_id=None,
@@ -147,7 +152,7 @@ class RenameAuditPersistenceTests(unittest.TestCase):
                 old_id, observed_at="2026-07-21T11:00:00+00:00"
             )
             catalog.observe_local_copy(
-                vault_id=self.vault_id,
+                vault_id=target_vault_id,
                 path=new_path,
                 file_type="regular",
                 size=9,
@@ -155,12 +160,63 @@ class RenameAuditPersistenceTests(unittest.TestCase):
                 observed_at="2026-07-21T11:00:00+00:00",
             )
             catalog.set_local_fingerprint(
-                vault_id=self.vault_id,
+                vault_id=target_vault_id,
                 path=new_path,
                 plaintext_sha256=digest,
                 matched_archive_version_id=None,
             )
             return old_id
+
+    def _create_operator_with_cross_vault_access(self) -> tuple[int, int]:
+        second_root = Path(self._tmp.name) / "second-source"
+        second_root.mkdir()
+        with SQLiteConnection(str(self.database_path)) as connection:
+            operator_id = connection.execute(
+                """
+                INSERT INTO users(username, display_name, password_hash, is_admin)
+                VALUES (%s, %s, %s, FALSE) RETURNING id
+                """,
+                ("operator", "Operator", hash_password(self.PASSWORD)),
+            ).fetchone()["id"]
+            second_vault_id = connection.execute(
+                """
+                INSERT INTO vaults(
+                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
+                ) VALUES (
+                    'media', 'Media', %s, 'bucket', 'media', 'remote'
+                ) RETURNING id
+                """,
+                (str(second_root),),
+            ).fetchone()["id"]
+            connection.execute(
+                "INSERT INTO vault_members(vault_id, user_id, role) "
+                "VALUES (%s, %s, 'operator')",
+                (self.vault_id, operator_id),
+            )
+            connection.execute(
+                "INSERT INTO vault_members(vault_id, user_id, role) "
+                "VALUES (%s, %s, 'viewer')",
+                (second_vault_id, operator_id),
+            )
+        return operator_id, second_vault_id
+
+    def _rename_state(self) -> dict[str, list[dict[str, object]]]:
+        with SQLiteConnection(str(self.database_path)) as connection:
+            return {
+                "vault_files": connection.execute(
+                    "SELECT * FROM vault_files ORDER BY id"
+                ).fetchall(),
+                "file_paths": connection.execute(
+                    "SELECT * FROM file_paths ORDER BY id"
+                ).fetchall(),
+                "local_copies": connection.execute(
+                    "SELECT * FROM local_copies ORDER BY vault_file_id"
+                ).fetchall(),
+                "jobs": connection.execute("SELECT * FROM jobs ORDER BY id").fetchall(),
+                "audit_events": connection.execute(
+                    "SELECT * FROM audit_events ORDER BY id"
+                ).fetchall(),
+            }
 
     def test_bug_009_rename_audit_persists_to_audit_events(self) -> None:
         """[BUG-009][Req: REQ-021] File rename must durable-audit.
@@ -190,6 +246,80 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             "vault_file_renamed",
             names,
             "confirm_rename must persist a durable vault_file_renamed audit event",
+        )
+
+    def test_issue_188_rejects_unknown_stale_and_foreign_ids_without_side_effects(
+        self,
+    ) -> None:
+        """An operator in Vault A cannot confirm a Vault B candidate as a viewer."""
+        operator_id, second_vault_id = self._create_operator_with_cross_vault_access()
+        foreign_id = self._seed_digest_rename(
+            vault_id=second_vault_id,
+            old_path="foreign/old.txt",
+            new_path="foreign/new.txt",
+        )
+        retired_id = self._seed_digest_rename(
+            old_path="retired/old.txt",
+            new_path="retired/new.txt",
+        )
+        stale_candidate_id = self._seed_digest_rename(
+            old_path="stale/old.txt",
+            new_path="stale/new.txt",
+        )
+        with SQLiteConnection(str(self.database_path)) as connection:
+            connection.execute(
+                """
+                UPDATE vault_files
+                SET status='retired', retired_at=%s
+                WHERE id=%s
+                """,
+                ("2026-07-21T12:00:00+00:00", retired_id),
+            )
+            ArchiveCatalog(connection).confirm_file_rename(
+                vault_file_id=stale_candidate_id,
+                new_path="stale/new.txt",
+                changed_at="2026-07-21T12:00:00+00:00",
+                vault_id=self.vault_id,
+            )
+
+        self._authenticate(user_id=operator_id)
+        self._select_vault(second_vault_id)
+        candidates = self.client.get("/api/rename-candidates")
+        self.assertEqual(candidates.status_code, 200, candidates.text)
+        foreign_candidates = [
+            candidate
+            for candidate in candidates.json()["items"]
+            if candidate["missing_vault_file_id"] == foreign_id
+        ]
+        self.assertEqual(len(foreign_candidates), 1)
+        foreign_id_from_viewer_lookup = foreign_candidates[0]["missing_vault_file_id"]
+
+        self._select_vault(self.vault_id)
+        responses = []
+        for vault_file_id, new_path in (
+            (str(uuid.uuid4()), "unknown/new.txt"),
+            (retired_id, "retired/new.txt"),
+            (stale_candidate_id, "stale/new.txt"),
+            (foreign_id_from_viewer_lookup, "foreign/new.txt"),
+        ):
+            with self.subTest(vault_file_id=vault_file_id):
+                before = self._rename_state()
+                response = self.client.post(
+                    "/api/confirm-rename",
+                    json={"vault_file_id": vault_file_id, "new_path": new_path},
+                    headers=self._headers(),
+                )
+                self.assertEqual(response.status_code, 404, response.text)
+                self.assertEqual(self._rename_state(), before)
+                responses.append(response.json())
+
+        self.assertEqual(
+            responses,
+            [{"detail": "Vault File not found"}] * 4,
+            (
+                "Unknown, retired, stale-candidate, and foreign IDs must have "
+                "the same non-oracle response"
+            ),
         )
 
     def test_bug_009_folder_rename_audit_persists_to_audit_events(self) -> None:

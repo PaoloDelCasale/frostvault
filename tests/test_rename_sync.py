@@ -126,6 +126,7 @@ def _prepare_renamed_plain_file(
             vault_file_id=file_id,
             new_path=new_path,
             changed_at="2026-07-21T11:05:00+00:00",
+            vault_id=2,
         )
     return source, database_path, file_id
 
@@ -257,6 +258,7 @@ class RenameMatchingTests(unittest.TestCase):
                     vault_file_id=old_id,
                     new_path="reports/new-name.txt",
                     changed_at="2026-07-21T11:05:00+00:00",
+                    vault_id=2,
                 )
 
                 renamed = catalog.get_file_by_path(2, "reports/new-name.txt")
@@ -803,6 +805,7 @@ class FolderRenameTests(unittest.TestCase):
                             vault_file_id=file_id,
                             new_path=new_path,
                             changed_at="2026-07-21T11:05:00+00:00",
+                            vault_id=2,
                         )
                         history = [
                             entry["path"]
@@ -917,6 +920,7 @@ class CryptRenameTests(unittest.TestCase):
                     vault_file_id=file_id,
                     new_path=new_path,
                     changed_at="2026-07-21T11:05:00+00:00",
+                    vault_id=2,
                 )
 
             fake_config = RuntimeRcloneConfig(

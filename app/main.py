@@ -39,7 +39,7 @@ from .backoff import (
     record_success,
 )
 from .breakglass import is_break_glass_allowed
-from .catalog import ArchiveCatalog
+from .catalog import ArchiveCatalog, VaultFileNotFound
 from .database import INTEGRITY_ERRORS, db, initialize_database
 from .migrate_on_start import ensure_schema_current
 from .services.source_layout import (
@@ -2107,7 +2107,9 @@ def file_history(
         if observed is None:
             raise HTTPException(404, "File not found")
         versions = catalog.list_versions(vault["id"], logical_path)
-        path_history = catalog.list_path_history(observed["id"])
+        path_history = catalog.list_path_history(
+            observed["id"], vault_id=vault["id"]
+        )
     return {
         "vault_file_id": observed["id"],
         "path": logical_path,
@@ -2136,16 +2138,21 @@ def confirm_rename(
     new_path = safe_relative_path(action.new_path).as_posix()
     with db() as connection:
         catalog = ArchiveCatalog(connection)
-        catalog.confirm_file_rename(
-            vault_file_id=action.vault_file_id,
-            new_path=new_path,
-            changed_at=now_iso(),
-        )
+        try:
+            confirmed_file_id = catalog.confirm_file_rename(
+                vault_file_id=action.vault_file_id,
+                new_path=new_path,
+                changed_at=now_iso(),
+                vault_id=vault["id"],
+            )
+        except VaultFileNotFound as exc:
+            # Do not reveal whether a supplied ID is foreign, retired, or absent.
+            raise HTTPException(404, "Vault File not found") from exc
         audit_log(
             "vault_file_renamed",
             connection=connection,
             vault_id=vault["id"],
-            vault_file_id=action.vault_file_id,
+            vault_file_id=confirmed_file_id,
             new_path=new_path,
             decision="confirmed",
             actor_id=user["id"],
@@ -2155,14 +2162,14 @@ def confirm_rename(
     except HTTPException as exc:
         if exc.status_code == 409:
             return {
-                "vault_file_id": action.vault_file_id,
+                "vault_file_id": confirmed_file_id,
                 "path": new_path,
                 "message": "Rename confirmed; no cloud migration required",
             }
         raise
     return {
         **queued,
-        "vault_file_id": action.vault_file_id,
+        "vault_file_id": confirmed_file_id,
         "path": new_path,
         "message": "Rename confirmed",
     }
