@@ -1628,6 +1628,10 @@
         "csrf_token": {
           "type": "string"
         },
+        "offline_cache_generation": {
+          "description": "Opaque server-side Session and selected Vault generation for offline file-cache authorization.",
+          "type": "string"
+        },
         "decommission_vault": {
           "anyOf": [
             {
@@ -1681,6 +1685,7 @@
         "active",
         "session_version",
         "csrf_token",
+        "offline_cache_generation",
         "auth_method",
         "locale",
         "locales",

@@ -15,8 +15,7 @@ import {
   isBrowserOffline,
   isOfflineCacheContext,
   loadCachedFilesListing,
-  offlineFileCacheRequestHeader,
-  OFFLINE_FILE_CACHE_GENERATION_HEADER,
+  offlineFileCacheRequestHeaders,
   saveCachedFilesListing,
   type OfflineCacheContext,
   type OfflineFileCacheLease,
@@ -44,9 +43,11 @@ export type FileBrowserProps = {
   userId?: number;
   /** Current Vault identity, used to isolate file and candidate query caches. */
   vaultId: number;
+  /** Server-issued Session/Vault generation; App supplies it even network-only. */
+  authorizationGeneration?: string;
   /**
    * App passes a lease or explicit null. Undefined is retained for isolated
-   * component consumers that exercise the storage seam without a Worker.
+   * component consumers that exercise the serialization seam without a Worker.
    */
   offlineCacheLease?: OfflineFileCacheLease | null;
   vaultName: string;
@@ -105,6 +106,7 @@ export function FileBrowser({
   capabilities,
   userId,
   vaultId,
+  authorizationGeneration,
   offlineCacheLease,
   vaultName,
 }: FileBrowserProps) {
@@ -137,32 +139,40 @@ export function FileBrowser({
     [q, state, directory, page],
   );
   const offlineCacheContext = useMemo<OfflineCacheContext | null>(() => {
-    const context = { userId, vaultId };
+    const context = {
+      userId,
+      vaultId,
+      authorizationGeneration:
+        offlineCacheLease?.context.authorizationGeneration ?? authorizationGeneration,
+    };
     return isOfflineCacheContext(context) ? context : null;
-  }, [userId, vaultId]);
+  }, [authorizationGeneration, offlineCacheLease, userId, vaultId]);
   const fileQueryKey = [
     "files",
     offlineCacheContext?.userId ?? "no-user",
     offlineCacheContext?.vaultId ?? "no-vault",
+    offlineCacheContext?.authorizationGeneration ?? "no-authorization",
     query.q ?? "",
     query.state ?? "",
     query.directory ?? "",
     query.page ?? 1,
     query.page_size ?? DEFAULT_PAGE_SIZE,
   ] as const;
-  const offlineCacheHeader = offlineFileCacheRequestHeader(
+  const offlineCacheHeaders = offlineFileCacheRequestHeaders(
     offlineCacheLease,
     offlineCacheContext,
   );
   const offlineCacheRequestOptions = useMemo<RequestInit | undefined>(
-    () =>
-      offlineCacheHeader
-        ? { headers: { [OFFLINE_FILE_CACHE_GENERATION_HEADER]: offlineCacheHeader } }
-        : undefined,
-    [offlineCacheHeader],
+    () => (offlineCacheHeaders ? { headers: offlineCacheHeaders } : undefined),
+    [offlineCacheHeaders],
   );
+  // The undefined branch is an isolated component-test seam. The mounted App
+  // always supplies null or a verified lease, so production persistence and
+  // Worker caching remain fail-closed.
   const canUseOfflineCache =
-    offlineCacheLease === undefined || Boolean(offlineCacheHeader);
+    offlineCacheLease === undefined
+      ? Boolean(offlineCacheContext)
+      : Boolean(offlineCacheHeaders);
 
   const queryClient = useQueryClient();
   // Share the jobs cache with FileOperationsHost so the list can poll while

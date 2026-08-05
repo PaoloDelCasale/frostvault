@@ -12,6 +12,10 @@ import {
 import { I18nContext, type I18nContextValue } from "@/i18n/context";
 import { translate } from "@/i18n/translate";
 import { LoginPage } from "@/pages/login/LoginPage";
+import {
+  OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
+  OFFLINE_FILE_CACHE_REPLY_TIMEOUT_MS,
+} from "@/pwa/offlineFiles";
 import { ThemeProvider } from "@/theme";
 import {
   THEME_ACTIVE_USER_STORAGE_KEY,
@@ -44,6 +48,7 @@ function meResponse(id = 42): Record<string, unknown> {
     active: true,
     session_version: 1,
     csrf_token: "csrf-token",
+    offline_cache_generation: `session-${id}-no-vault`,
     auth_method: "local",
     locale: "en",
     locales: ["en", "it"],
@@ -66,6 +71,8 @@ describe("LoginPage local sign-in", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
     window.localStorage.clear();
     resetApiClientForTests();
   });
@@ -182,7 +189,7 @@ describe("LoginPage local sign-in", () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/me");
   });
 
-  it("clears the active theme identity before OIDC navigation", () => {
+  it("closes the cache barrier and clears the active theme identity before OIDC navigation", async () => {
     renderPage();
     window.localStorage.setItem(THEME_ACTIVE_USER_STORAGE_KEY, "42");
     navigate.mockImplementation(() => {
@@ -191,7 +198,9 @@ describe("LoginPage local sign-in", () => {
 
     fireEvent.click(screen.getByRole("button", { name: en["login.oidc"] }));
 
-    expect(navigate).toHaveBeenCalledWith("/auth/oidc/login");
+    await waitFor(() => {
+      expect(navigate).toHaveBeenCalledWith("/auth/oidc/login");
+    });
   });
 
   it("shows a localized error and does not redirect when credentials are wrong", async () => {
@@ -235,9 +244,28 @@ describe("LoginPage local sign-in", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it("navigates to /auth/oidc/login when the OIDC button is used", () => {
+  it("waits for the bounded OIDC closure attempt before navigating", async () => {
+    vi.useFakeTimers();
+    const worker = { postMessage: vi.fn() };
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      serviceWorker: {
+        controller: worker,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        getRegistration: vi.fn(async () => undefined),
+      },
+    });
     renderPage();
     fireEvent.click(screen.getByRole("button", { name: en["login.oidc"] }));
+
+    await Promise.resolve();
+    expect(worker.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE }),
+    );
+    expect(navigate).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(OFFLINE_FILE_CACHE_REPLY_TIMEOUT_MS);
     expect(navigate).toHaveBeenCalledWith("/auth/oidc/login");
   });
 

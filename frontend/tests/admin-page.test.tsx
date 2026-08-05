@@ -167,6 +167,7 @@ async function renderAdmin(options: HarnessOptions = {}) {
           active: true,
           session_version: 1,
           csrf_token: "csrf",
+          offline_cache_generation: "admin-session-vault-1",
           auth_method: authMethod,
           locale: "en",
           locales: ["en", "it"],

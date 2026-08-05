@@ -164,7 +164,9 @@ from .services.vaults import (
 from .sessions import (
     create_session,
     csrf_token_for,
+    current_offline_cache_generation,
     is_reauth_recent,
+    offline_cache_generation,
     mark_reauthenticated,
     resolve_session,
     revoke_session,
@@ -419,6 +421,9 @@ def _set_csrf_cookie(response: Response, csrf_token: str) -> None:
     )
 
 
+OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER = "X-FrostVault-Offline-Cache-Authorization"
+
+
 def current_user(request: Request) -> dict[str, Any]:
     token = _read_session_cookie(request)
     if not token:
@@ -429,6 +434,50 @@ def current_user(request: Request) -> dict[str, Any]:
         raise HTTPException(401, "Invalid session")
     request.state.session = session
     return session["user"]
+
+
+def _offline_file_cache_generation(request: Request, vault_id: int | None) -> str:
+    """Get the opaque Session/Vault generation exposed through ``/api/me``."""
+    return offline_cache_generation(request.state.session, vault_id)
+
+
+def _validate_offline_file_cache_generation(
+    request: Request,
+    vault_id: int,
+) -> str:
+    """Reject a cache-tagged request after its Session/Vault changed.
+
+    The header is optional for ordinary API consumers. When the bundled PWA
+    supplies it, both the request and the eventual response must still belong
+    to this exact server-side Session/Vault generation before Workbox may cache
+    the payload.
+    """
+    expected = _offline_file_cache_generation(request, vault_id)
+    supplied = request.headers.get(OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER)
+    if supplied and not secrets.compare_digest(supplied, expected):
+        raise HTTPException(409, "Offline cache authorization changed")
+    return expected
+
+
+def _offline_file_cache_generation_is_current(
+    request: Request,
+    vault_id: int,
+    expected: str,
+) -> bool:
+    with db() as connection:
+        current = current_offline_cache_generation(
+            connection,
+            request.state.session["id"],
+            vault_id,
+        )
+    return bool(current and secrets.compare_digest(current, expected))
+
+
+def _set_offline_file_cache_generation(response: Response, generation: str) -> None:
+    response.headers[OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER] = generation
+    # CacheStorage is separated by generation as well, but this makes an
+    # accidental HTTP cache key conservative for non-Workbox clients too.
+    response.headers["Vary"] = OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER
 
 
 def admin_user(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
@@ -1659,6 +1708,10 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
     return {
         **user,
         "csrf_token": csrf_token,
+        "offline_cache_generation": _offline_file_cache_generation(
+            request,
+            vault["id"] if vault is not None else None,
+        ),
         "auth_method": request.state.session.get("auth_method"),
         "locale": _request_locale(request),
         "locales": list(available_locales()),
@@ -2066,7 +2119,16 @@ def list_files(
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=10, le=500),
     vault: dict[str, Any] = Depends(current_vault),
+    request: Request = None,
+    response: Response = None,
 ):
+    # Defaults retain the direct catalog test seam; routed requests always
+    # receive FastAPI's Request/Response instances and enforce the guard.
+    expected_cache_generation = (
+        _validate_offline_file_cache_generation(request, vault["id"])
+        if request is not None
+        else None
+    )
     directory = normalize_directory(directory)
     with db() as connection:
         rows = ArchiveCatalog(connection).list_file_rows(
@@ -2086,6 +2148,18 @@ def list_files(
             total = len(entries)
             offset = (page - 1) * page_size
             items = entries[offset:offset + page_size]
+
+    # The list query may have overlapped a logout or Vault selection. Do not
+    # return a cacheable old payload after the server-side Session transitioned.
+    if request is not None and expected_cache_generation is not None:
+        if not _offline_file_cache_generation_is_current(
+            request,
+            vault["id"],
+            expected_cache_generation,
+        ):
+            raise HTTPException(409, "Offline cache authorization changed")
+        if response is not None:
+            _set_offline_file_cache_generation(response, expected_cache_generation)
     return {
         "items": items,
         "total": total,

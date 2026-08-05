@@ -7,6 +7,8 @@ import { NetworkFirst, NetworkOnly } from "workbox-strategies";
 
 import {
   CLEAR_OFFLINE_FILE_CACHE_MESSAGE,
+  LEGACY_OFFLINE_FILE_SERVICE_WORKER_CACHE_PREFIX,
+  OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER,
   OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
   OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
   OFFLINE_FILE_CACHE_CONTEXT_MESSAGE,
@@ -34,6 +36,11 @@ const WORKER_WAIT_TIMEOUT_MS = 1_000;
 type ClientFileListingContext = Readonly<{
   context: OfflineCacheContext;
   generation: OfflineFileCacheGeneration;
+}>;
+
+type ActiveTransition = Readonly<{
+  id: string;
+  ownerClientId: string | null;
 }>;
 
 type ContextMessage = Readonly<{
@@ -64,7 +71,6 @@ type GenerationRequestMessage = Readonly<{
 
 const fileListingContexts = new Map<string, ClientFileListingContext>();
 const fileListingStrategies = new Map<string, NetworkFirst>();
-const activeTransitionIds = new Set<string>();
 const uncachedFileListingStrategy = new NetworkOnly();
 
 const workerBootId = createWorkerBootId();
@@ -72,6 +78,11 @@ let fileListingGeneration: OfflineFileCacheGeneration = {
   bootId: workerBootId,
   counter: 0,
 };
+// A process restart does not preserve contexts or transition capabilities. It
+// therefore starts closed and only a fresh page reconciliation can reopen it.
+let barrierClosed = true;
+let activeTransition: ActiveTransition | null = null;
+let hasHandledFirstInteraction = false;
 
 function createWorkerBootId(): string {
   const values = new Uint32Array(4);
@@ -183,14 +194,25 @@ function isLegacyClearMessage(value: unknown): boolean {
   );
 }
 
-async function purgeFileListingCaches(): Promise<void> {
+function isFileListingCache(cacheName: string): boolean {
+  return (
+    cacheName === LEGACY_FILE_LISTING_CACHE_NAME ||
+    cacheName.startsWith(LEGACY_OFFLINE_FILE_SERVICE_WORKER_CACHE_PREFIX) ||
+    cacheName.startsWith(OFFLINE_FILE_SERVICE_WORKER_CACHE_PREFIX)
+  );
+}
+
+/** Delete only obsolete generations so a delayed old purge cannot erase new bytes. */
+async function purgeObsoleteFileListingCaches(): Promise<void> {
+  const currentSuffix = `:generation-${offlineFileCacheGenerationKey(
+    fileListingGeneration,
+  )}`;
   const cacheNames = await caches.keys();
   await Promise.all(
     cacheNames
       .filter(
         (cacheName) =>
-          cacheName === LEGACY_FILE_LISTING_CACHE_NAME ||
-          cacheName.startsWith(OFFLINE_FILE_SERVICE_WORKER_CACHE_PREFIX),
+          isFileListingCache(cacheName) && !cacheName.endsWith(currentSuffix),
       )
       .map((cacheName) => caches.delete(cacheName)),
   );
@@ -215,7 +237,7 @@ function settleWithin<T>(
 }
 
 function schedulePurge(event?: ExtendableEvent): void {
-  const boundedPurge = settleWithin(purgeFileListingCaches());
+  const boundedPurge = settleWithin(purgeObsoleteFileListingCaches());
   if (event) event.waitUntil(boundedPurge);
 }
 
@@ -256,6 +278,7 @@ function globallyInvalidate(
   excludedClientId?: string | null,
 ): OfflineFileCacheGeneration {
   const generation = nextGeneration();
+  barrierClosed = closed;
   fileListingContexts.clear();
   fileListingStrategies.clear();
   schedulePurge(event);
@@ -263,22 +286,39 @@ function globallyInvalidate(
   return generation;
 }
 
+/**
+ * An ordinary process restart has no activate/controllerchange signal. On its
+ * first message it announces a closed, new boot generation to every page.
+ */
+function ensureFirstInteraction(event: ExtendableMessageEvent): void {
+  if (hasHandledFirstInteraction) return;
+  hasHandledFirstInteraction = true;
+  activeTransition = null;
+  globallyInvalidate(event, true);
+}
+
 function cacheContextFor(
   event: ExtendableEvent,
   request: Request,
 ): ClientFileListingContext | null {
+  if (barrierClosed) return null;
   const clientId = (event as FetchEvent).clientId;
   if (!clientId) return null;
   const authorization = fileListingContexts.get(clientId) ?? null;
   if (!authorization) return null;
-  if (!sameOfflineFileCacheGeneration(authorization.generation, fileListingGeneration)) {
+  if (
+    !sameOfflineFileCacheGeneration(
+      authorization.generation,
+      fileListingGeneration,
+    )
+  ) {
     return null;
   }
-  // This lease header lets a page fall back to NetworkOnly even if an old
-  // Worker was too unhealthy to acknowledge the client's transition message.
   if (
     request.headers.get(OFFLINE_FILE_CACHE_GENERATION_HEADER) !==
-    offlineFileCacheGenerationKey(authorization.generation)
+      offlineFileCacheGenerationKey(authorization.generation) ||
+    request.headers.get(OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER) !==
+      authorization.context.authorizationGeneration
   ) {
     return null;
   }
@@ -296,10 +336,7 @@ function strategyKey(
 }
 
 function cacheWritesAreAllowed(generation: OfflineFileCacheGeneration): boolean {
-  return (
-    activeTransitionIds.size === 0 &&
-    sameOfflineFileCacheGeneration(generation, fileListingGeneration)
-  );
+  return !barrierClosed && sameOfflineFileCacheGeneration(generation, fileListingGeneration);
 }
 
 function fileListingStrategyFor(
@@ -317,12 +354,16 @@ function fileListingStrategyFor(
       {
         cacheWillUpdate: async ({ response }: { response: Response }) => {
           // Workbox invokes this immediately before CacheStorage.put. A response
-          // that started before a transition can therefore never recreate an
-          // old cache after its generation was closed/replaced.
-          if (!cacheWritesAreAllowed(generation)) return null;
-          return response.status === 200 || response.status === 0
-            ? response
-            : null;
+          // that began before a transition can never recreate an old cache; a
+          // server response must also prove it still belongs to this Session.
+          if (
+            !cacheWritesAreAllowed(generation) ||
+            response.headers.get(OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER) !==
+              context.authorizationGeneration
+          ) {
+            return null;
+          }
+          return response.status === 200 ? response : null;
         },
       },
       new ExpirationPlugin({
@@ -371,7 +412,7 @@ function postGeneration(
     type: OFFLINE_FILE_CACHE_GENERATION_MESSAGE,
     requestId,
     generation: fileListingGeneration,
-    closed: activeTransitionIds.size > 0,
+    closed: barrierClosed,
   });
 }
 
@@ -386,7 +427,7 @@ function postTransitionAcknowledgement(
     requestId,
     generation: fileListingGeneration,
     accepted,
-    closed: activeTransitionIds.size > 0,
+    closed: barrierClosed,
     transitionComplete,
   });
 }
@@ -402,7 +443,7 @@ function postContextAcknowledgement(
     requestId,
     generation: fileListingGeneration,
     accepted,
-    closed: activeTransitionIds.size > 0,
+    closed: barrierClosed,
     transitionComplete,
   });
 }
@@ -411,19 +452,40 @@ function beginTransition(
   event: ExtendableMessageEvent,
   message: BeginTransitionMessage,
 ): void {
-  if (!activeTransitionIds.has(message.transitionId)) {
-    activeTransitionIds.add(message.transitionId);
-    globallyInvalidate(event, true);
+  ensureFirstInteraction(event);
+  const ownerClientId = clientIdFromMessage(event);
+  if (
+    !activeTransition ||
+    activeTransition.id !== message.transitionId ||
+    activeTransition.ownerClientId !== ownerClientId
+  ) {
+    // A newer explicit close supersedes an interrupted/lost transition. It is
+    // the only way to recover caching after a tab dies while the barrier is
+    // closed; no timer or restart can silently reopen it.
+    activeTransition = { id: message.transitionId, ownerClientId };
+    globallyInvalidate(event, true, ownerClientId);
   }
-  // This ACK is deliberately sent after state closure but before asynchronous
-  // cleanup. The Worker remains closed through the server mutation itself.
+  // ACK after synchronous state closure but before asynchronous cleanup.
   postTransitionAcknowledgement(event, message.requestId, true, false);
+}
+
+function transitionBelongsTo(
+  event: ExtendableMessageEvent,
+  transitionId: string,
+): boolean {
+  const ownerClientId = clientIdFromMessage(event);
+  return Boolean(
+    activeTransition &&
+      activeTransition.id === transitionId &&
+      activeTransition.ownerClientId === ownerClientId,
+  );
 }
 
 function completeTransitionWithContext(
   event: ExtendableMessageEvent,
   message: ContextMessage,
 ): void {
+  ensureFirstInteraction(event);
   const clientId = clientIdFromMessage(event);
   let accepted = false;
   let transitionComplete = false;
@@ -432,28 +494,25 @@ function completeTransitionWithContext(
     clientId &&
     sameOfflineFileCacheGeneration(message.generation, fileListingGeneration)
   ) {
-    if (activeTransitionIds.size === 0 && !message.transitionId) {
+    if (!barrierClosed && !message.transitionId) {
       fileListingContexts.set(clientId, {
         context: message.context,
         generation: fileListingGeneration,
       });
       accepted = true;
     } else if (
+      barrierClosed &&
       message.transitionId &&
-      activeTransitionIds.has(message.transitionId)
+      transitionBelongsTo(event, message.transitionId)
     ) {
-      activeTransitionIds.delete(message.transitionId);
-      if (activeTransitionIds.size === 0) {
-        // Rotate once more before reopening. Any /api/me response captured
-        // while closed now has an unusable generation, including other tabs'.
-        const generation = globallyInvalidate(event, false, clientId);
-        fileListingContexts.set(clientId, {
-          context: message.context,
-          generation,
-        });
-        accepted = true;
-        transitionComplete = true;
-      }
+      activeTransition = null;
+      const generation = globallyInvalidate(event, false, clientId);
+      fileListingContexts.set(clientId, {
+        context: message.context,
+        generation,
+      });
+      accepted = true;
+      transitionComplete = true;
     }
   }
 
@@ -469,18 +528,18 @@ function finishTransition(
   event: ExtendableMessageEvent,
   message: FinishTransitionMessage,
 ): void {
+  ensureFirstInteraction(event);
   let accepted = false;
   let transitionComplete = false;
   if (
+    barrierClosed &&
     sameOfflineFileCacheGeneration(message.generation, fileListingGeneration) &&
-    activeTransitionIds.has(message.transitionId)
+    transitionBelongsTo(event, message.transitionId)
   ) {
-    activeTransitionIds.delete(message.transitionId);
-    if (activeTransitionIds.size === 0) {
-      globallyInvalidate(event, false);
-      accepted = true;
-      transitionComplete = true;
-    }
+    activeTransition = null;
+    globallyInvalidate(event, false, clientIdFromMessage(event));
+    accepted = true;
+    transitionComplete = true;
   }
   postTransitionAcknowledgement(
     event,
@@ -495,14 +554,15 @@ precacheAndRoute(self.__WB_MANIFEST);
 void self.skipWaiting();
 clientsClaim();
 
-// An activate/update uses a fresh boot id and broadcasts a new generation.
-// Existing pages clear their leases on both this message and controllerchange.
 self.addEventListener("activate", (event) => {
-  globallyInvalidate(event, false);
+  // Keep the new process closed. Its first page handshake broadcasts the boot
+  // nonce and closure; activate/controllerchange are only one restart path.
+  schedulePurge(event);
 });
 
 self.addEventListener("message", (event) => {
   if (isGenerationRequestMessage(event.data)) {
+    ensureFirstInteraction(event);
     postGeneration(event, event.data.requestId);
     return;
   }
@@ -519,8 +579,6 @@ self.addEventListener("message", (event) => {
     return;
   }
   if (isLegacyClearMessage(event.data)) {
-    // A page running the prior protocol can only make the Worker safer: it
-    // closes globally, but lacks a capability to reopen it.
     const requestId = `legacy-${Date.now()}-${Math.random()}`;
     beginTransition(event, {
       type: OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,

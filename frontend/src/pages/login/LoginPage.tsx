@@ -1,6 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
 
-import { fetchMe } from "@/api";
 import { ApiError, loginWithPassword } from "@/api/client";
 import { AuthCard } from "@/components/AuthCard";
 import { ThemeControl } from "@/components/ThemeControl";
@@ -9,40 +8,11 @@ import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 import { useTheme } from "@/theme";
 import {
-  beginOfflineFileCacheTransition,
-  finishOfflineFileCacheTransition,
-  isOfflineCacheContext,
-  prepareOfflineFileCacheContext,
-  setOfflineFileCacheContext,
-} from "@/pwa/offlineFiles";
-
-const LOGIN_TRANSITION_TIMEOUT_MS = 5_000;
-
-class LoginTransitionTimeoutError extends Error {
-  constructor() {
-    super("Login transition request timed out");
-  }
-}
-
-function withinLoginTransitionTimeout<T>(work: Promise<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (callback: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      callback();
-    };
-    const timeout = setTimeout(
-      () => finish(() => reject(new LoginTransitionTimeoutError())),
-      LOGIN_TRANSITION_TIMEOUT_MS,
-    );
-    void work.then(
-      (value) => finish(() => resolve(value)),
-      (error: unknown) => finish(() => reject(error)),
-    );
-  });
-}
+  AuthTransitionTimeoutError,
+  beginOfflineAuthTransition,
+  reconcileOfflineAuthTransition,
+  withinAuthTransitionTimeout,
+} from "@/pwa/authTransition";
 
 type LoginPageProps = {
   /** Navigation after successful local sign-in (defaults to location.assign). */
@@ -58,36 +28,30 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
   const { setUserId } = useTheme();
 
   useEffect(() => {
-    // A login screen has no trusted identity. Never reuse a previous user's override.
+    // A login screen has no trusted identity. Never reuse a previous user's
+    // theme or offline listing; a bounded close also tells same-browser tabs
+    // that an expired/replaced Session may no longer use cached file data.
     setUserId(null);
+    void beginOfflineAuthTransition();
   }, [setUserId]);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [redirectingOidc, setRedirectingOidc] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
     setSubmitting(true);
-    const transition = await beginOfflineFileCacheTransition();
+    const transition = await beginOfflineAuthTransition();
     try {
-      await withinLoginTransitionTimeout(loginWithPassword(username, password));
+      await withinAuthTransitionTimeout(loginWithPassword(username, password));
     } catch (err) {
-      if (!(err instanceof LoginTransitionTimeoutError)) {
+      if (!(err instanceof AuthTransitionTimeoutError)) {
         // A rejected login leaves the prior server Session authoritative. It
-        // may reopen only after a new /api/me; otherwise the Worker remains
-        // closed/network-only for the next attempt.
-        await (async () => {
-          const freshness = await prepareOfflineFileCacheContext();
-          const me = await withinLoginTransitionTimeout(fetchMe());
-          const context = me.vault ? { userId: me.id, vaultId: me.vault.id } : null;
-          if (context && isOfflineCacheContext(context)) {
-            await setOfflineFileCacheContext(context, freshness, transition);
-          } else {
-            await finishOfflineFileCacheTransition(transition, freshness);
-          }
-        })().catch(() => undefined);
+        // may reopen only after one shared fresh /api/me reconciliation.
+        await reconcileOfflineAuthTransition({ transition }).catch(() => undefined);
       }
       if (err instanceof ApiError && err.status === 403) {
         setError(t("login.local_unavailable"));
@@ -99,17 +63,11 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
     }
 
     try {
-      // The Worker remains closed across login. This response is the first
-      // post-mutation authority allowed to register/reopen its cache context.
-      const freshness = await prepareOfflineFileCacheContext();
-      const me = await withinLoginTransitionTimeout(fetchMe());
-      const context = me.vault ? { userId: me.id, vaultId: me.vault.id } : null;
-      if (context && isOfflineCacheContext(context)) {
-        await setOfflineFileCacheContext(context, freshness, transition);
-      } else {
-        await finishOfflineFileCacheTransition(transition, freshness);
-      }
-      setUserId(me.id);
+      // The shared helper probes the Worker before fresh /api/me and only
+      // completes this capability after the newly authenticated Session is
+      // authoritative. A missing Worker remains deliberately network-only.
+      const reconciliation = await reconcileOfflineAuthTransition({ transition });
+      setUserId(reconciliation.me.id);
     } catch {
       // Authentication succeeded. Keep the first paint identity-safe and let
       // the destination retry /api/me. A failed reconciliation stays closed.
@@ -172,12 +130,17 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
               type="button"
               variant="secondary"
               className="w-full"
+              disabled={submitting || redirectingOidc}
               onClick={() => {
-                // OIDC does not identify the next user yet; never carry this
-                // session's marker across the authentication redirect.
-                void beginOfflineFileCacheTransition();
-                setUserId(null);
-                onNavigate("/auth/oidc/login");
+                void (async () => {
+                  setRedirectingOidc(true);
+                  // OIDC does not identify the next user yet. Await the
+                  // bounded local/Worker close before leaving this document;
+                  // a timeout still records local closure and navigates.
+                  await beginOfflineAuthTransition();
+                  setUserId(null);
+                  onNavigate("/auth/oidc/login");
+                })();
               }}
             >
               {t("login.oidc")}

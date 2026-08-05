@@ -55,9 +55,21 @@ const sampleListing: FilesResponse = {
 
 describe("offline file listing cache (seam 3)", () => {
   const query = { directory: "" };
-  const userAVaultA = { userId: 11, vaultId: 101 };
-  const userBVaultA = { userId: 22, vaultId: 101 };
-  const userAVaultB = { userId: 11, vaultId: 202 };
+  const userAVaultA = {
+    userId: 11,
+    vaultId: 101,
+    authorizationGeneration: "session-a-vault-a",
+  };
+  const userBVaultA = {
+    userId: 22,
+    vaultId: 101,
+    authorizationGeneration: "session-b-vault-a",
+  };
+  const userAVaultB = {
+    userId: 11,
+    vaultId: 202,
+    authorizationGeneration: "session-a-vault-b",
+  };
 
   function listingFor(path: string): FilesResponse {
     return {

@@ -6,6 +6,19 @@ type OfflineFilesModule = typeof import("@/pwa/offlineFiles");
 type ServiceWorkerMessageListener = (event: MessageEvent<unknown>) => void;
 type ControllerChangeListener = () => void;
 
+type WorkerGeneration = { bootId: string; counter: number };
+
+const contextA = {
+  userId: 11,
+  vaultId: 101,
+  authorizationGeneration: "server-session-a-vault-a",
+};
+const contextB = {
+  userId: 22,
+  vaultId: 202,
+  authorizationGeneration: "server-session-b-vault-b",
+};
+
 function listing(name: string): FilesResponse {
   return {
     items: [
@@ -90,7 +103,10 @@ describe("offline file-cache client transition protocol", () => {
     throw new Error("client did not post a Service Worker message");
   }
 
-  async function prepare(generation: { bootId: string; counter: number }, closed = false) {
+  async function prepare(
+    generation: WorkerGeneration,
+    closed = false,
+  ): Promise<Awaited<ReturnType<OfflineFilesModule["prepareOfflineFileCacheContext"]>>> {
     const freshnessPromise = offlineFiles.prepareOfflineFileCacheContext();
     const request = await nextPostedMessage();
     expect(request.type).toBe(
@@ -105,170 +121,174 @@ describe("offline file-cache client transition protocol", () => {
     return freshnessPromise;
   }
 
-  it("keeps the barrier closed through mutation and only grants the post-mutation completion a new lease", async () => {
-    const beforeMutation = { bootId: "worker-a", counter: 1 };
-    const closedGeneration = { bootId: "worker-a", counter: 2 };
-    const reopenedGeneration = { bootId: "worker-a", counter: 3 };
-    const oldContext = { userId: 11, vaultId: 101 };
-    const newContext = { userId: 11, vaultId: 202 };
-
-    const initialFreshness = await prepare(beforeMutation);
-    const initialLeasePromise = offlineFiles.setOfflineFileCacheContext(
-      oldContext,
-      initialFreshness,
-    );
-    const initialContext = await nextPostedMessage();
-    deliver({
-      type: offlineFiles.OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
-      requestId: initialContext.requestId,
-      generation: beforeMutation,
-      accepted: true,
-      closed: false,
-      transitionComplete: false,
-    });
-    const oldLease = await initialLeasePromise;
-    expect(oldLease).not.toBeNull();
-    offlineFiles.saveCachedFilesListing(
-      oldContext,
-      { directory: "" },
-      listing("old-before-transition.txt"),
-      localStorage,
-      oldLease ?? undefined,
-    );
-
-    const transitionPromise = offlineFiles.beginOfflineFileCacheTransition();
-    const begin = await nextPostedMessage();
-    expect(begin.type).toBe(
-      offlineFiles.OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
-    );
-    deliver({
-      type: offlineFiles.OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE,
-      requestId: begin.requestId,
-      generation: closedGeneration,
-      accepted: true,
-      closed: true,
-      transitionComplete: false,
-    });
-    const transition = await transitionPromise;
-
-    // The old UI's delayed write cannot restore local data while the mutation
-    // executes, even though the begin acknowledgement already arrived.
-    offlineFiles.saveCachedFilesListing(
-      oldContext,
-      { directory: "" },
-      listing("late-old-write.txt"),
-      localStorage,
-      oldLease ?? undefined,
-    );
-    expect(localStorage.length).toBe(0);
-
-    // This /api/me freshness is captured only after the server mutation while
-    // the Worker remains closed. The opaque transition id is required to open.
-    const postMutationFreshness = await prepare(closedGeneration, true);
-    const newLeasePromise = offlineFiles.setOfflineFileCacheContext(
-      newContext,
-      postMutationFreshness,
-      transition,
-    );
-    const completion = await nextPostedMessage();
-    expect(completion).toMatchObject({
-      type: offlineFiles.OFFLINE_FILE_CACHE_CONTEXT_MESSAGE,
-      generation: closedGeneration,
-      transitionId: transition.id,
-    });
-    deliver({
-      type: offlineFiles.OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
-      requestId: completion.requestId,
-      generation: reopenedGeneration,
-      accepted: true,
-      closed: false,
-      transitionComplete: true,
-    });
-    const newLease = await newLeasePromise;
-    expect(newLease).toMatchObject({
-      context: newContext,
-      generation: reopenedGeneration,
-    });
-
-    offlineFiles.saveCachedFilesListing(
-      newContext,
-      { directory: "" },
-      listing("new-after-transition.txt"),
-      localStorage,
-      newLease ?? undefined,
-    );
-    expect(
-      offlineFiles.loadCachedFilesListing(
-        newContext,
-        { directory: "" },
-        localStorage,
-        newLease ?? undefined,
-      )?.data.items[0]?.name,
-    ).toBe("new-after-transition.txt");
-  });
-
-  it("invalidates leases when a restarted Worker repeats a numeric counter with a new boot nonce", async () => {
-    const firstGeneration = { bootId: "worker-before-restart", counter: 1 };
-    const restartedGeneration = { bootId: "worker-after-restart", counter: 1 };
-    const context = { userId: 11, vaultId: 101 };
-
-    const freshness = await prepare(firstGeneration);
-    const leasePromise = offlineFiles.setOfflineFileCacheContext(context, freshness);
+  async function grantInitialLease(generation: WorkerGeneration) {
+    const freshness = await prepare(generation);
+    const leasePromise = offlineFiles.setOfflineFileCacheContext(contextA, freshness);
     const contextMessage = await nextPostedMessage();
+    expect(contextMessage.type).toBe(offlineFiles.OFFLINE_FILE_CACHE_CONTEXT_MESSAGE);
     deliver({
       type: offlineFiles.OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
       requestId: contextMessage.requestId,
-      generation: firstGeneration,
+      generation,
       accepted: true,
       closed: false,
       transitionComplete: false,
     });
     const lease = await leasePromise;
     expect(lease).not.toBeNull();
+    return lease!;
+  }
+
+  it("keeps a payload available across unchanged navigation only with the same server generation", async () => {
+    const generation = { bootId: "worker-a", counter: 1 };
+    const firstLease = await grantInitialLease(generation);
     offlineFiles.saveCachedFilesListing(
-      context,
+      contextA,
+      { directory: "" },
+      listing("user-a.txt"),
+      localStorage,
+      firstLease,
+    );
+
+    // Broadcast delivery is asynchronous; an old first-handshake closure must
+    // not revoke a later lease from the same Worker boot.
+    deliver({
+      type: offlineFiles.OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE,
+      generation: { bootId: "worker-a", counter: 0 },
+      closed: true,
+    });
+    expect(offlineFiles.isOfflineFileCacheLeaseCurrent(firstLease, contextA)).toBe(true);
+
+    const freshness = await prepare(generation);
+    const secondLeasePromise = offlineFiles.setOfflineFileCacheContext(
+      contextA,
+      freshness,
+    );
+    const contextMessage = await nextPostedMessage();
+    deliver({
+      type: offlineFiles.OFFLINE_FILE_CACHE_CONTEXT_ACK_MESSAGE,
+      requestId: contextMessage.requestId,
+      generation,
+      accepted: true,
+      closed: false,
+      transitionComplete: false,
+    });
+    const secondLease = await secondLeasePromise;
+
+    expect(secondLease).not.toBeNull();
+    expect(
+      offlineFiles.loadCachedFilesListing(
+        contextA,
+        { directory: "" },
+        localStorage,
+        secondLease!,
+      )?.data.items[0]?.name,
+    ).toBe("user-a.txt");
+    expect(
+      offlineFiles.loadCachedFilesListing(
+        contextB,
+        { directory: "" },
+        localStorage,
+        secondLease!,
+      ),
+    ).toBeNull();
+  });
+
+  it("does not claim global closure after an ACK timeout and rejects late old writes", async () => {
+    vi.useFakeTimers();
+    const generation = { bootId: "worker-a", counter: 1 };
+    const oldLease = await grantInitialLease(generation);
+    offlineFiles.saveCachedFilesListing(
+      contextA,
+      { directory: "" },
+      listing("before-timeout.txt"),
+      localStorage,
+      oldLease,
+    );
+
+    const transitionPromise = offlineFiles.beginOfflineFileCacheTransition();
+    const begin = await nextPostedMessage();
+    expect(begin.type).toBe(offlineFiles.OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE);
+    await vi.advanceTimersByTimeAsync(
+      offlineFiles.OFFLINE_FILE_CACHE_REPLY_TIMEOUT_MS,
+    );
+    const transition = await transitionPromise;
+
+    expect(transition.workerAcknowledged).toBe(false);
+    expect(offlineFiles.isOfflineFileCacheLeaseCurrent(oldLease, contextA)).toBe(false);
+    expect(localStorage.length).toBeGreaterThanOrEqual(1); // durable closed marker
+    offlineFiles.saveCachedFilesListing(
+      contextA,
+      { directory: "" },
+      listing("late-old-write.txt"),
+      localStorage,
+      oldLease,
+    );
+    expect(
+      offlineFiles.loadCachedFilesListing(contextA, { directory: "" }, localStorage, oldLease),
+    ).toBeNull();
+
+    // The mutation is intentionally not coupled to the missing ACK. Even if a
+    // later probe finds a Worker, the old locally durable transition stays
+    // closed until an explicit fresh reconciliation completes it.
+    const freshness = await prepare(generation, false);
+    expect(offlineFiles.offlineFileCacheFreshnessNeedsTransition(freshness)).toBe(true);
+  });
+
+  it("discovers a process restart through its boot nonce without a synthetic invalidation", async () => {
+    const beforeRestart = { bootId: "worker-before-restart", counter: 4 };
+    const afterRestart = { bootId: "worker-after-restart", counter: 1 };
+    const oldLease = await grantInitialLease(beforeRestart);
+    offlineFiles.saveCachedFilesListing(
+      contextA,
       { directory: "" },
       listing("before-restart.txt"),
       localStorage,
-      lease ?? undefined,
+      oldLease,
     );
 
-    deliver({
-      type: offlineFiles.OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE,
-      generation: restartedGeneration,
-      closed: false,
-    });
+    // No invalidation message and no controllerchange: only the bounded
+    // generation handshake exposes the random new Worker boot identity.
+    const freshness = await prepare(afterRestart, true);
+    expect(offlineFiles.isOfflineFileCacheLeaseCurrent(oldLease, contextA)).toBe(false);
     expect(
-      offlineFiles.isOfflineFileCacheLeaseCurrent(lease!, context),
-    ).toBe(false);
-    expect(localStorage.length).toBe(0);
+      offlineFiles.loadCachedFilesListing(contextA, { directory: "" }, localStorage, oldLease),
+    ).toBeNull();
+    expect(offlineFiles.offlineFileCacheFreshnessNeedsTransition(freshness)).toBe(true);
 
-    // controllerchange also invalidates before a new generation reply arrives.
     controllerChange();
-    expect(
-      offlineFiles.isOfflineFileCacheLeaseCurrent(lease!, context),
-    ).toBe(false);
+    expect(offlineFiles.isOfflineFileCacheLeaseCurrent(oldLease, contextA)).toBe(false);
   });
 
-  it("bounds absent acknowledgements and leaves the client network-only with local data purged", async () => {
-    vi.useFakeTimers();
-    const generation = { bootId: "worker-without-acks", counter: 1 };
-    const context = { userId: 11, vaultId: 101 };
-
-    const freshness = await prepare(generation);
-    const leasePromise = offlineFiles.setOfflineFileCacheContext(context, freshness);
-    await nextPostedMessage();
-    await vi.advanceTimersByTimeAsync(
-      offlineFiles.OFFLINE_FILE_CACHE_REPLY_TIMEOUT_MS,
-    );
-    await expect(leasePromise).resolves.toBeNull();
-    expect(localStorage.length).toBe(0);
-
+  it("refuses a lost transition capability rather than silently reopening after restart", async () => {
+    const beforeRestart = { bootId: "worker-before-restart", counter: 1 };
+    await prepare(beforeRestart);
     const transitionPromise = offlineFiles.beginOfflineFileCacheTransition();
-    await nextPostedMessage();
-    await vi.advanceTimersByTimeAsync(
-      offlineFiles.OFFLINE_FILE_CACHE_REPLY_TIMEOUT_MS,
+    const begin = await nextPostedMessage();
+    deliver({
+      type: offlineFiles.OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE,
+      requestId: begin.requestId,
+      generation: { bootId: "worker-before-restart", counter: 2 },
+      accepted: true,
+      closed: true,
+      transitionComplete: false,
+    });
+    const transition = await transitionPromise;
+
+    const restartedFreshness = await prepare(
+      { bootId: "worker-after-restart", counter: 1 },
+      true,
     );
-    await expect(transitionPromise).resolves.toMatchObject({ id: expect.any(String) });
+    expect(
+      offlineFiles.offlineFileCacheTransitionWasLost(transition, restartedFreshness),
+    ).toBe(true);
+    await expect(
+      offlineFiles.setOfflineFileCacheContext(
+        contextB,
+        restartedFreshness,
+        transition,
+      ),
+    ).resolves.toBeNull();
+    expect(postedMessages).toEqual([]);
   });
 });

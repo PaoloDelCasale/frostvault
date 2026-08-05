@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -18,10 +18,11 @@ import {
   OFFLINE_FILE_CACHE_GENERATION_MESSAGE,
   OFFLINE_FILE_CACHE_GENERATION_REQUEST_MESSAGE,
   OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE,
+  OFFLINE_FILE_CACHE_REPLY_TIMEOUT_MS,
   OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE,
 } from "@/pwa/offlineFiles";
 
-const OFFLINE_FILE_STORAGE_PREFIX = "frostvault.files.cache.v2:";
+const OFFLINE_FILE_STORAGE_PREFIX = "frostvault.files.cache.v3:";
 
 type WorkerGeneration = { bootId: string; counter: number };
 type ServiceWorkerListener = (event: MessageEvent<unknown>) => void;
@@ -56,6 +57,7 @@ function meResponse(
     active: true,
     session_version: 1,
     csrf_token: csrfToken,
+    offline_cache_generation: `session-${userId}-vault-${vaultId}-${csrfToken}`,
     auth_method: "local",
     locale: "en",
     locales: ["en", "it"],
@@ -138,6 +140,8 @@ function installServiceWorkerProtocolHarness() {
   const controllerChangeListeners = new Set<ControllerChangeListener>();
   const posted: Array<Record<string, unknown>> = [];
   let generation: WorkerGeneration = { bootId: "app-worker", counter: 1 };
+  let workerClosed = false;
+  let responsive = true;
   const activeTransitions = new Set<string>();
 
   function deliver(message: Record<string, unknown>) {
@@ -148,6 +152,7 @@ function installServiceWorkerProtocolHarness() {
   const worker = {
     postMessage: vi.fn((message: Record<string, unknown>) => {
       posted.push(message);
+      if (!responsive) return;
       const requestId = message.requestId;
       if (typeof requestId !== "string") return;
       if (message.type === OFFLINE_FILE_CACHE_GENERATION_REQUEST_MESSAGE) {
@@ -155,7 +160,7 @@ function installServiceWorkerProtocolHarness() {
           type: OFFLINE_FILE_CACHE_GENERATION_MESSAGE,
           requestId,
           generation,
-          closed: activeTransitions.size > 0,
+          closed: workerClosed,
         });
         return;
       }
@@ -163,6 +168,7 @@ function installServiceWorkerProtocolHarness() {
         const transitionId = message.transitionId;
         if (typeof transitionId === "string" && !activeTransitions.has(transitionId)) {
           activeTransitions.add(transitionId);
+          workerClosed = true;
           generation = { ...generation, counter: generation.counter + 1 };
         }
         deliver({
@@ -179,13 +185,14 @@ function installServiceWorkerProtocolHarness() {
         const transitionId = message.transitionId;
         let accepted = false;
         let transitionComplete = false;
-        if (activeTransitions.size === 0 && !transitionId) {
+        if (!workerClosed && activeTransitions.size === 0 && !transitionId) {
           accepted = true;
         } else if (
           typeof transitionId === "string" &&
           activeTransitions.delete(transitionId) &&
           activeTransitions.size === 0
         ) {
+          workerClosed = false;
           generation = { ...generation, counter: generation.counter + 1 };
           accepted = true;
           transitionComplete = true;
@@ -195,7 +202,7 @@ function installServiceWorkerProtocolHarness() {
           requestId,
           generation,
           accepted,
-          closed: activeTransitions.size > 0,
+          closed: workerClosed,
           transitionComplete,
         });
         return;
@@ -206,13 +213,16 @@ function installServiceWorkerProtocolHarness() {
           typeof transitionId === "string" &&
           activeTransitions.delete(transitionId) &&
           activeTransitions.size === 0;
-        if (accepted) generation = { ...generation, counter: generation.counter + 1 };
+        if (accepted) {
+          workerClosed = false;
+          generation = { ...generation, counter: generation.counter + 1 };
+        }
         deliver({
           type: OFFLINE_FILE_CACHE_TRANSITION_ACK_MESSAGE,
           requestId,
           generation,
           accepted,
-          closed: activeTransitions.size > 0,
+          closed: workerClosed,
           transitionComplete: accepted,
         });
       }
@@ -242,6 +252,7 @@ function installServiceWorkerProtocolHarness() {
   return {
     posted,
     invalidate(closed: boolean) {
+      workerClosed = closed;
       generation = { ...generation, counter: generation.counter + 1 };
       deliver({
         type: OFFLINE_FILE_CACHE_INVALIDATED_MESSAGE,
@@ -251,6 +262,14 @@ function installServiceWorkerProtocolHarness() {
     },
     controllerChange() {
       for (const listener of controllerChangeListeners) listener();
+    },
+    restartWithoutNotification() {
+      activeTransitions.clear();
+      workerClosed = true;
+      generation = { bootId: "app-worker-restarted", counter: 1 };
+    },
+    setResponsive(value: boolean) {
+      responsive = value;
     },
   };
 }
@@ -338,6 +357,7 @@ describe("App offline cache authorization transitions", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     resetApiClientForTests();
     vi.unstubAllGlobals();
   });
@@ -428,9 +448,49 @@ describe("App offline cache authorization transitions", () => {
     expect(offlineFileStorageKeys()).not.toHaveLength(0);
   });
 
-  it("unmounts the old FileBrowser as soon as another client closes the generation", async () => {
+  it("still sends the Vault mutation after a Worker ACK timeout while purging local data", async () => {
     const worker = installServiceWorkerProtocolHarness();
     let current: "a" | "b" = "a";
+    const fetchMock = installDefaultApi(() => current);
+    const original = fetchMock.getMockImplementation();
+    let selected = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url === "/api/vaults/select" && init?.method === "POST") {
+        selected = true;
+        current = "b";
+        return jsonResponse({ vault_id: 202 });
+      }
+      return original!(input, init);
+    });
+
+    renderApp();
+    await screen.findAllByText("vault-a.txt");
+    expect(offlineFileStorageKeys()).not.toHaveLength(0);
+    vi.useFakeTimers();
+    worker.setResponsive(false);
+
+    fireEvent.change(screen.getAllByRole("combobox", { name: "Vault" })[0]!, {
+      target: { value: "202" },
+    });
+    expect(offlineFileStorageKeys()).toEqual([]);
+    expect(selected).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(OFFLINE_FILE_CACHE_REPLY_TIMEOUT_MS);
+    await Promise.resolve();
+    expect(selected).toBe(true);
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          requestUrl(input as RequestInfo | URL) === "/api/vaults/select" &&
+          (init as RequestInit | undefined)?.method === "POST",
+      ),
+    ).toBe(true);
+  });
+
+  it("unmounts the old FileBrowser as soon as another client closes the generation", async () => {
+    const worker = installServiceWorkerProtocolHarness();
+    const current: "a" | "b" = "a";
     installDefaultApi(() => current);
     const app = renderApp();
     await screen.findAllByText("vault-a.txt");
@@ -442,6 +502,44 @@ describe("App offline cache authorization transitions", () => {
       expect(offlineFileStorageKeys()).toEqual([]);
       expect(app.client.getQueryCache().findAll({ queryKey: ["files"] })).toEqual([]);
     });
-    current = "b";
+  });
+
+  it("discovers an ordinary Worker restart on focus before reusing a local payload", async () => {
+    const worker = installServiceWorkerProtocolHarness();
+    const current: "a" | "b" = "a";
+    const fetchMock = installDefaultApi(() => current);
+    const original = fetchMock.getMockImplementation();
+    let filesOffline = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (filesOffline && url.startsWith("/api/files")) {
+        throw new TypeError("offline after Worker restart");
+      }
+      return original!(input, init);
+    });
+
+    renderApp();
+    await screen.findAllByText("vault-a.txt");
+    expect(offlineFileStorageKeys()).not.toHaveLength(0);
+
+    // No Worker invalidation/controllerchange is delivered. The page's bounded
+    // focus handshake sees only the new boot nonce and closed initial barrier.
+    filesOffline = true;
+    worker.restartWithoutNotification();
+    window.dispatchEvent(new Event("focus"));
+
+    await waitFor(() => {
+      expect(offlineFileStorageKeys()).toEqual([]);
+      expect(screen.queryByText("vault-a.txt")).not.toBeInTheDocument();
+      expect(screen.getByTestId("offline-shell")).toHaveTextContent(
+        "You are offline.",
+      );
+    });
+    expect(
+      worker.posted.some(
+        (message) =>
+          message.type === OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
+      ),
+    ).toBe(true);
   });
 });

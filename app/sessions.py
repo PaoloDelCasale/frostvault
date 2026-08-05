@@ -199,3 +199,54 @@ def set_session_vault(connection: Any, session_id: str, vault_id: int | None) ->
         (vault_id, session_id),
     )
 
+
+def offline_cache_generation(session: dict[str, Any], vault_id: int | None) -> str:
+    """Return an opaque generation for one live Session and selected Vault.
+
+    It is intentionally distinct from the CSRF token even though both are
+    session-scoped. The browser may persist this value as a cache namespace and
+    send it on a file-list request; the server checks it again before returning
+    a cacheable payload. A new Session or selected Vault therefore cannot reuse
+    an old client's offline cache authorization.
+    """
+    session_id = str(session.get("id") or "")
+    csrf_token = str(session.get("csrf_token") or "")
+    if not session_id or not csrf_token:
+        raise ValueError("A live session id and CSRF token are required")
+    material = "\x00".join((session_id, csrf_token, str(vault_id or "")))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def current_offline_cache_generation(
+    connection: Any,
+    session_id: str,
+    vault_id: int,
+) -> str | None:
+    """Return the generation only if the Session still authorizes ``vault_id``.
+
+    File-list work can overlap a logout or Vault selection. Rechecking at the
+    end of the request prevents that old response from being persisted after the
+    server-side Session transition commits.
+    """
+    row = connection.execute(
+        """
+        SELECT s.id, s.csrf_token, s.vault_id, s.revoked_at,
+               s.session_version AS session_session_version,
+               u.session_version AS user_session_version,
+               u.active AS user_active
+        FROM sessions s
+        JOIN users u ON u.id=s.user_id
+        WHERE s.id=%s
+        """,
+        (session_id,),
+    ).fetchone()
+    if (
+        not row
+        or row["revoked_at"]
+        or not row["user_active"]
+        or row["session_session_version"] != row["user_session_version"]
+        or row["vault_id"] != vault_id
+    ):
+        return None
+    return offline_cache_generation(row, vault_id)
+

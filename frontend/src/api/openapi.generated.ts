@@ -2829,6 +2829,8 @@ export interface components {
             is_admin: boolean;
             locale: string;
             locales: string[];
+            /** @description Opaque server-side Session and selected Vault generation for offline file-cache authorization. */
+            offline_cache_generation: string;
             session_version: number;
             username: string;
             vault: components["schemas"]["MeVault"] | null;

@@ -4,7 +4,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   ApiError,
   apiQueryKeys,
-  fetchMe,
   fetchVaults,
   logout,
   ReauthenticationRedirectError,
@@ -17,18 +16,19 @@ import { DEMO_MODE_ENABLED, getDemoSearchParam } from "@/demoGate";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/theme";
 import {
-  beginOfflineFileCacheTransition,
-  finishOfflineFileCacheTransition,
-  invalidateLegacyCachedFilesListings,
-  isOfflineCacheContext,
-  prepareOfflineFileCacheContext,
-  setOfflineFileCacheContext,
   subscribeToOfflineFileCacheInvalidation,
+  verifyOfflineFileCacheLease,
   type OfflineCacheContext,
-  type OfflineFileCacheFreshness,
   type OfflineFileCacheLease,
   type OfflineFileCacheTransition,
 } from "@/pwa/offlineFiles";
+import {
+  AuthTransitionTimeoutError,
+  beginOfflineAuthTransition,
+  offlineCacheContextForMe,
+  reconcileOfflineAuthTransition,
+  withinAuthTransitionTimeout,
+} from "@/pwa/authTransition";
 import { AppShell } from "@/layout/AppShell";
 import { shellLabel } from "@/layout/labels";
 import { Toast } from "@/components/Toast";
@@ -41,34 +41,6 @@ import { NoVaultPage } from "@/pages/no-vault/NoVaultPage";
 import { VaultAccessPage } from "@/pages/vault-access";
 import { VaultCreatePage } from "@/pages/vault-create";
 import { VaultCreateScreenshotFixture } from "@/pages/vault-create/VaultCreateScreenshotFixture";
-
-const SESSION_REQUEST_TIMEOUT_MS = 5_000;
-
-class SessionRequestTimeoutError extends Error {
-  constructor() {
-    super("Session request timed out");
-  }
-}
-
-function withinSessionTimeout<T>(work: Promise<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (callback: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      callback();
-    };
-    const timeout = setTimeout(
-      () => finish(() => reject(new SessionRequestTimeoutError())),
-      SESSION_REQUEST_TIMEOUT_MS,
-    );
-    void work.then(
-      (value) => finish(() => resolve(value)),
-      (error: unknown) => finish(() => reject(error)),
-    );
-  });
-}
 
 function pathIsVaultAccess(pathname: string): boolean {
   return pathname === "/vault/access" || pathname.startsWith("/vault/access/");
@@ -120,49 +92,15 @@ function currentPathname(): string {
   return window.location.pathname;
 }
 
-function offlineCacheContextFor(me: MeResponse): OfflineCacheContext | null {
-  if (!me.vault) return null;
-  const context = { userId: me.id, vaultId: me.vault.id };
-  return isOfflineCacheContext(context) ? context : null;
-}
-
-type OfflineCacheAuthorization = Readonly<{
-  context: OfflineCacheContext;
-  // csrf_token is per Session and remains in memory only. It distinguishes a
-  // real Session replacement from ordinary refreshes of the same User/Vault.
-  sessionFingerprint: string;
-}>;
-
-type OfflineCacheSynchronization =
-  | "ready"
-  | "retry"
-  | "network-only"
-  | "start-transition";
-
-function offlineCacheAuthorizationFor(
-  me: MeResponse,
-): OfflineCacheAuthorization | null {
-  const context = offlineCacheContextFor(me);
-  if (!context) return null;
-  return {
-    context,
-    sessionFingerprint: [
-      me.session_version,
-      me.auth_method,
-      me.csrf_token,
-    ].join("\u0000"),
-  };
-}
-
 function sameOfflineCacheAuthorization(
-  left: OfflineCacheAuthorization | null,
-  right: OfflineCacheAuthorization | null,
+  left: OfflineCacheContext | null,
+  right: OfflineCacheContext | null,
 ): boolean {
   if (!left || !right) return left === right;
   return (
-    left.context.userId === right.context.userId &&
-    left.context.vaultId === right.context.vaultId &&
-    left.sessionFingerprint === right.sessionFingerprint
+    left.userId === right.userId &&
+    left.vaultId === right.vaultId &&
+    left.authorizationGeneration === right.authorizationGeneration
   );
 }
 
@@ -179,7 +117,7 @@ export default function App() {
   const [offlineCacheTransitioning, setOfflineCacheTransitioning] =
     useState(false);
   const offlineCacheAuthorizationRef =
-    useRef<OfflineCacheAuthorization | null>(null);
+    useRef<OfflineCacheContext | null>(null);
   const refreshSessionRef = useRef<
     (transition?: OfflineFileCacheTransition) => Promise<MeResponse>
   >(async () => {
@@ -205,119 +143,40 @@ export default function App() {
     queryClient.removeQueries({ queryKey: ["files"] });
   }, [queryClient]);
 
-  const synchronizeOfflineCacheContext = useCallback(
-    async (
-      nextMe: MeResponse,
-      freshness: OfflineFileCacheFreshness,
-      transition?: OfflineFileCacheTransition,
-    ): Promise<OfflineCacheSynchronization> => {
-      invalidateLegacyCachedFilesListings();
-      const nextAuthorization = offlineCacheAuthorizationFor(nextMe);
-      const currentAuthorization = offlineCacheAuthorizationRef.current;
-
-      if (
-        !sameOfflineCacheAuthorization(
-          currentAuthorization,
-          nextAuthorization,
-        ) &&
-        currentAuthorization &&
-        !transition
-      ) {
-        // This /api/me response proves that the Session/Vault changed, but was
-        // collected before the global close. Start a new transition and fetch
-        // again rather than using it to revive a cache context.
-        clearOfflineFileData();
-        return "start-transition";
-      }
-
-      if (!nextAuthorization) {
-        clearOfflineFileData();
-        if (transition) {
-          await finishOfflineFileCacheTransition(transition, freshness);
-        }
-        // No Vault has no file-list cache surface; the normal no-Vault page is
-        // safe even if Worker coordination is unavailable.
-        setOfflineCacheTransitioning(false);
-        return "network-only";
-      }
-
-      if (!freshness.generation) {
-        // The page has a fresh authoritative Session but no reachable Worker.
-        // Render network-only; FileBrowser sends no lease header and cannot
-        // read/write the local listing cache.
-        clearOfflineFileData();
-        setOfflineCacheTransitioning(false);
-        return "network-only";
-      }
-
-      const lease = await setOfflineFileCacheContext(
-        nextAuthorization.context,
-        freshness,
-        transition,
-      );
-      if (!lease) {
-        // A missing ACK, a closed transition owned by another tab, or a Worker
-        // restart is fail-closed. The fresh /api/me response remains safe to
-        // render network-only, but never grants offline persistence.
-        clearOfflineFileData();
-        setOfflineCacheTransitioning(false);
-        return "network-only";
-      }
-
-      offlineCacheAuthorizationRef.current = nextAuthorization;
-      setOfflineCacheLease(lease);
-      setOfflineCacheTransitioning(false);
-      return "ready";
-    },
-    [clearOfflineFileData],
-  );
-
   const refreshSession = useCallback(
     async (initialTransition?: OfflineFileCacheTransition) => {
-      let transition = initialTransition;
-      let nextMe: MeResponse | null = null;
-      let synchronized = false;
-
-      // A context registration only follows a fresh /api/me. If the response
-      // discovers an unannounced Session replacement, begin closes globally
-      // before this loop obtains the replacement response again.
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        const freshness = await prepareOfflineFileCacheContext();
-        const candidate = await withinSessionTimeout(fetchMe());
-        nextMe = candidate;
-        const result = await synchronizeOfflineCacheContext(
-          candidate,
-          freshness,
-          transition,
-        );
-        if (result === "start-transition") {
-          transition = await beginOfflineFileCacheTransition();
-          continue;
-        }
-        if (result === "retry") continue;
-        synchronized = true;
-        break;
-      }
-
-      if (!nextMe) throw new Error("/api/me did not return a response");
-      if (!synchronized) {
-        // Bounded retries exhausted: local data is gone and the app can still
-        // use its authoritative response through the Worker NetworkOnly path.
+      const reconciliation = await reconcileOfflineAuthTransition({
+        transition: initialTransition,
+      });
+      const nextAuthorization = reconciliation.context;
+      if (
+        !reconciliation.lease ||
+        !sameOfflineCacheAuthorization(
+          offlineCacheAuthorizationRef.current,
+          nextAuthorization,
+        )
+      ) {
+        // The shared helper has already purged persisted listings. Removing
+        // React Query data here prevents a prior Session's in-memory response
+        // from surviving while this fresh authority renders network-only.
         clearOfflineFileData();
-        setOfflineCacheTransitioning(false);
       }
+      offlineCacheAuthorizationRef.current = nextAuthorization;
+      setOfflineCacheLease(reconciliation.lease);
+      setOfflineCacheTransitioning(false);
 
+      const nextMe = reconciliation.me;
       setUserId(nextMe.id);
       setMe(nextMe);
       try {
-        const listed = await withinSessionTimeout(fetchVaults());
+        const listed = await withinAuthTransitionTimeout(fetchVaults());
         setVaults(listed.items ?? []);
       } catch {
         setVaults([]);
       }
       return nextMe;
     },
-    [clearOfflineFileData, setUserId, synchronizeOfflineCacheContext],
+    [clearOfflineFileData, setUserId],
   );
 
   useEffect(() => {
@@ -328,14 +187,46 @@ export default function App() {
     () =>
       subscribeToOfflineFileCacheInvalidation((invalidation) => {
         clearOfflineFileData();
-        if (invalidation.state !== "open" || pathname === "/login") return;
-        // The closing tab completes the context itself. Every other tab waits
-        // for this reopened-generation broadcast, then gets its own fresh
-        // /api/me before requesting a new lease.
+        if (invalidation.state !== "reconcile" || pathname === "/login") return;
+        // Another page completed a transition. This page has no authority to
+        // reuse its context, so it obtains a fresh /api/me before any lease.
         void refreshSessionRef.current().catch(() => undefined);
       }),
     [clearOfflineFileData, pathname],
   );
+
+  useEffect(() => {
+    if (!offlineCacheLease || pathname === "/login") return;
+    let cancelled = false;
+    const verifyLease = () => {
+      void verifyOfflineFileCacheLease(
+        offlineCacheLease,
+        offlineCacheLease.context,
+      ).then((valid) => {
+        if (cancelled || valid) return;
+        clearOfflineFileData();
+        // Render fresh authority network-only while the shared helper rebuilds
+        // a replacement capability. A previously painted fully offline view
+        // can remain visibly stale until this bounded probe runs, but it can
+        // neither serve nor persist data after the probe detects a new boot.
+        setOfflineCacheTransitioning(false);
+        void refreshSessionRef.current().catch(() => undefined);
+      });
+    };
+    verifyLease();
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "hidden") verifyLease();
+    };
+    window.addEventListener("focus", verifyLease);
+    window.addEventListener("online", verifyLease);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", verifyLease);
+      window.removeEventListener("online", verifyLease);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [clearOfflineFileData, offlineCacheLease, pathname]);
 
   const onRefreshList = useCallback(() => {
     void requestScan()
@@ -392,8 +283,8 @@ export default function App() {
       .catch(() => {
         if (cancelled) return;
         // No request/ACK wait is allowed to leave stale persisted data alive.
-        // Starting this closes globally but does not delay navigation.
-        void beginOfflineFileCacheTransition();
+        // The bounded helper records a local close even if no Worker exists.
+        void beginOfflineAuthTransition();
         clearOfflineFileData();
         setUserId(null);
         setMe(null);
@@ -461,13 +352,13 @@ export default function App() {
     );
   }
 
-  const offlineCacheContext = offlineCacheLease?.context ?? offlineCacheContextFor(me);
+  const offlineCacheContext = offlineCacheLease?.context ?? offlineCacheContextForMe(me);
   if (!offlineCacheContext) return <NoVaultPage />;
 
   const capabilities = capabilitiesFromMe(me, vaults);
   const cacheKey = offlineCacheLease
-    ? `offline-${offlineCacheLease.context.userId}-${offlineCacheLease.context.vaultId}-${offlineCacheLease.generation.bootId}-${offlineCacheLease.generation.counter}-${offlineCacheLease.clientGeneration}`
-    : `network-only-${offlineCacheContext.userId}-${offlineCacheContext.vaultId}`;
+    ? `offline-${offlineCacheLease.context.userId}-${offlineCacheLease.context.vaultId}-${offlineCacheLease.context.authorizationGeneration}-${offlineCacheLease.generation.bootId}-${offlineCacheLease.generation.counter}-${offlineCacheLease.clientGeneration}`
+    : `network-only-${offlineCacheContext.userId}-${offlineCacheContext.vaultId}-${offlineCacheContext.authorizationGeneration}`;
 
   return (
     <AppShell
@@ -482,33 +373,20 @@ export default function App() {
         onSignOut: () => {
           void (async () => {
             clearOfflineFileData();
-            const transition = await beginOfflineFileCacheTransition();
+            const transition = await beginOfflineAuthTransition();
             setUserId(null);
             setMe(null);
             setVaults([]);
             try {
-              await withinSessionTimeout(logout());
-              // A successful logout is followed by a bounded authoritative
-              // probe. A 401 proves there is no context to reopen; it can
-              // safely rotate the Worker to an empty, network-only generation.
-              const freshness = await prepareOfflineFileCacheContext();
-              try {
-                const current = await withinSessionTimeout(fetchMe());
-                const context = offlineCacheContextFor(current);
-                if (context) {
-                  await setOfflineFileCacheContext(context, freshness, transition);
-                } else {
-                  await finishOfflineFileCacheTransition(transition, freshness);
-                }
-              } catch (error) {
-                if (error instanceof ApiError && error.status === 401) {
-                  await finishOfflineFileCacheTransition(transition, freshness);
-                }
-              }
+              await withinAuthTransitionTimeout(logout());
+              // Logout deliberately leaves the Worker/local barrier closed.
+              // The next sign-in must establish a fresh server generation;
+              // there is no empty-context acknowledgement that could reopen an
+              // old Session after an unresponsive Worker.
             } catch (error) {
-              if (!(error instanceof SessionRequestTimeoutError)) {
-                // A known failed logout must fetch fresh authority before it
-                // can reopen the prior Session; otherwise remain network-only.
+              if (!(error instanceof AuthTransitionTimeoutError)) {
+                // A known failed logout may recover only through a new /api/me
+                // reconciliation; otherwise this browser remains network-only.
                 await refreshSession(transition).catch(() => undefined);
               }
             } finally {
@@ -528,16 +406,16 @@ export default function App() {
         onVaultChange: (vaultId) => {
           void (async () => {
             clearOfflineFileData();
-            const transition = await beginOfflineFileCacheTransition();
+            const transition = await beginOfflineAuthTransition();
             try {
-              // The mutation starts after a bounded close acknowledgement. If
-              // a Worker is gone, begin returns network-only rather than
-              // blocking the server-side Vault selection.
-              await withinSessionTimeout(selectVault({ vault_id: vaultId }));
+              // begin is bounded and its acknowledgement is explicitly local
+              // evidence only. The server mutation still starts if no Worker
+              // replied; the durable cache barrier remains closed in that case.
+              await withinAuthTransitionTimeout(selectVault({ vault_id: vaultId }));
               await refreshSession(transition);
               window.location.assign("/");
             } catch (error) {
-              if (error instanceof SessionRequestTimeoutError) {
+              if (error instanceof AuthTransitionTimeoutError) {
                 // The server request may still commit. Do not reopen based on
                 // an earlier /api/me; stay closed/network-only instead.
                 return;
@@ -560,6 +438,7 @@ export default function App() {
             t={t}
             userId={offlineCacheContext.userId}
             vaultId={offlineCacheContext.vaultId}
+            authorizationGeneration={offlineCacheContext.authorizationGeneration}
             offlineCacheLease={offlineCacheLease}
             vaultName={capabilities.vaultName}
             capabilities={{

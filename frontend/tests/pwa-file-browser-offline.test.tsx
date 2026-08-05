@@ -45,7 +45,11 @@ function t(key: string): string {
   return messages[key] ?? key;
 }
 
-const offlineContext = { userId: 7, vaultId: 1 };
+const offlineContext = {
+  userId: 7,
+  vaultId: 1,
+  authorizationGeneration: "offline-session-a",
+};
 
 const listing: FilesResponse = {
   mode: "browse",
@@ -79,7 +83,11 @@ describe("FileBrowser offline shell and stale listing (seams 2–3)", () => {
   it("shows the offline shell when only another User's listing is cached", async () => {
     vi.stubGlobal("navigator", { ...navigator, onLine: false });
     saveCachedFilesListing(
-      { userId: offlineContext.userId + 1, vaultId: offlineContext.vaultId },
+      {
+        userId: offlineContext.userId + 1,
+        vaultId: offlineContext.vaultId,
+        authorizationGeneration: "offline-session-b",
+      },
       { directory: "", page: 1, page_size: 100 },
       listing,
     );
@@ -95,6 +103,7 @@ describe("FileBrowser offline shell and stale listing (seams 2–3)", () => {
           t={t}
           userId={offlineContext.userId}
           vaultId={offlineContext.vaultId}
+          authorizationGeneration={offlineContext.authorizationGeneration}
           vaultName="Docs"
           capabilities={{
             can_operate: true,
@@ -132,6 +141,7 @@ describe("FileBrowser offline shell and stale listing (seams 2–3)", () => {
           t={t}
           userId={offlineContext.userId}
           vaultId={offlineContext.vaultId}
+          authorizationGeneration={offlineContext.authorizationGeneration}
           vaultName="Docs"
           capabilities={{
             can_operate: true,
