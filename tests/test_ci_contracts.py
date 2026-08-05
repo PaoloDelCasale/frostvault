@@ -1,5 +1,5 @@
-"""Structural guarantees for layered CI (issue #13) and production-image
-PostgreSQL backup tooling (issue #7).
+"""Structural guarantees for layered CI (issue #13), strict frontend checks
+(issue #204), and production-image PostgreSQL backup tooling (issue #7).
 
 Seams under test: workflow YAML and Dependabot config as the public CI contract
 contributors rely on — not GitHub's runtime.
@@ -7,6 +7,7 @@ contributors rely on — not GitHub's runtime.
 
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 import re
@@ -51,6 +52,82 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertTrue(any("npm run lint" in block for block in run_blocks))
         self.assertTrue(any("npm run build" in block for block in run_blocks))
         self.assertFalse(any("node --test" in block for block in run_blocks))
+
+    def test_frontend_quality_refreshes_artifacts_before_strict_checks(self) -> None:
+        workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
+        steps = workflow["jobs"]["frontend-quality"]["steps"]
+        runs = [step.get("run", "") for step in steps]
+
+        def step_index(fragment: str) -> int:
+            return next(
+                index
+                for index, block in enumerate(runs)
+                if fragment in block
+            )
+
+        generated = step_index("npm run generate:api")
+        drift = step_index("git diff --exit-code")
+        typecheck = step_index("npm run typecheck")
+        self.assertLess(generated, drift)
+        self.assertLess(drift, typecheck)
+        for artifact in (
+            "frontend/openapi.json",
+            "frontend/src/api/openapi.generated.ts",
+            "frontend/src/api/types.ts",
+        ):
+            self.assertIn(artifact, runs[drift])
+
+        for command in ("npm run lint", "npm run test", "npm run build"):
+            self.assertGreater(step_index(command), typecheck)
+
+    def test_frontend_typecheck_projects_are_strict_and_environment_scoped(self) -> None:
+        frontend = ROOT / "frontend"
+        root = json.loads((frontend / "tsconfig.json").read_text(encoding="utf-8"))
+        references = {item["path"] for item in root["references"]}
+        self.assertEqual(
+            references,
+            {
+                "./tsconfig.app.json",
+                "./tsconfig.node.json",
+                "./tsconfig.vitest.json",
+                "./tsconfig.playwright.json",
+            },
+        )
+
+        configs = {
+            name: json.loads((frontend / name).read_text(encoding="utf-8"))
+            for name in references
+        }
+        for name, config in configs.items():
+            self.assertTrue(config["compilerOptions"]["strict"], name)
+
+        app_types = set(configs["./tsconfig.app.json"]["compilerOptions"]["types"])
+        node_types = set(configs["./tsconfig.node.json"]["compilerOptions"]["types"])
+        vitest_types = set(configs["./tsconfig.vitest.json"]["compilerOptions"]["types"])
+        playwright_types = set(
+            configs["./tsconfig.playwright.json"]["compilerOptions"]["types"]
+        )
+        self.assertNotIn("node", app_types)
+        self.assertNotIn("vitest/globals", app_types)
+        self.assertEqual(node_types, {"node"})
+        self.assertIn("node", vitest_types)
+        self.assertIn("vitest/globals", vitest_types)
+        self.assertNotIn("@playwright/test", vitest_types)
+        self.assertEqual(playwright_types, {"node"})
+        self.assertNotIn("vitest/globals", playwright_types)
+        self.assertIn("tests", configs["./tsconfig.vitest.json"]["include"])
+        self.assertIn("e2e", configs["./tsconfig.playwright.json"]["include"])
+
+    def test_frontend_scripts_lint_e2e_and_expose_each_test_typecheck(self) -> None:
+        package = json.loads(
+            (ROOT / "frontend" / "package.json").read_text(encoding="utf-8")
+        )
+        scripts = package["scripts"]
+        self.assertIn("typecheck", scripts)
+        self.assertIn("typecheck:vitest", scripts)
+        self.assertIn("typecheck:playwright", scripts)
+        self.assertIn("e2e", scripts["lint"])
+        self.assertIn("git diff --exit-code", scripts["check:generated"])
 
     def test_pr_isolates_postgresql_tests_from_the_sqlite_unit_job(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))

@@ -38,6 +38,12 @@ export default tseslint.config(
     },
   },
   {
+    files: ["e2e/**/*.{ts,tsx}"],
+    languageOptions: {
+      globals: { ...globals.browser, ...globals.node },
+    },
+  },
+  {
     files: ["src/components/ui/**/*.{ts,tsx}"],
     rules: {
       // shadcn vendored components export variants alongside components.

@@ -10,6 +10,7 @@ import {
   configureApiClient,
   createAppQueryClient,
   resetApiClientForTests,
+  type ApiFetch,
 } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { CostPriceBooksSection } from "@/pages/admin/CostPriceBooksSection";
@@ -53,7 +54,7 @@ const inactive = {
   is_active: false,
 };
 
-function renderSection(fetchMock: ReturnType<typeof vi.fn>) {
+function renderSection(fetchMock: ApiFetch) {
   configureApiClient({ fetch: fetchMock, csrfToken: "csrf" });
   render(
     <ApiQueryProvider client={createAppQueryClient()}>
@@ -142,7 +143,7 @@ it("creates arbitrary JSON rate maps without activating the new book", async () 
 
 it("requires an audit reason before activating an inactive persisted book", async () => {
   const user = userEvent.setup();
-  let active = builtin;
+  let active: typeof builtin | typeof inactive = builtin;
   let activationBody = "";
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);

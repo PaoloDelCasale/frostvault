@@ -102,7 +102,7 @@ jobs:
             -v
 
   frontend-quality:
-    name: Frontend lint, unit tests, and build
+    name: Frontend lint, typecheck, unit tests, and build
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -121,8 +121,11 @@ jobs:
       - name: Regenerate OpenAPI TypeScript types
         working-directory: frontend
         run: npm run generate:api
-      - name: Fail when generated API types drift
-        run: git diff --exit-code -- frontend/src/api/openapi.generated.ts frontend/src/api/types.ts
+      - name: Fail when generated API artifacts drift
+        run: git diff --exit-code -- frontend/openapi.json frontend/src/api/openapi.generated.ts frontend/src/api/types.ts
+      - name: Frontend TypeScript typecheck
+        working-directory: frontend
+        run: npm run typecheck
       - name: Frontend SPA lint
         working-directory: frontend
         run: npm run lint

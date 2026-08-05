@@ -13,44 +13,6 @@ async function assertNoHorizontalOverflow(page: Page) {
   expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
 }
 
-async function assertTapTargets(page: Page) {
-  const tooSmall = await page.evaluate(() => {
-    const selectors = [
-      "button:not([disabled])",
-      "a[href]",
-      'input:not([type="hidden"])',
-      "select",
-      '[role="button"]',
-    ];
-    const nodes = Array.from(
-      document.querySelectorAll<HTMLElement>(selectors.join(",")),
-    );
-    const bad: string[] = [];
-    for (const el of nodes) {
-      const style = window.getComputedStyle(el);
-      if (style.display === "none" || style.visibility === "hidden") continue;
-      if (el.getAttribute("aria-hidden") === "true") continue;
-      const rect = el.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) continue;
-      // Skip visually hidden skip-link until focused.
-      if (el.classList.contains("skip-link") && rect.y < -10) continue;
-      // Native checkboxes/radios are exempt; FrostVault uses custom controls.
-      if (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) {
-        continue;
-      }
-      if (rect.width < 44 || rect.height < 44) {
-        const label =
-          el.getAttribute("aria-label") ||
-          el.textContent?.trim().slice(0, 40) ||
-          el.tagName;
-        bad.push(`${label} (${Math.round(rect.width)}x${Math.round(rect.height)})`);
-      }
-    }
-    return bad;
-  });
-  expect(tooSmall, `tap targets under 44px: ${tooSmall.join("; ")}`).toEqual([]);
-}
-
 async function firstFocusable(page: Page): Promise<Locator> {
   return page
     .locator("a, button, input, select, textarea, [tabindex]:not([tabindex='-1'])")
