@@ -3746,49 +3746,77 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
                     "Quiet": True,
                 },
             )
-            errors: dict[tuple[str, str], str] = {}
-            for error in response.get("Errors") or []:
-                key = error.get("Key")
-                version_id = error.get("VersionId")
-                if not key or not version_id:
-                    raise RuntimeError("S3 returned an unidentifiable delete error")
-                code = error.get("Code") or "DeleteError"
-                message = error.get("Message") or "S3 rejected the deletion"
-                errors[(str(key), str(version_id))] = f"{code}: {message}"
-            for item in batch:
-                item_id = int(item["id"])
-                error_message = errors.get(
-                    (str(item["object_key"]), str(item["provider_version_id"]))
-                )
-                if error_message is None:
-                    deleted_ids.append(item_id)
-                else:
-                    failed_items.append((item_id, error_message))
         except Exception as exc:
+            response = None
             failed_items = [(int(item["id"]), str(exc)) for item in batch]
+
+        # The lease may expire while DeleteObjects is blocked.  Capture the
+        # provider-return time before inspecting its result, then honor the
+        # heartbeat's shared loss signal before any durable result is derived.
+        provider_returned_at = now_iso()
+        if _claim_is_lost(int(job["id"])):
+            _mark_claim_lost(int(job["id"]))
+            raise JobLeaseLost("Cloud purge claim was lost")
+
+        if response is not None:
+            try:
+                errors: dict[tuple[str, str], str] = {}
+                for error in response.get("Errors") or []:
+                    key = error.get("Key")
+                    version_id = error.get("VersionId")
+                    if not key or not version_id:
+                        raise RuntimeError("S3 returned an unidentifiable delete error")
+                    code = error.get("Code") or "DeleteError"
+                    message = error.get("Message") or "S3 rejected the deletion"
+                    errors[(str(key), str(version_id))] = f"{code}: {message}"
+                for item in batch:
+                    item_id = int(item["id"])
+                    error_message = errors.get(
+                        (str(item["object_key"]), str(item["provider_version_id"]))
+                    )
+                    if error_message is None:
+                        deleted_ids.append(item_id)
+                    else:
+                        failed_items.append((item_id, error_message))
+            except Exception as exc:
+                failed_items = [(int(item["id"]), str(exc)) for item in batch]
+
         failures += len(failed_items)
+        # Result parsing is local-only, but use a second timestamp immediately
+        # before the conditional group renewal so an expired lease cannot be
+        # revived with the pre-provider fence time.
+        fence_at = now_iso()
+        if _claim_is_lost(int(job["id"])):
+            _mark_claim_lost(int(job["id"]))
+            raise JobLeaseLost("Cloud purge claim was lost")
         with db() as connection:
             if not ArchiveCatalog(connection).renew_purge_group_claim(
                 vault_id=int(job["vault_id"]),
                 group_id=str(group_id),
                 claim_token=str(claim_token),
                 expected_job_ids=expected_job_ids,
-                now=stamp,
-                claim_expires_at=_claim_expiry_at(stamp),
+                now=fence_at,
+                claim_expires_at=_claim_expiry_at(fence_at),
             ):
+                _mark_claim_lost(int(job["id"]))
+                raise JobLeaseLost("Cloud purge claim was lost")
+            if _claim_is_lost(int(job["id"])):
                 _mark_claim_lost(int(job["id"]))
                 raise JobLeaseLost("Cloud purge claim was lost")
             cloud_deletion_service.mark_items_deleted(
                 connection,
                 item_ids=deleted_ids,
-                updated_at=stamp,
+                updated_at=provider_returned_at,
             )
             cloud_deletion_service.mark_items_failed(
                 connection,
                 failures=failed_items,
-                updated_at=stamp,
+                updated_at=provider_returned_at,
             )
     stamp = now_iso()
+    if _claim_is_lost(int(job["id"])):
+        _mark_claim_lost(int(job["id"]))
+        raise JobLeaseLost("Cloud purge claim was lost")
     with db() as connection:
         # This conditional UPDATE holds all Jobs' row locks through finalization,
         # so a cancellation either wins before this point or observes terminal
@@ -3801,6 +3829,9 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
             now=stamp,
             claim_expires_at=_claim_expiry_at(stamp),
         ):
+            _mark_claim_lost(int(job["id"]))
+            raise JobLeaseLost("Cloud purge claim was lost")
+        if _claim_is_lost(int(job["id"])):
             _mark_claim_lost(int(job["id"]))
             raise JobLeaseLost("Cloud purge claim was lost")
         for purge_job in purge_jobs:

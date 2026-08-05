@@ -1227,6 +1227,189 @@ class ClaimLeaseSchedulerTests(_CloudDeletionTestCase):
 
 
 class ClaimLeaseTakeoverTests(_CloudDeletionTestCase):
+    def test_blocked_purge_lease_expiry_fences_stale_worker_writes(self) -> None:
+        """A durable takeover must fence a provider call already in flight."""
+        with tempfile.TemporaryDirectory() as directory:
+            database_path, vault_id, _file_id = _prepare_vault_with_versions(
+                Path(directory), cloud_deletion_enabled=True, version_count=1
+            )
+            requested_at = _iso(_now() - timedelta(hours=25))
+            with SQLiteConnection(str(database_path)) as connection:
+                scheduled = cloud_deletion.schedule_cloud_purge(
+                    connection,
+                    vault_id=vault_id,
+                    paths=["report.txt"],
+                    is_directory=False,
+                    actor_user_id=1,
+                    requested_at=requested_at,
+                    confirmation="Docs Archive",
+                    reason="permanent cleanup",
+                    generated_phrase="x",
+                    delay_seconds=60,
+                )
+                connection.execute(
+                    "UPDATE jobs SET pending_until=%s WHERE group_id=%s",
+                    ("2000-01-01T00:00:00+00:00", scheduled.group_id),
+                )
+                claimed_at = storage_module.now_iso()
+                claimed = ArchiveCatalog(connection).claim_purge_group(
+                    lead_job_id=scheduled.job_ids[0],
+                    claim_token="blocked-worker",
+                    claimed_at=claimed_at,
+                    claim_expires_at=(
+                        datetime.now(timezone.utc) + timedelta(days=1)
+                    ).isoformat(),
+                    now=claimed_at,
+                    message="Permanently deleting cloud versions and markers",
+                    message_key="job.cloud_purge_deleting",
+                )
+                self.assertEqual(len(claimed), 1)
+                job = connection.execute(
+                    """
+                    SELECT j.*, v.source_root, v.s3_bucket, v.s3_prefix,
+                           v.rclone_remote, v.encryption_mode,
+                           v.crypt_password_ciphertext, v.crypt_password2_ciphertext,
+                           v.uuid AS vault_uuid, v.name AS vault_name,
+                           v.cloud_deletion_enabled, v.decommission_state
+                    FROM jobs j JOIN vaults v ON v.id=j.vault_id
+                    WHERE j.id=%s
+                    """,
+                    (scheduled.job_ids[0],),
+                ).fetchone()
+
+            provider_started = threading.Event()
+            release_provider = threading.Event()
+            heartbeat_ready = threading.Event()
+            heartbeat_ref: list[object] = []
+            client = Mock()
+            # Reconciliation must prove that the exact purge target still exists;
+            # it then requeues the expired cleaning group for the replacement claim.
+            client.list_object_versions.return_value = {
+                "Versions": [
+                    {"Key": "docs/report.txt", "VersionId": "s3-v1"}
+                ],
+                "DeleteMarkers": [],
+                "IsTruncated": False,
+            }
+
+            def blocked_delete(**_kwargs):
+                provider_started.set()
+                if not release_provider.wait(timeout=10):
+                    raise AssertionError("test did not release blocked provider")
+                return {}
+
+            client.delete_objects.side_effect = blocked_delete
+            database_settings = SimpleNamespace(
+                db_backend="sqlite", sqlite_path=str(database_path)
+            )
+            result: list[bool] = []
+            real_heartbeat = storage_module._ClaimLeaseHeartbeat
+
+            def capture_heartbeat(active_job: dict) -> object:
+                heartbeat = real_heartbeat(active_job)
+                heartbeat_ref.append(heartbeat)
+                heartbeat_ready.set()
+                return heartbeat
+
+            with (
+                patch("app.database.settings", database_settings),
+                patch(
+                    "app.storage._runtime_settings",
+                    return_value=SimpleNamespace(restore_poll_interval=0),
+                ),
+                patch("app.storage.validate_cloud_vault"),
+                patch("app.storage.s3_client", return_value=client),
+                patch("app.storage.JOB_CLAIM_LEASE_SECONDS", 0.2),
+                patch("app.storage._ClaimLeaseHeartbeat", new=capture_heartbeat),
+            ):
+                worker = threading.Thread(
+                    target=lambda: result.append(storage_module.process_job(dict(job)))
+                )
+                worker.start()
+                self.assertTrue(provider_started.wait(timeout=10))
+                self.assertTrue(heartbeat_ready.wait(timeout=10))
+
+                # Expire the real durable lease while DeleteObjects is blocked.
+                # The heartbeat must observe this failed renewal; no test-owned
+                # loss event is injected into the worker context.
+                with SQLiteConnection(str(database_path)) as connection:
+                    connection.execute(
+                        """
+                        UPDATE jobs
+                        SET claim_expires_at='2000-01-01T00:00:00+00:00'
+                        WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
+                        """,
+                        (vault_id, scheduled.group_id),
+                    )
+
+                reconciliation = storage_module.reconcile_interrupted_jobs()
+                self.assertEqual(
+                    reconciliation, {"completed": 0, "requeued": 1, "failed": 0}
+                )
+                replacement_at = storage_module.now_iso()
+                replacement_expiry = "2099-01-01T00:00:00+00:00"
+                with SQLiteConnection(str(database_path)) as connection:
+                    replacement = ArchiveCatalog(connection).claim_purge_group(
+                        lead_job_id=scheduled.job_ids[0],
+                        claim_token="replacement-worker",
+                        claimed_at=replacement_at,
+                        claim_expires_at=replacement_expiry,
+                        now=replacement_at,
+                        message="Permanently deleting cloud versions and markers",
+                        message_key="job.cloud_purge_deleting",
+                    )
+                self.assertEqual(len(replacement), 1)
+
+                # The loss is detected by the real heartbeat after the second
+                # worker owns the group; only then may the provider call return.
+                self.assertTrue(heartbeat_ref[0].lost.wait(timeout=10))
+                release_provider.set()
+                worker.join(timeout=10)
+                self.assertFalse(worker.is_alive())
+
+            self.assertEqual(result, [False])
+            client.delete_objects.assert_called_once()
+            with SQLiteConnection(str(database_path)) as connection:
+                jobs = connection.execute(
+                    """
+                    SELECT status, claim_token, claim_expires_at
+                    FROM jobs
+                    WHERE vault_id=%s AND group_id=%s
+                    ORDER BY id
+                    """,
+                    (vault_id, scheduled.group_id),
+                ).fetchall()
+                item_state = connection.execute(
+                    """
+                    SELECT cdi.status, av.availability, vf.status AS file_status
+                    FROM cloud_deletion_items cdi
+                    LEFT JOIN archive_versions av ON av.id=cdi.archive_version_id
+                    LEFT JOIN vault_files vf ON vf.id=av.vault_file_id
+                    WHERE cdi.job_id=%s
+                    """,
+                    (scheduled.job_ids[0],),
+                ).fetchone()
+                terminal_audits = connection.execute(
+                    """
+                    SELECT COUNT(*) AS total FROM audit_events
+                    WHERE event IN (
+                        'cloud_deletion.purge_completed',
+                        'cloud_deletion.purge_partial_failure'
+                    )
+                    """
+                ).fetchone()["total"]
+
+            self.assertEqual([row["status"] for row in jobs], ["cleaning"])
+            self.assertEqual({row["claim_token"] for row in jobs}, {"replacement-worker"})
+            self.assertEqual(
+                {row["claim_expires_at"] for row in jobs},
+                {replacement_expiry},
+            )
+            self.assertEqual(item_state["status"], "pending")
+            self.assertEqual(item_state["availability"], "available")
+            self.assertNotEqual(item_state["file_status"], "purged")
+            self.assertEqual(terminal_audits, 0)
+
     def test_takeover_after_delete_does_not_publish_stale_marker_or_repeat_delete(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path, vault_id, file_id = _prepare_vault_with_versions(
