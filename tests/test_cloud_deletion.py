@@ -19,7 +19,9 @@ schema via Alembic.
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1121,6 +1123,243 @@ class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
             self.assertEqual(job["status"], "completed")
             self.assertEqual(vault_file["status"], "purged")
             self.assertGreaterEqual(path_history, 1)
+
+
+class ClaimLeaseSchedulerTests(_CloudDeletionTestCase):
+    def test_two_schedulers_claim_a_cloud_purge_group_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path, vault_id, _file_id = _prepare_vault_with_versions(
+                Path(directory), cloud_deletion_enabled=True, version_count=1
+            )
+            with SQLiteConnection(str(database_path)) as connection:
+                catalog = ArchiveCatalog(connection)
+                second_file = catalog.observe_local_copy(
+                    vault_id=vault_id,
+                    path="second.txt",
+                    file_type="regular",
+                    size=4,
+                    mtime_ns=2,
+                    observed_at="2026-07-21T10:00:00+00:00",
+                )
+                second_version = catalog.record_archive_version(
+                    vault_id=vault_id,
+                    path="second.txt",
+                    object_key="docs/second.txt",
+                    provider_version_id="second-version",
+                    size=4,
+                    storage_class="STANDARD",
+                    etag="second-etag",
+                    uploaded_at="2026-07-21T10:00:00+00:00",
+                    observed_at="2026-07-21T10:00:00+00:00",
+                    scan_id="scan",
+                )
+                catalog.mark_version_verified(
+                    second_version,
+                    plaintext_sha256="b" * 64,
+                    verified_at="2026-07-21T10:01:00+00:00",
+                )
+                catalog.mark_local_copy_missing(
+                    second_file, observed_at="2026-07-21T10:02:00+00:00"
+                )
+                scheduled = cloud_deletion.schedule_cloud_purge(
+                    connection,
+                    vault_id=vault_id,
+                    paths=["report.txt", "second.txt"],
+                    is_directory=False,
+                    actor_user_id=1,
+                    requested_at=_iso(_now() - timedelta(hours=25)),
+                    confirmation="Docs Archive",
+                    reason="permanent cleanup",
+                    generated_phrase="x",
+                    delay_seconds=60,
+                )
+                connection.execute(
+                    "UPDATE jobs SET pending_until=%s WHERE group_id=%s",
+                    ("2000-01-01T00:00:00+00:00", scheduled.group_id),
+                )
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite", sqlite_path=str(database_path)
+            )
+            runtime = SimpleNamespace(
+                operation_concurrency=1,
+                bandwidth_limit_kibps=None,
+                restore_poll_interval=0,
+            )
+            start = threading.Barrier(2)
+            processed: list[int] = []
+            processed_lock = threading.Lock()
+
+            def record(job: dict) -> bool:
+                with processed_lock:
+                    processed.append(int(job["id"]))
+                return True
+
+            def run_once(_: int) -> int:
+                start.wait(timeout=10)
+                return process_jobs_once()
+
+            with (
+                patch("app.database.settings", database_settings),
+                patch("app.storage._runtime_settings", return_value=runtime),
+                patch(
+                    "app.storage.db",
+                    side_effect=lambda: SQLiteConnection(str(database_path)),
+                ),
+                patch("app.storage.process_job", side_effect=record),
+            ):
+                with ThreadPoolExecutor(max_workers=2) as workers:
+                    results = list(workers.map(run_once, range(2)))
+
+            self.assertEqual(sum(results), 1)
+            self.assertEqual(len(processed), 1)
+            with SQLiteConnection(str(database_path)) as connection:
+                jobs = connection.execute(
+                    """
+                    SELECT status, claim_token
+                    FROM jobs WHERE group_id=%s ORDER BY id
+                    """,
+                    (scheduled.group_id,),
+                ).fetchall()
+            self.assertEqual([job["status"] for job in jobs], ["cleaning", "cleaning"])
+            self.assertEqual(len({job["claim_token"] for job in jobs}), 1)
+            self.assertTrue(jobs[0]["claim_token"])
+
+
+class ClaimLeaseRestartTests(_CloudDeletionTestCase):
+    def test_restart_completes_cloud_archive_from_catalogued_delete_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path, vault_id, file_id = _prepare_vault_with_versions(
+                Path(directory), cloud_deletion_enabled=True, version_count=1
+            )
+            with SQLiteConnection(str(database_path)) as connection:
+                scheduled = cloud_deletion.schedule_cloud_archive(
+                    connection,
+                    vault_id=vault_id,
+                    paths=["report.txt"],
+                    is_directory=False,
+                    actor_user_id=1,
+                    requested_at=_iso(_now()),
+                )
+                catalog = ArchiveCatalog(connection)
+                catalog.record_delete_marker(
+                    vault_id=vault_id,
+                    path="report.txt",
+                    object_key="docs/report.txt",
+                    provider_version_id="marker-written-before-crash",
+                    created_at=_iso(_now()),
+                    observed_at=_iso(_now()),
+                )
+                connection.execute(
+                    """
+                    UPDATE jobs
+                    SET status='cleaning', claim_token='dead-worker',
+                        claimed_at='2026-07-23T10:00:00+00:00',
+                        claim_expires_at='2000-01-01T00:00:00+00:00'
+                    WHERE id=%s
+                    """,
+                    (scheduled.job_ids[0],),
+                )
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite", sqlite_path=str(database_path)
+            )
+            with (
+                patch("app.database.settings", database_settings),
+                patch(
+                    "app.storage.s3_client",
+                    side_effect=AssertionError("catalog postcondition must avoid a repeat delete"),
+                ),
+            ):
+                summary = storage_module.reconcile_interrupted_jobs()
+
+            self.assertEqual(summary, {"completed": 1, "requeued": 0, "failed": 0})
+            with SQLiteConnection(str(database_path)) as connection:
+                job = connection.execute(
+                    """
+                    SELECT status, claim_token, claim_expires_at
+                    FROM jobs WHERE id=%s
+                    """,
+                    (scheduled.job_ids[0],),
+                ).fetchone()
+                markers = connection.execute(
+                    "SELECT COUNT(*) AS total FROM delete_markers WHERE vault_file_id=%s",
+                    (file_id,),
+                ).fetchone()["total"]
+            self.assertEqual(job["status"], "completed")
+            self.assertIsNone(job["claim_token"])
+            self.assertIsNone(job["claim_expires_at"])
+            self.assertEqual(markers, 1)
+
+    def test_restart_finalizes_purge_from_deleted_item_catalog_without_repeat(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path, vault_id, _file_id = _prepare_vault_with_versions(
+                Path(directory), cloud_deletion_enabled=True, version_count=2
+            )
+            with SQLiteConnection(str(database_path)) as connection:
+                scheduled = cloud_deletion.schedule_cloud_purge(
+                    connection,
+                    vault_id=vault_id,
+                    paths=["report.txt"],
+                    is_directory=False,
+                    actor_user_id=1,
+                    requested_at=_iso(_now() - timedelta(hours=25)),
+                    confirmation="Docs Archive",
+                    reason="permanent cleanup",
+                    generated_phrase="x",
+                    delay_seconds=60,
+                )
+                item_ids = [
+                    int(row["id"])
+                    for row in connection.execute(
+                        "SELECT id FROM cloud_deletion_items WHERE job_id=%s",
+                        (scheduled.job_ids[0],),
+                    ).fetchall()
+                ]
+                cloud_deletion.mark_items_deleted(
+                    connection,
+                    item_ids=item_ids,
+                    updated_at=_iso(_now()),
+                )
+                connection.execute(
+                    """
+                    UPDATE jobs
+                    SET status='cleaning', claim_token='dead-worker',
+                        claimed_at='2026-07-23T10:00:00+00:00',
+                        claim_expires_at='2000-01-01T00:00:00+00:00'
+                    WHERE id=%s
+                    """,
+                    (scheduled.job_ids[0],),
+                )
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite", sqlite_path=str(database_path)
+            )
+            with patch("app.database.settings", database_settings):
+                summary = storage_module.reconcile_interrupted_jobs()
+            self.assertEqual(summary, {"completed": 0, "requeued": 1, "failed": 0})
+
+            client = Mock()
+            worker_settings = SimpleNamespace(operation_concurrency=1)
+            with (
+                patch("app.database.settings", database_settings),
+                patch("app.storage.settings", worker_settings),
+                patch("app.storage.validate_cloud_vault"),
+                patch("app.storage.s3_client", return_value=client),
+            ):
+                process_jobs_once()
+            client.delete_objects.assert_not_called()
+            with SQLiteConnection(str(database_path)) as connection:
+                job = connection.execute(
+                    """
+                    SELECT status, claim_token, claim_expires_at
+                    FROM jobs WHERE id=%s
+                    """,
+                    (scheduled.job_ids[0],),
+                ).fetchone()
+            self.assertEqual(job["status"], "completed")
+            self.assertIsNone(job["claim_token"])
+            self.assertIsNone(job["claim_expires_at"])
 
 
 class NoncurrentLifecycleTransitionTests(_CloudDeletionTestCase):

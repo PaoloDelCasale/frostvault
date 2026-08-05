@@ -12,9 +12,12 @@ Seams under test:
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
@@ -23,7 +26,8 @@ from app.services.job_scheduler import (
     job_is_within_operating_window,
     select_fair_jobs,
 )
-from app.storage import cancel_jobs, process_jobs_once
+from app import storage as storage_module
+from app.storage import cancel_jobs, claimable_queue_depth, process_job, process_jobs_once
 from tests.test_database import run_alembic
 
 
@@ -106,6 +110,44 @@ class FairSchedulerIntegrationTests(unittest.TestCase):
                         observed_at="2026-07-01T00:00:00+00:00",
                     )
 
+    def _insert_upload_job(
+        self,
+        *,
+        vault_id: int,
+        path: str,
+        requested_at: str = "2026-07-01T00:00:00+00:00",
+    ) -> int:
+        with SQLiteConnection(str(self.path)) as connection:
+            return int(
+                connection.execute(
+                    """
+                    INSERT INTO jobs(
+                        vault_id, vault_file_id, path, action, status,
+                        requested_by, requested_at, updated_at
+                    )
+                    SELECT %s, id, %s, 'upload', 'queued', 1, %s, %s
+                    FROM vault_files
+                    WHERE vault_id=%s
+                      AND id=(
+                          SELECT id FROM vault_files
+                          WHERE vault_id=%s
+                          ORDER BY id
+                          LIMIT 1 OFFSET %s
+                      )
+                    RETURNING id
+                    """,
+                    (
+                        vault_id,
+                        path,
+                        requested_at,
+                        requested_at,
+                        vault_id,
+                        vault_id,
+                        0 if path == "a.txt" else 1,
+                    ),
+                ).fetchone()["id"]
+            )
+
     def test_process_jobs_once_does_not_starve_second_vault(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
             # Three older Jobs in vault 10, one newer Job in vault 20.
@@ -185,6 +227,163 @@ class FairSchedulerIntegrationTests(unittest.TestCase):
                 "SELECT status FROM jobs WHERE id=%s", (job_id,)
             ).fetchone()["status"]
         self.assertEqual(status, "cancelled")
+
+    def test_two_sqlite_schedulers_claim_one_job_once(self) -> None:
+        job_id = self._insert_upload_job(vault_id=10, path="a.txt")
+        start = threading.Barrier(2)
+        seen: list[int] = []
+        seen_lock = threading.Lock()
+        runtime = SimpleNamespace(
+            operation_concurrency=1,
+            bandwidth_limit_kibps=None,
+            restore_poll_interval=0,
+        )
+
+        def record(job: dict) -> bool:
+            with seen_lock:
+                seen.append(int(job["id"]))
+            return True
+
+        def run_once(_: int) -> int:
+            start.wait(timeout=10)
+            return process_jobs_once()
+
+        with (
+            patch("app.storage._runtime_settings", return_value=runtime),
+            patch(
+                "app.storage.db",
+                side_effect=lambda: SQLiteConnection(str(self.path)),
+            ),
+            patch("app.storage.process_job", side_effect=record),
+        ):
+            with ThreadPoolExecutor(max_workers=2) as workers:
+                results = list(workers.map(run_once, range(2)))
+
+        self.assertEqual(sum(results), 1)
+        self.assertEqual(seen, [job_id])
+        with SQLiteConnection(str(self.path)) as connection:
+            job = connection.execute(
+                "SELECT claim_token, claim_expires_at FROM jobs WHERE id=%s",
+                (job_id,),
+            ).fetchone()
+        self.assertTrue(job["claim_token"])
+        self.assertTrue(job["claim_expires_at"])
+
+    def test_expired_queued_lease_is_reclaimed(self) -> None:
+        job_id = self._insert_upload_job(vault_id=10, path="a.txt")
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                """
+                UPDATE jobs
+                SET claim_token='dead-worker',
+                    claimed_at='2000-01-01T00:00:00+00:00',
+                    claim_expires_at='2000-01-01T00:05:00+00:00'
+                WHERE id=%s
+                """,
+                (job_id,),
+            )
+        runtime = SimpleNamespace(
+            operation_concurrency=1,
+            bandwidth_limit_kibps=None,
+            restore_poll_interval=0,
+        )
+        seen: list[int] = []
+        with (
+            patch("app.storage._runtime_settings", return_value=runtime),
+            patch(
+                "app.storage.db",
+                side_effect=lambda: SQLiteConnection(str(self.path)),
+            ),
+            patch(
+                "app.storage.process_job",
+                side_effect=lambda job: seen.append(int(job["id"])) or True,
+            ),
+        ):
+            self.assertEqual(process_jobs_once(), 1)
+        self.assertEqual(seen, [job_id])
+        with SQLiteConnection(str(self.path)) as connection:
+            job = connection.execute(
+                "SELECT claim_token FROM jobs WHERE id=%s", (job_id,)
+            ).fetchone()
+        self.assertNotEqual(job["claim_token"], "dead-worker")
+
+    def test_claimed_job_cancellation_cannot_be_overwritten_by_worker(self) -> None:
+        job_id = self._insert_upload_job(vault_id=10, path="a.txt")
+        timestamp = storage_module.now_iso()
+        with SQLiteConnection(str(self.path)) as connection:
+            claimed = ArchiveCatalog(connection).claim_job(
+                job_id=job_id,
+                claim_token="worker-claim",
+                claimed_at=timestamp,
+                claim_expires_at=(
+                    datetime.now(timezone.utc) + timedelta(days=1)
+                ).isoformat(),
+                now=timestamp,
+                restore_due_before=timestamp,
+            )
+            self.assertIsNotNone(claimed)
+            job = connection.execute(
+                """
+                SELECT j.*, v.source_root
+                FROM jobs j JOIN vaults v ON v.id=j.vault_id
+                WHERE j.id=%s
+                """,
+                (job_id,),
+            ).fetchone()
+
+        runtime = SimpleNamespace(restore_poll_interval=0)
+
+        def cancel_then_attempt_complete(active: dict) -> None:
+            with SQLiteConnection(str(self.path)) as connection:
+                connection.execute(
+                    "UPDATE jobs SET status='cancelled' WHERE id=%s", (job_id,)
+                )
+            self.assertFalse(storage_module.set_job(active["id"], "completed"))
+
+        with (
+            patch("app.storage._runtime_settings", return_value=runtime),
+            patch(
+                "app.storage.db",
+                side_effect=lambda: SQLiteConnection(str(self.path)),
+            ),
+            patch(
+                "app.storage.source_layout.vault_local_access",
+                return_value=SimpleNamespace(local_operations_allowed=True),
+            ),
+            patch("app.storage.process_upload", side_effect=cancel_then_attempt_complete),
+        ):
+            self.assertTrue(process_job(dict(job)))
+
+        with SQLiteConnection(str(self.path)) as connection:
+            status = connection.execute(
+                "SELECT status FROM jobs WHERE id=%s", (job_id,)
+            ).fetchone()["status"]
+        self.assertEqual(status, "cancelled")
+
+    def test_queue_depth_counts_unleased_backlog_not_concurrency_batch(self) -> None:
+        first = self._insert_upload_job(vault_id=10, path="a.txt")
+        self._insert_upload_job(vault_id=10, path="b.txt")
+        self._insert_upload_job(vault_id=20, path="a.txt")
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                """
+                UPDATE jobs
+                SET claim_token='live-worker',
+                    claimed_at='2099-01-01T00:00:00+00:00',
+                    claim_expires_at='2099-01-01T00:05:00+00:00'
+                WHERE id=%s
+                """,
+                (first,),
+            )
+        runtime = SimpleNamespace(restore_poll_interval=0)
+        with (
+            patch("app.storage._runtime_settings", return_value=runtime),
+            patch(
+                "app.storage.db",
+                side_effect=lambda: SQLiteConnection(str(self.path)),
+            ),
+        ):
+            self.assertEqual(claimable_queue_depth(), 2)
 
 
 if __name__ == "__main__":
