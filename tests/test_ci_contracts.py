@@ -304,6 +304,12 @@ class ContainerPublishContractTests(unittest.TestCase):
         self.assertIn("ghcr.io/paolodelcasale/frostvault", text)
         self.assertIn("docker build", text)
         self.assertIn("docker push", text)
+        dispatch = _workflow_on(workflow)["workflow_dispatch"]
+        self.assertIn("promote_tag", dispatch["inputs"])
+        self.assertIn('tags+=("${IMAGE}:${version}" "${IMAGE}:latest")', text)
+        self.assertNotIn('refs/heads/main")\n            tags+=("${IMAGE}:latest")', text)
+        self.assertIn('docker pull "${IMAGE}:${PROMOTE_TAG}"', text)
+        self.assertIn('pushed_digest" != "$source_digest', text)
         # Repo Actions allowlist blocks docker/* marketplace actions.
         self.assertNotRegex(text, r"(?m)^\s*uses:\s*docker/")
 
