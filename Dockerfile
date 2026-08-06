@@ -5,7 +5,7 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM rclone/rclone:1.74.4 AS rclone
+FROM rclone/rclone:1.75.0 AS rclone
 
 FROM python:3.14-slim
 
@@ -58,7 +58,10 @@ COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Pip is only needed while assembling the image; removing it keeps its vendored
+# package copies out of the runtime vulnerability scan.
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip uninstall --yes pip
 
 COPY app ./app
 COPY alembic.ini .

@@ -104,7 +104,7 @@ remain unchanged.
 - Docker Engine with Docker Compose v2 for the recommended deployment, or
   Python 3.12+ for native development
 - An S3 bucket with versioning enabled and a least-privilege IAM principal
-- Rclone 1.74.4 or a compatible release when running outside the image
+- Rclone 1.75.0 or a compatible release when running outside the image
 - PostgreSQL 16 for production; SQLite is supported for development and small
   single-node installations
 - An HTTPS reverse proxy for any network-accessible deployment
@@ -237,7 +237,7 @@ instead of trying other credentials available on the computer.
 5. Generate a distinct encryption password for each vault:
 
    ```bash
-   docker run --rm rclone/rclone:1.74.4 obscure 'ENCRYPTION-PASSWORD'
+   docker run --rm rclone/rclone:1.75.0 obscure 'ENCRYPTION-PASSWORD'
    ```
 
 6. Put the result in the relevant remote's `password` field in `rclone.conf`.
