@@ -243,11 +243,11 @@ jobs:
           cache: pip
       - name: Install rclone
         run: |
-          RCLONE_VERSION=1.74.4
+          RCLONE_VERSION=1.75.0
           RCLONE_ARCHIVE="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
           curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/${RCLONE_ARCHIVE}" \
             -o "/tmp/${RCLONE_ARCHIVE}"
-          echo "fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d  /tmp/${RCLONE_ARCHIVE}" \
+          echo "aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa  /tmp/${RCLONE_ARCHIVE}" \
             | sha256sum --check --strict
           sudo unzip -qo "/tmp/${RCLONE_ARCHIVE}" -d /tmp
           sudo cp "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
