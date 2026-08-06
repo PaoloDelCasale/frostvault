@@ -6,6 +6,11 @@ name: Publish container image
 
 on:
   workflow_dispatch:
+    inputs:
+      promote_tag:
+        description: Existing semantic-version image tag to promote to latest without rebuilding
+        required: false
+        type: string
   push:
     branches:
       - main
@@ -31,7 +36,33 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" \
             | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      - name: Promote an existing release image to latest
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.promote_tag != '' }}
+        env:
+          IMAGE: ghcr.io/paolodelcasale/frostvault
+          PROMOTE_TAG: ${{ inputs.promote_tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PROMOTE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "promote_tag must be a semantic version such as 0.3.0" >&2
+            exit 64
+          fi
+
+          docker pull "${IMAGE}:${PROMOTE_TAG}"
+          source_digest="$(docker image inspect \
+            --format '{{index .RepoDigests 0}}' "${IMAGE}:${PROMOTE_TAG}")"
+          source_digest="${source_digest#*@}"
+          docker tag "${IMAGE}:${PROMOTE_TAG}" "${IMAGE}:latest"
+          push_output="$(docker push "${IMAGE}:latest")"
+          printf '%s\n' "$push_output"
+          pushed_digest="$(printf '%s\n' "$push_output" | awk '/digest:/ {print $3}' | tail -1)"
+          if [ -z "$pushed_digest" ] || [ "$pushed_digest" != "$source_digest" ]; then
+            echo "latest digest $pushed_digest does not match ${PROMOTE_TAG} digest $source_digest" >&2
+            exit 1
+          fi
+
       - name: Build and push image
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.promote_tag == '' }}
         env:
           IMAGE: ghcr.io/paolodelcasale/frostvault
           REF_NAME: ${{ github.ref_name }}
@@ -41,11 +72,9 @@ jobs:
           sha_tag="sha-${SHA_SHORT:0:7}"
           tags=("${IMAGE}:${sha_tag}")
 
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            tags+=("${IMAGE}:latest")
-          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             version="${REF_NAME#v}"
-            tags+=("${IMAGE}:${version}")
+            tags+=("${IMAGE}:${version}" "${IMAGE}:latest")
             if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\. ]]; then
               tags+=("${IMAGE}:${BASH_REMATCH[1]}.${BASH_REMATCH[2]}")
             fi

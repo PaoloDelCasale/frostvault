@@ -50,8 +50,13 @@ or the CLI above against the same bucket/prefix if leftovers remain.
 Workflow: [`.github/workflows/publish-image.yml`](../.github/workflows/publish-image.yml)
 
 - Triggers: push to `main`, version tags `v*`, and `workflow_dispatch`.
-- Publishes `ghcr.io/paolodelcasale/frostvault` (`latest` on `main`, semver on
-  tags, plus a short `sha-` tag).
+- Publishes `ghcr.io/paolodelcasale/frostvault`: every build gets a short
+  `sha-` tag; version tags also get the full semver, major/minor, and `latest`
+  tags. Ordinary `main` pushes do not move `latest`, so it remains the newest
+  published release.
+- A manual dispatch may set `promote_tag` to an existing full semantic version
+  such as `0.3.0`. The workflow then promotes that exact manifest to `latest`
+  without rebuilding it and fails if the resulting digests differ.
 - Compose files pull this image; operators do not need a local image build for a
   standard deploy.
 
