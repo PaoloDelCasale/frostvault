@@ -396,6 +396,88 @@ class PlainUploadVerificationTests(unittest.TestCase):
             self.assertEqual(len(uploads), 1)
             self.assertEqual(len(streams), 2)
 
+    def test_changed_local_copy_between_retries_does_not_mark_remote_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = b"upload-snapshot"
+            mutated = b"changed-after-first-attempt"
+            source, database_path = _prepare_plain_vault(
+                root, relative_path="report.txt", payload=original
+            )
+            uploads: list[tuple[str, ...]] = []
+            streams: list[tuple[str, ...]] = []
+            attempts = 0
+
+            def fake_upload(*args, **kwargs) -> None:
+                uploads.append(tuple(str(arg) for arg in args if not callable(arg)))
+
+            def flaky_stream(*args, **kwargs) -> int:
+                nonlocal attempts
+                attempts += 1
+                streams.append(tuple(str(arg) for arg in args if not callable(arg)))
+                if attempts == 1:
+                    raise RuntimeError("connection reset by peer")
+                kwargs["on_chunk"](original)
+                return len(original)
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            worker_settings = SimpleNamespace(
+                operation_concurrency=1,
+                restore_poll_interval=900,
+            )
+            s3 = SimpleNamespace(
+                head_object=lambda **_: {
+                    "VersionId": "one-version",
+                    "ContentLength": len(original),
+                    "StorageClass": "STANDARD",
+                    "ETag": '"etag"',
+                }
+            )
+            with patch("app.database.settings", database_settings):
+                queue_jobs("report.txt", "upload", 2, 1)
+                with (
+                    patch("app.storage.settings", worker_settings),
+                    patch("app.storage.validate_cloud_vault"),
+                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
+                    patch("app.storage.run_rclone", side_effect=fake_upload),
+                    patch("app.storage.run_rclone_stream", side_effect=flaky_stream),
+                    patch("app.storage.s3_client", return_value=s3),
+                ):
+                    process_jobs_once()
+                    source.joinpath("report.txt").write_bytes(mutated)
+
+                    with SQLiteConnection(str(database_path)) as connection:
+                        connection.execute(
+                            "UPDATE jobs SET retry_after='2000-01-01T00:00:00+00:00' WHERE path=%s",
+                            ("report.txt",),
+                        )
+                    process_jobs_once()
+
+            with SQLiteConnection(str(database_path)) as connection:
+                observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
+                job = connection.execute(
+                    """
+                    SELECT status, archive_version_id, upload_plaintext_sha256, message
+                    FROM jobs WHERE path=%s
+                    """,
+                    ("report.txt",),
+                ).fetchone()
+                versions = connection.execute(
+                    "SELECT COUNT(*) AS total FROM archive_versions"
+                ).fetchone()["total"]
+
+            self.assertEqual(observed["latest_version"]["integrity"], "unverified")
+            self.assertEqual(job["status"], "retrying")
+            self.assertIn("changed", (job["message"] or "").lower())
+            self.assertEqual(job["upload_plaintext_sha256"], _sha256_hex(original))
+            self.assertIsNotNone(job["archive_version_id"])
+            self.assertEqual(versions, 1)
+            self.assertEqual(len(uploads), 1)
+            self.assertEqual(len(streams), 1)
+
     def test_changed_source_after_transfer_leaves_version_unverified(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

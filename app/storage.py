@@ -3493,7 +3493,7 @@ def process_upload(job: dict[str, Any]) -> None:
     verification_failure_reason: str | None = None
     try:
         set_job(job["id"], "uploading", message_key="job.hashing_local_file")
-        plaintext_sha256, source_stat = hash_stable_regular_file(source)
+        local_plaintext_sha256, source_stat = hash_stable_regular_file(source)
         ensure_job_active(job["id"], "Upload claim was lost")
 
         version_id: str
@@ -3508,13 +3508,27 @@ def process_upload(job: dict[str, Any]) -> None:
             target = dict(linked_target)
             version_id = str(linked_version_id)
             integrity = str(target.get("integrity") or "unverified")
+            upload_digest = str(
+                target.get("upload_plaintext_sha256")
+                or (target.get("version_sha256") if integrity == "verified" else "")
+                or ""
+            ).lower()
+            if len(upload_digest) != 64:
+                raise RuntimeError(
+                    "The linked Archive Version has no durable upload fingerprint"
+                )
+            try:
+                int(upload_digest, 16)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "The linked Archive Version has an invalid upload fingerprint"
+                ) from exc
             if integrity == "mismatch":
                 raise RuntimeError("The linked Archive Version already mismatches the Local Copy")
             if target.get("availability") not in {None, "available"}:
                 raise RuntimeError("The linked Archive Version is no longer available")
             if integrity == "verified":
-                expected_digest = str(target.get("version_sha256") or "").lower()
-                if expected_digest != plaintext_sha256:
+                if upload_digest != local_plaintext_sha256:
                     raise RuntimeError(
                         "Local file digest no longer matches the verified Archive Version"
                     )
@@ -3529,7 +3543,7 @@ def process_upload(job: dict[str, Any]) -> None:
                     ArchiveCatalog(connection).set_local_fingerprint(
                         vault_id=job["vault_id"],
                         path=job["path"],
-                        plaintext_sha256=plaintext_sha256,
+                        plaintext_sha256=upload_digest,
                         matched_archive_version_id=version_id,
                     )
                 set_job_progress(
@@ -3537,10 +3551,31 @@ def process_upload(job: dict[str, Any]) -> None:
                 )
                 set_job(job["id"], "completed", message_key="job.upload_verified")
                 return
+            # A changed Local Copy is a source race, not evidence that the
+            # already-linked remote Archive Version is corrupt.  Do this check
+            # before streaming so a retry cannot compare the remote snapshot
+            # with a newer Local Copy digest and mark a false mismatch.
+            if upload_digest != local_plaintext_sha256:
+                raise RuntimeError("Local file changed since fingerprinting")
             if not target.get("object_key") or not target.get("provider_version_id"):
                 raise RuntimeError("The linked Archive Version cannot be verified safely")
             head = _verification_version_head(client, job, target)
         else:
+            upload_digest = local_plaintext_sha256
+            # Keep the upload snapshot on the durable Job before contacting the
+            # provider.  Local Copy fingerprints are mutable scan observations
+            # and cannot identify a retry after the source changes.
+            with db() as connection:
+                ensure_job_claim_owned_in_transaction(
+                    connection,
+                    job,
+                    "Upload claim was lost",
+                )
+                ArchiveCatalog(connection).set_upload_plaintext_digest(
+                    job["id"],
+                    plaintext_sha256=upload_digest,
+                )
+            job["upload_plaintext_sha256"] = upload_digest
             upload_key = "job.encrypted_upload" if is_crypt else "job.plain_upload"
             set_job(job["id"], "uploading", message_key=upload_key)
             if encrypts_names:
@@ -3619,6 +3654,7 @@ def process_upload(job: dict[str, Any]) -> None:
                 "object_key": key,
                 "provider_version_id": provider_version_id,
                 "cloud_size": head.get("ContentLength"),
+                "upload_plaintext_sha256": upload_digest,
                 "integrity": "unverified",
                 "availability": "available",
             }
@@ -3664,7 +3700,7 @@ def process_upload(job: dict[str, Any]) -> None:
         ):
             verification_failure_reason = "source_changed"
             raise RuntimeError("Local file changed since fingerprinting")
-        if remote_digest != plaintext_sha256:
+        if remote_digest != upload_digest:
             verification_failure_reason = "mismatch"
             ensure_job_active(job["id"], "Upload claim was lost")
             with db() as connection:
@@ -3675,7 +3711,7 @@ def process_upload(job: dict[str, Any]) -> None:
                 )
                 ArchiveCatalog(connection).mark_version_mismatch(
                     version_id,
-                    plaintext_sha256=plaintext_sha256,
+                    plaintext_sha256=upload_digest,
                     checked_at=now_iso(),
                 )
             raise RuntimeError("Cloud copy digest does not match local file")
@@ -3690,13 +3726,13 @@ def process_upload(job: dict[str, Any]) -> None:
             catalog = ArchiveCatalog(connection)
             catalog.mark_version_verified(
                 version_id,
-                plaintext_sha256=plaintext_sha256,
+                plaintext_sha256=upload_digest,
                 verified_at=verified_at,
             )
             catalog.set_local_fingerprint(
                 vault_id=job["vault_id"],
                 path=job["path"],
-                plaintext_sha256=plaintext_sha256,
+                plaintext_sha256=upload_digest,
                 matched_archive_version_id=version_id,
             )
         set_job_progress(job["id"], int(job.get("total_bytes") or source_stat.st_size))
