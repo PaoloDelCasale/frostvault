@@ -271,6 +271,29 @@ class SecurityWorkflowContractTests(unittest.TestCase):
         self.assertTrue(any("gitleaks detect" in block for block in gitleaks_runs))
 
 
+class TrivyBaselineContractTests(unittest.TestCase):
+    def test_runtime_security_pins_and_rclone_checksums_stay_coherent(self) -> None:
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("FROM rclone/rclone:1.75.0 AS rclone", dockerfile)
+        self.assertIn("msgpack==1.2.1\n", requirements)
+        self.assertIn("setuptools==83.0.0\n", requirements)
+        self.assertIn("pip uninstall --yes pip", dockerfile)
+
+        rclone_checksum = (
+            "aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa"
+        )
+        for path in (
+            WORKFLOWS / "migrations.yml",
+            WORKFLOWS / "aws-s3-integrity.yml",
+        ):
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.name):
+                self.assertIn("RCLONE_VERSION=1.75.0", text)
+                self.assertIn(rclone_checksum, text)
+                self.assertNotIn("1.74.4", text)
+
+
 class ContainerPublishContractTests(unittest.TestCase):
     def test_publish_workflow_pushes_image_to_ghcr(self) -> None:
         path = WORKFLOWS / "publish-image.yml"

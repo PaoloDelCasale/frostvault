@@ -121,6 +121,163 @@ class RuntimeRcloneConfigStorageTests(unittest.TestCase):
                     self.fail("a named fallback must never be created")
         self.assertFalse(self.runtime_directory.exists())
 
+    def test_filename_decoding_batches_and_reuses_repeated_keys(self) -> None:
+        runtime = rclone_runtime.RuntimeRcloneConfig(
+            path=self.root / "runtime.conf",
+            remote_name="vault",
+            config_text="",
+            secrets=None,
+        )
+        calls: list[list[str]] = []
+
+        def fake_run(command, **_kwargs):
+            values = list(command[command.index("vault:") + 1 :])
+            calls.append(values)
+            return SimpleNamespace(
+                returncode=0,
+                stdout="\n".join(f"decoded/{value}" for value in values),
+                stderr="secret-material-must-not-be-read",
+            )
+
+        with patch("app.services.rclone_runtime.subprocess.run", side_effect=fake_run):
+            decoded, failed = rclone_runtime.decode_object_relative_paths(
+                runtime,
+                ["a", "b", "a", "c"],
+            )
+
+        self.assertEqual(
+            decoded,
+            {"a": "decoded/a", "b": "decoded/b", "c": "decoded/c"},
+        )
+        self.assertEqual(failed, set())
+        self.assertEqual(calls, [["a", "b", "c"]])
+
+    def test_filename_decoding_does_not_drop_keys_after_process_budget_page(self) -> None:
+        runtime = rclone_runtime.RuntimeRcloneConfig(
+            path=self.root / "runtime.conf",
+            remote_name="vault",
+            config_text="",
+            secrets=None,
+        )
+        values = [
+            f"encrypted-{index}"
+            for index in range(
+                rclone_runtime.RCLONE_DECODE_BATCH_SIZE
+                * rclone_runtime.RCLONE_DECODE_PROCESS_BUDGET
+                + 1
+            )
+        ]
+
+        def fake_run(command, **_kwargs):
+            arguments = list(command[command.index("vault:") + 1 :])
+            return SimpleNamespace(
+                returncode=0,
+                stdout="\n".join(f"decoded/{value}" for value in arguments),
+                stderr="",
+            )
+
+        with patch("app.services.rclone_runtime.subprocess.run", side_effect=fake_run):
+            decoded, failed = rclone_runtime.decode_object_relative_paths(runtime, values)
+
+        self.assertEqual(len(decoded), len(values))
+        self.assertEqual(failed, set())
+
+    def test_filename_decoding_caps_malformed_page_processes(self) -> None:
+        runtime = rclone_runtime.RuntimeRcloneConfig(
+            path=self.root / "runtime.conf",
+            remote_name="vault",
+            config_text="",
+            secrets=None,
+        )
+        values = [
+            f"malformed-{index}"
+            for index in range(rclone_runtime.RCLONE_DECODE_BATCH_SIZE)
+        ]
+        calls: list[list[str]] = []
+
+        def failed_run(command, **_kwargs):
+            calls.append(list(command[command.index("vault:") + 1 :]))
+            return SimpleNamespace(
+                returncode=1,
+                stdout="ciphertext-output",
+                stderr="password=secret-material",
+            )
+
+        with patch("app.services.rclone_runtime.subprocess.run", side_effect=failed_run):
+            decoded, failed = rclone_runtime.decode_object_relative_paths(runtime, values)
+
+        self.assertLessEqual(
+            len(calls),
+            rclone_runtime.RCLONE_DECODE_PROCESS_BUDGET,
+        )
+        self.assertEqual(decoded, {})
+        self.assertEqual(failed, set(values))
+
+    def test_filename_decoding_preserves_good_keys_around_malformed_key(self) -> None:
+        runtime = rclone_runtime.RuntimeRcloneConfig(
+            path=self.root / "runtime.conf",
+            remote_name="vault",
+            config_text="",
+            secrets=None,
+        )
+        malformed = "malformed"
+        good = [f"good-{index}" for index in range(rclone_runtime.RCLONE_DECODE_BATCH_SIZE - 1)]
+        values = [malformed, *good]
+        calls: list[list[str]] = []
+
+        def fake_run(command, **_kwargs):
+            arguments = list(command[command.index("vault:") + 1 :])
+            calls.append(arguments)
+            if malformed in arguments:
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout="ciphertext-output",
+                    stderr="password=secret-material",
+                )
+            return SimpleNamespace(
+                returncode=0,
+                stdout="\n".join(f"decoded/{value}" for value in arguments),
+                stderr="",
+            )
+
+        with patch("app.services.rclone_runtime.subprocess.run", side_effect=fake_run):
+            decoded, failed = rclone_runtime.decode_object_relative_paths(runtime, values)
+
+        self.assertLessEqual(
+            len(calls),
+            rclone_runtime.RCLONE_DECODE_PROCESS_BUDGET,
+        )
+        self.assertEqual(set(decoded), set(good))
+        self.assertEqual(failed, {malformed})
+        for value in good:
+            self.assertEqual(decoded[value], f"decoded/{value}")
+
+    def test_filename_decoding_failure_does_not_expose_process_output(self) -> None:
+        runtime = rclone_runtime.RuntimeRcloneConfig(
+            path=self.root / "runtime.conf",
+            remote_name="vault",
+            config_text="",
+            secrets=None,
+        )
+
+        def failed_run(_command, **_kwargs):
+            return SimpleNamespace(
+                returncode=1,
+                stdout="ciphertext-output",
+                stderr="password=secret-material",
+            )
+
+        with patch("app.services.rclone_runtime.subprocess.run", side_effect=failed_run):
+            decoded, failed = rclone_runtime.decode_object_relative_paths(
+                runtime,
+                ["encrypted-name"],
+            )
+
+        self.assertEqual(decoded, {})
+        self.assertEqual(failed, {"encrypted-name"})
+        with self.assertRaisesRegex(RuntimeError, "filename decoding failed"):
+            rclone_runtime.decode_object_relative_path(runtime, "encrypted-name")
+
     @unittest.skipUnless(shutil.which("rclone"), "rclone binary is required")
     def test_anonymous_memfd_config_is_accepted_by_rclone(self) -> None:
         with rclone_runtime.vault_rclone_config(self.vault) as runtime:

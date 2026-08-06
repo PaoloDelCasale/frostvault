@@ -285,6 +285,51 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             "confirm_rename must persist a durable vault_file_renamed audit event",
         )
 
+    def test_issue_198_invalid_paths_have_one_stable_validation_contract(self) -> None:
+        old_id = self._seed_digest_rename(
+            old_path="api/old.txt",
+            new_path="api/new.txt",
+        )
+        self._authenticate()
+        self._select_vault()
+
+        requests = [
+            self.client.get("/api/file-history", params={"path": "../secret"}),
+            self.client.get("/api/files/versions", params={"path": ""}),
+            self.client.post(
+                "/api/recover/estimate",
+                json={"path": ""},
+                headers=self._headers(),
+            ),
+            self.client.post(
+                "/api/upload",
+                json={"path": "/absolute.txt"},
+                headers=self._headers(),
+            ),
+            self.client.post(
+                "/api/confirm-rename",
+                json={"vault_file_id": old_id, "new_path": ""},
+                headers=self._headers(),
+            ),
+            self.client.post(
+                "/api/confirm-folder-rename",
+                json={"old_prefix": "", "new_prefix": "new"},
+                headers=self._headers(),
+            ),
+        ]
+
+        for response in requests:
+            with self.subTest(response=response.request.url):
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(
+                    response.json(),
+                    {
+                        "detail": "Invalid path",
+                        "message_key": "api.invalid_path",
+                        "message": "Invalid path",
+                    },
+                )
+
     def test_issue_188_rejects_unknown_stale_and_foreign_ids_without_side_effects(
         self,
     ) -> None:

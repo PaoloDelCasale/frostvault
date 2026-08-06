@@ -21,6 +21,7 @@ export type AdminVaultMembersResponse = components["schemas"]["AdminVaultMembers
 export type AdminVaultRelocatePayload = components["schemas"]["AdminVaultRelocatePayload"];
 export type AdminVaultRelocationResponse = components["schemas"]["AdminVaultRelocationResponse"];
 export type AdminVaultsResponse = components["schemas"]["AdminVaultsResponse"];
+export type ApiErrorResponse = components["schemas"]["ApiErrorResponse"];
 export type ArchiveListItem = components["schemas"]["ArchiveListItem"];
 export type ArchiveVersionItem = components["schemas"]["ArchiveVersionItem"];
 export type ArchiveVersionSummary = components["schemas"]["ArchiveVersionSummary"];
