@@ -105,13 +105,13 @@ class PlainUploadPrefixedRemoteTests(unittest.TestCase):
             def fake_rclone(*args, **kwargs) -> None:
                 command = tuple(str(arg) for arg in args if not callable(arg))
                 rclone_calls.append(command)
-                if command[:1] != ("copyto",) or len(command) < 3:
-                    return
-                origin, destination = command[1], command[2]
-                if ":" in origin and not Path(origin).exists():
-                    out = Path(destination)
-                    out.parent.mkdir(parents=True, exist_ok=True)
-                    out.write_bytes(payload)
+
+            def fake_rclone_stream(*args, **kwargs) -> int:
+                command = tuple(str(arg) for arg in args if not callable(arg))
+                rclone_calls.append(command)
+                self.assertEqual(command[:2], ("cat", expected_remote))
+                kwargs["on_chunk"](payload)
+                return len(payload)
 
             database_settings = SimpleNamespace(
                 db_backend="sqlite",
@@ -128,6 +128,7 @@ class PlainUploadPrefixedRemoteTests(unittest.TestCase):
                     patch("app.storage.validate_cloud_vault"),
                     patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch("app.storage.run_rclone", side_effect=fake_rclone),
+                    patch("app.storage.run_rclone_stream", side_effect=fake_rclone_stream),
                     patch(
                         "app.storage.s3_client",
                         return_value=SimpleNamespace(
@@ -148,11 +149,12 @@ class PlainUploadPrefixedRemoteTests(unittest.TestCase):
             upload_destinations = [
                 call[2] for call in rclone_calls if call[:1] == ("copyto",)
             ]
+            cat_calls = [call for call in rclone_calls if call[:1] == ("cat",)]
             self.assertGreaterEqual(len(rclone_calls), 2)
             self.assertEqual(rclone_calls[0][2], expected_remote)
-            self.assertEqual(rclone_calls[1][1], expected_remote)
+            self.assertEqual(cat_calls[0][1], expected_remote)
             self.assertIn(expected_remote, upload_destinations)
-            self.assertEqual(head_keys, [expected_key])
+            self.assertEqual(head_keys, [expected_key, expected_key])
 
 
 class PlainRenamePrefixedRemoteTests(unittest.TestCase):
