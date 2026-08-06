@@ -9,7 +9,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, IO, Iterator
+from typing import Any, IO, Iterator, Sequence
 
 try:  # FrostVault production deployments are Linux/POSIX containers.
     import fcntl
@@ -30,6 +30,14 @@ RUNTIME_REMOTE_NAME = "vault"
 RUNTIME_DIRECTORY_NAME = "frostvault-rclone-runtime"
 _LEGACY_RUNTIME_ROOT_MODE = 0o700
 _RUNTIME_CONFIG_MODE = 0o600
+
+# Filename decoding accepts multiple arguments. Keep both the argument page
+# and each page's recovery/split budget hard bounded so a cloud listing cannot
+# create an unbounded subprocess storm. The budget is reset for every page;
+# exhausting it leaves only that page's unattempted keys unresolved.
+RCLONE_DECODE_BATCH_SIZE = 256
+RCLONE_DECODE_PROCESS_BUDGET = 32
+RCLONE_DECODE_TIMEOUT_SECONDS = 30
 
 
 class RuntimeConfigStorageError(RuntimeError):
@@ -357,27 +365,109 @@ def encode_object_relative_path(
     return encoded
 
 
-def decode_object_relative_path(
-    runtime: RuntimeRcloneConfig, encrypted_relative: str
-) -> str:
-    completed = subprocess.run(
-        [
+def decode_object_relative_paths(
+    runtime: RuntimeRcloneConfig,
+    encrypted_relatives: Sequence[str],
+    *,
+    max_processes: int = RCLONE_DECODE_PROCESS_BUDGET,
+) -> tuple[dict[str, str], set[str]]:
+    """Decode many encrypted names with bounded page/split work.
+
+    Rclone's backend command accepts multiple filename arguments and emits one
+    decoded name per line. A failed page is recursively split within its hard
+    process budget; the budget is reset only at the next page so large
+    listings do not classify later valid keys as failures. Error output
+    is intentionally discarded because it may contain ciphertext or backend
+    configuration details.
+    """
+    unique = list(dict.fromkeys(str(value) for value in encrypted_relatives if value))
+    if not unique or max_processes <= 0:
+        return {}, set(unique)
+
+    decoded: dict[str, str] = {}
+    failed: set[str] = set()
+    process_count = 0
+
+    def run_batch(values: Sequence[str]) -> dict[str, str] | None:
+        nonlocal process_count
+        # ``max_processes`` is a hard per-page ceiling. Once exhausted, the
+        # caller must classify this group as unresolved instead of starting a
+        # new subprocess or resetting the page budget.
+        if process_count >= max_processes:
+            return None
+        process_count += 1
+        command = [
             "rclone",
             "--config",
             str(runtime.path),
             "backend",
             "decode",
             f"{runtime.remote_name}:",
-            encrypted_relative,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+            *values,
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=RCLONE_DECODE_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            # This is an external-process boundary. Never propagate its raw
+            # diagnostics: they may contain ciphertext, passwords, or remote
+            # configuration values.
+            return None
+        if completed.returncode != 0:
+            return None
+        lines = (completed.stdout or "").splitlines()
+        if len(lines) != len(values):
+            return None
+        result: dict[str, str] = {}
+        for encrypted, line in zip(values, lines):
+            value = line.strip()
+            if not value:
+                return None
+            result[encrypted] = value
+        return result
+
+    def decode_group(values: Sequence[str]) -> None:
+        if not values:
+            return
+        if process_count >= max_processes:
+            # No subprocess remains for this group on the current page. Keep
+            # every unattempted key explicitly unknown and never recurse past
+            # the resource boundary.
+            failed.update(values)
+            return
+        result = run_batch(values)
+        if result is not None:
+            decoded.update(result)
+            return
+        if len(values) == 1:
+            failed.add(values[0])
+            return
+        midpoint = len(values) // 2
+        decode_group(values[:midpoint])
+        decode_group(values[midpoint:])
+
+    for offset in range(0, len(unique), RCLONE_DECODE_BATCH_SIZE):
+        # A page is the resource boundary: valid keys on later pages must not
+        # inherit split failures from an earlier page.
+        process_count = 0
+        decode_group(unique[offset : offset + RCLONE_DECODE_BATCH_SIZE])
+    return decoded, failed
+
+
+def decode_object_relative_path(
+    runtime: RuntimeRcloneConfig, encrypted_relative: str
+) -> str:
+    """Compatibility wrapper for exact-version and direct caller seams."""
+    decoded, failed = decode_object_relative_paths(
+        runtime,
+        [encrypted_relative],
+        max_processes=1,
     )
-    if completed.returncode != 0:
-        message = (completed.stderr or completed.stdout or "rclone decode failed").strip()
-        raise RuntimeError(message[-1500:])
-    decoded = completed.stdout.strip()
-    if not decoded:
-        raise RuntimeError("rclone decode returned an empty path")
-    return decoded
+    if encrypted_relative in failed or encrypted_relative not in decoded:
+        raise RuntimeError("Rclone filename decoding failed")
+    return decoded[encrypted_relative]

@@ -10,6 +10,7 @@ import {
   configureApiClient,
   createAppQueryClient,
   resetApiClientForTests,
+  type ApiFetch,
 } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { NotificationsSection } from "@/pages/admin/NotificationsSection";
@@ -39,7 +40,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function renderNotifications(fetchMock: ReturnType<typeof vi.fn>) {
+function renderNotifications(fetchMock: ApiFetch) {
   configureApiClient({ fetch: fetchMock, csrfToken: "csrf" });
   render(
     <ApiQueryProvider client={createAppQueryClient()}>
