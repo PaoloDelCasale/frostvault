@@ -339,7 +339,10 @@ describe("VaultCreatePage", () => {
       "status",
     );
 
-    const createObjectURL = vi.fn(() => "blob:recovery-export");
+    const createObjectURL = vi.fn((blob: Blob) => {
+      if (!(blob instanceof Blob)) throw new TypeError("expected a Blob");
+      return "blob:recovery-export";
+    });
     const revokeObjectURL = vi.fn();
     vi.stubGlobal("URL", {
       ...URL,

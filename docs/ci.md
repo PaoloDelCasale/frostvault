@@ -11,7 +11,7 @@ Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.y
 | --- | --- | --- |
 | Unit and migration tests | Python `unittest` suite against SQLite, partitioned deterministically by test module across four parallel shards and reported through one stable aggregate check. PostgreSQL-only cases skip here and run in the parallel job below. | None. Live AWS/MinIO env vars are intentionally unset so S3 integration cases skip. |
 | PostgreSQL migration and concurrency tests | PostgreSQL-specific migration and shared rate-limit concurrency cases against `postgres:16`. | Ephemeral Postgres service only. |
-| Frontend lint, unit tests, and build | ESLint, Vitest, TypeScript and the production Vite/PWA build. Runs in parallel with both Python jobs. | None. |
+| Frontend lint, typecheck, unit tests, and build | Regenerates the committed OpenAPI TypeScript artifacts from `frontend/openapi.json`, fails on generated-artifact drift, runs the strict browser/Node/Vitest/Playwright TypeScript projects, ESLint (including `e2e/`), Vitest, and the production Vite/PWA build. Runs in parallel with both Python jobs. | None. |
 | Playwright e2e (375px + desktop) | Chromium Playwright against uvicorn + SQLite with seeded fixtures: eleven archive/admin flows plus touch/a11y checks at 375×667 and 1280×800 | None. Placeholder AWS env only; no live cloud calls. Browsers cached under `~/.cache/ms-playwright`. Uses `E2E_PYTHON=python` (setup-python on PATH; no repo `.venv` in CI). Failure screenshots upload as `playwright-e2e-failures`; successful 375px shots as `playwright-e2e-375px`. |
 | Production image PostgreSQL backup | Builds the production Docker image, checks `pg_dump`/`pg_restore`/`createdb`/`dropdb`/`psql`, then runs Alembic + `backup_upgrade --skip-upgrade` + isolated restore verification against `postgres:16` | Ephemeral Postgres service only. |
 | S3-compatible integrity (MinIO) | Real Rclone + MinIO upload/recovery SHA-256 proofs (plain, crypt, empty, Unicode, multipart cutoff) plus prefix cleanup | Ephemeral MinIO only (`minioadmin`). No AWS account. |
@@ -87,9 +87,16 @@ token to a workflow chosen by pull-request activity.
 # Export OpenAPI without a running server (from the repository root)
 .venv/bin/python scripts/export_openapi.py frontend/openapi.json
 
-# Frontend SPA and generated API types (from frontend/)
-npm ci && npm run generate:api && npm run lint && npm run test && npm run build
-# Generated artifacts are committed; CI fails if either schema or TypeScript drifts.
+# Frontend SPA, generated API artifacts, and strict environment typechecks (from frontend/)
+npm ci
+npm run generate:api
+git diff --exit-code -- openapi.json src/api/openapi.generated.ts src/api/types.ts
+npm run typecheck
+npm run lint
+npm run test
+npm run build
+# Generated artifacts are committed; CI fails if the schema or TypeScript drifts.
+# `npm run lint` includes e2e/; `npm run typecheck` covers browser, Node, Vitest, and Playwright projects.
 
 # Playwright e2e (requires a built frontend/dist and Chromium)
 npx playwright install chromium

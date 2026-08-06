@@ -152,6 +152,8 @@ function stubObjectUrls() {
   };
 }
 
+const INTEGRITY_DIGEST = "01119f43c3f2170b4eb39ef1494a06214d1a9679807666f103e18ceae596fb8c";
+
 const INTEGRITY_RUN: MetadataBackupRun = {
   id: 10,
   created_at: "2026-07-10T00:00:00+00:00",
@@ -159,7 +161,7 @@ const INTEGRITY_RUN: MetadataBackupRun = {
   reason: "manual",
   backend: "sqlite",
   status: "succeeded",
-  digest_sha256: "01119f43c3f2170b4eb39ef1494a06214d1a9679807666f103e18ceae596fb8c",
+  digest_sha256: INTEGRITY_DIGEST,
   database_sha256: "b".repeat(64),
   s3_key: "system/backups/metadata-10.bak.enc",
   size_bytes: 21,
@@ -311,7 +313,7 @@ describe("MetadataBackupsSection", () => {
     try {
       configureIntegrityScenario(
         "valid metadata backup",
-        INTEGRITY_RUN.digest_sha256.toUpperCase(),
+        INTEGRITY_DIGEST.toUpperCase(),
       );
       renderSection();
       await screen.findByRole("heading", { name: "Metadata backups", level: 2 });
@@ -364,7 +366,7 @@ describe("MetadataBackupsSection", () => {
         const run = { ...INTEGRITY_RUN, digest_sha256: digest };
         configureIntegrityScenario(
           "valid metadata backup",
-          INTEGRITY_RUN.digest_sha256,
+          INTEGRITY_DIGEST,
           run,
         );
         renderSection();
@@ -388,7 +390,7 @@ describe("MetadataBackupsSection", () => {
     try {
       configureIntegrityScenario(
         "corrupted metadata backup",
-        INTEGRITY_RUN.digest_sha256,
+        INTEGRITY_DIGEST,
       );
       renderSection();
       await screen.findByRole("heading", { name: "Metadata backups", level: 2 });

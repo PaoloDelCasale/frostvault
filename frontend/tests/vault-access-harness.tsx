@@ -3,13 +3,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { render, type RenderResult } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { vi } from "vitest";
+import { vi, type Mock } from "vitest";
 
 import {
   ApiQueryProvider,
   configureApiClient,
   createAppQueryClient,
   resetApiClientForTests,
+  type ApiFetch,
 } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { VaultAccessPage } from "@/pages/vault-access";
@@ -81,7 +82,7 @@ type HarnessOptions = {
   vaultId?: number;
   vaultName?: string;
   onTransferred?: () => void;
-  fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  fetchImpl?: ApiFetch;
 };
 
 export function createVaultAccessFetch(
@@ -90,9 +91,9 @@ export function createVaultAccessFetch(
     | Response
     | ((init?: RequestInit) => Response | Promise<Response>)
   > = {},
-): ReturnType<typeof vi.fn> {
+): Mock<ApiFetch> {
   const en = loadCatalog("en");
-  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+  return vi.fn<ApiFetch>(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
     const key = `${method} ${url}`;
@@ -132,10 +133,10 @@ export function createVaultAccessFetch(
 
 export function renderVaultAccess(
   options: HarnessOptions = {},
-): RenderResult & { fetchMock: ReturnType<typeof vi.fn> } {
+): RenderResult & { fetchMock: Mock<ApiFetch> } {
   resetApiClientForTests();
   const fetchMock = options.fetchImpl
-    ? (options.fetchImpl as ReturnType<typeof vi.fn>)
+    ? (options.fetchImpl as Mock<ApiFetch>)
     : createVaultAccessFetch();
   configureApiClient({ fetch: fetchMock });
   const client = createAppQueryClient();
