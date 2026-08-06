@@ -92,7 +92,7 @@ describe("FileBrowser offline shell and stale listing (seams 2–3)", () => {
       listing,
     );
     configureApiClient({
-      fetchImpl: async () => {
+      fetch: async () => {
         throw new TypeError("Failed to fetch");
       },
     });
@@ -130,7 +130,7 @@ describe("FileBrowser offline shell and stale listing (seams 2–3)", () => {
       listing,
     );
     configureApiClient({
-      fetchImpl: async () => {
+      fetch: async () => {
         throw new TypeError("Failed to fetch");
       },
     });

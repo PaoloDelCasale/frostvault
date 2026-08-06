@@ -6,6 +6,7 @@ import {
   configureApiClient,
   createAppQueryClient,
   resetApiClientForTests,
+  type ApiFetch,
 } from "@/api";
 import { NotificationCenter } from "@/components/NotificationCenter";
 
@@ -49,7 +50,7 @@ function translate(key: string, params: Record<string, unknown> = {}): string {
   );
 }
 
-function renderCenter(fetchMock: ReturnType<typeof vi.fn>) {
+function renderCenter(fetchMock: ApiFetch) {
   configureApiClient({ fetch: fetchMock, csrfToken: "notification-csrf" });
   return render(
     <NotificationCenter
