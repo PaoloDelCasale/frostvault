@@ -447,6 +447,27 @@
       ],
       "type": "object"
     },
+    "ApiErrorResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "message_key": {
+          "const": "api.invalid_path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "detail",
+        "message_key",
+        "message"
+      ],
+      "type": "object"
+    },
     "ArchiveListItem": {
       "anyOf": [
         {

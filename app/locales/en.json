@@ -178,6 +178,7 @@
   "api.vault_selected": "Vault selected",
   "api.scan_in_progress": "Scan already in progress",
   "api.scan_started": "Scan of {name} started",
+  "api.invalid_path": "Invalid path",
   "api.upload_started": "Upload started",
   "api.recovery_started": "Recovery started",
   "api.free_space_started": "Freeing local space started",

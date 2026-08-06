@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import configparser
 import hashlib
 import json
@@ -16,6 +17,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
+from urllib.parse import urlencode
 
 import boto3
 from boto3.s3.transfer import TransferConfig
@@ -30,6 +32,7 @@ from .i18n import DEFAULT_LOCALE, format_message_params, translate
 from .system_settings import effective_settings
 from .services.rclone_runtime import (
     decode_object_relative_path,
+    decode_object_relative_paths,
     encode_object_relative_path,
     vault_rclone_config,
 )
@@ -85,6 +88,11 @@ from .services.operation_policies import (
 
 
 runtime_status: dict[int, dict[str, Any]] = {}
+# Short-lived journals compensate committed observation batches if a pinned root
+# or scan generation fails before the final catalog transaction. They are
+# process-local; a crash remains conservative because no missing transition is
+# committed until the scan completes.
+_active_scan_journals: dict[tuple[int, str], dict[str, Any]] = {}
 scan_locks: dict[int, threading.Lock] = {}
 status_lock = threading.Lock()
 operation_process_lock = threading.Lock()
@@ -106,6 +114,23 @@ VERIFY_TEMPORARY_RE = re.compile(r"\..+\.verify-[0-9a-f]{32}\.tmp")
 UPLOAD_RETRY_BASE_SECONDS = 2
 UPLOAD_RETRY_CAP_SECONDS = 300
 UPLOAD_RETRY_MAX_ATTEMPTS = 8
+
+# Local scans deliberately keep filesystem work outside write transactions.
+# This is small enough to give other SQLite writers frequent admission while
+# avoiding one transaction per catalogued entry.
+LOCAL_SCAN_WRITE_BATCH_SIZE = 250
+
+# S3 CopyObject is limited to objects up to 5 GiB.  Multipart copy keeps the
+# source VersionId on every UploadPartCopy request and uses a deliberately
+# conservative part size so even the largest supported object stays below the
+# provider's 10,000-part limit.
+S3_SINGLE_COPY_MAX_BYTES = 5 * 1024**3
+S3_MULTIPART_COPY_MIN_PART_BYTES = 5 * 1024**2
+S3_MULTIPART_COPY_PART_BYTES = 128 * 1024**2
+S3_MULTIPART_COPY_MAX_PARTS = 10_000
+S3_COPY_CHECKSUM_ALGORITHM = "SHA256"
+S3_COPY_CHECKSUM_TYPE = "FULL_OBJECT"
+S3_OBJECT_HASH_CHUNK_BYTES = 1024 * 1024
 
 # A claim is intentionally durable rather than process-local.  Five minutes is
 # long enough for ordinary provider calls while status/progress checkpoints renew
@@ -169,6 +194,20 @@ def upload_retry_delay_seconds(attempt: int) -> int:
         attempt = 1
     delay = UPLOAD_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
     return min(delay, UPLOAD_RETRY_CAP_SECONDS)
+
+
+class InvalidLogicalPath(ValueError):
+    """A caller supplied a path that cannot be a Vault-relative logical path.
+
+    This remains a ``ValueError`` subclass for direct-call compatibility, but
+    the API maps this dedicated domain exception rather than catching every
+    ``ValueError`` raised by application code.
+    """
+
+    message_key = "api.invalid_path"
+
+    def __init__(self) -> None:
+        super().__init__("Invalid path")
 
 
 class OperationCancelled(RuntimeError):
@@ -461,9 +500,18 @@ class _ThrottledByteProgress:
 
 
 def safe_relative_path(value: str) -> PurePosixPath:
-    candidate = PurePosixPath(value.replace("\\", "/"))
+    """Normalize one non-empty, traversal-safe Vault-relative logical path."""
+    if not isinstance(value, str) or "\x00" in value:
+        raise InvalidLogicalPath()
+    normalized = value.replace("\\", "/")
+    # PurePosixPath intentionally does not treat a Windows drive prefix as an
+    # absolute path. Reject it explicitly because callers may submit paths
+    # produced on another platform.
+    if re.match(r"^[A-Za-z]:/", normalized):
+        raise InvalidLogicalPath()
+    candidate = PurePosixPath(normalized)
     if candidate.is_absolute() or not candidate.parts or ".." in candidate.parts:
-        raise ValueError("Invalid path")
+        raise InvalidLogicalPath()
     return candidate
 
 
@@ -565,6 +613,19 @@ def vault_encrypts_names(vault: dict[str, Any]) -> bool:
     return vault.get("encryption_mode") == "crypt"
 
 
+_UNSET_DECODED_PATH = object()
+
+
+def _cloud_relative_key(key: str, prefix_value: str) -> str | None:
+    prefix = f"{prefix_value.strip('/')}/" if prefix_value.strip('/') else ""
+    if prefix and not key.startswith(prefix):
+        return None
+    relative = key[len(prefix):]
+    if not relative or relative.endswith('/'):
+        return None
+    return relative
+
+
 def object_key_to_path(
     key: str,
     prefix_value: str,
@@ -572,23 +633,30 @@ def object_key_to_path(
     *,
     encrypted_names: bool = False,
     runtime: Any | None = None,
+    decoded_relative_path: str | None | object = _UNSET_DECODED_PATH,
 ) -> str | None:
-    prefix = f"{prefix_value.strip('/')}/" if prefix_value.strip("/") else ""
-    if prefix and not key.startswith(prefix):
+    relative = _cloud_relative_key(key, prefix_value)
+    if relative is None:
         return None
-    relative = key[len(prefix):]
     if encrypted_names:
-        if not relative or relative.endswith("/") or runtime is None:
+        if runtime is None:
             return None
-        try:
-            relative = decode_object_relative_path(runtime, relative)
-        except RuntimeError:
+        if decoded_relative_path is _UNSET_DECODED_PATH:
+            try:
+                relative = decode_object_relative_path(runtime, relative)
+            except RuntimeError:
+                return None
+        elif decoded_relative_path is None:
+            # The batch decoder deliberately makes one bad key unknown rather
+            # than allowing a partial/ambiguous plaintext path into the catalog.
             return None
+        else:
+            relative = str(decoded_relative_path)
     elif is_crypt:
-        if not relative.endswith(".bin"):
+        if not relative.endswith('.bin'):
             return None
         relative = relative[:-4]
-    if not relative or relative.endswith("/"):
+    if not relative or relative.endswith('/'):
         return None
     try:
         return safe_relative_path(relative).as_posix()
@@ -670,11 +738,72 @@ def _scan_tree(
     *,
     root: Path,
     allow_chunk_commits: bool,
+    finalize_missing: bool = True,
+    scan_started_at: str | None = None,
+    scan_journal: dict[str, Any] | None = None,
 ) -> tuple[int, str | None]:
-    """Catalog one root, leaving transaction ownership to the caller."""
+    """Observe a root with short catalog-write transactions.
+
+    Directory traversal and metadata reads happen before each bounded write
+    batch.  The caller can defer the missing-copy transition until it has
+    proved that the complete scan still owns the enrolled root.
+    """
     vault_id = int(vault["id"])
     count = 0
-    catalog = ArchiveCatalog(connection)
+    scan_started_at = scan_started_at or scan_id
+    pending: list[tuple[str, str, int | None, int | None, str]] = []
+
+    def _persisted_scan(vault_row: dict[str, Any]) -> bool:
+        return "root_identity" in vault_row or "root_identity_version" in vault_row
+
+    def flush() -> None:
+        nonlocal count
+        if not pending:
+            return
+        if _persisted_scan(vault):
+            _current_verified_scan_row(connection, vault)
+        if scan_journal is not None:
+            entries = scan_journal.setdefault("entries", {})
+            for relative, _file_type, _size, _mtime_ns, _observed_at in pending:
+                if relative in entries:
+                    continue
+                entries[relative] = connection.execute(
+                    """
+                    SELECT vf.id AS vault_file_id,
+                           vf.status AS vault_file_status,
+                           vf.retired_at AS vault_file_retired_at,
+                           lc.presence, lc.file_type, lc.size, lc.mtime_ns,
+                           lc.plaintext_sha256, lc.matched_archive_version_id,
+                           lc.last_seen_at, lc.observed_at
+                    FROM vault_files vf
+                    JOIN file_paths fp
+                      ON fp.vault_file_id=vf.id
+                     AND fp.vault_id=vf.vault_id
+                     AND fp.path=%s
+                     AND fp.valid_to IS NULL
+                    LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
+                    WHERE vf.vault_id=%s
+                    """,
+                    (relative, vault_id),
+                ).fetchone()
+        catalog = ArchiveCatalog(connection)
+        for relative, file_type, size, mtime_ns, observed_at in pending:
+            catalog.observe_local_copy(
+                vault_id=vault_id,
+                path=relative,
+                file_type=file_type,
+                size=size,
+                mtime_ns=mtime_ns,
+                seen_at=scan_id,
+                observed_at=observed_at,
+            )
+        count += len(pending)
+        pending.clear()
+        if _persisted_scan(vault):
+            _current_verified_scan_row(connection, vault)
+        if allow_chunk_commits:
+            connection.commit()
+
     for entry in root.rglob("*"):
         try:
             if entry.is_symlink():
@@ -703,29 +832,35 @@ def _scan_tree(
         if is_restore_temporary_name(entry.name):
             continue
         relative = entry.relative_to(root).as_posix()
-        catalog.observe_local_copy(
-            vault_id=vault_id,
-            path=relative,
-            file_type=file_type,
-            size=entry_stat.st_size,
-            mtime_ns=entry_stat.st_mtime_ns,
-            seen_at=scan_id,
-            observed_at=now_iso(),
+        pending.append(
+            (
+                relative,
+                file_type,
+                entry_stat.st_size,
+                entry_stat.st_mtime_ns,
+                now_iso(),
+            )
         )
-        count += 1
-        if allow_chunk_commits and count % 1000 == 0:
-            connection.commit()
+        if len(pending) >= LOCAL_SCAN_WRITE_BATCH_SIZE:
+            flush()
+    flush()
+
+    if _persisted_scan(vault):
+        _current_verified_scan_row(connection, vault)
     access = source_layout.vault_local_access(vault["source_root"])
     alias = access.volume_alias
     safe_scan_result = access.local_operations_allowed or access.volume_health == "scan_required"
-    if safe_scan_result and (
+    if finalize_missing and safe_scan_result and (
         alias is None or source_layout.should_emit_local_copy_removals(alias)
     ):
-        catalog.mark_unseen_local_copies_missing(
+        ArchiveCatalog(connection).mark_unseen_local_copies_missing(
             vault_id=vault_id,
             seen_at=scan_id,
             observed_at=now_iso(),
+            scan_started_at=scan_started_at,
         )
+        if allow_chunk_commits:
+            connection.commit()
     completed_alias = (
         alias
         if safe_scan_result and alias and source_layout.requires_full_local_scan(alias)
@@ -740,6 +875,8 @@ def scan_tree(
     *,
     _connection: Any | None = None,
     _root: Path | None = None,
+    _finalize_missing: bool = True,
+    _scan_journal: dict[str, Any] | None = None,
 ) -> int:
     access = source_layout.vault_local_access(vault["source_root"])
     if not access.local_operations_allowed and access.volume_health != "scan_required":
@@ -751,12 +888,26 @@ def scan_tree(
         raise RuntimeError(f"Folder is not available in the container: {root}")
     if _connection is not None:
         count, _completed_alias = _scan_tree(
-            _connection, vault, scan_id, root=root, allow_chunk_commits=False
+            _connection,
+            vault,
+            scan_id,
+            root=root,
+            allow_chunk_commits=True,
+            finalize_missing=_finalize_missing,
+            scan_started_at=scan_id,
+            scan_journal=_scan_journal,
         )
         return count
     with db() as connection:
         count, completed_alias = _scan_tree(
-            connection, vault, scan_id, root=root, allow_chunk_commits=True
+            connection,
+            vault,
+            scan_id,
+            root=root,
+            allow_chunk_commits=True,
+            finalize_missing=_finalize_missing,
+            scan_started_at=scan_id,
+            scan_journal=_scan_journal,
         )
     if completed_alias:
         source_layout.note_full_local_scan_completed(completed_alias)
@@ -883,37 +1034,55 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
     if prefix:
         kwargs["Prefix"] = f"{prefix}/"
     count = 0
+    raw_versions: list[dict[str, Any]] = []
+    raw_markers: list[dict[str, Any]] = []
+
+    # Complete the provider listing before decoding. This lets one bounded
+    # decoder batch reuse a ciphertext name across every historical Version and
+    # Delete Marker, including entries split across paginator pages.
+    for page in paginator.paginate(**kwargs):
+        raw_versions.extend(page.get("Versions", []))
+        raw_markers.extend(page.get("DeleteMarkers", []))
+
+    decoded_paths: dict[str, str] = {}
+    decode_failures: set[str] = set()
+    runtime: Any | None = None
+    if encrypts_names:
+        with vault_rclone_config(vault) as runtime_config:
+            runtime = runtime_config
+            encrypted_relatives = [
+                relative
+                for item in [*raw_versions, *raw_markers]
+                for relative in [_cloud_relative_key(item["Key"], prefix)]
+                if relative is not None
+            ]
+            decoded_paths, decode_failures = decode_object_relative_paths(
+                runtime_config,
+                encrypted_relatives,
+            )
+
     versions: list[tuple[str, str, dict[str, Any]]] = []
     markers: list[tuple[str, str, dict[str, Any]]] = []
 
-    def _collect(runtime: Any | None = None) -> None:
-        for page in paginator.paginate(**kwargs):
-            for item in page.get("Versions", []):
-                logical_path = object_key_to_path(
-                    item["Key"],
-                    prefix,
-                    is_crypt,
-                    encrypted_names=encrypts_names,
-                    runtime=runtime,
-                )
-                if logical_path is not None:
-                    versions.append((logical_path, item["VersionId"], item))
-            for item in page.get("DeleteMarkers", []):
-                logical_path = object_key_to_path(
-                    item["Key"],
-                    prefix,
-                    is_crypt,
-                    encrypted_names=encrypts_names,
-                    runtime=runtime,
-                )
-                if logical_path is not None:
-                    markers.append((logical_path, item["VersionId"], item))
+    def _convert(
+        items: list[dict[str, Any]],
+        destination: list[tuple[str, str, dict[str, Any]]],
+    ) -> None:
+        for item in items:
+            decode = decoded_paths.get(_cloud_relative_key(item["Key"], prefix))
+            logical_path = object_key_to_path(
+                item["Key"],
+                prefix,
+                is_crypt,
+                encrypted_names=encrypts_names,
+                runtime=runtime,
+                decoded_relative_path=decode if encrypts_names else _UNSET_DECODED_PATH,
+            )
+            if logical_path is not None:
+                destination.append((logical_path, item["VersionId"], item))
 
-    if encrypts_names:
-        with vault_rclone_config(vault) as runtime:
-            _collect(runtime)
-    else:
-        _collect()
+    _convert(raw_versions, versions)
+    _convert(raw_markers, markers)
 
     def remote_timestamp(item: dict[str, Any]) -> str:
         value = item.get("LastModified")
@@ -982,11 +1151,14 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                 observed_at=now_iso(),
             )
             count += 1
-        catalog.mark_unseen_archive_versions_missing(
-            vault_id=vault["id"],
-            scan_id=scan_id,
-            scan_started_at=scan_id,
-        )
+        # An unknown encrypted key is not evidence that its prior catalog rows
+        # disappeared. Fail closed by retaining their last known availability.
+        if not decode_failures:
+            catalog.mark_unseen_archive_versions_missing(
+                vault_id=vault["id"],
+                scan_id=scan_id,
+                scan_started_at=scan_id,
+            )
     return count
 
 
@@ -1088,12 +1260,228 @@ def _current_verified_scan_row(connection: Any, vault: dict[str, Any]) -> dict[s
     return current
 
 
+def _scan_generation_is_current(vault_id: int, scan_id: str) -> bool:
+    """Reject a completion path superseded by a newer in-process scan."""
+    with status_lock:
+        status = runtime_status.get(int(vault_id))
+        if not status or "scan_id" not in status:
+            # Direct unit-test callers do not enter through scan_vault and have
+            # no runtime generation to compare.
+            return True
+        return status.get("scan_id") == scan_id
+
+
+def _unfingerprinted_local_rows(vault_id: int) -> list[dict[str, Any]]:
+    with db() as connection:
+        return connection.execute(
+            """
+            SELECT vf.id AS vault_file_id, fp.path, lc.size, lc.mtime_ns
+            FROM vault_files vf
+            JOIN file_paths fp
+              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+            JOIN local_copies lc ON lc.vault_file_id=vf.id
+            WHERE vf.vault_id=%s
+              AND vf.status='active'
+              AND lc.presence='present'
+              AND lc.file_type='regular'
+              AND lc.plaintext_sha256 IS NULL
+            ORDER BY lower(fp.path)
+            """,
+            (vault_id,),
+        ).fetchall()
+
+
+def _collect_local_fingerprint_updates(
+    vault: dict[str, Any], root: Path
+) -> list[dict[str, Any]]:
+    """Hash Local Copies without holding a database write transaction."""
+    updates: list[dict[str, Any]] = []
+    for row in _unfingerprinted_local_rows(int(vault["id"])):
+        try:
+            local_path = safe_local_path(str(root), row["path"])
+            if not local_path.is_file():
+                continue
+            digest, stat_result = hash_stable_regular_file(local_path)
+        except (OSError, ValueError, RuntimeError):
+            continue
+        updates.append(
+            {
+                "vault_file_id": row["vault_file_id"],
+                "path": row["path"],
+                "old_size": row["size"],
+                "old_mtime_ns": row["mtime_ns"],
+                "size": stat_result.st_size,
+                "mtime_ns": stat_result.st_mtime_ns,
+                "digest": digest,
+                "observed_at": now_iso(),
+            }
+        )
+    return updates
+
+
+def _apply_local_fingerprint_updates(
+    vault: dict[str, Any],
+    scan_id: str,
+    updates: list[dict[str, Any]],
+) -> None:
+    """Publish hashed observations in bounded compare-and-swap batches."""
+    persisted = "root_identity" in vault or "root_identity_version" in vault
+    for offset in range(0, len(updates), LOCAL_SCAN_WRITE_BATCH_SIZE):
+        batch = updates[offset : offset + LOCAL_SCAN_WRITE_BATCH_SIZE]
+        with db() as connection:
+            if persisted:
+                _current_verified_scan_row(connection, vault)
+                if not _scan_generation_is_current(int(vault["id"]), scan_id):
+                    raise _ScanRootMismatch("Local scan was superseded")
+            for update in batch:
+                # A watcher may have replaced the file after hashing. The
+                # predicate prevents a stale digest from overwriting it.
+                connection.execute(
+                    """
+                    UPDATE local_copies
+                    SET size=%s,
+                        mtime_ns=%s,
+                        plaintext_sha256=%s,
+                        matched_archive_version_id=NULL,
+                        last_seen_at=%s,
+                        observed_at=%s
+                    WHERE vault_file_id=%s
+                      AND presence='present'
+                      AND file_type='regular'
+                      AND plaintext_sha256 IS NULL
+                      AND (size=%s OR (size IS NULL AND %s IS NULL))
+                      AND (mtime_ns=%s OR (mtime_ns IS NULL AND %s IS NULL))
+                    """,
+                    (
+                        update["size"],
+                        update["mtime_ns"],
+                        update["digest"],
+                        scan_id,
+                        update["observed_at"],
+                        update["vault_file_id"],
+                        update["old_size"],
+                        update["old_size"],
+                        update["old_mtime_ns"],
+                        update["old_mtime_ns"],
+                    ),
+                )
+            if persisted:
+                _current_verified_scan_row(connection, vault)
+
+
+def _rollback_local_scan_journal(
+    vault_id: int, scan_id: str, journal: dict[str, Any]
+) -> None:
+    """Compensate observations committed before a scan lost its proof.
+
+    The compare-and-swap predicate leaves a newer watcher observation alone. A
+    newly-created scan-only Vault File is removed only when no cloud Version or
+    Job has attached to it in the meantime.
+    """
+    entries = journal.get("entries") or {}
+    if not entries:
+        return
+    try:
+        with db() as connection:
+            for path, snapshot in entries.items():
+                if snapshot is None:
+                    current = connection.execute(
+                        """
+                        SELECT vf.id AS vault_file_id
+                        FROM vault_files vf
+                        JOIN file_paths fp
+                          ON fp.vault_file_id=vf.id
+                         AND fp.vault_id=vf.vault_id
+                         AND fp.path=%s
+                         AND fp.valid_to IS NULL
+                        JOIN local_copies lc ON lc.vault_file_id=vf.id
+                        WHERE vf.vault_id=%s
+                          AND lc.last_seen_at=%s
+                          AND NOT EXISTS (
+                              SELECT 1 FROM archive_versions av
+                              WHERE av.vault_file_id=vf.id
+                          )
+                          AND NOT EXISTS (
+                              SELECT 1 FROM jobs j WHERE j.vault_file_id=vf.id
+                          )
+                        """,
+                        (path, vault_id, scan_id),
+                    ).fetchone()
+                    if current is None:
+                        continue
+                    file_id = current["vault_file_id"]
+                    connection.execute(
+                        "DELETE FROM local_copies WHERE vault_file_id=%s AND last_seen_at=%s",
+                        (file_id, scan_id),
+                    )
+                    connection.execute(
+                        """
+                        DELETE FROM file_paths
+                        WHERE vault_file_id=%s AND vault_id=%s
+                          AND path=%s AND valid_to IS NULL
+                        """,
+                        (file_id, vault_id, path),
+                    )
+                    connection.execute(
+                        "DELETE FROM vault_files WHERE id=%s AND vault_id=%s",
+                        (file_id, vault_id),
+                    )
+                    continue
+
+                file_id = snapshot["vault_file_id"]
+                if snapshot.get("presence") is None:
+                    connection.execute(
+                        """
+                        DELETE FROM local_copies
+                        WHERE vault_file_id=%s AND last_seen_at=%s
+                        """,
+                        (file_id, scan_id),
+                    )
+                    continue
+                connection.execute(
+                    """
+                    UPDATE local_copies
+                    SET presence=%s,
+                        file_type=%s,
+                        size=%s,
+                        mtime_ns=%s,
+                        plaintext_sha256=%s,
+                        matched_archive_version_id=%s,
+                        last_seen_at=%s,
+                        observed_at=%s
+                    WHERE vault_file_id=%s AND last_seen_at=%s
+                    """,
+                    (
+                        snapshot["presence"],
+                        snapshot["file_type"],
+                        snapshot["size"],
+                        snapshot["mtime_ns"],
+                        snapshot["plaintext_sha256"],
+                        snapshot["matched_archive_version_id"],
+                        snapshot["last_seen_at"],
+                        snapshot["observed_at"],
+                        file_id,
+                        scan_id,
+                    ),
+                )
+    except Exception:
+        # Compensation is best effort. The scan is still reported as blocked,
+        # and no missing transition or relocation completion can commit.
+        return
+
+
 def _verified_local_scan(
     vault: dict[str, Any], scan_id: str
 ) -> tuple[int, dict[str, int], str | None]:
-    """Commit catalog, rename/jobs, and recovery state only after final identity proof."""
+    """Walk/hash outside writes, then publish bounded catalog stages.
+
+    Local observations are committed in short batches so ordinary SQLite
+    writers are not held behind directory traversal or hashing.  Missing
+    transitions, rename decisions, and relocation recovery remain in one final
+    transaction guarded by the enrolled root and scan generation.
+    """
     # Minimal in-memory Vaults are a longstanding unit-test seam. Persisted
-    # rows always contain identity columns and always use the atomic path.
+    # rows always contain identity columns and always use the staged path.
     if "root_identity" not in vault and "root_identity_version" not in vault:
         return scan_tree(vault, scan_id), apply_auto_renames(vault), None
 
@@ -1102,35 +1490,87 @@ def _verified_local_scan(
         raise RuntimeError(
             f"Local scan blocked by Source Volume health: {access.volume_health}"
         )
+    journal_key = (int(vault["id"]), scan_id)
+    scan_journal: dict[str, Any] = {"entries": {}}
+    _active_scan_journals[journal_key] = scan_journal
     with _pinned_verified_scan_root(vault) as pinned_root:
+        # The walk itself uses short catalog batches. Keeping this connection
+        # open preserves the old rollback seam when a test or an early failure
+        # writes directly before the final identity check; normal batches
+        # commit inside _scan_tree and release SQLite's write lock.
         with db() as connection:
             _current_verified_scan_row(connection, vault)
+            if not _scan_generation_is_current(int(vault["id"]), scan_id):
+                raise _ScanRootMismatch("Local scan was superseded")
             count = scan_tree(
                 vault,
                 scan_id,
                 _connection=connection,
                 _root=pinned_root,
-            )
-            alias = access.volume_alias
-            completed_alias = (
-                alias
-                if alias and source_layout.requires_full_local_scan(alias)
-                else None
+                _finalize_missing=False,
+                _scan_journal=scan_journal,
             )
             _current_verified_scan_row(connection, vault)
-            rename_summary = apply_auto_renames(
-                vault, _connection=connection, _root=pinned_root
+
+        # Hashing happens with no write transaction open. Publishing uses
+        # compare-and-swap predicates so watcher replacements win safely.
+        updates = _collect_local_fingerprint_updates(vault, pinned_root)
+        _apply_local_fingerprint_updates(vault, scan_id, updates)
+
+        alias = access.volume_alias
+        completed_alias = (
+            alias
+            if alias and source_layout.requires_full_local_scan(alias)
+            else None
+        )
+        with db() as connection:
+            _current_verified_scan_row(connection, vault)
+            if not _scan_generation_is_current(int(vault["id"]), scan_id):
+                raise _ScanRootMismatch("Local scan was superseded")
+            rename_summary = _apply_auto_renames(
+                connection,
+                vault,
+                root=pinned_root,
+                hash_missing=False,
             )
-            current = _current_verified_scan_row(connection, vault)
-            if current.get("relocation_state") == "scan_required":
+            rename_summary["hashed"] = len(updates)
+            _current_verified_scan_row(connection, vault)
+            final_access = source_layout.vault_local_access(vault["source_root"])
+            safe_scan_result = (
+                final_access.local_operations_allowed
+                or final_access.volume_health == "scan_required"
+            )
+            if safe_scan_result and (
+                final_access.volume_alias is None
+                or source_layout.should_emit_local_copy_removals(
+                    final_access.volume_alias
+                )
+            ):
+                ArchiveCatalog(connection).mark_unseen_local_copies_missing(
+                    vault_id=int(vault["id"]),
+                    seen_at=scan_id,
+                    observed_at=now_iso(),
+                    scan_started_at=scan_id,
+                )
+            _current_verified_scan_row(connection, vault)
+            was_relocation_scan = (
+                connection.execute(
+                    "SELECT relocation_state FROM vaults WHERE id=%s",
+                    (int(vault["id"]),),
+                ).fetchone()["relocation_state"]
+                == "scan_required"
+            )
+            if was_relocation_scan:
                 vault_relocation.complete_relocation_scan(
                     connection, int(vault["id"]), release_runtime=False
                 )
-        # Runtime gates are delayed until the DB transaction committed.
-        if current.get("relocation_state") == "scan_required":
+            current = _current_verified_scan_row(connection, vault)
+        # Runtime gates are delayed until the final transaction committed.
+        if was_relocation_scan:
             vault_relocation.release_relocation_scan_runtime(int(vault["id"]))
         if completed_alias:
             source_layout.note_full_local_scan_completed(completed_alias)
+        _active_scan_journals.pop(journal_key, None)
         return count, rename_summary, completed_alias
 
 
@@ -1165,10 +1605,9 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 status["last_error"] = f"Source scan blocked: {exc}"
             return {"local": -1, "root_identity_mismatch": 1}
 
-        with status_lock:
-            status.update(scanning=True, last_error=None)
-
         scan_id = now_iso()
+        with status_lock:
+            status.update(scanning=True, last_error=None, scan_id=scan_id)
         result: dict[str, int] = {}
         local_scan_identity_valid = True
         # Reset scan findings; live preflight still runs via /api/stats.
@@ -1191,11 +1630,25 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                     {f"rename_{key}": value for key, value in rename_summary.items()}
                 )
             except _ScanRootMismatch as exc:
+                journal = _active_scan_journals.pop(
+                    (int(vault["id"]), scan_id), None
+                )
+                if journal is not None:
+                    _rollback_local_scan_journal(
+                        int(vault["id"]), scan_id, journal
+                    )
                 local_scan_identity_valid = False
                 status["last_error"] = f"Source scan blocked: {exc}"
                 result["local"] = -1
                 result["root_identity_mismatch"] = 1
             except Exception as exc:
+                journal = _active_scan_journals.pop(
+                    (int(vault["id"]), scan_id), None
+                )
+                if journal is not None:
+                    _rollback_local_scan_journal(
+                        int(vault["id"]), scan_id, journal
+                    )
                 status["last_error"] = f"Source scan: {exc}"
                 result["local"] = -1
         else:
@@ -1262,8 +1715,14 @@ def _apply_auto_renames(
     *,
     root: Path,
     requested_by: int | None = None,
+    hash_missing: bool = True,
 ) -> dict[str, int]:
-    """Apply rename analysis inside the caller-owned transaction."""
+    """Apply rename analysis inside the caller-owned transaction.
+
+    ``hash_missing`` is false for the normal full-scan path: all filesystem
+    hashing has already completed outside this transaction and its digests were
+    published through compare-and-swap batches.
+    """
     from .audit import audit_log
 
     summary = {"hashed": 0, "confirmed": 0, "queued": 0, "ambiguous": 0}
@@ -1279,7 +1738,8 @@ def _apply_auto_renames(
             (vault["id"],),
         ).fetchone()
         requested_by = int(owner["user_id"]) if owner else None
-    present_rows = connection.execute(
+    if hash_missing:
+        present_rows = connection.execute(
             """
             SELECT vf.id AS vault_file_id, fp.path, lc.size, lc.mtime_ns
             FROM vault_files vf
@@ -1294,14 +1754,14 @@ def _apply_auto_renames(
             ORDER BY lower(fp.path)
             """,
             (vault["id"],),
-    ).fetchall()
-    for row in present_rows:
-            local_path = safe_local_path(str(root), row["path"])
-            if not local_path.is_file():
-                continue
+        ).fetchall()
+        for row in present_rows:
             try:
+                local_path = safe_local_path(str(root), row["path"])
+                if not local_path.is_file():
+                    continue
                 digest, stat_result = hash_stable_regular_file(local_path)
-            except (OSError, RuntimeError):
+            except (OSError, ValueError, RuntimeError):
                 continue
             catalog.set_local_fingerprint(
                 vault_id=vault["id"],
@@ -1379,16 +1839,27 @@ def apply_auto_renames(
     _connection: Any | None = None,
     _root: Path | None = None,
 ) -> dict[str, int]:
-    """Hash and auto-confirm renames as one database transaction."""
+    """Hash outside writes, then confirm renames atomically."""
     root = _root or Path(vault["source_root"]).resolve()
     if _connection is not None:
+        # Preserve the caller-owned transaction seam used by direct catalog
+        # callers and the relocation rollback tests.
         return _apply_auto_renames(
             _connection, vault, root=root, requested_by=requested_by
         )
+    scan_id = now_iso()
+    updates = _collect_local_fingerprint_updates(vault, root)
+    _apply_local_fingerprint_updates(vault, scan_id, updates)
     with db() as connection:
-        return _apply_auto_renames(
-            connection, vault, root=root, requested_by=requested_by
+        summary = _apply_auto_renames(
+            connection,
+            vault,
+            root=root,
+            requested_by=requested_by,
+            hash_missing=False,
         )
+    summary["hashed"] = len(updates)
+    return summary
 
 
 def run_rclone(
@@ -1694,16 +2165,16 @@ def set_job_progress(
 
 
 def _remove_abandoned_restore_files(target: Path) -> None:
-    """Remove temporary recovery files left behind by a stopped process."""
-    prefix = f".{target.name}.restore-"
+    """Remove only application-owned recovery files left by a stopped worker."""
     try:
         for entry in target.parent.iterdir():
-            if entry.name.startswith(prefix):
-                try:
-                    entry.unlink(missing_ok=True)
-                except OSError:
-                    # A stale temporary file must not prevent the job from being retried.
-                    pass
+            if RESTORE_TEMPORARY_RE.fullmatch(entry.name) is None:
+                continue
+            try:
+                entry.unlink(missing_ok=True)
+            except OSError:
+                # A stale temporary file must not prevent the job from being retried.
+                pass
     except OSError:
         # The worker will create the parent directory when it retries the job.
         pass
@@ -1856,6 +2327,109 @@ def _fail_storage_class_reconciliation(
         )
         return "failed"
     return "skipped"
+
+
+def _reconcile_recover_job(
+    connection: Any,
+    job: dict[str, Any],
+    *,
+    target_path: Path,
+    target: dict[str, Any] | None,
+    timestamp: str,
+) -> str:
+    """Reconcile a recovery destination without ever deleting its final path."""
+
+    def transition(status: str, message: str, *, complete: bool = False) -> str:
+        changed = _reconcile_job_transition(
+            connection,
+            job_id=int(job["id"]),
+            status=status,
+            message=message,
+            timestamp=timestamp,
+            reset_progress=status == "queued",
+            complete_progress=complete,
+        )
+        if not changed:
+            return "skipped"
+        if status in {"completed", "failed"}:
+            notification_service.enqueue_job_terminal_notification_best_effort(
+                connection, job_id=int(job["id"])
+            )
+        return "requeued" if status == "queued" else status
+
+    # An absent destination is the only state where retrying is safe.  Any
+    # existing final entry, including a directory or symlink, is preserved.
+    if not os.path.lexists(target_path):
+        return transition(
+            "queued",
+            "Recovery interrupted by restart; destination is absent and recovery will retry",
+        )
+
+    if target_path.is_symlink() or not target_path.is_file():
+        return transition(
+            "failed",
+            "Recovery destination conflict preserved after restart; the final path is not a regular file",
+        )
+
+    expected_digest = (target or {}).get("version_sha256") or job.get(
+        "version_sha256"
+    )
+    archive_version_id = (target or {}).get("archive_version_id") or job.get(
+        "archive_version_id"
+    )
+    if not expected_digest or not archive_version_id:
+        return transition(
+            "failed",
+            "Recovery destination preserved after restart; its Archive Version digest could not be verified",
+        )
+    expected_digest = str(expected_digest).lower()
+    if len(expected_digest) != 64:
+        return transition(
+            "failed",
+            "Recovery destination preserved after restart; its Archive Version digest is invalid",
+        )
+    try:
+        int(expected_digest, 16)
+        recovered_digest, recovered_stat = hash_stable_regular_file(target_path)
+    except (OSError, ValueError, RuntimeError) as exc:
+        return transition(
+            "failed",
+            f"Recovery destination conflict preserved after restart; digest verification failed: {exc}",
+        )
+
+    if recovered_digest != expected_digest:
+        return transition(
+            "failed",
+            "Recovery destination conflict preserved after restart; its digest does not match the Archive Version",
+        )
+
+    # Claim the terminal Job before publishing the Local Copy in this same
+    # transaction.  A live worker that renews the lease wins the compare-and-
+    # swap and this transaction commits no catalog observation.
+    outcome = transition(
+        "completed",
+        "Recovered Local Copy verified and adopted after restart",
+        complete=True,
+    )
+    if outcome != "completed":
+        return outcome
+    catalog = ArchiveCatalog(connection)
+    catalog.observe_local_copy(
+        vault_id=int(job["vault_id"]),
+        path=str(job["path"]),
+        file_type="regular",
+        size=recovered_stat.st_size,
+        mtime_ns=recovered_stat.st_mtime_ns,
+        observed_at=timestamp,
+        seen_at=timestamp,
+    )
+    catalog.set_local_fingerprint(
+        vault_id=int(job["vault_id"]),
+        path=str(job["path"]),
+        plaintext_sha256=expected_digest,
+        matched_archive_version_id=str(archive_version_id),
+    )
+    return outcome
 
 
 def _reconcile_storage_class_job(
@@ -2212,27 +2786,19 @@ def reconcile_interrupted_jobs() -> dict[str, int]:
                     source_root = Path(job["source_root"])
                     if not source_root.is_dir():
                         raise RuntimeError("Source folder is unavailable")
-                    target = safe_local_entry_path(job["source_root"], job["path"])
-                    _remove_abandoned_restore_files(target)
-                    # Issue #194 owns the final-destination decision.  Preserve
-                    # the current conservative behavior here while the lease
-                    # foundation only ensures a live worker is never reset.
-                    if target.is_file() and not target.is_symlink():
-                        try:
-                            target.unlink()
-                        except OSError:
-                            pass
-                    outcome = (
-                        "requeued"
-                        if _reconcile_job_transition(
-                            connection,
-                            job_id=int(job["id"]),
-                            status="queued",
-                            message="Recovery interrupted by restart; digest verification will rerun",
-                            timestamp=timestamp,
-                            reset_progress=True,
-                        )
-                        else "skipped"
+                    target_path = safe_local_entry_path(
+                        job["source_root"], job["path"]
+                    )
+                    _remove_abandoned_restore_files(target_path)
+                    recovery_target = ArchiveCatalog(connection).get_job_target(
+                        int(job["id"])
+                    )
+                    outcome = _reconcile_recover_job(
+                        connection,
+                        job,
+                        target_path=target_path,
+                        target=recovery_target,
+                        timestamp=timestamp,
                     )
                 elif job["action"] == "free-space":
                     source_root = Path(job["source_root"])
@@ -3117,6 +3683,341 @@ def process_free_space(job: dict[str, Any]) -> None:
         )
 
 
+def _head_object_with_checksum(client: Any, **kwargs: Any) -> dict[str, Any]:
+    """Read a version with provider checksum fields when supported.
+
+    Some S3-compatible providers reject ``ChecksumMode``. Falling back to a
+    normal HEAD keeps the operation portable; the caller then obtains an
+    equivalent proof by hashing the exact VersionId instead of publishing on
+    size/ETag metadata alone.
+    """
+    try:
+        return client.head_object(**kwargs, ChecksumMode="ENABLED")
+    except Exception:
+        return client.head_object(**kwargs)
+
+
+def _full_object_sha256_checksum(head: dict[str, Any]) -> str | None:
+    checksum = head.get("ChecksumSHA256")
+    if not checksum:
+        return None
+    checksum_type = str(head.get("ChecksumType") or "FULL_OBJECT").upper()
+    if checksum_type != S3_COPY_CHECKSUM_TYPE:
+        return None
+    return str(checksum)
+
+
+def _sha256_s3_version(
+    client: Any,
+    *,
+    bucket: str,
+    object_key: str,
+    version_id: str,
+    job_id: int | None = None,
+) -> str:
+    """Hash one exact provider VersionId and return its S3 checksum encoding."""
+    response = client.get_object(
+        Bucket=bucket,
+        Key=object_key,
+        VersionId=version_id,
+    )
+    body = response.get("Body") if isinstance(response, dict) else None
+    if body is None:
+        raise RuntimeError("S3 did not return a body for integrity verification")
+    digest = hashlib.sha256()
+    try:
+        iter_chunks = getattr(body, "iter_chunks", None)
+        if callable(iter_chunks):
+            chunks = iter_chunks(chunk_size=S3_OBJECT_HASH_CHUNK_BYTES)
+        else:
+            read = getattr(body, "read", None)
+            if not callable(read):
+                raise RuntimeError("S3 returned an unreadable body")
+
+            def read_chunks():
+                while True:
+                    chunk = read(S3_OBJECT_HASH_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    yield chunk
+
+            chunks = read_chunks()
+        for chunk in chunks:
+            if not isinstance(chunk, (bytes, bytearray, memoryview)):
+                raise RuntimeError("S3 returned a non-binary body")
+            digest.update(chunk)
+            if job_id is not None:
+                ensure_job_active(job_id, "Storage class change stopped")
+    finally:
+        close = getattr(body, "close", None)
+        if callable(close):
+            close()
+    return base64.b64encode(digest.digest()).decode("ascii")
+
+
+def _source_object_tagging(
+    client: Any,
+    *,
+    bucket: str,
+    object_key: str,
+    version_id: str,
+) -> str | None:
+    """Return source Version tags in CreateMultipartUpload's wire format."""
+    response = client.get_object_tagging(
+        Bucket=bucket,
+        Key=object_key,
+        VersionId=version_id,
+    )
+    if not isinstance(response, dict):
+        raise RuntimeError("S3 returned an invalid object-tag response")
+    tag_set = response.get("TagSet") or []
+    if not isinstance(tag_set, (list, tuple)):
+        raise RuntimeError("S3 returned an invalid object-tag set")
+    tags: list[tuple[str, str]] = []
+    for tag in tag_set:
+        if not isinstance(tag, dict) or tag.get("Key") is None or tag.get("Value") is None:
+            raise RuntimeError("S3 returned an invalid object tag")
+        tags.append((str(tag["Key"]), str(tag["Value"])))
+    return urlencode(tags) if tags else None
+
+
+def _multipart_copy_storage_class(
+    client: Any,
+    *,
+    job: dict[str, Any],
+    bucket: str,
+    object_key: str,
+    source_version_id: str,
+    target_class: str,
+    size_bytes: int,
+    source_head: dict[str, Any],
+) -> str | None:
+    """Copy one exact S3 Version with multipart UploadPartCopy operations."""
+    if size_bytes <= S3_SINGLE_COPY_MAX_BYTES:
+        raise ValueError("Multipart storage-class copy requires an oversized object")
+
+    part_size = max(
+        S3_MULTIPART_COPY_MIN_PART_BYTES,
+        S3_MULTIPART_COPY_PART_BYTES,
+        (size_bytes + S3_MULTIPART_COPY_MAX_PARTS - 1)
+        // S3_MULTIPART_COPY_MAX_PARTS,
+    )
+    part_count = (size_bytes + part_size - 1) // part_size
+    if part_count > S3_MULTIPART_COPY_MAX_PARTS:
+        raise RuntimeError("S3 multipart copy would exceed the part limit")
+
+    tagging = _source_object_tagging(
+        client,
+        bucket=bucket,
+        object_key=object_key,
+        version_id=source_version_id,
+    )
+    create_kwargs: dict[str, Any] = {
+        "Bucket": bucket,
+        "Key": object_key,
+        "StorageClass": target_class,
+        "ChecksumAlgorithm": S3_COPY_CHECKSUM_ALGORITHM,
+        "ChecksumType": S3_COPY_CHECKSUM_TYPE,
+    }
+    if tagging:
+        # UploadPartCopy does not inherit tags from its source Version. The
+        # tag set must be supplied when the multipart upload is initiated.
+        create_kwargs["Tagging"] = tagging
+    # Multipart initiation does not have CopyObject's metadata directives.  Set
+    # the source headers that S3 exposes so the new representation does not
+    # unexpectedly lose content metadata while its bytes are copied.
+    for field in (
+        "CacheControl",
+        "ContentDisposition",
+        "ContentEncoding",
+        "ContentLanguage",
+        "ContentType",
+        "Expires",
+        "Metadata",
+    ):
+        if source_head.get(field) is not None:
+            create_kwargs[field] = source_head[field]
+
+    upload_id: str | None = None
+    try:
+        initiated = client.create_multipart_upload(**create_kwargs)
+        upload_id = initiated.get("UploadId")
+        if not upload_id:
+            raise RuntimeError("S3 did not return a multipart UploadId")
+
+        parts: list[dict[str, Any]] = []
+        copy_source = {
+            "Bucket": bucket,
+            "Key": object_key,
+            "VersionId": source_version_id,
+        }
+        for part_number in range(1, part_count + 1):
+            ensure_job_active(job["id"], "Storage class change stopped")
+            start = (part_number - 1) * part_size
+            end = min(size_bytes, start + part_size) - 1
+            result = client.upload_part_copy(
+                Bucket=bucket,
+                Key=object_key,
+                UploadId=upload_id,
+                PartNumber=part_number,
+                CopySource=copy_source,
+                CopySourceRange=f"bytes={start}-{end}",
+            )
+            copy_result = result.get("CopyPartResult") or {}
+            etag = copy_result.get("ETag") or result.get("ETag")
+            if not etag:
+                raise RuntimeError(
+                    f"S3 did not return an ETag for multipart part {part_number}"
+                )
+            part = {"PartNumber": part_number, "ETag": etag}
+            for checksum_name in (
+                "ChecksumCRC32",
+                "ChecksumCRC32C",
+                "ChecksumSHA1",
+                "ChecksumSHA256",
+                "ChecksumCRC64NVME",
+            ):
+                checksum = copy_result.get(checksum_name)
+                if checksum:
+                    part[checksum_name] = checksum
+            parts.append(part)
+
+        ensure_job_active(job["id"], "Storage class change stopped")
+        completed = client.complete_multipart_upload(
+            Bucket=bucket,
+            Key=object_key,
+            UploadId=upload_id,
+            MultipartUpload={"Parts": parts},
+            ChecksumType=S3_COPY_CHECKSUM_TYPE,
+        )
+        # Completion makes the upload no longer abortable.  A missing VersionId
+        # is handled by the destination read-back, not by guessing the source.
+        upload_id = None
+        return completed.get("VersionId")
+    except BaseException as exc:
+        if upload_id:
+            try:
+                client.abort_multipart_upload(
+                    Bucket=bucket,
+                    Key=object_key,
+                    UploadId=upload_id,
+                )
+            except Exception as abort_exc:
+                raise RuntimeError(
+                    "Multipart storage-class copy failed and its upload could not be aborted"
+                ) from abort_exc
+        raise
+
+
+def _copy_storage_class_version(
+    client: Any,
+    *,
+    job: dict[str, Any],
+    bucket: str,
+    object_key: str,
+    source_version_id: str,
+    target_class: str,
+    source_size: int,
+    source_head: dict[str, Any],
+) -> str | None:
+    """Use CopyObject for small objects and exact multipart copy for large ones."""
+    if source_size > S3_SINGLE_COPY_MAX_BYTES:
+        return _multipart_copy_storage_class(
+            client,
+            job=job,
+            bucket=bucket,
+            object_key=object_key,
+            source_version_id=source_version_id,
+            target_class=target_class,
+            size_bytes=source_size,
+            source_head=source_head,
+        )
+    copy_result = client.copy_object(
+        Bucket=bucket,
+        Key=object_key,
+        CopySource={
+            "Bucket": bucket,
+            "Key": object_key,
+            "VersionId": source_version_id,
+        },
+        StorageClass=target_class,
+        MetadataDirective="COPY",
+        TaggingDirective="COPY",
+        ChecksumAlgorithm=S3_COPY_CHECKSUM_ALGORITHM,
+    )
+    return copy_result.get("VersionId")
+
+
+def _verify_storage_class_destination(
+    client: Any,
+    *,
+    bucket: str,
+    object_key: str,
+    source_version_id: str,
+    candidate_version_id: str | None,
+    target_class: str,
+    expected_size: int,
+    expected_sha256_checksum: str | None = None,
+    job_id: int | None = None,
+) -> tuple[str, str | None]:
+    """Read back the exact destination before publishing catalog state.
+
+    Size and ETag are useful metadata checks but are not content proofs (in
+    particular, multipart ETags are not object digests). The destination must
+    expose the same full-object SHA-256 checksum as the source, or be streamed
+    and hashed when the provider does not expose checksum metadata.
+    """
+    if not expected_sha256_checksum:
+        raise RuntimeError("Storage class copy lacks a source integrity proof")
+    kwargs: dict[str, Any] = {"Bucket": bucket, "Key": object_key}
+    if candidate_version_id:
+        kwargs["VersionId"] = candidate_version_id
+    destination = _head_object_with_checksum(client, **kwargs)
+    observed_version_id = destination.get("VersionId") or candidate_version_id
+    if not observed_version_id:
+        raise RuntimeError(
+            "Storage class copy did not produce a verifiable S3 VersionId"
+        )
+    if candidate_version_id and str(observed_version_id) != str(candidate_version_id):
+        raise RuntimeError(
+            "Storage class copy read-back returned a different S3 VersionId"
+        )
+    if str(observed_version_id) == str(source_version_id):
+        raise RuntimeError(
+            "Storage class copy read-back still points at the source S3 VersionId"
+        )
+    if destination.get("DeleteMarker"):
+        raise RuntimeError("Storage class copy read-back returned a Delete Marker")
+    observed_class = (destination.get("StorageClass") or "STANDARD").upper()
+    if observed_class != target_class:
+        raise RuntimeError(
+            "Storage class copy read-back returned the wrong storage class"
+        )
+    content_length = destination.get("ContentLength")
+    if content_length is None or int(content_length) != int(expected_size):
+        raise RuntimeError(
+            "Storage class copy read-back returned the wrong object size"
+        )
+    destination_checksum = _full_object_sha256_checksum(destination)
+    if destination_checksum is None:
+        destination_checksum = _sha256_s3_version(
+            client,
+            bucket=bucket,
+            object_key=object_key,
+            version_id=str(observed_version_id),
+            job_id=job_id,
+        )
+    if destination_checksum != expected_sha256_checksum:
+        raise RuntimeError(
+            "Storage class copy read-back failed its content-integrity check"
+        )
+    return str(observed_version_id), (
+        str(destination.get("ETag")).strip('"')
+        if destination.get("ETag")
+        else None
+    )
+
+
 def process_storage_class(job: dict[str, Any]) -> None:
     """Restore if needed, then copy an Archive Version onto a new storage class.
 
@@ -3140,11 +4041,18 @@ def process_storage_class(job: dict[str, Any]) -> None:
         raise RuntimeError("No available Archive Version for storage class change")
 
     client = s3_client()
-    head = client.head_object(
+    head = _head_object_with_checksum(
+        client,
         Bucket=job["s3_bucket"],
         Key=target["object_key"],
         VersionId=target["provider_version_id"],
     )
+    if head.get("DeleteMarker"):
+        raise RuntimeError("The scheduled Archive Version is a Delete Marker")
+    if head.get("VersionId") and str(head["VersionId"]) != str(
+        target["provider_version_id"]
+    ):
+        raise RuntimeError("The provider returned a different source VersionId")
     # AWS omits StorageClass on STANDARD; never prefer a stale colder catalog class.
     head_class = (head.get("StorageClass") or "STANDARD").upper()
     if storage_class_requires_restore(head_class):
@@ -3217,37 +4125,53 @@ def process_storage_class(job: dict[str, Any]) -> None:
         message_params={"storage_class": target_class},
     )
     ensure_job_active(job["id"], "Storage class change stopped")
-    copy_source = {
-        "Bucket": job["s3_bucket"],
-        "Key": target["object_key"],
-        "VersionId": target["provider_version_id"],
-    }
-    copy_result = client.copy_object(
-        Bucket=job["s3_bucket"],
-        Key=target["object_key"],
-        CopySource=copy_source,
-        StorageClass=target_class,
-        MetadataDirective="COPY",
-        TaggingDirective="COPY",
-    )
-    new_version_id = copy_result.get("VersionId")
-    if not new_version_id:
-        # Unversioned buckets keep the same logical object; fall back to head.
-        new_head = client.head_object(
-            Bucket=job["s3_bucket"],
-            Key=target["object_key"],
-        )
-        new_version_id = new_head.get("VersionId") or target["provider_version_id"]
-        etag = (new_head.get("ETag") or "").strip('"') or None
-        recorded_class = (new_head.get("StorageClass") or target_class).upper()
-    else:
-        etag = None
-        copy_etag = (copy_result.get("CopyObjectResult") or {}).get("ETag")
-        if copy_etag:
-            etag = str(copy_etag).strip('"')
-        recorded_class = target_class
+    # The provider's exact-Version HEAD is authoritative for the copy limit;
+    # catalog size may be stale after an external rewrite or prior scan.
+    source_size = head.get("ContentLength")
+    if source_size is None:
+        source_size = target.get("cloud_size")
+    if source_size is None:
+        raise RuntimeError("S3 did not return the Archive Version size")
+    try:
+        source_size = int(source_size)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("S3 returned an invalid Archive Version size") from exc
+    if source_size < 0:
+        raise RuntimeError("S3 returned a negative Archive Version size")
 
+    source_checksum = _full_object_sha256_checksum(head)
+    if source_checksum is None:
+        source_checksum = _sha256_s3_version(
+            client,
+            bucket=job["s3_bucket"],
+            object_key=target["object_key"],
+            version_id=str(target["provider_version_id"]),
+            job_id=int(job["id"]),
+        )
+    ensure_job_active(job["id"], "Storage class claim was lost")
+    new_version_id = _copy_storage_class_version(
+        client,
+        job=job,
+        bucket=job["s3_bucket"],
+        object_key=target["object_key"],
+        source_version_id=str(target["provider_version_id"]),
+        target_class=target_class,
+        source_size=source_size,
+        source_head=head,
+    )
     ensure_job_active(job["id"], "Storage class change stopped")
+    new_version_id, etag = _verify_storage_class_destination(
+        client,
+        bucket=job["s3_bucket"],
+        object_key=target["object_key"],
+        source_version_id=str(target["provider_version_id"]),
+        candidate_version_id=(str(new_version_id) if new_version_id else None),
+        target_class=target_class,
+        expected_size=source_size,
+        expected_sha256_checksum=source_checksum,
+        job_id=int(job["id"]),
+    )
+    ensure_job_active(job["id"], "Storage class claim was lost")
     timestamp = now_iso()
     with db() as connection:
         ensure_job_claim_owned_in_transaction(
@@ -3255,34 +4179,22 @@ def process_storage_class(job: dict[str, Any]) -> None:
             job,
             "Storage class claim was lost",
         )
-        ArchiveCatalog(connection).update_version_storage_placement(
-            target["archive_version_id"],
-            provider_version_id=str(new_version_id),
-            storage_class=recorded_class,
+        ArchiveCatalog(connection).publish_storage_class_copy(
+            job_id=int(job["id"]),
+            archive_version_id=str(target["archive_version_id"]),
+            provider_version_id=new_version_id,
+            storage_class=target_class,
             etag=etag,
             observed_at=timestamp,
         )
 
-    # Drop the previous provider version when copy created a new VersionId so the
-    # catalog keeps one recoverable identity without orphaning billed versions.
-    if str(new_version_id) != str(target["provider_version_id"]):
-        ensure_job_active(job["id"], "Storage class claim was lost")
-        try:
-            client.delete_object(
-                Bucket=job["s3_bucket"],
-                Key=target["object_key"],
-                VersionId=target["provider_version_id"],
-            )
-        except Exception:
-            # Catalog already points at the new version; orphan cleanup is best-effort.
-            pass
-        ensure_job_active(job["id"], "Storage class claim was lost")
-
+    # The prior exact VersionId is intentionally retained.  Only the dedicated
+    # Cloud Purge workflow may permanently delete provider versions.
     set_job(
         job["id"],
         "completed",
         message_key="job.storage_class_completed",
-        message_params={"storage_class": recorded_class},
+        message_params={"storage_class": target_class},
     )
 
 
