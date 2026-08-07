@@ -43,6 +43,10 @@ from .services.vault_crypto import safe_error_message
 from .services.vault_recovery import secrets_for_vault
 from .services.s3_preflight import check_bucket_readiness, preflight_failure_message
 from .services.catalog_audit import audit_vault_catalog
+from .services.directory_aggregates import (
+    invalidate_for_vault_file,
+    mark_path_dirty,
+)
 from .services.lifecycle_policies import (
     load_policy_assignments,
     resolve_effective_policy_id,
@@ -1364,10 +1368,11 @@ def _apply_local_fingerprint_updates(
                 _current_verified_scan_row(connection, vault)
                 if not _scan_generation_is_current(int(vault["id"]), scan_id):
                     raise _ScanRootMismatch("Local scan was superseded")
+            vault_id = int(vault["id"])
             for update in batch:
                 # A watcher may have replaced the file after hashing. The
                 # predicate prevents a stale digest from overwriting it.
-                connection.execute(
+                result = connection.execute(
                     """
                     UPDATE local_copies
                     SET size=%s,
@@ -1396,6 +1401,12 @@ def _apply_local_fingerprint_updates(
                         update["old_mtime_ns"],
                     ),
                 )
+                if getattr(result, "rowcount", 0):
+                    invalidate_for_vault_file(
+                        connection,
+                        vault_id,
+                        str(update["vault_file_id"]),
+                    )
             if persisted:
                 _current_verified_scan_row(connection, vault)
 
@@ -1457,6 +1468,7 @@ def _rollback_local_scan_journal(
                         "DELETE FROM vault_files WHERE id=%s AND vault_id=%s",
                         (file_id, vault_id),
                     )
+                    mark_path_dirty(connection, vault_id, path)
                     continue
 
                 file_id = snapshot["vault_file_id"]
@@ -1468,6 +1480,7 @@ def _rollback_local_scan_journal(
                         """,
                         (file_id, scan_id),
                     )
+                    invalidate_for_vault_file(connection, vault_id, str(file_id))
                     continue
                 connection.execute(
                     """
@@ -1495,6 +1508,7 @@ def _rollback_local_scan_journal(
                         scan_id,
                     ),
                 )
+                invalidate_for_vault_file(connection, vault_id, str(file_id))
     except Exception:
         # Compensation is best effort. The scan is still reported as blocked,
         # and no missing transition or relocation completion can commit.

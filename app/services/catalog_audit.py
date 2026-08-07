@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .directory_aggregates import invalidate_for_archive_version_ids
 from .s3_object_tags import read_version_policy_tag
 
 
@@ -73,6 +74,9 @@ def audit_vault_catalog(
         "missing_delete_markers": 0,
     }
 
+    # Aggregate-affecting mutations only (availability / storage_class). Policy
+    # tag drift updates applied_policy_id which is not part of the projection.
+    dirty_version_ids: list[str] = []
     seen: set[tuple[str, str]] = set()
     for row in catalog_versions:
         key = (row["object_key"], row["provider_version_id"])
@@ -85,6 +89,7 @@ def audit_vault_catalog(
                     "UPDATE archive_versions SET availability='missing' WHERE id=%s",
                     (row["id"],),
                 )
+                dirty_version_ids.append(str(row["id"]))
             continue
 
         storage_class = cloud.get("StorageClass") or "STANDARD"
@@ -94,11 +99,13 @@ def audit_vault_catalog(
                 "UPDATE archive_versions SET storage_class=%s, availability='available' WHERE id=%s",
                 (storage_class, row["id"]),
             )
+            dirty_version_ids.append(str(row["id"]))
         elif row["availability"] != "available":
             connection.execute(
                 "UPDATE archive_versions SET availability='available' WHERE id=%s",
                 (row["id"],),
             )
+            dirty_version_ids.append(str(row["id"]))
 
         try:
             applied = read_version_policy_tag(
@@ -132,6 +139,9 @@ def audit_vault_catalog(
     for key in cloud_markers:
         if key not in catalog_marker_keys:
             report["missing_delete_markers"] += 1
+
+    if dirty_version_ids:
+        invalidate_for_archive_version_ids(connection, dirty_version_ids)
 
     return report
 

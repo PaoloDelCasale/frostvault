@@ -432,6 +432,768 @@ class DirectoryScaleTests(unittest.TestCase):
         self.assertEqual(page["total"], 1)
         self.assertEqual(page["items"][0]["item_count"], 1)
 
+    def test_remark_bumps_durable_marked_at(self) -> None:
+        self.catalog.observe_local_copy(
+            vault_id=2,
+            path="photos/a.jpg",
+            file_type="regular",
+            size=1,
+            mtime_ns=1,
+            observed_at="2026-07-21T10:00:00+00:00",
+        )
+        # Discard observe-time dirty rows so this test owns marked_at values.
+        self.connection.execute("DELETE FROM directory_aggregate_dirty WHERE vault_id=2")
+        aggregates._tracker(self.connection).clear()
+        with patch.object(aggregates, "_now", return_value="2026-07-21T10:00:00+00:00"):
+            aggregates.mark_path_dirty(self.connection, 2, "photos/a.jpg")
+        first = self.connection.execute(
+            "SELECT marked_at FROM directory_aggregate_dirty WHERE vault_id=2 AND path='photos'"
+        ).fetchone()["marked_at"]
+        # Drop in-connection coalescing so the second mark hits durable storage.
+        aggregates._tracker(self.connection).clear()
+        with patch.object(aggregates, "_now", return_value="2026-07-21T10:00:05+00:00"):
+            aggregates.mark_path_dirty(self.connection, 2, "photos/a.jpg")
+        second = self.connection.execute(
+            "SELECT marked_at FROM directory_aggregate_dirty WHERE vault_id=2 AND path='photos'"
+        ).fetchone()["marked_at"]
+        self.assertEqual(first, "2026-07-21T10:00:00+00:00")
+        self.assertEqual(second, "2026-07-21T10:00:05+00:00")
+
+    def test_flush_preserves_dirty_marks_newer_than_claim_cutoff(self) -> None:
+        """A mark committed after the flush snapshot must survive delete."""
+        self.catalog.observe_local_copy(
+            vault_id=2,
+            path="alpha/one.bin",
+            file_type="regular",
+            size=1,
+            mtime_ns=1,
+            observed_at="2026-07-21T10:00:00+00:00",
+        )
+        self.catalog.observe_local_copy(
+            vault_id=2,
+            path="beta/two.bin",
+            file_type="regular",
+            size=1,
+            mtime_ns=1,
+            observed_at="2026-07-21T10:00:00+00:00",
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+
+        # Pre-claim dirty row (older than flush cutoff).
+        self.connection.execute("DELETE FROM directory_aggregate_dirty WHERE vault_id=2")
+        aggregates._tracker(self.connection).clear()
+        self.connection.execute(
+            """
+            INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at)
+            VALUES (2, 'alpha', '2026-07-21T10:00:01+00:00')
+            """
+        )
+
+        original_rebuild = aggregates._rebuild_directory
+
+        def rebuild_and_concurrent_mark(connection, vault_id, directory):
+            original_rebuild(connection, vault_id, directory)
+            if directory == "alpha":
+                # Concurrent transaction committed a newer dirty mark mid-flush.
+                connection.execute(
+                    """
+                    INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at)
+                    VALUES (2, 'beta', '2026-07-21T10:00:09+00:00')
+                    ON CONFLICT(vault_id, path) DO UPDATE SET marked_at=excluded.marked_at
+                    """
+                )
+                # Same-path re-mark after claim must also survive.
+                connection.execute(
+                    """
+                    INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at)
+                    VALUES (2, 'alpha', '2026-07-21T10:00:09+00:00')
+                    ON CONFLICT(vault_id, path) DO UPDATE SET marked_at=excluded.marked_at
+                    """
+                )
+
+        with patch.object(aggregates, "_now", return_value="2026-07-21T10:00:05+00:00"):
+            with patch.object(
+                aggregates, "_rebuild_directory", side_effect=rebuild_and_concurrent_mark
+            ):
+                aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+
+        remaining = {
+            row["path"]: row["marked_at"]
+            for row in self.connection.execute(
+                "SELECT path, marked_at FROM directory_aggregate_dirty WHERE vault_id=2"
+            ).fetchall()
+        }
+        self.assertEqual(
+            remaining,
+            {
+                "alpha": "2026-07-21T10:00:09+00:00",
+                "beta": "2026-07-21T10:00:09+00:00",
+            },
+        )
+
+    def test_full_rebuild_preserves_post_cutoff_dirty_marks(self) -> None:
+        self.catalog.observe_local_copy(
+            vault_id=2,
+            path="keep/me.bin",
+            file_type="regular",
+            size=1,
+            mtime_ns=1,
+            observed_at="2026-07-21T10:00:00+00:00",
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        aggregates._tracker(self.connection).clear()
+        self.connection.execute("DELETE FROM directory_aggregate_dirty WHERE vault_id=2")
+
+        original_iter = aggregates._iter_visible_file_contributions
+
+        def iter_and_mark(connection, vault_id, **kwargs):
+            rows = original_iter(connection, vault_id, **kwargs)
+            connection.execute(
+                """
+                INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at)
+                VALUES (2, 'keep', '2026-07-21T12:00:00+00:00')
+                ON CONFLICT(vault_id, path) DO UPDATE SET marked_at=excluded.marked_at
+                """
+            )
+            return rows
+
+        with patch.object(aggregates, "_now", return_value="2026-07-21T11:00:00+00:00"):
+            with patch.object(
+                aggregates,
+                "_iter_visible_file_contributions",
+                side_effect=iter_and_mark,
+            ):
+                aggregates.rebuild_vault_directory_aggregates(self.connection, 2)
+
+        remaining = self.connection.execute(
+            "SELECT path, marked_at FROM directory_aggregate_dirty WHERE vault_id=2"
+        ).fetchall()
+        self.assertEqual(
+            [(row["path"], row["marked_at"]) for row in remaining],
+            [("keep", "2026-07-21T12:00:00+00:00")],
+        )
+
+    def test_flush_rollback_leaves_durable_dirty_for_restart(self) -> None:
+        self.catalog.observe_local_copy(
+            vault_id=2,
+            path="roll/a.bin",
+            file_type="regular",
+            size=1,
+            mtime_ns=1,
+            observed_at="2026-07-21T10:00:00+00:00",
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        self.connection.commit()
+
+        self.catalog.observe_local_copy(
+            vault_id=2,
+            path="roll/b.bin",
+            file_type="regular",
+            size=2,
+            mtime_ns=1,
+            observed_at="2026-07-21T10:00:01+00:00",
+        )
+        dirty_before = self.connection.execute(
+            "SELECT path FROM directory_aggregate_dirty WHERE vault_id=2 ORDER BY path"
+        ).fetchall()
+        self.assertTrue(dirty_before)
+        self.connection.rollback()
+        aggregates._tracker(self.connection).clear()
+
+        # After rollback the in-tx dirty write is gone; a committed mark must
+        # still converge. Simulate a prior committed dirty row + restart.
+        self.connection.execute(
+            """
+            INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at)
+            VALUES (2, 'roll', '2026-07-21T10:00:02+00:00')
+            """
+        )
+        self.connection.commit()
+        # Fresh connection-scoped tracker (restart).
+        aggregates._tracker(self.connection).clear()
+        # Apply the missing file on a new transaction, then flush durable dirty.
+        self.catalog.observe_local_copy(
+            vault_id=2,
+            path="roll/b.bin",
+            file_type="regular",
+            size=2,
+            mtime_ns=1,
+            observed_at="2026-07-21T10:00:03+00:00",
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        page = self.catalog.list_files_page(2)
+        self.assertEqual(page["items"][0]["item_count"], 2)
+
+    def test_two_flush_passes_are_idempotent_on_shared_dirty_set(self) -> None:
+        self.catalog.observe_local_copy(
+            vault_id=2,
+            path="shared/x.bin",
+            file_type="regular",
+            size=3,
+            mtime_ns=1,
+            observed_at="2026-07-21T10:00:00+00:00",
+        )
+        aggregates.mark_path_dirty(self.connection, 2, "shared/x.bin")
+        first = aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        second = aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        self.assertGreaterEqual(first["rebuilt_directories"], 1)
+        self.assertEqual(second["rebuilt_directories"], 0)
+        dirty = self.connection.execute(
+            "SELECT COUNT(*) AS total FROM directory_aggregate_dirty WHERE vault_id=2"
+        ).fetchone()["total"]
+        self.assertEqual(int(dirty), 0)
+
+
+class DirectoryAggregateInvalidationTests(unittest.TestCase):
+    """Direct catalog writers must invalidate aggregate ancestors."""
+
+    def setUp(self) -> None:
+        metrics_service.reset_for_tests()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.database_path = Path(self._tmp.name) / "catalog.db"
+        migrated = run_alembic(self.database_path)
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        self.connection = SQLiteConnection(str(self.database_path))
+        self.connection.__enter__()
+        _seed_vault(self.connection, 2)
+        self.catalog = ArchiveCatalog(self.connection)
+
+    def tearDown(self) -> None:
+        self.connection.__exit__(None, None, None)
+        self._tmp.cleanup()
+
+    def _seed_both_file(self, path: str = "photos/shot.jpg") -> str:
+        digest = "a" * 64
+        file_id = self.catalog.observe_local_copy(
+            vault_id=2,
+            path=path,
+            file_type="regular",
+            size=100,
+            mtime_ns=1,
+            observed_at="2026-07-21T10:00:00+00:00",
+        )
+        version_id = self.catalog.record_archive_version(
+            vault_id=2,
+            path=path,
+            object_key=f"docs/{path}",
+            provider_version_id="v-1",
+            size=100,
+            storage_class="STANDARD",
+            etag="e1",
+            uploaded_at="2026-07-21T10:00:00+00:00",
+            observed_at="2026-07-21T10:00:00+00:00",
+            scan_id="scan-1",
+        )
+        self.connection.execute(
+            """
+            UPDATE archive_versions
+            SET plaintext_sha256=%s, integrity='verified', verified_at=%s
+            WHERE id=%s
+            """,
+            (digest, "2026-07-21T10:00:00+00:00", version_id),
+        )
+        self.catalog.set_local_fingerprint(
+            vault_id=2,
+            path=path,
+            plaintext_sha256=digest,
+            matched_archive_version_id=version_id,
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        return file_id
+
+    def test_catalog_audit_availability_change_invalidates_state(self) -> None:
+        from app.services.catalog_audit import audit_vault_catalog
+
+        self._seed_both_file()
+        before = self.catalog.list_files_page(2)["items"][0]
+        self.assertEqual(before["state"], "both")
+        self.assertEqual(before["available_actions"]["free-space"], 1)
+
+        vault = self.connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
+
+        class _EmptyClient:
+            def get_paginator(self, _name):
+                return self
+
+            def paginate(self, **_kwargs):
+                yield {"Versions": [], "DeleteMarkers": []}
+
+        audit_vault_catalog(self.connection, vault, _EmptyClient())
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        after = self.catalog.list_files_page(2)["items"][0]
+        self.assertEqual(after["state"], "local_only")
+        self.assertEqual(after["available_actions"]["upload"], 1)
+        self.assertEqual(after["available_actions"]["free-space"], 0)
+        self.assertIsNone(after.get("storage_class"))
+
+    def test_catalog_audit_storage_class_drift_invalidates_storage(self) -> None:
+        from app.services.catalog_audit import audit_vault_catalog
+
+        self._seed_both_file()
+        vault = self.connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
+        version = self.connection.execute(
+            "SELECT object_key, provider_version_id FROM archive_versions"
+        ).fetchone()
+
+        class _DriftClient:
+            def get_paginator(self, _name):
+                return self
+
+            def paginate(self, **_kwargs):
+                yield {
+                    "Versions": [
+                        {
+                            "Key": version["object_key"],
+                            "VersionId": version["provider_version_id"],
+                            "StorageClass": "GLACIER",
+                        }
+                    ],
+                    "DeleteMarkers": [],
+                }
+
+            def get_object_tagging(self, **_kwargs):
+                return {"TagSet": []}
+
+        audit_vault_catalog(self.connection, vault, _DriftClient())
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        after = self.catalog.list_files_page(2)["items"][0]
+        self.assertEqual(after["storage_class"], "GLACIER")
+        self.assertEqual(after["storage_class_count"], 1)
+
+    def test_cloud_deletion_purge_invalidates_counts_and_actions(self) -> None:
+        from app.services import cloud_deletion as cloud_deletion_service
+
+        file_id = self._seed_both_file(path="purge/me.bin")
+        version_id = self.connection.execute(
+            "SELECT id FROM archive_versions WHERE provider_version_id='v-1'"
+        ).fetchone()["id"]
+        # Minimal cloud_deletion_items row for the purge bookkeeping seam.
+        self.connection.execute(
+            """
+            INSERT INTO jobs(
+                vault_id, vault_file_id, path, action, status,
+                requested_by, requested_at, updated_at
+            ) VALUES (
+                2, %s, 'purge/me.bin', 'cloud-purge', 'running',
+                NULL, '2026-07-21T10:00:00+00:00', '2026-07-21T10:00:00+00:00'
+            )
+            """,
+            (file_id,),
+        )
+        job_id = self.connection.execute("SELECT id FROM jobs").fetchone()["id"]
+        self.connection.execute(
+            """
+            INSERT INTO cloud_deletion_items(
+                job_id, vault_id, vault_file_id, kind, archive_version_id,
+                object_key, provider_version_id, status, updated_at
+            ) VALUES (
+                %s, 2, %s, 'version', %s, 'docs/purge/me.bin', 'v-1',
+                'pending', '2026-07-21T10:00:00+00:00'
+            )
+            """,
+            (job_id, file_id, version_id),
+        )
+        item_id = self.connection.execute(
+            "SELECT id FROM cloud_deletion_items"
+        ).fetchone()["id"]
+        cloud_deletion_service.mark_item_deleted(
+            self.connection,
+            item_id=int(item_id),
+            updated_at="2026-07-21T11:00:00+00:00",
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        after = self.catalog.list_files_page(2)["items"][0]
+        self.assertEqual(after["state"], "local_only")
+        self.assertEqual(after["available_actions"]["cloud-purge"], 0)
+        self.assertEqual(after["cloud_size"], 0)
+
+    def test_direct_local_copy_fingerprint_update_invalidates_actions(self) -> None:
+        self._seed_both_file(path="hash/me.bin")
+        before = self.catalog.list_files_page(2)["items"][0]
+        self.assertEqual(before["available_actions"]["free-space"], 1)
+
+        file_id = self.connection.execute(
+            """
+            SELECT vf.id FROM vault_files vf
+            JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+            WHERE fp.path='hash/me.bin'
+            """
+        ).fetchone()["id"]
+        # Mimic storage._apply_local_fingerprint_updates direct SQL.
+        self.connection.execute(
+            """
+            UPDATE local_copies
+            SET plaintext_sha256=%s,
+                matched_archive_version_id=NULL,
+                size=100,
+                mtime_ns=1,
+                last_seen_at='scan-2',
+                observed_at='2026-07-21T12:00:00+00:00'
+            WHERE vault_file_id=%s
+            """,
+            ("b" * 64, file_id),
+        )
+        aggregates.invalidate_for_vault_file(self.connection, 2, file_id)
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        after = self.catalog.list_files_page(2)["items"][0]
+        self.assertEqual(after["available_actions"]["free-space"], 0)
+
+    def test_invalidate_for_archive_version_ids_marks_ancestors(self) -> None:
+        self._seed_both_file(path="deep/nested/file.bin")
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        self.connection.execute("DELETE FROM directory_aggregate_dirty WHERE vault_id=2")
+        aggregates._tracker(self.connection).clear()
+        version_id = self.connection.execute(
+            "SELECT id FROM archive_versions WHERE provider_version_id='v-1'"
+        ).fetchone()["id"]
+        aggregates.invalidate_for_archive_version_ids(self.connection, [version_id])
+        dirty = {
+            row["path"]
+            for row in self.connection.execute(
+                "SELECT path FROM directory_aggregate_dirty WHERE vault_id=2"
+            ).fetchall()
+        }
+        self.assertEqual(dirty, {"deep", "deep/nested"})
+
+    def _seed_rename_candidate(
+        self,
+        *,
+        old_path: str,
+        new_path: str,
+        size: int = 40,
+        with_cloud: bool = False,
+    ) -> str:
+        """Seed missing@old + present@new sharing a digest for confirmation."""
+        digest = "c" * 64
+        file_id = self.catalog.observe_local_copy(
+            vault_id=2,
+            path=old_path,
+            file_type="regular",
+            size=size,
+            mtime_ns=1,
+            observed_at="2026-07-21T10:00:00+00:00",
+        )
+        version_id = None
+        if with_cloud:
+            version_id = self.catalog.record_archive_version(
+                vault_id=2,
+                path=old_path,
+                object_key=f"docs/{old_path}",
+                provider_version_id="rename-v1",
+                size=size,
+                storage_class="STANDARD",
+                etag="rename-etag",
+                uploaded_at="2026-07-21T10:00:00+00:00",
+                observed_at="2026-07-21T10:00:00+00:00",
+                scan_id="scan-rename",
+            )
+            self.connection.execute(
+                """
+                UPDATE archive_versions
+                SET plaintext_sha256=%s, integrity='verified', verified_at=%s
+                WHERE id=%s
+                """,
+                (digest, "2026-07-21T10:00:00+00:00", version_id),
+            )
+        self.catalog.set_local_fingerprint(
+            vault_id=2,
+            path=old_path,
+            plaintext_sha256=digest,
+            matched_archive_version_id=version_id,
+        )
+        self.catalog.mark_local_copy_missing(
+            file_id, observed_at="2026-07-21T11:00:00+00:00"
+        )
+        self.catalog.observe_local_copy(
+            vault_id=2,
+            path=new_path,
+            file_type="regular",
+            size=size,
+            mtime_ns=2,
+            observed_at="2026-07-21T11:00:00+00:00",
+        )
+        # Carry the verified match onto the provisional so post-confirm
+        # free-space eligibility (local match == archive version) is realistic.
+        self.catalog.set_local_fingerprint(
+            vault_id=2,
+            path=new_path,
+            plaintext_sha256=digest,
+            matched_archive_version_id=version_id,
+        )
+        return file_id
+
+    def _clear_dirty(self) -> None:
+        self.connection.execute("DELETE FROM directory_aggregate_dirty WHERE vault_id=2")
+        aggregates._tracker(self.connection).clear()
+
+    def _dirty_paths(self) -> set[str]:
+        return {
+            row["path"]
+            for row in self.connection.execute(
+                "SELECT path FROM directory_aggregate_dirty WHERE vault_id=2"
+            ).fetchall()
+        }
+
+    def test_confirm_file_rename_marks_old_and_new_ancestors(self) -> None:
+        file_id = self._seed_rename_candidate(
+            old_path="old-dir/nested/file.bin",
+            new_path="new-dir/nested/file.bin",
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        self._clear_dirty()
+
+        self.catalog.confirm_file_rename(
+            vault_file_id=file_id,
+            new_path="new-dir/nested/file.bin",
+            changed_at="2026-07-21T12:00:00+00:00",
+            vault_id=2,
+        )
+
+        self.assertEqual(
+            self._dirty_paths(),
+            {"old-dir", "old-dir/nested", "new-dir", "new-dir/nested"},
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        root = self.catalog.list_files_page(2, page=1, page_size=20)
+        names = {item["name"] for item in root["items"]}
+        self.assertIn("new-dir", names)
+        self.assertNotIn("old-dir", names)
+        new_dir = next(item for item in root["items"] if item["name"] == "new-dir")
+        self.assertEqual(new_dir["item_count"], 1)
+        self.assertEqual(new_dir["total_size"], 40)
+
+    def test_confirm_file_rename_state_action_storage_parity(self) -> None:
+        file_id = self._seed_rename_candidate(
+            old_path="cloud-old/shot.jpg",
+            new_path="cloud-new/shot.jpg",
+            size=100,
+            with_cloud=True,
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        self._clear_dirty()
+
+        self.catalog.confirm_file_rename(
+            vault_file_id=file_id,
+            new_path="cloud-new/shot.jpg",
+            changed_at="2026-07-21T12:00:00+00:00",
+            vault_id=2,
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+
+        root = self.catalog.list_files_page(2)["items"]
+        names = {item["name"] for item in root}
+        self.assertIn("cloud-new", names)
+        self.assertNotIn("cloud-old", names)
+        folder = next(item for item in root if item["name"] == "cloud-new")
+        self.assertEqual(folder["state"], "both")
+        self.assertEqual(folder["available_actions"]["free-space"], 1)
+        self.assertEqual(folder["storage_class"], "STANDARD")
+        self.assertEqual(folder["cloud_size"], 100)
+
+    def test_confirm_folder_rename_converges_directory_chains(self) -> None:
+        first = self._seed_rename_candidate(
+            old_path="album/2024/a.bin",
+            new_path="archive/2024/a.bin",
+            size=10,
+        )
+        # Second sibling under the same folder prefixes.
+        second_old = "album/2024/b.bin"
+        second_new = "archive/2024/b.bin"
+        digest = "d" * 64
+        second_id = self.catalog.observe_local_copy(
+            vault_id=2,
+            path=second_old,
+            file_type="regular",
+            size=20,
+            mtime_ns=1,
+            observed_at="2026-07-21T10:05:00+00:00",
+        )
+        self.catalog.set_local_fingerprint(
+            vault_id=2,
+            path=second_old,
+            plaintext_sha256=digest,
+            matched_archive_version_id=None,
+        )
+        self.catalog.mark_local_copy_missing(
+            second_id, observed_at="2026-07-21T11:05:00+00:00"
+        )
+        self.catalog.observe_local_copy(
+            vault_id=2,
+            path=second_new,
+            file_type="regular",
+            size=20,
+            mtime_ns=2,
+            observed_at="2026-07-21T11:05:00+00:00",
+        )
+        self.catalog.set_local_fingerprint(
+            vault_id=2,
+            path=second_new,
+            plaintext_sha256=digest,
+            matched_archive_version_id=None,
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        self._clear_dirty()
+
+        renamed = self.catalog.confirm_folder_rename(
+            vault_id=2,
+            old_prefix="album/2024",
+            new_prefix="archive/2024",
+            changed_at="2026-07-21T12:30:00+00:00",
+        )
+        self.assertEqual(set(renamed), {first, second_id})
+        dirty = self._dirty_paths()
+        self.assertTrue({"album", "album/2024"}.issubset(dirty))
+        self.assertTrue({"archive", "archive/2024"}.issubset(dirty))
+
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        root = self.catalog.list_files_page(2)["items"]
+        names = {item["name"] for item in root}
+        self.assertIn("archive", names)
+        self.assertNotIn("album", names)
+        archive = next(item for item in root if item["name"] == "archive")
+        self.assertEqual(archive["item_count"], 2)
+        self.assertEqual(archive["total_size"], 30)
+
+    def test_confirm_file_rename_after_earlier_dirty_flushed(self) -> None:
+        # Unrelated dirty work is flushed first; rename must still mark both chains.
+        self.catalog.observe_local_copy(
+            vault_id=2,
+            path="other/seed.bin",
+            file_type="regular",
+            size=1,
+            mtime_ns=1,
+            observed_at="2026-07-21T09:00:00+00:00",
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        self._clear_dirty()
+
+        file_id = self._seed_rename_candidate(
+            old_path="alpha/x.bin",
+            new_path="beta/x.bin",
+            size=7,
+        )
+        # Seed leaves dirty from observe/fingerprint; flush those first.
+        # Missing@alpha has no cloud so it does not contribute; only beta shows.
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        before_names = {
+            item["name"] for item in self.catalog.list_files_page(2)["items"]
+        }
+        self.assertIn("beta", before_names)
+        self.assertNotIn("alpha", before_names)
+        self._clear_dirty()
+
+        self.catalog.confirm_file_rename(
+            vault_file_id=file_id,
+            new_path="beta/x.bin",
+            changed_at="2026-07-21T13:00:00+00:00",
+            vault_id=2,
+        )
+        # Old chain still dirtied so any stale alpha rollup would be cleared.
+        self.assertEqual(self._dirty_paths(), {"alpha", "beta"})
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        after = {
+            item["name"]: item
+            for item in self.catalog.list_files_page(2)["items"]
+        }
+        self.assertIn("beta", after)
+        self.assertNotIn("alpha", after)
+        self.assertEqual(after["beta"]["item_count"], 1)
+        self.assertEqual(after["beta"]["total_size"], 7)
+
+    def test_confirm_file_rename_failed_cas_does_not_leave_dirty(self) -> None:
+        file_id = self._seed_rename_candidate(
+            old_path="fail-old/a.bin",
+            new_path="fail-new/a.bin",
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        self._clear_dirty()
+
+        from app.catalog import VaultFileNotFound
+
+        with self.assertRaises(VaultFileNotFound):
+            self.catalog.confirm_file_rename(
+                vault_file_id=file_id,
+                new_path="fail-new/does-not-exist.bin",
+                changed_at="2026-07-21T14:00:00+00:00",
+                vault_id=2,
+            )
+        self.assertEqual(self._dirty_paths(), set())
+
+        # Successful confirmation after a failed attempt still dirties correctly.
+        self.catalog.confirm_file_rename(
+            vault_file_id=file_id,
+            new_path="fail-new/a.bin",
+            changed_at="2026-07-21T14:01:00+00:00",
+            vault_id=2,
+        )
+        self.assertEqual(self._dirty_paths(), {"fail-old", "fail-new"})
+
+    def test_confirm_file_rename_idempotent_second_call(self) -> None:
+        file_id = self._seed_rename_candidate(
+            old_path="once-old/f.bin",
+            new_path="once-new/f.bin",
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        self._clear_dirty()
+
+        self.catalog.confirm_file_rename(
+            vault_file_id=file_id,
+            new_path="once-new/f.bin",
+            changed_at="2026-07-21T15:00:00+00:00",
+            vault_id=2,
+        )
+        first_dirty = self._dirty_paths()
+        self.assertEqual(first_dirty, {"once-old", "once-new"})
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        self._clear_dirty()
+
+        from app.catalog import VaultFileNotFound
+
+        with self.assertRaises(VaultFileNotFound):
+            self.catalog.confirm_file_rename(
+                vault_file_id=file_id,
+                new_path="once-new/f.bin",
+                changed_at="2026-07-21T15:01:00+00:00",
+                vault_id=2,
+            )
+        self.assertEqual(self._dirty_paths(), set())
+
+    def test_confirm_file_rename_dirty_survives_reconnect_until_flush(self) -> None:
+        file_id = self._seed_rename_candidate(
+            old_path="persist-old/p.bin",
+            new_path="persist-new/p.bin",
+            size=5,
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        self._clear_dirty()
+        self.catalog.confirm_file_rename(
+            vault_file_id=file_id,
+            new_path="persist-new/p.bin",
+            changed_at="2026-07-21T16:00:00+00:00",
+            vault_id=2,
+        )
+        self.connection.commit()
+
+        # Restart recovery: a fresh connection still sees durable dirty rows.
+        with SQLiteConnection(str(self.database_path)) as other:
+            dirty = {
+                row["path"]
+                for row in other.execute(
+                    "SELECT path FROM directory_aggregate_dirty WHERE vault_id=2"
+                ).fetchall()
+            }
+            self.assertEqual(dirty, {"persist-old", "persist-new"})
+            aggregates.flush_directory_aggregates(other, vault_id=2)
+            other.commit()
+
+        with SQLiteConnection(str(self.database_path)) as verify:
+            catalog = ArchiveCatalog(verify)
+            names = {
+                item["name"] for item in catalog.list_files_page(2)["items"]
+            }
+            self.assertIn("persist-new", names)
+            self.assertNotIn("persist-old", names)
+
 
 if __name__ == "__main__":
     unittest.main()

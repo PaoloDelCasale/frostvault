@@ -98,17 +98,21 @@ class _DirectoryAggregateTracker:
 def _persist_dirty_directory(connection: Any, vault_id: int, directory: str) -> None:
     tracker = _tracker(connection)
     key = (int(vault_id), directory)
+    # Coalesce burst marks inside one connection. Cross-connection re-marks
+    # still bump durable marked_at so a concurrent flush cannot drop them.
     if key in tracker.dirty_directories:
         return
-    tracker.dirty_directories.add(key)
+    marked_at = _now()
     connection.execute(
         """
         INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at)
         VALUES (%s, %s, %s)
-        ON CONFLICT(vault_id, path) DO NOTHING
+        ON CONFLICT(vault_id, path) DO UPDATE SET
+            marked_at=excluded.marked_at
         """,
-        (int(vault_id), directory, _now()),
+        (int(vault_id), directory, marked_at),
     )
+    tracker.dirty_directories.add(key)
 
 
 def mark_path_dirty(connection: Any, vault_id: int, path: str | None) -> None:
@@ -158,6 +162,82 @@ def mark_paths_dirty(connection: Any, vault_id: int, paths: Iterable[str]) -> No
         mark_path_dirty(connection, vault_id, path)
 
 
+def invalidate_for_vault_file(
+    connection: Any,
+    vault_id: int,
+    vault_file_id: str | None,
+) -> None:
+    """Central seam: one Vault File mutation dirties its ancestor directories."""
+    mark_file_id_dirty(connection, vault_id, vault_file_id)
+
+
+def invalidate_for_confirmed_rename(
+    connection: Any,
+    vault_id: int,
+    *,
+    old_path: str | None,
+    provisional_path: str | None,
+    new_path: str | None,
+) -> None:
+    """Central seam: rename confirmation dirties old + provisional/new chains.
+
+    Paths come from the confirmation snapshot, not a post-mutation file_paths
+    lookup. After CAS moves Path History, the surviving Vault File only has
+    ``new_path`` current and the provisional identity is retired — so both the
+    pre-rename missing location and the consumed provisional location must be
+    marked explicitly for ancestor convergence.
+    """
+    mark_paths_dirty(
+        connection,
+        vault_id,
+        (old_path, provisional_path, new_path),
+    )
+
+
+def invalidate_for_vault_files(
+    connection: Any,
+    items: Iterable[tuple[int, str]],
+) -> None:
+    """Invalidate many ``(vault_id, vault_file_id)`` pairs with path coalescing."""
+    seen: set[tuple[int, str]] = set()
+    for vault_id, vault_file_id in items:
+        key = (int(vault_id), str(vault_file_id))
+        if not vault_file_id or key in seen:
+            continue
+        seen.add(key)
+        mark_file_id_dirty(connection, int(vault_id), str(vault_file_id))
+
+
+def invalidate_for_archive_version_ids(
+    connection: Any,
+    version_ids: Iterable[str],
+) -> None:
+    """Resolve Archive Version ids to current paths and mark ancestors dirty.
+
+    Prefer this over ad-hoc SQL in audit/purge/storage writers so every semantic
+    catalog mutation shares one invalidation path.
+    """
+    ids = [str(version_id) for version_id in version_ids if version_id]
+    if not ids:
+        return
+    # Chunk to keep parameter lists portable across SQLite/PostgreSQL.
+    for offset in range(0, len(ids), 500):
+        batch = ids[offset : offset + 500]
+        placeholders = ", ".join(["%s"] * len(batch))
+        rows = connection.execute(
+            f"""
+            SELECT DISTINCT av.vault_id, fp.path
+            FROM archive_versions av
+            JOIN file_paths fp
+              ON fp.vault_file_id=av.vault_file_id AND fp.valid_to IS NULL
+            WHERE av.id IN ({placeholders})
+            """,
+            batch,
+        ).fetchall()
+        for row in rows:
+            mark_path_dirty(connection, int(row["vault_id"]), row["path"])
+
+
 def request_vault_rebuild(connection: Any, vault_id: int) -> None:
     """Schedule a full aggregate rebuild for ``vault_id`` on the next flush."""
     tracker = _tracker(connection)
@@ -198,21 +278,85 @@ def ensure_directory_aggregates(connection: Any, vault_id: int) -> None:
     flush_directory_aggregates(connection, vault_id=vault_id)
 
 
+def _claim_dirty_rows(
+    connection: Any,
+    *,
+    vault_id: int | None,
+    cutoff: str,
+) -> list[tuple[int, str]]:
+    """Snapshot durable dirty rows with marked_at at or before ``cutoff``."""
+    if vault_id is None:
+        rows = connection.execute(
+            """
+            SELECT vault_id, path FROM directory_aggregate_dirty
+            WHERE marked_at <= %s
+            """,
+            (cutoff,),
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            """
+            SELECT vault_id, path FROM directory_aggregate_dirty
+            WHERE vault_id=%s AND marked_at <= %s
+            """,
+            (int(vault_id), cutoff),
+        ).fetchall()
+    return [(int(row["vault_id"]), str(row["path"])) for row in rows]
+
+
+def _delete_claimed_dirty_rows(
+    connection: Any,
+    *,
+    vault_id: int,
+    paths: Iterable[str],
+    cutoff: str,
+) -> None:
+    """Drop only claimed dirty rows; newer concurrent marks survive."""
+    unique_paths = sorted({str(path) for path in paths if path is not None})
+    if not unique_paths:
+        # Full-vault claim (rebuild): delete every pre-cutoff dirty row.
+        connection.execute(
+            """
+            DELETE FROM directory_aggregate_dirty
+            WHERE vault_id=%s AND marked_at <= %s
+            """,
+            (int(vault_id), cutoff),
+        )
+        return
+    for offset in range(0, len(unique_paths), 500):
+        batch = unique_paths[offset : offset + 500]
+        placeholders = ", ".join(["%s"] * len(batch))
+        connection.execute(
+            f"""
+            DELETE FROM directory_aggregate_dirty
+            WHERE vault_id=%s
+              AND path IN ({placeholders})
+              AND marked_at <= %s
+            """,
+            (int(vault_id), *batch, cutoff),
+        )
+
+
 def flush_directory_aggregates(
     connection: Any,
     *,
     vault_id: int | None = None,
 ) -> dict[str, int]:
-    """Apply coalesced dirty-directory rebuilds for one or all tracked Vaults."""
+    """Apply coalesced dirty-directory rebuilds for one or all tracked Vaults.
+
+    Claim/delete is cutoff-bounded: only dirty rows with ``marked_at`` at or
+    before the flush snapshot are removed. Marks committed during rebuild
+    (including same-path re-marks that bump ``marked_at``) remain durable for
+    the next flush — required for PostgreSQL READ COMMITTED concurrency.
+    """
     tracker = _tracker(connection)
     started = time.perf_counter()
+    # Cutoff freezes the claim set before any rebuild work observes catalog rows.
+    cutoff = _now()
 
     # Merge durable dirty rows (survives connection boundaries) with the
     # in-memory tracker so burst updates inside one transaction still coalesce.
     if vault_id is None:
-        durable_rows = connection.execute(
-            "SELECT vault_id, path FROM directory_aggregate_dirty"
-        ).fetchall()
         status_rows = connection.execute(
             """
             SELECT vault_id FROM directory_aggregate_status
@@ -221,13 +365,6 @@ def flush_directory_aggregates(
             (STATUS_REBUILD_REQUIRED,),
         ).fetchall()
     else:
-        durable_rows = connection.execute(
-            """
-            SELECT vault_id, path FROM directory_aggregate_dirty
-            WHERE vault_id=%s
-            """,
-            (int(vault_id),),
-        ).fetchall()
         status_rows = connection.execute(
             """
             SELECT vault_id FROM directory_aggregate_status
@@ -236,10 +373,19 @@ def flush_directory_aggregates(
             (int(vault_id), STATUS_REBUILD_REQUIRED),
         ).fetchall()
 
+    claimed_dirty = set(_claim_dirty_rows(connection, vault_id=vault_id, cutoff=cutoff))
+    # In-connection marks are always part of this claim even if a clock skew
+    # made their durable marked_at appear after cutoff (same transaction).
+    tracker_dirty = set(tracker.dirty_directories)
+    if vault_id is not None:
+        tracker_dirty = {
+            (vid, path) for vid, path in tracker_dirty if vid == int(vault_id)
+        }
+    dirty = set(claimed_dirty)
+    dirty.update(tracker_dirty)
+
     rebuild_vaults = set(tracker.rebuild_vaults)
     rebuild_vaults.update(int(row["vault_id"]) for row in status_rows)
-    dirty = set(tracker.dirty_directories)
-    dirty.update((int(row["vault_id"]), str(row["path"])) for row in durable_rows)
     if vault_id is not None:
         rebuild_vaults = {vid for vid in rebuild_vaults if vid == int(vault_id)}
         dirty = {(vid, path) for vid, path in dirty if vid == int(vault_id)}
@@ -248,10 +394,10 @@ def flush_directory_aggregates(
     rebuilt_dirs = 0
     full_rebuilds = 0
     for vid in sorted(rebuild_vaults):
-        rebuild_vault_directory_aggregates(connection, vid)
-        connection.execute(
-            "DELETE FROM directory_aggregate_dirty WHERE vault_id=%s",
-            (vid,),
+        rebuild_vault_directory_aggregates(
+            connection,
+            vid,
+            dirty_cutoff=cutoff,
         )
         full_rebuilds += 1
         dirty = {(d_vid, path) for d_vid, path in dirty if d_vid != vid}
@@ -260,12 +406,15 @@ def flush_directory_aggregates(
     for vid, path in dirty:
         by_vault[vid].append(path)
     for vid, directories in by_vault.items():
-        for directory in sorted(set(directories), key=lambda item: (item.count("/"), item)):
+        unique_dirs = sorted(set(directories), key=lambda item: (item.count("/"), item))
+        for directory in unique_dirs:
             _rebuild_directory(connection, vid, directory)
             rebuilt_dirs += 1
-        connection.execute(
-            "DELETE FROM directory_aggregate_dirty WHERE vault_id=%s",
-            (vid,),
+        _delete_claimed_dirty_rows(
+            connection,
+            vault_id=vid,
+            paths=unique_dirs,
+            cutoff=cutoff,
         )
         _mark_status(connection, vid, STATUS_READY)
 
@@ -301,15 +450,22 @@ def flush_directory_aggregates(
     }
 
 
-def rebuild_vault_directory_aggregates(connection: Any, vault_id: int) -> int:
-    """Replace every directory aggregate row for ``vault_id`` from the catalog."""
+def rebuild_vault_directory_aggregates(
+    connection: Any,
+    vault_id: int,
+    *,
+    dirty_cutoff: str | None = None,
+) -> int:
+    """Replace every directory aggregate row for ``vault_id`` from the catalog.
+
+    Dirty rows newer than ``dirty_cutoff`` (default: now at rebuild start) are
+    preserved so concurrent transactions that mark after the claim remain
+    durable for the next flush.
+    """
     started = time.perf_counter()
+    cutoff = dirty_cutoff or _now()
     connection.execute(
         "DELETE FROM directory_aggregates WHERE vault_id=%s",
-        (int(vault_id),),
-    )
-    connection.execute(
-        "DELETE FROM directory_aggregate_dirty WHERE vault_id=%s",
         (int(vault_id),),
     )
     contributions = _iter_visible_file_contributions(connection, vault_id)
@@ -320,6 +476,12 @@ def rebuild_vault_directory_aggregates(connection: Any, vault_id: int) -> int:
             rollup.add(contribution)
     for directory, rollup in rolled.items():
         _upsert_rollup(connection, vault_id, directory, rollup)
+    _delete_claimed_dirty_rows(
+        connection,
+        vault_id=int(vault_id),
+        paths=(),
+        cutoff=cutoff,
+    )
     _mark_status(connection, vault_id, STATUS_READY)
     tracker = _tracker(connection)
     tracker.dirty_directories = {

@@ -16,6 +16,7 @@ from .services.lifecycle_pins import is_path_pinned
 from .services.directory_aggregates import (
     count_child_directories,
     ensure_directory_aggregates,
+    invalidate_for_confirmed_rename,
     list_child_directory_rows,
     mark_directory_dirty,
     mark_file_id_dirty,
@@ -1264,6 +1265,15 @@ class ArchiveCatalog:
             ),
         )
         self._require_one_rename_mutation(restored_copy)
+        # Mark after CAS succeeds so a failed confirmation never dirties, and
+        # still inside the savepoint so dirty rows share rename rollback.
+        invalidate_for_confirmed_rename(
+            self.connection,
+            vault_id,
+            old_path=snapshot["missing_path"],
+            provisional_path=snapshot["provisional_path"],
+            new_path=new_path,
+        )
         self.connection.execute("RELEASE SAVEPOINT rename_confirmation_cas")
         return vault_file_id
 

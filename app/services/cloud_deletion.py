@@ -14,6 +14,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .audit_events import record_audit_event
+from .directory_aggregates import (
+    invalidate_for_archive_version_ids,
+    invalidate_for_vault_file,
+)
 from .notifications import (
     enqueue_job_terminal_notification_best_effort,
     enqueue_notification,
@@ -952,6 +956,17 @@ def mark_item_deleted(
             """,
             (updated_at, item["archive_version_id"]),
         )
+        invalidate_for_archive_version_ids(
+            connection,
+            [str(item["archive_version_id"])],
+        )
+    elif item.get("vault_file_id") is not None and item.get("vault_id") is not None:
+        # Delete-marker-only items still may change visible ancestry via file id.
+        invalidate_for_vault_file(
+            connection,
+            int(item["vault_id"]),
+            str(item["vault_file_id"]),
+        )
 
 
 def mark_item_failed(
@@ -983,6 +998,16 @@ def mark_items_deleted(
         if not batch:
             continue
         placeholders = ", ".join(["%s"] * len(batch))
+        version_rows = connection.execute(
+            f"""
+            SELECT archive_version_id
+            FROM cloud_deletion_items
+            WHERE id IN ({placeholders})
+              AND kind='version'
+              AND archive_version_id IS NOT NULL
+            """,
+            batch,
+        ).fetchall()
         connection.execute(
             f"""
             UPDATE archive_versions
@@ -1001,6 +1026,10 @@ def mark_items_deleted(
             WHERE id IN ({placeholders})
             """,
             (updated_at, *batch),
+        )
+        invalidate_for_archive_version_ids(
+            connection,
+            [str(row["archive_version_id"]) for row in version_rows],
         )
 
 
@@ -1150,6 +1179,8 @@ def finalize_purge_job(
                 """,
                 (updated_at, vault_file_id),
             )
+            if vault_id is not None:
+                invalidate_for_vault_file(connection, vault_id, vault_file_id)
         connection.execute(
             """
             UPDATE jobs
