@@ -425,6 +425,144 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertIsNone(marked)
         self.assertIsNone(stored["read_at"])
 
+    def test_list_filters_unread_and_read_independently(self) -> None:
+        with SQLiteConnection(str(self.path)) as connection:
+            older_unread = notifications.enqueue_notification(
+                connection,
+                user_id=self.user_id,
+                vault_id=self.vault_id,
+                event="upload_verified",
+                title="Older unread",
+            )
+            middle_read = notifications.enqueue_notification(
+                connection,
+                user_id=self.user_id,
+                vault_id=self.vault_id,
+                event="upload_verified",
+                title="Middle read",
+            )
+            newer_unread = notifications.enqueue_notification(
+                connection,
+                user_id=self.user_id,
+                vault_id=self.vault_id,
+                event="upload_verified",
+                title="Newer unread",
+            )
+            notifications.mark_notification_read(
+                connection,
+                notification_id=middle_read["id"],
+                user_id=self.user_id,
+            )
+
+            unread = notifications.list_in_app_notifications(
+                connection, user_id=self.user_id, status="unread"
+            )
+            read = notifications.list_in_app_notifications(
+                connection, user_id=self.user_id, status="read"
+            )
+
+        self.assertEqual([item["title"] for item in unread], ["Newer unread", "Older unread"])
+        self.assertEqual([item["title"] for item in read], ["Middle read"])
+        self.assertTrue(all(not item["read"] for item in unread))
+        self.assertTrue(all(item["read"] for item in read))
+        self.assertEqual({item["id"] for item in unread}, {older_unread["id"], newer_unread["id"]})
+
+    def test_list_before_id_bounds_incremental_history(self) -> None:
+        with SQLiteConnection(str(self.path)) as connection:
+            ids = []
+            for index in range(5):
+                item = notifications.enqueue_notification(
+                    connection,
+                    user_id=self.user_id,
+                    vault_id=self.vault_id,
+                    event="upload_verified",
+                    title=f"Item {index}",
+                )
+                ids.append(item["id"])
+            page = notifications.list_in_app_notifications(
+                connection,
+                user_id=self.user_id,
+                status="all",
+                limit=2,
+                before_id=ids[-1],
+            )
+
+        self.assertEqual([item["id"] for item in page], [ids[-2], ids[-3]])
+
+    def test_mark_all_notifications_read_is_idempotent_and_membership_scoped(self) -> None:
+        with SQLiteConnection(str(self.path)) as connection:
+            first = notifications.enqueue_notification(
+                connection,
+                user_id=self.user_id,
+                vault_id=self.vault_id,
+                event="upload_verified",
+                title="Owner one",
+            )
+            second = notifications.enqueue_notification(
+                connection,
+                user_id=self.user_id,
+                vault_id=self.vault_id,
+                event="upload_verified",
+                title="Owner two",
+            )
+            outsider = notifications.enqueue_notification(
+                connection,
+                user_id=self.outsider_id,
+                vault_id=None,
+                event="upload_verified",
+                title="Outsider personal",
+            )
+            other_vault_id = connection.execute(
+                """
+                INSERT INTO vaults(
+                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
+                ) VALUES ('hidden', 'Hidden', '/h', 'bucket', 'h', 'remote')
+                RETURNING id
+                """
+            ).fetchone()["id"]
+            connection.execute(
+                "INSERT INTO vault_members(vault_id, user_id, role) "
+                "VALUES (%s, %s, 'owner')",
+                (other_vault_id, self.user_id),
+            )
+            hidden = notifications.enqueue_notification(
+                connection,
+                user_id=self.user_id,
+                vault_id=other_vault_id,
+                event="upload_verified",
+                title="Hidden by membership",
+            )
+            connection.execute(
+                "DELETE FROM vault_members WHERE vault_id=%s AND user_id=%s",
+                (other_vault_id, self.user_id),
+            )
+
+            first_pass = notifications.mark_all_notifications_read(
+                connection, user_id=self.user_id
+            )
+            second_pass = notifications.mark_all_notifications_read(
+                connection, user_id=self.user_id
+            )
+
+            owner_rows = connection.execute(
+                "SELECT id, read_at FROM notifications WHERE user_id=%s ORDER BY id",
+                (self.user_id,),
+            ).fetchall()
+            outsider_row = connection.execute(
+                "SELECT read_at FROM notifications WHERE id=%s",
+                (outsider["id"],),
+            ).fetchone()
+
+        self.assertEqual(first_pass["marked_count"], 2)
+        self.assertEqual(first_pass["unread_count"], 0)
+        self.assertEqual(second_pass["marked_count"], 0)
+        self.assertEqual(second_pass["unread_count"], 0)
+        by_id = {row["id"]: row["read_at"] for row in owner_rows}
+        self.assertIsNotNone(by_id[first["id"]])
+        self.assertIsNotNone(by_id[second["id"]])
+        self.assertIsNone(by_id[hidden["id"]])
+        self.assertIsNone(outsider_row["read_at"])
+
     def test_terminal_notification_failure_does_not_rollback_job_transition(self) -> None:
         def fail_after_sql_error(connection, *, job_id):
             del job_id
@@ -747,6 +885,130 @@ class NotificationReadHttpTests(unittest.TestCase):
                 (notification_id,),
             ).fetchone()
         self.assertIsNone(row["read_at"])
+
+    def test_notifications_http_filters_status_and_reports_has_more(self) -> None:
+        with SQLiteConnection(str(self.path)) as connection:
+            older = notifications.enqueue_notification(
+                connection,
+                user_id=self.owner_id,
+                vault_id=self.vault_id,
+                event="upload_verified",
+                title="Older unread",
+            )
+            middle = notifications.enqueue_notification(
+                connection,
+                user_id=self.owner_id,
+                vault_id=self.vault_id,
+                event="upload_verified",
+                title="Middle read",
+            )
+            newer = notifications.enqueue_notification(
+                connection,
+                user_id=self.owner_id,
+                vault_id=self.vault_id,
+                event="upload_verified",
+                title="Newer unread",
+            )
+            notifications.mark_notification_read(
+                connection,
+                notification_id=middle["id"],
+                user_id=self.owner_id,
+            )
+        self._authenticate(self.owner_token, self.owner_csrf)
+
+        unread = self.client.get("/api/notifications?status=unread&limit=1")
+        self.assertEqual(unread.status_code, 200, unread.text)
+        body = unread.json()
+        self.assertEqual(len(body["items"]), 1)
+        self.assertEqual(body["items"][0]["title"], "Newer unread")
+        self.assertTrue(body["has_more"])
+        self.assertEqual(body["unread_count"], 2)
+
+        older_page = self.client.get(
+            f"/api/notifications?status=unread&limit=10&before_id={newer['id']}"
+        )
+        self.assertEqual(older_page.status_code, 200, older_page.text)
+        older_body = older_page.json()
+        self.assertEqual([item["id"] for item in older_body["items"]], [older["id"]])
+        self.assertFalse(older_body["has_more"])
+
+        read = self.client.get("/api/notifications?status=read")
+        self.assertEqual(read.status_code, 200, read.text)
+        self.assertEqual([item["title"] for item in read.json()["items"]], ["Middle read"])
+
+        invalid = self.client.get("/api/notifications?status=snoozed")
+        self.assertEqual(invalid.status_code, 422, invalid.text)
+
+    def test_mark_all_read_http_is_idempotent_and_authz_scoped(self) -> None:
+        with SQLiteConnection(str(self.path)) as connection:
+            first = notifications.enqueue_notification(
+                connection,
+                user_id=self.owner_id,
+                vault_id=self.vault_id,
+                event="upload_verified",
+                title="Owner one",
+            )
+            second = notifications.enqueue_notification(
+                connection,
+                user_id=self.owner_id,
+                vault_id=self.vault_id,
+                event="upload_verified",
+                title="Owner two",
+            )
+            outsider = notifications.enqueue_notification(
+                connection,
+                user_id=self.outsider_id,
+                vault_id=None,
+                event="upload_verified",
+                title="Outsider",
+            )
+
+        self._authenticate(self.owner_token, self.owner_csrf)
+        first_response = self.client.post(
+            "/api/notifications/read-all",
+            headers={"X-CSRF-Token": self.owner_csrf},
+        )
+        self.assertEqual(first_response.status_code, 200, first_response.text)
+        self.assertEqual(first_response.json()["marked_count"], 2)
+        self.assertEqual(first_response.json()["unread_count"], 0)
+
+        second_response = self.client.post(
+            "/api/notifications/read-all",
+            headers={"X-CSRF-Token": self.owner_csrf},
+        )
+        self.assertEqual(second_response.status_code, 200, second_response.text)
+        self.assertEqual(second_response.json()["marked_count"], 0)
+        self.assertEqual(second_response.json()["unread_count"], 0)
+
+        with SQLiteConnection(str(self.path)) as connection:
+            owner_unread = connection.execute(
+                "SELECT COUNT(*) AS total FROM notifications "
+                "WHERE user_id=%s AND read_at IS NULL",
+                (self.owner_id,),
+            ).fetchone()["total"]
+            outsider_row = connection.execute(
+                "SELECT read_at FROM notifications WHERE id=%s",
+                (outsider["id"],),
+            ).fetchone()
+            owner_ids = {
+                row["id"]: row["read_at"]
+                for row in connection.execute(
+                    "SELECT id, read_at FROM notifications WHERE user_id=%s",
+                    (self.owner_id,),
+                ).fetchall()
+            }
+        self.assertEqual(owner_unread, 0)
+        self.assertIsNotNone(owner_ids[first["id"]])
+        self.assertIsNotNone(owner_ids[second["id"]])
+        self.assertIsNone(outsider_row["read_at"])
+
+        self._authenticate(self.outsider_token, self.outsider_csrf)
+        outsider_response = self.client.post(
+            "/api/notifications/read-all",
+            headers={"X-CSRF-Token": self.outsider_csrf},
+        )
+        self.assertEqual(outsider_response.status_code, 200, outsider_response.text)
+        self.assertEqual(outsider_response.json()["marked_count"], 1)
 
 
 if __name__ == "__main__":

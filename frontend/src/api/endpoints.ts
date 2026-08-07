@@ -122,8 +122,23 @@ export type NotificationItem = {
   read_at: string | null;
 };
 
+export type NotificationListStatus = "unread" | "read" | "all";
+
 export type NotificationsResponse = {
   items: NotificationItem[];
+  unread_count: number;
+  /** True when another bounded page is available via ``before_id``. */
+  has_more?: boolean;
+};
+
+export type FetchNotificationsParams = {
+  limit?: number;
+  status?: NotificationListStatus;
+  beforeId?: number;
+};
+
+export type MarkAllNotificationsReadResponse = {
+  marked_count: number;
   unread_count: number;
 };
 
@@ -586,9 +601,27 @@ export function saveAdminSmtpEndpoint(
 }
 
 /** List the authenticated user's visible in-app notifications and unread count. */
-export function fetchNotifications(limit?: number): Promise<NotificationsResponse> {
-  const query = limit === undefined ? "" : `?limit=${encodeURIComponent(String(limit))}`;
-  return apiRequest<NotificationsResponse>(`/api/notifications${query}`);
+export function fetchNotifications(
+  limitOrParams?: number | FetchNotificationsParams,
+): Promise<NotificationsResponse> {
+  const params: FetchNotificationsParams =
+    typeof limitOrParams === "number"
+      ? { limit: limitOrParams }
+      : (limitOrParams ?? {});
+  const search = new URLSearchParams();
+  if (params.limit !== undefined) {
+    search.set("limit", String(params.limit));
+  }
+  if (params.status !== undefined) {
+    search.set("status", params.status);
+  }
+  if (params.beforeId !== undefined) {
+    search.set("before_id", String(params.beforeId));
+  }
+  const query = search.toString();
+  return apiRequest<NotificationsResponse>(
+    `/api/notifications${query ? `?${query}` : ""}`,
+  );
 }
 
 /** Mark one visible notification read; the server operation is idempotent. */
@@ -599,6 +632,14 @@ export function markNotificationRead(
     method: "POST",
     body: JSON.stringify({ notification_id: notificationId }),
   });
+}
+
+/** Mark every currently visible unread notification read in one request. */
+export function markAllNotificationsRead(): Promise<MarkAllNotificationsReadResponse> {
+  return apiRequest<MarkAllNotificationsReadResponse>(
+    "/api/notifications/read-all",
+    { method: "POST" },
+  );
 }
 
 /** List personal preferences for the server-selected active Vault. */

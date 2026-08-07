@@ -1119,6 +1119,10 @@ export interface paths {
         /**
          * List Notifications
          * @description List in-app notifications for the authenticated user.
+         *
+         *     Supports server-side ``status`` filtering (``unread`` / ``read`` / ``all``)
+         *     and ``before_id`` cursor pagination so older unread items are never hidden
+         *     behind a mixed newest page (issue #225).
          */
         get: operations["list_notifications_api_notifications_get"];
         put?: never;
@@ -1140,6 +1144,29 @@ export interface paths {
         put?: never;
         /** Mark Notification Read */
         post: operations["mark_notification_read_api_notifications_read_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notifications/read-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark All Notifications Read
+         * @description Mark every currently visible unread notification read (issue #225).
+         *
+         *     Server-authoritative and idempotent; preserves the same membership and
+         *     in-app visibility checks as single-item mark-read.
+         */
+        post: operations["mark_all_notifications_read_api_notifications_read_all_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5918,6 +5945,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_all_notifications_read_api_notifications_read_all_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
         };

@@ -20,6 +20,7 @@ import {
   fetchVaults,
 } from "./endpoints";
 import type { FilesQuery, JobsResponse, StatsResponse } from "./types";
+import type { NotificationListStatus } from "./endpoints";
 import { jobAwareRefetchInterval, jobPollIntervalMs } from "./polling";
 
 export const apiQueryKeys = {
@@ -40,7 +41,10 @@ export const apiQueryKeys = {
     ] as const,
   fileHistory: (path: string) => ["file-history", path] as const,
   fileVersions: (path: string) => ["file-versions", path] as const,
+  /** Prefix shared by every notifications list query (status-scoped children). */
   notifications: ["notifications"] as const,
+  notificationsByStatus: (status: NotificationListStatus) =>
+    ["notifications", status] as const,
   notificationPreferences: (vaultId: number) =>
     ["notification-preferences", vaultId] as const,
 };
@@ -132,10 +136,15 @@ export function fileVersionsQueryOptions(path: string) {
   };
 }
 
-export const notificationsQueryOptions = {
-  queryKey: apiQueryKeys.notifications,
-  queryFn: () => fetchNotifications(),
-};
+export function notificationsQueryOptions(
+  status: NotificationListStatus = "unread",
+  limit = 50,
+) {
+  return {
+    queryKey: apiQueryKeys.notificationsByStatus(status),
+    queryFn: () => fetchNotifications({ status, limit }),
+  };
+}
 
 export function notificationPreferencesQueryOptions(vaultId: number) {
   return {
