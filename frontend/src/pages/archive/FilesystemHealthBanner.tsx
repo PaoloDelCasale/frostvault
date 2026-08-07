@@ -6,9 +6,11 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 import {
+  DETAILS_GROUP_PAGE_SIZE,
   DETAILS_PAGE_SIZE,
   INLINE_FINDING_SAMPLE,
   INLINE_GROUP_LIMIT,
+  type FilesystemFindingGroup,
   groupFilesystemFindings,
 } from "./filesystemHealthFindings";
 
@@ -28,6 +30,31 @@ function countedLabel(
 ): string {
   const form = count === 1 ? "one" : "other";
   return t(`${baseKey}_${form}`, { count, ...params });
+}
+
+/** Finding and group counts pluralize independently (e.g. "2 findings in 1 group"). */
+function findingsSummaryLabel(
+  findingCount: number,
+  groupCount: number,
+  t: Translate,
+): string {
+  return t("ui.filesystem_findings_summary", {
+    findings: countedLabel(findingCount, "ui.filesystem_findings_count", t),
+    groups: countedLabel(groupCount, "ui.filesystem_groups_count", t),
+  });
+}
+
+function groupSummaryLabel(group: FilesystemFindingGroup, t: Translate): string {
+  const params = {
+    message: group.message,
+    code: group.code,
+    count: group.count,
+    scope: group.scope,
+  };
+  if (group.scope && group.hasNestedPaths) {
+    return countedLabel(group.count, "ui.filesystem_finding_group", t, params);
+  }
+  return countedLabel(group.count, "ui.filesystem_finding_group_root", t, params);
 }
 
 function findingKey(finding: FilesystemFinding, index: number): string {
@@ -66,6 +93,27 @@ function FindingPathRow({
   );
 }
 
+function GroupSummaryCard({
+  group,
+  remediation,
+  t,
+  testId = "filesystem-finding-group",
+  className,
+}: {
+  group: FilesystemFindingGroup;
+  remediation: string | null;
+  t: Translate;
+  testId?: string;
+  className?: string;
+}) {
+  return (
+    <li data-testid={testId} className={className}>
+      <div className="font-semibold text-ink">{groupSummaryLabel(group, t)}</div>
+      {remediation ? <div className="mt-1 text-muted">{remediation}</div> : null}
+    </li>
+  );
+}
+
 /**
  * Alarm banner for vault filesystem health.
  * When `ok` is true there is no alarm (operators still see stats elsewhere).
@@ -78,7 +126,8 @@ export function FilesystemHealthBanner({
   className,
 }: FilesystemHealthBannerProps) {
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [page, setPage] = useState(0);
+  const [findingPage, setFindingPage] = useState(0);
+  const [groupPage, setGroupPage] = useState(0);
 
   const findings = useMemo(
     () => filesystem?.findings ?? [],
@@ -115,22 +164,43 @@ export function FilesystemHealthBanner({
     if (inlineSample.length >= INLINE_FINDING_SAMPLE) break;
   }
   const isTruncated = totalFindings > INLINE_FINDING_SAMPLE;
-  const pageCount = Math.max(1, Math.ceil(totalFindings / DETAILS_PAGE_SIZE));
-  const safePage = Math.min(page, pageCount - 1);
+
+  const findingPageCount = Math.max(
+    1,
+    Math.ceil(totalFindings / DETAILS_PAGE_SIZE),
+  );
+  const safeFindingPage = Math.min(findingPage, findingPageCount - 1);
   const pageFindings = findings.slice(
-    safePage * DETAILS_PAGE_SIZE,
-    safePage * DETAILS_PAGE_SIZE + DETAILS_PAGE_SIZE,
+    safeFindingPage * DETAILS_PAGE_SIZE,
+    safeFindingPage * DETAILS_PAGE_SIZE + DETAILS_PAGE_SIZE,
+  );
+
+  const groupPageCount = Math.max(
+    1,
+    Math.ceil(totalGroups / DETAILS_GROUP_PAGE_SIZE),
+  );
+  const safeGroupPage = Math.min(groupPage, groupPageCount - 1);
+  const pageGroups = groups.slice(
+    safeGroupPage * DETAILS_GROUP_PAGE_SIZE,
+    safeGroupPage * DETAILS_GROUP_PAGE_SIZE + DETAILS_GROUP_PAGE_SIZE,
   );
 
   const openDetails = () => {
-    setPage(0);
+    setFindingPage(0);
+    setGroupPage(0);
     setDetailsOpen(true);
   };
 
   const closeDetails = (open: boolean) => {
     setDetailsOpen(open);
-    if (!open) setPage(0);
+    if (!open) {
+      setFindingPage(0);
+      setGroupPage(0);
+    }
   };
+
+  const groupRemediation = (group: FilesystemFindingGroup): string | null =>
+    group.remediation || checkRemediations[0] || null;
 
   return (
     <>
@@ -158,52 +228,35 @@ export function FilesystemHealthBanner({
 
         {totalFindings > 0 ? (
           <div className="mt-2.5 space-y-2.5 text-[13px]">
-            <p className="font-semibold text-ink" data-testid="filesystem-findings-summary">
-              {countedLabel(totalFindings, "ui.filesystem_findings_summary", t, {
-                groups: totalGroups,
-              })}
+            <p
+              className="font-semibold text-ink"
+              data-testid="filesystem-findings-summary"
+            >
+              {findingsSummaryLabel(totalFindings, totalGroups, t)}
             </p>
 
             <ul
               className="list-none space-y-2.5 p-0"
               data-testid="filesystem-finding-groups"
             >
-              {inlineGroups.map((group) => {
-                const label =
-                  group.scope && group.hasNestedPaths
-                    ? t("ui.filesystem_finding_group", {
-                        message: group.message,
-                        code: group.code,
-                        count: group.count,
-                        scope: group.scope,
-                      })
-                    : t("ui.filesystem_finding_group_root", {
-                        message: group.message,
-                        code: group.code,
-                        count: group.count,
-                      });
-                const remediation =
-                  group.remediation || checkRemediations[0] || null;
-                return (
-                  <li
-                    key={`${group.code}:${group.scope}`}
-                    data-testid="filesystem-finding-group"
-                    className="rounded-[10px] border border-[var(--health-warn-border)]/60 bg-canvas/40 px-3 py-2"
-                  >
-                    <div className="font-semibold text-ink">{label}</div>
-                    {remediation ? (
-                      <div className="mt-1 text-muted">{remediation}</div>
-                    ) : null}
-                  </li>
-                );
-              })}
+              {inlineGroups.map((group) => (
+                <GroupSummaryCard
+                  key={`${group.code}:${group.scope}`}
+                  group={group}
+                  remediation={groupRemediation(group)}
+                  t={t}
+                  className="rounded-[10px] border border-[var(--health-warn-border)]/60 bg-canvas/40 px-3 py-2"
+                />
+              ))}
             </ul>
 
             {hiddenGroupCount > 0 ? (
-              <p className="text-muted">
-                {t("ui.filesystem_findings_more_groups", {
-                  count: hiddenGroupCount,
-                })}
+              <p className="text-muted" data-testid="filesystem-findings-more-groups">
+                {countedLabel(
+                  hiddenGroupCount,
+                  "ui.filesystem_findings_more_groups",
+                  t,
+                )}
               </p>
             ) : null}
 
@@ -266,50 +319,72 @@ export function FilesystemHealthBanner({
           className="flex max-h-[min(65vh,560px)] flex-col gap-3"
         >
           <p className="text-sm font-semibold text-ink">
-            {countedLabel(totalFindings, "ui.filesystem_findings_summary", t, {
-              groups: totalGroups,
-            })}
+            {findingsSummaryLabel(totalFindings, totalGroups, t)}
           </p>
 
-          <ul
-            className="max-h-40 shrink-0 space-y-2 overflow-y-auto pr-1 text-sm"
-            data-testid="filesystem-finding-groups-detail"
-          >
-            {groups.map((group) => {
-              const label =
-                group.scope && group.hasNestedPaths
-                  ? t("ui.filesystem_finding_group", {
-                      message: group.message,
-                      code: group.code,
-                      count: group.count,
-                      scope: group.scope,
-                    })
-                  : t("ui.filesystem_finding_group_root", {
-                      message: group.message,
-                      code: group.code,
-                      count: group.count,
-                    });
-              const remediation =
-                group.remediation || checkRemediations[0] || null;
-              return (
-                <li
+          <div className="space-y-2">
+            <ul
+              className="max-h-40 space-y-2 overflow-y-auto pr-1 text-sm"
+              data-testid="filesystem-finding-groups-detail"
+            >
+              {pageGroups.map((group) => (
+                <GroupSummaryCard
                   key={`detail-group:${group.code}:${group.scope}`}
+                  group={group}
+                  remediation={groupRemediation(group)}
+                  t={t}
+                  testId="filesystem-finding-group-detail"
                   className="rounded-[10px] border border-line bg-canvas px-3 py-2"
+                />
+              ))}
+            </ul>
+
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm text-muted" data-testid="filesystem-groups-page">
+                {t("ui.filesystem_groups_page", {
+                  page: safeGroupPage + 1,
+                  pages: groupPageCount,
+                })}
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="min-h-11"
+                  disabled={safeGroupPage <= 0}
+                  aria-label={t("ui.filesystem_groups_prev_page")}
+                  onClick={() =>
+                    setGroupPage((current) => Math.max(0, current - 1))
+                  }
                 >
-                  <div className="font-semibold">{label}</div>
-                  {remediation ? (
-                    <div className="mt-1 text-muted">{remediation}</div>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
+                  ←
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="min-h-11"
+                  disabled={safeGroupPage >= groupPageCount - 1}
+                  aria-label={t("ui.filesystem_groups_next_page")}
+                  onClick={() =>
+                    setGroupPage((current) =>
+                      Math.min(groupPageCount - 1, current + 1),
+                    )
+                  }
+                >
+                  →
+                </Button>
+              </div>
+            </div>
+          </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto rounded-[10px] border border-line bg-canvas">
             <ul className="list-disc space-y-1.5 p-3 pl-7 text-sm">
               {pageFindings.map((finding, index) => (
                 <FindingPathRow
-                  key={findingKey(finding, safePage * DETAILS_PAGE_SIZE + index)}
+                  key={findingKey(
+                    finding,
+                    safeFindingPage * DETAILS_PAGE_SIZE + index,
+                  )}
                   finding={finding}
                   testId="filesystem-finding-detail-row"
                   showCode
@@ -320,10 +395,10 @@ export function FilesystemHealthBanner({
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-sm text-muted">
+            <span className="text-sm text-muted" data-testid="filesystem-findings-page">
               {t("ui.filesystem_findings_page", {
-                page: safePage + 1,
-                pages: pageCount,
+                page: safeFindingPage + 1,
+                pages: findingPageCount,
               })}
             </span>
             <div className="flex gap-2">
@@ -331,9 +406,11 @@ export function FilesystemHealthBanner({
                 type="button"
                 variant="secondary"
                 className="min-h-11"
-                disabled={safePage <= 0}
+                disabled={safeFindingPage <= 0}
                 aria-label={t("ui.filesystem_findings_prev_page")}
-                onClick={() => setPage((current) => Math.max(0, current - 1))}
+                onClick={() =>
+                  setFindingPage((current) => Math.max(0, current - 1))
+                }
               >
                 ←
               </Button>
@@ -341,10 +418,12 @@ export function FilesystemHealthBanner({
                 type="button"
                 variant="secondary"
                 className="min-h-11"
-                disabled={safePage >= pageCount - 1}
+                disabled={safeFindingPage >= findingPageCount - 1}
                 aria-label={t("ui.filesystem_findings_next_page")}
                 onClick={() =>
-                  setPage((current) => Math.min(pageCount - 1, current + 1))
+                  setFindingPage((current) =>
+                    Math.min(findingPageCount - 1, current + 1),
+                  )
                 }
               >
                 →

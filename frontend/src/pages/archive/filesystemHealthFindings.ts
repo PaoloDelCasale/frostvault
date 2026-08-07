@@ -6,8 +6,11 @@ export const INLINE_FINDING_SAMPLE = 5;
 /** Maximum group summaries rendered inline before collapsing into details. */
 export const INLINE_GROUP_LIMIT = 8;
 
-/** Page size for the full-findings dialog list. */
+/** Page size for the full-findings dialog path list. */
 export const DETAILS_PAGE_SIZE = 50;
+
+/** Page size for the full-findings dialog group summaries. */
+export const DETAILS_GROUP_PAGE_SIZE = 25;
 
 export type FilesystemFindingGroup = {
   code: string;
