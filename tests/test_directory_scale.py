@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -18,15 +19,23 @@ from app.services.lifecycle_pins import set_lifecycle_pin
 from tests.test_database import run_alembic
 
 
-def _seed_vault(connection: SQLiteConnection, vault_id: int = 2) -> None:
+def _seed_vault(
+    connection: SQLiteConnection,
+    vault_id: int = 2,
+    *,
+    slug: str | None = None,
+    name: str | None = None,
+) -> None:
+    vault_slug = slug or ("docs" if vault_id == 2 else f"vault-{vault_id}")
+    vault_name = name or ("Docs" if vault_id == 2 else f"Vault {vault_id}")
     connection.execute(
         """
         INSERT INTO vaults(
             id, slug, name, source_root, s3_bucket, s3_prefix,
             rclone_remote
-        ) VALUES (%s, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+        ) VALUES (%s, %s, %s, '/source', 'bucket', %s, 'remote')
         """,
-        (vault_id,),
+        (vault_id, vault_slug, vault_name, vault_slug),
     )
 
 
@@ -1343,6 +1352,547 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
             }
             self.assertIn("persist-new", names)
             self.assertNotIn("persist-old", names)
+
+
+class DirectoryAggregateMaintenanceSingleFlightTests(unittest.TestCase):
+    """Per-Vault single-flight across global sweeps and targeted workers."""
+
+    def setUp(self) -> None:
+        metrics_service.reset_for_tests()
+        aggregates.reset_maintenance_runtime_for_tests()
+        aggregates.set_maintenance_scheduling_enabled(True)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.database_path = Path(self._tmp.name) / "catalog.db"
+        migrated = run_alembic(self.database_path)
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        self.connection = SQLiteConnection(str(self.database_path))
+        self.connection.__enter__()
+        _seed_vault(self.connection, 2)
+        _seed_vault(self.connection, 3)
+        self.catalog = ArchiveCatalog(self.connection)
+        self._db_settings = SimpleNamespace(
+            db_backend="sqlite",
+            sqlite_path=str(self.database_path),
+        )
+
+    def tearDown(self) -> None:
+        # Stop further pending drains, then join any worker already started so
+        # follow-up threads cannot touch a deleted temp database path.
+        aggregates.set_maintenance_scheduling_enabled(False)
+        with aggregates._maintenance_lock:
+            workers = list(aggregates._maintenance_inflight.values())
+        for worker in workers:
+            worker.join(timeout=5)
+        aggregates.reset_maintenance_runtime_for_tests()
+        self.connection.__exit__(None, None, None)
+        self._tmp.cleanup()
+        aggregates.set_maintenance_scheduling_enabled(True)
+
+    def _seed_dirty_vault(self, vault_id: int, path: str) -> None:
+        self.catalog.observe_local_copy(
+            vault_id=vault_id,
+            path=path,
+            file_type="regular",
+            size=1,
+            mtime_ns=1,
+            observed_at="2026-07-21T10:00:00+00:00",
+        )
+        # Leave durable dirty work for maintenance (no flush).
+        self.connection.commit()
+
+    def _open_db(self) -> SQLiteConnection:
+        return SQLiteConnection(str(self.database_path))
+
+    def _drain_maintenance_workers(self) -> None:
+        """Join inflight workers; suppress further pending reschedules."""
+        aggregates.set_maintenance_scheduling_enabled(False)
+        with aggregates._maintenance_lock:
+            workers = list(aggregates._maintenance_inflight.values())
+            aggregates._vault_maintenance_pending.clear()
+        for worker in workers:
+            worker.join(timeout=5)
+        aggregates.reset_maintenance_runtime_for_tests()
+        aggregates.set_maintenance_scheduling_enabled(True)
+
+    def test_global_owner_blocks_targeted_same_vault(self) -> None:
+        """Global sweep paused on A + targeted A must not double-flush."""
+        self._seed_dirty_vault(2, "alpha/a.bin")
+        entered = threading.Event()
+        release = threading.Event()
+        flush_vaults: list[int] = []
+        flush_lock = threading.Lock()
+        original_flush = aggregates.flush_directory_aggregates
+
+        def gated_flush(connection, *, vault_id=None):
+            vid = int(vault_id) if vault_id is not None else -1
+            with flush_lock:
+                flush_vaults.append(vid)
+            if vid == 2:
+                entered.set()
+                self.assertTrue(release.wait(timeout=5), "release timed out")
+            return original_flush(connection, vault_id=vault_id)
+
+        with patch("app.database.settings", self._db_settings), patch.object(
+            aggregates, "flush_directory_aggregates", side_effect=gated_flush
+        ):
+            global_thread = threading.Thread(
+                target=lambda: aggregates.process_directory_aggregate_maintenance(
+                    vault_id=None, publish=False
+                ),
+                name="global-maint",
+            )
+            global_thread.start()
+            self.assertTrue(entered.wait(timeout=5), "global never claimed A")
+
+            targeted = aggregates.process_directory_aggregate_maintenance(
+                vault_id=2, publish=False
+            )
+            self.assertEqual(targeted["vaults"], 0)
+            self.assertEqual(targeted["skipped_vaults"], 1)
+            self.assertFalse(
+                aggregates.schedule_directory_aggregate_maintenance(2),
+                "targeted schedule must coalesce while A is owned",
+            )
+            with flush_lock:
+                # Concurrent window: only the global owner may flush A.
+                self.assertEqual(flush_vaults.count(2), 1)
+
+            release.set()
+            global_thread.join(timeout=5)
+            self.assertFalse(global_thread.is_alive())
+            self._drain_maintenance_workers()
+
+    def test_targeted_owner_blocks_global_same_vault(self) -> None:
+        """Targeted A then global sweep must skip A while owned."""
+        self._seed_dirty_vault(2, "beta/b.bin")
+        entered = threading.Event()
+        release = threading.Event()
+        flush_vaults: list[int] = []
+        flush_lock = threading.Lock()
+        original_flush = aggregates.flush_directory_aggregates
+
+        def gated_flush(connection, *, vault_id=None):
+            vid = int(vault_id) if vault_id is not None else -1
+            with flush_lock:
+                flush_vaults.append(vid)
+            if vid == 2 and threading.current_thread().name == "targeted-maint":
+                entered.set()
+                self.assertTrue(release.wait(timeout=5), "release timed out")
+            return original_flush(connection, vault_id=vault_id)
+
+        with patch("app.database.settings", self._db_settings), patch.object(
+            aggregates, "flush_directory_aggregates", side_effect=gated_flush
+        ):
+            targeted_thread = threading.Thread(
+                target=lambda: aggregates.process_directory_aggregate_maintenance(
+                    vault_id=2, publish=False
+                ),
+                name="targeted-maint",
+            )
+            targeted_thread.start()
+            self.assertTrue(entered.wait(timeout=5), "targeted never claimed A")
+
+            global_result = aggregates.process_directory_aggregate_maintenance(
+                vault_id=None, publish=False
+            )
+            self.assertEqual(global_result["skipped_vaults"], 1)
+            self.assertEqual(global_result["vaults"], 0)
+            with flush_lock:
+                # Concurrent window: only the targeted owner may flush A.
+                self.assertEqual(flush_vaults.count(2), 1)
+
+            release.set()
+            targeted_thread.join(timeout=5)
+            self.assertFalse(targeted_thread.is_alive())
+            self._drain_maintenance_workers()
+
+    def test_different_vaults_may_proceed_in_parallel(self) -> None:
+        self._seed_dirty_vault(2, "a/x.bin")
+        self._seed_dirty_vault(3, "b/y.bin")
+        barrier = threading.Barrier(2, timeout=5)
+        seen: list[int] = []
+        seen_lock = threading.Lock()
+        original_flush = aggregates.flush_directory_aggregates
+
+        def barrier_flush(connection, *, vault_id=None):
+            vid = int(vault_id)
+            with seen_lock:
+                seen.append(vid)
+            # Both owners must reach flush concurrently (no sleep).
+            barrier.wait()
+            return original_flush(connection, vault_id=vault_id)
+
+        results: dict[int, dict] = {}
+
+        def run_with_db(vid: int) -> None:
+            with self._open_db() as conn:
+                results[vid] = aggregates.process_directory_aggregate_maintenance(
+                    vault_id=vid, publish=False, connection=conn
+                )
+
+        with patch.object(
+            aggregates, "flush_directory_aggregates", side_effect=barrier_flush
+        ):
+            t2 = threading.Thread(target=lambda: run_with_db(2))
+            t3 = threading.Thread(target=lambda: run_with_db(3))
+            t2.start()
+            t3.start()
+            t2.join(timeout=5)
+            t3.join(timeout=5)
+            self.assertFalse(t2.is_alive())
+            self.assertFalse(t3.is_alive())
+
+        self.assertEqual(sorted(seen), [2, 3])
+        self.assertEqual(results[2]["vaults"], 1)
+        self.assertEqual(results[3]["vaults"], 1)
+        self.assertEqual(results[2]["skipped_vaults"], 0)
+        self.assertEqual(results[3]["skipped_vaults"], 0)
+
+    def test_exception_releases_vault_claim(self) -> None:
+        self._seed_dirty_vault(2, "fail/me.bin")
+
+        def exploding_flush(connection, *, vault_id=None):
+            raise RuntimeError("flush exploded")
+
+        with patch.object(
+            aggregates, "flush_directory_aggregates", side_effect=exploding_flush
+        ):
+            with self.assertRaises(RuntimeError):
+                aggregates.process_directory_aggregate_maintenance(
+                    vault_id=2,
+                    publish=False,
+                    connection=self.connection,
+                )
+
+        self.assertFalse(aggregates._vault_maintenance_owned(2))
+
+        # A later owner can claim and finish.
+        result = aggregates.process_directory_aggregate_maintenance(
+            vault_id=2, publish=False, connection=self.connection
+        )
+        self.assertEqual(result["vaults"], 1)
+        self.assertEqual(result["skipped_vaults"], 0)
+
+    def test_repeated_schedule_coalesces_while_owned(self) -> None:
+        """Multiple targeted schedules under one owner become a single follow-up."""
+        self._seed_dirty_vault(2, "coal/a.bin")
+        hold_entered = threading.Event()
+        hold_release = threading.Event()
+        follow_up_starts = threading.Event()
+        follow_ups: list[int | None] = []
+        original_flush = aggregates.flush_directory_aggregates
+
+        def hold_flush(connection, *, vault_id=None):
+            hold_entered.set()
+            self.assertTrue(hold_release.wait(timeout=5))
+            return original_flush(connection, vault_id=vault_id)
+
+        def track_follow_up(*, vault_id=None):
+            follow_ups.append(vault_id)
+            follow_up_starts.set()
+            # No-op body: only count dispatch coalescing.
+
+        with patch("app.database.settings", self._db_settings), patch.object(
+            aggregates, "flush_directory_aggregates", side_effect=hold_flush
+        ), patch.object(
+            aggregates, "_run_scheduled_maintenance", side_effect=track_follow_up
+        ):
+            holder = threading.Thread(
+                target=lambda: aggregates.process_directory_aggregate_maintenance(
+                    vault_id=2, publish=False
+                )
+            )
+            holder.start()
+            self.assertTrue(hold_entered.wait(timeout=5))
+
+            self.assertFalse(aggregates.schedule_directory_aggregate_maintenance(2))
+            self.assertFalse(aggregates.schedule_directory_aggregate_maintenance(2))
+            self.assertFalse(aggregates.schedule_directory_aggregate_maintenance(2))
+
+            hold_release.set()
+            holder.join(timeout=5)
+            self.assertFalse(holder.is_alive())
+
+            # Pending drain on release starts exactly one follow-up worker.
+            self.assertTrue(follow_up_starts.wait(timeout=5))
+            worker = aggregates._maintenance_inflight.get(2)
+            if worker is not None:
+                worker.join(timeout=5)
+            self._drain_maintenance_workers()
+
+        self.assertEqual(follow_ups, [2])
+
+    def test_scheduled_targeted_owner_handoff_after_inflight_teardown(self) -> None:
+        """Pending during a real scheduled targeted worker must run after teardown.
+
+        Reproduces production lifecycle: schedule() owns _maintenance_inflight,
+        process cleanup tries to re-schedule while that slot is still held, and
+        handoff must occur only after inflight removal (no stranded pending).
+        """
+        self._seed_dirty_vault(2, "strand/a.bin")
+        entered = threading.Event()
+        release = threading.Event()
+        flush_entries = 0
+        flush_lock = threading.Lock()
+        concurrent_flushes = 0
+        max_concurrent_flushes = 0
+        runs: list[int | None] = []
+        runs_lock = threading.Lock()
+        original_flush = aggregates.flush_directory_aggregates
+        original_run = aggregates._run_scheduled_maintenance
+
+        def gated_flush(connection, *, vault_id=None):
+            nonlocal flush_entries, concurrent_flushes, max_concurrent_flushes
+            vid = int(vault_id) if vault_id is not None else -1
+            with flush_lock:
+                flush_entries += 1
+                n = flush_entries
+                if vid == 2:
+                    concurrent_flushes += 1
+                    max_concurrent_flushes = max(
+                        max_concurrent_flushes, concurrent_flushes
+                    )
+            try:
+                if vid == 2 and n == 1:
+                    entered.set()
+                    self.assertTrue(release.wait(timeout=5), "release timed out")
+                return original_flush(connection, vault_id=vault_id)
+            finally:
+                if vid == 2:
+                    with flush_lock:
+                        concurrent_flushes -= 1
+
+        def tracking_run(*, vault_id=None):
+            with runs_lock:
+                runs.append(vault_id)
+            return original_run(vault_id=vault_id)
+
+        with patch("app.database.settings", self._db_settings), patch.object(
+            aggregates, "flush_directory_aggregates", side_effect=gated_flush
+        ), patch.object(
+            aggregates, "_run_scheduled_maintenance", side_effect=tracking_run
+        ):
+            self.assertTrue(aggregates.schedule_directory_aggregate_maintenance(2))
+            self.assertTrue(entered.wait(timeout=5), "scheduled owner never entered")
+
+            # Requests while the scheduled targeted worker still occupies inflight.
+            self.assertFalse(aggregates.schedule_directory_aggregate_maintenance(2))
+            self.assertFalse(aggregates.schedule_directory_aggregate_maintenance(2))
+            self.assertFalse(aggregates.schedule_directory_aggregate_maintenance(2))
+
+            release.set()
+
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                with runs_lock:
+                    if runs.count(2) >= 2:
+                        break
+                time.sleep(0.01)
+
+            self._drain_maintenance_workers()
+
+        with runs_lock:
+            self.assertEqual(runs, [2, 2], "exactly one follow-up after teardown")
+        with flush_lock:
+            self.assertEqual(max_concurrent_flushes, 1, "no overlapping vault flush")
+            self.assertGreaterEqual(flush_entries, 2)
+        self.assertFalse(aggregates._vault_maintenance_owned(2))
+        with aggregates._maintenance_lock:
+            self.assertNotIn(2, aggregates._vault_maintenance_pending)
+            inflight = aggregates._maintenance_inflight.get(2)
+            self.assertTrue(inflight is None or not inflight.is_alive())
+
+    def test_scheduled_targeted_exception_still_handoffs_pending(self) -> None:
+        """Exception in scheduled targeted process must release and hand off."""
+        self._seed_dirty_vault(2, "strand/fail.bin")
+        entered = threading.Event()
+        release = threading.Event()
+        flush_entries = 0
+        flush_lock = threading.Lock()
+        runs: list[int | None] = []
+        runs_lock = threading.Lock()
+        original_flush = aggregates.flush_directory_aggregates
+        original_run = aggregates._run_scheduled_maintenance
+
+        def gated_flush(connection, *, vault_id=None):
+            nonlocal flush_entries
+            vid = int(vault_id) if vault_id is not None else -1
+            with flush_lock:
+                flush_entries += 1
+                n = flush_entries
+            if vid == 2 and n == 1:
+                entered.set()
+                self.assertTrue(release.wait(timeout=5), "release timed out")
+                raise RuntimeError("scheduled flush exploded")
+            return original_flush(connection, vault_id=vault_id)
+
+        def tracking_run(*, vault_id=None):
+            with runs_lock:
+                runs.append(vault_id)
+            return original_run(vault_id=vault_id)
+
+        with patch("app.database.settings", self._db_settings), patch.object(
+            aggregates, "flush_directory_aggregates", side_effect=gated_flush
+        ), patch.object(
+            aggregates, "_run_scheduled_maintenance", side_effect=tracking_run
+        ):
+            self.assertTrue(aggregates.schedule_directory_aggregate_maintenance(2))
+            self.assertTrue(entered.wait(timeout=5), "scheduled owner never entered")
+            self.assertFalse(aggregates.schedule_directory_aggregate_maintenance(2))
+            release.set()
+
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                with runs_lock:
+                    if runs.count(2) >= 2:
+                        break
+                time.sleep(0.01)
+
+            self._drain_maintenance_workers()
+
+        with runs_lock:
+            self.assertEqual(runs, [2, 2])
+        self.assertFalse(aggregates._vault_maintenance_owned(2))
+        with aggregates._maintenance_lock:
+            self.assertNotIn(2, aggregates._vault_maintenance_pending)
+            inflight = aggregates._maintenance_inflight.get(2)
+            self.assertTrue(inflight is None or not inflight.is_alive())
+
+    def test_stale_worker_does_not_consume_pending_after_slot_replaced(self) -> None:
+        """Stale teardown must not discard pending owned by a replacement worker.
+
+        Simulates ABA on the inflight slot: worker A loses _maintenance_inflight[vid]
+        to replacement B before A's finally runs. Pending recorded for B must survive
+        A's teardown so B (exact owner) can consume/re-dispatch later.
+        """
+        noop_totals = {
+            "rebuilt_directories": 0,
+            "full_rebuilds": 0,
+            "vaults": 0,
+            "dirty_file_marks": 0,
+            "skipped_vaults": 0,
+        }
+        replacement_placeholder = threading.Thread(name="replacement-owner")
+
+        with aggregates._maintenance_lock:
+            aggregates._maintenance_inflight[2] = replacement_placeholder
+            aggregates._vault_maintenance_pending.add(2)
+
+        # Stale path: current thread is not the exact inflight owner.
+        with patch.object(
+            aggregates,
+            "process_directory_aggregate_maintenance",
+            return_value=noop_totals,
+        ), patch.object(
+            aggregates,
+            "schedule_directory_aggregate_maintenance",
+        ) as stale_schedule:
+            aggregates._run_scheduled_maintenance(vault_id=2)
+
+        stale_schedule.assert_not_called()
+        with aggregates._maintenance_lock:
+            self.assertIs(
+                aggregates._maintenance_inflight.get(2),
+                replacement_placeholder,
+                "stale worker must not pop a replacement owner's slot",
+            )
+            self.assertIn(
+                2,
+                aggregates._vault_maintenance_pending,
+                "stale worker must leave pending for the replacement owner",
+            )
+
+        # Exact owner teardown still consumes pending once.
+        started: list[int | None] = []
+
+        def track_schedule(vault_id=None):
+            started.append(vault_id)
+            return False
+
+        def as_exact_owner() -> None:
+            with patch.object(
+                aggregates,
+                "process_directory_aggregate_maintenance",
+                return_value=noop_totals,
+            ), patch.object(
+                aggregates,
+                "schedule_directory_aggregate_maintenance",
+                side_effect=track_schedule,
+            ):
+                aggregates._run_scheduled_maintenance(vault_id=2)
+
+        # schedule() registers the live Thread object before start(); mirror that.
+        exact_owner = threading.Thread(
+            target=as_exact_owner, name="exact-owner"
+        )
+        with aggregates._maintenance_lock:
+            aggregates._maintenance_inflight[2] = exact_owner
+            self.assertIn(2, aggregates._vault_maintenance_pending)
+
+        exact_owner.start()
+        exact_owner.join(timeout=5)
+        self.assertFalse(exact_owner.is_alive())
+
+        self.assertEqual(started, [2], "exact owner consumes pending once")
+        with aggregates._maintenance_lock:
+            self.assertNotIn(2, aggregates._vault_maintenance_pending)
+            self.assertNotIn(2, aggregates._maintenance_inflight)
+
+    def test_no_duplicate_revision_when_global_and_targeted_race(self) -> None:
+        self._seed_dirty_vault(2, "rev/a.bin")
+        entered = threading.Event()
+        release = threading.Event()
+        revisions: list[int] = []
+        rev_lock = threading.Lock()
+        original_flush = aggregates.flush_directory_aggregates
+
+        def gated_flush(connection, *, vault_id=None):
+            vid = int(vault_id) if vault_id is not None else -1
+            if vid == 2:
+                entered.set()
+                self.assertTrue(release.wait(timeout=5))
+            return original_flush(connection, vault_id=vault_id)
+
+        def record_revision(connection, *, vault_id, reason, invalidate):
+            with rev_lock:
+                revisions.append(int(vault_id))
+            return {
+                "vault_id": int(vault_id),
+                "revision": len(revisions),
+                "reason": reason,
+                "invalidate": list(invalidate),
+            }
+
+        with patch("app.database.settings", self._db_settings), patch.object(
+            aggregates, "flush_directory_aggregates", side_effect=gated_flush
+        ), patch(
+            "app.services.catalog_events.record_catalog_revision",
+            side_effect=record_revision,
+        ), patch(
+            "app.services.catalog_event_hub.publish_committed_event",
+            return_value=None,
+        ):
+            global_thread = threading.Thread(
+                target=lambda: aggregates.process_directory_aggregate_maintenance(
+                    vault_id=None, publish=True
+                )
+            )
+            global_thread.start()
+            self.assertTrue(entered.wait(timeout=5))
+
+            targeted = aggregates.process_directory_aggregate_maintenance(
+                vault_id=2, publish=True
+            )
+            self.assertEqual(targeted["skipped_vaults"], 1)
+            self.assertEqual(targeted["vaults"], 0)
+
+            release.set()
+            global_thread.join(timeout=5)
+            self.assertFalse(global_thread.is_alive())
+            self._drain_maintenance_workers()
+
+        with rev_lock:
+            self.assertEqual(revisions, [2])
 
 
 if __name__ == "__main__":

@@ -48,7 +48,16 @@ REBUILD_CONTRIBUTION_BATCH_SIZE = 2_000
 
 _logger = logging.getLogger(__name__)
 _maintenance_lock = threading.Lock()
+# Worker-thread registry coalesces repeated schedule() calls for the same key
+# (None = all-pending sweep, int = targeted Vault). This alone is not ownership:
+# global (None) and targeted (vault_id) keys are independent, so per-Vault work
+# is serialized by `_vault_maintenance_owners` inside process().
 _maintenance_inflight: dict[int | None, threading.Thread] = {}
+# True per-Vault single-flight across global sweeps and targeted workers.
+_vault_maintenance_owners: dict[int, object] = {}
+# schedule()/process requests that arrived while a Vault was owned; drained on
+# release so dirty marks that survive a cutoff still converge without polling.
+_vault_maintenance_pending: set[int] = set()
 _maintenance_scheduling_enabled = True
 
 _STATE_COLUMNS = {
@@ -299,6 +308,43 @@ def set_maintenance_scheduling_enabled(enabled: bool) -> None:
     _maintenance_scheduling_enabled = bool(enabled)
 
 
+def reset_maintenance_runtime_for_tests() -> None:
+    """Test seam: drop in-process maintenance owner/worker/pending state."""
+    with _maintenance_lock:
+        _maintenance_inflight.clear()
+        _vault_maintenance_owners.clear()
+        _vault_maintenance_pending.clear()
+
+
+def _try_claim_vault_maintenance(vault_id: int, owner: object) -> bool:
+    """Claim exclusive in-process maintenance ownership for one Vault."""
+    vid = int(vault_id)
+    with _maintenance_lock:
+        current = _vault_maintenance_owners.get(vid)
+        if current is not None and current is not owner:
+            # Another owner is mid-flight; ask for a follow-up pass on release.
+            _vault_maintenance_pending.add(vid)
+            return False
+        _vault_maintenance_owners[vid] = owner
+        return True
+
+
+def _release_vault_maintenance(vault_id: int, owner: object) -> bool:
+    """Release a Vault claim. Returns True when a re-run was requested."""
+    vid = int(vault_id)
+    with _maintenance_lock:
+        if _vault_maintenance_owners.get(vid) is owner:
+            _vault_maintenance_owners.pop(vid, None)
+        pending = vid in _vault_maintenance_pending
+        _vault_maintenance_pending.discard(vid)
+        return pending
+
+
+def _vault_maintenance_owned(vault_id: int) -> bool:
+    with _maintenance_lock:
+        return int(vault_id) in _vault_maintenance_owners
+
+
 def _vault_has_projection(connection: Any, vault_id: int) -> bool:
     try:
         row = connection.execute(
@@ -337,14 +383,30 @@ def schedule_directory_aggregate_maintenance(vault_id: int | None = None) -> boo
     Returns True when a new worker thread was started. Durable dirty /
     rebuild_required rows remain the source of truth for restart recovery even
     when scheduling is disabled (tests) or a worker is already running.
+
+    Thread coalescing is keyed by schedule target, but exclusive *work*
+    ownership is always per Vault (see ``process_directory_aggregate_maintenance``):
+    a global sweep (key=None) and a targeted worker cannot rebuild the same
+    Vault concurrently. Targeted schedule requests that arrive while that Vault
+    is owned are recorded as pending and re-dispatched on release.
     """
     if not _maintenance_scheduling_enabled:
         return False
     key: int | None = int(vault_id) if vault_id is not None else None
     with _maintenance_lock:
-        existing = _maintenance_inflight.get(key)
-        if existing is not None and existing.is_alive():
-            return False
+        if key is not None:
+            # Vault already has an owner (global sweep or targeted worker).
+            if key in _vault_maintenance_owners:
+                _vault_maintenance_pending.add(key)
+                return False
+            existing_targeted = _maintenance_inflight.get(key)
+            if existing_targeted is not None and existing_targeted.is_alive():
+                _vault_maintenance_pending.add(key)
+                return False
+        else:
+            existing_global = _maintenance_inflight.get(None)
+            if existing_global is not None and existing_global.is_alive():
+                return False
         thread = threading.Thread(
             target=_run_scheduled_maintenance,
             kwargs={"vault_id": key},
@@ -365,10 +427,34 @@ def _run_scheduled_maintenance(*, vault_id: int | None) -> None:
             vault_id,
         )
     finally:
+        # process() may observe pending and call schedule() while this thread
+        # still occupies _maintenance_inflight[key]. schedule() then re-queues
+        # pending and returns without starting a worker. Handoff must happen
+        # only after the inflight slot is cleared so ownership transfers with
+        # no overlap gap and no stranded follow-up.
+        #
+        # Consume pending here: this dispatch *is* the coalesced follow-up.
+        # Leaving the bit set would make the next worker release+reschedule
+        # forever.
+        # ABA-safe handoff: identity check, inflight pop, and pending consume
+        # must stay atomic under the registry lock. A stale worker that no
+        # longer owns the slot must leave pending for the replacement owner.
+        follow_up_vault: int | None = None
         with _maintenance_lock:
             current = _maintenance_inflight.get(vault_id)
-            if current is threading.current_thread():
+            removed_exact_slot = current is threading.current_thread()
+            if removed_exact_slot:
                 _maintenance_inflight.pop(vault_id, None)
+                if (
+                    vault_id is not None
+                    and int(vault_id) in _vault_maintenance_pending
+                ):
+                    follow_up_vault = int(vault_id)
+                    _vault_maintenance_pending.discard(follow_up_vault)
+        if follow_up_vault is not None and _maintenance_scheduling_enabled:
+            # schedule() re-adds pending if another owner/inflight appeared
+            # between unlock and start; otherwise starts exactly one worker.
+            schedule_directory_aggregate_maintenance(follow_up_vault)
 
 
 def process_directory_aggregate_maintenance(
@@ -383,6 +469,13 @@ def process_directory_aggregate_maintenance(
     provided (tests or an outer transaction owner), uses that connection and
     does not commit/close it. Publishes one catalog revision per Vault that had
     work so open browsers converge via #227 invalidation without idle polling.
+
+    Each Vault is claimed for the full process call (flush + optional publish)
+    so global sweeps and targeted workers never delete/rebuild/publish the same
+    Vault concurrently. Unclaimed Vaults keep durable dirty/rebuild rows for the
+    owner currently in flight or the next schedule/background pass. Worker
+    failure releases claims in ``finally``; pending targeted requests are
+    re-scheduled after release when scheduling is enabled.
     """
     # Local import keeps module import light and avoids cycle at import time.
     from ..database import db
@@ -394,8 +487,11 @@ def process_directory_aggregate_maintenance(
         "full_rebuilds": 0,
         "vaults": 0,
         "dirty_file_marks": 0,
+        "skipped_vaults": 0,
     }
     published_events: list[dict[str, Any]] = []
+    owner = object()
+    claimed: list[int] = []
 
     def _run(active: Any) -> None:
         if vault_id is not None:
@@ -418,6 +514,10 @@ def process_directory_aggregate_maintenance(
                 }
             )
         for vid in vault_ids:
+            if not _try_claim_vault_maintenance(vid, owner):
+                totals["skipped_vaults"] += 1
+                continue
+            claimed.append(vid)
             result = flush_directory_aggregates(active, vault_id=vid)
             totals["rebuilt_directories"] += int(result["rebuilt_directories"])
             totals["full_rebuilds"] += int(result["full_rebuilds"])
@@ -435,21 +535,38 @@ def process_directory_aggregate_maintenance(
                     )
                 )
 
-    if connection is not None:
-        _run(connection)
-    else:
-        with db() as owned:
-            _run(owned)
+    try:
+        if connection is not None:
+            _run(connection)
+        else:
+            with db() as owned:
+                _run(owned)
 
-    if publish:
-        for event in published_events:
-            try:
-                publish_committed_event(event)
-            except Exception:
-                _logger.exception(
-                    "failed to publish directory aggregate revision"
-                )
-    return totals
+        if publish:
+            for event in published_events:
+                try:
+                    publish_committed_event(event)
+                except Exception:
+                    _logger.exception(
+                        "failed to publish directory aggregate revision"
+                    )
+        return totals
+    finally:
+        # Release every claim even when flush/publish raises so a failed worker
+        # cannot pin a Vault forever. Pending targeted requests re-enter via
+        # schedule(); durable dirty/rebuild rows cover restart recovery.
+        #
+        # When this call runs under a scheduled targeted worker, schedule()
+        # may see our still-held inflight slot and only re-queue pending.
+        # _run_scheduled_maintenance performs the real handoff after it drops
+        # inflight (consume pending → start exactly one follow-up).
+        pending_vaults: list[int] = []
+        for vid in claimed:
+            if _release_vault_maintenance(vid, owner):
+                pending_vaults.append(vid)
+        if _maintenance_scheduling_enabled:
+            for vid in pending_vaults:
+                schedule_directory_aggregate_maintenance(vid)
 
 
 def ensure_directory_aggregates(connection: Any, vault_id: int) -> str:
