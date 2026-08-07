@@ -89,7 +89,7 @@ export function AppShell({
       <header className="border-b border-line bg-surface px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
         <div
           data-testid="app-shell-header-row"
-          className="mx-auto flex max-w-[1180px] flex-nowrap items-center justify-between gap-3"
+          className="mx-auto flex max-w-[1180px] flex-nowrap items-start justify-between gap-3"
         >
           <div className="min-w-0 flex-1">
             <p className="text-xs font-extrabold tracking-[0.16em] text-green uppercase">
