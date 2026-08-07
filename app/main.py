@@ -7,7 +7,6 @@ import os
 import re
 import secrets
 import uuid
-import contextlib
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,13 +118,10 @@ from .services import metrics as metrics_service
 from .services import notifications as notification_service
 from .services import user_administration as user_admin_service
 from .services import worker_errors as worker_error_store
-from .services.catalog_event_hub import (
-    catalog_event_hub,
-    coalesce_signals,
-    normalize_invalidate_domains,
-    signal_from_event,
+from .services.catalog_event_stream import (
+    coalesced_catchup_signal,
+    iter_catalog_event_sse,
 )
-from .services.catalog_events import CatalogEventStore
 from .system_settings import (
     InvalidSystemSetting,
     StaleSystemSettings,
@@ -3454,98 +3450,13 @@ async def start_scan(
     return {**_api_message(request, "api.scan_started", name=vault["name"])}
 
 
-def _catalog_event_sse_frame(event_name: str, payload: dict[str, Any], *, event_id: str | None = None) -> str:
-    lines: list[str] = []
-    if event_id is not None:
-        lines.append(f"id: {event_id}")
-    lines.append(f"event: {event_name}")
-    lines.append(f"data: {json.dumps(payload, separators=(',', ':'), sort_keys=True)}")
-    lines.append("")
-    lines.append("")
-    return "\n".join(lines)
-
-
-def _user_can_access_vault(user_id: int, vault_id: int) -> bool:
-    with db() as connection:
-        row = connection.execute(
-            """
-            SELECT 1 AS ok
-            FROM vault_members vm
-            JOIN vaults v ON v.id=vm.vault_id
-            WHERE vm.user_id=%s AND vm.vault_id=%s
-              AND v.enabled=TRUE AND v.decommission_state='active'
-            LIMIT 1
-            """,
-            (user_id, vault_id),
-        ).fetchone()
-    return bool(row)
-
-
-def _session_vault_id(session_id: str) -> int | None:
-    with db() as connection:
-        row = connection.execute(
-            "SELECT vault_id FROM sessions WHERE id=%s",
-            (session_id,),
-        ).fetchone()
-    if row is None or row["vault_id"] is None:
-        return None
-    return int(row["vault_id"])
-
-
-def _coalesced_catchup_signal(
-    *,
-    vault_id: int,
-    after_revision: int,
-) -> dict[str, Any]:
-    """Build one catch-up signal from durable events, never one frame per row."""
-    with db() as connection:
-        page = CatalogEventStore(connection).read_events(
-            vault_id=vault_id,
-            after_revision=after_revision,
-            limit=100,
-        )
-        current = int(page["current_revision"])
-        if page["has_gap"]:
-            return {
-                "vault_id": vault_id,
-                "revision": current,
-                "domains": normalize_invalidate_domains(None),
-                "has_gap": True,
-            }
-        signals = [signal_from_event(event) for event in page["events"]]
-        while page["has_more"]:
-            last_revision = int(page["events"][-1]["revision"])
-            page = CatalogEventStore(connection).read_events(
-                vault_id=vault_id,
-                after_revision=last_revision,
-                limit=100,
-            )
-            signals.extend(signal_from_event(event) for event in page["events"])
-            if page["has_gap"]:
-                return {
-                    "vault_id": vault_id,
-                    "revision": int(page["current_revision"]),
-                    "domains": normalize_invalidate_domains(None),
-                    "has_gap": True,
-                }
-    merged = coalesce_signals(*signals)
-    if merged is None:
-        return {
-            "vault_id": vault_id,
-            "revision": current,
-            "domains": [],
-            "has_gap": False,
-        }
-    return merged
-
-
 @app.get("/api/catalog/revision", response_model=response_model("CatalogRevisionResponse"))
 def catalog_revision_snapshot(
     after_revision: int = Query(0, ge=0),
     vault: dict[str, Any] = Depends(current_vault),
 ):
     """One-shot catch-up for focus/online recovery without holding a stream."""
-    signal = _coalesced_catchup_signal(
+    signal = coalesced_catchup_signal(
         vault_id=int(vault["id"]),
         after_revision=after_revision,
     )
@@ -3575,7 +3486,8 @@ async def catalog_events_stream(
     The payload carries only Vault identity, monotonic revision, affected
     domains, and an optional retention gap flag — never filesystem paths.
     Pass ``subscribe=false`` for a finite catch-up response used by tests and
-    bounded recovery probes.
+    bounded recovery probes. Open streams observe the durable journal so
+    multi-process writers are visible without client idle polling.
     """
     vault_id = int(vault["id"])
     user_id = int(user["id"])
@@ -3589,99 +3501,15 @@ async def catalog_events_stream(
             raise HTTPException(422, "Last-Event-ID must be an integer revision") from None
 
     async def event_generator():
-        subscriber = None
-        if subscribe:
-            subscriber = catalog_event_hub.subscribe(vault_id)
-        try:
-            hello = await asyncio.to_thread(
-                _coalesced_catchup_signal,
-                vault_id=vault_id,
-                after_revision=resume_after,
-            )
-            # Always announce the authorized Vault scope first so the SPA can
-            # bind its local high-water mark before applying catch-up work.
-            yield _catalog_event_sse_frame(
-                "hello",
-                {
-                    "vault_id": vault_id,
-                    "revision": int(hello["revision"]),
-                },
-                event_id=str(int(hello["revision"])) if int(hello["revision"]) > 0 else None,
-            )
-            if int(hello["revision"]) > resume_after or hello.get("has_gap"):
-                yield _catalog_event_sse_frame(
-                    "catalog",
-                    {
-                        "vault_id": int(hello["vault_id"]),
-                        "revision": int(hello["revision"]),
-                        "domains": list(hello.get("domains") or []),
-                        "has_gap": bool(hello.get("has_gap")),
-                    },
-                    event_id=str(int(hello["revision"])),
-                )
-                last_seen = int(hello["revision"])
-            else:
-                last_seen = resume_after
-
-            if not subscribe or subscriber is None:
-                return
-
-            while True:
-                if await request.is_disconnected():
-                    break
-                if not await asyncio.to_thread(_user_can_access_vault, user_id, vault_id):
-                    yield _catalog_event_sse_frame(
-                        "error",
-                        {"error": "vault_access_revoked", "vault_id": vault_id},
-                    )
-                    break
-                current_session_vault = await asyncio.to_thread(
-                    _session_vault_id, session_id
-                )
-                if current_session_vault is None or current_session_vault != vault_id:
-                    yield _catalog_event_sse_frame(
-                        "error",
-                        {
-                            "error": "vault_switched",
-                            "vault_id": vault_id,
-                            "current_vault_id": current_session_vault,
-                        },
-                    )
-                    break
-                get_task = asyncio.create_task(subscriber.queue.get())
-                try:
-                    done, _pending = await asyncio.wait({get_task}, timeout=1.0)
-                    if not done:
-                        get_task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await get_task
-                        yield ": keepalive\n\n"
-                        continue
-                    signal = get_task.result()
-                except Exception:
-                    get_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await get_task
-                    raise
-                if signal is None:
-                    break
-                revision = int(signal["revision"])
-                if revision <= last_seen and not signal.get("has_gap"):
-                    continue
-                last_seen = max(last_seen, revision)
-                yield _catalog_event_sse_frame(
-                    "catalog",
-                    {
-                        "vault_id": int(signal["vault_id"]),
-                        "revision": revision,
-                        "domains": list(signal.get("domains") or []),
-                        "has_gap": bool(signal.get("has_gap")),
-                    },
-                    event_id=str(revision),
-                )
-        finally:
-            if subscriber is not None:
-                catalog_event_hub.unsubscribe(vault_id, subscriber)
+        async for chunk in iter_catalog_event_sse(
+            vault_id=vault_id,
+            user_id=user_id,
+            session_id=session_id,
+            resume_after=resume_after,
+            subscribe=subscribe,
+            is_disconnected=request.is_disconnected,
+        ):
+            yield chunk
 
     return StreamingResponse(
         event_generator(),

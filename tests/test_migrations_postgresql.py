@@ -27,7 +27,7 @@ from app.invites import (
 )
 from app.services import notifications
 from app.services import user_administration
-from app.services.catalog_events import CatalogEventStore, FilesystemHealthStore
+from app.services.catalog_events import CatalogEventStore
 from app.system_settings import resolve_system_settings, set_system_setting
 
 
@@ -204,18 +204,6 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             column["name"]
             for column in sa.inspect(self.engine).get_columns("catalog_events")
         }
-        snapshot_columns = {
-            column["name"]
-            for column in sa.inspect(self.engine).get_columns(
-                "filesystem_health_snapshots"
-            )
-        }
-        finding_columns = {
-            column["name"]
-            for column in sa.inspect(self.engine).get_columns(
-                "filesystem_health_findings"
-            )
-        }
         self.assertEqual(
             revision_columns,
             {"vault_id", "revision", "retained_from_revision", "updated_at"},
@@ -224,14 +212,9 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             event_columns,
             {"id", "vault_id", "revision", "domain", "scope", "payload_json", "created_at"},
         )
-        self.assertLessEqual(
-            {"id", "vault_id", "catalog_revision", "status", "summary_json"},
-            snapshot_columns,
-        )
-        self.assertLessEqual(
-            {"id", "snapshot_id", "code", "scope", "path", "message"},
-            finding_columns,
-        )
+        inspector = sa.inspect(self.engine)
+        self.assertNotIn("filesystem_health_snapshots", inspector.get_table_names())
+        self.assertNotIn("filesystem_health_findings", inspector.get_table_names())
         connect_url = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
         with psycopg.connect(connect_url, row_factory=dict_row) as connection:
             admin_id = connection.execute(
@@ -284,22 +267,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 scope="root",
                 payload={"changed": True},
             )
-            snapshot = FilesystemHealthStore(connection).save_snapshot(
-                vault_id=2,
-                catalog_revision=published.event["revision"],
-                status="current",
-                summary={"fs.symlink": 1},
-                total_findings=1,
-                findings=[
-                    {
-                        "code": "fs.symlink",
-                        "path": "alias",
-                        "message": "Symbolic link rejected",
-                    }
-                ],
-            )
             self.assertEqual(published.event["revision"], 1)
-            self.assertEqual(snapshot["sampled_findings"], 1)
 
         with self._connection() as connection:
             self.assertEqual(
@@ -311,7 +279,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             )
             self.assertEqual(
                 connection.execute(
-                    "SELECT COUNT(*) AS total FROM filesystem_health_findings"
+                    "SELECT COUNT(*) AS total FROM catalog_events"
                 ).fetchone()["total"],
                 1,
             )

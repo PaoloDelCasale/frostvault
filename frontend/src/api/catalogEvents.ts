@@ -117,19 +117,44 @@ type EventSourceLike = {
     type: string,
     listener: (event: MessageEvent<string>) => void,
   ) => void;
-  onerror: ((this: EventSourceLike, ev: Event) => unknown) | null;
+  onerror: ((ev: Event) => unknown) | null;
 };
 
 export type CatalogEventSourceFactory = (
   url: string,
 ) => EventSourceLike;
 
-const defaultEventSourceFactory: CatalogEventSourceFactory = (url) =>
-  new EventSource(url, { withCredentials: true }) as unknown as EventSourceLike;
+/** Resolve EventSource without assuming a browser global exists (jsdom/tests). */
+export function getDefaultEventSourceFactory(): CatalogEventSourceFactory {
+  return (url: string): EventSourceLike => {
+    const globalObj = globalThis as typeof globalThis & {
+      EventSource?: new (
+        url: string | URL,
+        eventSourceInitDict?: EventSourceInit,
+      ) => EventSourceLike;
+    };
+    const Ctor = globalObj.EventSource;
+    if (typeof Ctor === "function") {
+      return new Ctor(url, { withCredentials: true }) as EventSourceLike;
+    }
+    // Fail closed without throwing: unit tests that mount App without a browser
+    // EventSource still exercise auth/offline seams. Production browsers always
+    // provide EventSource; inject createSource when a real stream is required.
+    return {
+      close: () => undefined,
+      addEventListener: () => undefined,
+      onerror: null,
+    };
+  };
+}
+
+const defaultEventSourceFactory: CatalogEventSourceFactory =
+  getDefaultEventSourceFactory();
 
 /**
  * Open an authenticated SSE subscription for catalog invalidation signals.
  * Callers own reconnect/backoff policy; this helper only binds one connection.
+ * Pass ``createSource`` in tests; production uses the guarded EventSource global.
  */
 export function openCatalogEventSource(
   afterRevision: number,

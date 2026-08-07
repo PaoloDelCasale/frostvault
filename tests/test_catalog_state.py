@@ -1,4 +1,4 @@
-"""Durable catalog revision/event and filesystem-health persistence seams."""
+"""Durable catalog revision/event persistence seams."""
 from __future__ import annotations
 
 import tempfile
@@ -7,11 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from app.database import SQLiteConnection
-from app.services.catalog_events import (
-    CatalogEventStore,
-    FilesystemHealthStore,
-    MAX_HEALTH_FINDINGS_PER_SNAPSHOT,
-)
+from app.services.catalog_events import CatalogEventStore
 from tests.test_database import run_alembic
 
 
@@ -198,65 +194,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
                 )
             self.assertEqual(store.current_revision(2), 0)
 
-    def test_health_snapshot_persists_a_bounded_sample_and_summary(self) -> None:
-        findings = [
-            {
-                "code": "fs.unwritable_directory",
-                "scope": "directory",
-                "path": "recordings",
-                "message": "Directory is not writable",
-                "remediation": "Grant write access",
-            },
-            {
-                "code": "fs.symlink",
-                "scope": "entry",
-                "path": "latest",
-                "message": "Symbolic link rejected",
-                "remediation": "Remove the symbolic link",
-            },
-        ]
-        with SQLiteConnection(str(self.path)) as connection:
-            snapshot = FilesystemHealthStore(connection).save_snapshot(
-                vault_id=2,
-                catalog_revision=0,
-                status="current",
-                created_at="2026-08-01T11:00:00+00:00",
-                checked_at="2026-08-01T11:00:01+00:00",
-                summary={"fs.unwritable_directory": 99, "fs.symlink": 1},
-                total_findings=100,
-                findings=findings,
-            )
-            loaded = FilesystemHealthStore(connection).latest_snapshot(2)
 
-        self.assertEqual(snapshot["status"], "current")
-        self.assertEqual(loaded["total_findings"], 100)
-        self.assertEqual(loaded["sampled_findings"], 2)
-        self.assertTrue(loaded["findings_truncated"])
-        self.assertEqual(loaded["summary"]["fs.symlink"], 1)
-        self.assertEqual(loaded["findings"][0]["path"], "recordings")
-
-    def test_health_snapshot_rejects_more_than_the_persistence_bound(self) -> None:
-        findings = [
-            {
-                "code": "fs.symlink",
-                "path": f"item-{index}",
-                "message": "Symbolic link rejected",
-            }
-            for index in range(MAX_HEALTH_FINDINGS_PER_SNAPSHOT + 1)
-        ]
-        with SQLiteConnection(str(self.path)) as connection:
-            with self.assertRaisesRegex(ValueError, "bounded"):
-                FilesystemHealthStore(connection).save_snapshot(
-                    vault_id=2,
-                    catalog_revision=0,
-                    status="current",
-                    findings=findings,
-                )
-            count = connection.execute(
-                "SELECT COUNT(*) AS total FROM filesystem_health_snapshots"
-            ).fetchone()["total"]
-
-        self.assertEqual(count, 0)
 
     def test_downgrade_refuses_to_drop_durable_catalog_history(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
@@ -273,13 +211,13 @@ class CatalogStatePersistenceTests(unittest.TestCase):
             command="downgrade",
         )
         self.assertNotEqual(downgraded.returncode, 0)
-        self.assertIn("catalog event or filesystem health data", downgraded.stderr)
+        self.assertIn("catalog event", downgraded.stderr)
 
         with SQLiteConnection(str(self.path)) as connection:
             revision = connection.execute(
                 "SELECT version_num FROM alembic_version"
             ).fetchone()["version_num"]
-        self.assertEqual(revision, "0036_catalog_events_health")
+        self.assertEqual(revision, "0036_catalog_events")
 
 
 if __name__ == "__main__":

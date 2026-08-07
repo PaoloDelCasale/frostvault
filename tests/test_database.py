@@ -138,7 +138,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 {"claim_token", "claimed_at", "claim_expires_at"}, job_columns
             )
 
-    def test_head_creates_catalog_event_and_health_primitives(self) -> None:
+    def test_head_creates_catalog_event_primitives(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "catalog-state-schema.db"
             upgraded = run_alembic(path)
@@ -162,22 +162,10 @@ class DatabaseMigrationTests(unittest.TestCase):
                         "PRAGMA table_info(catalog_events)"
                     ).fetchall()
                 }
-                snapshot_columns = {
-                    row["name"]
-                    for row in connection.execute(
-                        "PRAGMA table_info(filesystem_health_snapshots)"
-                    ).fetchall()
-                }
-                finding_columns = {
-                    row["name"]
-                    for row in connection.execute(
-                        "PRAGMA table_info(filesystem_health_findings)"
-                    ).fetchall()
-                }
             self.assertIn("vault_catalog_revisions", tables)
             self.assertIn("catalog_events", tables)
-            self.assertIn("filesystem_health_snapshots", tables)
-            self.assertIn("filesystem_health_findings", tables)
+            self.assertNotIn("filesystem_health_snapshots", tables)
+            self.assertNotIn("filesystem_health_findings", tables)
             self.assertEqual(
                 revision_columns,
                 {"vault_id", "revision", "retained_from_revision", "updated_at"},
@@ -185,14 +173,6 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertEqual(
                 event_columns,
                 {"id", "vault_id", "revision", "domain", "scope", "payload_json", "created_at"},
-            )
-            self.assertLessEqual(
-                {"id", "vault_id", "catalog_revision", "status", "summary_json"},
-                snapshot_columns,
-            )
-            self.assertLessEqual(
-                {"id", "snapshot_id", "code", "scope", "path", "message"},
-                finding_columns,
             )
 
     def test_catalog_state_schema_round_trips_through_0035_when_empty(self) -> None:
@@ -214,7 +194,6 @@ class DatabaseMigrationTests(unittest.TestCase):
                     ).fetchall()
                 }
             self.assertNotIn("catalog_events", names)
-            self.assertNotIn("filesystem_health_snapshots", names)
             upgraded_again = run_alembic(path)
             self.assertEqual(upgraded_again.returncode, 0, upgraded_again.stderr)
 

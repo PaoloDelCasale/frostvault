@@ -159,6 +159,7 @@ export {
   catalogEventsUrl,
   catalogRevisionUrl,
   fetchCatalogRevision,
+  getDefaultEventSourceFactory,
   normalizeDomains,
   openCatalogEventSource,
   parseCatalogEventData,

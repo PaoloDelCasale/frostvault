@@ -9,7 +9,9 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import httpx
 from fastapi.testclient import TestClient
+from httpx import ASGITransport
 from watchfiles import Change
 
 from app import main
@@ -17,8 +19,12 @@ from app.config import settings
 from app.database import SQLiteConnection
 from app.security import hash_password
 from app.services.catalog_event_hub import catalog_event_hub, coalesce_signals
-from app.services.catalog_events import CatalogEventStore
-from app.sessions import create_session, csrf_token_for, set_session_vault
+from app.services.catalog_event_stream import (
+    iter_catalog_event_sse,
+    session_stream_state,
+)
+from app.services.catalog_events import CatalogEventStore, record_catalog_revision
+from app.sessions import create_session, csrf_token_for, revoke_session, set_session_vault
 from app.storage import apply_filesystem_changes
 from tests.test_database import run_alembic
 
@@ -165,18 +171,14 @@ class CatalogEventsHttpTests(unittest.TestCase):
         self.owner_token = self._authenticate(1, vault_id=1)
         self.viewer_token = self._authenticate(2, vault_id=1)
         self.outsider_token = self._authenticate(3, vault_id=None)
+        self.owner_session_id = self._session_id_for_user(1)
 
     def _authenticate(self, user_id: int, *, vault_id: int | None) -> str:
         with SQLiteConnection(str(self.db_path)) as connection:
             raw_token = create_session(
                 connection, user_id=user_id, auth_method="local"
             )
-            csrf_token = csrf_token_for(connection, raw_token)
-            session = connection.execute(
-                "SELECT id, offline_cache_generation, offline_cache_nonce "
-                "FROM sessions WHERE token_hash IS NOT NULL ORDER BY created_at DESC"
-            ).fetchone()
-            # Prefer the newest session for this user.
+            csrf_token_for(connection, raw_token)
             session = connection.execute(
                 """
                 SELECT id, offline_cache_generation, offline_cache_nonce
@@ -195,8 +197,19 @@ class CatalogEventsHttpTests(unittest.TestCase):
                     expected_generation=session["offline_cache_generation"],
                     expected_nonce=session["offline_cache_nonce"],
                 )
-        # Tokens are returned for stream helpers that build isolated clients.
         return raw_token
+
+    def _session_id_for_user(self, user_id: int) -> str:
+        with SQLiteConnection(str(self.db_path)) as connection:
+            row = connection.execute(
+                """
+                SELECT id FROM sessions
+                WHERE user_id=%s AND revoked_at IS NULL
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+        return str(row["id"])
 
     def _client_for(self, token: str) -> TestClient:
         client = TestClient(
@@ -282,7 +295,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
                 )
 
         with SQLiteConnection(str(self.db_path)) as connection:
-            # Only the successful add published a revision.
             self.assertEqual(CatalogEventStore(connection).current_revision(1), 1)
             presence = connection.execute(
                 """
@@ -356,43 +368,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
         events = self._parse_sse(body)
         self.assertTrue(any(event.get("event") == "hello" for event in events))
 
-    def test_live_publish_reaches_subscriber_and_cleans_up(self) -> None:
-        async def exercise() -> list[dict[str, object]]:
-            loop = asyncio.get_running_loop()
-            subscriber = catalog_event_hub.subscribe(1)
-            self.assertEqual(catalog_event_hub.subscriber_count(1), 1)
-
-            def mutate() -> None:
-                vault = {
-                    "id": 1,
-                    "source_root": str(self.source),
-                    "relocation_state": "ready",
-                    "decommission_state": "active",
-                }
-                path = self.source / "live.txt"
-                path.write_text("hello", encoding="utf-8")
-                apply_filesystem_changes(vault, {(Change.added, str(path))})
-
-            await asyncio.to_thread(mutate)
-            signal = await asyncio.wait_for(subscriber.queue.get(), timeout=2.0)
-            catalog_event_hub.unsubscribe(1, subscriber)
-            self.assertEqual(catalog_event_hub.subscriber_count(1), 0)
-            return [signal]
-
-        signals = asyncio.run(exercise())
-        self.assertEqual(len(signals), 1)
-        self.assertEqual(signals[0]["vault_id"], 1)
-        self.assertEqual(signals[0]["revision"], 1)
-        self.assertIn("files", signals[0]["domains"])
-
-        client = self._client_for(self.owner_token)
-        try:
-            snapshot = client.get("/api/catalog/revision?after_revision=0")
-        finally:
-            client.close()
-        self.assertEqual(snapshot.status_code, 200)
-        self.assertEqual(snapshot.json()["revision"], 1)
-
     def test_reconnect_after_revision_does_not_replay_older_events(self) -> None:
         with SQLiteConnection(str(self.db_path)) as connection:
             store = CatalogEventStore(connection)
@@ -422,6 +397,220 @@ class CatalogEventsHttpTests(unittest.TestCase):
         hello = next(event for event in events if event.get("event") == "hello")
         self.assertEqual(json.loads(hello["data"])["revision"], 2)
         self.assertFalse(snapshot.json()["changed"])
+
+    def test_live_stream_observes_durable_publish_without_local_hub(self) -> None:
+        """Multi-process seam: durable journal advances without hub publish."""
+
+        async def exercise() -> list[dict[str, str]]:
+            frames: list[str] = []
+            stop = {"value": False}
+
+            async def is_disconnected() -> bool:
+                return stop["value"]
+
+            async def consume() -> None:
+                async for chunk in iter_catalog_event_sse(
+                    vault_id=1,
+                    user_id=1,
+                    session_id=self.owner_session_id,
+                    resume_after=0,
+                    subscribe=True,
+                    is_disconnected=is_disconnected,
+                    durable_poll_seconds=0.05,
+                    use_hub=False,
+                ):
+                    frames.append(chunk)
+                    body = "".join(frames)
+                    events = self._parse_sse(body)
+                    if any(
+                        event.get("event") == "catalog"
+                        and '"revision":1' in event.get("data", "").replace(" ", "")
+                        for event in events
+                    ):
+                        stop["value"] = True
+                        break
+                    if len(body) > 8000:
+                        stop["value"] = True
+                        break
+
+            async def publish_durable() -> None:
+                await asyncio.sleep(0.08)
+                # Intentionally skip catalog_event_hub.publish — other process.
+                with SQLiteConnection(str(self.db_path)) as connection:
+                    record_catalog_revision(
+                        connection,
+                        vault_id=1,
+                        reason="other_process",
+                    )
+
+            await asyncio.gather(consume(), publish_durable())
+            return self._parse_sse("".join(frames))
+
+        events = asyncio.run(exercise())
+        catalog = [event for event in events if event.get("event") == "catalog"]
+        self.assertTrue(catalog, msg=events)
+        payload = json.loads(catalog[-1]["data"])
+        self.assertEqual(payload["vault_id"], 1)
+        self.assertEqual(payload["revision"], 1)
+        self.assertIn("files", payload["domains"])
+        self.assertEqual(catalog_event_hub.subscriber_count(1), 0)
+
+    def test_session_revocation_closes_live_stream(self) -> None:
+        async def exercise() -> list[dict[str, str]]:
+            frames: list[str] = []
+            stop = {"value": False}
+
+            async def is_disconnected() -> bool:
+                return stop["value"]
+
+            async def consume() -> None:
+                async for chunk in iter_catalog_event_sse(
+                    vault_id=1,
+                    user_id=1,
+                    session_id=self.owner_session_id,
+                    resume_after=0,
+                    subscribe=True,
+                    is_disconnected=is_disconnected,
+                    durable_poll_seconds=0.05,
+                    use_hub=False,
+                ):
+                    frames.append(chunk)
+                    body = "".join(frames)
+                    if any(
+                        event.get("event") == "error"
+                        for event in self._parse_sse(body)
+                    ):
+                        stop["value"] = True
+                        break
+                    if len(body) > 8000:
+                        stop["value"] = True
+                        break
+
+            async def revoke() -> None:
+                await asyncio.sleep(0.08)
+                with SQLiteConnection(str(self.db_path)) as connection:
+                    self.assertTrue(revoke_session(connection, self.owner_session_id))
+                self.assertIsNone(session_stream_state(self.owner_session_id))
+
+            await asyncio.gather(consume(), revoke())
+            return self._parse_sse("".join(frames))
+
+        events = asyncio.run(exercise())
+        errors = [event for event in events if event.get("event") == "error"]
+        self.assertTrue(errors, msg=events)
+        self.assertEqual(json.loads(errors[-1]["data"])["error"], "session_revoked")
+        self.assertEqual(catalog_event_hub.subscriber_count(1), 0)
+
+    def test_full_app_finite_streaming_response_headers_and_body(self) -> None:
+        """Full FrostVault app StreamingResponse for finite catch-up frames."""
+
+        async def exercise() -> str:
+            transport = ASGITransport(app=main.app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test", timeout=5.0
+            ) as client:
+                response = await client.get(
+                    "/api/catalog/events?subscribe=false",
+                    cookies={
+                        self.test_settings.session_cookie_name: self.owner_token
+                    },
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("text/event-stream", response.headers["content-type"])
+            return response.text
+
+        body = asyncio.run(exercise())
+        events = self._parse_sse(body)
+        self.assertTrue(any(event.get("event") == "hello" for event in events))
+
+    def test_streaming_response_live_event_disconnect_and_cleanup(self) -> None:
+        """StreamingResponse body iterator: live event, abort, hub cleanup.
+
+        httpx/Starlette TestClient buffer infinite SSE bodies through the full
+        ASGI stack in this environment, so the production generator is driven
+        through ``StreamingResponse.body_iterator`` directly. Finite full-app
+        StreamingResponse coverage lives in
+        ``test_full_app_finite_streaming_response_headers_and_body``.
+        """
+        from starlette.responses import StreamingResponse
+
+        from app.services.catalog_event_hub import publish_committed_event
+
+        self.client.close()
+        session_id = self.owner_session_id
+        stop = {"value": False}
+
+        async def disconnected() -> bool:
+            return stop["value"]
+
+        async def exercise() -> tuple[list[dict[str, str]], int, int]:
+            response = StreamingResponse(
+                iter_catalog_event_sse(
+                    vault_id=1,
+                    user_id=1,
+                    session_id=session_id,
+                    resume_after=0,
+                    subscribe=True,
+                    is_disconnected=disconnected,
+                    durable_poll_seconds=0.05,
+                    use_hub=True,
+                ),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-store",
+                    "Connection": "keep-alive",
+                },
+            )
+            self.assertEqual(
+                response.media_type.split(";")[0], "text/event-stream"
+            )
+            frames: list[str] = []
+            published = False
+            seen_subs = 0
+            async for chunk in response.body_iterator:
+                text = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
+                frames.append(text)
+                seen_subs = max(seen_subs, catalog_event_hub.subscriber_count(1))
+                body = "".join(frames)
+                events = self._parse_sse(body)
+                if not published and any(
+                    event.get("event") == "hello" for event in events
+                ):
+                    with SQLiteConnection(str(self.db_path)) as connection:
+                        event = record_catalog_revision(
+                            connection,
+                            vault_id=1,
+                            reason="stream_live",
+                        )
+                    publish_committed_event(event)
+                    published = True
+                if any(event.get("event") == "catalog" for event in events):
+                    # Client abort / disconnect.
+                    stop["value"] = True
+                    break
+            # Generator finally should run after the iterator is closed.
+            await response.body_iterator.aclose()
+            deadline = asyncio.get_running_loop().time() + 2.0
+            while (
+                catalog_event_hub.subscriber_count(1) > 0
+                and asyncio.get_running_loop().time() < deadline
+            ):
+                await asyncio.sleep(0.05)
+            return (
+                self._parse_sse("".join(frames)),
+                catalog_event_hub.subscriber_count(1),
+                seen_subs,
+            )
+
+        events, subscribers, seen = asyncio.run(
+            asyncio.wait_for(exercise(), timeout=5.0)
+        )
+        self.assertTrue(any(event.get("event") == "hello" for event in events))
+        catalog = [event for event in events if event.get("event") == "catalog"]
+        self.assertTrue(catalog, msg=events)
+        self.assertEqual(json.loads(catalog[-1]["data"])["revision"], 1)
+        self.assertGreaterEqual(seen, 1)
+        self.assertEqual(subscribers, 0)
 
 
 if __name__ == "__main__":

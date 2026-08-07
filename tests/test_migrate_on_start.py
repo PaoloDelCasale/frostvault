@@ -142,7 +142,8 @@ class MigrateOnStartTests(unittest.TestCase):
                 }
             self.assertEqual(revision, HEAD_SCHEMA_REVISION)
             self.assertIn("vault_catalog_revisions", derived_tables)
-            self.assertIn("filesystem_health_snapshots", derived_tables)
+            self.assertIn("catalog_events", derived_tables)
+            self.assertNotIn("filesystem_health_snapshots", derived_tables)
 
     def test_stale_schema_uses_backup_then_upgrade(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

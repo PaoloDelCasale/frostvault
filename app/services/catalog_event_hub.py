@@ -167,11 +167,18 @@ class CatalogEventHub:
         with self._lock:
             subscribers = list(self._subscribers.get(vault_id, []))
         for subscriber in subscribers:
-            # offer() is thread-safe for asyncio.Queue from any thread when the
-            # consumer runs on the loop that created the queue.
+            # offer() is safe for asyncio.Queue from the owning loop thread and
+            # via call_soon_threadsafe from worker threads.
             if subscriber.loop.is_closed():
                 continue
-            subscriber.loop.call_soon_threadsafe(subscriber.offer, signal)
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is subscriber.loop:
+                subscriber.offer(signal)
+            else:
+                subscriber.loop.call_soon_threadsafe(subscriber.offer, signal)
         return signal
 
     def subscriber_count(self, vault_id: int | None = None) -> int:
