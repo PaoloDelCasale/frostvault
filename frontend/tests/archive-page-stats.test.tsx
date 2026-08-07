@@ -17,9 +17,27 @@ const messages: Record<string, string> = {
   "ui.archive_subtitle":
     "Your files, on the server and safely stored in the cloud.",
   "ui.archive_statistics": "Archive statistics",
+  "ui.stats_loading": "Loading archive statistics…",
+  "ui.stats_error":
+    "Unable to load archive statistics. Values will appear when the request succeeds.",
   "ui.filesystem_needs_attention": "Vault filesystem needs attention",
   "ui.filesystem_attention_detail":
     "Symbolic links and permission errors are reported; ownership and modes are never changed automatically.",
+  "ui.filesystem_health_status_checking": "Filesystem health: checking",
+  "ui.filesystem_health_status_current": "Filesystem health: current",
+  "ui.filesystem_health_status_stale": "Filesystem health: stale",
+  "ui.filesystem_health_status_failed": "Filesystem health: failed",
+  "ui.filesystem_health_checking_title": "Checking vault filesystem health",
+  "ui.filesystem_health_checking_detail":
+    "Permission diagnostics are still running. Archive statistics are independent and are not blocked by this check.",
+  "ui.filesystem_health_stale_title": "Refreshing vault filesystem health",
+  "ui.filesystem_health_stale_detail":
+    "Showing the last known diagnostics while a fresh check runs in the background.",
+  "ui.filesystem_health_failed_title": "Vault filesystem health check failed",
+  "ui.filesystem_health_failed_detail":
+    "The health check could not complete. Ownership and modes are never changed automatically; inspect host mounts and permissions.",
+  "ui.filesystem_health_checked_at": "Last checked {when}",
+  "ui.filesystem_health_revision": "Revision {revision}",
   "ui.file_list_placeholder": "File list",
   "ui.server_space": "Server space",
   "ui.cloud_space": "Cloud space",
@@ -61,6 +79,10 @@ const emptyVaultStats: StatsResponse = {
     root: "/sources/new-vault",
     checks: [],
     findings: [],
+    health_status: "current",
+    findings_total: 0,
+    finding_counts: {},
+    findings_truncated: false,
   },
   delete_enabled: false,
 };
@@ -78,6 +100,10 @@ const liveVaultStats: StatsResponse = {
     root: "/sources/live",
     checks: [],
     findings: [],
+    health_status: "current",
+    findings_total: 0,
+    finding_counts: {},
+    findings_truncated: false,
   },
   delete_enabled: true,
 };
@@ -111,6 +137,35 @@ describe("ArchivePage from /api/stats", () => {
       </ApiQueryProvider>,
     );
   }
+
+  it("shows a loading skeleton without zeros before the first /api/stats success", async () => {
+    let resolveStats: ((value: Response) => void) | undefined;
+    fetchMock.mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveStats = resolve;
+        }),
+    );
+
+    renderArchive();
+
+    expect(screen.getByTestId("stats-summary")).toHaveAttribute(
+      "data-status",
+      "loading",
+    );
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
+    expect(screen.queryByText("0 B")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    resolveStats?.(jsonResponse(emptyVaultStats));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("stats-summary")).toHaveAttribute(
+        "data-status",
+        "ready",
+      );
+    });
+  });
 
   it("shows zeros and no filesystem alarm for an empty Vault /api/stats payload", async () => {
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
@@ -155,6 +210,109 @@ describe("ArchivePage from /api/stats", () => {
     expect(screen.getAllByText("2.0 KB").length).toBeGreaterThan(0);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.queryByText(/alias\.txt/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps prior summary values while a background stats refresh is in flight", async () => {
+    let releaseSecond: (() => void) | undefined;
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    fetchMock.mockImplementation(async () => {
+      if (fetchMock.mock.calls.length === 1) {
+        return jsonResponse(liveVaultStats);
+      }
+      await secondGate;
+      return jsonResponse({
+        ...liveVaultStats,
+        states: { both: 9, local_only: 1, cloud_only: 2 },
+      });
+    });
+
+    const client = createAppQueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <ApiQueryProvider client={client}>
+        <ArchivePage vaultName="New Archive" displayName="Operator" t={t} />
+      </ApiQueryProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText("4").length).toBeGreaterThan(0);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const invalidation = client.invalidateQueries({ queryKey: ["stats"] });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    // Prior authoritative values remain visible (no skeleton / no zeros).
+    expect(screen.getAllByText("4").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("512 B").length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("stats-skeleton-card")).not.toBeInTheDocument();
+    expect(screen.getByTestId("stats-summary")).toHaveAttribute(
+      "data-status",
+      "ready",
+    );
+
+    releaseSecond?.();
+    await invalidation;
+
+    await waitFor(() => {
+      expect(screen.getAllByText("9").length).toBeGreaterThan(0);
+    });
+  });
+
+  it("shows a summary error independently of filesystem health", async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ detail: "stats unavailable" }, 500),
+    );
+
+    renderArchive();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("stats-error")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
+    expect(screen.queryByText("0 B")).not.toBeInTheDocument();
+    // Health banner stays absent when stats never arrived.
+    expect(screen.queryByTestId("filesystem-health")).not.toBeInTheDocument();
+  });
+
+  it("renders summary metrics while filesystem health is still checking", async () => {
+    const checkingStats: StatsResponse = {
+      ...liveVaultStats,
+      filesystem: {
+        ok: false,
+        uid: 1000,
+        gid: 1000,
+        root: "/sources/live",
+        checks: [],
+        findings: [],
+        health_status: "checking",
+        findings_total: 0,
+        finding_counts: {},
+        findings_truncated: false,
+        revision: 0,
+        checked_at: null,
+      },
+    };
+    fetchMock.mockImplementation(async () => jsonResponse(checkingStats));
+
+    renderArchive();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("4").length).toBeGreaterThan(0);
+    });
+    expect(screen.getAllByText("512 B").length).toBeGreaterThan(0);
+
+    const health = screen.getByTestId("filesystem-health");
+    expect(health).toHaveAttribute("data-health-status", "checking");
+    expect(health).toHaveAttribute("role", "status");
+    expect(health).toHaveTextContent(/Checking vault filesystem health/i);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("polls /api/stats every 1s while Jobs are active and refreshes the cards", async () => {
