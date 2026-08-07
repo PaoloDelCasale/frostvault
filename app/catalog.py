@@ -21,6 +21,7 @@ from .services.directory_aggregates import (
     mark_directory_dirty,
     mark_file_id_dirty,
     mark_path_dirty,
+    mark_paths_dirty,
     request_vault_rebuild,
 )
 
@@ -49,12 +50,19 @@ class ArchiveCatalog:
     def _request_aggregate_rebuild(self, vault_id: int) -> None:
         request_vault_rebuild(self.connection, vault_id)
 
-    def _get_or_create_file(self, vault_id: int, path: str, created_at: str) -> str:
-        # Serialize identity creation per Vault across scanner and worker transactions.
+    def _vault_lock_touch(self, vault_id: int) -> None:
+        # Serialize identity creation per Vault across scanner and worker
+        # transactions.  The row-lock "touch" is a single UPDATE that locks the
+        # Vault row (PostgreSQL FOR UPDATE semantics via the write) so two
+        # concurrent writers cannot mint duplicate identities for the same
+        # path.  It must be taken once per batch, never once per file.
         self.connection.execute(
             "UPDATE vaults SET name=name WHERE id=%s",
             (vault_id,),
         )
+
+    def _get_or_create_file(self, vault_id: int, path: str, created_at: str) -> str:
+        self._vault_lock_touch(vault_id)
         current = self.connection.execute(
             """
             SELECT vf.id
@@ -191,6 +199,304 @@ class ArchiveCatalog:
         )
         self._mark_path_aggregates_dirty(vault_id, path)
         return file_id
+
+    @staticmethod
+    def _chunked(seq: Sequence[Any], size: int) -> list[list[Any]]:
+        return [list(seq[offset : offset + size]) for offset in range(0, len(seq), size)]
+
+    def _resolve_or_create_files(
+        self,
+        vault_id: int,
+        paths: Sequence[str],
+        created_at: str,
+    ) -> dict[str, str]:
+        """Resolve many logical paths to Vault File ids in a few statements.
+
+        One Vault row-lock touch (``UPDATE vaults SET name=name``) replaces the
+        per-file touch in ``_get_or_create_file``: identity creation is
+        serialized per Vault by that single lock, so a whole scan batch can
+        resolve existing paths with one bulk ``IN (...)`` lookup and mint only
+        the genuinely-new ones with guarded bulk INSERTs.  The ``NOT EXISTS``
+        guard also fails closed against non-cooperating writers.
+
+        Duplicate input paths resolve to the same id, and the caller's
+        last-observation-wins deduplication maps each path to exactly one
+        identity — matching the serialized per-file path.
+        """
+        unique_paths = list(dict.fromkeys(paths))
+        self._vault_lock_touch(vault_id)
+        resolved: dict[str, str] = {}
+        for chunk in self._chunked(unique_paths, 200):
+            if not chunk:
+                continue
+            placeholders = ", ".join(["%s"] * len(chunk))
+            rows = self.connection.execute(
+                f"""
+                SELECT fp.path, vf.id
+                FROM vault_files vf
+                JOIN file_paths fp
+                  ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+                WHERE vf.vault_id=%s AND fp.path IN ({placeholders})
+                """,
+                (vault_id, *chunk),
+            ).fetchall()
+            for row in rows:
+                resolved[str(row["path"])] = str(row["id"])
+            new_paths = [path for path in chunk if path not in resolved]
+            if not new_paths:
+                continue
+            # One portable derived table: (id, path) pairs for this chunk.
+            # Explicit casts keep PostgreSQL's UNION ALL type inference stable
+            # (SQLite ignores the cast names).
+            id_values = " UNION ALL ".join(
+                ["SELECT CAST(%s AS VARCHAR) AS id, CAST(%s AS TEXT) AS path"]
+                * len(new_paths)
+            )
+            pair_params: list[Any] = []
+            for path in new_paths:
+                pair_params.extend([str(uuid.uuid4()), path])
+            # Mint Vault File identities.  The Vault row lock already
+            # serialized this transaction against concurrent identity writers,
+            # so every guarded row here is the winner; the NOT EXISTS guard is
+            # still applied for non-cooperating direct SQL writers.
+            self.connection.execute(
+                f"""
+                INSERT INTO vault_files(id, vault_id, status, created_at)
+                SELECT s.id, %s, 'active', %s
+                FROM ({id_values}) s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM file_paths fp
+                    WHERE fp.vault_id=%s
+                      AND fp.path=s.path
+                      AND fp.valid_to IS NULL
+                )
+                """,
+                (vault_id, created_at, *pair_params, vault_id),
+            )
+            # Link each new identity to its path (same guarded pass).
+            self.connection.execute(
+                f"""
+                INSERT INTO file_paths(
+                    vault_file_id, vault_id, path, valid_from, valid_to
+                )
+                SELECT s.id, %s, s.path, %s, NULL
+                FROM ({id_values}) s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM file_paths fp
+                    WHERE fp.vault_id=%s
+                      AND fp.path=s.path
+                      AND fp.valid_to IS NULL
+                )
+                """,
+                (vault_id, created_at, *pair_params, vault_id),
+            )
+            # A non-cooperating writer may have created a path between the
+            # lookup and the guarded INSERT; re-resolve every new path so the
+            # returned id always names a durable vault_files row (ours when we
+            # minted it, the writer's when the guard skipped us).
+            re_placeholders = ", ".join(["%s"] * len(new_paths))
+            re_rows = self.connection.execute(
+                f"""
+                SELECT fp.path, vf.id
+                FROM vault_files vf
+                JOIN file_paths fp
+                  ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+                WHERE vf.vault_id=%s AND fp.path IN ({re_placeholders})
+                """,
+                (vault_id, *new_paths),
+            ).fetchall()
+            for row in re_rows:
+                resolved[str(row["path"])] = str(row["id"])
+        return {path: resolved[path] for path in paths}
+
+    def observe_local_copies_batch(
+        self,
+        *,
+        vault_id: int,
+        entries: Sequence[tuple[str, str, int | None, int | None, str]],
+        seen_at: str | None = None,
+    ) -> dict[str, str]:
+        """Observe many Local Copy rows in a few statements.
+
+        Semantically equivalent to calling :meth:`observe_local_copy` once per
+        entry (same upsert columns, same digest-preservation rules, same dirty
+        ancestors) but without the per-file identity lock touch, identity
+        lookup, and dirty-marking round-trips.  Directory aggregate ancestors
+        are marked dirty once per unique ancestor via :func:`mark_paths_dirty`.
+        Returns a ``{path: vault_file_id}`` map for the input entries.
+        """
+        if not entries:
+            return {}
+        # A repeated path in one batch must behave like the serialized per-file
+        # path: the last observation wins.  Deduplicate to one row per identity
+        # so the guarded INSERT cannot trip the unique vault_file_id constraint.
+        last_by_path: dict[str, tuple[str, str, int | None, int | None, str]] = {}
+        for entry in entries:
+            last_by_path[entry[0]] = entry
+        ordered_entries = list(last_by_path.values())
+        paths = [entry[0] for entry in ordered_entries]
+        observed_at = ordered_entries[0][4]
+        file_ids = self._resolve_or_create_files(vault_id, paths, observed_at)
+        values = " UNION ALL ".join(
+            [
+                "SELECT CAST(%s AS VARCHAR), CAST(%s AS TEXT), "
+                "CAST(%s AS TEXT), CAST(%s AS BIGINT), CAST(%s AS BIGINT), "
+                "CAST(%s AS TEXT), CAST(%s AS TEXT)"
+            ]
+            * len(ordered_entries)
+        )
+        params: list[Any] = []
+        for path, file_type, size, mtime_ns, entry_observed_at in ordered_entries:
+            presence = "present" if file_type == "regular" else "unsupported"
+            last_seen_at = seen_at or entry_observed_at
+            params.extend(
+                [
+                    file_ids[path],
+                    presence,
+                    file_type,
+                    size,
+                    mtime_ns,
+                    last_seen_at,
+                    entry_observed_at,
+                ]
+            )
+        # SQLite does not support ON CONFLICT DO UPDATE on an INSERT...SELECT
+        # source, so the batch upsert is expressed as a portable pair: a
+        # conditional UPDATE of existing rows (digest/matched-version preserved
+        # exactly when the observation is unchanged, mirroring the per-file
+        # ON CONFLICT semantics), then a guarded INSERT of the new rows.  Both
+        # statements run in the caller's transaction; the Vault row lock
+        # already serialized identity creation, so the NOT EXISTS insert cannot
+        # race a cooperating writer.
+        self.connection.execute(
+            f"""
+            WITH s(
+                vault_file_id, presence, file_type, size, mtime_ns,
+                last_seen_at, observed_at
+            ) AS ({values})
+            UPDATE local_copies
+            SET
+                presence=(
+                    SELECT s.presence FROM s
+                    WHERE s.vault_file_id=local_copies.vault_file_id
+                ),
+                file_type=(
+                    SELECT s.file_type FROM s
+                    WHERE s.vault_file_id=local_copies.vault_file_id
+                ),
+                size=(
+                    SELECT s.size FROM s
+                    WHERE s.vault_file_id=local_copies.vault_file_id
+                ),
+                mtime_ns=(
+                    SELECT s.mtime_ns FROM s
+                    WHERE s.vault_file_id=local_copies.vault_file_id
+                ),
+                plaintext_sha256=CASE
+                    WHEN local_copies.file_type=(
+                        SELECT s.file_type FROM s
+                        WHERE s.vault_file_id=local_copies.vault_file_id
+                    )
+                     AND (
+                        local_copies.size=(
+                            SELECT s.size FROM s
+                            WHERE s.vault_file_id=local_copies.vault_file_id
+                        )
+                        OR (
+                            local_copies.size IS NULL
+                            AND (
+                                SELECT s.size FROM s
+                                WHERE s.vault_file_id=local_copies.vault_file_id
+                            ) IS NULL
+                        )
+                     )
+                     AND (
+                        local_copies.mtime_ns=(
+                            SELECT s.mtime_ns FROM s
+                            WHERE s.vault_file_id=local_copies.vault_file_id
+                        )
+                        OR (
+                            local_copies.mtime_ns IS NULL
+                            AND (
+                                SELECT s.mtime_ns FROM s
+                                WHERE s.vault_file_id=local_copies.vault_file_id
+                            ) IS NULL
+                        )
+                     )
+                    THEN local_copies.plaintext_sha256
+                    ELSE NULL
+                END,
+                matched_archive_version_id=CASE
+                    WHEN local_copies.file_type=(
+                        SELECT s.file_type FROM s
+                        WHERE s.vault_file_id=local_copies.vault_file_id
+                    )
+                     AND (
+                        local_copies.size=(
+                            SELECT s.size FROM s
+                            WHERE s.vault_file_id=local_copies.vault_file_id
+                        )
+                        OR (
+                            local_copies.size IS NULL
+                            AND (
+                                SELECT s.size FROM s
+                                WHERE s.vault_file_id=local_copies.vault_file_id
+                            ) IS NULL
+                        )
+                     )
+                     AND (
+                        local_copies.mtime_ns=(
+                            SELECT s.mtime_ns FROM s
+                            WHERE s.vault_file_id=local_copies.vault_file_id
+                        )
+                        OR (
+                            local_copies.mtime_ns IS NULL
+                            AND (
+                                SELECT s.mtime_ns FROM s
+                                WHERE s.vault_file_id=local_copies.vault_file_id
+                            ) IS NULL
+                        )
+                     )
+                    THEN local_copies.matched_archive_version_id
+                    ELSE NULL
+                END,
+                last_seen_at=(
+                    SELECT s.last_seen_at FROM s
+                    WHERE s.vault_file_id=local_copies.vault_file_id
+                ),
+                observed_at=(
+                    SELECT s.observed_at FROM s
+                    WHERE s.vault_file_id=local_copies.vault_file_id
+                )
+            WHERE vault_file_id IN (SELECT vault_file_id FROM s)
+            """,
+            params,
+        )
+        self.connection.execute(
+            f"""
+            WITH s(
+                vault_file_id, presence, file_type, size, mtime_ns,
+                last_seen_at, observed_at
+            ) AS ({values})
+            INSERT INTO local_copies(
+                vault_file_id, presence, file_type, size, mtime_ns,
+                plaintext_sha256, matched_archive_version_id,
+                last_seen_at, observed_at
+            )
+            SELECT
+                s.vault_file_id, s.presence, s.file_type, s.size, s.mtime_ns,
+                NULL, NULL,
+                s.last_seen_at, s.observed_at
+            FROM s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM local_copies lc
+                WHERE lc.vault_file_id=s.vault_file_id
+            )
+            """,
+            params,
+        )
+        mark_paths_dirty(self.connection, vault_id, paths)
+        return file_ids
 
     def record_archive_version(
         self,

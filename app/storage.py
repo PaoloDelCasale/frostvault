@@ -1135,16 +1135,16 @@ def _scan_tree(
                     (relative, vault_id),
                 ).fetchone()
         catalog = ArchiveCatalog(connection)
-        for relative, file_type, size, mtime_ns, observed_at in pending:
-            catalog.observe_local_copy(
-                vault_id=vault_id,
-                path=relative,
-                file_type=file_type,
-                size=size,
-                mtime_ns=mtime_ns,
-                seen_at=scan_id,
-                observed_at=observed_at,
-            )
+        # Issue #242: one Vault row-lock touch, one bulk identity lookup, and
+        # one bulk upsert replace the per-file round-trips that pinned Postgres
+        # CPU on large Vaults.  The batch is semantically identical to the
+        # serialized per-file path (same upsert columns, digest preservation,
+        # dirty ancestors).
+        catalog.observe_local_copies_batch(
+            vault_id=vault_id,
+            entries=pending,
+            seen_at=scan_id,
+        )
         count += len(pending)
         pending.clear()
         if _persisted_scan(vault):
