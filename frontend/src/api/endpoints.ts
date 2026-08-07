@@ -642,14 +642,20 @@ export function markAllNotificationsRead(): Promise<MarkAllNotificationsReadResp
   );
 }
 
-/** List personal preferences for the server-selected active Vault. */
+/**
+ * List personal preferences for the server-selected active Vault.
+ * Owned by the dedicated notification-preferences surface (#226), not the inbox.
+ */
 export function fetchVaultNotificationPreferences(): Promise<VaultNotificationPreferencesResponse> {
   return apiRequest<VaultNotificationPreferencesResponse>(
     "/api/vault/notification-preferences",
   );
 }
 
-/** Save one personal preference for the server-selected active Vault. */
+/**
+ * Save one personal preference for the server-selected active Vault.
+ * Owned by the dedicated notification-preferences surface (#226), not the inbox.
+ */
 export function setVaultNotificationPreference(
   payload: VaultNotificationPreferencePayload,
 ): Promise<VaultNotificationPreference> {

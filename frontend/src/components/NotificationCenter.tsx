@@ -11,16 +11,11 @@ import {
   apiQueryKeys,
   markAllNotificationsRead,
   markNotificationRead,
-  notificationPreferencesQueryOptions,
   notificationsQueryOptions,
-  setVaultNotificationPreference,
   fetchNotifications,
   type MarkAllNotificationsReadResponse,
   type NotificationItem,
   type NotificationsResponse,
-  type VaultNotificationPreference,
-  type VaultNotificationPreferencePayload,
-  type VaultNotificationPreferencesResponse,
   createAppQueryClient,
 } from "@/api";
 import { Dialog } from "@/components/Dialog";
@@ -33,10 +28,10 @@ export type NotificationTranslator = (
 ) => string;
 
 type NotificationCenterProps = {
-  currentVaultId?: number;
-  vaultName?: string;
   locale?: string;
   t?: NotificationTranslator;
+  /** Optional navigation into the dedicated notification-preferences surface. */
+  onOpenPreferences?: () => void;
   /** The app passes its shared client; the fallback keeps shell stories isolated. */
   queryClient?: QueryClient;
 };
@@ -49,48 +44,6 @@ type UnreadMutationContext = MutationContext<NotificationsResponse> & {
   previousExtra: NotificationItem[];
   previousHasMore: boolean;
 };
-
-type PreferenceRow = {
-  event: string;
-  labelKey: string;
-  fallbackLabel: string;
-  descriptionKey: string;
-  fallbackDescription: string;
-};
-
-const PREFERENCE_ROWS: PreferenceRow[] = [
-  {
-    event: "job_completed",
-    labelKey: "ui.notifications_preference_job_completed",
-    fallbackLabel: "Completed jobs",
-    descriptionKey: "ui.notifications_preference_job_completed_description",
-    fallbackDescription: "Get notified when a job completes.",
-  },
-  {
-    event: "job_failed",
-    labelKey: "ui.notifications_preference_job_failed",
-    fallbackLabel: "Failed jobs",
-    descriptionKey: "ui.notifications_preference_job_failed_description",
-    fallbackDescription: "Get notified when a job fails.",
-  },
-];
-
-const PREFERENCE_CHANNELS: Array<{
-  channel: "in_app" | "push";
-  labelKey: string;
-  fallbackLabel: string;
-}> = [
-  {
-    channel: "in_app",
-    labelKey: "ui.notifications_channel_in_app",
-    fallbackLabel: "In-app",
-  },
-  {
-    channel: "push",
-    labelKey: "ui.notifications_channel_push",
-    fallbackLabel: "Push",
-  },
-];
 
 const UNREAD_PAGE_SIZE = 50;
 const READ_PAGE_SIZE = 30;
@@ -121,19 +74,6 @@ function notificationDate(value: string, locale: string): string {
   } catch {
     return value;
   }
-}
-
-function preferenceIsEnabled(
-  items: VaultNotificationPreference[],
-  event: string,
-  channel: "in_app" | "push",
-): boolean {
-  const saved = items.find(
-    (item) => item.event === event && item.channel === channel,
-  );
-  // In-app notices are enabled by default to match the backend. Push keeps its
-  // existing enabled-by-default behavior until the user explicitly changes it.
-  return saved?.enabled ?? true;
 }
 
 function notificationContent(value: unknown): string {
@@ -232,10 +172,9 @@ function NotificationRow({
 }
 
 export function NotificationCenter({
-  currentVaultId,
-  vaultName = "Vault",
   locale = "en",
   t,
+  onOpenPreferences,
   queryClient: providedQueryClient,
 }: NotificationCenterProps) {
   const contextQueryClient = useContext(QueryClientContext);
@@ -244,7 +183,6 @@ export function NotificationCenter({
     providedQueryClient ?? contextQueryClient ?? fallbackQueryClient;
   const [open, setOpen] = useState(false);
   const [markError, setMarkError] = useState<string | null>(null);
-  const [preferenceError, setPreferenceError] = useState(false);
   const [showRead, setShowRead] = useState(false);
   const [readItems, setReadItems] = useState<NotificationItem[]>([]);
   const [readHasMore, setReadHasMore] = useState(false);
@@ -270,22 +208,12 @@ export function NotificationCenter({
     unreadHasMoreRef.current = unreadHasMore;
   }, [unreadHasMore]);
 
-  const selectedVaultId = currentVaultId ?? 0;
-  const preferencesKey = apiQueryKeys.notificationPreferences(selectedVaultId);
   const unreadKey = apiQueryKeys.notificationsByStatus("unread");
 
   const notificationsQuery = useQuery(
     {
       ...notificationsQueryOptions("unread", UNREAD_PAGE_SIZE),
       staleTime: 15_000,
-    },
-    queryClient,
-  );
-  const preferencesQuery = useQuery(
-    {
-      ...notificationPreferencesQueryOptions(selectedVaultId),
-      enabled: open && selectedVaultId > 0,
-      staleTime: 60_000,
     },
     queryClient,
   );
@@ -530,89 +458,6 @@ export function NotificationCenter({
     queryClient,
   );
 
-  const preferenceMutation = useMutation<
-    VaultNotificationPreference,
-    Error,
-    VaultNotificationPreferencePayload,
-    MutationContext<VaultNotificationPreferencesResponse>
-  >(
-    {
-      mutationFn: setVaultNotificationPreference,
-      onMutate: async (payload) => {
-        await queryClient.cancelQueries({ queryKey: preferencesKey });
-        const previous =
-          queryClient.getQueryData<VaultNotificationPreferencesResponse>(
-            preferencesKey,
-          );
-        queryClient.setQueryData<
-          VaultNotificationPreferencesResponse | undefined
-        >(preferencesKey, (current) => {
-          const existing = current?.items ?? [];
-          const alreadyPresent = existing.some(
-            (item) =>
-              item.event === payload.event && item.channel === payload.channel,
-          );
-          const optimistic: VaultNotificationPreference = {
-            id: 0,
-            user_id: 0,
-            vault_id: selectedVaultId,
-            event: payload.event,
-            channel: payload.channel,
-            enabled: payload.enabled,
-          };
-          return {
-            items: alreadyPresent
-              ? existing.map((item) =>
-                  item.event === payload.event &&
-                  item.channel === payload.channel
-                    ? { ...item, enabled: payload.enabled }
-                    : item,
-                )
-              : [...existing, optimistic],
-          };
-        });
-        return { previous };
-      },
-      onError: (_error, _payload, context) => {
-        if (context?.previous) {
-          queryClient.setQueryData(preferencesKey, context.previous);
-        }
-        setPreferenceError(true);
-      },
-      onSuccess: (saved) => {
-        queryClient.setQueryData<VaultNotificationPreferencesResponse | undefined>(
-          preferencesKey,
-          (current) => {
-            if (!current) return { items: [saved] };
-            const found = current.items.some(
-              (item) =>
-                item.event === saved.event && item.channel === saved.channel,
-            );
-            return {
-              items: found
-                ? current.items.map((item) =>
-                    item.event === saved.event &&
-                    item.channel === saved.channel
-                      ? saved
-                      : item,
-                  )
-                : [...current.items, saved],
-            };
-          },
-        );
-      },
-      onSettled: () => {
-        if (selectedVaultId > 0) {
-          void queryClient.invalidateQueries({
-            queryKey: preferencesKey,
-            refetchType: "active",
-          });
-        }
-      },
-    },
-    queryClient,
-  );
-
   const unreadCount =
     typeof notificationsQuery.data?.unread_count === "number" &&
     Number.isFinite(notificationsQuery.data.unread_count)
@@ -641,7 +486,6 @@ export function NotificationCenter({
       ...unreadExtra.filter((item) => !seen.has(item.id)),
     ];
   }, [pageItems, unreadExtra]);
-  const preferenceItems = preferencesQuery.data?.items ?? [];
   const notificationTitle = notificationLabel(
     t,
     "ui.notifications_title",
@@ -668,7 +512,6 @@ export function NotificationCenter({
     setOpen(nextOpen);
     if (nextOpen) {
       setMarkError(null);
-      setPreferenceError(false);
     }
   }
 
@@ -725,6 +568,11 @@ export function NotificationCenter({
         setUnreadLoadingMore(false);
       }
     }
+  }
+
+  function handleOpenPreferences(): void {
+    setOpen(false);
+    onOpenPreferences?.();
   }
 
   return (
@@ -821,6 +669,21 @@ export function NotificationCenter({
                     "Show read",
                   )}
             </Button>
+            {onOpenPreferences ? (
+              <Button
+                type="button"
+                variant="ghost"
+                className="min-h-11"
+                data-testid="notifications-open-preferences"
+                onClick={handleOpenPreferences}
+              >
+                {notificationLabel(
+                  t,
+                  "ui.notifications_preferences_heading",
+                  "Notification preferences",
+                )}
+              </Button>
+            ) : null}
           </div>
 
           {notificationsQuery.isPending && !notificationsQuery.data ? (
@@ -1026,157 +889,6 @@ export function NotificationCenter({
               )}
             </section>
           ) : null}
-
-          <section
-            aria-labelledby="notification-preferences-heading"
-            className="grid gap-3 border-t border-line pt-4"
-            data-testid="notification-preferences"
-          >
-            <div>
-              <h3
-                id="notification-preferences-heading"
-                className="text-base font-bold text-ink"
-              >
-                {notificationLabel(
-                  t,
-                  "ui.notifications_preferences_heading",
-                  "Notification preferences",
-                )}
-              </h3>
-              <p className="mt-1 text-sm text-muted">
-                {notificationLabel(
-                  t,
-                  "ui.notifications_preferences_description",
-                  "Choose how you receive activity for {vault}.",
-                  { vault: vaultName },
-                )}
-              </p>
-            </div>
-
-            {preferenceError ? (
-              <p role="alert" className="text-sm font-bold text-destructive">
-                {notificationLabel(
-                  t,
-                  "ui.notifications_preferences_save_failed",
-                  "Could not update notification preference.",
-                )}
-              </p>
-            ) : null}
-
-            {selectedVaultId <= 0 ? (
-              <p className="text-sm text-muted">
-                {notificationLabel(
-                  t,
-                  "ui.notifications_preferences_unavailable",
-                  "Select a Vault to manage preferences.",
-                )}
-              </p>
-            ) : preferencesQuery.isPending && !preferencesQuery.data ? (
-              <p role="status" data-testid="notification-preferences-loading">
-                {notificationLabel(
-                  t,
-                  "ui.notifications_preferences_loading",
-                  "Loading preferences…",
-                )}
-              </p>
-            ) : preferencesQuery.isError && !preferencesQuery.data ? (
-              <div className="grid gap-3" data-testid="notification-preferences-error">
-                <p role="alert" className="text-sm font-bold text-destructive">
-                  {notificationLabel(
-                    t,
-                    "ui.notifications_preferences_error",
-                    "Unable to load notification preferences.",
-                  )}
-                </p>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  className="min-h-11 justify-self-start"
-                  onClick={() => void preferencesQuery.refetch()}
-                >
-                  {notificationLabel(
-                    t,
-                    "ui.notifications_preferences_retry",
-                    "Try again",
-                  )}
-                </Button>
-              </div>
-            ) : (
-              <div
-                className="grid gap-3"
-                role="group"
-                aria-label={notificationLabel(
-                  t,
-                  "ui.notifications_preferences_heading",
-                  "Notification preferences",
-                )}
-              >
-                {PREFERENCE_ROWS.map((row) => {
-                  const rowLabel = notificationLabel(
-                    t,
-                    row.labelKey,
-                    row.fallbackLabel,
-                  );
-                  return (
-                    <fieldset
-                      key={row.event}
-                      className="grid gap-2 rounded-[14px] border border-line bg-canvas p-3"
-                    >
-                      <legend className="px-1 text-sm font-bold text-ink">
-                        {rowLabel}
-                      </legend>
-                      <p className="text-sm text-muted">
-                        {notificationLabel(
-                          t,
-                          row.descriptionKey,
-                          row.fallbackDescription,
-                        )}
-                      </p>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        {PREFERENCE_CHANNELS.map(({ channel, labelKey, fallbackLabel }) => {
-                          const channelLabel = notificationLabel(
-                            t,
-                            labelKey,
-                            fallbackLabel,
-                          );
-                          const checked = preferenceIsEnabled(
-                            preferenceItems,
-                            row.event,
-                            channel,
-                          );
-                          const inputId = `notification-${row.event}-${channel}`;
-                          return (
-                            <label
-                              key={channel}
-                              htmlFor={inputId}
-                              className="flex min-h-11 items-center gap-2 rounded-lg border border-line bg-surface px-3 text-sm font-bold text-ink"
-                            >
-                              <input
-                                id={inputId}
-                                type="checkbox"
-                                checked={checked}
-                                disabled={preferenceMutation.isPending}
-                                aria-label={`${rowLabel}: ${channelLabel}`}
-                                onChange={(event) => {
-                                  setPreferenceError(false);
-                                  preferenceMutation.mutate({
-                                    event: row.event,
-                                    channel,
-                                    enabled: event.target.checked,
-                                  });
-                                }}
-                              />
-                              {channelLabel}
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </fieldset>
-                  );
-                })}
-              </div>
-            )}
-          </section>
         </section>
       </Dialog>
     </>

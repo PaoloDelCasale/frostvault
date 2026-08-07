@@ -41,16 +41,6 @@ const catalog: Record<string, string> = {
   "ui.notifications_load_more": "Load more",
   "ui.notifications_loading_more": "Loading more…",
   "ui.notifications_preferences_heading": "Notification preferences",
-  "ui.notifications_preferences_description":
-    "Choose how you receive activity for {vault}.",
-  "ui.notifications_channel_in_app": "In-app",
-  "ui.notifications_channel_push": "Push",
-  "ui.notifications_preference_job_completed": "Completed jobs",
-  "ui.notifications_preference_job_completed_description":
-    "Get notified when a job completes.",
-  "ui.notifications_preference_job_failed": "Failed jobs",
-  "ui.notifications_preference_job_failed_description":
-    "Get notified when a job fails.",
 };
 
 function translate(key: string, params: Record<string, unknown> = {}): string {
@@ -91,15 +81,17 @@ function notificationItem(
   };
 }
 
-function renderCenter(fetchMock: ApiFetch) {
+function renderCenter(
+  fetchMock: ApiFetch,
+  options: { onOpenPreferences?: () => void } = {},
+) {
   configureApiClient({ fetch: fetchMock, csrfToken: "notification-csrf" });
   return render(
     <NotificationCenter
-      currentVaultId={9}
-      vaultName="Test Archive"
       locale="en"
       t={translate}
       queryClient={createAppQueryClient()}
+      onOpenPreferences={options.onOpenPreferences}
     />,
   );
 }
@@ -738,80 +730,59 @@ describe("NotificationCenter", () => {
     }
   });
 
-  it("defaults absent in-app preferences to enabled and saves a first-click opt-out", async () => {
+  it("does not request notification preferences when the bell opens", async () => {
     const user = userEvent.setup();
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(
-        jsonResponse({ unread_count: 0, has_more: false, items: [] }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({
-          items: [
-            {
-              id: 2,
-              user_id: 7,
-              vault_id: 9,
-              event: "job_completed",
-              channel: "push",
-              enabled: true,
-            },
-          ],
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({
-          id: 3,
-          user_id: 7,
-          vault_id: 9,
-          event: "job_completed",
-          channel: "in_app",
-          enabled: false,
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({
-          items: [
-            {
-              id: 3,
-              user_id: 7,
-              vault_id: 9,
-              event: "job_completed",
-              channel: "in_app",
-              enabled: false,
-            },
-          ],
-        }),
-      );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/notifications")) {
+        return jsonResponse({ unread_count: 0, has_more: false, items: [] });
+      }
+      if (url === "/api/vault/notification-preferences") {
+        throw new Error("preferences must not load with the inbox");
+      }
+      throw new Error(`unexpected ${url}`);
+    });
 
     renderCenter(fetchMock);
     await user.click(
       await screen.findByRole("button", { name: "Open notifications" }),
     );
     const dialog = await screen.findByRole("dialog", { name: "Notifications" });
-    const inApp = await within(dialog).findByRole("checkbox", {
-      name: "Completed jobs: In-app",
-    });
-    expect(inApp).toBeChecked();
+    expect(within(dialog).queryByTestId("notification-preferences")).toBeNull();
     expect(
-      within(dialog).getByRole("checkbox", { name: "Completed jobs: Push" }),
-    ).toBeChecked();
+      within(dialog).queryByRole("checkbox", { name: /Completed jobs/i }),
+    ).toBeNull();
+    expect(
+      fetchMock.mock.calls.map((call) => requestUrl(call)).some(
+        (url) => url === "/api/vault/notification-preferences",
+      ),
+    ).toBe(false);
+  });
 
-    await user.click(inApp);
-    expect(inApp).not.toBeChecked();
-    await waitFor(() => {
-      expect(fetchMock.mock.calls.map((call) => requestUrl(call))).toContain(
-        "/api/vault/notification-preferences",
-      );
+  it("offers an optional link into the dedicated preferences surface", async () => {
+    const user = userEvent.setup();
+    const onOpenPreferences = vi.fn();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/notifications")) {
+        return jsonResponse({ unread_count: 0, has_more: false, items: [] });
+      }
+      throw new Error(`unexpected ${url}`);
     });
-    const preferencePost = fetchMock.mock.calls.find(
-      (call) =>
-        requestUrl(call) === "/api/vault/notification-preferences" &&
-        call[1]?.method === "POST",
+
+    renderCenter(fetchMock, { onOpenPreferences });
+    await user.click(
+      await screen.findByRole("button", { name: "Open notifications" }),
     );
-    expect(JSON.parse(String(preferencePost?.[1]?.body))).toEqual({
-      event: "job_completed",
-      channel: "in_app",
-      enabled: false,
+    const dialog = await screen.findByRole("dialog", { name: "Notifications" });
+    await user.click(
+      within(dialog).getByRole("button", {
+        name: "Notification preferences",
+      }),
+    );
+    expect(onOpenPreferences).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Notifications" })).toBeNull();
     });
   });
 
@@ -870,8 +841,6 @@ describe("NotificationCenter", () => {
     configureApiClient({ fetch: fetchMock, csrfToken: "notification-csrf" });
     render(
       <NotificationCenter
-        currentVaultId={9}
-        vaultName="Archivio"
         locale="it"
         t={tIt}
         queryClient={createAppQueryClient()}
