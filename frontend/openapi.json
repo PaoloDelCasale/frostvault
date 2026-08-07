@@ -1413,17 +1413,54 @@
       "FilesystemHealth": {
         "additionalProperties": true,
         "properties": {
+          "cache_age_seconds": {
+            "description": "Age of the cached health snapshot in seconds, when known.",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "checked_at": {
+            "description": "ISO-8601 timestamp of the latest completed health computation.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "checks": {
             "items": {
               "$ref": "#/components/schemas/FilesystemCheck"
             },
             "type": "array"
           },
+          "error": {
+            "description": "Short failure class when health_status is failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finding_counts": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "Finding totals keyed by finding code.",
+            "type": "object"
+          },
           "findings": {
+            "description": "Bounded sample of filesystem findings for the latest health revision.",
             "items": {
               "$ref": "#/components/schemas/FilesystemFinding"
             },
             "type": "array"
+          },
+          "findings_total": {
+            "description": "Total findings counted for the latest health revision.",
+            "type": "number"
+          },
+          "findings_truncated": {
+            "description": "True when findings is a bounded sample of findings_total.",
+            "type": "boolean"
           },
           "gid": {
             "type": [
@@ -1431,8 +1468,19 @@
               "null"
             ]
           },
+          "health_status": {
+            "description": "checking | current | stale | failed filesystem-health revision state.",
+            "type": "string"
+          },
           "ok": {
             "type": "boolean"
+          },
+          "revision": {
+            "description": "Monotonic in-process health revision for this Vault.",
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "root": {
             "type": "string"
@@ -1463,6 +1511,10 @@
               "cloud_catalog_allowed"
             ],
             "type": "object"
+          },
+          "synopsis_truncated": {
+            "description": "True when checks sample or check/finding field values were capped or clipped while building the bounded synopsis.",
+            "type": "boolean"
           },
           "uid": {
             "type": [

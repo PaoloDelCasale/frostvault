@@ -1,4 +1,45 @@
-import type { FilesystemFinding } from "@/api/types";
+import type { FilesystemFinding, FilesystemHealth } from "@/api/types";
+
+/** Explicit filesystem-health revision states from GET /api/stats (#228). */
+export type FilesystemHealthStatus =
+  | "checking"
+  | "current"
+  | "stale"
+  | "failed";
+
+const HEALTH_STATUSES = new Set<FilesystemHealthStatus>([
+  "checking",
+  "current",
+  "stale",
+  "failed",
+]);
+
+/**
+ * Resolve health_status. Legacy payloads without the field are treated as a
+ * completed revision so fail-closed findings still render (#222).
+ */
+export function resolveHealthStatus(
+  filesystem: Pick<FilesystemHealth, "health_status" | "ok">,
+): FilesystemHealthStatus {
+  const raw = filesystem.health_status;
+  if (typeof raw === "string" && HEALTH_STATUSES.has(raw as FilesystemHealthStatus)) {
+    return raw as FilesystemHealthStatus;
+  }
+  return "current";
+}
+
+/** Prefer server findings_total; fall back to the bounded sample length. */
+export function resolveFindingsTotal(
+  filesystem: Pick<FilesystemHealth, "findings_total" | "findings">,
+): number {
+  if (
+    typeof filesystem.findings_total === "number" &&
+    Number.isFinite(filesystem.findings_total)
+  ) {
+    return Math.max(0, Math.floor(filesystem.findings_total));
+  }
+  return filesystem.findings?.length ?? 0;
+}
 
 /** Maximum finding paths rendered inline in the page-level banner. */
 export const INLINE_FINDING_SAMPLE = 5;

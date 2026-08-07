@@ -12,6 +12,8 @@ import {
   INLINE_GROUP_LIMIT,
   type FilesystemFindingGroup,
   groupFilesystemFindings,
+  resolveFindingsTotal,
+  resolveHealthStatus,
 } from "./filesystemHealthFindings";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
@@ -114,11 +116,73 @@ function GroupSummaryCard({
   );
 }
 
+function CodeCountList({
+  counts,
+  t,
+}: {
+  counts: Record<string, number>;
+  t: Translate;
+}) {
+  const entries = Object.entries(counts).sort((a, b) => {
+    if (b[1] !== a[1]) return b[1] - a[1];
+    return a[0].localeCompare(b[0]);
+  });
+  if (entries.length === 0) return null;
+  return (
+    <ul
+      className="mt-2 list-none space-y-1 p-0 text-[13px]"
+      data-testid="filesystem-finding-counts"
+    >
+      {entries.map(([code, count]) => (
+        <li key={code}>
+          <code className="text-[12px]">{code}</code>
+          {" — "}
+          {countedLabel(count, "ui.filesystem_findings_count", t)}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function StatusMeta({
+  filesystem,
+  healthStatus,
+  t,
+}: {
+  filesystem: FilesystemHealth;
+  healthStatus: string;
+  t: Translate;
+}) {
+  const bits: string[] = [];
+  if (filesystem.checked_at) {
+    bits.push(
+      t("ui.filesystem_health_checked_at", { when: filesystem.checked_at }),
+    );
+  }
+  if (filesystem.revision != null) {
+    bits.push(
+      t("ui.filesystem_health_revision", { revision: filesystem.revision }),
+    );
+  }
+  return (
+    <div
+      className="mt-1 space-y-0.5 text-[12px] text-muted"
+      data-testid="filesystem-health-meta"
+      data-health-status={healthStatus}
+    >
+      <div>{t(`ui.filesystem_health_status_${healthStatus}`)}</div>
+      {bits.length > 0 ? <div>{bits.join(" · ")}</div> : null}
+    </div>
+  );
+}
+
 /**
- * Alarm banner for vault filesystem health.
- * When `ok` is true there is no alarm (operators still see stats elsewhere).
- * When not ok, findings are summarized/grouped with progressive disclosure so
- * large adopted Vaults stay usable.
+ * Alarm / status banner for vault filesystem health.
+ *
+ * Health lifecycle (`checking` / `current` / `stale` / `failed`) is independent
+ * of archive summary success. Findings are a bounded sample; totals come from
+ * `findings_total` / `finding_counts` when present (#228). Progressive disclosure
+ * from #222 still pages the available sample.
  */
 export function FilesystemHealthBanner({
   filesystem,
@@ -142,14 +206,123 @@ export function FilesystemHealthBanner({
     [filesystem?.checks],
   );
 
-  if (!filesystem || filesystem.ok) {
+  if (!filesystem) {
     return null;
   }
 
+  const healthStatus = resolveHealthStatus(filesystem);
+  const findingsTotal = resolveFindingsTotal(filesystem);
+  const sampleCount = findings.length;
+  const isTruncated =
+    filesystem.findings_truncated === true || findingsTotal > sampleCount;
+  const findingCounts = filesystem.finding_counts ?? {};
   const isSourceVolumeDegraded = (filesystem.checks || []).some((check) =>
     check.code.startsWith("source_volume."),
   );
-  const totalFindings = findings.length;
+
+  // Pure healthy current — nothing to surface.
+  if (
+    healthStatus === "current" &&
+    filesystem.ok &&
+    findingsTotal === 0 &&
+    !isSourceVolumeDegraded
+  ) {
+    return null;
+  }
+
+  // First-pass / in-flight check with no known problems yet.
+  if (
+    healthStatus === "checking" &&
+    findingsTotal === 0 &&
+    !isSourceVolumeDegraded &&
+    filesystem.ok !== true
+  ) {
+    return (
+      <section
+        role="status"
+        aria-live="polite"
+        data-testid="filesystem-health"
+        data-health-status="checking"
+        className={cn(
+          "filesystem-health mb-4 rounded-card border border-line bg-surface px-4 py-3.5",
+          className,
+        )}
+      >
+        <strong className="mb-1 block">
+          {t("ui.filesystem_health_checking_title")}
+        </strong>
+        <span className="text-[13px] text-muted">
+          {t("ui.filesystem_health_checking_detail")}
+        </span>
+        <StatusMeta filesystem={filesystem} healthStatus="checking" t={t} />
+      </section>
+    );
+  }
+
+  // Stale but still healthy: quiet refresh note, not an alarm.
+  if (
+    healthStatus === "stale" &&
+    filesystem.ok &&
+    findingsTotal === 0 &&
+    !isSourceVolumeDegraded
+  ) {
+    return (
+      <section
+        role="status"
+        aria-live="polite"
+        data-testid="filesystem-health"
+        data-health-status="stale"
+        className={cn(
+          "filesystem-health mb-4 rounded-card border border-line bg-surface px-4 py-3.5",
+          className,
+        )}
+      >
+        <strong className="mb-1 block">
+          {t("ui.filesystem_health_stale_title")}
+        </strong>
+        <span className="text-[13px] text-muted">
+          {t("ui.filesystem_health_stale_detail")}
+        </span>
+        <StatusMeta filesystem={filesystem} healthStatus="stale" t={t} />
+      </section>
+    );
+  }
+
+  if (healthStatus === "failed") {
+    return (
+      <section
+        role="alert"
+        data-testid="filesystem-health"
+        data-health-status="failed"
+        className={cn(
+          "filesystem-health mb-4 rounded-card border border-red-300 bg-red-soft px-4 py-3.5",
+          className,
+        )}
+      >
+        <strong className="mb-1 block">
+          {t("ui.filesystem_health_failed_title")}
+        </strong>
+        <span className="text-[13px] text-muted">
+          {t("ui.filesystem_health_failed_detail")}
+          {filesystem.error ? ` (${filesystem.error})` : null}
+        </span>
+        {checkRemediations.length > 0 ? (
+          <ul className="mt-2.5 list-disc space-y-1 pl-4 text-[13px]">
+            {checkRemediations.map((text) => (
+              <li key={text}>{text}</li>
+            ))}
+          </ul>
+        ) : null}
+        <StatusMeta filesystem={filesystem} healthStatus="failed" t={t} />
+      </section>
+    );
+  }
+
+  // Remaining not-ok / degraded paths keep the fail-closed warn alarm.
+  if (filesystem.ok && findingsTotal === 0 && !isSourceVolumeDegraded) {
+    return null;
+  }
+
   const totalGroups = groups.length;
   const inlineGroups = groups.slice(0, INLINE_GROUP_LIMIT);
   const hiddenGroupCount = Math.max(0, totalGroups - inlineGroups.length);
@@ -163,11 +336,11 @@ export function FilesystemHealthBanner({
     }
     if (inlineSample.length >= INLINE_FINDING_SAMPLE) break;
   }
-  const isTruncated = totalFindings > INLINE_FINDING_SAMPLE;
+  const inlineTruncated = findingsTotal > INLINE_FINDING_SAMPLE;
 
   const findingPageCount = Math.max(
     1,
-    Math.ceil(totalFindings / DETAILS_PAGE_SIZE),
+    Math.ceil(Math.max(sampleCount, 1) / DETAILS_PAGE_SIZE),
   );
   const safeFindingPage = Math.min(findingPage, findingPageCount - 1);
   const pageFindings = findings.slice(
@@ -177,7 +350,7 @@ export function FilesystemHealthBanner({
 
   const groupPageCount = Math.max(
     1,
-    Math.ceil(totalGroups / DETAILS_GROUP_PAGE_SIZE),
+    Math.ceil(Math.max(totalGroups, 1) / DETAILS_GROUP_PAGE_SIZE),
   );
   const safeGroupPage = Math.min(groupPage, groupPageCount - 1);
   const pageGroups = groups.slice(
@@ -202,11 +375,17 @@ export function FilesystemHealthBanner({
   const groupRemediation = (group: FilesystemFindingGroup): string | null =>
     group.remediation || checkRemediations[0] || null;
 
+  const statusTone =
+    healthStatus === "stale" || healthStatus === "checking"
+      ? "stale"
+      : "warn";
+
   return (
     <>
       <section
         role="alert"
         data-testid="filesystem-health"
+        data-health-status={healthStatus}
         className={cn(
           "filesystem-health warn mb-4 rounded-card border border-[var(--health-warn-border)] bg-amber-soft px-4 py-3.5",
           className,
@@ -226,13 +405,29 @@ export function FilesystemHealthBanner({
             : null}
         </span>
 
-        {totalFindings > 0 ? (
+        <StatusMeta
+          filesystem={filesystem}
+          healthStatus={healthStatus}
+          t={t}
+        />
+
+        {Object.keys(findingCounts).length > 0 ? (
+          <CodeCountList counts={findingCounts} t={t} />
+        ) : null}
+
+        {findingsTotal > 0 ? (
           <div className="mt-2.5 space-y-2.5 text-[13px]">
             <p
               className="font-semibold text-ink"
               data-testid="filesystem-findings-summary"
             >
-              {findingsSummaryLabel(totalFindings, totalGroups, t)}
+              {findingsSummaryLabel(findingsTotal, totalGroups, t)}
+              {isTruncated && totalGroups > 0
+                ? ` ${t("ui.filesystem_findings_sample_note", {
+                    shown: sampleCount,
+                    total: findingsTotal,
+                  })}`
+                : null}
             </p>
 
             <ul
@@ -266,43 +461,62 @@ export function FilesystemHealthBanner({
                   <FindingPathRow
                     key={findingKey(finding, index)}
                     finding={finding}
-                    // Small sets keep path-level remediation when each finding is unique.
-                    showRemediation={!isTruncated && Boolean(finding.remediation)}
+                    // Small complete samples keep path-level remediation.
+                    showRemediation={
+                      !inlineTruncated && Boolean(finding.remediation)
+                    }
                   />
                 ))}
               </ul>
             ) : null}
 
-            {isTruncated ? (
+            {inlineTruncated ? (
               <p className="text-muted" data-testid="filesystem-findings-truncated">
                 {t("ui.filesystem_findings_truncated", {
-                  shown: inlineSample.length,
-                  total: totalFindings,
+                  shown: Math.min(inlineSample.length, INLINE_FINDING_SAMPLE),
+                  total: findingsTotal,
                 })}
               </p>
             ) : null}
 
-            <div className="pt-0.5">
-              <Button
-                type="button"
-                variant="secondary"
-                className="min-h-11"
-                aria-expanded={detailsOpen}
-                aria-controls="filesystem-findings-dialog"
-                onClick={openDetails}
-              >
-                {t("ui.filesystem_show_all_findings", { count: totalFindings })}
-              </Button>
-            </div>
+            {sampleCount > 0 ? (
+              <div className="pt-0.5">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="min-h-11"
+                  aria-expanded={detailsOpen}
+                  aria-controls="filesystem-findings-dialog"
+                  onClick={openDetails}
+                >
+                  {isTruncated
+                    ? t("ui.filesystem_show_findings_sample", {
+                        count: sampleCount,
+                        total: findingsTotal,
+                      })
+                    : t("ui.filesystem_show_all_findings", {
+                        count: findingsTotal,
+                      })}
+                </Button>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
-        {totalFindings === 0 && checkRemediations.length > 0 ? (
+        {findingsTotal === 0 && checkRemediations.length > 0 ? (
           <ul className="mt-2.5 list-disc space-y-1 pl-4 text-[13px]">
             {checkRemediations.map((text) => (
               <li key={text}>{text}</li>
             ))}
           </ul>
+        ) : null}
+
+        {statusTone === "stale" ? (
+          <p className="mt-2 text-[12px] text-muted" data-testid="filesystem-health-refreshing">
+            {healthStatus === "checking"
+              ? t("ui.filesystem_health_checking_detail")
+              : t("ui.filesystem_health_stale_detail")}
+          </p>
         ) : null}
       </section>
 
@@ -310,7 +524,14 @@ export function FilesystemHealthBanner({
         open={detailsOpen}
         onOpenChange={closeDetails}
         title={t("ui.filesystem_findings_details_title")}
-        description={t("ui.filesystem_findings_details_description")}
+        description={
+          isTruncated
+            ? t("ui.filesystem_findings_details_description_sample", {
+                shown: sampleCount,
+                total: findingsTotal,
+              })
+            : t("ui.filesystem_findings_details_description")
+        }
         closeLabel={t("ui.close")}
         className="max-h-[min(85vh,720px)] overflow-hidden"
       >
@@ -319,7 +540,7 @@ export function FilesystemHealthBanner({
           className="flex max-h-[min(65vh,560px)] flex-col gap-3"
         >
           <p className="text-sm font-semibold text-ink">
-            {findingsSummaryLabel(totalFindings, totalGroups, t)}
+            {findingsSummaryLabel(findingsTotal, totalGroups, t)}
           </p>
 
           <div className="space-y-2">

@@ -18,6 +18,10 @@ from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
 from app.main import stats
 from app.services import source_layout
+from app.services.fs_preflight import (
+    ensure_vault_filesystem_health,
+    reset_filesystem_health_cache_for_tests,
+)
 from app.storage import (
     runtime_status,
     safe_local_entry_path,
@@ -141,6 +145,12 @@ class ScanSymlinkAndPermissionTests(unittest.TestCase):
 
 
 class VaultFilesystemHealthStatsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        reset_filesystem_health_cache_for_tests()
+
+    def tearDown(self) -> None:
+        reset_filesystem_health_cache_for_tests()
+
     def test_stats_include_filesystem_preflight_for_vault(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             self.addCleanup(source_layout.reset_sources_root_override)
@@ -175,6 +185,15 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
             )
             from app import main as main_module
 
+            # Warm the health revision synchronously so the stats payload
+            # exposes the bounded synopsis without waiting on a background thread.
+            ensure_vault_filesystem_health(
+                11,
+                source_root=str(source),
+                allowed_bases=[directory],
+                preflight_allowed=True,
+                spawn=False,
+            )
             with (
                 patch("app.main.settings", test_settings),
                 patch("app.database.settings", test_settings),
@@ -196,8 +215,11 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
             self.assertIn("storage", payload)
             self.assertFalse(filesystem["ok"])
             self.assertEqual(filesystem["uid"], os.geteuid())
+            self.assertEqual(filesystem["health_status"], "current")
+            self.assertGreaterEqual(filesystem["findings_total"], 1)
             finding_codes = {f["code"] for f in filesystem["findings"]}
             self.assertIn("fs.symlink", finding_codes)
+            self.assertIn("fs.symlink", filesystem["finding_counts"])
 
     def test_stats_retains_preflight_diagnostics_for_safe_degraded_volume(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -228,9 +250,11 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
                 bootstrap_vault_source_root="",
             )
             from app import main as main_module
+            from app.services import fs_preflight as fs_preflight_module
 
             for health in ("read_only", "scan_required"):
                 with self.subTest(health=health):
+                    reset_filesystem_health_cache_for_tests()
                     access = SimpleNamespace(
                         local_operations_allowed=False,
                         cloud_catalog_allowed=True,
@@ -243,18 +267,29 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
                         patch.object(main_module, "is_owner", lambda _role: True),
                         patch.object(main_module, "vault_local_access", return_value=access),
                         patch.object(
-                            main_module,
+                            fs_preflight_module,
                             "check_vault_filesystem",
-                            wraps=main_module.check_vault_filesystem,
+                            wraps=fs_preflight_module.check_vault_filesystem,
                         ) as preflight,
                     ):
+                        # Degraded-but-safe volumes may still preflight; compute
+                        # the revision inline for a deterministic assertion.
+                        ensure_vault_filesystem_health(
+                            12,
+                            source_root=str(source),
+                            allowed_bases=[directory],
+                            preflight_allowed=True,
+                            walker=preflight,
+                            spawn=False,
+                        )
                         payload = stats(vault=vault)
-                    preflight.assert_called_once()
+                    preflight.assert_called()
                     filesystem = payload["filesystem"]
                     self.assertIn("states", payload)
                     self.assertIn("storage", payload)
                     self.assertFalse(filesystem["ok"])
                     self.assertEqual(filesystem["source_volume"]["health"], health)
+                    self.assertEqual(filesystem["health_status"], "current")
                     self.assertIn(
                         "fs.symlink",
                         {finding["code"] for finding in filesystem["findings"]},
@@ -289,6 +324,7 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
                 bootstrap_vault_source_root="",
             )
             from app import main as main_module
+            from app.services import fs_preflight as fs_preflight_module
 
             for health in (
                 "replaced",
@@ -299,6 +335,7 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
                 "inaccessible",
             ):
                 with self.subTest(health=health):
+                    reset_filesystem_health_cache_for_tests()
                     access = SimpleNamespace(
                         local_operations_allowed=False,
                         cloud_catalog_allowed=True,
@@ -329,7 +366,9 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
                         patch.object(main_module, "vault_local_access", return_value=access),
                         patch.object(Path, "resolve", guarded_resolve),
                         patch("os.path.realpath", side_effect=guarded_realpath),
-                        patch.object(main_module, "check_vault_filesystem") as preflight,
+                        patch.object(
+                            fs_preflight_module, "check_vault_filesystem"
+                        ) as preflight,
                     ):
                         payload = stats(vault=vault)
                     preflight.assert_not_called()
@@ -339,6 +378,7 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
                     self.assertFalse(filesystem["ok"])
                     self.assertEqual(filesystem["source_volume"]["health"], health)
                     self.assertEqual(filesystem["findings"], [])
+                    self.assertEqual(filesystem["health_status"], "current")
 
 
 if __name__ == "__main__":

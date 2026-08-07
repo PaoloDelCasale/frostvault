@@ -34,6 +34,12 @@ _ALLOWED_METRICS = {
     "queue_depth": "gauge",
     "worker_up": "gauge",
     "metadata_backup_last_success_unixtime": "gauge",
+    # Bounded archive-stats / filesystem-health observability (issue #228).
+    "stats_last_duration_seconds": "gauge",
+    "filesystem_health_last_duration_seconds": "gauge",
+    "filesystem_health_findings": "gauge",
+    "filesystem_health_cache_age_seconds": "gauge",
+    "filesystem_health_status": "gauge",
 }
 
 _lock = threading.Lock()
