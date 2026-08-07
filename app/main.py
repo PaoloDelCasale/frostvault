@@ -24,7 +24,7 @@ from fastapi import (
     Response,
 )
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .api_models import JsonObjectResponse, documented_schemas, response_model
@@ -118,6 +118,10 @@ from .services import metrics as metrics_service
 from .services import notifications as notification_service
 from .services import user_administration as user_admin_service
 from .services import worker_errors as worker_error_store
+from .services.catalog_event_stream import (
+    coalesced_catchup_signal,
+    iter_catalog_event_sse,
+)
 from .system_settings import (
     InvalidSystemSetting,
     StaleSystemSettings,
@@ -3444,6 +3448,97 @@ async def start_scan(
         return {**_api_message(request, "api.scan_in_progress")}
     asyncio.create_task(asyncio.to_thread(scan_vault, vault))
     return {**_api_message(request, "api.scan_started", name=vault["name"])}
+
+
+@app.get("/api/catalog/revision", response_model=response_model("CatalogRevisionResponse"))
+def catalog_revision_snapshot(
+    after_revision: int = Query(0, ge=0),
+    vault: dict[str, Any] = Depends(current_vault),
+):
+    """One-shot catch-up for focus/online recovery without holding a stream."""
+    signal = coalesced_catchup_signal(
+        vault_id=int(vault["id"]),
+        after_revision=after_revision,
+    )
+    return {
+        "vault_id": int(signal["vault_id"]),
+        "revision": int(signal["revision"]),
+        "domains": list(signal.get("domains") or []),
+        "has_gap": bool(signal.get("has_gap")),
+        "changed": bool(
+            signal.get("has_gap")
+            or int(signal["revision"]) > after_revision
+        ),
+    }
+
+
+@app.get(
+    "/api/catalog/events",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": (
+                "Server-Sent Events stream of Vault-scoped catalog "
+                "invalidation signals (text/event-stream)"
+            ),
+            "content": {
+                "text/event-stream": {
+                    "schema": {"type": "string"},
+                }
+            },
+        }
+    },
+)
+async def catalog_events_stream(
+    request: Request,
+    after_revision: int = Query(0, ge=0),
+    subscribe: bool = Query(True),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    vault: dict[str, Any] = Depends(current_vault),
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Authenticated SSE stream of coalesced catalog invalidation signals.
+
+    The payload carries only Vault identity, monotonic revision, affected
+    domains, and an optional retention gap flag — never filesystem paths.
+    Pass ``subscribe=false`` for a finite catch-up response used by tests and
+    bounded recovery probes. Open streams observe the durable journal so
+    multi-process writers are visible without client idle polling.
+
+    Documented like ``/metrics`` as a non-JSON success body (SSE text stream);
+    it is excluded from the JsonObjectResponse OpenAPI contract suite.
+    """
+    vault_id = int(vault["id"])
+    user_id = int(user["id"])
+    session = request.state.session
+    session_id = str(session["id"])
+    resume_after = after_revision
+    if last_event_id:
+        try:
+            resume_after = max(resume_after, int(last_event_id))
+        except (TypeError, ValueError):
+            raise HTTPException(422, "Last-Event-ID must be an integer revision") from None
+
+    async def event_generator():
+        async for chunk in iter_catalog_event_sse(
+            vault_id=vault_id,
+            user_id=user_id,
+            session_id=session_id,
+            resume_after=resume_after,
+            subscribe=subscribe,
+            is_disconnected=request.is_disconnected,
+        ):
+            yield chunk
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def queue_jobs(

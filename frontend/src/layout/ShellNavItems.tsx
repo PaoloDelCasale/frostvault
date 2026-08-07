@@ -23,7 +23,6 @@ export function ShellNavItems({
 }: ShellNavItemsProps) {
   const {
     isVaultOwner,
-    canOperate,
     isAdmin,
     locale,
     locales,
@@ -37,7 +36,6 @@ export function ShellNavItems({
     "min-h-11 rounded-[10px] border border-input bg-surface px-3 text-ink";
   const vaultLabel = shellLabel(t, "ui.vault", "Vault");
   const languageLabel = shellLabel(t, "ui.language", "Language");
-  const refreshListLabel = shellLabel(t, "ui.refresh_list", "Refresh list");
   const newVaultLabel = shellLabel(t, "ui.new_vault", "New vault");
   const manageAccessLabel = shellLabel(t, "ui.manage_access", "Manage access");
   const administrationLabel = shellLabel(t, "ui.administration", "Administration");
@@ -98,19 +96,6 @@ export function ShellNavItems({
           }}
         >
           {administrationLabel}
-        </button>
-      ) : null}
-
-      {canOperate ? (
-        <button
-          type="button"
-          className={actionClass}
-          onClick={() => {
-            handlers?.onRefreshList?.();
-            onNavigate?.();
-          }}
-        >
-          {refreshListLabel}
         </button>
       ) : null}
 

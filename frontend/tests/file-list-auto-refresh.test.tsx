@@ -184,17 +184,16 @@ const completedUploadJob: JobsResponse = {
 };
 
 describe("filesRefetchIntervalFromJobs", () => {
-  it("uses the same 1s ↔ 10s cadence as jobs/stats from active Job groups", () => {
-    expect(filesRefetchIntervalFromJobs(undefined)).toBe(IDLE_POLL_MS);
-    expect(filesRefetchIntervalFromJobs({ items: [], groups: [] })).toBe(
-      IDLE_POLL_MS,
-    );
+  it("polls only while Job groups are active and disables idle file polling", () => {
+    expect(filesRefetchIntervalFromJobs(undefined)).toBe(false);
+    expect(filesRefetchIntervalFromJobs({ items: [], groups: [] })).toBe(false);
+    expect(filesRefetchIntervalFromJobs(undefined)).not.toBe(IDLE_POLL_MS);
     expect(countActiveJobGroups(activeUploadJob)).toBe(1);
     expect(filesRefetchIntervalFromJobs(activeUploadJob)).toBe(
       ACTIVE_JOB_POLL_MS,
     );
     expect(countActiveJobGroups(completedUploadJob)).toBe(0);
-    expect(filesRefetchIntervalFromJobs(completedUploadJob)).toBe(IDLE_POLL_MS);
+    expect(filesRefetchIntervalFromJobs(completedUploadJob)).toBe(false);
   });
 });
 

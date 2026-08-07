@@ -26,6 +26,7 @@ export type ArchiveListItem = components["schemas"]["ArchiveListItem"];
 export type ArchiveVersionItem = components["schemas"]["ArchiveVersionItem"];
 export type ArchiveVersionSummary = components["schemas"]["ArchiveVersionSummary"];
 export type AuthMethod = components["schemas"]["AuthMethod"];
+export type CatalogRevisionResponse = components["schemas"]["CatalogRevisionResponse"];
 export type CloudArchiveRequest = components["schemas"]["CloudArchiveRequest"];
 export type CloudDeletionPreview = components["schemas"]["CloudDeletionPreview"];
 export type CloudDeletionPreviewRequest = components["schemas"]["CloudDeletionPreviewRequest"];

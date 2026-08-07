@@ -193,15 +193,20 @@ describe("ArchivePage from /api/stats", () => {
 });
 
 describe("statsRefetchInterval", () => {
-  it("matches the jobs 1s ↔ 10s cadence from active_jobs", () => {
+  it("polls only while Jobs are active and disables idle stats polling", () => {
     expect(
       statsRefetchInterval({ state: { data: undefined } }),
-    ).toBe(IDLE_POLL_MS);
+    ).toBe(false);
     expect(
       statsRefetchInterval({
         state: { data: { ...liveVaultStats, active_jobs: 0 } },
       }),
-    ).toBe(IDLE_POLL_MS);
+    ).toBe(false);
+    expect(
+      statsRefetchInterval({
+        state: { data: { ...liveVaultStats, active_jobs: 0 } },
+      }),
+    ).not.toBe(IDLE_POLL_MS);
     expect(
       statsRefetchInterval({
         state: { data: { ...liveVaultStats, active_jobs: 2 } },

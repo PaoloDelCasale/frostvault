@@ -134,7 +134,16 @@ class MigrateOnStartTests(unittest.TestCase):
                 revision = connection.execute(
                     "SELECT version_num FROM alembic_version"
                 ).fetchone()["version_num"]
+                derived_tables = {
+                    row["name"]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
             self.assertEqual(revision, HEAD_SCHEMA_REVISION)
+            self.assertIn("vault_catalog_revisions", derived_tables)
+            self.assertIn("catalog_events", derived_tables)
+            self.assertNotIn("filesystem_health_snapshots", derived_tables)
 
     def test_stale_schema_uses_backup_then_upgrade(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

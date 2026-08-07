@@ -18,7 +18,6 @@ export type ShellNavHandlers = {
   onNewVault?: () => void;
   onManageAccess?: () => void;
   onAdministration?: () => void;
-  onRefreshList?: () => void;
   onSignOut?: () => void;
   onLocaleChange?: (locale: string) => void;
   onVaultChange?: (vaultId: number) => void;

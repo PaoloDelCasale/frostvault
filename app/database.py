@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import psycopg
 from psycopg.errors import UniqueViolation
@@ -15,7 +16,7 @@ from .services.rclone_runtime import cleanup_runtime_configs
 
 
 INTEGRITY_ERRORS = (UniqueViolation, sqlite3.IntegrityError)
-HEAD_SCHEMA_REVISION = "0035_upload_verification_digest"
+HEAD_SCHEMA_REVISION = "0036_catalog_events"
 _logger = logging.getLogger(__name__)
 
 
@@ -53,33 +54,104 @@ class SQLiteConnection:
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys=ON")
         self.connection.execute("PRAGMA journal_mode=WAL")
+        self._context_active = False
 
     def execute(self, sql: str, params: Any = ()) -> SQLiteResult:
         translated = sql.replace("%s", "?")
         return SQLiteResult(self.connection.execute(translated, tuple(params or ())))
 
+    @property
+    def in_transaction(self) -> bool:
+        return self.connection.in_transaction
+
+    @property
+    def transaction_context_active(self) -> bool:
+        """Whether the surrounding ``with SQLiteConnection`` owns commit."""
+        return self._context_active
+
     def commit(self) -> None:
         self.connection.commit()
+
+    def rollback(self) -> None:
+        self.connection.rollback()
 
     def begin_immediate(self) -> None:
         """Acquire SQLite's database-wide write lock for an atomic operation."""
         self.connection.execute("BEGIN IMMEDIATE")
 
     def __enter__(self) -> "SQLiteConnection":
+        self._context_active = True
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        if exc_type is None:
-            self.connection.commit()
-        else:
-            self.connection.rollback()
-        self.connection.close()
+        try:
+            if exc_type is None:
+                self.connection.commit()
+            else:
+                self.connection.rollback()
+        finally:
+            self._context_active = False
+            self.connection.close()
 
 
 def db() -> Any:
     if settings.db_backend == "sqlite":
         return SQLiteConnection(settings.sqlite_path)
     return psycopg.connect(row_factory=dict_row, connect_timeout=10)
+
+
+def _connection_in_transaction(connection: Any) -> bool:
+    """Return whether ``connection`` already owns an open transaction.
+
+    The application deliberately passes caller-owned connections into deep
+    persistence modules.  A nested helper must not commit or roll back work it
+    did not start, so this small adapter keeps SQLite and psycopg semantics in
+    one place.
+    """
+    value = getattr(connection, "in_transaction", None)
+    if value is not None:
+        return bool(value)
+    raw = getattr(connection, "connection", None)
+    return bool(getattr(raw, "in_transaction", False))
+
+
+@contextmanager
+def transaction(connection: Any, *, immediate: bool = False) -> Iterator[Any]:
+    """Run a caller-compatible transaction without stealing outer ownership.
+
+    ``immediate=True`` takes SQLite's database write lock before the body.  On
+    PostgreSQL the first write obtains the equivalent row/table locks selected
+    by the caller.  The context commits or rolls back only when it opened the
+    transaction itself; callers can therefore compose catalog mutations and
+    their revision/event publication atomically.
+    """
+    owns_transaction = not _connection_in_transaction(connection)
+    context_active = bool(getattr(connection, "transaction_context_active", False))
+    if context_active:
+        # A SQLiteConnection context owns the eventual commit even before its
+        # first DML statement starts sqlite3's transaction flag.
+        owns_transaction = False
+    if not _connection_in_transaction(connection) and immediate:
+        begin_immediate = getattr(connection, "begin_immediate", None)
+        if begin_immediate is not None:
+            begin_immediate()
+        elif getattr(connection, "backend", None) == "sqlite":
+            connection.execute("BEGIN IMMEDIATE")
+    elif (
+        not _connection_in_transaction(connection)
+        and getattr(connection, "backend", None) == "sqlite"
+    ):
+        connection.execute("BEGIN")
+
+    try:
+        yield connection
+    except Exception:
+        if owns_transaction:
+            connection.rollback()
+        raise
+    else:
+        if owns_transaction:
+            connection.commit()
 
 
 def read_schema_revision(connection: Any) -> str | None:

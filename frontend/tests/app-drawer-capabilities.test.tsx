@@ -41,7 +41,7 @@ describe("App drawer capability filtering", () => {
     expect(drawer).toHaveTextContent("Sign out");
   });
 
-  it("shows Refresh list for an operator, not Manage access or Administration", async () => {
+  it("hides Manage access, Administration and Refresh list for an operator", async () => {
     await openDrawer({
       vaultName: "Ops Vault",
       isVaultOwner: false,
@@ -54,27 +54,12 @@ describe("App drawer capability filtering", () => {
     });
 
     const drawer = screen.getByRole("dialog");
-    expect(drawer).toHaveTextContent("Refresh list");
+    expect(drawer).not.toHaveTextContent("Refresh list");
+    expect(drawer).not.toHaveTextContent("Aggiorna elenco");
     expect(drawer).not.toHaveTextContent("Manage access");
     expect(drawer).not.toHaveTextContent("Administration");
-  });
-
-  it("uses the translated Refresh list label for an operator", async () => {
-    await openDrawer(
-      {
-        vaultName: "Ops Vault",
-        isVaultOwner: false,
-        canOperate: true,
-        isAdmin: false,
-        locale: "it",
-        locales: ["it"],
-        vaults: [{ id: 2, slug: "ops", name: "Ops Vault", role: "operator" }],
-        role: "operator",
-      },
-      (key) => (key === "ui.refresh_list" ? "Aggiorna elenco" : key),
-    );
-
-    expect(screen.getByRole("dialog")).toHaveTextContent("Aggiorna elenco");
+    expect(drawer).toHaveTextContent("New vault");
+    expect(drawer).toHaveTextContent("Sign out");
   });
 
   it("hides Manage access, Administration and Refresh list for a viewer", async () => {

@@ -352,7 +352,9 @@ cleanup reruns, and security scanner severity gates.
 Before indexing a terabyte of data:
 
 1. use a test source folder containing two unimportant files;
-2. select **Refresh list**;
+2. wait for the local catalog to pick them up through the filesystem watcher
+   (or trigger an administrative `POST /api/scan` if you need a full
+   reconciliation immediately);
 3. upload one file and confirm that a distinct S3 version exists in the bucket;
 4. confirm the catalog keeps the version unverified until plaintext read-back
    verification completes;
@@ -361,10 +363,16 @@ Before indexing a terabyte of data:
 6. keep `rclone.conf` and the original password in at least two secure places.
 
 The local catalog updates automatically when files under the configured source
-are created, modified, renamed, or deleted. **Refresh list** remains available
-as a forced synchronization of the filesystem and S3 content. Set
+are created, modified, renamed, or deleted. Native filesystem watching is the
+primary mechanism; authenticated browsers receive a Vault-scoped catalog
+revision signal and refresh the archive view without idle polling or a manual
+**Refresh list** action. A low-frequency full scan (`SCAN_INTERVAL_SECONDS`,
+default six hours) remains the reconciliation safety net for missed events,
+startup, and mount-return correctness. Set
 `FILESYSTEM_WATCH_FORCE_POLLING=true` with Docker Desktop on Windows. On a Linux
 server, prefer the native watcher with the value `false`.
+See [docs/catalog-events.md](docs/catalog-events.md) for the SSE journal cost
+model and reconnect semantics.
 
 ## Indicative minimum AWS permissions
 

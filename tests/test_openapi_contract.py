@@ -15,7 +15,14 @@ from app.main import app
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RAW_JSON_EXCEPTIONS = {"/api/admin/metadata-backups/download/{run_id}"}
+# Binary download and SSE streams are non-JSON success bodies with explicit
+# OpenAPI content types (octet-stream / text/event-stream), not JsonObjectResponse.
+RAW_RESPONSE_EXCEPTIONS = {
+    "/api/admin/metadata-backups/download/{run_id}",
+    "/api/catalog/events",
+}
+# Backward-compatible alias used by older call sites in this module.
+RAW_JSON_EXCEPTIONS = RAW_RESPONSE_EXCEPTIONS
 
 
 class OpenApiResponseContractTests(unittest.TestCase):
@@ -70,10 +77,13 @@ class OpenApiResponseContractTests(unittest.TestCase):
             schemas["ArchiveVersionSummary"]["additionalProperties"], False
         )
 
-    def test_raw_download_and_metrics_are_explicit_openapi_exceptions(self) -> None:
+    def test_raw_download_metrics_and_catalog_sse_are_explicit_openapi_exceptions(
+        self,
+    ) -> None:
         paths = app.openapi()["paths"]
         download = paths["/api/admin/metadata-backups/download/{run_id}"]["get"]
         metrics = paths["/metrics"]["get"]
+        catalog_events = paths["/api/catalog/events"]["get"]
         self.assertEqual(
             download["responses"]["200"]["content"]["application/octet-stream"]["schema"],
             {"type": "string", "format": "binary"},
@@ -81,6 +91,16 @@ class OpenApiResponseContractTests(unittest.TestCase):
         self.assertEqual(
             metrics["responses"]["200"]["content"]["text/plain"]["schema"],
             {"type": "string"},
+        )
+        self.assertEqual(
+            catalog_events["responses"]["200"]["content"]["text/event-stream"][
+                "schema"
+            ],
+            {"type": "string"},
+        )
+        self.assertNotIn(
+            "application/json",
+            catalog_events["responses"]["200"].get("content", {}),
         )
 
     def test_storage_estimate_response_documents_atomic_price_book_identity(self) -> None:
@@ -186,9 +206,10 @@ class OpenApiResponseContractTests(unittest.TestCase):
 
     def test_all_api_response_models_are_nonfiltering_contracts(self) -> None:
         for route in app.routes:
-            if not isinstance(route, APIRoute) or route.path in RAW_JSON_EXCEPTIONS:
+            if not isinstance(route, APIRoute) or route.path in RAW_RESPONSE_EXCEPTIONS:
                 continue
             if route.path.startswith("/api/") or route.path in {"/health", "/ready"}:
+                self.assertIsNotNone(route.response_model, route.path)
                 self.assertTrue(
                     issubclass(route.response_model, JsonObjectResponse),
                     route.path,

@@ -29,6 +29,8 @@ from .catalog import ArchiveCatalog
 from .database import db
 from .services import source_layout
 from .services import vault_relocation
+from .services.catalog_event_hub import publish_committed_event
+from .services.catalog_events import record_catalog_revision
 from .i18n import DEFAULT_LOCALE, format_message_params, translate
 from .system_settings import effective_settings
 from .services.rclone_runtime import (
@@ -972,6 +974,7 @@ def _apply_filesystem_changes(
         raise RuntimeError(f"Folder is not available in the container: {root}")
     changed = 0
     event_id = now_iso()
+    published: dict[str, Any] | None = None
     with db() as connection:
         catalog = ArchiveCatalog(connection)
         for _, path_value in sorted(changes, key=lambda item: item[1]):
@@ -1037,6 +1040,17 @@ def _apply_filesystem_changes(
                     observed_at=now_iso(),
                 )
             changed += 1
+        if changed:
+            # One revision per watcher batch — never one event per path.
+            published = record_catalog_revision(
+                connection,
+                vault_id=int(vault["id"]),
+                reason="filesystem_watch",
+                extra_payload={"changed_paths": int(changed)},
+                created_at=event_id,
+            )
+    if published is not None:
+        publish_committed_event(published)
     return changed
 
 
@@ -1719,6 +1733,30 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 result["policy_tags"] = -1
                 result["lifecycle_rules"] = -1
         status["last_scan"] = now_iso()
+        # Full scans are the low-frequency reconciliation net. Publish one
+        # catalog revision so open browsers converge without idle polling.
+        if not result.get("already_running") and not result.get("suspended"):
+            try:
+                with db() as connection:
+                    published = record_catalog_revision(
+                        connection,
+                        vault_id=vault_id,
+                        reason="scan",
+                        extra_payload={
+                            "local": int(result.get("local") or 0),
+                            "cloud": int(result.get("cloud") or 0),
+                        },
+                    )
+                publish_committed_event(published)
+                result["catalog_revision"] = int(published["revision"])
+            except Exception as exc:
+                # Catalog mutation already committed; surface publication failure
+                # without discarding the scan result.
+                status["last_error"] = (
+                    f"Catalog revision publication: {exc}"
+                    if not status.get("last_error")
+                    else status["last_error"]
+                )
         return result
     finally:
         with status_lock:
@@ -5598,13 +5636,20 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
         if current and current["decommission_state"] != "active":
             await asyncio.sleep(1)
             continue
+        # Identity / mount gate first — never resolve() or walk the configured
+        # tree while local operations are fail-closed (replacement, absent,
+        # inaccessible, ambiguous, unsafe alias).
         access = await asyncio.to_thread(
             source_layout.vault_local_access, vault["source_root"]
         )
         if not access.local_operations_allowed:
             await asyncio.sleep(5)
             continue
-        root = Path(vault["source_root"]).resolve()
+        try:
+            root = Path(vault["source_root"]).resolve()
+        except OSError:
+            await asyncio.sleep(5)
+            continue
         if not root.is_dir():
             await asyncio.sleep(5)
             continue

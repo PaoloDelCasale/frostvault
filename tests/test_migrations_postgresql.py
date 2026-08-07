@@ -27,6 +27,7 @@ from app.invites import (
 )
 from app.services import notifications
 from app.services import user_administration
+from app.services.catalog_events import CatalogEventStore
 from app.system_settings import resolve_system_settings, set_system_setting
 
 
@@ -193,6 +194,27 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             column["name"] for column in sa.inspect(self.engine).get_columns("invites")
         }
         self.assertLessEqual({"revoked_at", "revoked_by"}, invite_columns)
+        revision_columns = {
+            column["name"]
+            for column in sa.inspect(self.engine).get_columns(
+                "vault_catalog_revisions"
+            )
+        }
+        event_columns = {
+            column["name"]
+            for column in sa.inspect(self.engine).get_columns("catalog_events")
+        }
+        self.assertEqual(
+            revision_columns,
+            {"vault_id", "revision", "retained_from_revision", "updated_at"},
+        )
+        self.assertEqual(
+            event_columns,
+            {"id", "vault_id", "revision", "domain", "scope", "payload_json", "created_at"},
+        )
+        inspector = sa.inspect(self.engine)
+        self.assertNotIn("filesystem_health_snapshots", inspector.get_table_names())
+        self.assertNotIn("filesystem_health_findings", inspector.get_table_names())
         connect_url = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
         with psycopg.connect(connect_url, row_factory=dict_row) as connection:
             admin_id = connection.execute(
@@ -224,6 +246,43 @@ class PostgreSQLMigrationTests(unittest.TestCase):
 
         upgraded_again = run_alembic()
         self.assertEqual(upgraded_again.returncode, 0, upgraded_again.stderr)
+
+    def test_catalog_state_helpers_commit_and_roll_back_on_postgresql(self) -> None:
+        upgraded = run_alembic()
+        self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO vaults(
+                    id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
+                ) VALUES (2, 'state', 'State', '/source', 'bucket', 'state', 'remote')
+                """
+            )
+            published = CatalogEventStore(connection).mutate_and_publish(
+                2,
+                lambda conn: conn.execute(
+                    "UPDATE vaults SET name='Committed' WHERE id=2"
+                ),
+                domain="files",
+                scope="root",
+                payload={"changed": True},
+            )
+            self.assertEqual(published.event["revision"], 1)
+
+        with self._connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT revision FROM vault_catalog_revisions WHERE vault_id=%s",
+                    (2,),
+                ).fetchone()["revision"],
+                1,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) AS total FROM catalog_events"
+                ).fetchone()["total"],
+                1,
+            )
 
     def test_current_release_data_migrates_without_loss(self) -> None:
         baseline = run_alembic("0001_current_schema")
