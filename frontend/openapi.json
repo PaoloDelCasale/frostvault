@@ -7985,8 +7985,54 @@
     },
     "/api/notifications": {
       "get": {
-        "description": "List in-app notifications for the authenticated user.",
+        "description": "List in-app notifications for the authenticated user.\n\nSupports server-side ``status`` filtering (``unread`` / ``read`` / ``all``)\nand ``before_id`` cursor pagination so older unread items are never hidden\nbehind a mixed newest page (issue #225).",
         "operationId": "list_notifications_api_notifications_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "unread",
+                "read"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -7997,6 +8043,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Notifications"
@@ -8038,6 +8094,25 @@
           }
         },
         "summary": "Mark Notification Read"
+      }
+    },
+    "/api/notifications/read-all": {
+      "post": {
+        "description": "Mark every currently visible unread notification read (issue #225).\n\nServer-authoritative and idempotent; preserves the same membership and\nin-app visibility checks as single-item mark-read.",
+        "operationId": "mark_all_notifications_read_api_notifications_read_all_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonObjectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Mark All Notifications Read"
       }
     },
     "/api/push/config": {

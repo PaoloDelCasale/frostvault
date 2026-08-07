@@ -137,6 +137,53 @@ class OpenApiResponseContractTests(unittest.TestCase):
         )
         self.assertEqual(committed, app.openapi())
 
+    def test_notifications_list_documents_status_before_id_and_limit_query_params(
+        self,
+    ) -> None:
+        operation = app.openapi()["paths"]["/api/notifications"]["get"]
+        parameters = {
+            parameter["name"]: parameter
+            for parameter in operation.get("parameters", [])
+            if parameter.get("in") == "query"
+        }
+        self.assertIn("limit", parameters)
+        self.assertIn("status", parameters)
+        self.assertIn("before_id", parameters)
+
+        limit_schema = parameters["limit"]["schema"]
+        self.assertEqual(limit_schema.get("minimum"), 1)
+        self.assertEqual(limit_schema.get("maximum"), 200)
+        self.assertEqual(limit_schema.get("default"), 50)
+
+        status_schema = parameters["status"]["schema"]
+        status_values = status_schema.get("enum") or status_schema.get("const")
+        if isinstance(status_values, str):
+            status_values = [status_values]
+        self.assertEqual(set(status_values or []), {"all", "unread", "read"})
+        self.assertEqual(status_schema.get("default"), "all")
+
+        before_schema = parameters["before_id"]["schema"]
+        # Optional positive cursor; OpenAPI may wrap nullability as anyOf.
+        def _collect_schemas(node):
+            if not isinstance(node, dict):
+                return
+            yield node
+            for key in ("anyOf", "oneOf", "allOf"):
+                for child in node.get(key) or []:
+                    yield from _collect_schemas(child)
+
+        minima = [
+            schema.get("minimum")
+            for schema in _collect_schemas(before_schema)
+            if schema.get("minimum") is not None
+        ]
+        self.assertIn(1, minima)
+
+        self.assertIn(
+            "/api/notifications/read-all",
+            app.openapi()["paths"],
+        )
+
     def test_all_api_response_models_are_nonfiltering_contracts(self) -> None:
         for route in app.routes:
             if not isinstance(route, APIRoute) or route.path in RAW_JSON_EXCEPTIONS:

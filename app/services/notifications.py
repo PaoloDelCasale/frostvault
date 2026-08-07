@@ -806,21 +806,60 @@ def _visible_notification_predicate(alias: str = "n") -> str:
     """
 
 
+def _normalize_notification_status(status: str | None) -> str:
+    """Accept unread/read/all filters for the in-app inbox (issue #225)."""
+    normalized = (status or "all").strip().lower()
+    if normalized not in {"all", "unread", "read"}:
+        raise ValueError("status must be unread, read, or all")
+    return normalized
+
+
+# Public HTTP pages are capped at 200. Callers may request one extra row
+# (201) as a has_more sentinel without clamping the probe away.
+_MAX_NOTIFICATION_LIST_FETCH = 201
+
+
 def list_in_app_notifications(
     connection: Any,
     *,
     user_id: int,
     limit: int = 50,
     locale: str | None = None,
+    status: str | None = None,
+    before_id: int | None = None,
 ) -> list[dict[str, Any]]:
+    """List visible in-app notifications, optionally filtered and cursor-paged.
+
+    ``status`` selects unread, read, or the mixed newest-first list (``all``).
+    ``before_id`` returns strictly older rows (lower id) for incremental history.
+    ``limit`` accepts up to 201 so HTTP handlers can probe ``has_more`` at the
+    public maximum page size of 200.
+    """
+    clauses = [_visible_notification_predicate()]
+    params: list[Any] = [user_id]
+
+    normalized_status = _normalize_notification_status(status)
+    if normalized_status == "unread":
+        clauses.append("n.read_at IS NULL")
+    elif normalized_status == "read":
+        clauses.append("n.read_at IS NOT NULL")
+
+    if before_id is not None:
+        before = int(before_id)
+        if before < 1:
+            raise ValueError("before_id must be a positive integer")
+        clauses.append("n.id < %s")
+        params.append(before)
+
+    params.append(max(1, min(int(limit), _MAX_NOTIFICATION_LIST_FETCH)))
     rows = connection.execute(
         f"""
         SELECT n.* FROM notifications n
-        WHERE {_visible_notification_predicate()}
+        WHERE {' AND '.join(clauses)}
         ORDER BY n.id DESC
         LIMIT %s
         """,
-        (user_id, max(1, min(int(limit), 200))),
+        tuple(params),
     ).fetchall()
     return [_row_notification(row, locale=locale) for row in rows]
 
@@ -864,6 +903,35 @@ def mark_notification_read(
         (notification_id, user_id),
     ).fetchone()
     return _row_notification(row, locale=locale) if row else None
+
+
+def mark_all_notifications_read(
+    connection: Any,
+    *,
+    user_id: int,
+) -> dict[str, int]:
+    """Mark every currently visible unread notification read (issue #225).
+
+    Idempotent: already-read rows and notifications outside the membership/
+    in-app visibility predicate are left untouched. Returns the number of
+    rows newly stamped plus the authoritative remaining unread count.
+    """
+    stamp = now_iso()
+    update_predicate = _visible_notification_predicate("")
+    result = connection.execute(
+        f"""
+        UPDATE notifications
+        SET read_at=COALESCE(read_at, %s)
+        WHERE {update_predicate}
+          AND read_at IS NULL
+        """,
+        (stamp, user_id),
+    )
+    marked_count = int(getattr(result, "rowcount", 0) or 0)
+    return {
+        "marked_count": marked_count,
+        "unread_count": count_unread_notifications(connection, user_id=user_id),
+    }
 
 
 def _endpoint_config(connection: Any, kind: str) -> dict[str, Any] | None:

@@ -10,7 +10,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import (
@@ -2939,25 +2939,36 @@ def rotate_admin_oidc_secret(
 
 @app.get("/api/notifications", response_model=JsonObjectResponse)
 def list_notifications(
-    request: Request, user: dict[str, Any] = Depends(current_user)
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    limit: int = Query(50, ge=1, le=200),
+    status: Literal["all", "unread", "read"] = Query("all"),
+    before_id: int | None = Query(default=None, ge=1),
 ):
-    """List in-app notifications for the authenticated user."""
-    raw_limit = request.query_params.get("limit", "50")
-    try:
-        limit = int(raw_limit)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(422, "limit must be an integer") from exc
-    if not 1 <= limit <= 200:
-        raise HTTPException(422, "limit must be between 1 and 200")
+    """List in-app notifications for the authenticated user.
+
+    Supports server-side ``status`` filtering (``unread`` / ``read`` / ``all``)
+    and ``before_id`` cursor pagination so older unread items are never hidden
+    behind a mixed newest page (issue #225).
+    """
     locale = _request_locale(request)
     with db() as connection:
-        items = notification_service.list_in_app_notifications(
-            connection, user_id=user["id"], limit=limit, locale=locale
+        # Fetch one extra row (allowed as an internal 201-row sentinel) so the
+        # client can offer bounded "load more" even at limit=200.
+        fetched = notification_service.list_in_app_notifications(
+            connection,
+            user_id=user["id"],
+            limit=limit + 1,
+            locale=locale,
+            status=status,
+            before_id=before_id,
         )
+        has_more = len(fetched) > limit
+        items = fetched[:limit]
         unread_count = notification_service.count_unread_notifications(
             connection, user_id=user["id"]
         )
-    return {"items": items, "unread_count": unread_count}
+    return {"items": items, "unread_count": unread_count, "has_more": has_more}
 
 
 class NotificationReadAction(BaseModel):
@@ -2980,6 +2991,21 @@ def mark_notification_read(
     if item is None:
         raise HTTPException(404, "Notification not found")
     return item
+
+
+@app.post("/api/notifications/read-all", response_model=JsonObjectResponse)
+def mark_all_notifications_read(
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Mark every currently visible unread notification read (issue #225).
+
+    Server-authoritative and idempotent; preserves the same membership and
+    in-app visibility checks as single-item mark-read.
+    """
+    with db() as connection:
+        return notification_service.mark_all_notifications_read(
+            connection, user_id=user["id"]
+        )
 
 
 class PushSubscribeAction(BaseModel):
