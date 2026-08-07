@@ -301,7 +301,11 @@ export function NotificationPreferencesPanel({
                 className="min-h-11 w-full rounded-[10px] border border-input bg-surface px-3 text-ink"
                 value={selectedVaultId > 0 ? selectedVaultId : ""}
                 data-testid="notification-preferences-vault"
+                // POST targets the server-selected Vault; block switches while a
+                // preference mutation is in flight so selection cannot race the save.
+                disabled={preferenceMutation.isPending}
                 onChange={(event) => {
+                  if (preferenceMutation.isPending) return;
                   const id = Number(event.target.value);
                   if (!Number.isNaN(id) && id > 0) onVaultChange?.(id);
                 }}

@@ -40,6 +40,16 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function requestUrl(call: unknown[]): string {
   return String(call[0] ?? "");
 }
@@ -600,5 +610,152 @@ describe("notification preferences surface (#226)", () => {
         catalog["ui.notifications_preferences_vault_mismatch"],
       ),
     ).toBeInTheDocument();
+  });
+
+  it("disables Vault switching while a preference save is in flight and re-enables after settle", async () => {
+    const pendingSave = deferred<Response>();
+    const onVaultChange = vi.fn();
+    const multiVaults = [
+      { id: 9, slug: "test", name: "Test Archive", role: "owner" as const },
+      { id: 12, slug: "other", name: "Other Vault", role: "operator" as const },
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = requestMethod(init);
+      if (url === "/api/vault/notification-preferences" && method === "GET") {
+        return jsonResponse({
+          items: [
+            {
+              id: 1,
+              user_id: 7,
+              vault_id: 9,
+              event: "job_completed",
+              channel: "in_app",
+              enabled: true,
+            },
+          ],
+        });
+      }
+      if (url === "/api/vault/notification-preferences" && method === "POST") {
+        return pendingSave.promise;
+      }
+      throw new Error(`unexpected ${method} ${url}`);
+    });
+
+    const { user, catalog } = renderPreferencesPanel(fetchMock, {
+      currentVaultId: 9,
+      vaults: multiVaults,
+      onVaultChange,
+    });
+    const dialog = await screen.findByRole("dialog", {
+      name: catalog["ui.notifications_preferences_heading"],
+    });
+    const vaultSwitcher = within(dialog).getByRole("combobox", {
+      name: catalog["ui.vault"],
+    });
+    expect(vaultSwitcher).toBeEnabled();
+
+    // Idle multi-Vault switching still works before any save starts.
+    await user.selectOptions(vaultSwitcher, "12");
+    expect(onVaultChange).toHaveBeenCalledWith(12);
+    onVaultChange.mockClear();
+
+    const checkbox = await within(dialog).findByRole("checkbox", {
+      name: "Completed jobs: In-app",
+    });
+    await user.click(checkbox);
+
+    await waitFor(() => {
+      expect(vaultSwitcher).toBeDisabled();
+    });
+    // Disabled switcher must not issue a selection while the POST is pending.
+    await user.selectOptions(vaultSwitcher, "12").catch(() => undefined);
+    expect(onVaultChange).not.toHaveBeenCalled();
+    expect(
+      fetchMock.mock.calls.filter(
+        (call) =>
+          requestUrl(call) === "/api/vault/notification-preferences" &&
+          requestMethod(call[1] as RequestInit | undefined) === "POST",
+      ),
+    ).toHaveLength(1);
+
+    pendingSave.resolve(
+      jsonResponse({
+        id: 1,
+        user_id: 7,
+        vault_id: 9,
+        event: "job_completed",
+        channel: "in_app",
+        enabled: false,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(vaultSwitcher).toBeEnabled();
+    });
+    await user.selectOptions(vaultSwitcher, "12");
+    expect(onVaultChange).toHaveBeenCalledWith(12);
+  });
+
+  it("re-enables Vault switching after a failed preference save", async () => {
+    const pendingSave = deferred<Response>();
+    const onVaultChange = vi.fn();
+    const multiVaults = [
+      { id: 9, slug: "test", name: "Test Archive", role: "owner" as const },
+      { id: 12, slug: "other", name: "Other Vault", role: "operator" as const },
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = requestMethod(init);
+      if (url === "/api/vault/notification-preferences" && method === "GET") {
+        return jsonResponse({
+          items: [
+            {
+              id: 1,
+              user_id: 7,
+              vault_id: 9,
+              event: "job_failed",
+              channel: "push",
+              enabled: true,
+            },
+          ],
+        });
+      }
+      if (url === "/api/vault/notification-preferences" && method === "POST") {
+        return pendingSave.promise;
+      }
+      throw new Error(`unexpected ${method} ${url}`);
+    });
+
+    const { user, catalog } = renderPreferencesPanel(fetchMock, {
+      currentVaultId: 9,
+      vaults: multiVaults,
+      onVaultChange,
+    });
+    const dialog = await screen.findByRole("dialog", {
+      name: catalog["ui.notifications_preferences_heading"],
+    });
+    const vaultSwitcher = within(dialog).getByRole("combobox", {
+      name: catalog["ui.vault"],
+    });
+    const push = await within(dialog).findByRole("checkbox", {
+      name: "Failed jobs: Push",
+    });
+    await user.click(push);
+
+    await waitFor(() => {
+      expect(vaultSwitcher).toBeDisabled();
+    });
+
+    pendingSave.resolve(new Response("nope", { status: 500 }));
+
+    await waitFor(() => {
+      expect(vaultSwitcher).toBeEnabled();
+    });
+    expect(
+      await within(dialog).findByRole("alert"),
+    ).toHaveTextContent(catalog["ui.notifications_preferences_save_failed"]);
+    await user.selectOptions(vaultSwitcher, "12");
+    expect(onVaultChange).toHaveBeenCalledWith(12);
   });
 });
