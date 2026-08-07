@@ -5636,13 +5636,20 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
         if current and current["decommission_state"] != "active":
             await asyncio.sleep(1)
             continue
+        # Identity / mount gate first — never resolve() or walk the configured
+        # tree while local operations are fail-closed (replacement, absent,
+        # inaccessible, ambiguous, unsafe alias).
         access = await asyncio.to_thread(
             source_layout.vault_local_access, vault["source_root"]
         )
         if not access.local_operations_allowed:
             await asyncio.sleep(5)
             continue
-        root = Path(vault["source_root"]).resolve()
+        try:
+            root = Path(vault["source_root"]).resolve()
+        except OSError:
+            await asyncio.sleep(5)
+            continue
         if not root.is_dir():
             await asyncio.sleep(5)
             continue

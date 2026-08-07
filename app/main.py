@@ -3472,7 +3472,23 @@ def catalog_revision_snapshot(
     }
 
 
-@app.get("/api/catalog/events")
+@app.get(
+    "/api/catalog/events",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": (
+                "Server-Sent Events stream of Vault-scoped catalog "
+                "invalidation signals (text/event-stream)"
+            ),
+            "content": {
+                "text/event-stream": {
+                    "schema": {"type": "string"},
+                }
+            },
+        }
+    },
+)
 async def catalog_events_stream(
     request: Request,
     after_revision: int = Query(0, ge=0),
@@ -3488,6 +3504,9 @@ async def catalog_events_stream(
     Pass ``subscribe=false`` for a finite catch-up response used by tests and
     bounded recovery probes. Open streams observe the durable journal so
     multi-process writers are visible without client idle polling.
+
+    Documented like ``/metrics`` as a non-JSON success body (SSE text stream);
+    it is excluded from the JsonObjectResponse OpenAPI contract suite.
     """
     vault_id = int(vault["id"])
     user_id = int(user["id"])

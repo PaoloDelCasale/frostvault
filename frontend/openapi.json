@@ -7213,7 +7213,7 @@
     },
     "/api/catalog/events": {
       "get": {
-        "description": "Authenticated SSE stream of coalesced catalog invalidation signals.\n\nThe payload carries only Vault identity, monotonic revision, affected\ndomains, and an optional retention gap flag \u2014 never filesystem paths.\nPass ``subscribe=false`` for a finite catch-up response used by tests and\nbounded recovery probes.",
+        "description": "Authenticated SSE stream of coalesced catalog invalidation signals.\n\nThe payload carries only Vault identity, monotonic revision, affected\ndomains, and an optional retention gap flag \u2014 never filesystem paths.\nPass ``subscribe=false`` for a finite catch-up response used by tests and\nbounded recovery probes. Open streams observe the durable journal so\nmulti-process writers are visible without client idle polling.\n\nDocumented like ``/metrics`` as a non-JSON success body (SSE text stream);\nit is excluded from the JsonObjectResponse OpenAPI contract suite.",
         "operationId": "catalog_events_stream_api_catalog_events_get",
         "parameters": [
           {
@@ -7257,11 +7257,13 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
-                "schema": {}
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
               }
             },
-            "description": "Successful Response"
+            "description": "Server-Sent Events stream of Vault-scoped catalog invalidation signals (text/event-stream)"
           },
           "422": {
             "content": {

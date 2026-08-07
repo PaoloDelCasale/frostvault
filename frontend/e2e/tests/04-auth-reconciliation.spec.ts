@@ -60,10 +60,14 @@ async function assertNoPriorAuthenticatedShell(
     /manage access/i,
     /administration/i,
     /refresh list/i,
+    /aggiorna elenco/i,
     /^sign out$/i,
   ]) {
     await expect(page.getByRole("button", { name })).toHaveCount(0);
   }
+  // Manual Refresh list was removed (#227); catalog updates are event-driven.
+  await expect(page.getByText(/refresh list/i)).toHaveCount(0);
+  await expect(page.getByText(/aggiorna elenco/i)).toHaveCount(0);
   await expect(page.getByTestId("file-browser")).toHaveCount(0);
 }
 
@@ -82,6 +86,10 @@ test.describe("auth reconciliation shell safety", () => {
     await expect(
       page.getByRole("heading", { name: priorVaultName, exact: true }),
     ).toBeVisible();
+    // Ordinary archive chrome must not expose the retired manual refresh action.
+    await expect(
+      page.getByRole("button", { name: /refresh list|aggiorna elenco/i }),
+    ).toHaveCount(0);
 
     const mainContent = await page.locator("#main-content").elementHandle();
     await assertFirstFocusableIsSkipLink(page);
@@ -99,15 +107,18 @@ test.describe("auth reconciliation shell safety", () => {
       };
     });
 
-    const refreshNoticeText = `Controlled refresh notice (${testInfo.project.name})`;
-    await page.route("**/api/scan", async (route) => {
+    // Catalog discovery is event-driven (#227). Hold the SSE subscription so
+    // the SPA remains on the archive surface while authority is revoked, without
+    // a manual Refresh list click or /api/scan toast.
+    await page.route("**/api/catalog/events**", async (route) => {
       await route.fulfill({
-        status: 202,
-        contentType: "application/json",
-        body: JSON.stringify({
-          message: refreshNoticeText,
-          message_key: "api.scan_started",
-        }),
+        status: 200,
+        contentType: "text/event-stream",
+        body: `event: hello\ndata: {"vault_id":1,"revision":0}\n\n`,
+        headers: {
+          "Cache-Control": "no-store",
+          Connection: "keep-alive",
+        },
       });
     });
 
@@ -116,25 +127,9 @@ test.describe("auth reconciliation shell safety", () => {
       if (testInfo.project.name === "mobile-375") {
         await page.getByRole("button", { name: /open navigation/i }).click();
         await expect(page.getByRole("dialog")).toBeVisible();
-      }
-
-      const refreshButton = page.getByRole("button", { name: /refresh list/i });
-      await expect(refreshButton).toBeVisible();
-      await refreshButton.click();
-      const refreshToast = page
-        .getByRole("status")
-        .filter({ hasText: refreshNoticeText });
-      await expect(refreshToast).toBeVisible();
-
-      if (testInfo.project.name === "mobile-375") {
-        // The toast overlays the compact header, so use only the real drawer
-        // trigger to reopen the dialog before the Worker changes authority.
-        const openNavigation = page.getByRole("button", {
-          name: /open navigation/i,
-        });
-        await openNavigation.focus();
-        await page.keyboard.press("Enter");
-        await expect(page.getByRole("dialog")).toBeVisible();
+        await expect(
+          page.getByRole("button", { name: /refresh list|aggiorna elenco/i }),
+        ).toHaveCount(0);
       }
 
       // Use a real same-origin Worker client without mounting another App.
@@ -174,10 +169,6 @@ test.describe("auth reconciliation shell safety", () => {
 
       await authorityRequested;
       await expect(page.getByRole("dialog")).toBeHidden();
-      await expect(refreshToast).toHaveCount(0);
-      await expect(
-        page.getByText(refreshNoticeText, { exact: true }),
-      ).toHaveCount(0);
       await assertNoPriorAuthenticatedShell(page, priorVaultName);
       await assertLandmarkIsStable(page, mainContent);
       await assertFirstFocusableIsSkipLink(page);
@@ -193,10 +184,13 @@ test.describe("auth reconciliation shell safety", () => {
         page.getByText(expectedFileName).locator("visible=true").first(),
       ).toBeVisible();
       await assertFirstFocusableIsSkipLink(page);
+      await expect(
+        page.getByRole("button", { name: /refresh list|aggiorna elenco/i }),
+      ).toHaveCount(0);
     } finally {
       releaseAuthority();
       await page.unroute("**/api/me");
-      await page.unroute("**/api/scan");
+      await page.unroute("**/api/catalog/events**");
       await initiator?.close();
     }
   });

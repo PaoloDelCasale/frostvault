@@ -806,7 +806,11 @@ export interface paths {
          *     The payload carries only Vault identity, monotonic revision, affected
          *     domains, and an optional retention gap flag — never filesystem paths.
          *     Pass ``subscribe=false`` for a finite catch-up response used by tests and
-         *     bounded recovery probes.
+         *     bounded recovery probes. Open streams observe the durable journal so
+         *     multi-process writers are visible without client idle polling.
+         *
+         *     Documented like ``/metrics`` as a non-JSON success body (SSE text stream);
+         *     it is excluded from the JsonObjectResponse OpenAPI contract suite.
          */
         get: operations["catalog_events_stream_api_catalog_events_get"];
         put?: never;
@@ -5359,13 +5363,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Server-Sent Events stream of Vault-scoped catalog invalidation signals (text/event-stream) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "text/event-stream": string;
                 };
             };
             /** @description Validation Error */
