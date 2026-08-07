@@ -150,6 +150,12 @@ export function notificationsQueryOptions(
   };
 }
 
+/**
+ * Preference query ownership lives with the dedicated preferences surface
+ * (#226). Inbox consumers must not enable this key when the bell opens.
+ * The key is vault-scoped even though the HTTP route uses the server-selected
+ * active Vault, so cache entries cannot cross Vault switches silently.
+ */
 export function notificationPreferencesQueryOptions(vaultId: number) {
   return {
     queryKey: apiQueryKeys.notificationPreferences(vaultId),
