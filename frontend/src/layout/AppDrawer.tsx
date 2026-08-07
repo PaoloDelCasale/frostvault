@@ -17,6 +17,11 @@ type AppDrawerProps = {
   trigger: ReactNode;
 };
 
+/**
+ * Mobile Vault navigation drawer. Mirrors the desktop primary Vault controls
+ * (switcher + owner Manage access). Secondary destinations stay in the account
+ * menu so desktop and mobile share the same information architecture.
+ */
 export function AppDrawer({
   open,
   onOpenChange,
@@ -75,6 +80,7 @@ export function AppDrawer({
               capabilities={capabilities}
               handlers={handlers}
               t={t}
+              density="stacked"
               onNavigate={() => onOpenChange(false)}
             />
           </nav>
