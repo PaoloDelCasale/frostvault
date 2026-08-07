@@ -1,4 +1,4 @@
-import { useContext, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 
 import { Dialog } from "@/components/Dialog";
 import { ThemeControl } from "@/components/ThemeControl";
@@ -111,6 +111,16 @@ export function AccountPreferencesMenu({
   const t = tProp ?? i18n?.t ?? ((key: string) => key);
   const fallback = locale === "it" ? FALLBACK_LABELS.it : FALLBACK_LABELS.en;
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const wasOpenRef = useRef(false);
+
+  // Controlled Dialog (no Radix Trigger): restore focus like NotificationCenter.
+  useEffect(() => {
+    if (wasOpenRef.current && !open) {
+      triggerRef.current?.focus();
+    }
+    wasOpenRef.current = open;
+  }, [open]);
 
   const shellSecondary = Boolean(handlers);
   const availableLocales = locales ?? i18n?.locales ?? ["en", "it"];
@@ -170,6 +180,7 @@ export function AccountPreferencesMenu({
   return (
     <>
       <Button
+        ref={triggerRef}
         type="button"
         variant="secondary"
         className={cn("min-h-11", className)}
