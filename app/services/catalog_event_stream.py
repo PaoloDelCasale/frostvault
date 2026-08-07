@@ -1,9 +1,27 @@
 """Authenticated catalog invalidation stream (SSE) seam.
 
-The durable ``catalog_events`` journal is the multi-process source of truth.
-In-process hub fan-out is an optional fast path; every open stream also observes
-the journal on a bounded cadence so revisions committed by another worker
-reach live subscribers without client reconnect or idle polling.
+Architecture and cost
+=====================
+
+The durable ``catalog_events`` / ``vault_catalog_revisions`` journal is the
+multi-process source of truth.  The in-process hub is **wake-up only**: every
+advance of the client high-water mark is computed by re-reading the journal
+from ``last_seen``, never by trusting a hub payload alone.
+
+Each open stream performs one short-lived tick on a bounded cadence
+(``DURABLE_POLL_SECONDS``, default 2s).  A hub notification only short-circuits
+the wait; the tick still runs the same single-connection snapshot.
+
+**Per tick, one DB connection, three short statements (no long transaction):**
+
+1. Session + user + membership authorization (single JOIN).
+2. Vault catalog high-water / retention markers.
+3. At most ``MAX_CATCHUP_EVENTS + 1`` journal rows after ``last_seen``.
+
+If the backlog exceeds the bound (``has_more``), the tick emits one coalesced
+``has_gap`` / invalidate-all signal at the high-water revision instead of
+paging the whole journal.  Connections are opened and closed per tick; nothing
+is held across awaits.
 """
 from __future__ import annotations
 
@@ -11,8 +29,9 @@ import asyncio
 import contextlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from ..database import db
 from .catalog_event_hub import (
@@ -21,10 +40,38 @@ from .catalog_event_hub import (
     normalize_invalidate_domains,
     signal_from_event,
 )
-from .catalog_events import CatalogEventStore
+from .catalog_events import MAX_EVENT_PAGE_SIZE
 
 
-DURABLE_POLL_SECONDS = 1.0
+# Wake / multi-process observation cadence.  One consolidated snapshot per tick.
+DURABLE_POLL_SECONDS = 2.0
+
+# Hard cap on journal rows materialized per catch-up.  Larger backlogs become a
+# single has_gap invalidate-all at the high-water revision.
+MAX_CATCHUP_EVENTS = min(64, MAX_EVENT_PAGE_SIZE)
+
+StreamErrorCode = Literal[
+    "session_revoked",
+    "session_expired",
+    "session_version_mismatch",
+    "user_disabled",
+    "vault_access_revoked",
+    "vault_switched",
+]
+
+
+@dataclass(frozen=True)
+class StreamTickSnapshot:
+    """Result of one authorization + journal observation tick."""
+
+    ok: bool
+    error: StreamErrorCode | None = None
+    session_vault_id: int | None = None
+    signal: dict[str, Any] | None = None
+    # Observability for tests/operators — not part of the wire contract.
+    statement_count: int = 0
+    events_read: int = 0
+    backlog_truncated: bool = False
 
 
 def catalog_event_sse_frame(
@@ -43,6 +90,304 @@ def catalog_event_sse_frame(
     return "\n".join(lines)
 
 
+def _parse_iso(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _invalidate_all_signal(*, vault_id: int, revision: int) -> dict[str, Any]:
+    return {
+        "vault_id": vault_id,
+        "revision": int(revision),
+        "domains": normalize_invalidate_domains(None),
+        "has_gap": True,
+    }
+
+
+def coalesced_catchup_from_connection(
+    connection: Any,
+    *,
+    vault_id: int,
+    after_revision: int,
+    max_events: int = MAX_CATCHUP_EVENTS,
+    statement_counter: list[int] | None = None,
+) -> tuple[dict[str, Any], int, bool]:
+    """Bounded journal catch-up on an already-open connection.
+
+    Returns ``(signal, events_read, backlog_truncated)``.
+    Never loops pages: one high-water read + one bounded event page.
+    """
+    max_events = max(1, min(int(max_events), MAX_EVENT_PAGE_SIZE))
+
+    def _count() -> None:
+        if statement_counter is not None:
+            statement_counter[0] += 1
+
+    _count()
+    state = connection.execute(
+        """
+        SELECT revision, retained_from_revision
+        FROM vault_catalog_revisions
+        WHERE vault_id=%s
+        """,
+        (vault_id,),
+    ).fetchone()
+    current = int(state["revision"]) if state else 0
+    retained_from = int(state["retained_from_revision"]) if state else 1
+
+    if after_revision >= current and after_revision >= retained_from - 1:
+        return (
+            {
+                "vault_id": vault_id,
+                "revision": current,
+                "domains": [],
+                "has_gap": False,
+            },
+            0,
+            False,
+        )
+
+    # Retention gap or cursor behind retained history → full invalidate.
+    if after_revision < retained_from - 1:
+        return _invalidate_all_signal(vault_id=vault_id, revision=current), 0, True
+
+    _count()
+    rows = connection.execute(
+        """
+        SELECT id, vault_id, revision, domain, scope, payload_json, created_at
+        FROM catalog_events
+        WHERE vault_id=%s AND revision>%s
+        ORDER BY revision
+        LIMIT %s
+        """,
+        (vault_id, after_revision, max_events + 1),
+    ).fetchall()
+    has_more = len(rows) > max_events
+    visible = rows[:max_events]
+    events_read = len(visible)
+
+    if not visible:
+        if after_revision < current:
+            # Missing retained events → treat as gap, do not silently advance.
+            return (
+                _invalidate_all_signal(vault_id=vault_id, revision=current),
+                0,
+                True,
+            )
+        return (
+            {
+                "vault_id": vault_id,
+                "revision": current,
+                "domains": [],
+                "has_gap": False,
+            },
+            0,
+            False,
+        )
+
+    expected = max(after_revision + 1, retained_from)
+    if int(visible[0]["revision"]) > expected:
+        return (
+            _invalidate_all_signal(vault_id=vault_id, revision=current),
+            events_read,
+            True,
+        )
+
+    if has_more:
+        # Bound exceeded: do not page.  Client converges via invalidate-all.
+        return (
+            _invalidate_all_signal(vault_id=vault_id, revision=current),
+            events_read,
+            True,
+        )
+
+    decoded: list[dict[str, Any]] = []
+    for row in visible:
+        payload_raw = row["payload_json"]
+        if isinstance(payload_raw, dict):
+            payload = payload_raw
+        else:
+            try:
+                payload = json.loads(payload_raw or "{}")
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+        decoded.append(
+            signal_from_event(
+                {
+                    "vault_id": row["vault_id"],
+                    "revision": int(row["revision"]),
+                    "domain": row["domain"],
+                    "scope": row["scope"],
+                    "payload": payload,
+                    "created_at": row["created_at"],
+                    "has_gap": False,
+                }
+            )
+        )
+    merged = coalesce_signals(*decoded)
+    if merged is None:
+        return (
+            {
+                "vault_id": vault_id,
+                "revision": current,
+                "domains": [],
+                "has_gap": False,
+            },
+            events_read,
+            False,
+        )
+    # Fully consumed bounded page: high-water is the newest visible revision.
+    merged["has_gap"] = bool(merged.get("has_gap"))
+    return merged, events_read, False
+
+
+def stream_tick_snapshot(
+    *,
+    session_id: str,
+    user_id: int,
+    vault_id: int,
+    after_revision: int,
+    max_events: int = MAX_CATCHUP_EVENTS,
+    now: datetime | None = None,
+) -> StreamTickSnapshot:
+    """Authorize the stream and observe the journal on **one** short connection.
+
+    Cost: one connection, three statements (auth JOIN + high-water + bounded
+    event page).  No transaction is held across awaits — the caller closes the
+    connection before sleeping or yielding.
+    """
+    vault_id = int(vault_id)
+    user_id = int(user_id)
+    after_revision = max(0, int(after_revision))
+    stamp = now or datetime.now(timezone.utc)
+    statements = [0]
+
+    with db() as connection:
+        statements[0] += 1
+        row = connection.execute(
+            """
+            SELECT s.vault_id AS session_vault_id,
+                   s.revoked_at AS revoked_at,
+                   s.idle_expires_at AS idle_expires_at,
+                   s.absolute_expires_at AS absolute_expires_at,
+                   s.session_version AS session_session_version,
+                   u.session_version AS user_session_version,
+                   u.active AS user_active,
+                   CASE
+                     WHEN vm.user_id IS NOT NULL AND v.id IS NOT NULL THEN 1
+                     ELSE 0
+                   END AS has_membership
+            FROM sessions s
+            JOIN users u ON u.id = s.user_id
+            LEFT JOIN vault_members vm
+              ON vm.user_id = s.user_id
+             AND vm.vault_id = %s
+            LEFT JOIN vaults v
+              ON v.id = vm.vault_id
+             AND v.enabled = TRUE
+             AND v.decommission_state = 'active'
+            WHERE s.id = %s AND s.user_id = %s
+            """,
+            (vault_id, session_id, user_id),
+        ).fetchone()
+
+        if row is None:
+            return StreamTickSnapshot(
+                ok=False,
+                error="session_revoked",
+                statement_count=statements[0],
+            )
+        if row["revoked_at"]:
+            return StreamTickSnapshot(
+                ok=False,
+                error="session_revoked",
+                statement_count=statements[0],
+            )
+        if not row["user_active"]:
+            return StreamTickSnapshot(
+                ok=False,
+                error="user_disabled",
+                statement_count=statements[0],
+            )
+        if row["session_session_version"] != row["user_session_version"]:
+            return StreamTickSnapshot(
+                ok=False,
+                error="session_version_mismatch",
+                statement_count=statements[0],
+            )
+
+        absolute = _parse_iso(row["absolute_expires_at"])
+        idle = _parse_iso(row["idle_expires_at"])
+        if absolute is None or idle is None or stamp >= absolute or stamp >= idle:
+            return StreamTickSnapshot(
+                ok=False,
+                error="session_expired",
+                statement_count=statements[0],
+            )
+
+        session_vault_id = (
+            int(row["session_vault_id"])
+            if row["session_vault_id"] is not None
+            else None
+        )
+        if session_vault_id is None or session_vault_id != vault_id:
+            return StreamTickSnapshot(
+                ok=False,
+                error="vault_switched",
+                session_vault_id=session_vault_id,
+                statement_count=statements[0],
+            )
+
+        # Membership against the subscribed vault (fail closed).
+        if not int(row["has_membership"] or 0):
+            return StreamTickSnapshot(
+                ok=False,
+                error="vault_access_revoked",
+                session_vault_id=session_vault_id,
+                statement_count=statements[0],
+            )
+
+        signal, events_read, truncated = coalesced_catchup_from_connection(
+            connection,
+            vault_id=vault_id,
+            after_revision=after_revision,
+            max_events=max_events,
+            statement_counter=statements,
+        )
+        return StreamTickSnapshot(
+            ok=True,
+            session_vault_id=session_vault_id,
+            signal=signal,
+            statement_count=statements[0],
+            events_read=events_read,
+            backlog_truncated=truncated,
+        )
+
+
+def coalesced_catchup_signal(
+    *,
+    vault_id: int,
+    after_revision: int,
+    max_events: int = MAX_CATCHUP_EVENTS,
+) -> dict[str, Any]:
+    """Public catch-up helper (hello / one-shot revision endpoint)."""
+    with db() as connection:
+        signal, _events_read, _truncated = coalesced_catchup_from_connection(
+            connection,
+            vault_id=int(vault_id),
+            after_revision=max(0, int(after_revision)),
+            max_events=max_events,
+        )
+    return signal
+
+
+# Backward-compatible names used by older tests/callers.
 def user_can_access_vault(user_id: int, vault_id: int) -> bool:
     with db() as connection:
         row = connection.execute(
@@ -60,11 +405,7 @@ def user_can_access_vault(user_id: int, vault_id: int) -> bool:
 
 
 def session_stream_state(session_id: str) -> dict[str, Any] | None:
-    """Return live session vault scope, or None when revoked/expired/invalid.
-
-    Read-only: does not slide idle expiry. Long-lived streams must still end when
-    the Session is revoked or its absolute/idle deadlines elapse.
-    """
+    """Return live session vault scope, or None when invalid (compat helper)."""
     with db() as connection:
         row = connection.execute(
             """
@@ -81,78 +422,26 @@ def session_stream_state(session_id: str) -> dict[str, Any] | None:
             """,
             (session_id,),
         ).fetchone()
-    if row is None:
-        return None
-    if row["revoked_at"] or not row["user_active"]:
+    if row is None or row["revoked_at"] or not row["user_active"]:
         return None
     if row["session_session_version"] != row["user_session_version"]:
         return None
     now = datetime.now(timezone.utc)
-
-    def _parse(value: str) -> datetime:
-        return datetime.fromisoformat(str(value))
-
-    try:
-        if now >= _parse(row["absolute_expires_at"]) or now >= _parse(
-            row["idle_expires_at"]
-        ):
-            return None
-    except (TypeError, ValueError):
+    absolute = _parse_iso(row["absolute_expires_at"])
+    idle = _parse_iso(row["idle_expires_at"])
+    if absolute is None or idle is None or now >= absolute or now >= idle:
         return None
     vault_id = row["vault_id"]
-    return {
-        "vault_id": int(vault_id) if vault_id is not None else None,
-    }
-
-
-def coalesced_catchup_signal(
-    *,
-    vault_id: int,
-    after_revision: int,
-) -> dict[str, Any]:
-    """Build one catch-up signal from durable events, never one frame per row."""
-    with db() as connection:
-        page = CatalogEventStore(connection).read_events(
-            vault_id=vault_id,
-            after_revision=after_revision,
-            limit=100,
-        )
-        current = int(page["current_revision"])
-        if page["has_gap"]:
-            return {
-                "vault_id": vault_id,
-                "revision": current,
-                "domains": normalize_invalidate_domains(None),
-                "has_gap": True,
-            }
-        signals = [signal_from_event(event) for event in page["events"]]
-        while page["has_more"]:
-            last_revision = int(page["events"][-1]["revision"])
-            page = CatalogEventStore(connection).read_events(
-                vault_id=vault_id,
-                after_revision=last_revision,
-                limit=100,
-            )
-            signals.extend(signal_from_event(event) for event in page["events"])
-            if page["has_gap"]:
-                return {
-                    "vault_id": vault_id,
-                    "revision": int(page["current_revision"]),
-                    "domains": normalize_invalidate_domains(None),
-                    "has_gap": True,
-                }
-    merged = coalesce_signals(*signals)
-    if merged is None:
-        return {
-            "vault_id": vault_id,
-            "revision": current,
-            "domains": [],
-            "has_gap": False,
-        }
-    return merged
+    return {"vault_id": int(vault_id) if vault_id is not None else None}
 
 
 DisconnectProbe = Callable[[], Awaitable[bool]]
+
+
+def _error_frame(code: StreamErrorCode, vault_id: int, **extra: Any) -> str:
+    payload: dict[str, Any] = {"error": code, "vault_id": vault_id}
+    payload.update(extra)
+    return catalog_event_sse_frame("error", payload)
 
 
 async def iter_catalog_event_sse(
@@ -165,44 +454,62 @@ async def iter_catalog_event_sse(
     is_disconnected: DisconnectProbe | None = None,
     durable_poll_seconds: float = DURABLE_POLL_SECONDS,
     use_hub: bool = True,
+    max_events: int = MAX_CATCHUP_EVENTS,
 ) -> AsyncIterator[str]:
     """Yield SSE frames for one authorized catalog subscription.
 
-    ``use_hub=False`` forces durable-journal observation only (multi-process and
-    test seam). When the hub is enabled it remains a fast path, but the journal
-    is still observed on every wait timeout.
+    Hub notifications only wake the wait loop.  Advancement always comes from
+    ``stream_tick_snapshot`` journal observation starting at ``last_seen``.
     """
+    vault_id = int(vault_id)
+    user_id = int(user_id)
     subscriber = None
     if subscribe and use_hub:
         subscriber = catalog_event_hub.subscribe(vault_id)
     try:
-        hello = await asyncio.to_thread(
-            coalesced_catchup_signal,
+        initial = await asyncio.to_thread(
+            stream_tick_snapshot,
+            session_id=session_id,
+            user_id=user_id,
             vault_id=vault_id,
             after_revision=resume_after,
+            max_events=max_events,
         )
+        if not initial.ok:
+            code = initial.error or "session_revoked"
+            yield _error_frame(
+                code,
+                vault_id,
+                current_vault_id=initial.session_vault_id,
+            )
+            return
+
+        hello_revision = int((initial.signal or {}).get("revision") or 0)
         yield catalog_event_sse_frame(
             "hello",
-            {
-                "vault_id": vault_id,
-                "revision": int(hello["revision"]),
-            },
-            event_id=str(int(hello["revision"])) if int(hello["revision"]) > 0 else None,
+            {"vault_id": vault_id, "revision": hello_revision},
+            event_id=str(hello_revision) if hello_revision > 0 else None,
         )
-        if int(hello["revision"]) > resume_after or hello.get("has_gap"):
+
+        last_seen = resume_after
+        signal = initial.signal or {
+            "vault_id": vault_id,
+            "revision": hello_revision,
+            "domains": [],
+            "has_gap": False,
+        }
+        if int(signal["revision"]) > resume_after or signal.get("has_gap"):
             yield catalog_event_sse_frame(
                 "catalog",
                 {
-                    "vault_id": int(hello["vault_id"]),
-                    "revision": int(hello["revision"]),
-                    "domains": list(hello.get("domains") or []),
-                    "has_gap": bool(hello.get("has_gap")),
+                    "vault_id": int(signal["vault_id"]),
+                    "revision": int(signal["revision"]),
+                    "domains": list(signal.get("domains") or []),
+                    "has_gap": bool(signal.get("has_gap")),
                 },
-                event_id=str(int(hello["revision"])),
+                event_id=str(int(signal["revision"])),
             )
-            last_seen = int(hello["revision"])
-        else:
-            last_seen = resume_after
+            last_seen = max(last_seen, int(signal["revision"]))
 
         if not subscribe:
             return
@@ -211,33 +518,7 @@ async def iter_catalog_event_sse(
             if is_disconnected is not None and await is_disconnected():
                 break
 
-            if not await asyncio.to_thread(user_can_access_vault, user_id, vault_id):
-                yield catalog_event_sse_frame(
-                    "error",
-                    {"error": "vault_access_revoked", "vault_id": vault_id},
-                )
-                break
-
-            session_state = await asyncio.to_thread(session_stream_state, session_id)
-            if session_state is None:
-                yield catalog_event_sse_frame(
-                    "error",
-                    {"error": "session_revoked", "vault_id": vault_id},
-                )
-                break
-            current_session_vault = session_state.get("vault_id")
-            if current_session_vault is None or int(current_session_vault) != vault_id:
-                yield catalog_event_sse_frame(
-                    "error",
-                    {
-                        "error": "vault_switched",
-                        "vault_id": vault_id,
-                        "current_vault_id": current_session_vault,
-                    },
-                )
-                break
-
-            signal: dict[str, Any] | None = None
+            # Hub is wake-up only: wait for notification or cadence timeout.
             if subscriber is not None:
                 get_task = asyncio.create_task(subscriber.queue.get())
                 try:
@@ -245,7 +526,12 @@ async def iter_catalog_event_sse(
                         {get_task}, timeout=durable_poll_seconds
                     )
                     if done:
-                        signal = get_task.result()
+                        # Drain/coalesce wake-ups; ignore payload content.
+                        while True:
+                            try:
+                                subscriber.queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
                     else:
                         get_task.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
@@ -258,24 +544,38 @@ async def iter_catalog_event_sse(
             else:
                 await asyncio.sleep(durable_poll_seconds)
 
-            if signal is None:
-                # Multi-process path: observe durable journal even without hub.
-                durable = await asyncio.to_thread(
-                    coalesced_catchup_signal,
-                    vault_id=vault_id,
-                    after_revision=last_seen,
-                )
-                if int(durable["revision"]) > last_seen or durable.get("has_gap"):
-                    signal = durable
-                else:
-                    yield ": keepalive\n\n"
-                    continue
-
-            if signal is None:
+            if is_disconnected is not None and await is_disconnected():
                 break
+
+            tick = await asyncio.to_thread(
+                stream_tick_snapshot,
+                session_id=session_id,
+                user_id=user_id,
+                vault_id=vault_id,
+                after_revision=last_seen,
+                max_events=max_events,
+            )
+            if not tick.ok:
+                code = tick.error or "session_revoked"
+                yield _error_frame(
+                    code,
+                    vault_id,
+                    current_vault_id=tick.session_vault_id,
+                )
+                break
+
+            signal = tick.signal or {
+                "vault_id": vault_id,
+                "revision": last_seen,
+                "domains": [],
+                "has_gap": False,
+            }
             revision = int(signal["revision"])
             if revision <= last_seen and not signal.get("has_gap"):
+                yield ": keepalive\n\n"
                 continue
+
+            # Dedupe: never emit a non-gap frame at or behind last_seen.
             last_seen = max(last_seen, revision)
             yield catalog_event_sse_frame(
                 "catalog",

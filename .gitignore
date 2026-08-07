@@ -21,6 +21,7 @@ local-data/
 __pycache__/
 *.pyc
 .venv/
+**/node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/e2e/.runtime/

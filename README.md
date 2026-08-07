@@ -371,6 +371,8 @@ default six hours) remains the reconciliation safety net for missed events,
 startup, and mount-return correctness. Set
 `FILESYSTEM_WATCH_FORCE_POLLING=true` with Docker Desktop on Windows. On a Linux
 server, prefer the native watcher with the value `false`.
+See [docs/catalog-events.md](docs/catalog-events.md) for the SSE journal cost
+model and reconnect semantics.
 
 ## Indicative minimum AWS permissions
 
