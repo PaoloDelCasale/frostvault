@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 
 import { createAppQueryClient } from "@/api";
+import { AccountPreferencesMenu } from "@/components/AccountPreferencesMenu";
 import { Button } from "@/components/ui/button";
 import { NotificationCenter } from "@/components/NotificationCenter";
 
@@ -91,6 +92,11 @@ export function AppShell({
                 locale={capabilities.locale}
                 t={t}
                 queryClient={queryClient}
+              />
+
+              <AccountPreferencesMenu
+                locale={capabilities.locale}
+                t={t}
               />
 
               <div className="md:hidden">

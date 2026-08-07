@@ -1,5 +1,3 @@
-import { ThemeControl } from "@/components/ThemeControl";
-
 import { shellLabel } from "./labels";
 import type { ShellCapabilities, ShellNavHandlers } from "./types";
 
@@ -134,8 +132,6 @@ export function ShellNavItems({
           })}
         </select>
       </label>
-
-      <ThemeControl t={t} locale={locale} />
 
       <button
         type="button"

@@ -1,8 +1,8 @@
 import { useState } from "react";
 
 import { logout } from "@/api/endpoints";
+import { AccountPreferencesMenu } from "@/components/AccountPreferencesMenu";
 import { AuthCard } from "@/components/AuthCard";
-import { ThemeControl } from "@/components/ThemeControl";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 import { useTheme } from "@/theme";
@@ -45,7 +45,10 @@ export function NoVaultPage({ onNavigate = defaultNavigate }: NoVaultPageProps) 
   }
 
   return (
-    <div className="grid min-h-svh place-items-center bg-canvas px-4 text-ink">
+    <div className="relative grid min-h-svh place-items-center bg-canvas px-4 text-ink">
+      <div className="absolute top-[max(0.75rem,env(safe-area-inset-top))] right-[max(1rem,env(safe-area-inset-right))]">
+        <AccountPreferencesMenu />
+      </div>
       <main className="my-[30px] w-[min(440px,calc(100%-32px))]">
         <AuthCard>
           <p className="text-xs font-extrabold tracking-[0.16em] text-green uppercase">
@@ -71,7 +74,6 @@ export function NoVaultPage({ onNavigate = defaultNavigate }: NoVaultPageProps) 
               {t("ui.sign_out")}
             </Button>
           </div>
-          <ThemeControl className="mt-5 max-w-[14rem]" />
         </AuthCard>
       </main>
     </div>
