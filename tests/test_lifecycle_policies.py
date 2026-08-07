@@ -239,9 +239,14 @@ class UploadPolicyTagIntegrationTests(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(b"hello")
 
+        def fake_rclone_stream(*args, **kwargs) -> int:
+            kwargs["on_chunk"](b"hello")
+            return 5
+
         with (
             patch("app.storage.s3_client", return_value=s3),
             patch("app.storage.run_rclone", side_effect=fake_rclone),
+            patch("app.storage.run_rclone_stream", side_effect=fake_rclone_stream),
             patch("app.storage.settings") as mock_settings,
             patch("app.storage.db", side_effect=lambda: SQLiteConnection(str(path))),
         ):

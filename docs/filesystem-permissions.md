@@ -2,8 +2,11 @@
 
 The archive container runs as a configurable non-root identity (`PUID`/`PGID`,
 default `99:100` for Unraid compatibility). It never changes ownership or modes
-under vault source directories. Operators must permission host paths explicitly
-so upload, verified cleanup, and recovery can read and write as that user.
+under vault source directories. Operators must grant the runtime identity read
+and traverse access for cataloging, upload, and streamed upload verification.
+Verification reads the remote plaintext without creating a temporary file in the
+Vault root. Recovery, rename, and Local Copy cleanup remain write operations and
+also require write access to the applicable directory.
 
 Symbolic links are rejected: they appear in the catalog as unsupported, are
 blocked from upload and cleanup, and are listed in vault filesystem health.

@@ -272,6 +272,24 @@ class ArchiveCatalog:
             (archive_version_id, job_id),
         )
 
+    def set_upload_plaintext_digest(
+        self,
+        job_id: int,
+        *,
+        plaintext_sha256: str,
+    ) -> None:
+        if len(plaintext_sha256) != 64:
+            raise ValueError("SHA-256 must contain 64 hexadecimal characters")
+        int(plaintext_sha256, 16)
+        self.connection.execute(
+            """
+            UPDATE jobs
+            SET upload_plaintext_sha256=%s
+            WHERE id=%s
+            """,
+            (plaintext_sha256.lower(), job_id),
+        )
+
     def get_job_target(self, job_id: int) -> dict[str, Any] | None:
         return self.connection.execute(
             """
@@ -280,6 +298,7 @@ class ArchiveCatalog:
                 j.vault_id,
                 j.vault_file_id,
                 j.archive_version_id,
+                j.upload_plaintext_sha256,
                 j.path,
                 lc.presence AS local_presence,
                 lc.file_type AS local_file_type,

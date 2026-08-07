@@ -15,7 +15,7 @@ from .services.rclone_runtime import cleanup_runtime_configs
 
 
 INTEGRITY_ERRORS = (UniqueViolation, sqlite3.IntegrityError)
-HEAD_SCHEMA_REVISION = "0034_job_claim_leases"
+HEAD_SCHEMA_REVISION = "0035_upload_verification_digest"
 _logger = logging.getLogger(__name__)
 
 
