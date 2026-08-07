@@ -347,6 +347,189 @@ describe("NotificationCenter", () => {
     expect(screen.getByTestId("notification-unread-badge")).toHaveTextContent("1");
   });
 
+  it("restores loaded extra unread pages when mark-one fails after Load more", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/notifications?") && url.includes("status=unread")) {
+        if (url.includes("before_id=")) {
+          return jsonResponse({
+            unread_count: 2,
+            has_more: false,
+            items: [notificationItem({ id: 1, title: "Older unread" })],
+          });
+        }
+        return jsonResponse({
+          unread_count: 2,
+          has_more: true,
+          items: [notificationItem({ id: 2, title: "Newer unread" })],
+        });
+      }
+      if (url === "/api/vault/notification-preferences") {
+        return jsonResponse({ items: [] });
+      }
+      if (url === "/api/notifications/read" && init?.method === "POST") {
+        return new Response("nope", { status: 500 });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+
+    renderCenter(fetchMock);
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Open notifications (2 unread)",
+      }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Notifications" });
+    expect(within(dialog).getByText("Newer unread")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Older unread")).toBeNull();
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "Load more" }),
+    );
+    expect(await within(dialog).findByText("Older unread")).toBeInTheDocument();
+
+    const olderRow = within(dialog)
+      .getByText("Older unread")
+      .closest("[data-testid='notification-row']");
+    expect(olderRow).not.toBeNull();
+    await user.click(
+      within(olderRow as HTMLElement).getByRole("button", { name: "Mark as read" }),
+    );
+
+    expect(
+      await within(dialog).findByRole("alert"),
+    ).toHaveTextContent("Could not mark notification as read.");
+    expect(within(dialog).getByText("Newer unread")).toBeInTheDocument();
+    expect(within(dialog).getByText("Older unread")).toBeInTheDocument();
+    expect(screen.getByTestId("notification-unread-badge")).toHaveTextContent("2");
+    expect(
+      within(dialog).queryByTestId("notifications-load-more-unread"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("restores loaded extra unread pages when mark-all fails after Load more", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/notifications?") && url.includes("status=unread")) {
+        if (url.includes("before_id=")) {
+          return jsonResponse({
+            unread_count: 2,
+            has_more: true,
+            items: [notificationItem({ id: 1, title: "Page two" })],
+          });
+        }
+        return jsonResponse({
+          unread_count: 2,
+          has_more: true,
+          items: [notificationItem({ id: 2, title: "Page one" })],
+        });
+      }
+      if (url === "/api/vault/notification-preferences") {
+        return jsonResponse({ items: [] });
+      }
+      if (url === "/api/notifications/read-all" && init?.method === "POST") {
+        return new Response("nope", { status: 500 });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+
+    renderCenter(fetchMock);
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Open notifications (2 unread)",
+      }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Notifications" });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Load more" }),
+    );
+    expect(await within(dialog).findByText("Page two")).toBeInTheDocument();
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "Mark all as read" }),
+    );
+    expect(
+      await within(dialog).findByRole("alert"),
+    ).toHaveTextContent("Could not mark all notifications as read.");
+    expect(within(dialog).getByText("Page one")).toBeInTheDocument();
+    expect(within(dialog).getByText("Page two")).toBeInTheDocument();
+    expect(screen.getByTestId("notification-unread-badge")).toHaveTextContent("2");
+    expect(
+      within(dialog).getByTestId("notifications-load-more-unread"),
+    ).toBeInTheDocument();
+  });
+
+  it("ignores a stale Load more response after mark-all empties the unread list", async () => {
+    const user = userEvent.setup();
+    const loadMoreGate: {
+      release: ((response: Response) => void) | null;
+    } = { release: null };
+    let allRead = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/notifications?") && url.includes("status=unread")) {
+        if (url.includes("before_id=")) {
+          return await new Promise<Response>((resolve) => {
+            loadMoreGate.release = resolve;
+          });
+        }
+        if (allRead) {
+          return jsonResponse({ unread_count: 0, has_more: false, items: [] });
+        }
+        return jsonResponse({
+          unread_count: 2,
+          has_more: true,
+          items: [notificationItem({ id: 20, title: "Visible first page" })],
+        });
+      }
+      if (url === "/api/vault/notification-preferences") {
+        return jsonResponse({ items: [] });
+      }
+      if (url === "/api/notifications/read-all" && init?.method === "POST") {
+        allRead = true;
+        return jsonResponse({ marked_count: 2, unread_count: 0 });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+
+    renderCenter(fetchMock);
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Open notifications (2 unread)",
+      }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Notifications" });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Load more" }),
+    );
+    await waitFor(() => {
+      expect(loadMoreGate.release).not.toBeNull();
+    });
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "Mark all as read" }),
+    );
+    await waitFor(() => {
+      expect(within(dialog).getByTestId("notifications-empty")).toBeInTheDocument();
+    });
+
+    loadMoreGate.release?.(
+      jsonResponse({
+        unread_count: 1,
+        has_more: false,
+        items: [notificationItem({ id: 10, title: "Stale page two" })],
+      }),
+    );
+
+    await waitFor(() => {
+      expect(within(dialog).queryByText("Stale page two")).toBeNull();
+    });
+    expect(within(dialog).getByTestId("notifications-empty")).toBeInTheDocument();
+    expect(screen.queryByTestId("notification-unread-badge")).not.toBeInTheDocument();
+  });
+
   it("renders a compact bounded list for many unread rows without card footers", async () => {
     const user = userEvent.setup();
     const items = Array.from({ length: 40 }, (_, index) =>

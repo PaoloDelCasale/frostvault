@@ -814,6 +814,11 @@ def _normalize_notification_status(status: str | None) -> str:
     return normalized
 
 
+# Public HTTP pages are capped at 200. Callers may request one extra row
+# (201) as a has_more sentinel without clamping the probe away.
+_MAX_NOTIFICATION_LIST_FETCH = 201
+
+
 def list_in_app_notifications(
     connection: Any,
     *,
@@ -827,6 +832,8 @@ def list_in_app_notifications(
 
     ``status`` selects unread, read, or the mixed newest-first list (``all``).
     ``before_id`` returns strictly older rows (lower id) for incremental history.
+    ``limit`` accepts up to 201 so HTTP handlers can probe ``has_more`` at the
+    public maximum page size of 200.
     """
     clauses = [_visible_notification_predicate()]
     params: list[Any] = [user_id]
@@ -844,7 +851,7 @@ def list_in_app_notifications(
         clauses.append("n.id < %s")
         params.append(before)
 
-    params.append(max(1, min(int(limit), 200)))
+    params.append(max(1, min(int(limit), _MAX_NOTIFICATION_LIST_FETCH)))
     rows = connection.execute(
         f"""
         SELECT n.* FROM notifications n

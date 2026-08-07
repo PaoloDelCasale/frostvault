@@ -489,6 +489,28 @@ class NotificationDeliveryTests(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in page], [ids[-2], ids[-3]])
 
+    def test_list_has_more_sentinel_works_at_max_public_page_size(self) -> None:
+        """Public limit=200 must still detect a 201st row via internal sentinel."""
+        with SQLiteConnection(str(self.path)) as connection:
+            for index in range(201):
+                notifications.enqueue_notification(
+                    connection,
+                    user_id=self.user_id,
+                    vault_id=self.vault_id,
+                    event="upload_verified",
+                    title=f"Bulk {index}",
+                )
+            # Endpoint fetches limit+1; the service must not clamp the sentinel
+            # fetch back down to 200 or has_more stays false forever.
+            fetched = notifications.list_in_app_notifications(
+                connection,
+                user_id=self.user_id,
+                status="unread",
+                limit=201,
+            )
+
+        self.assertEqual(len(fetched), 201)
+
     def test_mark_all_notifications_read_is_idempotent_and_membership_scoped(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
             first = notifications.enqueue_notification(
@@ -885,6 +907,25 @@ class NotificationReadHttpTests(unittest.TestCase):
                 (notification_id,),
             ).fetchone()
         self.assertIsNone(row["read_at"])
+
+    def test_notifications_http_has_more_at_max_limit(self) -> None:
+        with SQLiteConnection(str(self.path)) as connection:
+            for index in range(201):
+                notifications.enqueue_notification(
+                    connection,
+                    user_id=self.owner_id,
+                    vault_id=self.vault_id,
+                    event="upload_verified",
+                    title=f"Max page {index}",
+                )
+        self._authenticate(self.owner_token, self.owner_csrf)
+
+        response = self.client.get("/api/notifications?status=unread&limit=200")
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(len(body["items"]), 200)
+        self.assertTrue(body["has_more"])
+        self.assertEqual(body["unread_count"], 201)
 
     def test_notifications_http_filters_status_and_reports_has_more(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:

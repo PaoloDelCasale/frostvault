@@ -10,7 +10,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import (
@@ -2939,7 +2939,11 @@ def rotate_admin_oidc_secret(
 
 @app.get("/api/notifications", response_model=JsonObjectResponse)
 def list_notifications(
-    request: Request, user: dict[str, Any] = Depends(current_user)
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    limit: int = Query(50, ge=1, le=200),
+    status: Literal["all", "unread", "read"] = Query("all"),
+    before_id: int | None = Query(default=None, ge=1),
 ):
     """List in-app notifications for the authenticated user.
 
@@ -2947,31 +2951,10 @@ def list_notifications(
     and ``before_id`` cursor pagination so older unread items are never hidden
     behind a mixed newest page (issue #225).
     """
-    raw_limit = request.query_params.get("limit", "50")
-    try:
-        limit = int(raw_limit)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(422, "limit must be an integer") from exc
-    if not 1 <= limit <= 200:
-        raise HTTPException(422, "limit must be between 1 and 200")
-
-    status = (request.query_params.get("status") or "all").strip().lower()
-    if status not in {"all", "unread", "read"}:
-        raise HTTPException(422, "status must be unread, read, or all")
-
-    before_id: int | None = None
-    raw_before = request.query_params.get("before_id")
-    if raw_before is not None and raw_before != "":
-        try:
-            before_id = int(raw_before)
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(422, "before_id must be an integer") from exc
-        if before_id < 1:
-            raise HTTPException(422, "before_id must be a positive integer")
-
     locale = _request_locale(request)
     with db() as connection:
-        # Fetch one extra row so the client can offer bounded "load more".
+        # Fetch one extra row (allowed as an internal 201-row sentinel) so the
+        # client can offer bounded "load more" even at limit=200.
         fetched = notification_service.list_in_app_notifications(
             connection,
             user_id=user["id"],

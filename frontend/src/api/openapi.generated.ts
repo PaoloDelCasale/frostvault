@@ -5898,7 +5898,11 @@ export interface operations {
     };
     list_notifications_api_notifications_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                status?: "all" | "unread" | "read";
+                before_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5912,6 +5916,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -45,6 +45,11 @@ type MutationContext<T> = {
   previous: T | undefined;
 };
 
+type UnreadMutationContext = MutationContext<NotificationsResponse> & {
+  previousExtra: NotificationItem[];
+  previousHasMore: boolean;
+};
+
 type PreferenceRow = {
   event: string;
   labelKey: string;
@@ -247,6 +252,18 @@ export function NotificationCenter({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const wasOpenRef = useRef(false);
   const unreadFetchingRef = useRef(false);
+  const unreadExtraRef = useRef<NotificationItem[]>([]);
+  const unreadHasMoreRef = useRef(false);
+  /** Bumped to drop in-flight direct page fetches after list mutations. */
+  const unreadLoadGenerationRef = useRef(0);
+  const readLoadGenerationRef = useRef(0);
+
+  useEffect(() => {
+    unreadExtraRef.current = unreadExtra;
+  }, [unreadExtra]);
+  useEffect(() => {
+    unreadHasMoreRef.current = unreadHasMore;
+  }, [unreadHasMore]);
 
   const selectedVaultId = currentVaultId ?? 0;
   const preferencesKey = apiQueryKeys.notificationPreferences(selectedVaultId);
@@ -287,6 +304,8 @@ export function NotificationCenter({
       setReadLoadingMore(false);
       setUnreadExtra([]);
       setUnreadLoadingMore(false);
+      unreadLoadGenerationRef.current += 1;
+      readLoadGenerationRef.current += 1;
     }
   }, [open]);
 
@@ -310,6 +329,7 @@ export function NotificationCenter({
     beforeId?: number;
   }): Promise<void> {
     const append = options?.append === true;
+    const generation = ++readLoadGenerationRef.current;
     if (append) {
       setReadLoadingMore(true);
     } else {
@@ -322,20 +342,28 @@ export function NotificationCenter({
         limit: READ_PAGE_SIZE,
         beforeId: options?.beforeId,
       });
+      if (generation !== readLoadGenerationRef.current) {
+        return;
+      }
       setReadItems((current) =>
         append ? [...current, ...response.items] : response.items,
       );
       setReadHasMore(Boolean(response.has_more));
       setReadError(false);
     } catch {
+      if (generation !== readLoadGenerationRef.current) {
+        return;
+      }
       if (!append) {
         setReadItems([]);
         setReadHasMore(false);
       }
       setReadError(true);
     } finally {
-      setReadLoading(false);
-      setReadLoadingMore(false);
+      if (generation === readLoadGenerationRef.current) {
+        setReadLoading(false);
+        setReadLoadingMore(false);
+      }
     }
   }
 
@@ -352,38 +380,52 @@ export function NotificationCenter({
     NotificationItem,
     Error,
     number,
-    MutationContext<NotificationsResponse>
+    UnreadMutationContext
   >(
     {
       mutationFn: markNotificationRead,
       onMutate: async (notificationId) => {
+        // Invalidate in-flight Load more so a stale page cannot reintroduce
+        // rows the user just marked read.
+        unreadLoadGenerationRef.current += 1;
+        setUnreadLoadingMore(false);
         await queryClient.cancelQueries({
           queryKey: apiQueryKeys.notifications,
         });
         const previous = queryClient.getQueryData<NotificationsResponse>(unreadKey);
+        const previousExtra = unreadExtraRef.current;
+        const previousHasMore = unreadHasMoreRef.current;
         queryClient.setQueryData<NotificationsResponse | undefined>(
           unreadKey,
           (current) => {
             if (!current) return current;
             const items = current.items.filter((item) => item.id !== notificationId);
-            const removed = current.items.length !== items.length;
+            const removedFromPage = current.items.length !== items.length;
+            const removedFromExtra = previousExtra.some(
+              (item) => item.id === notificationId,
+            );
             return {
               ...current,
               items,
-              unread_count: removed
-                ? Math.max(0, current.unread_count - 1)
-                : current.unread_count,
+              unread_count:
+                removedFromPage || removedFromExtra
+                  ? Math.max(0, current.unread_count - 1)
+                  : current.unread_count,
             };
           },
         );
         setUnreadExtra((current) =>
           current.filter((item) => item.id !== notificationId),
         );
-        return { previous };
+        return { previous, previousExtra, previousHasMore };
       },
       onError: (_error, _notificationId, context) => {
         if (context?.previous) {
           queryClient.setQueryData(unreadKey, context.previous);
+        }
+        if (context) {
+          setUnreadExtra(context.previousExtra);
+          setUnreadHasMore(context.previousHasMore);
         }
         setMarkError(
           notificationLabel(
@@ -405,7 +447,10 @@ export function NotificationCenter({
           });
         }
       },
-      onSettled: () => {
+      onSettled: (_data, error) => {
+        // Skip refetch on error so restored extra pages are not wiped by the
+        // post-fetch pagination resync effect.
+        if (error) return;
         void queryClient.invalidateQueries({
           queryKey: apiQueryKeys.notifications,
           refetchType: "active",
@@ -419,15 +464,19 @@ export function NotificationCenter({
     MarkAllNotificationsReadResponse,
     Error,
     void,
-    MutationContext<NotificationsResponse>
+    UnreadMutationContext
   >(
     {
       mutationFn: markAllNotificationsRead,
       onMutate: async () => {
+        unreadLoadGenerationRef.current += 1;
+        setUnreadLoadingMore(false);
         await queryClient.cancelQueries({
           queryKey: apiQueryKeys.notifications,
         });
         const previous = queryClient.getQueryData<NotificationsResponse>(unreadKey);
+        const previousExtra = unreadExtraRef.current;
+        const previousHasMore = unreadHasMoreRef.current;
         queryClient.setQueryData<NotificationsResponse | undefined>(
           unreadKey,
           (current) => {
@@ -442,11 +491,15 @@ export function NotificationCenter({
         );
         setUnreadExtra([]);
         setUnreadHasMore(false);
-        return { previous };
+        return { previous, previousExtra, previousHasMore };
       },
       onError: (_error, _variables, context) => {
         if (context?.previous) {
           queryClient.setQueryData(unreadKey, context.previous);
+        }
+        if (context) {
+          setUnreadExtra(context.previousExtra);
+          setUnreadHasMore(context.previousHasMore);
         }
         setMarkError(
           notificationLabel(
@@ -461,7 +514,8 @@ export function NotificationCenter({
           void loadReadHistory();
         }
       },
-      onSettled: () => {
+      onSettled: (_data, error) => {
+        if (error) return;
         void queryClient.invalidateQueries({
           queryKey: apiQueryKeys.notifications,
           refetchType: "active",
@@ -616,6 +670,7 @@ export function NotificationCenter({
   async function handleLoadMoreUnread(): Promise<void> {
     const last = notifications[notifications.length - 1];
     if (!last) return;
+    const generation = ++unreadLoadGenerationRef.current;
     setUnreadLoadingMore(true);
     try {
       const response = await fetchNotifications({
@@ -623,6 +678,9 @@ export function NotificationCenter({
         limit: UNREAD_PAGE_SIZE,
         beforeId: last.id,
       });
+      if (generation !== unreadLoadGenerationRef.current) {
+        return;
+      }
       setUnreadExtra((current) => {
         const seen = new Set([
           ...pageItems.map((item) => item.id),
@@ -635,6 +693,9 @@ export function NotificationCenter({
       });
       setUnreadHasMore(Boolean(response.has_more));
     } catch {
+      if (generation !== unreadLoadGenerationRef.current) {
+        return;
+      }
       setMarkError(
         notificationLabel(
           t,
@@ -643,7 +704,9 @@ export function NotificationCenter({
         ),
       );
     } finally {
-      setUnreadLoadingMore(false);
+      if (generation === unreadLoadGenerationRef.current) {
+        setUnreadLoadingMore(false);
+      }
     }
   }
 
