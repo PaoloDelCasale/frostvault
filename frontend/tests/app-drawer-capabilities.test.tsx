@@ -218,4 +218,68 @@ describe("App drawer capability filtering", () => {
     ).toBeInTheDocument();
     expect(account).not.toHaveTextContent("Manage access");
   });
+
+  it("constrains the desktop Vault select for long names at narrow desktop widths", async () => {
+    const longName =
+      "Very Long Owner Archive Name For Desktop Header Overflow Regression";
+    const user = await renderShell({
+      vaultName: longName,
+      isVaultOwner: true,
+      canOperate: true,
+      isAdmin: false,
+      locale: "en",
+      locales: ["en"],
+      vaults: [
+        { id: 1, slug: "long", name: longName, role: "owner" },
+        { id: 2, slug: "docs", name: "Docs", role: "owner" },
+      ],
+      role: "owner",
+      currentVaultId: 1,
+    });
+
+    // Representative narrow desktop width (md breakpoint floor).
+    const shell = screen.getByRole("banner").parentElement;
+    expect(shell).not.toBeNull();
+    Object.defineProperty(shell as HTMLElement, "clientWidth", {
+      configurable: true,
+      value: 768,
+    });
+
+    const desktopNav = screen.getByTestId("desktop-vault-nav");
+    const desktopSelect = within(desktopNav).getByRole("combobox", {
+      name: /^vault$/i,
+    });
+
+    // Inside the shrink-0 / nowrap primary cluster the select must carry an
+    // explicit ceiling so a content-sized long name cannot expand the header.
+    const desktopClasses = desktopSelect.className.split(/\s+/);
+    expect(desktopClasses).toEqual(
+      expect.arrayContaining([
+        "min-w-0",
+        expect.stringMatching(/^max-w-/),
+      ]),
+    );
+    expect(desktopSelect).toHaveValue("1");
+    expect(
+      within(desktopSelect).getByRole("option", { name: longName }),
+    ).toBeInTheDocument();
+    // Ordinary short names remain first-class options in the same control.
+    expect(
+      within(desktopSelect).getByRole("option", { name: "Docs" }),
+    ).toBeInTheDocument();
+
+    // Mobile stacked drawer select stays unconstrained by the desktop clamp.
+    const drawer = await openDrawer(user);
+    const drawerSelect = within(drawer).getByRole("combobox", {
+      name: /^vault$/i,
+    });
+    const drawerClasses = drawerSelect.className.split(/\s+/);
+    expect(drawerClasses).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/^max-w-/)]),
+    );
+    expect(drawerSelect).toHaveValue("1");
+    expect(
+      within(drawerSelect).getByRole("option", { name: longName }),
+    ).toBeInTheDocument();
+  });
 });

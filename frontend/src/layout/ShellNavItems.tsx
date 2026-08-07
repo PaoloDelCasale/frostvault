@@ -34,6 +34,9 @@ export function ShellNavItems({
     "min-h-11 rounded-[10px] border border-input bg-surface px-4 text-left font-bold text-ink";
   const selectClass =
     "min-h-11 rounded-[10px] border border-input bg-surface px-3 text-ink";
+  // Desktop primary sits in a shrink-0 / nowrap cluster; cap intrinsic option
+  // width so long Vault names cannot blow out the single-row header.
+  const compactSelectClass = `${selectClass} min-w-0 max-w-[12rem]`;
   const vaultLabel = shellLabel(t, "ui.vault", "Vault");
   const manageAccessLabel = shellLabel(t, "ui.manage_access", "Manage access");
 
@@ -49,7 +52,7 @@ export function ShellNavItems({
       {compact ? (
         <select
           aria-label={vaultLabel}
-          className={selectClass}
+          className={compactSelectClass}
           value={selectedVaultId}
           onChange={(event) => {
             const id = Number(event.target.value);
