@@ -1114,6 +1114,10 @@
           "type": "boolean",
           "description": "True when findings is a bounded sample of findings_total."
         },
+        "synopsis_truncated": {
+          "type": "boolean",
+          "description": "True when checks sample or check/finding field values were capped or clipped while building the bounded synopsis."
+        },
         "cache_age_seconds": {
           "type": [
             "number",

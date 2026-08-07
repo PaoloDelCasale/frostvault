@@ -2670,6 +2670,8 @@ export interface components {
             } & {
                 [key: string]: unknown;
             };
+            /** @description True when checks sample or check/finding field values were capped or clipped while building the bounded synopsis. */
+            synopsis_truncated?: boolean;
             uid: number | null;
         } & {
             [key: string]: unknown;
