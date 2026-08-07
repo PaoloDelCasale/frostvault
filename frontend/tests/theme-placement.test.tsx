@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ApiQueryProvider,
@@ -14,7 +14,7 @@ import {
 import { I18nContext, type I18nContextValue } from "@/i18n/context";
 import { translate } from "@/i18n/translate";
 import { AppShell } from "@/layout/AppShell";
-import type { ShellCapabilities } from "@/layout/types";
+import type { ShellCapabilities, ShellNavHandlers } from "@/layout/types";
 import { LoginPage } from "@/pages/login/LoginPage";
 import { NoVaultPage } from "@/pages/no-vault/NoVaultPage";
 import { VaultCreatePage } from "@/pages/vault-create";
@@ -40,6 +40,15 @@ const shellCapabilities: ShellCapabilities = {
   locales: ["en", "it"],
   vaults: [{ id: 1, slug: "test", name: "Test Archive", role: "owner" }],
   currentVaultId: 1,
+};
+
+const shellHandlers: ShellNavHandlers = {
+  onNewVault: vi.fn(),
+  onManageAccess: vi.fn(),
+  onAdministration: vi.fn(),
+  onSignOut: vi.fn(),
+  onLocaleChange: vi.fn(),
+  onVaultChange: vi.fn(),
 };
 
 function renderWithProviders(
@@ -70,16 +79,20 @@ function renderWithProviders(
   };
 }
 
-describe("theme control placement (#223)", () => {
+describe("theme control placement (#223 / #224)", () => {
   afterEach(() => {
     cleanup();
     resetApiClientForTests();
   });
 
-  it("keeps a single Appearance control behind the shell preferences surface", async () => {
+  it("keeps a single Appearance control behind the shell account menu", async () => {
     const catalog = loadCatalog("en");
     const { user } = renderWithProviders(
-      <AppShell capabilities={shellCapabilities} t={(key) => catalog[key] ?? key}>
+      <AppShell
+        capabilities={shellCapabilities}
+        handlers={shellHandlers}
+        t={(key) => catalog[key] ?? key}
+      >
         <p>Archive content</p>
       </AppShell>,
     );
@@ -90,39 +103,39 @@ describe("theme control placement (#223)", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryAllByTestId("theme-control")).toHaveLength(0);
 
-    const openPreferences = screen.getByRole("button", {
-      name: catalog["ui.open_preferences"],
+    const openAccount = screen.getByRole("button", {
+      name: catalog["ui.open_account_menu"],
     });
-    expect(openPreferences).toHaveClass("min-h-11");
+    expect(openAccount).toHaveClass("min-h-11");
     expect(
-      screen.getAllByRole("button", { name: catalog["ui.open_preferences"] }),
+      screen.getAllByRole("button", { name: catalog["ui.open_account_menu"] }),
     ).toHaveLength(1);
 
-    await user.click(openPreferences);
+    await user.click(openAccount);
 
-    const preferences = await screen.findByRole("dialog", {
-      name: catalog["ui.preferences"],
+    const account = await screen.findByRole("dialog", {
+      name: catalog["ui.account_menu"],
     });
     expect(
-      within(preferences).getAllByTestId("theme-control"),
+      within(account).getAllByTestId("theme-control"),
     ).toHaveLength(1);
     expect(
-      within(preferences).getByRole("combobox", {
+      within(account).getByRole("combobox", {
         name: catalog["ui.theme"],
       }),
     ).toBeInTheDocument();
     expect(
-      within(preferences).getByRole("option", {
+      within(account).getByRole("option", {
         name: catalog["ui.theme_system"],
       }),
     ).toBeInTheDocument();
     expect(
-      within(preferences).getByRole("option", {
+      within(account).getByRole("option", {
         name: catalog["ui.theme_light"],
       }),
     ).toBeInTheDocument();
     expect(
-      within(preferences).getByRole("option", {
+      within(account).getByRole("option", {
         name: catalog["ui.theme_dark"],
       }),
     ).toBeInTheDocument();
@@ -131,14 +144,18 @@ describe("theme control placement (#223)", () => {
   it("does not put Appearance in the mobile drawer navigation list", async () => {
     const catalog = loadCatalog("en");
     const { user } = renderWithProviders(
-      <AppShell capabilities={shellCapabilities} t={(key) => catalog[key] ?? key}>
+      <AppShell
+        capabilities={shellCapabilities}
+        handlers={shellHandlers}
+        t={(key) => catalog[key] ?? key}
+      >
         <p>Archive content</p>
       </AppShell>,
     );
 
-    // Preferences stay in the shell chrome, not inside the navigation drawer.
+    // Account menu stays in the shell chrome, not inside the navigation drawer.
     expect(
-      screen.getByRole("button", { name: catalog["ui.open_preferences"] }),
+      screen.getByRole("button", { name: catalog["ui.open_account_menu"] }),
     ).toBeInTheDocument();
 
     await user.click(
@@ -154,16 +171,22 @@ describe("theme control placement (#223)", () => {
     ).not.toBeInTheDocument();
     expect(
       within(drawer).queryByRole("button", {
+        name: catalog["ui.open_account_menu"],
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(drawer).queryByRole("button", {
         name: catalog["ui.open_preferences"],
       }),
     ).not.toBeInTheDocument();
   });
 
-  it("exposes Italian preferences labels from the shell entry point", async () => {
+  it("exposes Italian account-menu appearance labels from the shell entry point", async () => {
     const catalog = loadCatalog("it");
     const { user } = renderWithProviders(
       <AppShell
         capabilities={{ ...shellCapabilities, locale: "it" }}
+        handlers={shellHandlers}
         t={(key) => catalog[key] ?? key}
       >
         <p>Contenuto archivio</p>
@@ -172,18 +195,18 @@ describe("theme control placement (#223)", () => {
     );
 
     await user.click(
-      screen.getByRole("button", { name: catalog["ui.open_preferences"] }),
+      screen.getByRole("button", { name: catalog["ui.open_account_menu"] }),
     );
-    const preferences = await screen.findByRole("dialog", {
-      name: catalog["ui.preferences"],
+    const account = await screen.findByRole("dialog", {
+      name: catalog["ui.account_menu"],
     });
     expect(
-      within(preferences).getByRole("combobox", {
+      within(account).getByRole("combobox", {
         name: catalog["ui.theme"],
       }),
     ).toBeInTheDocument();
     expect(
-      within(preferences).getByRole("option", {
+      within(account).getByRole("option", {
         name: catalog["ui.theme_dark"],
       }),
     ).toBeInTheDocument();
@@ -198,6 +221,9 @@ describe("theme control placement (#223)", () => {
     ).toHaveClass("min-h-11");
     expect(
       screen.queryByRole("button", { name: catalog["ui.open_preferences"] }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: catalog["ui.open_account_menu"] }),
     ).not.toBeInTheDocument();
   });
 
