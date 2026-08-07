@@ -208,6 +208,19 @@ class DirectoryScaleTests(unittest.TestCase):
         self.assertEqual(page["total"], 1)
         self.assertEqual(catalog.last_listing_rows_materialized, 1)
 
+    def test_root_listing_clause_is_parameterised_for_psycopg3(self) -> None:
+        # Regression: the root branch embedded a literal '%' in raw SQL
+        # ("fp.path NOT LIKE '%/%'"), which psycopg3 rejects as an unescaped
+        # placeholder (ProgrammingError: ... got '%/'). It must be parameterised
+        # like the sibling LIKE clauses. (Issue #240)
+        clauses, params = self.catalog._direct_child_file_clauses(
+            2, directory="", state=""
+        )
+        self.assertIn("fp.path NOT LIKE %s", clauses)
+        self.assertEqual(params[-1], "%/%")
+        # The SQL text must not embed a bare percent beside a slash.
+        self.assertFalse(any("%/" in c for c in clauses))
+
     def test_pagination_bounds_materialized_rows(self) -> None:
         paths = [(f"bucket/file-{index:04d}.bin", 10) for index in range(250)]
         paths.extend((f"other/file-{index:04d}.bin", 5) for index in range(20))
