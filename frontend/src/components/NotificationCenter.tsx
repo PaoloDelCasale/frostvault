@@ -145,12 +145,16 @@ function NotificationRow({
   locale,
   t,
   markPending,
+  markDisabled,
   onMarkRead,
 }: {
   item: NotificationItem;
   locale: string;
   t?: NotificationTranslator;
+  /** True only for the in-flight row (screen-reader progress). */
   markPending: boolean;
+  /** True for every row while any mark-one/mark-all mutation is open. */
+  markDisabled: boolean;
   onMarkRead?: (id: number) => void;
 }) {
   const title = notificationContent(item.title);
@@ -202,7 +206,8 @@ function NotificationRow({
           type="button"
           variant="ghost"
           className="min-h-11 min-w-11 shrink-0 px-2"
-          disabled={markPending}
+          disabled={markDisabled}
+          aria-busy={markPending || undefined}
           aria-label={notificationLabel(
             t,
             "ui.notifications_mark_read",
@@ -647,7 +652,17 @@ export function NotificationCenter({
     "ui.notifications_description",
     "Recent activity for your Vault.",
   );
-  const showMarkAll = unreadCount > 0 || notifications.some((item) => !item.read);
+  // Serialize mark-one globally and coordinate with mark-all so optimistic
+  // snapshots cannot overlap or roll back each other (issue #225 review).
+  const markOnePending = markReadMutation.isPending;
+  const markAllPending = markAllMutation.isPending;
+  const markActionsLocked = markOnePending || markAllPending;
+  // Keep the bulk control mounted while its mutation is in flight so the
+  // busy/disabled state remains exposed after the optimistic empty list.
+  const showMarkAll =
+    markAllPending ||
+    unreadCount > 0 ||
+    notifications.some((item) => !item.read);
 
   function handleOpenChange(nextOpen: boolean): void {
     setOpen(nextOpen);
@@ -658,11 +673,13 @@ export function NotificationCenter({
   }
 
   function handleMarkOne(notificationId: number): void {
+    if (markActionsLocked) return;
     setMarkError(null);
     markReadMutation.mutate(notificationId);
   }
 
   function handleMarkAll(): void {
+    if (markActionsLocked) return;
     setMarkError(null);
     markAllMutation.mutate();
   }
@@ -765,7 +782,8 @@ export function NotificationCenter({
                 type="button"
                 variant="secondary"
                 className="min-h-11"
-                disabled={markAllMutation.isPending || markReadMutation.isPending}
+                disabled={markActionsLocked}
+                aria-busy={markAllPending || undefined}
                 data-testid="notifications-mark-all"
                 onClick={handleMarkAll}
               >
@@ -857,9 +875,9 @@ export function NotificationCenter({
                       locale={locale}
                       t={t}
                       markPending={
-                        markReadMutation.isPending &&
-                        markReadMutation.variables === item.id
+                        markOnePending && markReadMutation.variables === item.id
                       }
+                      markDisabled={markActionsLocked}
                       onMarkRead={handleMarkOne}
                     />
                   ))}
@@ -968,6 +986,7 @@ export function NotificationCenter({
                           locale={locale}
                           t={t}
                           markPending={false}
+                          markDisabled
                         />
                       ))}
                     </ul>

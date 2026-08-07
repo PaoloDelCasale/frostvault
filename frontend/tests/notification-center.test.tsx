@@ -310,6 +310,162 @@ describe("NotificationCenter", () => {
     expect(within(dialog).queryByRole("button", { name: "Mark all as read" })).toBeNull();
   });
 
+  it("disables other mark-one and mark-all actions while one mark-one is pending, then rolls back coherently", async () => {
+    const user = userEvent.setup();
+    const markGate: { release: ((response: Response) => void) | null } = {
+      release: null,
+    };
+    let markCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/notifications?") && url.includes("status=unread")) {
+        return jsonResponse({
+          unread_count: 2,
+          has_more: false,
+          items: [
+            notificationItem({ id: 1, title: "Alpha unread" }),
+            notificationItem({ id: 2, title: "Beta unread" }),
+          ],
+        });
+      }
+      if (url === "/api/vault/notification-preferences") {
+        return jsonResponse({ items: [] });
+      }
+      if (url === "/api/notifications/read" && init?.method === "POST") {
+        markCalls += 1;
+        return await new Promise<Response>((resolve) => {
+          markGate.release = resolve;
+        });
+      }
+      if (url === "/api/notifications/read-all" && init?.method === "POST") {
+        throw new Error("mark-all must not run while mark-one is pending");
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+
+    renderCenter(fetchMock);
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Open notifications (2 unread)",
+      }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Notifications" });
+    const markButtons = within(dialog).getAllByRole("button", {
+      name: "Mark as read",
+    });
+    expect(markButtons).toHaveLength(2);
+
+    await user.click(markButtons[0]!);
+    await waitFor(() => {
+      expect(markCalls).toBe(1);
+      expect(markGate.release).not.toBeNull();
+    });
+
+    // Optimistic mark-one removes Alpha; Beta remains locked until A settles.
+    expect(within(dialog).queryByText("Alpha unread")).toBeNull();
+    expect(within(dialog).getByText("Beta unread")).toBeInTheDocument();
+    const betaMark = within(dialog).getByRole("button", { name: "Mark as read" });
+    expect(betaMark).toBeDisabled();
+    expect(
+      within(dialog).getByRole("button", { name: "Mark all as read" }),
+    ).toBeDisabled();
+
+    // A second click must not enqueue another mark-one while the first is open.
+    await user.click(betaMark);
+    expect(markCalls).toBe(1);
+
+    markGate.release?.(new Response("nope", { status: 500 }));
+
+    expect(
+      await within(dialog).findByRole("alert"),
+    ).toHaveTextContent("Could not mark notification as read.");
+    expect(within(dialog).getByText("Alpha unread")).toBeInTheDocument();
+    expect(within(dialog).getByText("Beta unread")).toBeInTheDocument();
+    expect(screen.getByTestId("notification-unread-badge")).toHaveTextContent("2");
+
+    const recovered = within(dialog).getAllByRole("button", {
+      name: "Mark as read",
+    });
+    expect(recovered).toHaveLength(2);
+    for (const button of recovered) {
+      expect(button).toBeEnabled();
+    }
+    expect(
+      within(dialog).getByRole("button", { name: "Mark all as read" }),
+    ).toBeEnabled();
+    expect(markCalls).toBe(1);
+  });
+
+  it("disables individual mark-one actions while mark-all is pending", async () => {
+    const user = userEvent.setup();
+    const markAllGate: { release: ((response: Response) => void) | null } = {
+      release: null,
+    };
+    let markOneCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/notifications?") && url.includes("status=unread")) {
+        return jsonResponse({
+          unread_count: 2,
+          has_more: false,
+          items: [
+            notificationItem({ id: 1, title: "One" }),
+            notificationItem({ id: 2, title: "Two" }),
+          ],
+        });
+      }
+      if (url === "/api/vault/notification-preferences") {
+        return jsonResponse({ items: [] });
+      }
+      if (url === "/api/notifications/read" && init?.method === "POST") {
+        markOneCalls += 1;
+        return jsonResponse(notificationItem({ id: 1, read: true }));
+      }
+      if (url === "/api/notifications/read-all" && init?.method === "POST") {
+        return await new Promise<Response>((resolve) => {
+          markAllGate.release = resolve;
+        });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+
+    renderCenter(fetchMock);
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Open notifications (2 unread)",
+      }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Notifications" });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Mark all as read" }),
+    );
+    await waitFor(() => {
+      expect(markAllGate.release).not.toBeNull();
+    });
+
+    const markButtons = within(dialog).queryAllByRole("button", {
+      name: "Mark as read",
+    });
+    // Optimistic mark-all clears unread rows, so individual actions disappear.
+    expect(markButtons).toHaveLength(0);
+    expect(
+      within(dialog).getByRole("button", { name: /Marking all as read/i }),
+    ).toBeDisabled();
+
+    markAllGate.release?.(new Response("nope", { status: 500 }));
+    expect(
+      await within(dialog).findByRole("alert"),
+    ).toHaveTextContent("Could not mark all notifications as read.");
+    expect(markOneCalls).toBe(0);
+    const recovered = within(dialog).getAllByRole("button", {
+      name: "Mark as read",
+    });
+    expect(recovered).toHaveLength(2);
+    for (const button of recovered) {
+      expect(button).toBeEnabled();
+    }
+  });
+
   it("rolls back a failed single mark-read and keeps the row accessible", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
