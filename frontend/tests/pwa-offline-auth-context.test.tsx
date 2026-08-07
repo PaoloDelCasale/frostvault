@@ -1,4 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -97,7 +104,21 @@ const catalog = {
   locales: ["en", "it"],
   messages: {
     "ui.vault": "Vault",
+    "ui.language": "Language",
+    "ui.language_en": "English",
+    "ui.language_it": "Italiano",
     "ui.sign_out": "Sign out",
+    "ui.account_menu": "Account",
+    "ui.open_account_menu": "Open account menu",
+    "ui.close_account_menu": "Close account menu",
+    "ui.account_menu_description":
+      "Account actions and personal preferences for this browser.",
+    "ui.new_vault": "New vault",
+    "ui.administration": "Administration",
+    "ui.theme": "Appearance",
+    "ui.theme_system": "System",
+    "ui.theme_light": "Light",
+    "ui.theme_dark": "Dark",
     "ui.loading": "Loading…",
     "ui.search_placeholder": "Search",
     "ui.filter_by_state": "Filter",
@@ -377,8 +398,14 @@ describe("App offline cache authorization transitions", () => {
       (message) => message.type === OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
     ).length;
 
+    await user.click(
+      screen.getByRole("button", { name: /open account menu/i }),
+    );
+    const accountMenu = await screen.findByRole("dialog", {
+      name: /^account$/i,
+    });
     await user.selectOptions(
-      screen.getAllByRole("combobox", { name: "Language" })[0]!,
+      within(accountMenu).getByRole("combobox", { name: "Language" }),
       "it",
     );
     await waitFor(() => {
