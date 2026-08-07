@@ -2075,16 +2075,83 @@ class ArchiveCatalog:
         return int(row["total"] or 0) if row is not None else 0
 
     def summary(self, vault_id: int) -> dict[str, Any]:
-        rows = self.list_file_rows(vault_id)
+        """Return archive state counts and byte totals via SQL aggregates.
+
+        Intentionally avoids ``list_file_rows`` and any Python-side walk of
+        Vault File rows so ``/api/stats`` stays bounded on large catalogs.
+        State classification mirrors ``list_file_rows`` (restoring / both /
+        local_only / cloud_only) and skips rows with neither a Local Copy nor a
+        non-missing/purged Archive Version.
+        """
+        rows = self.connection.execute(
+            """
+            WITH latest_versions AS (
+                SELECT
+                    av.vault_file_id AS vault_file_id,
+                    av.id AS archive_version_id,
+                    av.size AS cloud_size,
+                    av.restore_state AS restore_state,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY av.vault_file_id
+                        ORDER BY av.version_number DESC
+                    ) AS rn
+                FROM archive_versions av
+                WHERE av.vault_id=%s
+                  AND av.availability NOT IN ('missing', 'purged')
+            )
+            SELECT
+                classified.state AS state,
+                COUNT(*) AS total,
+                COALESCE(SUM(classified.local_bytes), 0) AS local_bytes,
+                COALESCE(SUM(classified.cloud_bytes), 0) AS cloud_bytes
+            FROM (
+                SELECT
+                    CASE
+                        WHEN latest.restore_state = 'restoring' THEN 'restoring'
+                        WHEN (
+                            lc.presence IN ('present', 'unsupported')
+                            AND latest.archive_version_id IS NOT NULL
+                        ) THEN 'both'
+                        WHEN lc.presence IN ('present', 'unsupported') THEN 'local_only'
+                        WHEN latest.archive_version_id IS NOT NULL THEN 'cloud_only'
+                    END AS state,
+                    CASE
+                        WHEN lc.presence IN ('present', 'unsupported')
+                        THEN COALESCE(lc.size, 0)
+                        ELSE 0
+                    END AS local_bytes,
+                    CASE
+                        WHEN latest.archive_version_id IS NOT NULL
+                        THEN COALESCE(latest.cloud_size, 0)
+                        ELSE 0
+                    END AS cloud_bytes
+                FROM vault_files vf
+                JOIN file_paths fp
+                  ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+                LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
+                LEFT JOIN latest_versions latest
+                  ON latest.vault_file_id=vf.id AND latest.rn=1
+                WHERE vf.vault_id=%s
+                  AND vf.status='active'
+                  AND (
+                        lc.presence IN ('present', 'unsupported')
+                     OR latest.archive_version_id IS NOT NULL
+                  )
+            ) AS classified
+            GROUP BY classified.state
+            """,
+            (vault_id, vault_id),
+        ).fetchall()
         states: dict[str, int] = {}
         local_bytes = 0
         cloud_bytes = 0
         for row in rows:
-            states[row["state"]] = states.get(row["state"], 0) + 1
-            if row["local_exists"]:
-                local_bytes += int(row["local_size"] or 0)
-            if row["cloud_exists"]:
-                cloud_bytes += int(row["cloud_size"] or 0)
+            state = row["state"]
+            if not state:
+                continue
+            states[str(state)] = int(row["total"] or 0)
+            local_bytes += int(row["local_bytes"] or 0)
+            cloud_bytes += int(row["cloud_bytes"] or 0)
         active_jobs = self.connection.execute(
             """
             SELECT COUNT(*) AS total FROM jobs

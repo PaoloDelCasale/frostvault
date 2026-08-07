@@ -6,6 +6,7 @@ import mimetypes
 import os
 import re
 import secrets
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -190,11 +191,7 @@ from .sessions import (
     rotate_session,
     set_session_vault,
 )
-from .services.fs_preflight import (
-    FilesystemPreflightResult,
-    check_vault_filesystem,
-    resolve_configured_vault_root,
-)
+from .services.fs_preflight import build_stats_filesystem_payload
 from .services.storage_classes import (
     cold_class_warning,
     list_storage_class_options,
@@ -2611,100 +2608,41 @@ def confirm_folder_rename(
 
 @app.get("/api/stats", response_model=response_model("StatsResponse"))
 def stats(vault: dict[str, Any] = Depends(current_vault)):
+    started = time.perf_counter()
     source_root = vault.get("source_root") or ""
     # Reconcile Source Volume identity before anything can preflight or walk the
     # configured Vault tree. Catalog summaries remain available when local work
     # is suspended, so they are intentionally collected after this gate too.
     access = vault_local_access(source_root)
     with db() as connection:
+        # Cheap SQL aggregates only — never materialize every Vault File row.
         summary = ArchiveCatalog(connection).summary(vault["id"])
     allowed_bases = [str(get_sources_root())]
     bootstrap_root = (settings.bootstrap_vault_source_root or "").strip()
     if bootstrap_root:
         allowed_bases.append(bootstrap_root)
+    # Identity-unsafe / missing volumes fail closed: no resolve, no walk.
     preflight_allowed = access.volume_health in {"ok", "read_only", "scan_required"}
-    if preflight_allowed:
-        safe_root = resolve_configured_vault_root(
-            source_root, allowed_bases=allowed_bases
-        )
-        if safe_root is None:
-            # Report missing under the configured sources root; never walk raw input.
-            preflight_root = Path(
-                f"{str(get_sources_root()).rstrip(chr(47))}/.missing-vault-root"
-            )
-        else:
-            preflight_root = safe_root
-        filesystem = check_vault_filesystem(preflight_root, allowed_bases=allowed_bases)
-    else:
-        # Missing, inaccessible, or identity-unsafe volumes must not be
-        # resolved or traversed. Catalog and Source Volume diagnostics remain.
-        filesystem = FilesystemPreflightResult(
-            root=str(source_root),
-            ok=False,
-            uid=os.geteuid(),
-            gid=os.getegid(),
-            checks=(),
-            findings=(),
-        )
-    checks_payload = [
-        {
-            "code": check.code,
-            "status": check.status,
-            "message": check.message,
-            "remediation": check.remediation,
-        }
-        for check in filesystem.checks
-    ]
-    ok = filesystem.ok
-    if not access.local_operations_allowed:
-        ok = False
-        checks_payload.append(
-            {
-                "code": f"source_volume.{access.volume_health}",
-                "status": "fail",
-                "message": (
-                    f"Local operations suspended for Source Volume "
-                    f"{access.volume_alias or 'unknown'} "
-                    f"({access.volume_health})"
-                ),
-                "remediation": (
-                    "Remount /sources/<alias> as a direct rw sibling, then run a "
-                    "full local scan before local operations resume. Nested mounts "
-                    "are unsupported."
-                ),
-            }
-        )
-    filesystem_payload = {
-        "ok": ok,
-        "uid": filesystem.uid,
-        "gid": filesystem.gid,
-        "root": filesystem.root,
-        "checks": checks_payload,
-        "findings": [
-            {
-                "path": finding.path,
-                "code": finding.code,
-                "message": finding.message,
-            }
-            for finding in filesystem.findings
-        ],
-        "source_volume": {
-            "alias": access.volume_alias,
-            "health": access.volume_health,
-            "local_operations_allowed": access.local_operations_allowed,
-            "cloud_catalog_allowed": access.cloud_catalog_allowed,
-        },
-    }
     runtime = dict(runtime_status.get(vault["id"], {}))
-    # Merge any scan-time findings that are not already in the live preflight.
     scan_findings = (runtime.get("filesystem") or {}).get("findings") or []
-    if scan_findings:
-        known = {(item["path"], item["code"]) for item in filesystem_payload["findings"]}
-        for item in scan_findings:
-            key = (item.get("path"), item.get("code"))
-            if key not in known:
-                filesystem_payload["findings"].append(item)
-                filesystem_payload["ok"] = False
+    # Filesystem health is a cached/background revision with a bounded synopsis.
+    # The request path must not os.walk the Vault root or serialize unbounded
+    # findings; single-flight recomputation runs off-thread.
+    filesystem_payload = build_stats_filesystem_payload(
+        vault_id=int(vault["id"]),
+        source_root=str(source_root),
+        allowed_bases=allowed_bases,
+        volume_alias=access.volume_alias,
+        volume_health=access.volume_health,
+        local_operations_allowed=access.local_operations_allowed,
+        cloud_catalog_allowed=access.cloud_catalog_allowed,
+        preflight_allowed=preflight_allowed,
+        scan_findings=scan_findings,
+    )
+    metrics_service.set_gauge(
+        "stats_last_duration_seconds",
+        max(0.0, time.perf_counter() - started),
+    )
     return {
         **summary,
         "runtime": runtime,

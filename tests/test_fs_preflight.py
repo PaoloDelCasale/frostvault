@@ -55,6 +55,10 @@ class VaultFilesystemPreflightTests(unittest.TestCase):
             secret.write_bytes(b"secret")
             secret.chmod(0o000)
             try:
+                if os.access(secret, os.R_OK):
+                    self.skipTest(
+                        "running as root; cannot simulate unreadable file modes"
+                    )
                 result = check_vault_filesystem(root, allowed_bases=[root])
             finally:
                 secret.chmod(0o600)
@@ -70,6 +74,10 @@ class VaultFilesystemPreflightTests(unittest.TestCase):
             nested.mkdir()
             nested.chmod(0o555)
             try:
+                if os.access(nested, os.W_OK):
+                    self.skipTest(
+                        "running as root; cannot simulate unwritable directory modes"
+                    )
                 result = check_vault_filesystem(root, allowed_bases=[root])
             finally:
                 nested.chmod(0o755)
