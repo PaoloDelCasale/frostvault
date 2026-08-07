@@ -14,8 +14,8 @@ import type {
   VaultCreateResponse,
   VaultCreationMode,
 } from "@/api";
+import { AccountPreferencesMenu } from "@/components/AccountPreferencesMenu";
 import { AuthCard } from "@/components/AuthCard";
-import { ThemeControl } from "@/components/ThemeControl";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
@@ -166,7 +166,10 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
   const recoveryExport = createdVault?.recovery_export;
 
   return (
-    <main className="grid min-h-screen place-items-center bg-canvas px-4 py-[30px]">
+    <main className="relative grid min-h-screen place-items-center bg-canvas px-4 py-[30px]">
+      <div className="absolute top-[max(0.75rem,env(safe-area-inset-top))] right-[max(1rem,env(safe-area-inset-right))]">
+        <AccountPreferencesMenu />
+      </div>
       <div className="w-full max-w-[min(440px,100%)]">
         <AuthCard>
           <p className="m-0 mb-1.5 text-[12px] font-extrabold tracking-[0.16em] text-green">
@@ -178,7 +181,6 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
           <p className="mt-2 text-sm text-muted">
             {t("ui.vault_create.subtitle", { name: displayName })}
           </p>
-          <ThemeControl className="mt-4 max-w-[14rem]" />
 
           {recoveryExport ? (
             <RecoveryExportPanel
