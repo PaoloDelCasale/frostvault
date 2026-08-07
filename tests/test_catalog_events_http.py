@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport
 from watchfiles import Change
 
-from app import main
+from app import main, storage
 from app.config import settings
 from app.database import SQLiteConnection
 from app.security import hash_password
@@ -33,6 +33,18 @@ from app.services.catalog_events import CatalogEventStore, record_catalog_revisi
 from app.sessions import create_session, csrf_token_for, revoke_session, set_session_vault
 from app.storage import apply_filesystem_changes
 from tests.test_database import run_alembic
+
+
+_ORIGINAL_STORAGE_PATCH_TARGETS = {
+    "vault_local_access": storage.source_layout.vault_local_access,
+    "should_emit_local_copy_removals": (
+        storage.source_layout.should_emit_local_copy_removals
+    ),
+    "relocation_suspended": storage.vault_relocation.local_work_suspended,
+    "decommission_suspended": (
+        storage.vault_decommission_service.local_work_suspended
+    ),
+}
 
 
 class CatalogEventHubTests(unittest.TestCase):
@@ -144,30 +156,15 @@ class CatalogEventsHttpTests(unittest.TestCase):
             volume_health="ok",
             volume_alias=None,
         )
-        self.addCleanup(
-            patch(
-                "app.storage.source_layout.vault_local_access",
-                return_value=access,
-            ).start()
-        )
-        self.addCleanup(
-            patch(
-                "app.storage.source_layout.should_emit_local_copy_removals",
-                return_value=True,
-            ).start()
-        )
-        self.addCleanup(
-            patch(
-                "app.storage.vault_relocation.local_work_suspended",
-                return_value=False,
-            ).start()
-        )
-        self.addCleanup(
-            patch(
-                "app.storage.vault_decommission_service.local_work_suspended",
-                return_value=False,
-            ).start()
-        )
+        for target, return_value in (
+            ("app.storage.source_layout.vault_local_access", access),
+            ("app.storage.source_layout.should_emit_local_copy_removals", True),
+            ("app.storage.vault_relocation.local_work_suspended", False),
+            ("app.storage.vault_decommission_service.local_work_suspended", False),
+        ):
+            patcher = patch(target, return_value=return_value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
         self.client = TestClient(
             app=main.app, client=("127.0.0.1", 50000), follow_redirects=False
@@ -920,6 +917,26 @@ class CatalogEventsHttpTests(unittest.TestCase):
         self.assertEqual(remaining, 0)
         self.assertTrue(
             any(msg.get("type") == "http.response.start" for msg in sent)
+        )
+
+
+class CatalogEventsPatchCleanupTests(unittest.TestCase):
+    def test_http_fixture_restores_storage_patches(self) -> None:
+        self.assertIs(
+            storage.source_layout.vault_local_access,
+            _ORIGINAL_STORAGE_PATCH_TARGETS["vault_local_access"],
+        )
+        self.assertIs(
+            storage.source_layout.should_emit_local_copy_removals,
+            _ORIGINAL_STORAGE_PATCH_TARGETS["should_emit_local_copy_removals"],
+        )
+        self.assertIs(
+            storage.vault_relocation.local_work_suspended,
+            _ORIGINAL_STORAGE_PATCH_TARGETS["relocation_suspended"],
+        )
+        self.assertIs(
+            storage.vault_decommission_service.local_work_suspended,
+            _ORIGINAL_STORAGE_PATCH_TARGETS["decommission_suspended"],
         )
 
 
