@@ -13,6 +13,15 @@ from .services.vault_quotas import (
 )
 from .services.vault_recovery import require_upload_custody
 from .services.lifecycle_pins import is_path_pinned
+from .services.directory_aggregates import (
+    count_child_directories,
+    ensure_directory_aggregates,
+    list_child_directory_rows,
+    mark_directory_dirty,
+    mark_file_id_dirty,
+    mark_path_dirty,
+    request_vault_rebuild,
+)
 
 
 class VaultFileNotFound(LookupError):
@@ -26,6 +35,18 @@ class ArchiveCatalog:
         self.connection = connection
         self.last_quota_evaluation = QuotaEvaluation(allowed=True)
         self.last_skipped_same_class = 0
+        self.last_listing_rows_materialized = 0
+
+    def _mark_path_aggregates_dirty(self, vault_id: int, path: str | None) -> None:
+        mark_path_dirty(self.connection, vault_id, path)
+
+    def _mark_file_aggregates_dirty(
+        self, vault_id: int, vault_file_id: str | None
+    ) -> None:
+        mark_file_id_dirty(self.connection, vault_id, vault_file_id)
+
+    def _request_aggregate_rebuild(self, vault_id: int) -> None:
+        request_vault_rebuild(self.connection, vault_id)
 
     def _get_or_create_file(self, vault_id: int, path: str, created_at: str) -> str:
         # Serialize identity creation per Vault across scanner and worker transactions.
@@ -167,6 +188,7 @@ class ArchiveCatalog:
                 observed_at,
             ),
         )
+        self._mark_path_aggregates_dirty(vault_id, path)
         return file_id
 
     def record_archive_version(
@@ -216,6 +238,7 @@ class ArchiveCatalog:
                     existing["id"],
                 ),
             )
+            self._mark_path_aggregates_dirty(vault_id, path)
             return existing["id"]
         file_id = self._resolve_cloud_path_file(vault_id, path, observed_at)
         self.connection.execute(
@@ -264,6 +287,7 @@ class ArchiveCatalog:
                 applied_policy_id,
             ),
         )
+        self._mark_path_aggregates_dirty(vault_id, path)
         return version_id
 
     def link_job_version(self, job_id: int, archive_version_id: str) -> None:
@@ -332,6 +356,14 @@ class ArchiveCatalog:
         checked_at: str,
         storage_class: str | None = None,
     ) -> None:
+        owned = self.connection.execute(
+            """
+            SELECT vault_id, vault_file_id
+            FROM archive_versions
+            WHERE id=%s
+            """,
+            (archive_version_id,),
+        ).fetchone()
         self.connection.execute(
             """
             UPDATE archive_versions
@@ -343,6 +375,10 @@ class ArchiveCatalog:
             """,
             (state, expiry, checked_at, storage_class, archive_version_id),
         )
+        if owned is not None:
+            self._mark_file_aggregates_dirty(
+                int(owned["vault_id"]), owned["vault_file_id"]
+            )
 
     def update_version_storage_placement(
         self,
@@ -354,6 +390,14 @@ class ArchiveCatalog:
         observed_at: str,
     ) -> None:
         """Preserve Archive Version identity while recording a class/placement change."""
+        owned = self.connection.execute(
+            """
+            SELECT vault_id, vault_file_id
+            FROM archive_versions
+            WHERE id=%s
+            """,
+            (archive_version_id,),
+        ).fetchone()
         self.connection.execute(
             """
             UPDATE archive_versions
@@ -376,6 +420,10 @@ class ArchiveCatalog:
                 archive_version_id,
             ),
         )
+        if owned is not None:
+            self._mark_file_aggregates_dirty(
+                int(owned["vault_id"]), owned["vault_file_id"]
+            )
 
     def publish_storage_class_copy(
         self,
@@ -424,6 +472,12 @@ class ArchiveCatalog:
     def mark_local_copy_missing(
         self, vault_file_id: str, *, observed_at: str
     ) -> None:
+        owned = self.connection.execute(
+            """
+            SELECT vault_id FROM vault_files WHERE id=%s
+            """,
+            (vault_file_id,),
+        ).fetchone()
         self.connection.execute(
             """
             UPDATE local_copies
@@ -432,6 +486,10 @@ class ArchiveCatalog:
             """,
             (observed_at, vault_file_id),
         )
+        if owned is not None:
+            self._mark_file_aggregates_dirty(
+                int(owned["vault_id"]), vault_file_id
+            )
 
     def observe_replaced_local_copy(
         self,
@@ -443,6 +501,12 @@ class ArchiveCatalog:
         observed_at: str,
     ) -> None:
         presence = "present" if file_type == "regular" else "unsupported"
+        owned = self.connection.execute(
+            """
+            SELECT vault_id FROM vault_files WHERE id=%s
+            """,
+            (vault_file_id,),
+        ).fetchone()
         self.connection.execute(
             """
             UPDATE local_copies
@@ -461,6 +525,10 @@ class ArchiveCatalog:
                 vault_file_id,
             ),
         )
+        if owned is not None:
+            self._mark_file_aggregates_dirty(
+                int(owned["vault_id"]), vault_file_id
+            )
 
     def mark_version_verified(
         self,
@@ -472,6 +540,14 @@ class ArchiveCatalog:
         if len(plaintext_sha256) != 64:
             raise ValueError("SHA-256 must contain 64 hexadecimal characters")
         int(plaintext_sha256, 16)
+        owned = self.connection.execute(
+            """
+            SELECT vault_id, vault_file_id
+            FROM archive_versions
+            WHERE id=%s
+            """,
+            (archive_version_id,),
+        ).fetchone()
         self.connection.execute(
             """
             UPDATE archive_versions
@@ -480,6 +556,10 @@ class ArchiveCatalog:
             """,
             (plaintext_sha256.lower(), verified_at, archive_version_id),
         )
+        if owned is not None:
+            self._mark_file_aggregates_dirty(
+                int(owned["vault_id"]), owned["vault_file_id"]
+            )
 
     def mark_version_mismatch(
         self,
@@ -491,6 +571,14 @@ class ArchiveCatalog:
         if len(plaintext_sha256) != 64:
             raise ValueError("SHA-256 must contain 64 hexadecimal characters")
         int(plaintext_sha256, 16)
+        owned = self.connection.execute(
+            """
+            SELECT vault_id, vault_file_id
+            FROM archive_versions
+            WHERE id=%s
+            """,
+            (archive_version_id,),
+        ).fetchone()
         self.connection.execute(
             """
             UPDATE archive_versions
@@ -499,6 +587,10 @@ class ArchiveCatalog:
             """,
             (plaintext_sha256.lower(), checked_at, archive_version_id),
         )
+        if owned is not None:
+            self._mark_file_aggregates_dirty(
+                int(owned["vault_id"]), owned["vault_file_id"]
+            )
 
     def set_local_fingerprint(
         self,
@@ -530,6 +622,7 @@ class ArchiveCatalog:
                 path,
             ),
         )
+        self._mark_path_aggregates_dirty(vault_id, path)
 
     def rename_file(
         self,
@@ -555,6 +648,9 @@ class ArchiveCatalog:
             raise VaultFileNotFound()
         if current["path"] == new_path:
             return
+        # Both old and new ancestor chains must rebuild before/after the move.
+        self._mark_path_aggregates_dirty(vault_id, current["path"])
+        self._mark_path_aggregates_dirty(vault_id, new_path)
         self.connection.execute(
             """
             UPDATE file_paths SET valid_to=%s
@@ -1303,6 +1399,8 @@ class ArchiveCatalog:
             """,
             (scan_id, vault_id, scan_id, scan_started_at),
         )
+        # Bulk reconciliation can touch an unbounded set of paths.
+        self._request_aggregate_rebuild(vault_id)
 
     def mark_unseen_local_copies_missing(
         self,
@@ -1332,6 +1430,7 @@ class ArchiveCatalog:
             query += " AND (observed_at IS NULL OR observed_at<=%s)"
             params.append(scan_started_at)
         self.connection.execute(query, params)
+        self._request_aggregate_rebuild(vault_id)
 
     def mark_local_path_missing(
         self, *, vault_id: int, path: str, observed_at: str
@@ -1356,6 +1455,9 @@ class ArchiveCatalog:
             """,
             (observed_at, vault_id, path, f"{escaped}/%"),
         )
+        # Path may be a file or a directory prefix of many descendants.
+        self._mark_path_aggregates_dirty(vault_id, path)
+        mark_directory_dirty(self.connection, vault_id, path)
 
     def get_file_by_path(
         self, vault_id: int, path: str
@@ -1607,6 +1709,432 @@ class ArchiveCatalog:
                 }
             )
         return result
+
+    def list_files_page(
+        self,
+        vault_id: int,
+        *,
+        search: str = "",
+        directory: str = "",
+        state: str = "",
+        page: int = 1,
+        page_size: int = 100,
+    ) -> dict[str, Any]:
+        """Return one page of browse/search items without full-catalog materialization.
+
+        Browse mode reads durable directory aggregates for child folders and
+        pages direct child files in SQL. Search mode filters and pages Vault
+        File rows in SQL. Both paths keep ``last_listing_rows_materialized``
+        equal to the returned page cardinality (not the descendant total).
+        """
+        ensure_directory_aggregates(self.connection, vault_id)
+        page = max(1, int(page))
+        page_size = max(1, int(page_size))
+        if search:
+            items, total = self._search_files_page(
+                vault_id,
+                search=search,
+                state=state,
+                page=page,
+                page_size=page_size,
+            )
+            mode = "search"
+        else:
+            items, total = self._browse_directory_page(
+                vault_id,
+                directory=directory or "",
+                state=state,
+                page=page,
+                page_size=page_size,
+            )
+            mode = "browse"
+        self.last_listing_rows_materialized = len(items)
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "directory": directory or "",
+            "mode": mode,
+        }
+
+    def _browse_directory_page(
+        self,
+        vault_id: int,
+        *,
+        directory: str,
+        state: str,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        parent_path = directory or ""
+        folder_total = count_child_directories(
+            self.connection,
+            vault_id,
+            parent_path=parent_path,
+            state_filter=state,
+        )
+        file_total = self._count_direct_child_files(
+            vault_id,
+            directory=parent_path,
+            state=state,
+        )
+        total = folder_total + file_total
+        offset = (page - 1) * page_size
+        items: list[dict[str, Any]] = []
+        if offset < folder_total:
+            folders = list_child_directory_rows(
+                self.connection,
+                vault_id,
+                parent_path=parent_path,
+                state_filter=state,
+                limit=page_size,
+                offset=offset,
+            )
+            items.extend(folders)
+            remaining = page_size - len(items)
+            if remaining > 0:
+                items.extend(
+                    self._list_direct_child_files(
+                        vault_id,
+                        directory=parent_path,
+                        state=state,
+                        limit=remaining,
+                        offset=0,
+                    )
+                )
+        else:
+            file_offset = offset - folder_total
+            items.extend(
+                self._list_direct_child_files(
+                    vault_id,
+                    directory=parent_path,
+                    state=state,
+                    limit=page_size,
+                    offset=file_offset,
+                )
+            )
+        return items, total
+
+    def _direct_child_file_clauses(
+        self,
+        vault_id: int,
+        *,
+        directory: str,
+        state: str,
+        search: str = "",
+    ) -> tuple[list[str], list[Any]]:
+        clauses = ["vf.vault_id=%s", "vf.status='active'"]
+        params: list[Any] = [vault_id]
+        if search:
+            clauses.append("lower(fp.path) LIKE lower(%s)")
+            params.append(f"%{search}%")
+        elif directory:
+            escaped = (
+                directory.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            # Immediate children only (portable SQLite + PostgreSQL).
+            clauses.append("fp.path LIKE %s ESCAPE '\\'")
+            params.append(f"{escaped}/%")
+            clauses.append("fp.path NOT LIKE %s ESCAPE '\\'")
+            params.append(f"{escaped}/%/%")
+        else:
+            clauses.append("fp.path NOT LIKE '%/%'")
+        # Visibility and state classification mirror list_file_rows.
+        # Presence may be NULL when no local_copies row exists — avoid SQL
+        # three-valued NOT (NULL) filtering out legitimate cloud-only files.
+        local_exists = (
+            "coalesce(lc.presence, 'missing') IN ('present', 'unsupported')"
+        )
+        cloud_exists = "av.id IS NOT NULL"
+        clauses.append(f"(({local_exists}) OR ({cloud_exists}))")
+        if state:
+            state_sql = {
+                "restoring": "av.restore_state = 'restoring'",
+                "both": (
+                    f"({local_exists}) AND ({cloud_exists}) "
+                    "AND coalesce(av.restore_state, '') <> 'restoring'"
+                ),
+                "local_only": (
+                    f"({local_exists}) AND NOT ({cloud_exists}) "
+                    "AND coalesce(av.restore_state, '') <> 'restoring'"
+                ),
+                "cloud_only": (
+                    f"NOT ({local_exists}) AND ({cloud_exists}) "
+                    "AND coalesce(av.restore_state, '') <> 'restoring'"
+                ),
+            }.get(state)
+            if state_sql is None:
+                clauses.append("1=0")
+            else:
+                clauses.append(f"({state_sql})")
+        return clauses, params
+
+    def _file_row_select_sql(self, clauses: list[str]) -> str:
+        return f"""
+            SELECT
+                fp.path,
+                lc.presence AS local_presence,
+                lc.file_type AS local_file_type,
+                lc.size AS local_size,
+                lc.plaintext_sha256 AS local_sha256,
+                lc.matched_archive_version_id,
+                av.id AS archive_version_id,
+                av.size AS cloud_size,
+                av.storage_class,
+                av.plaintext_sha256 AS version_sha256,
+                av.integrity,
+                av.availability,
+                av.restore_state,
+                av.restore_expiry,
+                (
+                    SELECT COUNT(*)
+                    FROM archive_versions recoverable
+                    WHERE recoverable.vault_file_id=vf.id
+                      AND recoverable.integrity='verified'
+                      AND recoverable.availability='available'
+                ) AS recoverable_version_count
+            FROM vault_files vf
+            JOIN file_paths fp
+              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+            LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
+            LEFT JOIN archive_versions av
+              ON av.id=(
+                  SELECT latest.id
+                  FROM archive_versions latest
+                  WHERE latest.vault_file_id=vf.id
+                    AND latest.availability NOT IN ('missing', 'purged')
+                  ORDER BY latest.version_number DESC
+                  LIMIT 1
+              )
+            WHERE {" AND ".join(clauses)}
+        """
+
+    def _materialize_file_items(
+        self,
+        vault_id: int,
+        rows: list[dict[str, Any]],
+        *,
+        name_from_path: bool,
+        directory: str = "",
+    ) -> list[dict[str, Any]]:
+        prefix = f"{directory}/" if directory else ""
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            local_exists = row["local_presence"] in {"present", "unsupported"}
+            cloud_exists = row["archive_version_id"] is not None
+            if not local_exists and not cloud_exists:
+                continue
+            state = (
+                "restoring"
+                if row["restore_state"] == "restoring"
+                else "both"
+                if local_exists and cloud_exists
+                else "local_only"
+                if local_exists
+                else "cloud_only"
+            )
+            upload_eligible = (
+                row["local_presence"] == "present"
+                and row["local_file_type"] == "regular"
+                and not cloud_exists
+            )
+            recoverable_count = int(row["recoverable_version_count"] or 0)
+            recover_eligible = not local_exists and recoverable_count > 0
+            cleanup_eligible = (
+                row["local_presence"] == "present"
+                and row["local_file_type"] == "regular"
+                and cloud_exists
+                and row["integrity"] == "verified"
+                and row["availability"] == "available"
+                and row["matched_archive_version_id"] == row["archive_version_id"]
+                and row["local_sha256"] is not None
+                and row["local_sha256"] == row["version_sha256"]
+            )
+            lifecycle_pinned = is_path_pinned(
+                self.connection, vault_id, row["path"]
+            )
+            storage_class_eligible = (
+                cloud_exists
+                and row["availability"] == "available"
+                and row["restore_state"] != "restoring"
+            )
+            if name_from_path:
+                name = row["path"]
+            else:
+                name = row["path"][len(prefix):] if prefix else row["path"]
+            items.append(
+                {
+                    "type": "file",
+                    "name": name,
+                    "path": row["path"],
+                    "local_exists": int(local_exists),
+                    "local_size": row["local_size"],
+                    "local_file_type": row["local_file_type"],
+                    "cloud_exists": int(cloud_exists),
+                    "cloud_size": row["cloud_size"],
+                    "storage_class": row["storage_class"],
+                    "integrity": row["integrity"],
+                    "availability": row["availability"],
+                    "restore_state": row["restore_state"],
+                    "restore_expiry": row["restore_expiry"],
+                    "state": state,
+                    "upload_eligible": upload_eligible,
+                    "recover_eligible": recover_eligible,
+                    "recoverable_version_count": recoverable_count,
+                    "cleanup_eligible": cleanup_eligible,
+                    "lifecycle_pinned": lifecycle_pinned,
+                    "storage_class_eligible": storage_class_eligible,
+                }
+            )
+        return items
+
+    def _count_direct_child_files(
+        self,
+        vault_id: int,
+        *,
+        directory: str,
+        state: str,
+    ) -> int:
+        clauses, params = self._direct_child_file_clauses(
+            vault_id, directory=directory, state=state
+        )
+        row = self.connection.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM vault_files vf
+            JOIN file_paths fp
+              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+            LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
+            LEFT JOIN archive_versions av
+              ON av.id=(
+                  SELECT latest.id
+                  FROM archive_versions latest
+                  WHERE latest.vault_file_id=vf.id
+                    AND latest.availability NOT IN ('missing', 'purged')
+                  ORDER BY latest.version_number DESC
+                  LIMIT 1
+              )
+            WHERE {" AND ".join(clauses)}
+            """,
+            params,
+        ).fetchone()
+        return int(row["total"] or 0) if row else 0
+
+    def _list_direct_child_files(
+        self,
+        vault_id: int,
+        *,
+        directory: str,
+        state: str,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        clauses, params = self._direct_child_file_clauses(
+            vault_id, directory=directory, state=state
+        )
+        sql = self._file_row_select_sql(clauses)
+        rows = self.connection.execute(
+            f"""
+            {sql}
+            ORDER BY lower(fp.path) ASC, fp.path ASC
+            LIMIT %s OFFSET %s
+            """,
+            [*params, int(limit), max(0, int(offset))],
+        ).fetchall()
+        return self._materialize_file_items(
+            vault_id,
+            rows,
+            name_from_path=False,
+            directory=directory,
+        )
+
+    def _search_files_page(
+        self,
+        vault_id: int,
+        *,
+        search: str,
+        state: str,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        clauses, params = self._direct_child_file_clauses(
+            vault_id,
+            directory="",
+            state=state,
+            search=search,
+        )
+        # Search ignores the root-only instr() clause added for browse.
+        # Rebuild clauses specifically for search.
+        clauses = ["vf.vault_id=%s", "vf.status='active'"]
+        params = [vault_id]
+        clauses.append("lower(fp.path) LIKE lower(%s)")
+        params.append(f"%{search}%")
+        local_exists = (
+            "coalesce(lc.presence, 'missing') IN ('present', 'unsupported')"
+        )
+        cloud_exists = "av.id IS NOT NULL"
+        clauses.append(f"(({local_exists}) OR ({cloud_exists}))")
+        if state:
+            state_sql = {
+                "restoring": "av.restore_state = 'restoring'",
+                "both": (
+                    f"({local_exists}) AND ({cloud_exists}) "
+                    "AND coalesce(av.restore_state, '') <> 'restoring'"
+                ),
+                "local_only": (
+                    f"({local_exists}) AND NOT ({cloud_exists}) "
+                    "AND coalesce(av.restore_state, '') <> 'restoring'"
+                ),
+                "cloud_only": (
+                    f"NOT ({local_exists}) AND ({cloud_exists}) "
+                    "AND coalesce(av.restore_state, '') <> 'restoring'"
+                ),
+            }.get(state)
+            if state_sql is None:
+                clauses.append("1=0")
+            else:
+                clauses.append(f"({state_sql})")
+        total_row = self.connection.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM vault_files vf
+            JOIN file_paths fp
+              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+            LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
+            LEFT JOIN archive_versions av
+              ON av.id=(
+                  SELECT latest.id
+                  FROM archive_versions latest
+                  WHERE latest.vault_file_id=vf.id
+                    AND latest.availability NOT IN ('missing', 'purged')
+                  ORDER BY latest.version_number DESC
+                  LIMIT 1
+              )
+            WHERE {" AND ".join(clauses)}
+            """,
+            params,
+        ).fetchone()
+        total = int(total_row["total"] or 0) if total_row else 0
+        offset = (page - 1) * page_size
+        sql = self._file_row_select_sql(clauses)
+        rows = self.connection.execute(
+            f"""
+            {sql}
+            ORDER BY lower(fp.path) ASC, fp.path ASC
+            LIMIT %s OFFSET %s
+            """,
+            [*params, int(page_size), max(0, int(offset))],
+        ).fetchall()
+        items = self._materialize_file_items(
+            vault_id,
+            rows,
+            name_from_path=True,
+        )
+        return items, total
 
     @staticmethod
     def _claimable_job_status_sql(

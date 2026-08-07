@@ -497,6 +497,11 @@ def record_catalog_revision(
 ) -> dict[str, Any]:
     """Append one broad catalog invalidation event in the caller's transaction."""
     from .catalog_event_hub import DEFAULT_INVALIDATE_DOMAINS, normalize_invalidate_domains
+    from .directory_aggregates import flush_directory_aggregates
+
+    # Keep durable directory aggregates inside the same transaction as the
+    # catalog mutation + revision so a rolled-back burst never leaves rollups.
+    flush_directory_aggregates(connection, vault_id=int(vault_id))
 
     domains = normalize_invalidate_domains(
         invalidate if invalidate is not None else DEFAULT_INVALIDATE_DOMAINS

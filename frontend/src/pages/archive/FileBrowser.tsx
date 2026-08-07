@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { DEMO_MODE_ENABLED, getDemoSearchParam } from "@/demoGate";
@@ -192,6 +192,9 @@ export function FileBrowser({
     ...filesQueryOptions(query, offlineCacheRequestOptions),
     queryKey: fileQueryKey,
     refetchInterval: filesRefetchIntervalFromJobs(jobsQuery.data),
+    // Keep the previous directory page visible during invalidation/refetch so
+    // event-driven updates never flash a false-empty "0 items" table.
+    placeholderData: keepPreviousData,
   });
   const forceOfflineDemo =
     DEMO_MODE_ENABLED && getDemoSearchParam("offline") === "1";
@@ -326,8 +329,14 @@ export function FileBrowser({
   const crumbs = buildBreadcrumbs(directory, t("ui.breadcrumb_archive"));
   const narrowCrumbs = collapseBreadcrumbs(crumbs);
   const data = displayData;
-  const total = data?.total ?? 0;
-  const pages = Math.max(1, Math.ceil(total / DEFAULT_PAGE_SIZE));
+  const isInitialLoading = !displayData && (filesQuery.isLoading || filesQuery.isPending);
+  const isListingError =
+    !displayData && filesQuery.isError && !isBrowserOffline();
+  const total = data?.total;
+  const pages =
+    total === undefined
+      ? null
+      : Math.max(1, Math.ceil(total / DEFAULT_PAGE_SIZE));
   const unit =
     data?.mode === "search" ? t("ui.files_found_unit") : t("ui.items_unit");
   const hasFilter = Boolean(q || state);
@@ -479,13 +488,43 @@ export function FileBrowser({
       </div>
 
       <div className="min-w-0 overflow-x-hidden pt-4">
-        {filesQuery.isLoading && !displayData ? (
-          <p className="text-sm text-muted" data-testid="file-list-loading">
-            {t("ui.file_list_placeholder")}
-          </p>
+        {isInitialLoading ? (
+          <div
+            className="space-y-2"
+            data-testid="file-list-loading"
+            role="status"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <p className="text-sm text-muted">{t("ui.file_list_loading")}</p>
+            <div className="h-12 animate-pulse rounded-lg bg-canvas" />
+            <div className="h-12 animate-pulse rounded-lg bg-canvas" />
+            <div className="h-12 animate-pulse rounded-lg bg-canvas" />
+          </div>
         ) : null}
 
-        {data && data.items.length === 0 ? (
+        {isListingError ? (
+          <div
+            role="alert"
+            data-testid="file-list-error"
+            className="rounded-lg border border-line bg-canvas px-3 py-6 text-center"
+          >
+            <p className="text-sm text-muted">{t("ui.file_list_error")}</p>
+            <Button
+              type="button"
+              variant="secondary"
+              className="mt-3"
+              data-testid="file-list-retry"
+              onClick={() => {
+                void filesQuery.refetch();
+              }}
+            >
+              {t("ui.file_list_retry")}
+            </Button>
+          </div>
+        ) : null}
+
+        {data && data.items.length === 0 && !isInitialLoading ? (
           <p
             className="py-8 text-center text-sm text-muted"
             data-testid="file-list-empty"
@@ -551,18 +590,20 @@ export function FileBrowser({
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
           <p className="text-sm text-muted" data-testid="page-label">
-            {t("ui.page_label", {
-              page,
-              pages,
-              total: total.toLocaleString("en-US"),
-              unit,
-            })}
+            {total === undefined || pages === null
+              ? t("ui.file_list_loading")
+              : t("ui.page_label", {
+                  page,
+                  pages,
+                  total: total.toLocaleString("en-US"),
+                  unit,
+                })}
           </p>
           <div className="flex gap-2">
             <Button
               type="button"
               variant="secondary"
-              disabled={page <= 1}
+              disabled={page <= 1 || total === undefined}
               data-testid="page-previous"
               onClick={() => changePage(page - 1)}
             >
@@ -571,7 +612,9 @@ export function FileBrowser({
             <Button
               type="button"
               variant="secondary"
-              disabled={page >= pages}
+              disabled={
+                total === undefined || pages === null || page >= pages
+              }
               data-testid="page-next"
               onClick={() => changePage(page + 1)}
             >

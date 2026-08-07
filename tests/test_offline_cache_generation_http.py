@@ -140,7 +140,7 @@ class OfflineCacheGenerationHttpTests(unittest.TestCase):
     ):
         listing_started = Event()
         release_listing = Event()
-        original = ArchiveCatalog.list_file_rows
+        original = ArchiveCatalog.list_files_page
 
         def blocked_listing(
             catalog: ArchiveCatalog,
@@ -152,7 +152,7 @@ class OfflineCacheGenerationHttpTests(unittest.TestCase):
                 raise TimeoutError("test did not release the blocked listing")
             return original(catalog, *args, **kwargs)
 
-        with patch.object(ArchiveCatalog, "list_file_rows", new=blocked_listing):
+        with patch.object(ArchiveCatalog, "list_files_page", new=blocked_listing):
             with ThreadPoolExecutor(max_workers=1) as executor:
                 request = executor.submit(
                     self.client.get,

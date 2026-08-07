@@ -2422,24 +2422,29 @@ def list_files(
         else None
     )
     directory = normalize_directory(directory, api=True)
+    started = time.perf_counter()
     with db() as connection:
-        rows = ArchiveCatalog(connection).list_file_rows(
+        catalog = ArchiveCatalog(connection)
+        listing = catalog.list_files_page(
             vault["id"],
             search=q,
-            path_prefix=directory if not q else "",
+            directory=directory,
+            state=state,
+            page=page,
+            page_size=page_size,
         )
-        if q:
-            if state:
-                rows = [row for row in rows if row["state"] == state]
-            total = len(rows)
-            offset = (page - 1) * page_size
-            rows = rows[offset:offset + page_size]
-            items = [{**row, "type": "file", "name": row["path"]} for row in rows]
-        else:
-            entries = build_directory_items(rows, directory, state)
-            total = len(entries)
-            offset = (page - 1) * page_size
-            items = entries[offset:offset + page_size]
+        items = listing["items"]
+        total = listing["total"]
+        rows_materialized = int(catalog.last_listing_rows_materialized)
+
+    metrics_service.set_gauge(
+        "directory_listing_duration_seconds",
+        float(time.perf_counter() - started),
+    )
+    metrics_service.set_gauge(
+        "directory_listing_rows_materialized",
+        float(rows_materialized),
+    )
 
     # The list query may have overlapped a logout or Vault selection. Do not
     # return a cacheable old payload after the server-side Session transitioned.
@@ -2457,7 +2462,7 @@ def list_files(
         "total": total,
         "page": page,
         "directory": directory,
-        "mode": "search" if q else "browse",
+        "mode": listing["mode"],
     }
 
 
