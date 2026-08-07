@@ -1852,7 +1852,8 @@ class ArchiveCatalog:
             clauses.append("fp.path NOT LIKE %s ESCAPE '\\'")
             params.append(f"{escaped}/%/%")
         else:
-            clauses.append("fp.path NOT LIKE '%/%'")
+            clauses.append("fp.path NOT LIKE %s")
+            params.append("%/%")
         # Visibility and state classification mirror list_file_rows.
         # Presence may be NULL when no local_copies row exists — avoid SQL
         # three-valued NOT (NULL) filtering out legitimate cloud-only files.
