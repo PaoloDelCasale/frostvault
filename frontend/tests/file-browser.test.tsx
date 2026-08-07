@@ -794,6 +794,30 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
     expect(screen.getByTestId("page-label")).toHaveTextContent("3 items");
   });
 
+  it("treats aggregate_status=loading with empty items as loading, not empty", async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) {
+        return jsonResponse({ items: [], groups: [] });
+      }
+      return jsonResponse({
+        items: [],
+        total: 0,
+        page: 1,
+        directory: "",
+        mode: "browse",
+        aggregate_status: "loading",
+      });
+    });
+
+    renderBrowser();
+    await waitFor(() => {
+      expect(screen.getByTestId("file-list-loading")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("file-list-empty")).not.toBeInTheDocument();
+    expect(screen.getByTestId("page-label")).toHaveTextContent("Loading folder…");
+    expect(screen.getByTestId("page-label")).not.toHaveTextContent("0 items");
+  });
+
   it("exposes an accessible retry control when the listing fails", async () => {
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       if (String(input).includes("/api/jobs")) {

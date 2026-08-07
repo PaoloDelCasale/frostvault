@@ -48,6 +48,7 @@ from .services.catalog_audit import audit_vault_catalog
 from .services.directory_aggregates import (
     invalidate_for_vault_file,
     mark_path_dirty,
+    process_directory_aggregate_maintenance,
 )
 from .services.lifecycle_policies import (
     load_policy_assignments,
@@ -6257,6 +6258,9 @@ async def background_loop() -> None:
             # disabled, before workers or scheduled scans can touch local data.
             await asyncio.to_thread(source_layout.verify_mounts_once)
             await asyncio.to_thread(process_jobs_once)
+            # Converge durable directory aggregate dirty/rebuild work off the
+            # /api/files request path (issue #229).
+            await asyncio.to_thread(process_directory_aggregate_maintenance)
             await asyncio.to_thread(
                 vault_decommission_service.reconcile_all,
                 local_delete_enabled=runtime.allow_local_delete,

@@ -9,13 +9,22 @@ maintains a derived projection used only by directory listing:
 
 Callers mutate the catalog on a shared connection, mark dirty paths/files, and
 :func:`flush_directory_aggregates` before commit (also invoked from catalog
-revision publication and the listing read path).
+revision publication). The listing read path only *schedules* maintenance and
+never performs an unbounded rebuild: it returns ``ready`` / ``loading`` /
+``stale`` plus the existing projection when one exists.
+
+Dirty-directory refresh uses SQL-side rollups (bounded result cardinality).
+Full Vault rebuild streams contributions in bounded batches and folds them into
+per-directory rollups without retaining a full descendant list in Python.
 """
 from __future__ import annotations
 
 import json
+import logging
+import threading
 import time
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
@@ -26,6 +35,21 @@ from .lifecycle_pins import is_path_pinned, load_lifecycle_pins
 
 STATUS_READY = "ready"
 STATUS_REBUILD_REQUIRED = "rebuild_required"
+
+# Public listing readiness (returned by /api/files). Distinct from durable
+# directory_aggregate_status.status which only stores ready/rebuild_required.
+AGGREGATE_LISTING_READY = "ready"
+AGGREGATE_LISTING_LOADING = "loading"
+AGGREGATE_LISTING_STALE = "stale"
+
+# Full-rebuild contribution stream size. Keeps peak Python cardinality bounded
+# while folding into O(directories) rollups.
+REBUILD_CONTRIBUTION_BATCH_SIZE = 2_000
+
+_logger = logging.getLogger(__name__)
+_maintenance_lock = threading.Lock()
+_maintenance_inflight: dict[int | None, threading.Thread] = {}
+_maintenance_scheduling_enabled = True
 
 _STATE_COLUMNS = {
     "local_only": "state_local_only",
@@ -269,13 +293,191 @@ def _status_row(connection: Any, vault_id: int) -> dict[str, Any] | None:
         return None
 
 
-def ensure_directory_aggregates(connection: Any, vault_id: int) -> None:
-    """Rebuild when the Vault has never been projected or is marked stale."""
+def set_maintenance_scheduling_enabled(enabled: bool) -> None:
+    """Test seam: disable background scheduling without patching threads."""
+    global _maintenance_scheduling_enabled
+    _maintenance_scheduling_enabled = bool(enabled)
+
+
+def _vault_has_projection(connection: Any, vault_id: int) -> bool:
+    try:
+        row = connection.execute(
+            """
+            SELECT 1 AS present
+            FROM directory_aggregates
+            WHERE vault_id=%s
+            LIMIT 1
+            """,
+            (int(vault_id),),
+        ).fetchone()
+    except Exception:
+        return False
+    return row is not None
+
+
+def _vault_has_dirty(connection: Any, vault_id: int) -> bool:
+    try:
+        row = connection.execute(
+            """
+            SELECT 1 AS present
+            FROM directory_aggregate_dirty
+            WHERE vault_id=%s
+            LIMIT 1
+            """,
+            (int(vault_id),),
+        ).fetchone()
+    except Exception:
+        return False
+    return row is not None
+
+
+def schedule_directory_aggregate_maintenance(vault_id: int | None = None) -> bool:
+    """Single-flight background maintenance for one Vault (or all pending).
+
+    Returns True when a new worker thread was started. Durable dirty /
+    rebuild_required rows remain the source of truth for restart recovery even
+    when scheduling is disabled (tests) or a worker is already running.
+    """
+    if not _maintenance_scheduling_enabled:
+        return False
+    key: int | None = int(vault_id) if vault_id is not None else None
+    with _maintenance_lock:
+        existing = _maintenance_inflight.get(key)
+        if existing is not None and existing.is_alive():
+            return False
+        thread = threading.Thread(
+            target=_run_scheduled_maintenance,
+            kwargs={"vault_id": key},
+            name=f"directory-aggregates-{key if key is not None else 'all'}",
+            daemon=True,
+        )
+        _maintenance_inflight[key] = thread
+        thread.start()
+        return True
+
+
+def _run_scheduled_maintenance(*, vault_id: int | None) -> None:
+    try:
+        process_directory_aggregate_maintenance(vault_id=vault_id, publish=True)
+    except Exception:
+        _logger.exception(
+            "directory aggregate maintenance failed vault_id=%s",
+            vault_id,
+        )
+    finally:
+        with _maintenance_lock:
+            current = _maintenance_inflight.get(vault_id)
+            if current is threading.current_thread():
+                _maintenance_inflight.pop(vault_id, None)
+
+
+def process_directory_aggregate_maintenance(
+    *,
+    vault_id: int | None = None,
+    publish: bool = True,
+    connection: Any | None = None,
+) -> dict[str, int]:
+    """Apply pending dirty/rebuild work (background worker / recovery path).
+
+    When ``connection`` is omitted, opens a short-lived ``db()`` handle. When
+    provided (tests or an outer transaction owner), uses that connection and
+    does not commit/close it. Publishes one catalog revision per Vault that had
+    work so open browsers converge via #227 invalidation without idle polling.
+    """
+    # Local import keeps module import light and avoids cycle at import time.
+    from ..database import db
+    from .catalog_event_hub import publish_committed_event
+    from .catalog_events import record_catalog_revision
+
+    totals = {
+        "rebuilt_directories": 0,
+        "full_rebuilds": 0,
+        "vaults": 0,
+        "dirty_file_marks": 0,
+    }
+    published_events: list[dict[str, Any]] = []
+
+    def _run(active: Any) -> None:
+        if vault_id is not None:
+            vault_ids = [int(vault_id)]
+        else:
+            status_rows = active.execute(
+                """
+                SELECT vault_id FROM directory_aggregate_status
+                WHERE status=%s
+                """,
+                (STATUS_REBUILD_REQUIRED,),
+            ).fetchall()
+            dirty_rows = active.execute(
+                "SELECT DISTINCT vault_id FROM directory_aggregate_dirty"
+            ).fetchall()
+            vault_ids = sorted(
+                {
+                    int(row["vault_id"])
+                    for row in (*status_rows, *dirty_rows)
+                }
+            )
+        for vid in vault_ids:
+            result = flush_directory_aggregates(active, vault_id=vid)
+            totals["rebuilt_directories"] += int(result["rebuilt_directories"])
+            totals["full_rebuilds"] += int(result["full_rebuilds"])
+            totals["dirty_file_marks"] += int(result["dirty_file_marks"])
+            totals["vaults"] += 1
+            if publish and (
+                result["rebuilt_directories"] or result["full_rebuilds"]
+            ):
+                published_events.append(
+                    record_catalog_revision(
+                        active,
+                        vault_id=vid,
+                        reason="directory_aggregates",
+                        invalidate=("files",),
+                    )
+                )
+
+    if connection is not None:
+        _run(connection)
+    else:
+        with db() as owned:
+            _run(owned)
+
+    if publish:
+        for event in published_events:
+            try:
+                publish_committed_event(event)
+            except Exception:
+                _logger.exception(
+                    "failed to publish directory aggregate revision"
+                )
+    return totals
+
+
+def ensure_directory_aggregates(connection: Any, vault_id: int) -> str:
+    """Return listing readiness; never run unbounded rebuild on the request path.
+
+    Schedules background maintenance when the durable projection is missing,
+    marked ``rebuild_required``, or has pending dirty rows. Callers must treat
+    ``loading`` / ``stale`` as non-authoritative empty/prior projection states.
+    """
     status = _status_row(connection, vault_id)
-    if status is None or str(status.get("status") or "") != STATUS_READY:
-        rebuild_vault_directory_aggregates(connection, vault_id)
-        return
-    flush_directory_aggregates(connection, vault_id=vault_id)
+    if status is None:
+        request_vault_rebuild(connection, vault_id)
+        schedule_directory_aggregate_maintenance(int(vault_id))
+        return AGGREGATE_LISTING_LOADING
+
+    current = str(status.get("status") or "")
+    if current != STATUS_READY:
+        schedule_directory_aggregate_maintenance(int(vault_id))
+        if _vault_has_projection(connection, vault_id):
+            return AGGREGATE_LISTING_STALE
+        return AGGREGATE_LISTING_LOADING
+
+    # Ready projection with durable dirty rows (restart / partial flush). Do not
+    # rebuild large dirty ancestors on the listing connection — schedule only.
+    if _vault_has_dirty(connection, vault_id):
+        schedule_directory_aggregate_maintenance(int(vault_id))
+        return AGGREGATE_LISTING_STALE
+    return AGGREGATE_LISTING_READY
 
 
 def _claim_dirty_rows(
@@ -458,9 +660,11 @@ def rebuild_vault_directory_aggregates(
 ) -> int:
     """Replace every directory aggregate row for ``vault_id`` from the catalog.
 
-    Dirty rows newer than ``dirty_cutoff`` (default: now at rebuild start) are
-    preserved so concurrent transactions that mark after the claim remain
-    durable for the next flush.
+    Streams visible file contributions in bounded batches and folds each batch
+    into per-directory rollups. Peak Python cardinality is O(batch + dirs),
+    never a full descendant materialization. Dirty rows newer than
+    ``dirty_cutoff`` (default: now at rebuild start) are preserved so concurrent
+    transactions that mark after the claim remain durable for the next flush.
     """
     started = time.perf_counter()
     cutoff = dirty_cutoff or _now()
@@ -468,12 +672,14 @@ def rebuild_vault_directory_aggregates(
         "DELETE FROM directory_aggregates WHERE vault_id=%s",
         (int(vault_id),),
     )
-    contributions = _iter_visible_file_contributions(connection, vault_id)
     rolled: dict[str, _DirectoryRollup] = {}
-    for contribution in contributions:
-        for directory in ancestor_directories(contribution.path):
-            rollup = rolled.setdefault(directory, _DirectoryRollup())
-            rollup.add(contribution)
+    max_batch_seen = 0
+    for batch in _iter_visible_file_contribution_batches(connection, vault_id):
+        max_batch_seen = max(max_batch_seen, len(batch))
+        for contribution in batch:
+            for directory in ancestor_directories(contribution.path):
+                rollup = rolled.setdefault(directory, _DirectoryRollup())
+                rollup.add(contribution)
     for directory, rollup in rolled.items():
         _upsert_rollup(connection, vault_id, directory, rollup)
     _delete_claimed_dirty_rows(
@@ -496,7 +702,7 @@ def rebuild_vault_directory_aggregates(
     metrics_service.set_gauge("directory_aggregate_rebuild_status", 1.0)
     metrics_service.set_gauge(
         "directory_aggregate_update_batch_size",
-        float(len(rolled)),
+        float(max_batch_seen if max_batch_seen else len(rolled)),
     )
     return len(rolled)
 
@@ -569,21 +775,29 @@ class _DirectoryRollup:
             self.storage_classes[key] = self.storage_classes.get(key, 0) + 1
 
 
-def _iter_visible_file_contributions(
-    connection: Any,
-    vault_id: int,
+def _visible_file_select_sql(
     *,
     path_prefix: str | None = None,
-) -> list[_FileContribution]:
-    """Load visible file contributions (same classification as list_file_rows)."""
+    keyset_path: str | None = None,
+    limit: int | None = None,
+) -> tuple[str, list[Any]]:
+    """Shared SELECT for visible catalog rows (SQLite/PG portable)."""
     clauses = ["vf.vault_id=%s", "vf.status='active'"]
-    params: list[Any] = [vault_id]
+    params: list[Any] = []
+    # vault_id is bound by the caller as the first param after building SQL.
     if path_prefix:
         escaped = _escape_like(path_prefix)
-        clauses.append("(fp.path=%s OR fp.path LIKE %s ESCAPE '\\')")
-        params.extend([path_prefix, f"{escaped}/%"])
-    rows = connection.execute(
-        f"""
+        # Strict descendants under directory/ (directory path itself is never a file).
+        clauses.append("fp.path LIKE %s ESCAPE '\\'")
+        params.append(f"{escaped}/%")
+    if keyset_path is not None:
+        clauses.append("fp.path > %s")
+        params.append(keyset_path)
+    limit_sql = ""
+    if limit is not None:
+        limit_sql = "LIMIT %s"
+        params.append(int(limit))
+    sql = f"""
         SELECT
             vf.id AS vault_file_id,
             fp.path,
@@ -620,17 +834,69 @@ def _iter_visible_file_contributions(
               LIMIT 1
           )
         WHERE {" AND ".join(clauses)}
-        ORDER BY lower(fp.path)
-        """,
-        params,
-    ).fetchall()
-    # Pin matching is path-prefix based; load once per rebuild scope.
+        ORDER BY fp.path ASC
+        {limit_sql}
+        """
+    return sql, params
+
+
+def _iter_visible_file_contribution_batches(
+    connection: Any,
+    vault_id: int,
+    *,
+    path_prefix: str | None = None,
+    batch_size: int | None = None,
+) -> Iterator[list[_FileContribution]]:
+    """Yield bounded batches of visible file contributions (no full list)."""
+    size = int(batch_size or REBUILD_CONTRIBUTION_BATCH_SIZE)
+    if size <= 0:
+        size = REBUILD_CONTRIBUTION_BATCH_SIZE
     pins = load_lifecycle_pins(connection, vault_id)
+    keyset_path = ""
+    while True:
+        sql, extra_params = _visible_file_select_sql(
+            path_prefix=path_prefix,
+            keyset_path=keyset_path,
+            limit=size,
+        )
+        rows = connection.execute(
+            sql,
+            (int(vault_id), *extra_params),
+        ).fetchall()
+        if not rows:
+            return
+        batch: list[_FileContribution] = []
+        for row in rows:
+            contribution = _contribution_from_row(row, pins=pins)
+            if contribution is not None:
+                batch.append(contribution)
+        # Advance keyset even when a page had only invisible rows so we cannot
+        # spin forever on a dense missing/local-less band.
+        keyset_path = str(rows[-1]["path"])
+        if batch:
+            yield batch
+        if len(rows) < size:
+            return
+
+
+def _iter_visible_file_contributions(
+    connection: Any,
+    vault_id: int,
+    *,
+    path_prefix: str | None = None,
+) -> list[_FileContribution]:
+    """Compatibility helper: materialize contributions (tests / small scopes).
+
+    Production rebuild and dirty refresh must not call this for unbounded
+    prefixes — use batch streaming or :func:`_rebuild_directory` SQL rollup.
+    """
     contributions: list[_FileContribution] = []
-    for row in rows:
-        contribution = _contribution_from_row(row, pins=pins)
-        if contribution is not None:
-            contributions.append(contribution)
+    for batch in _iter_visible_file_contribution_batches(
+        connection,
+        vault_id,
+        path_prefix=path_prefix,
+    ):
+        contributions.extend(batch)
     return contributions
 
 
@@ -720,23 +986,167 @@ def _pinned_with_loaded(pins: tuple[tuple[str, bool], ...], path: str) -> bool:
     return False
 
 
+def _pin_match_sql(
+    pins: tuple[tuple[str, bool], ...],
+) -> tuple[str, list[Any]]:
+    """SQL CASE expression counting lifecycle-pinned paths (bounded pin list)."""
+    if not pins:
+        return "0", []
+    clauses: list[str] = []
+    params: list[Any] = []
+    for pin_path, is_directory in pins:
+        normalized = str(pin_path).strip().strip("/")
+        if not normalized:
+            continue
+        if is_directory:
+            escaped = _escape_like(normalized)
+            clauses.append("(fp.path = %s OR fp.path LIKE %s ESCAPE '\\')")
+            params.extend([normalized, f"{escaped}/%"])
+        else:
+            clauses.append("fp.path = %s")
+            params.append(normalized)
+    if not clauses:
+        return "0", []
+    return f"CASE WHEN ({' OR '.join(clauses)}) THEN 1 ELSE 0 END", params
+
+
 def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
+    """Refresh one directory rollup via SQL aggregation (no descendant list)."""
     directory = (directory or "").strip().strip("/")
     if not directory:
         return
-    contributions = _iter_visible_file_contributions(
-        connection,
-        vault_id,
-        path_prefix=directory,
-    )
-    # path_prefix includes the directory path itself if it were a file; filter
-    # to strict descendants only (files under directory/).
-    prefix = f"{directory}/"
-    rollup = _DirectoryRollup()
-    for contribution in contributions:
-        if contribution.path.startswith(prefix):
-            rollup.add(contribution)
-    if rollup.item_count <= 0:
+    pins = load_lifecycle_pins(connection, vault_id)
+    pin_expr, pin_params = _pin_match_sql(pins)
+    escaped = _escape_like(directory)
+    # Classification mirrors _contribution_from_row / list_file_rows exactly.
+    summary = connection.execute(
+        f"""
+        SELECT
+            COUNT(*) AS item_count,
+            COALESCE(SUM(classified.total_size), 0) AS total_size,
+            COALESCE(SUM(classified.local_size), 0) AS local_size,
+            COALESCE(SUM(classified.cloud_size), 0) AS cloud_size,
+            COALESCE(SUM(classified.state_local_only), 0) AS state_local_only,
+            COALESCE(SUM(classified.state_cloud_only), 0) AS state_cloud_only,
+            COALESCE(SUM(classified.state_both), 0) AS state_both,
+            COALESCE(SUM(classified.state_restoring), 0) AS state_restoring,
+            COALESCE(SUM(classified.upload_eligible), 0) AS action_upload,
+            COALESCE(SUM(classified.recover_eligible), 0) AS action_recover,
+            COALESCE(SUM(classified.cleanup_eligible), 0) AS action_free_space,
+            COALESCE(SUM(classified.has_cloud), 0) AS action_cloud_archive,
+            COALESCE(SUM(classified.has_cloud), 0) AS action_cloud_purge,
+            COALESCE(SUM(classified.storage_class_eligible), 0) AS action_storage_class,
+            COALESCE(SUM(classified.lifecycle_pinned), 0) AS pinned_count
+        FROM (
+            SELECT
+                CASE
+                    WHEN lc.size IS NOT NULL THEN lc.size
+                    ELSE COALESCE(av.size, 0)
+                END AS total_size,
+                CASE
+                    WHEN lc.presence IN ('present', 'unsupported')
+                    THEN COALESCE(lc.size, 0)
+                    ELSE 0
+                END AS local_size,
+                CASE
+                    WHEN av.id IS NOT NULL THEN COALESCE(av.size, 0)
+                    ELSE 0
+                END AS cloud_size,
+                CASE
+                    WHEN av.restore_state = 'restoring' THEN 0
+                    WHEN lc.presence IN ('present', 'unsupported')
+                     AND av.id IS NULL THEN 1
+                    ELSE 0
+                END AS state_local_only,
+                CASE
+                    WHEN av.restore_state = 'restoring' THEN 0
+                    WHEN (
+                        lc.presence IS NULL
+                        OR lc.presence NOT IN ('present', 'unsupported')
+                    ) AND av.id IS NOT NULL THEN 1
+                    ELSE 0
+                END AS state_cloud_only,
+                CASE
+                    WHEN av.restore_state = 'restoring' THEN 0
+                    WHEN lc.presence IN ('present', 'unsupported')
+                     AND av.id IS NOT NULL THEN 1
+                    ELSE 0
+                END AS state_both,
+                CASE
+                    WHEN av.restore_state = 'restoring' THEN 1
+                    ELSE 0
+                END AS state_restoring,
+                CASE
+                    WHEN lc.presence = 'present'
+                     AND lc.file_type = 'regular'
+                     AND av.id IS NULL THEN 1
+                    ELSE 0
+                END AS upload_eligible,
+                CASE
+                    WHEN (
+                        lc.presence IS NULL
+                        OR lc.presence NOT IN ('present', 'unsupported')
+                    )
+                     AND (
+                        SELECT COUNT(*)
+                        FROM archive_versions recoverable
+                        WHERE recoverable.vault_file_id = vf.id
+                          AND recoverable.integrity = 'verified'
+                          AND recoverable.availability = 'available'
+                     ) > 0 THEN 1
+                    ELSE 0
+                END AS recover_eligible,
+                CASE
+                    WHEN lc.presence = 'present'
+                     AND lc.file_type = 'regular'
+                     AND av.id IS NOT NULL
+                     AND av.integrity = 'verified'
+                     AND av.availability = 'available'
+                     AND lc.matched_archive_version_id = av.id
+                     AND lc.plaintext_sha256 IS NOT NULL
+                     AND lc.plaintext_sha256 = av.plaintext_sha256 THEN 1
+                    ELSE 0
+                END AS cleanup_eligible,
+                CASE
+                    WHEN av.id IS NOT NULL THEN 1
+                    ELSE 0
+                END AS has_cloud,
+                CASE
+                    WHEN av.id IS NOT NULL
+                     AND av.availability = 'available'
+                     AND (
+                        av.restore_state IS NULL
+                        OR av.restore_state <> 'restoring'
+                     ) THEN 1
+                    ELSE 0
+                END AS storage_class_eligible,
+                {pin_expr} AS lifecycle_pinned
+            FROM vault_files vf
+            JOIN file_paths fp
+              ON fp.vault_file_id = vf.id AND fp.valid_to IS NULL
+            LEFT JOIN local_copies lc ON lc.vault_file_id = vf.id
+            LEFT JOIN archive_versions av
+              ON av.id = (
+                  SELECT latest.id
+                  FROM archive_versions latest
+                  WHERE latest.vault_file_id = vf.id
+                    AND latest.availability NOT IN ('missing', 'purged')
+                  ORDER BY latest.version_number DESC
+                  LIMIT 1
+              )
+            WHERE vf.vault_id = %s
+              AND vf.status = 'active'
+              AND fp.path LIKE %s ESCAPE '\\'
+              AND (
+                    lc.presence IN ('present', 'unsupported')
+                 OR av.id IS NOT NULL
+              )
+        ) AS classified
+        """,
+        (*pin_params, int(vault_id), f"{escaped}/%"),
+    ).fetchone()
+    item_count = int(summary["item_count"] or 0) if summary else 0
+    if item_count <= 0:
         connection.execute(
             """
             DELETE FROM directory_aggregates
@@ -745,6 +1155,62 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
             (int(vault_id), directory),
         )
         return
+
+    storage_rows = connection.execute(
+        """
+        SELECT av.storage_class AS storage_class, COUNT(*) AS total
+        FROM vault_files vf
+        JOIN file_paths fp
+          ON fp.vault_file_id = vf.id AND fp.valid_to IS NULL
+        LEFT JOIN local_copies lc ON lc.vault_file_id = vf.id
+        JOIN archive_versions av
+          ON av.id = (
+              SELECT latest.id
+              FROM archive_versions latest
+              WHERE latest.vault_file_id = vf.id
+                AND latest.availability NOT IN ('missing', 'purged')
+              ORDER BY latest.version_number DESC
+              LIMIT 1
+          )
+        WHERE vf.vault_id = %s
+          AND vf.status = 'active'
+          AND fp.path LIKE %s ESCAPE '\\'
+          AND av.storage_class IS NOT NULL
+          AND (
+                lc.presence IN ('present', 'unsupported')
+             OR av.id IS NOT NULL
+          )
+        GROUP BY av.storage_class
+        """,
+        (int(vault_id), f"{escaped}/%"),
+    ).fetchall()
+    storage_classes = {
+        str(row["storage_class"]): int(row["total"] or 0)
+        for row in storage_rows
+        if row["storage_class"] is not None and int(row["total"] or 0) > 0
+    }
+    rollup = _DirectoryRollup(
+        item_count=item_count,
+        total_size=int(summary["total_size"] or 0),
+        local_size=int(summary["local_size"] or 0),
+        cloud_size=int(summary["cloud_size"] or 0),
+        state_counts={
+            "local_only": int(summary["state_local_only"] or 0),
+            "cloud_only": int(summary["state_cloud_only"] or 0),
+            "both": int(summary["state_both"] or 0),
+            "restoring": int(summary["state_restoring"] or 0),
+        },
+        action_counts={
+            "upload": int(summary["action_upload"] or 0),
+            "recover": int(summary["action_recover"] or 0),
+            "free-space": int(summary["action_free_space"] or 0),
+            "cloud-archive": int(summary["action_cloud_archive"] or 0),
+            "cloud-purge": int(summary["action_cloud_purge"] or 0),
+            "storage-class": int(summary["action_storage_class"] or 0),
+        },
+        storage_classes=storage_classes,
+        pinned_count=int(summary["pinned_count"] or 0),
+    )
     _upsert_rollup(connection, vault_id, directory, rollup)
 
 

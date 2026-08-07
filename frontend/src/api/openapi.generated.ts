@@ -2612,6 +2612,11 @@ export interface components {
             [key: string]: unknown;
         };
         FilesResponse: {
+            /**
+             * @description Directory aggregate readiness for this listing: ready, loading (no projection yet), or stale (showing prior projection while rebuild/dirty work converges).
+             * @enum {string}
+             */
+            aggregate_status?: "ready" | "loading" | "stale";
             directory: string;
             items: components["schemas"]["ArchiveListItem"][];
             mode: string;

@@ -191,7 +191,15 @@ export function FileBrowser({
   const filesQuery = useQuery({
     ...filesQueryOptions(query, offlineCacheRequestOptions),
     queryKey: fileQueryKey,
-    refetchInterval: filesRefetchIntervalFromJobs(jobsQuery.data),
+    refetchInterval: (queryState) => {
+      // Bounded loading convergence while the durable projection is still
+      // building after migration/restart. Not idle catalog polling: stops as
+      // soon as aggregate_status leaves "loading". Catalog events also invalidate.
+      if (queryState.state.data?.aggregate_status === "loading") {
+        return 1_500;
+      }
+      return filesRefetchIntervalFromJobs(jobsQuery.data);
+    },
     // Keep the previous directory page visible during invalidation/refetch so
     // event-driven updates never flash a false-empty "0 items" table.
     placeholderData: keepPreviousData,
@@ -329,10 +337,16 @@ export function FileBrowser({
   const crumbs = buildBreadcrumbs(directory, t("ui.breadcrumb_archive"));
   const narrowCrumbs = collapseBreadcrumbs(crumbs);
   const data = displayData;
-  const isInitialLoading = !displayData && (filesQuery.isLoading || filesQuery.isPending);
+  // Server may return quickly with aggregate_status=loading and empty items
+  // while a background rebuild converges — never treat that as authoritative empty.
+  const serverProjectionLoading =
+    data?.aggregate_status === "loading" && (data.items?.length ?? 0) === 0;
+  const isInitialLoading =
+    (!displayData && (filesQuery.isLoading || filesQuery.isPending)) ||
+    serverProjectionLoading;
   const isListingError =
     !displayData && filesQuery.isError && !isBrowserOffline();
-  const total = data?.total;
+  const total = isInitialLoading ? undefined : data?.total;
   const pages =
     total === undefined
       ? null
@@ -524,7 +538,10 @@ export function FileBrowser({
           </div>
         ) : null}
 
-        {data && data.items.length === 0 && !isInitialLoading ? (
+        {data &&
+        data.items.length === 0 &&
+        !isInitialLoading &&
+        data.aggregate_status !== "loading" ? (
           <p
             className="py-8 text-center text-sm text-muted"
             data-testid="file-list-empty"
@@ -534,7 +551,7 @@ export function FileBrowser({
           </p>
         ) : null}
 
-        {data && data.items.length > 0 ? (
+        {data && data.items.length > 0 && !serverProjectionLoading ? (
           <FileOperationsHost
             items={data.items}
             capabilities={capabilities}

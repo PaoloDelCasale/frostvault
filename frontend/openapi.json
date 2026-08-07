@@ -1329,6 +1329,15 @@
       "FilesResponse": {
         "additionalProperties": true,
         "properties": {
+          "aggregate_status": {
+            "description": "Directory aggregate readiness for this listing: ready, loading (no projection yet), or stale (showing prior projection while rebuild/dirty work converges).",
+            "enum": [
+              "ready",
+              "loading",
+              "stale"
+            ],
+            "type": "string"
+          },
           "directory": {
             "type": "string"
           },

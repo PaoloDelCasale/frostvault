@@ -77,6 +77,9 @@ def _bulk_local_files(
 class DirectoryScaleTests(unittest.TestCase):
     def setUp(self) -> None:
         metrics_service.reset_for_tests()
+        # Request-path scheduling must not spawn background rebuild threads in
+        # unit tests (they race the shared SQLite fixture connection).
+        aggregates.set_maintenance_scheduling_enabled(False)
         self._tmp = tempfile.TemporaryDirectory()
         self.database_path = Path(self._tmp.name) / "catalog.db"
         migrated = run_alembic(self.database_path)
@@ -89,6 +92,7 @@ class DirectoryScaleTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.connection.__exit__(None, None, None)
         self._tmp.cleanup()
+        aggregates.set_maintenance_scheduling_enabled(True)
 
     def test_migration_creates_directory_aggregate_tables(self) -> None:
         tables = {
@@ -416,7 +420,8 @@ class DirectoryScaleTests(unittest.TestCase):
         self.assertEqual(result["total"], 4)
         self.assertEqual(len(result["items"]), 4)
 
-    def test_stale_rebuild_flag_repairs_on_list(self) -> None:
+    def test_stale_rebuild_flag_does_not_block_list(self) -> None:
+        """Listing must not run full rebuild; maintenance converges off-path."""
         self.catalog.observe_local_copy(
             vault_id=2,
             path="repair/me.bin",
@@ -428,9 +433,147 @@ class DirectoryScaleTests(unittest.TestCase):
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         self.connection.execute("DELETE FROM directory_aggregates WHERE vault_id=2")
         aggregates.request_vault_rebuild(self.connection, 2)
+
+        def blocked_rebuild(*_args, **_kwargs):
+            raise AssertionError("list path must not rebuild vault aggregates")
+
+        with patch.object(
+            aggregates,
+            "rebuild_vault_directory_aggregates",
+            side_effect=blocked_rebuild,
+        ):
+            page = self.catalog.list_files_page(2)
+        self.assertEqual(page["aggregate_status"], "loading")
+        self.assertEqual(page["total"], 0)
+        self.assertEqual(page["items"], [])
+        self.assertEqual(self.catalog.last_listing_rows_materialized, 0)
+
+        # Worker/maintenance path repairs without holding /api/files.
+        result = aggregates.process_directory_aggregate_maintenance(
+            vault_id=2,
+            publish=False,
+            connection=self.connection,
+        )
+        self.assertEqual(result["full_rebuilds"], 1)
         page = self.catalog.list_files_page(2)
+        self.assertEqual(page["aggregate_status"], "ready")
         self.assertEqual(page["total"], 1)
         self.assertEqual(page["items"][0]["item_count"], 1)
+
+    def test_list_with_existing_projection_returns_stale_while_rebuild_required(
+        self,
+    ) -> None:
+        self.catalog.observe_local_copy(
+            vault_id=2,
+            path="keep/me.bin",
+            file_type="regular",
+            size=3,
+            mtime_ns=1,
+            observed_at="2026-07-21T10:00:00+00:00",
+        )
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        aggregates.request_vault_rebuild(self.connection, 2)
+
+        def blocked_rebuild(*_args, **_kwargs):
+            raise AssertionError("stale listing must not rebuild")
+
+        with patch.object(
+            aggregates,
+            "rebuild_vault_directory_aggregates",
+            side_effect=blocked_rebuild,
+        ):
+            page = self.catalog.list_files_page(2)
+        self.assertEqual(page["aggregate_status"], "stale")
+        self.assertEqual(page["total"], 1)
+        self.assertEqual(page["items"][0]["name"], "keep")
+
+    def test_dirty_directory_rebuild_does_not_materialize_descendants(self) -> None:
+        paths = [(f"photos/file-{index:04d}.jpg", 10) for index in range(250)]
+        _bulk_local_files(self.connection, vault_id=2, paths_and_sizes=paths)
+        aggregates.rebuild_vault_directory_aggregates(self.connection, 2)
+        aggregates.mark_directory_dirty(self.connection, 2, "photos")
+
+        def blocked_iter(*_args, **_kwargs):
+            raise AssertionError(
+                "dirty refresh must use SQL rollup, not contribution lists"
+            )
+
+        with patch.object(
+            aggregates,
+            "_iter_visible_file_contributions",
+            side_effect=blocked_iter,
+        ):
+            with patch.object(
+                aggregates,
+                "_iter_visible_file_contribution_batches",
+                side_effect=blocked_iter,
+            ):
+                result = aggregates.flush_directory_aggregates(
+                    self.connection, vault_id=2
+                )
+        self.assertEqual(result["rebuilt_directories"], 1)
+        page = self.catalog.list_files_page(2)
+        self.assertEqual(page["items"][0]["item_count"], 250)
+
+    def test_full_rebuild_streams_bounded_batches(self) -> None:
+        paths = [(f"bucket/f-{index:03d}.bin", 1) for index in range(25)]
+        paths.append(("other/x.bin", 2))
+        _bulk_local_files(self.connection, vault_id=2, paths_and_sizes=paths)
+        observed_sizes: list[int] = []
+        original = aggregates._iter_visible_file_contribution_batches
+
+        def tracking_batches(*args, **kwargs):
+            for batch in original(*args, **kwargs):
+                observed_sizes.append(len(batch))
+                yield batch
+
+        with patch.object(
+            aggregates,
+            "REBUILD_CONTRIBUTION_BATCH_SIZE",
+            10,
+        ):
+            with patch.object(
+                aggregates,
+                "_iter_visible_file_contribution_batches",
+                side_effect=tracking_batches,
+            ):
+                rebuilt = aggregates.rebuild_vault_directory_aggregates(
+                    self.connection, 2
+                )
+        self.assertEqual(rebuilt, 2)
+        self.assertTrue(observed_sizes)
+        self.assertLessEqual(max(observed_sizes), 10)
+        self.assertGreaterEqual(sum(observed_sizes), 26)
+        page = self.catalog.list_files_page(2)
+        names = {item["name"] for item in page["items"]}
+        self.assertEqual(names, {"bucket", "other"})
+
+    def test_400k_first_listing_after_rebuild_required_is_bounded(self) -> None:
+        per_dir = 5_000
+        paths: list[tuple[str, int]] = []
+        for folder in ("clips", "recordings", "exports"):
+            for index in range(per_dir):
+                paths.append((f"{folder}/f-{index:06d}.bin", 1))
+        _bulk_local_files(self.connection, vault_id=2, paths_and_sizes=paths)
+        aggregates.request_vault_rebuild(self.connection, 2)
+        self.connection.commit()
+
+        def blocked_rebuild(*_args, **_kwargs):
+            raise AssertionError("first listing must not rebuild 15k+ descendants")
+
+        started = time.perf_counter()
+        with patch.object(
+            aggregates,
+            "rebuild_vault_directory_aggregates",
+            side_effect=blocked_rebuild,
+        ):
+            with patch.object(ArchiveCatalog, "list_file_rows", blocked_rebuild):
+                page = self.catalog.list_files_page(2, page=1, page_size=100)
+        duration = time.perf_counter() - started
+        self.assertEqual(page["aggregate_status"], "loading")
+        self.assertEqual(page["items"], [])
+        self.assertEqual(self.catalog.last_listing_rows_materialized, 0)
+        self.assertLess(duration, 2.0)
 
     def test_remark_bumps_durable_marked_at(self) -> None:
         self.catalog.observe_local_copy(
@@ -544,24 +687,29 @@ class DirectoryScaleTests(unittest.TestCase):
         aggregates._tracker(self.connection).clear()
         self.connection.execute("DELETE FROM directory_aggregate_dirty WHERE vault_id=2")
 
-        original_iter = aggregates._iter_visible_file_contributions
+        original_batches = aggregates._iter_visible_file_contribution_batches
 
-        def iter_and_mark(connection, vault_id, **kwargs):
-            rows = original_iter(connection, vault_id, **kwargs)
-            connection.execute(
-                """
-                INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at)
-                VALUES (2, 'keep', '2026-07-21T12:00:00+00:00')
-                ON CONFLICT(vault_id, path) DO UPDATE SET marked_at=excluded.marked_at
-                """
-            )
-            return rows
+        def batches_and_mark(connection, vault_id, **kwargs):
+            marked = False
+            for batch in original_batches(connection, vault_id, **kwargs):
+                if not marked:
+                    # Concurrent dirty mark after the rebuild claim cutoff.
+                    connection.execute(
+                        """
+                        INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at)
+                        VALUES (2, 'keep', '2026-07-21T12:00:00+00:00')
+                        ON CONFLICT(vault_id, path) DO UPDATE SET
+                            marked_at=excluded.marked_at
+                        """
+                    )
+                    marked = True
+                yield batch
 
         with patch.object(aggregates, "_now", return_value="2026-07-21T11:00:00+00:00"):
             with patch.object(
                 aggregates,
-                "_iter_visible_file_contributions",
-                side_effect=iter_and_mark,
+                "_iter_visible_file_contribution_batches",
+                side_effect=batches_and_mark,
             ):
                 aggregates.rebuild_vault_directory_aggregates(self.connection, 2)
 
@@ -649,6 +797,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
 
     def setUp(self) -> None:
         metrics_service.reset_for_tests()
+        aggregates.set_maintenance_scheduling_enabled(False)
         self._tmp = tempfile.TemporaryDirectory()
         self.database_path = Path(self._tmp.name) / "catalog.db"
         migrated = run_alembic(self.database_path)
@@ -661,6 +810,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.connection.__exit__(None, None, None)
         self._tmp.cleanup()
+        aggregates.set_maintenance_scheduling_enabled(True)
 
     def _seed_both_file(self, path: str = "photos/shot.jpg") -> str:
         digest = "a" * 64

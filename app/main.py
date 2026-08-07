@@ -2464,6 +2464,7 @@ def list_files(
         "page": page,
         "directory": directory,
         "mode": listing["mode"],
+        "aggregate_status": listing.get("aggregate_status", "ready"),
     }
 
 

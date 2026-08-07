@@ -1737,7 +1737,7 @@ class ArchiveCatalog:
         File rows in SQL. Both paths keep ``last_listing_rows_materialized``
         equal to the returned page cardinality (not the descendant total).
         """
-        ensure_directory_aggregates(self.connection, vault_id)
+        aggregate_status = ensure_directory_aggregates(self.connection, vault_id)
         page = max(1, int(page))
         page_size = max(1, int(page_size))
         if search:
@@ -1765,6 +1765,8 @@ class ArchiveCatalog:
             "page": page,
             "directory": directory or "",
             "mode": mode,
+            # ready | loading | stale — listing never blocks on full rebuild.
+            "aggregate_status": aggregate_status,
         }
 
     def _browse_directory_page(
