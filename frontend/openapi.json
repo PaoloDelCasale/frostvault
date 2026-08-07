@@ -1512,6 +1512,10 @@
             ],
             "type": "object"
           },
+          "synopsis_truncated": {
+            "description": "True when checks sample or check/finding field values were capped or clipped while building the bounded synopsis.",
+            "type": "boolean"
+          },
           "uid": {
             "type": [
               "number",

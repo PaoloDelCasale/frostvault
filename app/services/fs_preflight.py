@@ -12,9 +12,10 @@ from __future__ import annotations
 import os
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence, Sized
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,20 @@ CheckStatus = str  # reused vocabulary: pass / fail / warn
 # Bound the findings array returned on the hot stats path. Full progressive
 # inspection belongs to the diagnostics detail flow (#222), not archive stats.
 FINDINGS_SAMPLE_LIMIT = 25
+# Exact producer codes looked up by key (never by walking finding_counts).
+KNOWN_FINDING_COUNT_CODES: tuple[str, ...] = (
+    "fs.symlink",
+    "fs.unreadable_file",
+    "fs.unwritable_directory",
+    "fs.unknown",
+)
+# Extra unknown/legacy finding_counts keys inspected beyond known codes.
+FINDING_COUNTS_UNKNOWN_KEY_BUDGET = 32
+# Detached synopsis string/key budgets for runtime + stats response graphs.
+SYNOPSIS_MAX_STRING_CHARS = 512
+SYNOPSIS_MAX_KEY_CHARS = 128
+# Checks sample shares the findings sample budget (same hot-path response).
+CHECKS_SAMPLE_LIMIT = FINDINGS_SAMPLE_LIMIT
 # Coalesce repeated refresh signals: a current snapshot younger than this is
 # reused without starting another walk.
 HEALTH_CACHE_TTL_SECONDS = 300.0
@@ -636,6 +651,517 @@ def ensure_vault_filesystem_health(
     return snapshot
 
 
+def _coerce_non_negative_int(value: Any, default: int = 0) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number >= 0 else default
+
+
+def bound_mapping_key_name(
+    key: Any, *, max_chars: int = SYNOPSIS_MAX_KEY_CHARS
+) -> str | None:
+    """Convert a mapping key to a JSON-safe name without calling arbitrary ``__str__``.
+
+    Only plain strings and safe JSON scalar key types are accepted. Oversized
+    strings are clipped to ``max_chars``. Unsupported objects return ``None`` so
+    callers can fail closed without invoking producer ``__str__`` / ``__repr__``.
+    """
+    if isinstance(key, str):
+        if not key:
+            return None
+        if len(key) > max_chars:
+            return key[:max_chars]
+        return key
+    # bool is an int subclass — reject before the int branch.
+    if isinstance(key, bool):
+        return "true" if key else "false"
+    if isinstance(key, int):
+        return str(key)
+    if isinstance(key, float):
+        return str(key)
+    if key is None:
+        return "null"
+    return None
+
+
+def bound_synopsis_text(
+    value: Any, *, max_chars: int = SYNOPSIS_MAX_STRING_CHARS
+) -> tuple[str, bool]:
+    """Detach a synopsis text field as ``(text, truncated)``.
+
+    Accepts plain strings and safe JSON scalars only. Arbitrary objects are
+    replaced with an empty string and reported as truncated (fail closed);
+    ``str(value)`` is never called on producer-controlled types.
+    """
+    if value is None:
+        return "", False
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, bool):
+        text = "true" if value else "false"
+    elif isinstance(value, int):
+        text = str(value)
+    elif isinstance(value, float):
+        text = str(value)
+    else:
+        return "", True
+    if len(text) > max_chars:
+        return text[:max_chars], True
+    return text, False
+
+
+def coerce_optional_posix_id(value: Any) -> tuple[int | None, bool]:
+    """Return ``(uid_or_gid, invalid)`` for synopsis identity fields.
+
+    Only real ``int`` values (not ``bool``) are accepted. Invalid inputs become
+    ``None`` with ``invalid=True`` so callers can fail closed.
+    """
+    if value is None:
+        return None, False
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None, True
+    return value, False
+
+
+def normalize_finding_counts(raw: Mapping[str, Any] | None) -> dict[str, int]:
+    """Return bounded finding_counts without walking an arbitrary mapping.
+
+    Known producer codes are read via exact key lookup. Unknown/legacy keys are
+    inspected through a hard ``islice`` budget; leftover mass fails closed into
+    ``fs.unknown`` so totals stay conservative without O(n) key copies. Key
+    names are converted through :func:`bound_mapping_key_name` — never bare
+    ``str(key)`` on producer-controlled objects.
+    """
+    counts: dict[str, int] = {}
+    if raw is None:
+        return counts
+
+    known_set = frozenset(KNOWN_FINDING_COUNT_CODES)
+    for code in KNOWN_FINDING_COUNT_CODES:
+        try:
+            value = raw.get(code)  # type: ignore[attr-defined]
+        except Exception:
+            value = None
+        amount = _coerce_non_negative_int(value, default=0)
+        if amount > 0:
+            counts[code] = counts.get(code, 0) + amount
+
+    overflow_mass = 0
+    unknown_kept = 0
+    examine_limit = len(KNOWN_FINDING_COUNT_CODES) + FINDING_COUNTS_UNKNOWN_KEY_BUDGET
+    try:
+        item_view = raw.items()
+    except Exception:
+        return counts
+
+    for key, value in islice(item_view, examine_limit):
+        code = bound_mapping_key_name(key)
+        if code is None:
+            # Unsupported key object — fold mass fail-closed, never str(key).
+            amount = _coerce_non_negative_int(value, default=0)
+            if amount > 0:
+                overflow_mass += amount
+            else:
+                overflow_mass = max(overflow_mass, 1)
+            continue
+        if code in known_set:
+            # Already applied via exact lookup; do not double-count.
+            continue
+        amount = _coerce_non_negative_int(value, default=0)
+        if amount <= 0:
+            continue
+        if unknown_kept < FINDING_COUNTS_UNKNOWN_KEY_BUDGET:
+            counts[code] = counts.get(code, 0) + amount
+            unknown_kept += 1
+        else:
+            overflow_mass += amount
+
+    raw_len: int | None
+    try:
+        raw_len = int(len(raw))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raw_len = None
+
+    if raw_len is not None and raw_len > examine_limit:
+        # Mapping reports more keys than the inspection budget. Fail closed with
+        # at least one hidden unit so empty/under-reported counts cannot pass.
+        overflow_mass = max(overflow_mass, 1)
+
+    if overflow_mass > 0:
+        counts["fs.unknown"] = counts.get("fs.unknown", 0) + overflow_mass
+    return counts
+
+
+def _append_finding_sample(
+    findings: list[dict[str, Any]],
+    *,
+    known: set[tuple[Any, Any]],
+    item: Mapping[str, Any],
+) -> bool:
+    """Append one bounded finding sample row.
+
+    Returns ``True`` when any field was clipped or replaced fail-closed.
+    """
+    if len(findings) >= FINDINGS_SAMPLE_LIMIT:
+        return False
+    field_truncated = False
+    path_text, path_trunc = bound_synopsis_text(item.get("path"))
+    field_truncated = field_truncated or path_trunc
+    raw_code = item.get("code")
+    if raw_code is None:
+        code_text = "fs.unknown"
+    else:
+        code_text, code_trunc = bound_synopsis_text(raw_code)
+        field_truncated = field_truncated or code_trunc
+        if not code_text:
+            code_text = "fs.unknown"
+            # Empty after bounding (unsupported/clipped-to-empty) is lossy.
+            field_truncated = True
+    message_text, message_trunc = bound_synopsis_text(item.get("message"))
+    field_truncated = field_truncated or message_trunc
+    key = (path_text, code_text)
+    if key in known:
+        # Duplicate sample row: still report field clipping evidence.
+        return field_truncated
+    known.add(key)
+    findings.append(
+        {
+            "path": path_text,
+            "code": code_text,
+            "message": message_text,
+        }
+    )
+    return field_truncated
+
+
+def _bound_check_item(item: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Detach one filesystem check row with bounded scalar fields only.
+
+    Returns ``(check, truncated)`` where ``truncated`` is true when any field was
+    clipped or replaced fail-closed (unsupported producer type).
+    """
+    field_truncated = False
+    code, code_trunc = bound_synopsis_text(item.get("code"))
+    field_truncated = field_truncated or code_trunc
+    status, status_trunc = bound_synopsis_text(item.get("status"))
+    field_truncated = field_truncated or status_trunc
+    message, message_trunc = bound_synopsis_text(item.get("message"))
+    field_truncated = field_truncated or message_trunc
+    check: dict[str, Any] = {
+        "code": code,
+        "status": status,
+        "message": message,
+    }
+    if "remediation" in item:
+        remediation, remediation_trunc = bound_synopsis_text(item.get("remediation"))
+        field_truncated = field_truncated or remediation_trunc
+        check["remediation"] = remediation
+    return check, field_truncated
+
+
+def _bound_checks_sample(
+    checks_in: Any,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Detach a bounded checks sample shared by runtime and top-level payloads.
+
+    Honors ``CHECKS_SAMPLE_LIMIT`` and :func:`_bound_check_item` field clipping.
+    Sized sources use ``len()`` for over-limit detection; non-sized iterables are
+    consumed only up to the sample budget plus one optional probe row. Returns
+    ``(checks, truncated)`` — never mutates the producer collection.
+    """
+    checks: list[dict[str, Any]] = []
+    synopsis_truncated = False
+    if not (isinstance(checks_in, Iterable) and not isinstance(checks_in, (str, bytes))):
+        return checks, synopsis_truncated
+
+    sized_checks: int | None
+    if isinstance(checks_in, Sized):
+        try:
+            sized_checks = max(0, int(len(checks_in)))
+        except (TypeError, ValueError):
+            sized_checks = None
+    else:
+        sized_checks = None
+
+    checks_iter = iter(checks_in)
+    checks_inspected = 0
+    for item in islice(checks_iter, CHECKS_SAMPLE_LIMIT):
+        checks_inspected += 1
+        if not isinstance(item, Mapping):
+            # Dropped non-mapping check is lossy — fail closed.
+            synopsis_truncated = True
+            continue
+        check, item_truncated = _bound_check_item(item)
+        checks.append(check)
+        if item_truncated:
+            synopsis_truncated = True
+    if sized_checks is not None:
+        if sized_checks > CHECKS_SAMPLE_LIMIT:
+            synopsis_truncated = True
+    elif checks_inspected >= CHECKS_SAMPLE_LIMIT:
+        # Non-sized source: probe one extra row after the sample budget.
+        for _extra in islice(checks_iter, 1):
+            synopsis_truncated = True
+            break
+    return checks, synopsis_truncated
+
+
+def _merge_scan_findings(
+    *,
+    findings: list[dict[str, Any]],
+    finding_counts: dict[str, int],
+    findings_total: int,
+    ok: bool,
+    scan_findings: Sequence[Mapping[str, Any]] | Iterable[Mapping[str, Any]] | None,
+    scan_finding_counts: Mapping[str, Any] | None,
+    scan_findings_total: int | None,
+) -> tuple[list[dict[str, Any]], dict[str, int], int, bool, bool]:
+    """Merge scan-time findings into the stats synopsis without O(n) work.
+
+    Preferred contract: producer supplies ``scan_findings_total`` and
+    ``scan_finding_counts`` plus a bounded sample. Request-path merge then only
+    inspects up to ``FINDINGS_SAMPLE_LIMIT`` sample rows.
+
+    Legacy fallback (list only): when the iterable is ``Sized``, total comes from
+    ``len()`` (O(1)); only a bounded prefix is inspected for sample/code hints.
+    Non-sized iterables stop after the sample budget and fail closed with an
+    explicit truncated total of at least sample+1 when more rows were present.
+
+    Returns
+    ``(findings, finding_counts, findings_total, ok, synopsis_truncated)``.
+    ``synopsis_truncated`` is true when any finding field was clipped or replaced
+    during sample detach (distinct from sample-vs-total ``findings_truncated``).
+    """
+    synopsis_counts = normalize_finding_counts(scan_finding_counts)
+    has_synopsis = scan_findings_total is not None or bool(synopsis_counts)
+    has_sample = scan_findings is not None
+    synopsis_truncated = False
+    if not has_synopsis and not has_sample:
+        return findings, finding_counts, findings_total, ok, synopsis_truncated
+
+    known = {(item.get("path"), item.get("code")) for item in findings}
+
+    if has_synopsis:
+        if scan_findings_total is not None:
+            scan_total = _coerce_non_negative_int(scan_findings_total, default=0)
+        else:
+            scan_total = sum(synopsis_counts.values())
+
+        # Inspect at most a bounded sample prefix for response evidence. Sample
+        # rows are authoritative when the synopsis under-reports (total=0 /
+        # empty counts with a non-empty sample must fail closed).
+        sample_evidence_count = 0
+        sample_evidence_counts: dict[str, int] = {}
+        if scan_findings is not None:
+            for item in islice(scan_findings, FINDINGS_SAMPLE_LIMIT):
+                if not isinstance(item, Mapping):
+                    # Dropped non-mapping sample row is lossy evidence.
+                    synopsis_truncated = True
+                    continue
+                raw_code = item.get("code")
+                if raw_code is None:
+                    code_text = "fs.unknown"
+                    code_trunc = False
+                else:
+                    code_text, code_trunc = bound_synopsis_text(raw_code)
+                    if not code_text:
+                        code_text = "fs.unknown"
+                        code_trunc = True
+                if code_trunc:
+                    synopsis_truncated = True
+                sample_evidence_count += 1
+                sample_evidence_counts[code_text] = (
+                    sample_evidence_counts.get(code_text, 0) + 1
+                )
+                if len(findings) < FINDINGS_SAMPLE_LIMIT:
+                    if _append_finding_sample(findings, known=known, item=item):
+                        synopsis_truncated = True
+
+        synopsis_mass = max(
+            scan_total,
+            sum(synopsis_counts.values()) if synopsis_counts else 0,
+        )
+        # Never trust a zero/empty synopsis over concrete sample evidence.
+        effective_scan_total = max(synopsis_mass, sample_evidence_count)
+        if effective_scan_total > 0 or synopsis_counts or sample_evidence_count:
+            ok = False
+
+        if synopsis_counts:
+            for code, amount in synopsis_counts.items():
+                finding_counts[code] = finding_counts.get(code, 0) + amount
+            counted = sum(synopsis_counts.values())
+            # Prefer the larger figure so under-specified totals stay fail-closed.
+            findings_total += max(scan_total, counted, sample_evidence_count)
+        else:
+            findings_total += max(scan_total, sample_evidence_count)
+
+        # When synopsis counts under-report relative to the sample, lift codes
+        # conservatively from sample evidence only for the deficit.
+        if sample_evidence_count > synopsis_mass:
+            for code, amount in sample_evidence_counts.items():
+                already = synopsis_counts.get(code, 0)
+                if amount > already:
+                    finding_counts[code] = finding_counts.get(code, 0) + (
+                        amount - already
+                    )
+        if synopsis_truncated:
+            ok = False
+        return findings, finding_counts, findings_total, ok, synopsis_truncated
+
+    # Legacy list/iterable without precomputed synopsis.
+    assert scan_findings is not None
+    sized_total: int | None
+    if isinstance(scan_findings, Sized):
+        try:
+            sized_total = max(0, int(len(scan_findings)))
+        except (TypeError, ValueError):
+            sized_total = None
+    else:
+        sized_total = None
+
+    inspected = 0
+    # Sized sources expose an O(1) total via len(); only the sample prefix is
+    # inspected. Non-sized sources stop after the sample budget and, if the
+    # iterator still has a row, count one extra hidden finding (fail closed).
+    findings_iter = iter(scan_findings)
+    sample_iter = islice(findings_iter, FINDINGS_SAMPLE_LIMIT)
+    for item in sample_iter:
+        inspected += 1
+        if not isinstance(item, Mapping):
+            synopsis_truncated = True
+            continue
+        path_text, path_trunc = bound_synopsis_text(item.get("path"))
+        raw_code = item.get("code")
+        if raw_code is None:
+            code_text = "fs.unknown"
+            code_trunc = False
+        else:
+            code_text, code_trunc = bound_synopsis_text(raw_code)
+            if not code_text:
+                code_text = "fs.unknown"
+                code_trunc = True
+        message_text, message_trunc = bound_synopsis_text(item.get("message"))
+        if path_trunc or code_trunc or message_trunc:
+            synopsis_truncated = True
+        key = (path_text, code_text)
+        if key in known:
+            continue
+        known.add(key)
+        # Only the bounded prefix contributes code hints on the legacy path.
+        finding_counts[code_text] = finding_counts.get(code_text, 0) + 1
+        ok = False
+        if len(findings) < FINDINGS_SAMPLE_LIMIT:
+            findings.append(
+                {
+                    "path": path_text,
+                    "code": code_text,
+                    "message": message_text,
+                }
+            )
+
+    saw_extra = False
+    if sized_total is None and inspected >= FINDINGS_SAMPLE_LIMIT:
+        # Probe one more row without draining the iterator.
+        for _extra in islice(findings_iter, 1):
+            saw_extra = True
+            break
+
+    if sized_total is not None:
+        if sized_total > 0:
+            ok = False
+        findings_total += sized_total
+    elif inspected > 0:
+        ok = False
+        # Conservative truncation: at least one hidden row when more existed.
+        findings_total += inspected + (1 if saw_extra else 0)
+
+    if synopsis_truncated:
+        ok = False
+    return findings, finding_counts, findings_total, ok, synopsis_truncated
+
+
+def bound_runtime_filesystem_synopsis(
+    raw: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Return a response-safe copy of ``runtime.filesystem``.
+
+    Legacy producers may retain an unbounded ``findings`` collection on the
+    shared runtime dict. Response construction must never hand that collection
+    to the serializer: copy only known synopsis fields, bound the sample, and
+    derive conservative totals/counts without mutating the caller's mapping or
+    calling ``dict(raw)`` on an arbitrary key set.
+
+    Any checks-sample cap or check/finding field clip sets additive
+    ``synopsis_truncated`` and fails closed (``ok=False``). Sample-vs-total
+    evidence remains on ``findings_truncated``.
+    """
+    if raw is None:
+        return {
+            "ok": True,
+            "uid": None,
+            "gid": None,
+            "checks": [],
+            "findings": [],
+            "findings_total": 0,
+            "finding_counts": {},
+            "findings_truncated": False,
+            "synopsis_truncated": False,
+        }
+
+    # Known-key lookups only — never iterate/copy arbitrary filesystem keys.
+    raw_counts = raw.get("finding_counts")
+    raw_total = raw.get("findings_total")
+    try:
+        scan_total = int(raw_total) if raw_total is not None else None
+    except (TypeError, ValueError):
+        scan_total = None
+
+    uid, uid_invalid = coerce_optional_posix_id(raw.get("uid"))
+    gid, gid_invalid = coerce_optional_posix_id(raw.get("gid"))
+
+    # Shared checks sample seam — same contract as top-level stats payload.
+    checks, synopsis_truncated = _bound_checks_sample(raw.get("checks") or [])
+    # Preserve producer synopsis_truncated when already set (additive, never clear).
+    if raw.get("synopsis_truncated") is True:
+        synopsis_truncated = True
+
+    findings: list[dict[str, Any]] = []
+    finding_counts: dict[str, int] = {}
+    findings_total = 0
+    ok = bool(raw.get("ok", True))
+    if uid_invalid or gid_invalid:
+        # Identity fields must be JSON scalars; poison values fail closed.
+        ok = False
+    findings, finding_counts, findings_total, ok, findings_field_truncated = (
+        _merge_scan_findings(
+            findings=findings,
+            finding_counts=finding_counts,
+            findings_total=findings_total,
+            ok=ok,
+            scan_findings=raw.get("findings"),
+            scan_finding_counts=raw_counts if isinstance(raw_counts, Mapping) else None,
+            scan_findings_total=scan_total,
+        )
+    )
+    if findings_field_truncated:
+        synopsis_truncated = True
+    if synopsis_truncated:
+        ok = False
+    return {
+        "ok": ok,
+        "uid": uid,
+        "gid": gid,
+        "checks": checks,
+        "findings": findings,
+        "findings_total": findings_total,
+        "finding_counts": finding_counts,
+        "findings_truncated": findings_total > len(findings),
+        "synopsis_truncated": synopsis_truncated,
+    }
+
+
 def build_stats_filesystem_payload(
     *,
     vault_id: int,
@@ -646,7 +1172,9 @@ def build_stats_filesystem_payload(
     local_operations_allowed: bool,
     cloud_catalog_allowed: bool,
     preflight_allowed: bool,
-    scan_findings: Sequence[Mapping[str, Any]] | None = None,
+    scan_findings: Sequence[Mapping[str, Any]] | Iterable[Mapping[str, Any]] | None = None,
+    scan_finding_counts: Mapping[str, Any] | None = None,
+    scan_findings_total: int | None = None,
     force_refresh: bool = False,
     walker: Callable[..., FilesystemPreflightResult] | None = None,
     spawn: bool = True,
@@ -655,7 +1183,9 @@ def build_stats_filesystem_payload(
 
     Always returns quickly: expensive walks run through
     :func:`ensure_vault_filesystem_health` single-flight cache, never inline on
-    the request thread when ``spawn`` is true.
+    the request thread when ``spawn`` is true. Scan-time findings are merged from
+    a bounded producer synopsis (totals/counts + sample), not by walking an
+    unbounded runtime list.
     """
     snapshot = ensure_vault_filesystem_health(
         vault_id,
@@ -666,11 +1196,27 @@ def build_stats_filesystem_payload(
         walker=walker,
         spawn=spawn,
     )
-    checks = [dict(check) for check in snapshot.checks]
-    findings = [dict(item) for item in snapshot.findings_sample]
+    # One shared checks/findings field contract with runtime synopsis — bound at
+    # the response edge so the health cache stays a raw producer snapshot and
+    # truncation is not double-applied/lost between cache write and serialize.
+    checks, checks_truncated = _bound_checks_sample(snapshot.checks)
+    findings: list[dict[str, Any]] = []
+    known_findings: set[tuple[Any, Any]] = set()
+    findings_field_truncated = False
+    findings_sample = snapshot.findings_sample or ()
+    if isinstance(findings_sample, Iterable) and not isinstance(
+        findings_sample, (str, bytes)
+    ):
+        for item in islice(findings_sample, FINDINGS_SAMPLE_LIMIT):
+            if not isinstance(item, Mapping):
+                findings_field_truncated = True
+                continue
+            if _append_finding_sample(findings, known=known_findings, item=item):
+                findings_field_truncated = True
     finding_counts = dict(snapshot.finding_counts)
     findings_total = int(snapshot.findings_total)
     ok = bool(snapshot.ok)
+    synopsis_truncated = checks_truncated or findings_field_truncated
 
     if not local_operations_allowed:
         ok = False
@@ -689,29 +1235,30 @@ def build_stats_filesystem_payload(
             ),
         }
         if not any(check.get("code") == source_check["code"] for check in checks):
-            checks.append(source_check)
+            if len(checks) < CHECKS_SAMPLE_LIMIT:
+                bound_source, source_trunc = _bound_check_item(source_check)
+                checks.append(bound_source)
+                if source_trunc:
+                    synopsis_truncated = True
+            else:
+                # Gate evidence does not fit the sample budget — fail closed.
+                synopsis_truncated = True
 
-    if scan_findings:
-        known = {(item.get("path"), item.get("code")) for item in findings}
-        for item in scan_findings:
-            path = item.get("path")
-            code = item.get("code")
-            key = (path, code)
-            if key in known:
-                continue
-            known.add(key)
-            code_text = str(code or "fs.unknown")
-            finding_counts[code_text] = finding_counts.get(code_text, 0) + 1
-            findings_total += 1
-            ok = False
-            if len(findings) < FINDINGS_SAMPLE_LIMIT:
-                findings.append(
-                    {
-                        "path": str(path or ""),
-                        "code": code_text,
-                        "message": str(item.get("message") or ""),
-                    }
-                )
+    findings, finding_counts, findings_total, ok, merge_truncated = (
+        _merge_scan_findings(
+            findings=findings,
+            finding_counts=finding_counts,
+            findings_total=findings_total,
+            ok=ok,
+            scan_findings=scan_findings,
+            scan_finding_counts=scan_finding_counts,
+            scan_findings_total=scan_findings_total,
+        )
+    )
+    if merge_truncated:
+        synopsis_truncated = True
+    if synopsis_truncated:
+        ok = False
 
     truncated = findings_total > len(findings)
     return {
@@ -733,6 +1280,7 @@ def build_stats_filesystem_payload(
         "findings_total": findings_total,
         "finding_counts": finding_counts,
         "findings_truncated": truncated,
+        "synopsis_truncated": synopsis_truncated,
         "cache_age_seconds": snapshot.cache_age_seconds,
         "error": snapshot.error,
     }

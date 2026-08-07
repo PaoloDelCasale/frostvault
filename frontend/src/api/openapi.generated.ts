@@ -2638,10 +2638,29 @@ export interface components {
             [key: string]: unknown;
         };
         FilesystemHealth: {
+            /** @description Age of the cached health snapshot in seconds, when known. */
+            cache_age_seconds?: number | null;
+            /** @description ISO-8601 timestamp of the latest completed health computation. */
+            checked_at?: string | null;
             checks: components["schemas"]["FilesystemCheck"][];
+            /** @description Short failure class when health_status is failed. */
+            error?: string | null;
+            /** @description Finding totals keyed by finding code. */
+            finding_counts?: {
+                [key: string]: number;
+            };
+            /** @description Bounded sample of filesystem findings for the latest health revision. */
             findings: components["schemas"]["FilesystemFinding"][];
+            /** @description Total findings counted for the latest health revision. */
+            findings_total?: number;
+            /** @description True when findings is a bounded sample of findings_total. */
+            findings_truncated?: boolean;
             gid: number | null;
+            /** @description checking | current | stale | failed filesystem-health revision state. */
+            health_status?: string;
             ok: boolean;
+            /** @description Monotonic in-process health revision for this Vault. */
+            revision?: number | null;
             root?: string;
             source_volume?: {
                 alias: string | null;
@@ -2651,6 +2670,8 @@ export interface components {
             } & {
                 [key: string]: unknown;
             };
+            /** @description True when checks sample or check/finding field values were capped or clipped while building the bounded synopsis. */
+            synopsis_truncated?: boolean;
             uid: number | null;
         } & {
             [key: string]: unknown;

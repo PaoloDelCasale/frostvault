@@ -14,6 +14,8 @@ import {
   INLINE_FINDING_SAMPLE,
   INLINE_GROUP_LIMIT,
   groupFilesystemFindings,
+  resolveFindingsTotal,
+  resolveHealthStatus,
 } from "@/pages/archive/filesystemHealthFindings";
 import { translate } from "@/i18n/translate";
 
@@ -551,7 +553,8 @@ describe("FilesystemHealthBanner", () => {
       (key) =>
         key.startsWith("ui.filesystem_finding") ||
         key.startsWith("ui.filesystem_findings") ||
-        key.startsWith("ui.filesystem_groups"),
+        key.startsWith("ui.filesystem_groups") ||
+        key.startsWith("ui.filesystem_health"),
     );
     for (const key of keys) {
       for (const stub of banned) {
@@ -603,5 +606,151 @@ describe("FilesystemHealthBanner", () => {
     ).toBe(
       "Directory is not writable (fs.unwritable_directory) — 3 paths under clips",
     );
+  });
+
+  it("surfaces checking / stale / failed health statuses independently of findings", () => {
+    const checking: FilesystemHealth = {
+      ok: false,
+      uid: 1000,
+      gid: 1000,
+      root: "/sources/test",
+      checks: [],
+      findings: [],
+      health_status: "checking",
+      findings_total: 0,
+      finding_counts: {},
+      findings_truncated: false,
+      revision: 0,
+      checked_at: null,
+    };
+    const { rerender } = render(
+      <FilesystemHealthBanner filesystem={checking} t={tEn} />,
+    );
+    let banner = screen.getByTestId("filesystem-health");
+    expect(banner).toHaveAttribute("data-health-status", "checking");
+    expect(banner).toHaveAttribute("role", "status");
+    expect(banner).toHaveTextContent(/Checking vault filesystem health/i);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    const staleHealthy: FilesystemHealth = {
+      ...healthy,
+      health_status: "stale",
+      findings_total: 0,
+      checked_at: "2026-04-01T12:00:00+00:00",
+      revision: 3,
+    };
+    rerender(<FilesystemHealthBanner filesystem={staleHealthy} t={tEn} />);
+    banner = screen.getByTestId("filesystem-health");
+    expect(banner).toHaveAttribute("data-health-status", "stale");
+    expect(banner).toHaveAttribute("role", "status");
+    expect(banner).toHaveTextContent(/Refreshing vault filesystem health/i);
+    expect(banner).toHaveTextContent(/Last checked 2026-04-01T12:00:00\+00:00/);
+    expect(banner).toHaveTextContent(/Revision 3/);
+
+    const failed: FilesystemHealth = {
+      ok: false,
+      uid: 1000,
+      gid: 1000,
+      root: "/sources/test",
+      checks: [
+        {
+          code: "fs.health",
+          status: "fail",
+          message: "Filesystem health check failed",
+          remediation: "Inspect host mounts and permissions",
+        },
+      ],
+      findings: [],
+      health_status: "failed",
+      error: "PermissionError",
+      findings_total: 0,
+      finding_counts: {},
+      findings_truncated: false,
+    };
+    rerender(<FilesystemHealthBanner filesystem={failed} t={tEn} />);
+    banner = screen.getByTestId("filesystem-health");
+    expect(banner).toHaveAttribute("data-health-status", "failed");
+    expect(banner).toHaveAttribute("role", "alert");
+    expect(banner).toHaveTextContent(/health check failed/i);
+    expect(banner).toHaveTextContent("PermissionError");
+    expect(banner).toHaveTextContent(/Inspect host mounts/);
+  });
+
+  it("uses findings_total and finding_counts for a bounded synopsis sample", async () => {
+    const user = userEvent.setup();
+    const sample = Array.from({ length: 25 }, (_, index) => makeFinding(index));
+    const total = 420_543;
+    const bounded: FilesystemHealth = {
+      ok: false,
+      uid: 99,
+      gid: 100,
+      root: "/sources/cameras",
+      checks: [
+        {
+          code: "fs.entries",
+          status: "fail",
+          message: `${total} filesystem problem(s) under the vault root`,
+          remediation: "Fix host permissions for the reported paths",
+        },
+      ],
+      findings: sample,
+      health_status: "current",
+      findings_total: total,
+      finding_counts: { "fs.unwritable_directory": total },
+      findings_truncated: true,
+      revision: 7,
+      checked_at: "2026-04-02T08:00:00+00:00",
+    };
+
+    const { container } = render(
+      <FilesystemHealthBanner filesystem={bounded} t={tEn} />,
+    );
+
+    const alarm = screen.getByRole("alert");
+    expect(alarm).toHaveAttribute("data-health-status", "current");
+    expect(alarm).toHaveTextContent("420543 findings");
+    expect(alarm).toHaveTextContent("fs.unwritable_directory");
+    expect(screen.getByTestId("filesystem-finding-counts")).toHaveTextContent(
+      "420543 findings",
+    );
+    expect(
+      container.querySelectorAll('[data-testid="filesystem-finding-row"]').length,
+    ).toBeLessThanOrEqual(INLINE_FINDING_SAMPLE);
+
+    await user.click(
+      screen.getByRole("button", {
+        name: `Inspect ${sample.length} of ${total} findings`,
+      }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: /Filesystem findings/i,
+    });
+    expect(
+      within(dialog).getAllByTestId("filesystem-finding-detail-row").length,
+    ).toBeLessThanOrEqual(DETAILS_PAGE_SIZE);
+    expect(
+      within(dialog).getAllByTestId("filesystem-finding-detail-row").length,
+    ).toBeLessThanOrEqual(sample.length);
+  });
+});
+
+describe("filesystem health helpers", () => {
+  it("resolves health_status and findings_total with safe fallbacks", () => {
+    expect(resolveHealthStatus({ ok: true })).toBe("current");
+    expect(resolveHealthStatus({ ok: false, health_status: "checking" })).toBe(
+      "checking",
+    );
+    expect(resolveHealthStatus({ ok: false, health_status: "nope" })).toBe(
+      "current",
+    );
+    expect(resolveFindingsTotal({ findings: [{ path: "a", code: "x", message: "m" }] })).toBe(
+      1,
+    );
+    expect(
+      resolveFindingsTotal({
+        findings: [{ path: "a", code: "x", message: "m" }],
+        findings_total: 99,
+      }),
+    ).toBe(99);
   });
 });

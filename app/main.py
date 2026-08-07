@@ -209,6 +209,7 @@ from .storage import (
     runtime_status,
     safe_local_path,
     scan_lock_for_vault,
+    snapshot_runtime_status_for_stats,
     status_lock,
     safe_relative_path,
     InvalidLogicalPath,
@@ -2628,8 +2629,23 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
         allowed_bases.append(bootstrap_root)
     # Identity-unsafe / missing volumes fail closed: no resolve, no walk.
     preflight_allowed = access.volume_health in {"ok", "read_only", "scan_required"}
-    runtime = dict(runtime_status.get(vault["id"], {}))
-    scan_findings = (runtime.get("filesystem") or {}).get("findings") or []
+    # Consistent bounded snapshot under the producer lock, then release before
+    # any merge/response work. Never dict(runtime_status[...]) unlocked while
+    # storage mutates filesystem under status_lock.
+    runtime = snapshot_runtime_status_for_stats(int(vault["id"]))
+    scan_filesystem = runtime.get("filesystem") or {}
+    # Prefer the producer synopsis (totals/counts + bounded sample). Merge inputs
+    # come from the already-bounded copy so the request path never re-walks the
+    # legacy collection.
+    scan_findings = scan_filesystem.get("findings") or []
+    scan_finding_counts = scan_filesystem.get("finding_counts")
+    raw_scan_total = scan_filesystem.get("findings_total")
+    try:
+        scan_findings_total = (
+            int(raw_scan_total) if raw_scan_total is not None else None
+        )
+    except (TypeError, ValueError):
+        scan_findings_total = None
     # Filesystem health is a cached/background revision with a bounded synopsis.
     # The request path must not os.walk the Vault root or serialize unbounded
     # findings; single-flight recomputation runs off-thread.
@@ -2643,6 +2659,10 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
         cloud_catalog_allowed=access.cloud_catalog_allowed,
         preflight_allowed=preflight_allowed,
         scan_findings=scan_findings,
+        scan_finding_counts=scan_finding_counts
+        if isinstance(scan_finding_counts, dict)
+        else None,
+        scan_findings_total=scan_findings_total,
     )
     metrics_service.set_gauge(
         "stats_last_duration_seconds",
