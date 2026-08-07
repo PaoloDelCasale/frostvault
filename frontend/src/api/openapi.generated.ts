@@ -792,6 +792,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/catalog/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Catalog Events Stream
+         * @description Authenticated SSE stream of coalesced catalog invalidation signals.
+         *
+         *     The payload carries only Vault identity, monotonic revision, affected
+         *     domains, and an optional retention gap flag — never filesystem paths.
+         *     Pass ``subscribe=false`` for a finite catch-up response used by tests and
+         *     bounded recovery probes.
+         */
+        get: operations["catalog_events_stream_api_catalog_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/catalog/revision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Catalog Revision Snapshot
+         * @description One-shot catch-up for focus/online recovery without holding a stream.
+         */
+        get: operations["catalog_revision_snapshot_api_catalog_revision_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud-archive": {
         parameters: {
             query?: never;
@@ -2330,6 +2375,15 @@ export interface components {
             [key: string]: unknown;
         };
         AuthMethod: string | null;
+        CatalogRevisionResponse: {
+            changed: boolean;
+            domains: string[];
+            has_gap: boolean;
+            revision: number;
+            vault_id: number;
+        } & {
+            [key: string]: unknown;
+        };
         /** CloudArchiveRequest */
         CloudArchiveRequest: {
             /**
@@ -5287,6 +5341,71 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+        };
+    };
+    catalog_events_stream_api_catalog_events_get: {
+        parameters: {
+            query?: {
+                after_revision?: number;
+                subscribe?: boolean;
+            };
+            header?: {
+                "Last-Event-ID"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    catalog_revision_snapshot_api_catalog_revision_get: {
+        parameters: {
+            query?: {
+                after_revision?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -138,6 +138,86 @@ class DatabaseMigrationTests(unittest.TestCase):
                 {"claim_token", "claimed_at", "claim_expires_at"}, job_columns
             )
 
+    def test_head_creates_catalog_event_and_health_primitives(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog-state-schema.db"
+            upgraded = run_alembic(path)
+            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+            with SQLiteConnection(str(path)) as connection:
+                tables = {
+                    row["name"]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+                revision_columns = {
+                    row["name"]
+                    for row in connection.execute(
+                        "PRAGMA table_info(vault_catalog_revisions)"
+                    ).fetchall()
+                }
+                event_columns = {
+                    row["name"]
+                    for row in connection.execute(
+                        "PRAGMA table_info(catalog_events)"
+                    ).fetchall()
+                }
+                snapshot_columns = {
+                    row["name"]
+                    for row in connection.execute(
+                        "PRAGMA table_info(filesystem_health_snapshots)"
+                    ).fetchall()
+                }
+                finding_columns = {
+                    row["name"]
+                    for row in connection.execute(
+                        "PRAGMA table_info(filesystem_health_findings)"
+                    ).fetchall()
+                }
+            self.assertIn("vault_catalog_revisions", tables)
+            self.assertIn("catalog_events", tables)
+            self.assertIn("filesystem_health_snapshots", tables)
+            self.assertIn("filesystem_health_findings", tables)
+            self.assertEqual(
+                revision_columns,
+                {"vault_id", "revision", "retained_from_revision", "updated_at"},
+            )
+            self.assertEqual(
+                event_columns,
+                {"id", "vault_id", "revision", "domain", "scope", "payload_json", "created_at"},
+            )
+            self.assertLessEqual(
+                {"id", "vault_id", "catalog_revision", "status", "summary_json"},
+                snapshot_columns,
+            )
+            self.assertLessEqual(
+                {"id", "snapshot_id", "code", "scope", "path", "message"},
+                finding_columns,
+            )
+
+    def test_catalog_state_schema_round_trips_through_0035_when_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog-state-round-trip.db"
+            upgraded = run_alembic(path)
+            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+            downgraded = run_alembic(
+                path,
+                revision="0035_upload_verification_digest",
+                command="downgrade",
+            )
+            self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
+            with SQLiteConnection(str(path)) as connection:
+                names = {
+                    row["name"]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+            self.assertNotIn("catalog_events", names)
+            self.assertNotIn("filesystem_health_snapshots", names)
+            upgraded_again = run_alembic(path)
+            self.assertEqual(upgraded_again.returncode, 0, upgraded_again.stderr)
+
     def test_current_catalog_migrates_without_losing_file_state(self) -> None:
         from app.catalog import ArchiveCatalog
 

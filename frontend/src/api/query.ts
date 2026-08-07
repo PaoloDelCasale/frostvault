@@ -21,7 +21,10 @@ import {
 } from "./endpoints";
 import type { FilesQuery, JobsResponse, StatsResponse } from "./types";
 import type { NotificationListStatus } from "./endpoints";
-import { jobAwareRefetchInterval, jobPollIntervalMs } from "./polling";
+import {
+  catalogPollIntervalMs,
+  jobAwareRefetchInterval,
+} from "./polling";
 
 export const apiQueryKeys = {
   me: ["me"] as const,
@@ -92,10 +95,11 @@ export function i18nCatalogQueryOptions(locale?: string) {
   };
 }
 
-/** Stats query: 1s while any Job is active, 10s when idle (same cadence as jobs). */
-export const statsRefetchInterval = jobAwareRefetchInterval<StatsResponse>(
-  (data) => data?.active_jobs ?? 0,
-);
+/** Stats query: poll only while Jobs are active; idle updates are event-driven. */
+export const statsRefetchInterval = (
+  query: { state: { data: StatsResponse | undefined } },
+): number | false =>
+  catalogPollIntervalMs(query.state.data?.active_jobs ?? 0);
 
 export const statsQueryOptions = {
   queryKey: apiQueryKeys.stats,
@@ -163,16 +167,16 @@ export function countActiveJobGroups(data: JobsResponse | undefined): number {
 }
 
 /**
- * Files list cadence mirrors jobs/stats: 1s while any Job group is active,
- * 10s when idle. Driven by the shared jobs query cache, not the files payload.
+ * Files list cadence mirrors jobs: 1s while any Job group is active, otherwise
+ * no fixed polling. External filesystem discovery is event-driven (#227).
  */
 export function filesRefetchIntervalFromJobs(
   jobs: JobsResponse | undefined,
-): number {
-  return jobPollIntervalMs(countActiveJobGroups(jobs));
+): number | false {
+  return catalogPollIntervalMs(countActiveJobGroups(jobs));
 }
 
-/** Jobs query: 1s while any group is active, 10s when idle (app.js cadence). */
+/** Jobs query keeps a dedicated active/idle cadence for progress only. */
 export const jobsRefetchInterval = jobAwareRefetchInterval<JobsResponse>(
   countActiveJobGroups,
 );

@@ -156,8 +156,28 @@ export { createLatestRequestScope } from "./latest";
 export type { LatestRequestHandle, LatestRequestScope } from "./latest";
 
 export {
+  catalogEventsUrl,
+  catalogRevisionUrl,
+  fetchCatalogRevision,
+  normalizeDomains,
+  openCatalogEventSource,
+  parseCatalogEventData,
+} from "./catalogEvents";
+export type {
+  CatalogEventHandlers,
+  CatalogEventSource,
+  CatalogEventSourceFactory,
+  CatalogHelloSignal,
+  CatalogInvalidationDomains,
+  CatalogRevisionSignal,
+} from "./catalogEvents";
+export { useCatalogEvents } from "./useCatalogEvents";
+export type { UseCatalogEventsOptions } from "./useCatalogEvents";
+
+export {
   ACTIVE_JOB_POLL_MS,
   IDLE_POLL_MS,
+  catalogPollIntervalMs,
   jobAwareRefetchInterval,
   jobPollIntervalMs,
 } from "./polling";

@@ -55,7 +55,7 @@ describe("shell catalog labels", () => {
 
     expect(dialog).toHaveTextContent(catalog["ui.new_vault"]);
     expect(dialog).toHaveTextContent(catalog["ui.manage_access"]);
-    expect(dialog).toHaveTextContent(catalog["ui.refresh_list"]);
+    expect(dialog).not.toHaveTextContent(catalog["ui.refresh_list"] ?? "Refresh list");
     expect(dialog).toHaveTextContent(catalog["ui.administration"]);
     expect(dialog).toHaveTextContent(catalog["ui.sign_out"]);
     expect(dialog).toHaveAccessibleName(catalog["ui.navigation"]);
@@ -70,13 +70,13 @@ describe("shell catalog labels", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders the new vault, manage access, and refresh list labels in Italian", async () => {
+  it("renders the new vault and manage access labels in Italian without Refresh list", async () => {
     const { catalog, dialog } = await openDrawer("it");
     const drawer = within(dialog);
 
     expect(dialog).toHaveTextContent(catalog["ui.new_vault"]);
     expect(dialog).toHaveTextContent(catalog["ui.manage_access"]);
-    expect(dialog).toHaveTextContent(catalog["ui.refresh_list"]);
+    expect(dialog).not.toHaveTextContent(catalog["ui.refresh_list"] ?? "Aggiorna elenco");
     expect(dialog).toHaveTextContent(catalog["ui.sign_out"]);
     expect(
       drawer.getByRole("button", { name: catalog["ui.close_navigation"] }),

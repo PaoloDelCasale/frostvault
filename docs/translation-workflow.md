@@ -14,7 +14,7 @@ prose.
 
 ## Adding or changing a string
 
-1. Choose a stable key such as `ui.refresh_list`, `job.upload_verified`, or
+1. Choose a stable key such as `ui.sign_out`, `job.upload_verified`, or
    `api.scan_started`. Prefer domain terms from `CONTEXT.md` (Vault, Local Copy,
    Archive Version, Job, …).
 2. Add the English string to `app/locales/en.json`.

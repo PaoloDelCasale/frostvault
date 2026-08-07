@@ -636,6 +636,37 @@
           "null"
         ]
       },
+      "CatalogRevisionResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "changed": {
+            "type": "boolean"
+          },
+          "domains": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "has_gap": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "vault_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "vault_id",
+          "revision",
+          "domains",
+          "has_gap",
+          "changed"
+        ],
+        "type": "object"
+      },
       "CloudArchiveRequest": {
         "additionalProperties": false,
         "properties": {
@@ -7178,6 +7209,114 @@
           }
         },
         "summary": "Vault Audit Events"
+      }
+    },
+    "/api/catalog/events": {
+      "get": {
+        "description": "Authenticated SSE stream of coalesced catalog invalidation signals.\n\nThe payload carries only Vault identity, monotonic revision, affected\ndomains, and an optional retention gap flag \u2014 never filesystem paths.\nPass ``subscribe=false`` for a finite catch-up response used by tests and\nbounded recovery probes.",
+        "operationId": "catalog_events_stream_api_catalog_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after_revision",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "After Revision",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subscribe",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Subscribe",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Catalog Events Stream"
+      }
+    },
+    "/api/catalog/revision": {
+      "get": {
+        "description": "One-shot catch-up for focus/online recovery without holding a stream.",
+        "operationId": "catalog_revision_snapshot_api_catalog_revision_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after_revision",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "After Revision",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogRevisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Catalog Revision Snapshot"
       }
     },
     "/api/cloud-archive": {

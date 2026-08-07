@@ -21,7 +21,6 @@ LOCALES_DIR = Path(__file__).resolve().parent / "locales"
 CRITICAL_KEYS: frozenset[str] = frozenset(
     {
         "ui.sign_out",
-        "ui.refresh_list",
         "ui.language",
         "ui.language_en",
         "ui.language_it",
