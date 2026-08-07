@@ -75,3 +75,15 @@ export async function openMobileDrawer(page: Page): Promise<void> {
     await expect(page.getByRole("dialog")).toBeVisible();
   }
 }
+
+/** Open the shell account / secondary-actions surface (#224). */
+export async function openAccountMenu(page: Page): Promise<void> {
+  const trigger = page.getByRole("button", {
+    name: /open account menu|apri menu account/i,
+  });
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  await expect(
+    page.getByRole("dialog", { name: /^account$/i }),
+  ).toBeVisible();
+}

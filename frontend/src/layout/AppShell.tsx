@@ -34,9 +34,14 @@ export function AppShell({
   children,
 }: AppShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [notificationPreferencesOpen, setNotificationPreferencesOpen] =
+    useState(false);
 
   useEffect(() => {
-    if (authReconciliationPending) setDrawerOpen(false);
+    if (authReconciliationPending) {
+      setDrawerOpen(false);
+      setNotificationPreferencesOpen(false);
+    }
   }, [authReconciliationPending]);
   const fallbackQueryClient = useMemo(() => createAppQueryClient(), []);
   const queryClient = providedQueryClient ?? fallbackQueryClient;
@@ -57,6 +62,16 @@ export function AppShell({
   );
   const loadingLabel = shellLabel(t, "ui.loading", "Loading…");
 
+  const accountHandlers = handlers
+    ? {
+        onNewVault: handlers.onNewVault,
+        onAdministration: handlers.onAdministration,
+        onSignOut: handlers.onSignOut,
+        onLocaleChange: handlers.onLocaleChange,
+        onVaultChange: handlers.onVaultChange,
+      }
+    : undefined;
+
   return (
     <div className="min-h-svh bg-canvas text-ink">
       <a
@@ -71,11 +86,12 @@ export function AppShell({
         {skipToMainLabel}
       </a>
 
-      <header
-        className="border-b border-line bg-surface px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))]"
-      >
-        <div className="mx-auto flex max-w-[1180px] items-center justify-between gap-3">
-          <div className="min-w-0">
+      <header className="border-b border-line bg-surface px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
+        <div
+          data-testid="app-shell-header-row"
+          className="mx-auto flex max-w-[1180px] flex-nowrap items-start justify-between gap-3"
+        >
+          <div className="min-w-0 flex-1">
             <p className="text-xs font-extrabold tracking-[0.16em] text-green uppercase">
               FrostVault
             </p>
@@ -85,18 +101,42 @@ export function AppShell({
           </div>
 
           {!authReconciliationPending ? (
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 flex-nowrap items-center gap-2">
+              <nav
+                aria-label={vaultNavigationLabel}
+                className="hidden md:flex md:flex-nowrap md:items-center md:gap-2"
+                data-testid="desktop-vault-nav"
+              >
+                <ShellNavItems
+                  capabilities={capabilities}
+                  handlers={handlers}
+                  t={t}
+                  density="primary"
+                  className="flex flex-row flex-nowrap items-center gap-2"
+                />
+              </nav>
+
               <NotificationCenter
-                currentVaultId={capabilities.currentVaultId}
-                vaultName={capabilities.vaultName}
                 locale={capabilities.locale}
                 t={t}
                 queryClient={queryClient}
+                onOpenPreferences={() => setNotificationPreferencesOpen(true)}
               />
 
               <AccountPreferencesMenu
                 locale={capabilities.locale}
+                locales={capabilities.locales}
+                isAdmin={capabilities.isAdmin}
+                handlers={accountHandlers}
                 t={t}
+                notificationPreferences={{
+                  currentVaultId: capabilities.currentVaultId,
+                  vaultName: capabilities.vaultName,
+                  vaults: capabilities.vaults,
+                  queryClient,
+                  open: notificationPreferencesOpen,
+                  onOpenChange: setNotificationPreferencesOpen,
+                }}
               />
 
               <div className="md:hidden">
@@ -118,18 +158,6 @@ export function AppShell({
                   }
                 />
               </div>
-
-              <nav
-                aria-label={vaultNavigationLabel}
-                className="hidden md:flex md:flex-wrap md:items-center md:justify-end md:gap-2"
-              >
-                <ShellNavItems
-                  capabilities={capabilities}
-                  handlers={handlers}
-                  t={t}
-                  className="flex flex-row flex-wrap items-end gap-2"
-                />
-              </nav>
             </div>
           ) : null}
         </div>

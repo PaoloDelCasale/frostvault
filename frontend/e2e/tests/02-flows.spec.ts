@@ -1,6 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { applySession, breakGlassLogin, openMobileDrawer } from "../helpers/auth";
+import {
+  applySession,
+  breakGlassLogin,
+  openAccountMenu,
+  openMobileDrawer,
+} from "../helpers/auth";
 
 function visibleFileButton(page: Page, name: string) {
   return page
@@ -26,11 +31,10 @@ async function vaultSelect(page: Page) {
 }
 
 async function languageSelect(page: Page) {
-  const drawer = page.getByRole("dialog");
-  if (await drawer.isVisible()) {
-    return drawer.getByLabel(/^language$/i);
-  }
-  return page.getByLabel(/^language$/i).locator("visible=true").first();
+  await openAccountMenu(page);
+  return page
+    .getByRole("dialog", { name: /^account$/i })
+    .getByLabel(/^language$|^lingua$/i);
 }
 
 test.describe("archive flows", () => {
@@ -109,17 +113,10 @@ test.describe("archive flows", () => {
     await expect(page.getByText("hello.txt").locator("visible=true").first()).toBeVisible();
   });
 
-  test("flow 7 — switch locale to Italian", async ({ page }, testInfo) => {
+  test("flow 7 — switch locale to Italian", async ({ page }) => {
     await breakGlassLogin(page);
-    if (testInfo.project.name === "mobile-375") {
-      await openMobileDrawer(page);
-    }
     const language = await languageSelect(page);
     await language.selectOption("it");
-    if (testInfo.project.name === "mobile-375") {
-      const close = page.getByRole("button", { name: /close navigation/i });
-      if (await close.isVisible()) await close.click();
-    }
     await expect(page.getByTestId("file-search")).toHaveAttribute(
       "placeholder",
       /cerca per nome/i,
@@ -155,18 +152,11 @@ test.describe("archive flows", () => {
     page,
   }, testInfo) => {
     await breakGlassLogin(page);
-    if (testInfo.project.name === "mobile-375") {
-      await openMobileDrawer(page);
-      await page
-        .getByRole("dialog")
-        .getByRole("button", { name: /administration|amministrazione/i })
-        .click();
-    } else {
-      await page
-        .getByRole("navigation", { name: /vault navigation/i })
-        .getByRole("button", { name: /administration|amministrazione/i })
-        .click();
-    }
+    await openAccountMenu(page);
+    await page
+      .getByRole("dialog", { name: /^account$/i })
+      .getByRole("button", { name: /administration|amministrazione/i })
+      .click();
     await expect(page).toHaveURL(/\/admin/);
     await expect(page.getByText("Family Archive").first()).toBeVisible();
 
@@ -219,20 +209,13 @@ test.describe("archive flows", () => {
     await expect(page.locator('[data-testid="desktop-actions-note.txt"]')).toHaveCount(0);
   });
 
-  test("flow 11 — sign out", async ({ page }, testInfo) => {
+  test("flow 11 — sign out", async ({ page }) => {
     await breakGlassLogin(page);
-    if (testInfo.project.name === "mobile-375") {
-      await openMobileDrawer(page);
-      await page
-        .getByRole("dialog")
-        .getByRole("button", { name: /^sign out$|^esci$/i })
-        .click();
-    } else {
-      await page
-        .getByRole("navigation", { name: /vault navigation/i })
-        .getByRole("button", { name: /^sign out$|^esci$/i })
-        .click();
-    }
+    await openAccountMenu(page);
+    await page
+      .getByRole("dialog", { name: /^account$/i })
+      .getByRole("button", { name: /^sign out$|^esci$/i })
+      .click();
     await expect(page).toHaveURL(/\/login/);
     await expect(page.getByLabel(/username/i)).toBeVisible();
   });

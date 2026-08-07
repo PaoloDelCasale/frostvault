@@ -1,28 +1,55 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AppShell } from "@/layout/AppShell";
-import type { ShellCapabilities } from "@/layout/types";
+import type { ShellCapabilities, ShellNavHandlers } from "@/layout/types";
 
-async function openDrawer(
+const shellHandlers: ShellNavHandlers = {
+  onNewVault: vi.fn(),
+  onManageAccess: vi.fn(),
+  onAdministration: vi.fn(),
+  onSignOut: vi.fn(),
+  onLocaleChange: vi.fn(),
+  onVaultChange: vi.fn(),
+};
+
+async function renderShell(
   capabilities: ShellCapabilities,
   t?: (key: string) => string,
 ) {
   const user = userEvent.setup();
   render(
-    <AppShell capabilities={capabilities} t={t}>
+    <AppShell capabilities={capabilities} handlers={shellHandlers} t={t}>
       <p>content</p>
     </AppShell>,
   );
-  await user.click(screen.getByRole("button", { name: /open navigation/i }));
-  await screen.findByRole("dialog");
   return user;
 }
 
+async function openDrawer(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /open navigation/i }));
+  return screen.findByRole("dialog", { name: /navigation/i });
+}
+
+async function closeDrawerIfOpen(user: ReturnType<typeof userEvent.setup>) {
+  const close = screen.queryByRole("button", { name: /close navigation/i });
+  if (close) {
+    await user.click(close);
+    expect(screen.queryByRole("dialog", { name: /navigation/i })).not.toBeInTheDocument();
+  }
+}
+
+async function openAccountMenu(user: ReturnType<typeof userEvent.setup>) {
+  // The vault drawer is modal and aria-hides the header account trigger.
+  await closeDrawerIfOpen(user);
+  await user.click(screen.getByRole("button", { name: /open account menu/i }));
+  return screen.findByRole("dialog", { name: /^account$/i });
+}
+
 describe("App drawer capability filtering", () => {
-  it("shows Manage access for an owner, not Administration or Refresh list", async () => {
-    await openDrawer({
+  it("shows Manage access for an owner in vault nav, not Administration or Refresh list", async () => {
+    const user = await renderShell({
       vaultName: "Owner Vault",
       isVaultOwner: true,
       canOperate: false,
@@ -33,16 +60,25 @@ describe("App drawer capability filtering", () => {
       role: "owner",
     });
 
-    const drawer = screen.getByRole("dialog");
+    const drawer = await openDrawer(user);
     expect(drawer).toHaveTextContent("Manage access");
     expect(drawer).not.toHaveTextContent("Administration");
     expect(drawer).not.toHaveTextContent("Refresh list");
-    expect(drawer).toHaveTextContent("New vault");
-    expect(drawer).toHaveTextContent("Sign out");
+    expect(drawer).not.toHaveTextContent("New vault");
+    expect(drawer).not.toHaveTextContent("Sign out");
+    expect(drawer).not.toHaveTextContent("Language");
+
+    const account = await openAccountMenu(user);
+    expect(account).toHaveTextContent("New vault");
+    expect(account).toHaveTextContent("Sign out");
+    expect(account).toHaveTextContent("Language");
+    expect(account).not.toHaveTextContent("Administration");
+    expect(account).not.toHaveTextContent("Manage access");
+    expect(account).not.toHaveTextContent("Refresh list");
   });
 
   it("hides Manage access, Administration and Refresh list for an operator", async () => {
-    await openDrawer({
+    const user = await renderShell({
       vaultName: "Ops Vault",
       isVaultOwner: false,
       canOperate: true,
@@ -53,17 +89,24 @@ describe("App drawer capability filtering", () => {
       role: "operator",
     });
 
-    const drawer = screen.getByRole("dialog");
+    const drawer = await openDrawer(user);
     expect(drawer).not.toHaveTextContent("Refresh list");
     expect(drawer).not.toHaveTextContent("Aggiorna elenco");
     expect(drawer).not.toHaveTextContent("Manage access");
     expect(drawer).not.toHaveTextContent("Administration");
-    expect(drawer).toHaveTextContent("New vault");
-    expect(drawer).toHaveTextContent("Sign out");
+    expect(drawer).not.toHaveTextContent("New vault");
+    expect(drawer).not.toHaveTextContent("Sign out");
+
+    const account = await openAccountMenu(user);
+    expect(account).toHaveTextContent("New vault");
+    expect(account).toHaveTextContent("Sign out");
+    expect(account).not.toHaveTextContent("Manage access");
+    expect(account).not.toHaveTextContent("Administration");
+    expect(account).not.toHaveTextContent("Refresh list");
   });
 
   it("hides Manage access, Administration and Refresh list for a viewer", async () => {
-    await openDrawer({
+    const user = await renderShell({
       vaultName: "View Vault",
       isVaultOwner: false,
       canOperate: false,
@@ -74,17 +117,21 @@ describe("App drawer capability filtering", () => {
       role: "viewer",
     });
 
-    const drawer = screen.getByRole("dialog");
+    const drawer = await openDrawer(user);
     expect(drawer).not.toHaveTextContent("Manage access");
     expect(drawer).not.toHaveTextContent("Administration");
     expect(drawer).not.toHaveTextContent("Refresh list");
-    expect(drawer).toHaveTextContent("New vault");
-    expect(drawer).toHaveTextContent("Language");
-    expect(drawer).toHaveTextContent("Sign out");
+
+    const account = await openAccountMenu(user);
+    expect(account).toHaveTextContent("New vault");
+    expect(account).toHaveTextContent("Language");
+    expect(account).toHaveTextContent("Sign out");
+    expect(account).not.toHaveTextContent("Manage access");
+    expect(account).not.toHaveTextContent("Administration");
   });
 
-  it("shows Administration for an admin", async () => {
-    await openDrawer({
+  it("shows Administration for an admin only in the account menu", async () => {
+    const user = await renderShell({
       vaultName: "Admin Vault",
       isVaultOwner: false,
       canOperate: false,
@@ -95,9 +142,144 @@ describe("App drawer capability filtering", () => {
       role: "viewer",
     });
 
-    const drawer = screen.getByRole("dialog");
-    expect(drawer).toHaveTextContent("Administration");
+    const drawer = await openDrawer(user);
+    expect(drawer).not.toHaveTextContent("Administration");
     expect(drawer).not.toHaveTextContent("Manage access");
     expect(drawer).not.toHaveTextContent("Refresh list");
+
+    const account = await openAccountMenu(user);
+    expect(account).toHaveTextContent("Administration");
+    expect(account).not.toHaveTextContent("Manage access");
+    expect(account).not.toHaveTextContent("Refresh list");
+  });
+
+  it("keeps desktop primary header free of secondary destinations", async () => {
+    const user = await renderShell({
+      vaultName: "Very Long Owner Archive Name For Header",
+      isVaultOwner: true,
+      canOperate: true,
+      isAdmin: true,
+      locale: "en",
+      locales: ["en", "it"],
+      vaults: [
+        {
+          id: 1,
+          slug: "long",
+          name: "Very Long Owner Archive Name For Header",
+          role: "owner",
+        },
+      ],
+      role: "owner",
+      currentVaultId: 1,
+    });
+
+    const header = screen.getByRole("banner");
+    const headerRow = within(header).getByTestId("app-shell-header-row");
+    expect(headerRow.className).toMatch(/flex-nowrap/);
+
+    // Secondary destinations must not sit permanently in the header chrome.
+    expect(
+      within(header).queryByRole("button", { name: /^new vault$/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(header).queryByRole("button", { name: /^administration$/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(header).queryByRole("button", { name: /^sign out$/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(header).queryByRole("combobox", { name: /^language$/i }),
+    ).not.toBeInTheDocument();
+    expect(header).not.toHaveTextContent("Refresh list");
+
+    // Primary / vault-contextual controls remain reachable from the shell.
+    expect(
+      within(header).getByRole("button", { name: /open account menu/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(header).getByTestId("notification-bell"),
+    ).toBeInTheDocument();
+
+    const account = await openAccountMenu(user);
+    expect(
+      within(account).getByRole("button", { name: /^new vault$/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(account).getByRole("button", { name: /^administration$/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(account).getByRole("combobox", { name: /^language$/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(account).getByRole("combobox", { name: /^appearance$/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(account).getByRole("button", { name: /^sign out$/i }),
+    ).toBeInTheDocument();
+    expect(account).not.toHaveTextContent("Manage access");
+  });
+
+  it("constrains the desktop Vault select for long names at narrow desktop widths", async () => {
+    const longName =
+      "Very Long Owner Archive Name For Desktop Header Overflow Regression";
+    const user = await renderShell({
+      vaultName: longName,
+      isVaultOwner: true,
+      canOperate: true,
+      isAdmin: false,
+      locale: "en",
+      locales: ["en"],
+      vaults: [
+        { id: 1, slug: "long", name: longName, role: "owner" },
+        { id: 2, slug: "docs", name: "Docs", role: "owner" },
+      ],
+      role: "owner",
+      currentVaultId: 1,
+    });
+
+    // Representative narrow desktop width (md breakpoint floor).
+    const shell = screen.getByRole("banner").parentElement;
+    expect(shell).not.toBeNull();
+    Object.defineProperty(shell as HTMLElement, "clientWidth", {
+      configurable: true,
+      value: 768,
+    });
+
+    const desktopNav = screen.getByTestId("desktop-vault-nav");
+    const desktopSelect = within(desktopNav).getByRole("combobox", {
+      name: /^vault$/i,
+    });
+
+    // Inside the shrink-0 / nowrap primary cluster the select must carry an
+    // explicit ceiling so a content-sized long name cannot expand the header.
+    const desktopClasses = desktopSelect.className.split(/\s+/);
+    expect(desktopClasses).toEqual(
+      expect.arrayContaining([
+        "min-w-0",
+        expect.stringMatching(/^max-w-/),
+      ]),
+    );
+    expect(desktopSelect).toHaveValue("1");
+    expect(
+      within(desktopSelect).getByRole("option", { name: longName }),
+    ).toBeInTheDocument();
+    // Ordinary short names remain first-class options in the same control.
+    expect(
+      within(desktopSelect).getByRole("option", { name: "Docs" }),
+    ).toBeInTheDocument();
+
+    // Mobile stacked drawer select stays unconstrained by the desktop clamp.
+    const drawer = await openDrawer(user);
+    const drawerSelect = within(drawer).getByRole("combobox", {
+      name: /^vault$/i,
+    });
+    const drawerClasses = drawerSelect.className.split(/\s+/);
+    expect(drawerClasses).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/^max-w-/)]),
+    );
+    expect(drawerSelect).toHaveValue("1");
+    expect(
+      within(drawerSelect).getByRole("option", { name: longName }),
+    ).toBeInTheDocument();
   });
 });
