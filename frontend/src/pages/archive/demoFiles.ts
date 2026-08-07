@@ -69,6 +69,7 @@ export const demoRootListing: FilesResponse = {
   page: 1,
   directory: "",
   mode: "browse",
+  aggregate_status: "ready",
 };
 
 const demoNestedListing: FilesResponse = {
@@ -100,6 +101,7 @@ const demoNestedListing: FilesResponse = {
   page: 1,
   directory: "reports",
   mode: "browse",
+  aggregate_status: "ready",
 };
 
 const demoSearchListing: FilesResponse = {
@@ -120,6 +122,7 @@ const demoSearchListing: FilesResponse = {
   page: 1,
   directory: "",
   mode: "search",
+  aggregate_status: "ready",
 };
 
 const demoFileHistory: FileHistoryResponse = {

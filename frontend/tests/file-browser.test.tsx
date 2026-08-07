@@ -47,6 +47,9 @@ const messages: Record<string, string> = {
   "ui.path_history_error": "Unable to load Path History.",
   "ui.close_path_history": "Close",
   "ui.file_list_placeholder": "File list",
+  "ui.file_list_loading": "Loading folder…",
+  "ui.file_list_error": "Unable to load this folder.",
+  "ui.file_list_retry": "Retry",
   "state.both": "Server + cloud",
   "state.local_only": "Server only",
   "state.cloud_only": "Cloud only",
@@ -762,6 +765,73 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
     expect(screen.getByTestId("file-list-empty")).toHaveTextContent(
       "No Vault Files match your search.",
     );
+  });
+
+  it("shows a loading skeleton instead of a false-empty 0 items label", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) {
+        return jsonResponse({ items: [], groups: [] });
+      }
+      await gate;
+      return jsonResponse(realisticBrowse);
+    });
+
+    renderBrowser();
+    expect(screen.getByTestId("file-list-loading")).toBeInTheDocument();
+    expect(screen.queryByTestId("file-list-empty")).not.toBeInTheDocument();
+    expect(screen.getByTestId("page-label")).toHaveTextContent("Loading folder…");
+    expect(screen.getByTestId("page-label")).not.toHaveTextContent("0 items");
+
+    release?.();
+    await waitFor(() => {
+      expect(screen.getByTestId("file-list-cards")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("file-list-loading")).not.toBeInTheDocument();
+    expect(screen.getByTestId("page-label")).toHaveTextContent("3 items");
+  });
+
+  it("treats aggregate_status=loading with empty items as loading, not empty", async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) {
+        return jsonResponse({ items: [], groups: [] });
+      }
+      return jsonResponse({
+        items: [],
+        total: 0,
+        page: 1,
+        directory: "",
+        mode: "browse",
+        aggregate_status: "loading",
+      });
+    });
+
+    renderBrowser();
+    await waitFor(() => {
+      expect(screen.getByTestId("file-list-loading")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("file-list-empty")).not.toBeInTheDocument();
+    expect(screen.getByTestId("page-label")).toHaveTextContent("Loading folder…");
+    expect(screen.getByTestId("page-label")).not.toHaveTextContent("0 items");
+  });
+
+  it("exposes an accessible retry control when the listing fails", async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) {
+        return jsonResponse({ items: [], groups: [] });
+      }
+      return new Response("boom", { status: 500 });
+    });
+
+    renderBrowser();
+    await waitFor(() => {
+      expect(screen.getByTestId("file-list-error")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("file-list-retry")).toHaveTextContent("Retry");
+    expect(screen.queryByTestId("file-list-empty")).not.toBeInTheDocument();
   });
 
   it("renders a file name containing HTML as text, not as markup", async () => {

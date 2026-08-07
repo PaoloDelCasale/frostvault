@@ -40,6 +40,12 @@ _ALLOWED_METRICS = {
     "filesystem_health_findings": "gauge",
     "filesystem_health_cache_age_seconds": "gauge",
     "filesystem_health_status": "gauge",
+    # Directory listing / aggregate maintenance (issue #229).
+    "directory_listing_duration_seconds": "gauge",
+    "directory_listing_rows_materialized": "gauge",
+    "directory_aggregate_update_batch_size": "gauge",
+    "directory_aggregate_update_duration_seconds": "gauge",
+    "directory_aggregate_rebuild_status": "gauge",
 }
 
 _lock = threading.Lock()
