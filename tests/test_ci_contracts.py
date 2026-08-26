@@ -277,7 +277,7 @@ class TrivyBaselineContractTests(unittest.TestCase):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("FROM rclone/rclone:1.75.0 AS rclone", dockerfile)
         self.assertIn("msgpack==1.2.1\n", requirements)
-        self.assertIn("setuptools==83.0.0\n", requirements)
+        self.assertIn("setuptools==84.0.0\n", requirements)
         self.assertIn("apt-get upgrade -y", dockerfile)
         self.assertIn("pip uninstall --yes pip", dockerfile)
 

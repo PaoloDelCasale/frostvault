@@ -13,4 +13,4 @@ cryptography==50.0.0
 PyYAML==6.0.3
 pywebpush==2.4.0
 msgpack==1.2.1
-setuptools==83.0.0
+setuptools==84.0.0
