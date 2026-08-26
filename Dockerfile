@@ -17,6 +17,7 @@ LABEL org.opencontainers.image.title="FrostVault" \
 # against the supported PostgreSQL 16 server (issue #7). PGDG pins major 16 even when
 # the base image's Debian default client is a different major.
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
