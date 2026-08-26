@@ -1,1 +1,13 @@
-# No temporary Trivy exceptions: the image is kept on remediated dependency pins.
+# rclone v1.75.0 is the latest release as of 2026-08-26 and embeds Go
+# v1.26.5. These CVEs are fixed in Go v1.26.6, but no rclone release built
+# with that toolchain is available yet. Track the next release at:
+# https://github.com/rclone/rclone/releases
+# Review and remove these exceptions by 2026-09-09.
+CVE-2026-33818
+CVE-2026-39821
+CVE-2026-46600
+CVE-2026-56853
+CVE-2026-56858
+CVE-2026-56859
+CVE-2026-56860
+CVE-2026-56862
