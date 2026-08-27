@@ -71,12 +71,20 @@ Workflow: [`.github/workflows/security.yml`](../.github/workflows/security.yml)
 | Gitleaks (CLI) | Any finding fails the job | Rotate the secret, purge history if needed, then add a documented allow rule only for false positives. |
 | SBOM + Trivy image scan | **CRITICAL** and **HIGH** fail (`ignore-unfixed: true`) | Add CVE lines to [`.trivyignore`](../.trivyignore) with advisory URL + review date. |
 
-Dependabot (`.github/dependabot.yml`) opens weekly update PRs for pip, Actions, and
-Docker. **Auto-merge is disabled**; humans review and merge.
+Dependabot (`.github/dependabot.yml`) opens weekly update PRs for pip, Actions,
+and Docker. [Dependabot maintenance](../.github/workflows/dependabot-maintenance.yml)
+queues minor and patch updates for squash auto-merge; branch protection and all
+required checks still gate each merge. Major updates remain manual. The same
+workflow updates open Dependabot PRs that are behind `main`, running after every
+push to `main` and every 15 minutes so a sequence of dependency PRs does not
+require manual **Update branch** clicks. CodeQL `init` and `analyze` updates are
+grouped because those steps must use exactly the same version.
 
-`workflow_run` and `pull_request_target` remain forbidden: both hand a privileged
-token to a workflow chosen by pull-request activity.
-`tests/test_ci_contracts.py` enforces that.
+The privileged maintenance workflow runs only from the trusted default branch
+and never checks out dependency-PR code. `workflow_run` and
+`pull_request_target` remain forbidden because both can cross a privileged
+boundary based on pull-request activity. `tests/test_ci_contracts.py` enforces
+these constraints.
 
 ## Local commands
 

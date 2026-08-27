@@ -1,0 +1,76 @@
+name: Dependabot maintenance
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  schedule:
+    # Catch newly opened PRs without using a privileged pull-request trigger.
+    - cron: "7,22,37,52 * * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependabot-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintain:
+    name: Enable auto-merge and update stale branches
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Maintain open Dependabot pull requests
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          prs="$({
+            gh pr list \
+              --repo "$GH_REPO" \
+              --state open \
+              --author app/dependabot \
+              --limit 100 \
+              --json number,url,isDraft,mergeStateStatus,headRefOid
+          })"
+
+          while IFS= read -r pr; do
+            number="$(jq -r '.number' <<<"$pr")"
+            url="$(jq -r '.url' <<<"$pr")"
+            draft="$(jq -r '.isDraft' <<<"$pr")"
+            state="$(jq -r '.mergeStateStatus' <<<"$pr")"
+            head_sha="$(jq -r '.headRefOid' <<<"$pr")"
+
+            if [[ "$state" == "BEHIND" ]]; then
+              echo "Updating Dependabot PR #$number to the current base branch"
+              if ! gh api \
+                --method PUT \
+                "repos/$GH_REPO/pulls/$number/update-branch" \
+                -f "expected_head_sha=$head_sha"
+              then
+                echo "::warning::Could not update Dependabot PR #$number; it may have changed concurrently"
+              fi
+            fi
+
+            commit_messages="$({
+              gh api --paginate \
+                "repos/$GH_REPO/pulls/$number/commits?per_page=100" \
+                --jq '.[].commit.message'
+            })"
+            if [[ "$draft" == "false" ]] && \
+              grep -Eq 'update-type: version-update:semver-(minor|patch)' \
+                <<<"$commit_messages" && \
+              ! grep -Fq 'update-type: version-update:semver-major' \
+                <<<"$commit_messages"
+            then
+              echo "Enabling auto-merge for Dependabot PR #$number"
+              if ! gh pr merge --repo "$GH_REPO" --auto --squash "$url"; then
+                echo "::warning::Could not enable auto-merge for Dependabot PR #$number"
+              fi
+            fi
+          done < <(jq -c '.[]' <<<"$prs")
