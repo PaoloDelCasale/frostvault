@@ -5,13 +5,17 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-    # No auto-merge: proposals only (issue #13).
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      codeql-action:
+        # init and analyze must run at the same version.
+        patterns:
+          - "github/codeql-action/*"
 
   - package-ecosystem: docker
     directory: "/"
