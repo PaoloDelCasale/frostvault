@@ -341,15 +341,42 @@ class ProductionImagePostgresClientContractTests(unittest.TestCase):
 
 
 class DependabotContractTests(unittest.TestCase):
-    def test_dependabot_has_no_auto_merge(self) -> None:
-        text = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
-        config = yaml.safe_load(text)
-        for update in config["updates"]:
-            self.assertNotIn("auto-merge", update)
-            self.assertFalse(update.get("automerged", False))
+    def test_codeql_actions_are_grouped_to_prevent_version_mismatches(self) -> None:
+        config = yaml.safe_load(
+            (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+        )
         ecosystems = {item["package-ecosystem"] for item in config["updates"]}
         self.assertEqual(ecosystems, {"pip", "github-actions", "docker"})
-        self.assertIn("proposals only", text.lower())
+        actions = next(
+            item
+            for item in config["updates"]
+            if item["package-ecosystem"] == "github-actions"
+        )
+        self.assertIn(
+            "github/codeql-action/*",
+            actions["groups"]["codeql-action"]["patterns"],
+        )
+
+    def test_maintenance_updates_stale_prs_and_auto_merges_safe_updates(self) -> None:
+        path = WORKFLOWS / "dependabot-maintenance.yml"
+        text = path.read_text(encoding="utf-8")
+        workflow = yaml.safe_load(text)
+        triggers = _workflow_on(workflow)
+        self.assertIn("workflow_dispatch", triggers)
+        self.assertIn("push", triggers)
+        self.assertIn("schedule", triggers)
+        self.assertNotIn("pull_request", triggers)
+        self.assertNotIn("pull_request_target", triggers)
+        self.assertEqual(workflow["permissions"]["contents"], "write")
+        self.assertEqual(workflow["permissions"]["pull-requests"], "write")
+        self.assertIn("--author app/dependabot", text)
+        self.assertIn("pulls/$number/update-branch", text)
+        self.assertIn("expected_head_sha=$head_sha", text)
+        self.assertIn("pulls/$number/commits?per_page=100", text)
+        self.assertIn("version-update:semver-(minor|patch)", text)
+        self.assertIn("version-update:semver-major", text)
+        self.assertIn("gh pr merge", text)
+        self.assertIn("--auto --squash", text)
 
 class ContributorCiDocsTests(unittest.TestCase):
     def test_ci_status_is_documented(self) -> None:
