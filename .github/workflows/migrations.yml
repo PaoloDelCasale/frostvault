@@ -9,15 +9,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   python-unit-tests:
-    name: Python unit tests (SQLite shard ${{ matrix.shard }}/3)
+    name: Python unit tests (SQLite shard ${{ matrix.shard }}/7)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -30,7 +34,7 @@ jobs:
       - name: Run SQLite unit-test shard
         env:
           SHARD_INDEX: ${{ matrix.shard }}
-          SHARD_COUNT: "4"
+          SHARD_COUNT: "8"
         run: |
           mapfile -t TEST_MODULES < <(
             python - <<'PY'
@@ -49,7 +53,7 @@ jobs:
           python -m unittest "${TEST_MODULES[@]}" -v
 
   # Keep this aggregate check name stable for branch protection. It fails when
-  # any matrix shard fails, while allowing all four shards to run concurrently.
+  # any matrix shard fails, while allowing all eight shards to run concurrently.
   sqlite-and-postgresql:
     name: Unit and migration tests
     needs: python-unit-tests
