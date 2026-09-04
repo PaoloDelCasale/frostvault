@@ -135,8 +135,25 @@ jobs:
           path: .
           format: spdx-json
           artifact-name: python-sbom.spdx.json
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/.buildx-cache
+          key: docker-${{ runner.os }}-${{ hashFiles('Dockerfile', 'requirements.txt', 'frontend/package-lock.json', 'docker/entrypoint.sh') }}
+          restore-keys: |
+            docker-${{ runner.os }}-
       - name: Build runtime image
-        run: docker build -t archive-ci:scan .
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/.buildx-cache
+          docker buildx create --name ci --driver docker-container --use >/dev/null 2>&1 || docker buildx use ci
+          docker buildx build --load \
+            --cache-from type=local,src=/tmp/.buildx-cache \
+            --cache-to type=local,dest=/tmp/.buildx-cache-out,mode=max \
+            -t archive-ci:scan .
+          rm -rf /tmp/.buildx-cache
+          if [ -d /tmp/.buildx-cache-out ]; then
+            mv /tmp/.buildx-cache-out /tmp/.buildx-cache
+          fi
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
