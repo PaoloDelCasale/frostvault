@@ -15,13 +15,13 @@ concurrency:
 
 jobs:
   python-unit-tests:
-    name: Python unit tests (SQLite shard ${{ matrix.shard }}/7)
+    name: Python unit tests (SQLite shard ${{ matrix.shard }}/11)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -34,7 +34,7 @@ jobs:
       - name: Run SQLite unit-test shard
         env:
           SHARD_INDEX: ${{ matrix.shard }}
-          SHARD_COUNT: "8"
+          SHARD_COUNT: "12"
         run: |
           mapfile -t TEST_MODULES < <(
             python - <<'PY'
@@ -43,9 +43,18 @@ jobs:
 
           shard_index = int(os.environ["SHARD_INDEX"])
           shard_count = int(os.environ["SHARD_COUNT"])
-          for index, path in enumerate(sorted(Path("tests").glob("test_*.py"))):
-              if index % shard_count == shard_index:
-                  print(f"tests.{path.stem}")
+          paths = sorted(
+              Path("tests").glob("test_*.py"),
+              key=lambda path: (-path.stat().st_size, path.name),
+          )
+          loads = [0] * shard_count
+          assigned = [[] for _ in range(shard_count)]
+          for path in paths:
+              target = min(range(shard_count), key=lambda index: (loads[index], index))
+              assigned[target].append(path)
+              loads[target] += path.stat().st_size
+          for path in assigned[shard_index]:
+              print(f"tests.{path.stem}")
           PY
           )
           printf 'Shard %s/%s modules:\n%s\n' \
@@ -53,7 +62,7 @@ jobs:
           python -m unittest "${TEST_MODULES[@]}" -v
 
   # Keep this aggregate check name stable for branch protection. It fails when
-  # any matrix shard fails, while allowing all eight shards to run concurrently.
+  # any matrix shard fails, while allowing all twelve shards to run concurrently.
   sqlite-and-postgresql:
     name: Unit and migration tests
     needs: python-unit-tests
@@ -105,10 +114,10 @@ jobs:
             tests.test_migrations_postgresql.PostgreSQLMigrationTests \
             -v
 
-  frontend-quality:
-    name: Frontend lint, typecheck, unit tests, and build
+  frontend-typecheck:
+    name: Frontend generate and typecheck
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -130,12 +139,46 @@ jobs:
       - name: Frontend TypeScript typecheck
         working-directory: frontend
         run: npm run typecheck
+
+  frontend-lint-test:
+    name: Frontend lint and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
       - name: Frontend SPA lint
         working-directory: frontend
         run: npm run lint
       - name: Frontend SPA unit tests
         working-directory: frontend
         run: npm run test
+
+  frontend-build:
+    name: Frontend production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
       - name: Frontend SPA build
         working-directory: frontend
         run: npm run build
@@ -325,9 +368,13 @@ jobs:
           if-no-files-found: ignore
 
   playwright-e2e:
-    name: Playwright e2e (375px + desktop)
+    name: Playwright e2e (${{ matrix.project }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [mobile-375, desktop-1280]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -362,18 +409,18 @@ jobs:
           CI: "1"
           # setup-python puts the interpreter on PATH; there is no repo .venv in CI.
           E2E_PYTHON: python
-        run: npm run test:e2e
+        run: npm run test:e2e -- --project ${{ matrix.project }}
       - name: Upload Playwright failure artifacts
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: playwright-e2e-failures
+          name: playwright-e2e-failures-${{ matrix.project }}
           path: |
             frontend/e2e/test-results/
             frontend/e2e-report/
           if-no-files-found: ignore
       - name: Upload 375px e2e screenshots
-        if: always()
+        if: ${{ always() && matrix.project == 'mobile-375' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: playwright-e2e-375px
