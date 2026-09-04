@@ -9,10 +9,12 @@ Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.y
 
 | Job | What it proves | Credentials |
 | --- | --- | --- |
-| Unit and migration tests | Python `unittest` suite against SQLite, partitioned deterministically by test module across eight parallel shards and reported through one stable aggregate check. PostgreSQL-only cases skip here and run in the parallel job below. | None. Live AWS/MinIO env vars are intentionally unset so S3 integration cases skip. |
+| Unit and migration tests | Python `unittest` suite against SQLite, partitioned across twelve parallel shards by packing largest test modules first so slow files do not land together, then reported through one stable aggregate check. PostgreSQL-only cases skip here and run in the parallel job below. | None. Live AWS/MinIO env vars are intentionally unset so S3 integration cases skip. |
 | PostgreSQL migration and concurrency tests | PostgreSQL-specific migration and shared rate-limit concurrency cases against `postgres:16`. | Ephemeral Postgres service only. |
-| Frontend lint, typecheck, unit tests, and build | Regenerates the committed OpenAPI TypeScript artifacts from `frontend/openapi.json`, fails on generated-artifact drift, runs the strict browser/Node/Vitest/Playwright TypeScript projects, ESLint (including `e2e/`), Vitest, and the production Vite/PWA build. Runs in parallel with both Python jobs. | None. |
-| Playwright e2e (375px + desktop) | Chromium Playwright against uvicorn + SQLite with seeded fixtures: eleven archive/admin flows plus touch/a11y checks at 375×667 and 1280×800 | None. Placeholder AWS env only; no live cloud calls. Browsers cached under `~/.cache/ms-playwright`. Uses `E2E_PYTHON=python` (setup-python on PATH; no repo `.venv` in CI). Failure screenshots upload as `playwright-e2e-failures`; successful 375px shots as `playwright-e2e-375px`. |
+| Frontend generate and typecheck | Regenerates the committed OpenAPI TypeScript artifacts from `frontend/openapi.json`, fails on generated-artifact drift, then runs the strict browser/Node/Vitest/Playwright TypeScript projects. | None. |
+| Frontend lint and unit tests | ESLint (including `e2e/`) and Vitest, in parallel with typecheck and the production build. | None. |
+| Frontend production build | Production Vite/PWA build, in parallel with typecheck and lint/unit tests. | None. |
+| Playwright e2e (mobile-375 / desktop-1280) | Chromium Playwright against uvicorn + SQLite with seeded fixtures, split into two parallel projects: 375×667 and 1280×800. | None. Placeholder AWS env only; no live cloud calls. Browsers cached under `~/.cache/ms-playwright`. Uses `E2E_PYTHON=python` (setup-python on PATH; no repo `.venv` in CI). Failure screenshots upload as `playwright-e2e-failures-<project>`; successful 375px shots as `playwright-e2e-375px`. |
 | Production image PostgreSQL backup | Builds the production Docker image, checks `pg_dump`/`pg_restore`/`createdb`/`dropdb`/`psql`, then runs Alembic + `backup_upgrade --skip-upgrade` + isolated restore verification against `postgres:16` | Ephemeral Postgres service only. |
 | S3-compatible integrity (MinIO) | Real Rclone + MinIO upload/recovery SHA-256 proofs (plain, crypt, empty, Unicode, multipart cutoff) plus prefix cleanup | Ephemeral MinIO only (`minioadmin`). No AWS account. |
 
@@ -72,13 +74,14 @@ Workflow: [`.github/workflows/security.yml`](../.github/workflows/security.yml)
 | SBOM + Trivy image scan | **CRITICAL** and **HIGH** fail (`ignore-unfixed: true`) | Add CVE lines to [`.trivyignore`](../.trivyignore) with advisory URL + review date. |
 
 Dependabot (`.github/dependabot.yml`) opens weekly update PRs for pip, Actions,
-and Docker. [Dependabot maintenance](../.github/workflows/dependabot-maintenance.yml)
-queues minor and patch updates for squash auto-merge; branch protection and all
-required checks still gate each merge. Major updates remain manual. The same
-workflow updates open Dependabot PRs that are behind `main`, running after every
-push to `main` and every 15 minutes so a sequence of dependency PRs does not
-require manual **Update branch** clicks. CodeQL `init` and `analyze` updates are
-grouped because those steps must use exactly the same version.
+Docker, and npm in `/frontend`. [Dependabot maintenance](../.github/workflows/dependabot-maintenance.yml)
+queues minor, patch, and security updates (including advisories that omit
+`update-type`) for squash auto-merge; branch protection and all required checks
+still gate each merge. Major updates remain manual. The same workflow always
+tries to refresh open Dependabot PRs against `main` after every push and every
+15 minutes, with a short delay on push so GitHub's merge state has time to
+settle. CodeQL `init` and `analyze` updates are grouped because those steps must
+use exactly the same version.
 
 The privileged maintenance workflow runs only from the trusted default branch
 and never checks out dependency-PR code. `workflow_run` and
