@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Native actions/dependency-review-action needs Dependency graph + GitHub
   # Advanced Security on private repositories. pip-audit is the portable gate
