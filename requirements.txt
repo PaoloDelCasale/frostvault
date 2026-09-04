@@ -12,5 +12,5 @@ authlib==1.7.2
 cryptography==50.0.1
 PyYAML==6.0.3
 pywebpush==2.4.0
-msgpack==1.2.1
+msgpack==1.2.2
 setuptools==84.0.0
