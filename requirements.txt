@@ -8,7 +8,7 @@ argon2-cffi==25.1.0
 SQLAlchemy==2.0.52
 alembic==1.19.1
 httpx==0.28.1
-authlib==1.7.2
+authlib==1.8.0
 cryptography==50.0.1
 PyYAML==6.0.3
 pywebpush==2.5.0
