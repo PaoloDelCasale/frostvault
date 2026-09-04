@@ -40,22 +40,33 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertIn("s3-compatible-integrity", job_names)
         self.assertIn("playwright-e2e", job_names)
 
-    def test_pr_runs_frontend_quality_in_a_dedicated_parallel_job(self) -> None:
+    def test_pr_runs_frontend_checks_in_parallel_jobs(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
         jobs = workflow["jobs"]
-        self.assertIn("frontend-quality", jobs)
-        run_blocks = [
-            step.get("run", "") for step in jobs["frontend-quality"]["steps"]
-        ]
-        self.assertTrue(any("npm ci" in block for block in run_blocks))
-        self.assertTrue(any("npm run test" in block for block in run_blocks))
-        self.assertTrue(any("npm run lint" in block for block in run_blocks))
-        self.assertTrue(any("npm run build" in block for block in run_blocks))
-        self.assertFalse(any("node --test" in block for block in run_blocks))
+        self.assertIn("frontend-typecheck", jobs)
+        self.assertIn("frontend-lint-test", jobs)
+        self.assertIn("frontend-build", jobs)
+        self.assertNotIn("frontend-quality", jobs)
 
-    def test_frontend_quality_refreshes_artifacts_before_strict_checks(self) -> None:
+        typecheck_runs = [
+            step.get("run", "") for step in jobs["frontend-typecheck"]["steps"]
+        ]
+        lint_runs = [
+            step.get("run", "") for step in jobs["frontend-lint-test"]["steps"]
+        ]
+        build_runs = [
+            step.get("run", "") for step in jobs["frontend-build"]["steps"]
+        ]
+        self.assertTrue(any("npm ci" in block for block in typecheck_runs))
+        self.assertTrue(any("npm run typecheck" in block for block in typecheck_runs))
+        self.assertTrue(any("npm run lint" in block for block in lint_runs))
+        self.assertTrue(any("npm run test" in block for block in lint_runs))
+        self.assertTrue(any("npm run build" in block for block in build_runs))
+        self.assertFalse(any("node --test" in block for block in lint_runs))
+
+    def test_frontend_typecheck_refreshes_artifacts_before_strict_checks(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
-        steps = workflow["jobs"]["frontend-quality"]["steps"]
+        steps = workflow["jobs"]["frontend-typecheck"]["steps"]
         runs = [step.get("run", "") for step in steps]
 
         def step_index(fragment: str) -> int:
@@ -76,9 +87,6 @@ class PullRequestCiContractTests(unittest.TestCase):
             "frontend/src/api/types.ts",
         ):
             self.assertIn(artifact, runs[drift])
-
-        for command in ("npm run lint", "npm run test", "npm run build"):
-            self.assertGreater(step_index(command), typecheck)
 
     def test_frontend_typecheck_projects_are_strict_and_environment_scoped(self) -> None:
         frontend = ROOT / "frontend"
@@ -137,17 +145,18 @@ class PullRequestCiContractTests(unittest.TestCase):
         postgres_job = jobs["postgresql-tests"]
         self.assertEqual(
             python_job["strategy"]["matrix"]["shard"],
-            [0, 1, 2, 3, 4, 5, 6, 7],
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
         )
         self.assertEqual(sqlite_job["needs"], "python-unit-tests")
         self.assertEqual(sqlite_job["if"], "${{ always() }}")
         python_runs = "\n".join(
             step.get("run", "") for step in python_job["steps"]
         )
-        self.assertIn("index % shard_count == shard_index", python_runs)
+        self.assertIn("key=lambda path: (-path.stat().st_size, path.name)", python_runs)
+        self.assertIn("assigned[target].append(path)", python_runs)
         self.assertEqual(
             python_job["steps"][-1].get("env", {}).get("SHARD_COUNT"),
-            "8",
+            "12",
         )
         self.assertNotIn("postgres", python_job.get("services") or {})
         self.assertNotIn("TEST_POSTGRES_URL", python_job.get("env") or {})
@@ -166,9 +175,14 @@ class PullRequestCiContractTests(unittest.TestCase):
     def test_playwright_e2e_job_installs_chromium_and_uploads_failures(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
         job = workflow["jobs"]["playwright-e2e"]
+        self.assertEqual(
+            job["strategy"]["matrix"]["project"],
+            ["mobile-375", "desktop-1280"],
+        )
         runs = [step.get("run", "") for step in job["steps"]]
         self.assertTrue(any("playwright install" in block for block in runs))
         self.assertTrue(any("test:e2e" in block for block in runs))
+        self.assertTrue(any("--project" in block for block in runs))
         uses = [step.get("uses", "") for step in job["steps"]]
         self.assertTrue(any(u.startswith("actions/cache@") for u in uses))
         self.assertTrue(any(u.startswith("actions/upload-artifact@") for u in uses))
@@ -280,8 +294,8 @@ class TrivyBaselineContractTests(unittest.TestCase):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("FROM rclone/rclone:1.75.0 AS rclone", dockerfile)
-        self.assertIn("msgpack==1.2.1\n", requirements)
-        self.assertIn("setuptools==84.0.0\n", requirements)
+        self.assertRegex(requirements, r"(?m)^msgpack==\d+\.\d+\.\d+\n")
+        self.assertRegex(requirements, r"(?m)^setuptools==\d+\.\d+\.\d+\n")
         self.assertIn("apt-get upgrade -y", dockerfile)
         self.assertIn("pip uninstall --yes pip", dockerfile)
         trivyignore = (ROOT / ".trivyignore").read_text(encoding="utf-8")
@@ -353,7 +367,7 @@ class DependabotContractTests(unittest.TestCase):
             (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
         )
         ecosystems = {item["package-ecosystem"] for item in config["updates"]}
-        self.assertEqual(ecosystems, {"pip", "github-actions", "docker"})
+        self.assertEqual(ecosystems, {"pip", "github-actions", "docker", "npm"})
         actions = next(
             item
             for item in config["updates"]
@@ -382,6 +396,9 @@ class DependabotContractTests(unittest.TestCase):
         self.assertIn("pulls/$number/commits?per_page=100", text)
         self.assertIn("version-update:semver-(minor|patch)", text)
         self.assertIn("version-update:semver-major", text)
+        self.assertIn("update-type: version-update:", text)
+        self.assertIn("sleep 15", text)
+        self.assertNotIn('state" == "BEHIND"', text)
         self.assertIn("gh pr merge", text)
         self.assertIn("--auto --squash", text)
 
