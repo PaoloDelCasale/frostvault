@@ -137,7 +137,7 @@ class PullRequestCiContractTests(unittest.TestCase):
         postgres_job = jobs["postgresql-tests"]
         self.assertEqual(
             python_job["strategy"]["matrix"]["shard"],
-            [0, 1, 2, 3],
+            [0, 1, 2, 3, 4, 5, 6, 7],
         )
         self.assertEqual(sqlite_job["needs"], "python-unit-tests")
         self.assertEqual(sqlite_job["if"], "${{ always() }}")
@@ -145,6 +145,10 @@ class PullRequestCiContractTests(unittest.TestCase):
             step.get("run", "") for step in python_job["steps"]
         )
         self.assertIn("index % shard_count == shard_index", python_runs)
+        self.assertEqual(
+            python_job["steps"][-1].get("env", {}).get("SHARD_COUNT"),
+            "8",
+        )
         self.assertNotIn("postgres", python_job.get("services") or {})
         self.assertNotIn("TEST_POSTGRES_URL", python_job.get("env") or {})
         self.assertIn("postgres", postgres_job.get("services") or {})
@@ -280,6 +284,9 @@ class TrivyBaselineContractTests(unittest.TestCase):
         self.assertIn("setuptools==84.0.0\n", requirements)
         self.assertIn("apt-get upgrade -y", dockerfile)
         self.assertIn("pip uninstall --yes pip", dockerfile)
+        trivyignore = (ROOT / ".trivyignore").read_text(encoding="utf-8")
+        self.assertIn("CVE-2026-56854", trivyignore)
+        self.assertIn("CVE-2026-46603", trivyignore)
 
         rclone_checksum = (
             "aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa"
