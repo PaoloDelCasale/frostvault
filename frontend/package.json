@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:ci": "vite build",
     "generate:api": "openapi-typescript openapi.json -o src/api/openapi.generated.ts && node scripts/generate-api-aliases.mjs",
     "check:generated": "git diff --exit-code -- openapi.json src/api/openapi.generated.ts src/api/types.ts",
     "typecheck": "tsc -b --pretty false",
