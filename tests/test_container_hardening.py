@@ -303,7 +303,8 @@ class EntrypointHardeningTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    DOCKER_COMPOSE_AVAILABLE,
+    DOCKER_COMPOSE_AVAILABLE
+    and os.environ.get("FROSTVAULT_SKIP_DOCKER_SMOKE") != "1",
     "Docker Compose with a usable Docker daemon is required for this smoke test",
 )
 class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
