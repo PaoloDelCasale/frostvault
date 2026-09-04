@@ -1,8 +1,11 @@
-# rclone v1.75.0 is the latest release as of 2026-08-26 and embeds Go
-# v1.26.5. These CVEs are fixed in Go v1.26.6, but no rclone release built
-# with that toolchain is available yet. Track the next release at:
+# rclone v1.75.0 is still the latest release as of 2026-09-04.
+# It embeds Go v1.26.5, golang.org/x/crypto v0.54.0, and
+# golang.org/x/image v0.44.0. No rclone rebuild includes the
+# patched toolchain or modules yet. Track the next release at:
 # https://github.com/rclone/rclone/releases
-# Review and remove these exceptions by 2026-09-09.
+# Review and remove these exceptions by 2026-09-18.
+#
+# Go stdlib (fixed in Go v1.26.6):
 CVE-2026-33818
 CVE-2026-39821
 CVE-2026-46600
@@ -11,3 +14,13 @@ CVE-2026-56858
 CVE-2026-56859
 CVE-2026-56860
 CVE-2026-56862
+#
+# golang.org/x/crypto/ssh authentication bypass via unenforced
+# source-address restrictions, fixed in v0.55.0:
+# https://avd.aquasec.com/nvd/cve-2026-56854
+CVE-2026-56854
+#
+# golang.org/x/image/vp8l denial of service via excessive memory
+# allocation, fixed in v0.45.0:
+# https://avd.aquasec.com/nvd/cve-2026-46603
+CVE-2026-46603
