@@ -35,6 +35,7 @@ jobs:
         env:
           SHARD_INDEX: ${{ matrix.shard }}
           SHARD_COUNT: "12"
+          FROSTVAULT_SKIP_DOCKER_SMOKE: "1"
         run: |
           mapfile -t TEST_MODULES < <(
             python - <<'PY'
@@ -181,7 +182,7 @@ jobs:
         run: npm ci
       - name: Frontend SPA build
         working-directory: frontend
-        run: npm run build
+        run: npm run build:ci
 
   production-image-postgres-backup:
     name: Production image PostgreSQL backup
@@ -207,8 +208,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/.buildx-cache
+          key: docker-${{ runner.os }}-${{ hashFiles('Dockerfile', 'requirements.txt', 'frontend/package-lock.json', 'docker/entrypoint.sh') }}
+          restore-keys: |
+            docker-${{ runner.os }}-
       - name: Build production image
-        run: docker build -t "$IMAGE" .
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/.buildx-cache
+          docker buildx create --name ci --driver docker-container --use >/dev/null 2>&1 || docker buildx use ci
+          docker buildx build --load \
+            --cache-from type=local,src=/tmp/.buildx-cache \
+            --cache-to type=local,dest=/tmp/.buildx-cache-out,mode=max \
+            -t "$IMAGE" .
+          rm -rf /tmp/.buildx-cache
+          if [ -d /tmp/.buildx-cache-out ]; then
+            mv /tmp/.buildx-cache-out /tmp/.buildx-cache
+          fi
       - name: Verify PostgreSQL client tools in image
         run: |
           set -euo pipefail
@@ -394,7 +412,7 @@ jobs:
         run: npm ci
       - name: Build SPA
         working-directory: frontend
-        run: npm run build
+        run: npm run build:ci
       - name: Cache Playwright browsers
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

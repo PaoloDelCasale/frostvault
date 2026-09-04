@@ -61,8 +61,11 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertTrue(any("npm run typecheck" in block for block in typecheck_runs))
         self.assertTrue(any("npm run lint" in block for block in lint_runs))
         self.assertTrue(any("npm run test" in block for block in lint_runs))
-        self.assertTrue(any("npm run build" in block for block in build_runs))
+        self.assertTrue(any("npm run build:ci" in block for block in build_runs))
         self.assertFalse(any("node --test" in block for block in lint_runs))
+        self.assertFalse(
+            any("tsc -b && vite build" in block for block in build_runs)
+        )
 
     def test_frontend_typecheck_refreshes_artifacts_before_strict_checks(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
@@ -294,6 +297,7 @@ class TrivyBaselineContractTests(unittest.TestCase):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("FROM rclone/rclone:1.75.0 AS rclone", dockerfile)
+        self.assertIn("RUN npm run build:ci", dockerfile)
         self.assertRegex(requirements, r"(?m)^msgpack==\d+\.\d+\.\d+\n")
         self.assertRegex(requirements, r"(?m)^setuptools==\d+\.\d+\.\d+\n")
         self.assertIn("apt-get upgrade -y", dockerfile)
@@ -355,6 +359,10 @@ class ProductionImagePostgresClientContractTests(unittest.TestCase):
         )
         runs = "\n".join(step.get("run", "") for step in job.get("steps", []))
         self.assertIn("docker build", runs)
+        self.assertIn("cache-from type=local", runs)
+        ignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+        for item in (".git", "tests", "frontend/node_modules", "frontend/e2e"):
+            self.assertIn(item, ignore)
         for tool in ("pg_dump", "pg_restore", "createdb", "dropdb", "psql"):
             self.assertIn(f"{tool} --version", runs)
         self.assertIn("app.backup_upgrade --skip-upgrade", runs)
