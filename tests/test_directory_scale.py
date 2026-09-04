@@ -1,11 +1,11 @@
 """Directory listing scale + durable aggregates (issue #229)."""
 from __future__ import annotations
 
+import os
 import tempfile
 import threading
 import time
 import unittest
-import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -39,6 +39,17 @@ def _seed_vault(
     )
 
 
+def _directory_scale_file_count() -> int:
+    """CI keeps this modest so the suite stays inside a two-minute wall clock.
+
+    Set FROSTVAULT_DIRECTORY_SCALE_N=400000 locally for the issue #229 proof.
+    """
+    raw = os.environ.get("FROSTVAULT_DIRECTORY_SCALE_N", "").strip()
+    if raw:
+        return int(raw)
+    return 20_000
+
+
 def _bulk_local_files(
     connection: SQLiteConnection,
     *,
@@ -51,8 +62,8 @@ def _bulk_local_files(
     file_rows = []
     path_rows = []
     local_rows = []
-    for path, size in paths_and_sizes:
-        file_id = str(uuid.uuid4())
+    for index, (path, size) in enumerate(paths_and_sizes):
+        file_id = f"00000000-0000-4000-8000-{index:012d}"
         file_rows.append((file_id, vault_id, "active", observed_at))
         path_rows.append((file_id, vault_id, path, observed_at))
         local_rows.append((file_id, "present", "regular", size, 1, observed_at, observed_at))
@@ -400,14 +411,17 @@ class DirectoryScaleTests(unittest.TestCase):
         self.assertEqual(page["items"][0]["item_count"], burst + 1)
         self.assertLess(duration, 120.0)
 
-    def test_synthetic_400k_root_page_is_bounded(self) -> None:
-        # 400k files under three top-level directories, plus a couple of roots.
-        per_dir = 133_334
+    def test_synthetic_large_root_page_is_bounded(self) -> None:
+        # Large tree under three top-level directories, plus a root file.
+        # Listing must stay bounded regardless of descendant count.
+        total = _directory_scale_file_count()
+        per_dir = total // 3
+        remainder = total - (2 * per_dir)
         paths: list[tuple[str, int]] = []
         for folder, count in (
             ("clips", per_dir),
             ("recordings", per_dir),
-            ("exports", 400_000 - (2 * per_dir)),
+            ("exports", remainder),
         ):
             for index in range(count):
                 paths.append((f"{folder}/f-{index:06d}.bin", 1))

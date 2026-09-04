@@ -3,7 +3,7 @@ WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
-RUN npm run build
+RUN npm run build:ci
 
 FROM rclone/rclone:1.75.0 AS rclone
 
