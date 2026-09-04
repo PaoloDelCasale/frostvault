@@ -35,6 +35,7 @@ jobs:
         env:
           SHARD_INDEX: ${{ matrix.shard }}
           SHARD_COUNT: "12"
+          FROSTVAULT_SKIP_DOCKER_SMOKE: "1"
         run: |
           mapfile -t TEST_MODULES < <(
             python - <<'PY'
