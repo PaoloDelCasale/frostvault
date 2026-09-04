@@ -297,6 +297,7 @@ class TrivyBaselineContractTests(unittest.TestCase):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("FROM rclone/rclone:1.75.0 AS rclone", dockerfile)
+        self.assertIn("RUN npm run build:ci", dockerfile)
         self.assertRegex(requirements, r"(?m)^msgpack==\d+\.\d+\.\d+\n")
         self.assertRegex(requirements, r"(?m)^setuptools==\d+\.\d+\.\d+\n")
         self.assertIn("apt-get upgrade -y", dockerfile)
