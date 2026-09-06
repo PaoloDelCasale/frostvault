@@ -54,6 +54,20 @@ TEMPLATES: dict[str, dict[str, str]] = {
             "Details: {body}\n"
         ),
     },
+    "job_failed": {
+        "subject": f"{SUBJECT_PREFIX} Job failed",
+        "body": (
+            "A Job failed in vault {vault_id}.\n"
+            "{title}\n{body}\n"
+        ),
+    },
+    "job_completed": {
+        "subject": f"{SUBJECT_PREFIX} Job completed",
+        "body": (
+            "A Job completed in vault {vault_id}.\n"
+            "{title}\n{body}\n"
+        ),
+    },
     "default": {
         "subject": f"{SUBJECT_PREFIX} {{title}}",
         "body": "{body}\n",

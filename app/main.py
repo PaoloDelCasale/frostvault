@@ -3035,6 +3035,7 @@ class SmtpEndpointAction(BaseModel):
     username: str = ""
     password: str = ""
     from_address: str = Field(min_length=3, max_length=320)
+    to_address: str = Field(default="", max_length=320)
     use_tls: bool = True
     enabled: bool = True
     reason: str = Field(min_length=3, max_length=500)
@@ -3084,6 +3085,7 @@ def admin_set_smtp_endpoint(
             username=action.username,
             password=action.password,
             from_address=action.from_address,
+            to_address=action.to_address,
             use_tls=action.use_tls,
             enabled=action.enabled,
         )

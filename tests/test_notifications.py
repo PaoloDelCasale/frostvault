@@ -648,6 +648,13 @@ class NotificationDeliveryTests(unittest.TestCase):
             )
             # Four delivery passes with max_attempts=3 must stop retrying.
             for _ in range(4):
+                connection.execute(
+                    """
+                    UPDATE notification_deliveries
+                    SET next_attempt_at='2000-01-01T00:00:00+00:00'
+                    WHERE status='pending'
+                    """
+                )
                 notifications.deliver_pending_notifications(
                     connection,
                     webhook_client=webhook,

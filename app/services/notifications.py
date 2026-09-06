@@ -10,9 +10,15 @@ subscription rows bound to a Session/device.
 from __future__ import annotations
 
 import json
+import logging
+import smtplib
+import ssl
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from typing import Any, Protocol
+
+import httpx
 
 from ..config import push_configured, settings
 from ..i18n import catalog as locale_catalog
@@ -21,6 +27,9 @@ from ..i18n import format_message_params, parse_message_params, translate
 
 SUPPORTED_NOTIFICATION_EVENTS = frozenset({"job_completed", "job_failed"})
 SUPPORTED_PERSONAL_NOTIFICATION_CHANNELS = frozenset({"in_app", "push"})
+DELIVERY_TIMEOUT_SECONDS = 10.0
+DELIVERY_RETRY_CAP_SECONDS = 300
+_logger = logging.getLogger(__name__)
 
 
 def now_iso() -> str:
@@ -158,6 +167,7 @@ def set_global_smtp_endpoint(
     username: str = "",
     password: str = "",
     from_address: str = "",
+    to_address: str = "",
     use_tls: bool = True,
     enabled: bool = True,
     name: str = "default",
@@ -170,6 +180,7 @@ def set_global_smtp_endpoint(
         "username": username,
         "password": password,
         "from_address": from_address,
+        "to_address": to_address,
         "use_tls": use_tls,
     }
     config_json = json.dumps(config, sort_keys=True)
@@ -372,6 +383,33 @@ def _user_vault_preference_map(
         (user_id, vault_id, event),
     ).fetchall()
     return {str(row["channel"]): bool(row["enabled"]) for row in rows}
+
+
+def _legacy_channel_allowed(
+    connection: Any,
+    *,
+    user_id: int,
+    vault_id: int,
+    event: str,
+    channel: str,
+) -> bool:
+    """Honor Vault-level webhook/email preferences when they exist."""
+    row = connection.execute(
+        """
+        SELECT enabled, recipient_user_ids_json
+        FROM vault_notification_preferences
+        WHERE vault_id=%s AND event=%s AND channel=%s
+        """,
+        (vault_id, event, channel),
+    ).fetchone()
+    if row is None:
+        return True
+    if not row["enabled"]:
+        return False
+    recipients = _normalize_recipient_user_ids(row.get("recipient_user_ids_json"))
+    if recipients and user_id not in recipients:
+        return False
+    return True
 
 
 def _legacy_in_app_preference(
@@ -680,6 +718,8 @@ def enqueue_job_terminal_push(connection: Any, *, job_id: int) -> int:
         """,
         (vault_id,),
     ).fetchall()
+    webhook_enabled = _endpoint_config(connection, "webhook") is not None
+    smtp_enabled = _endpoint_config(connection, "smtp") is not None
 
     enqueued = 0
     for member in members:
@@ -713,6 +753,25 @@ def enqueue_job_terminal_push(connection: Any, *, job_id: int) -> int:
             channels.append("in_app")
         if subscriptions:
             channels.append("push")
+        # Global admin endpoints carry Job-failed alerts unless a Vault-level
+        # preference explicitly disables that channel for this member.
+        if event == "job_failed":
+            if webhook_enabled and _legacy_channel_allowed(
+                connection,
+                user_id=user_id,
+                vault_id=vault_id,
+                event=event,
+                channel="webhook",
+            ):
+                channels.append("webhook")
+            if smtp_enabled and _legacy_channel_allowed(
+                connection,
+                user_id=user_id,
+                vault_id=vault_id,
+                event=event,
+                channel="email",
+            ):
+                channels.append("email")
         if not channels:
             continue
         dedupe_key = f"job:{int(job['id'])}:{event}"
@@ -1060,6 +1119,13 @@ def deliver_pending_notifications(
                     body=row["n_body"],
                     vault_id=row["n_vault_id"],
                 )
+                to_address = _smtp_recipient(
+                    connection,
+                    user_id=int(row["n_user_id"]),
+                    smtp_config=smtp_config,
+                )
+                if not to_address:
+                    raise RuntimeError("smtp recipient unavailable")
                 smtp_client.send(
                     {
                         "template": row["n_event"],
@@ -1067,7 +1133,12 @@ def deliver_pending_notifications(
                         "body": rendered["body"],
                         "user_id": row["n_user_id"],
                         "from_address": smtp_config.get("from_address"),
+                        "to_address": to_address,
                         "host": smtp_config.get("host"),
+                        "port": smtp_config.get("port") or 587,
+                        "username": smtp_config.get("username") or "",
+                        "password": smtp_config.get("password") or "",
+                        "use_tls": smtp_config.get("use_tls", True),
                     }
                 )
             elif row["channel"] == "push":
@@ -1145,6 +1216,7 @@ def deliver_pending_notifications(
             )
             stats["failed"] += 1
         else:
+            retry_at = _delivery_retry_at(attempt, now=stamp)
             connection.execute(
                 """
                 UPDATE notification_deliveries
@@ -1152,10 +1224,115 @@ def deliver_pending_notifications(
                     next_attempt_at=%s, updated_at=%s
                 WHERE id=%s
                 """,
-                (attempt, error[:500], stamp, stamp, row["id"]),
+                (attempt, error[:500], retry_at, stamp, row["id"]),
             )
             stats["requeued"] += 1
     return stats
+
+
+def _delivery_retry_at(attempt: int, *, now: str | None = None) -> str:
+    """Exponential backoff that stays due after ``now`` for the next worker poll."""
+    delay = min(DELIVERY_RETRY_CAP_SECONDS, 2 ** max(1, int(attempt)))
+    if now:
+        try:
+            current = datetime.fromisoformat(str(now).replace("Z", "+00:00"))
+        except ValueError:
+            current = datetime.now(timezone.utc)
+    else:
+        current = datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return (current + timedelta(seconds=delay)).replace(microsecond=0).isoformat()
+
+
+def _smtp_recipient(
+    connection: Any, *, user_id: int, smtp_config: Mapping[str, Any]
+) -> str | None:
+    user = connection.execute(
+        "SELECT username FROM users WHERE id=%s", (user_id,)
+    ).fetchone()
+    username = str((user or {}).get("username") or "").strip()
+    if "@" in username and " " not in username:
+        return username
+    configured = str(smtp_config.get("to_address") or "").strip()
+    return configured or None
+
+
+def production_delivery_clients(
+    connection: Any,
+) -> tuple[WebhookClient | None, SmtpClient | None]:
+    """Build concrete adapters when the matching admin endpoint is enabled."""
+    webhook_client = HttpWebhookClient() if _endpoint_config(connection, "webhook") else None
+    smtp_client = (
+        SmtpNotificationClient() if _endpoint_config(connection, "smtp") else None
+    )
+    return webhook_client, smtp_client
+
+
+class HttpWebhookClient:
+    """POST JSON to the configured webhook URL with a hard timeout."""
+
+    timeout = DELIVERY_TIMEOUT_SECONDS
+
+    def send(self, payload: dict[str, Any]) -> None:
+        url = str(payload.get("url") or "").strip()
+        if not url:
+            raise RuntimeError("webhook endpoint unavailable")
+        body = {key: value for key, value in payload.items() if key != "url"}
+        try:
+            with httpx.Client(
+                timeout=self.timeout,
+                follow_redirects=False,
+                trust_env=False,
+            ) as client:
+                response = client.post(url, json=body)
+                response.raise_for_status()
+        except Exception as exc:
+            _logger.warning("webhook delivery failed: %s", exc.__class__.__name__)
+            raise RuntimeError("webhook delivery failed") from exc
+
+
+class SmtpNotificationClient:
+    """Send one notification through the admin-configured SMTP endpoint."""
+
+    timeout = int(DELIVERY_TIMEOUT_SECONDS)
+
+    def send(self, message: dict[str, Any]) -> None:
+        host = str(message.get("host") or "").strip()
+        port = int(message.get("port") or 587)
+        username = str(message.get("username") or "")
+        password = str(message.get("password") or "")
+        from_address = str(message.get("from_address") or "").strip()
+        to_address = str(message.get("to_address") or "").strip()
+        use_tls = bool(message.get("use_tls", True))
+        if not host or not from_address or not to_address:
+            raise RuntimeError("smtp endpoint unavailable")
+        email = EmailMessage()
+        email["From"] = from_address
+        email["To"] = to_address
+        email["Subject"] = str(message.get("subject") or "")
+        email.set_content(str(message.get("body") or ""))
+        try:
+            if use_tls and port == 465:
+                smtp: smtplib.SMTP = smtplib.SMTP_SSL(
+                    host,
+                    port,
+                    timeout=self.timeout,
+                    context=ssl.create_default_context(),
+                )
+            else:
+                smtp = smtplib.SMTP(host, port, timeout=self.timeout)
+            with smtp:
+                smtp.ehlo()
+                if use_tls and port != 465:
+                    smtp.starttls(context=ssl.create_default_context())
+                    smtp.ehlo()
+                if username:
+                    smtp.login(username, password)
+                smtp.send_message(email)
+        except Exception as exc:
+            _logger.warning("smtp delivery failed: %s", exc.__class__.__name__)
+            raise RuntimeError("smtp delivery failed") from exc
 
 
 class PyWebPushClient:

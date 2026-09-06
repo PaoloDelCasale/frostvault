@@ -6667,8 +6667,13 @@ def _deliver_notifications_once() -> None:
 
             if push_configured():
                 push_client = notification_service.PyWebPushClient()
+            webhook_client, smtp_client = (
+                notification_service.production_delivery_clients(connection)
+            )
             stats = notification_service.deliver_pending_notifications(
                 connection,
+                webhook_client=webhook_client,
+                smtp_client=smtp_client,
                 push_client=push_client,
             )
         for _ in range(int(stats.get("delivered", 0))):
