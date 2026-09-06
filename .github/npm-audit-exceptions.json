@@ -1,0 +1,4 @@
+{
+  "_comment": "Temporary npm audit exceptions. Each entry needs id (GHSA or CVE), reason, issue (GitHub issue URL), exposure (runtime|build), and review_by (YYYY-MM-DD). Expired, unused, or build-classified runtime findings fail the security gate. Prefer a targeted lockfile/override fix over an exception.",
+  "exceptions": []
+}

@@ -19,6 +19,16 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 FULL_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
+def _semver(version: str) -> tuple[int, int, int]:
+    core = version.split("-", 1)[0].split("+", 1)[0]
+    parts = core.split(".")
+    return (
+        int(parts[0]),
+        int(parts[1] if len(parts) > 1 else 0),
+        int(parts[2] if len(parts) > 2 else 0),
+    )
+
+
 def _workflow_on(workflow: dict) -> dict | list | str:
     # PyYAML 1.1 may parse the key ``on`` as boolean True.
     if "on" in workflow:
@@ -280,6 +290,7 @@ class SecurityWorkflowContractTests(unittest.TestCase):
         workflow = yaml.safe_load((WORKFLOWS / "security.yml").read_text(encoding="utf-8"))
         jobs = workflow["jobs"]
         self.assertIn("dependency-review", jobs)
+        self.assertIn("npm-audit", jobs)
         self.assertIn("codeql", jobs)
         self.assertIn("gitleaks", jobs)
         self.assertIn("sbom-and-image", jobs)
@@ -288,6 +299,32 @@ class SecurityWorkflowContractTests(unittest.TestCase):
         self.assertTrue(
             any("requirements.txt" in block for block in dep_runs)
         )
+        npm_job = jobs["npm-audit"]
+        npm_runs = [step.get("run", "") for step in npm_job["steps"]]
+        npm_node = next(
+            step["with"]["node-version"]
+            for step in npm_job["steps"]
+            if str(step.get("uses", "")).startswith("actions/setup-node@")
+        )
+        self.assertEqual(npm_node, "22")
+        self.assertTrue(any("npm ci" in block for block in npm_runs))
+        self.assertTrue(any("npm audit --json" in block for block in npm_runs))
+        self.assertTrue(any("--omit=dev" in block for block in npm_runs))
+        self.assertTrue(
+            any("scripts/npm-audit-gate.mjs" in block for block in npm_runs)
+        )
+        self.assertTrue(
+            any("npm-audit-exceptions.json" in block for block in npm_runs)
+        )
+        self.assertTrue(
+            any("npm-audit-gate.test.mjs" in block for block in npm_runs)
+        )
+        self.assertFalse(any("audit fix --force" in block for block in npm_runs))
+        npm_uses = [step.get("uses", "") for step in npm_job["steps"]]
+        self.assertTrue(any(item.startswith("actions/upload-artifact@") for item in npm_uses))
+        npm_serialized = yaml.safe_dump(npm_job)
+        self.assertIn("artifacts/npm-audit.json", npm_serialized)
+        self.assertIn("artifacts/npm-audit-prod.json", npm_serialized)
         codeql_analyze = next(
             step
             for step in jobs["codeql"]["steps"]
@@ -309,6 +346,92 @@ class SecurityWorkflowContractTests(unittest.TestCase):
             step.get("run", "") for step in jobs["gitleaks"]["steps"]
         ]
         self.assertTrue(any("gitleaks detect" in block for block in gitleaks_runs))
+
+
+class NpmAuditBaselineContractTests(unittest.TestCase):
+    """Issue #308: patched npm lockfile copies plus a dated exception process."""
+
+    def test_frontend_overrides_floor_patched_advisory_lines(self) -> None:
+        package = json.loads((ROOT / "frontend" / "package.json").read_text(encoding="utf-8"))
+        overrides = package["overrides"]
+        self.assertEqual(overrides["brace-expansion@1"], "^1.1.18")
+        self.assertEqual(overrides["brace-expansion@2"], "^2.1.4")
+        self.assertEqual(overrides["brace-expansion@5"], "^5.0.9")
+        self.assertEqual(overrides["nanoid@3"], "^3.3.18")
+        self.assertEqual(overrides["qs@6"], "^6.16.0")
+        self.assertNotIn("qs", overrides)
+
+    def test_lockfile_copies_are_at_or_above_advisory_floors(self) -> None:
+        lock = json.loads(
+            (ROOT / "frontend" / "package-lock.json").read_text(encoding="utf-8")
+        )
+        found = {"brace-expansion": [], "nanoid": [], "qs": []}
+        for path, pkg in lock["packages"].items():
+            if "node_modules/" not in path:
+                continue
+            name = path.rsplit("node_modules/", 1)[-1]
+            if name in found and pkg.get("version"):
+                found[name].append((path, pkg["version"]))
+        for name, copies in found.items():
+            self.assertTrue(copies, f"expected lockfile copies of {name}")
+
+        for path, version in found["brace-expansion"]:
+            major, minor, patch = _semver(version)
+            with self.subTest(path=path, version=version):
+                if major == 1:
+                    self.assertGreaterEqual((minor, patch), (1, 18), path)
+                elif major == 2:
+                    self.assertGreaterEqual((minor, patch), (1, 4), path)
+                elif major == 3:
+                    self.assertGreaterEqual((minor, patch), (0, 6), path)
+                else:
+                    self.assertGreaterEqual((major, minor, patch), (5, 0, 9), path)
+
+        for path, version in found["nanoid"]:
+            major, minor, patch = _semver(version)
+            with self.subTest(path=path, version=version):
+                if major == 3:
+                    self.assertGreaterEqual((minor, patch), (3, 18), path)
+                else:
+                    self.assertGreaterEqual((major, minor, patch), (5, 1, 6), path)
+
+        for path, version in found["qs"]:
+            major, minor, patch = _semver(version)
+            with self.subTest(path=path, version=version):
+                self.assertGreaterEqual((major, minor, patch), (6, 16, 0), path)
+
+    def test_npm_audit_exceptions_are_dated_and_currently_unused(self) -> None:
+        payload = json.loads(
+            (ROOT / ".github" / "npm-audit-exceptions.json").read_text(encoding="utf-8")
+        )
+        self.assertIn("exceptions", payload)
+        self.assertIsInstance(payload["exceptions"], list)
+        seen: set[str] = set()
+        for index, entry in enumerate(payload["exceptions"]):
+            with self.subTest(index=index):
+                identifier = entry["id"]
+                self.assertRegex(identifier, r"^(GHSA-[0-9a-z-]+|CVE-\d{4}-\d+)$")
+                self.assertNotIn(identifier, seen)
+                seen.add(identifier)
+                self.assertTrue(str(entry["reason"]).strip())
+                self.assertRegex(
+                    entry["issue"],
+                    r"^https://github\.com/[^/]+/[^/]+/issues/\d+$",
+                )
+                self.assertIn(entry["exposure"], {"runtime", "build"})
+                self.assertRegex(entry["review_by"], r"^\d{4}-\d{2}-\d{2}$")
+        # The lockfile floors above should keep this allowlist empty.
+        self.assertEqual(payload["exceptions"], [])
+
+    def test_npm_audit_gate_script_is_present(self) -> None:
+        script = ROOT / "frontend" / "scripts" / "npm-audit-gate.mjs"
+        tests = ROOT / "frontend" / "scripts" / "npm-audit-gate.test.mjs"
+        self.assertTrue(script.is_file())
+        self.assertTrue(tests.is_file())
+        text = script.read_text(encoding="utf-8")
+        self.assertIn("review_by", text)
+        self.assertIn("runtime", text)
+        self.assertIn("build", text)
 
 
 class TrivyBaselineContractTests(unittest.TestCase):
@@ -436,6 +559,10 @@ class ContributorCiDocsTests(unittest.TestCase):
         self.assertIn("MinIO", docs)
         self.assertIn("OIDC", docs)
         self.assertIn("Trivy", docs)
+        self.assertIn("npm audit", docs)
+        self.assertIn("runtime", docs)
+        self.assertIn("build", docs)
+        self.assertIn("npm-audit-exceptions.json", docs)
         self.assertIn("s3_prefix_cleanup_cli", docs)
         self.assertIn("ghcr.io/paolodelcasale/frostvault", docs)
 
