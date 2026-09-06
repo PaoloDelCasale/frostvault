@@ -162,12 +162,25 @@ S3_OBJECT_HASH_CHUNK_BYTES = 1024 * 1024
 
 # A claim is intentionally durable rather than process-local.  Five minutes is
 # long enough for ordinary provider calls while status/progress checkpoints renew
-# it during transfers; a dead process becomes recoverable on the next restart.
+# it during transfers; a dead process becomes recoverable once the lease expires,
+# without waiting for another restart.
 JOB_CLAIM_LEASE_SECONDS = 5 * 60
+EXPIRED_LEASE_RECONCILE_BATCH = 100
 JOB_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 JOB_LEASE_HELD_STATUSES = frozenset(
     {"downloading", "uploading", "verifying", "cleaning"}
 )
+_INTERRUPTED_JOB_SQL = """
+(
+        (j.action='recover' AND j.status IN ('downloading', 'verifying'))
+     OR (j.action='upload' AND j.status IN ('uploading', 'verifying'))
+     OR (j.action='rename' AND j.status IN ('uploading', 'verifying', 'cleaning'))
+     OR (j.action='free-space' AND j.status='cleaning')
+     OR (j.action='storage-class' AND j.status='uploading')
+     OR (j.action='cloud-archive' AND j.status='cleaning')
+     OR (j.action='cloud-purge' AND j.status='cleaning')
+)
+"""
 _worker_claim = threading.local()
 
 _PERMANENT_UPLOAD_FAILURE_MARKERS = (
@@ -3356,13 +3369,62 @@ def _reconcile_cloud_purge_group(
     return result
 
 
-def reconcile_interrupted_jobs() -> dict[str, int]:
-    """Reconcile only legacy/expired durable worker states after a restart.
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
-    A live lease is authoritative even when another process is restarting.  The
-    explicit action/state matrix below covers every operation state which can be
+
+def observe_stuck_lease_jobs() -> tuple[int, float]:
+    """Count intermediate Jobs whose lease is already expired or missing.
+
+    In-flight work with a live lease is excluded so this gauge stays distinct
+    from both ``queue_depth`` and ordinary concurrency. Age is seconds since
+    the oldest expired lease (or last update when no expiry was stored).
+    """
+    timestamp = now_iso()
+    now = datetime.now(timezone.utc)
+    with db() as connection:
+        row = connection.execute(
+            f"""
+            SELECT COUNT(*) AS total,
+                   MIN(j.claim_expires_at) AS oldest_expiry,
+                   MIN(j.updated_at) AS oldest_update
+            FROM jobs j
+            WHERE {_INTERRUPTED_JOB_SQL}
+              AND (j.claim_token IS NULL OR j.claim_expires_at IS NULL
+                   OR j.claim_expires_at <= %s)
+            """,
+            (timestamp,),
+        ).fetchone()
+    count = int(row["total"] or 0) if row is not None else 0
+    if count <= 0:
+        return 0, 0.0
+    stamp = _parse_iso_datetime(
+        (row or {}).get("oldest_expiry") or (row or {}).get("oldest_update")
+    )
+    if stamp is None:
+        return count, 0.0
+    return count, max(0.0, (now - stamp).total_seconds())
+
+
+def reconcile_interrupted_jobs() -> dict[str, int]:
+    """Reconcile expired or legacy durable worker states.
+
+    A live lease is authoritative even when another process is sweeping.  The
+    explicit action/state matrix covers every operation state which can be
     persisted mid-I/O; waiting states (retrying, pending approval/delay, and
-    Glacier restoring) remain scheduler-owned and are not reset.
+    Glacier restoring) remain scheduler-owned and are not reset.  Each call
+    is bounded so a large backlog of expired leases cannot monopolize a poll.
     """
     summary = {"completed": 0, "requeued": 0, "failed": 0}
     local_actions = {"recover", "upload", "rename", "free-space"}
@@ -3370,24 +3432,17 @@ def reconcile_interrupted_jobs() -> dict[str, int]:
     with db() as connection:
         timestamp = now_iso()
         jobs = connection.execute(
-            """
+            f"""
             SELECT j.*, v.source_root, v.s3_bucket
             FROM jobs j
             JOIN vaults v ON v.id=j.vault_id
-            WHERE (
-                    (j.action='recover' AND j.status IN ('downloading', 'verifying'))
-                 OR (j.action='upload' AND j.status IN ('uploading', 'verifying'))
-                 OR (j.action='rename' AND j.status IN ('uploading', 'verifying', 'cleaning'))
-                 OR (j.action='free-space' AND j.status='cleaning')
-                 OR (j.action='storage-class' AND j.status='uploading')
-                 OR (j.action='cloud-archive' AND j.status='cleaning')
-                 OR (j.action='cloud-purge' AND j.status='cleaning')
-            )
+            WHERE {_INTERRUPTED_JOB_SQL}
               AND (j.claim_token IS NULL OR j.claim_expires_at IS NULL
                    OR j.claim_expires_at <= %s)
             ORDER BY j.requested_at ASC, j.id ASC
+            LIMIT %s
             """,
-            (timestamp,),
+            (timestamp, EXPIRED_LEASE_RECONCILE_BATCH),
         ).fetchall()
 
         for job in jobs:
@@ -6116,7 +6171,10 @@ def process_jobs_once() -> int:
     Selecting candidates is intentionally separate from acquisition.  Every
     selected row is rechecked by a conditional UPDATE in ``ArchiveCatalog``;
     two processes may read the same queue but only one receives a claim token.
+    Expired intermediate leases are reconciled first so a dead worker does not
+    leave ``uploading``/``verifying``/``cleaning`` Jobs invisible to the scheduler.
     """
+    reconcile_interrupted_jobs()
     now = now_iso()
     current = datetime.now(timezone.utc)
     with db() as connection:
@@ -6564,9 +6622,13 @@ async def background_loop() -> None:
             )
             # Backlog is measured independently from the selected batch: an
             # active lease is no longer claimable, while every remaining due
-            # queued row is visible even when concurrency is small.
+            # queued row is visible even when concurrency is small. Stuck
+            # intermediate Jobs with expired leases are a separate series.
             queued_count = await asyncio.to_thread(claimable_queue_depth)
             metrics_service.set_gauge("queue_depth", float(queued_count))
+            stuck_count, stuck_age = await asyncio.to_thread(observe_stuck_lease_jobs)
+            metrics_service.set_gauge("jobs_stuck", float(stuck_count))
+            metrics_service.set_gauge("jobs_stuck_oldest_age_seconds", stuck_age)
             current = loop.time()
             if current - last_scan >= runtime.scan_interval:
                 await asyncio.to_thread(scan_all_vaults)

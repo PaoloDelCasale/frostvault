@@ -7,10 +7,13 @@ Seams under test:
   outside configured windows without cancelling them.
 - Cancellation remains observable through Job status via the existing
   ``cancel_jobs`` seam (covered in an integration slice below).
+- Expired intermediate leases are swept by ``process_jobs_once`` without a
+  second restart; stuck gauges stay distinct from ``queue_depth``.
 """
 
 from __future__ import annotations
 
+import os
 import tempfile
 import threading
 import time
@@ -21,6 +24,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+# Windows test hosts lack the Linux open flags imported by vault decommission.
+for _flag, _value in (
+    ("O_DIRECTORY", 0x10000),
+    ("O_NOFOLLOW", 0x20000),
+    ("O_CLOEXEC", 0x80000),
+):
+    if not hasattr(os, _flag):
+        setattr(os, _flag, _value)
+
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
 from app.services.job_scheduler import (
@@ -28,7 +40,15 @@ from app.services.job_scheduler import (
     select_fair_jobs,
 )
 from app import storage as storage_module
-from app.storage import cancel_jobs, claimable_queue_depth, process_job, process_jobs_once
+from app.storage import (
+    cancel_jobs,
+    claimable_queue_depth,
+    observe_stuck_lease_jobs,
+    process_job,
+    process_jobs_once,
+    reconcile_interrupted_jobs,
+)
+from app.services import metrics as metrics_service
 from tests.test_database import run_alembic
 
 
@@ -78,7 +98,7 @@ class OperatingWindowTests(unittest.TestCase):
         self.assertTrue(job_is_within_operating_window(now, windows))
 
 
-class FairSchedulerIntegrationTests(unittest.TestCase):
+class _SchedulerDbMixin:
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -149,6 +169,8 @@ class FairSchedulerIntegrationTests(unittest.TestCase):
                 ).fetchone()["id"]
             )
 
+
+class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
     def test_process_jobs_once_does_not_starve_second_vault(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
             # Three older Jobs in vault 10, one newer Job in vault 20.
@@ -453,6 +475,185 @@ class FairSchedulerIntegrationTests(unittest.TestCase):
             ),
         ):
             self.assertEqual(claimable_queue_depth(), 3)
+
+
+class ExpiredLeaseSweepTests(_SchedulerDbMixin, unittest.TestCase):
+    def _hold_upload_job(
+        self,
+        job_id: int,
+        *,
+        status: str = "uploading",
+        token: str = "dead-worker",
+        expires_at: str,
+        claimed_at: str = "2026-07-01T00:00:00+00:00",
+    ) -> None:
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                """
+                UPDATE jobs
+                SET status=%s,
+                    claim_token=%s,
+                    claimed_at=%s,
+                    claim_expires_at=%s,
+                    updated_at=%s
+                WHERE id=%s
+                """,
+                (status, token, claimed_at, expires_at, claimed_at, job_id),
+            )
+
+    def _with_worker_db(self):
+        runtime = SimpleNamespace(
+            operation_concurrency=1,
+            bandwidth_limit_kibps=None,
+            restore_poll_interval=0,
+        )
+        return (
+            patch("app.storage._runtime_settings", return_value=runtime),
+            patch(
+                "app.storage.db",
+                side_effect=lambda: SQLiteConnection(str(self.path)),
+            ),
+        )
+
+    def test_lease_valid_at_restart_remains_stuck_until_expiry(self) -> None:
+        job_id = self._insert_upload_job(vault_id=10, path="a.txt")
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        self._hold_upload_job(job_id, expires_at=future)
+        seen: list[int] = []
+        runtime_patch, db_patch = self._with_worker_db()
+        with runtime_patch, db_patch:
+            summary = reconcile_interrupted_jobs()
+            self.assertEqual(summary, {"completed": 0, "requeued": 0, "failed": 0})
+            with patch(
+                "app.storage.process_job",
+                side_effect=lambda job: seen.append(int(job["id"])),
+            ):
+                self.assertEqual(process_jobs_once(), 0)
+            self.assertEqual(claimable_queue_depth(), 0)
+            self.assertEqual(observe_stuck_lease_jobs()[0], 0)
+        with SQLiteConnection(str(self.path)) as connection:
+            job = connection.execute(
+                "SELECT status, claim_token FROM jobs WHERE id=%s",
+                (job_id,),
+            ).fetchone()
+        self.assertEqual(job["status"], "uploading")
+        self.assertEqual(job["claim_token"], "dead-worker")
+        self.assertEqual(seen, [])
+
+    def test_expired_intermediate_lease_is_swept_without_restart(self) -> None:
+        job_id = self._insert_upload_job(vault_id=10, path="a.txt")
+        self._hold_upload_job(
+            job_id,
+            expires_at="2000-01-01T00:05:00+00:00",
+        )
+        seen: list[int] = []
+        runtime_patch, db_patch = self._with_worker_db()
+        with runtime_patch, db_patch:
+            self.assertEqual(claimable_queue_depth(), 0)
+            stuck, age = observe_stuck_lease_jobs()
+            self.assertEqual(stuck, 1)
+            self.assertGreater(age, 0)
+            with patch(
+                "app.storage.process_job",
+                side_effect=lambda job: seen.append(int(job["id"])),
+            ):
+                self.assertEqual(process_jobs_once(), 1)
+            self.assertEqual(seen, [job_id])
+            self.assertEqual(observe_stuck_lease_jobs()[0], 0)
+        with SQLiteConnection(str(self.path)) as connection:
+            job = connection.execute(
+                "SELECT status, claim_token FROM jobs WHERE id=%s",
+                (job_id,),
+            ).fetchone()
+        self.assertEqual(job["status"], "queued")
+        self.assertNotEqual(job["claim_token"], "dead-worker")
+
+    def test_live_worker_lease_is_not_recovered_when_sibling_expires(self) -> None:
+        live_id = self._insert_upload_job(vault_id=10, path="a.txt")
+        dead_id = self._insert_upload_job(vault_id=10, path="b.txt")
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        self._hold_upload_job(
+            live_id,
+            token="live-worker",
+            expires_at=future,
+        )
+        self._hold_upload_job(
+            dead_id,
+            token="dead-worker",
+            expires_at="2000-01-01T00:05:00+00:00",
+        )
+        seen: list[int] = []
+        runtime_patch, db_patch = self._with_worker_db()
+        with runtime_patch, db_patch:
+            with patch(
+                "app.storage.process_job",
+                side_effect=lambda job: seen.append(int(job["id"])),
+            ):
+                self.assertEqual(process_jobs_once(), 1)
+        self.assertEqual(seen, [dead_id])
+        with SQLiteConnection(str(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT id, status, claim_token FROM jobs WHERE id IN (%s, %s)",
+                (live_id, dead_id),
+            ).fetchall()
+        by_id = {int(row["id"]): row for row in rows}
+        self.assertEqual(by_id[live_id]["status"], "uploading")
+        self.assertEqual(by_id[live_id]["claim_token"], "live-worker")
+        self.assertEqual(by_id[dead_id]["status"], "queued")
+        self.assertNotEqual(by_id[dead_id]["claim_token"], "dead-worker")
+
+    def test_stuck_metrics_are_distinct_from_claimable_backlog(self) -> None:
+        queued_id = self._insert_upload_job(vault_id=10, path="a.txt")
+        stuck_id = self._insert_upload_job(vault_id=20, path="a.txt")
+        self._hold_upload_job(
+            stuck_id,
+            expires_at="2000-01-01T00:05:00+00:00",
+        )
+        runtime_patch, db_patch = self._with_worker_db()
+        with runtime_patch, db_patch:
+            self.assertEqual(claimable_queue_depth(), 1)
+            stuck, age = observe_stuck_lease_jobs()
+            self.assertEqual(stuck, 1)
+            self.assertGreater(age, 0)
+            metrics_service.reset_for_tests()
+            metrics_service.set_gauge("queue_depth", float(claimable_queue_depth()))
+            count, oldest = observe_stuck_lease_jobs()
+            metrics_service.set_gauge("jobs_stuck", float(count))
+            metrics_service.set_gauge("jobs_stuck_oldest_age_seconds", oldest)
+            rendered = metrics_service.render_prometheus()
+        self.assertIn("queue_depth 1", rendered)
+        self.assertIn("jobs_stuck 1", rendered)
+        self.assertIn("jobs_stuck_oldest_age_seconds", rendered)
+        self.assertNotEqual(queued_id, stuck_id)
+
+    def test_sweep_resumes_after_transient_db_error(self) -> None:
+        job_id = self._insert_upload_job(vault_id=10, path="a.txt")
+        self._hold_upload_job(
+            job_id,
+            expires_at="2000-01-01T00:05:00+00:00",
+        )
+        seen: list[int] = []
+        runtime_patch, db_patch = self._with_worker_db()
+        with runtime_patch, db_patch:
+            with patch(
+                "app.storage.reconcile_interrupted_jobs",
+                side_effect=RuntimeError("database is locked"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "database is locked"):
+                    process_jobs_once()
+            with SQLiteConnection(str(self.path)) as connection:
+                held = connection.execute(
+                    "SELECT status, claim_token FROM jobs WHERE id=%s",
+                    (job_id,),
+                ).fetchone()
+            self.assertEqual(held["status"], "uploading")
+            self.assertEqual(held["claim_token"], "dead-worker")
+            with patch(
+                "app.storage.process_job",
+                side_effect=lambda job: seen.append(int(job["id"])),
+            ):
+                self.assertEqual(process_jobs_once(), 1)
+        self.assertEqual(seen, [job_id])
 
 
 if __name__ == "__main__":
