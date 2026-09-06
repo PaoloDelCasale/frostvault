@@ -8,11 +8,21 @@ Seams under test:
 from __future__ import annotations
 
 import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+# Windows test hosts lack the Linux open flags imported by vault decommission.
+for _flag, _value in (
+    ("O_DIRECTORY", 0x10000),
+    ("O_NOFOLLOW", 0x20000),
+    ("O_CLOEXEC", 0x80000),
+):
+    if not hasattr(os, _flag):
+        setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
@@ -257,17 +267,36 @@ class PlainRenamePrefixedRemoteTests(unittest.TestCase):
 
             rclone_calls: list[tuple[str, ...]] = []
             head_keys: list[str] = []
+            download_calls: list[dict[str, str]] = []
 
             def fake_rclone(*args, **kwargs) -> None:
                 command = tuple(str(arg) for arg in args if not callable(arg))
                 rclone_calls.append(command)
                 if command[:1] != ("copyto",) or len(command) < 3:
                     return
-                origin, destination = command[1], command[2]
+                origin = command[1]
                 if ":" in origin and not Path(origin).exists():
-                    out = Path(destination)
-                    out.parent.mkdir(parents=True, exist_ok=True)
-                    out.write_bytes(payload)
+                    raise RuntimeError(
+                        "plain rename verification must pin S3 VersionId"
+                    )
+
+            def fake_download_file(
+                Bucket: str,
+                Key: str,
+                Filename: str,
+                ExtraArgs: dict | None = None,
+                Callback=None,
+                Config=None,
+            ) -> None:
+                version_id = str((ExtraArgs or {}).get("VersionId") or "")
+                download_calls.append(
+                    {"Bucket": Bucket, "Key": Key, "VersionId": version_id}
+                )
+                out = Path(Filename)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_bytes(payload)
+                if Callback is not None:
+                    Callback(len(payload))
 
             database_settings = SimpleNamespace(
                 db_backend="sqlite",
@@ -305,6 +334,7 @@ class PlainRenamePrefixedRemoteTests(unittest.TestCase):
                                 "VersionId": "delete-marker-1",
                                 "DeleteMarker": True,
                             },
+                            download_file=fake_download_file,
                         ),
                     ),
                 ):
@@ -312,4 +342,14 @@ class PlainRenamePrefixedRemoteTests(unittest.TestCase):
 
             self.assertTrue(rclone_calls)
             self.assertEqual(rclone_calls[0][2], expected_remote)
-            self.assertEqual(head_keys, [new_key, old_key])
+            self.assertEqual(head_keys, [new_key, new_key, old_key])
+            self.assertEqual(
+                download_calls,
+                [
+                    {
+                        "Bucket": "example-bucket",
+                        "Key": new_key,
+                        "VersionId": "new-s3-version",
+                    }
+                ],
+            )

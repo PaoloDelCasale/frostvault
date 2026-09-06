@@ -13,12 +13,22 @@ Seams under test:
 from __future__ import annotations
 
 import hashlib
+import os
 import tempfile
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+# Windows test hosts lack the Linux open flags imported by vault decommission.
+for _flag, _value in (
+    ("O_DIRECTORY", 0x10000),
+    ("O_NOFOLLOW", 0x20000),
+    ("O_CLOEXEC", 0x80000),
+):
+    if not hasattr(os, _flag):
+        setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
@@ -131,6 +141,38 @@ def _prepare_renamed_plain_file(
     return source, database_path, file_id
 
 
+def _write_versioned_download(
+    *,
+    payload: bytes,
+    expected_key: str,
+    expected_version_id: str,
+    calls: list[dict[str, str]],
+):
+    def download_file(
+        Bucket: str,
+        Key: str,
+        Filename: str,
+        ExtraArgs: dict | None = None,
+        Callback=None,
+        Config=None,
+    ) -> None:
+        version_id = str((ExtraArgs or {}).get("VersionId") or "")
+        calls.append({"Bucket": Bucket, "Key": Key, "VersionId": version_id})
+        if Key != expected_key:
+            raise RuntimeError(f"unexpected download key {Key}")
+        if version_id != expected_version_id:
+            raise RuntimeError(
+                "exact VersionId is required for rename verification"
+            )
+        target = Path(Filename)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+        if Callback is not None:
+            Callback(len(payload))
+
+    return download_file
+
+
 @contextmanager
 def _rename_worker(
     database_path: Path,
@@ -142,6 +184,7 @@ def _rename_worker(
     rclone_calls: list[tuple[str, ...]] = []
     deleted_keys: list[dict[str, str]] = []
     head_calls: list[dict[str, str]] = []
+    download_calls: list[dict[str, str]] = []
 
     def fake_rclone(*args, **kwargs) -> None:
         command = tuple(str(arg) for arg in args if not callable(arg))
@@ -150,13 +193,22 @@ def _rename_worker(
             return
         origin, destination = command[1], command[2]
         if ":" in origin and not Path(origin).exists():
-            target = Path(destination)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(payload)
+            raise RuntimeError(
+                "plain rename verification must pin S3 VersionId, not the current key"
+            )
 
     def fake_head_object(**kwargs):
-        head_calls.append({"Bucket": kwargs["Bucket"], "Key": kwargs["Key"]})
+        requested = str(kwargs.get("VersionId") or "")
+        head_calls.append(
+            {
+                "Bucket": kwargs["Bucket"],
+                "Key": kwargs["Key"],
+                "VersionId": requested,
+            }
+        )
         if kwargs["Key"] == old_key:
+            if requested and requested != "old-s3-version":
+                raise RuntimeError("missing old VersionId")
             return {
                 "VersionId": "old-s3-version",
                 "ContentLength": len(payload),
@@ -165,6 +217,8 @@ def _rename_worker(
             }
         if kwargs["Key"] != new_key:
             raise RuntimeError(f"unexpected head key {kwargs['Key']}")
+        if requested and requested != "new-s3-version":
+            raise RuntimeError("missing new VersionId")
         return {
             "VersionId": "new-s3-version",
             "ContentLength": len(payload),
@@ -201,10 +255,16 @@ def _rename_worker(
                 return_value=SimpleNamespace(
                     head_object=fake_head_object,
                     delete_object=fake_delete_object,
+                    download_file=_write_versioned_download(
+                        payload=payload,
+                        expected_key=new_key,
+                        expected_version_id="new-s3-version",
+                        calls=download_calls,
+                    ),
                 ),
             ),
         ):
-            yield rclone_calls, deleted_keys, head_calls
+            yield rclone_calls, deleted_keys, head_calls, download_calls
 
 
 class RenameMatchingTests(unittest.TestCase):
@@ -400,7 +460,7 @@ class RenameCloudJobTests(unittest.TestCase):
                     payload=payload,
                     old_key=old_key,
                     new_key=new_key,
-                ) as (rclone_calls, deleted_keys, head_calls):
+                ) as (rclone_calls, deleted_keys, head_calls, download_calls):
                     process_jobs_once()
 
             with SQLiteConnection(str(database_path)) as connection:
@@ -436,8 +496,29 @@ class RenameCloudJobTests(unittest.TestCase):
                 deleted_keys,
                 [{"Bucket": "bucket", "Key": old_key, "VersionId": ""}],
             )
-            self.assertEqual([call["Key"] for call in head_calls], [new_key, old_key])
+            self.assertEqual(
+                [call["Key"] for call in head_calls],
+                [new_key, new_key, old_key],
+            )
+            self.assertEqual(head_calls[1]["VersionId"], "new-s3-version")
+            self.assertEqual(
+                download_calls,
+                [
+                    {
+                        "Bucket": "bucket",
+                        "Key": new_key,
+                        "VersionId": "new-s3-version",
+                    }
+                ],
+            )
             self.assertTrue(any(call[:1] == ("copyto",) for call in rclone_calls))
+            self.assertFalse(
+                any(
+                    str(arg).startswith("--s3-version-id=")
+                    for call in rclone_calls
+                    for arg in call
+                )
+            )
 
     def test_bug_002_rename_hide_detects_concurrent_version(self) -> None:
         """[BUG-002][Req: REQ-004] rename hide aborts on live VersionId mismatch.
@@ -462,16 +543,7 @@ class RenameCloudJobTests(unittest.TestCase):
 
             deleted: list[str] = []
             head_keys: list[str] = []
-
-            def fake_rclone(*args, **kwargs) -> None:
-                command = tuple(str(arg) for arg in args if not callable(arg))
-                if command[:1] != ("copyto",) or len(command) < 3:
-                    return
-                origin, destination = command[1], command[2]
-                if ":" in origin and not Path(origin).exists():
-                    target = Path(destination)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(payload)
+            download_calls: list[dict[str, str]] = []
 
             def fake_head_object(**kwargs):
                 head_keys.append(kwargs["Key"])
@@ -503,7 +575,7 @@ class RenameCloudJobTests(unittest.TestCase):
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
                     patch("app.storage.rclone_remote_is_crypt", return_value=False),
-                    patch("app.storage.run_rclone", side_effect=fake_rclone),
+                    patch("app.storage.run_rclone"),
                     patch(
                         "app.storage.s3_client",
                         return_value=SimpleNamespace(
@@ -513,6 +585,12 @@ class RenameCloudJobTests(unittest.TestCase):
                                 "VersionId": "delete-marker-wrong",
                                 "DeleteMarker": True,
                             },
+                            download_file=_write_versioned_download(
+                                payload=payload,
+                                expected_key=new_key,
+                                expected_version_id="new-s3-version",
+                                calls=download_calls,
+                            ),
                         ),
                     ),
                 ):
@@ -532,7 +610,11 @@ class RenameCloudJobTests(unittest.TestCase):
             self.assertEqual(markers, [])
             self.assertEqual(job["status"], "failed")
             self.assertIn("VersionId", job["message"] or "")
-            self.assertEqual(head_keys, [new_key, old_key])
+            self.assertEqual(head_keys, [new_key, new_key, old_key])
+            self.assertEqual(
+                download_calls[0]["VersionId"],
+                "new-s3-version",
+            )
 
     def test_failed_verification_never_hides_the_old_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -549,17 +631,27 @@ class RenameCloudJobTests(unittest.TestCase):
                 payload=payload,
             )
 
-            def fake_rclone(*args, **kwargs) -> None:
-                command = tuple(str(arg) for arg in args if not callable(arg))
-                if command[:1] != ("copyto",) or len(command) < 3:
-                    return
-                origin, destination = command[1], command[2]
-                if ":" in origin and not Path(origin).exists():
-                    target = Path(destination)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(b"tampered-cloud-bytes")
-
             deleted: list[str] = []
+            download_calls: list[dict[str, str]] = []
+
+            def fake_download_file(
+                Bucket: str,
+                Key: str,
+                Filename: str,
+                ExtraArgs: dict | None = None,
+                Callback=None,
+                Config=None,
+            ) -> None:
+                version_id = str((ExtraArgs or {}).get("VersionId") or "")
+                download_calls.append(
+                    {"Bucket": Bucket, "Key": Key, "VersionId": version_id}
+                )
+                target = Path(Filename)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"tampered-cloud-bytes")
+                if Callback is not None:
+                    Callback(len(b"tampered-cloud-bytes"))
+
             database_settings = SimpleNamespace(
                 db_backend="sqlite",
                 sqlite_path=str(database_path),
@@ -574,7 +666,7 @@ class RenameCloudJobTests(unittest.TestCase):
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
                     patch("app.storage.rclone_remote_is_crypt", return_value=False),
-                    patch("app.storage.run_rclone", side_effect=fake_rclone),
+                    patch("app.storage.run_rclone"),
                     patch(
                         "app.storage.s3_client",
                         return_value=SimpleNamespace(
@@ -586,6 +678,7 @@ class RenameCloudJobTests(unittest.TestCase):
                             },
                             delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
                             or {"VersionId": "delete-marker-1", "DeleteMarker": True},
+                            download_file=fake_download_file,
                         ),
                     ),
                 ):
@@ -606,6 +699,7 @@ class RenameCloudJobTests(unittest.TestCase):
             self.assertEqual(deleted, [])
             self.assertEqual(markers, [])
             self.assertEqual(job["status"], "failed")
+            self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
             by_key = {row["object_key"]: row for row in versions}
             self.assertEqual(by_key[old_key]["integrity"], "verified")
             self.assertEqual(by_key[new_key]["integrity"], "mismatch")
@@ -935,8 +1029,11 @@ class CryptRenameTests(unittest.TestCase):
             def fake_vault_rclone_config(_vault):
                 yield fake_config
 
+            rclone_calls: list[tuple[str, ...]] = []
+
             def fake_rclone(*args, **kwargs) -> None:
                 command = tuple(str(arg) for arg in args if not callable(arg))
+                rclone_calls.append(command)
                 if command[:1] != ("copyto",) or len(command) < 3:
                     return
                 origin, destination = command[1], command[2]
@@ -1025,6 +1122,12 @@ class CryptRenameTests(unittest.TestCase):
                 [(row["object_key"], row["provider_version_id"]) for row in markers],
                 [(old_key, "crypt-delete-marker")],
             )
+            self.assertTrue(
+                any(
+                    "--s3-version-id=crypt-new" in call for call in rclone_calls
+                ),
+                rclone_calls,
+            )
 
 
 class RenameRestartTests(unittest.TestCase):
@@ -1104,6 +1207,32 @@ class RenameRestartTests(unittest.TestCase):
                 sqlite_path=str(database_path),
             )
             deleted: list[str] = []
+            rclone_calls: list[tuple[str, ...]] = []
+            download_calls: list[dict[str, str]] = []
+
+            def fake_head_object(**kwargs):
+                key = kwargs["Key"]
+                requested = str(kwargs.get("VersionId") or "")
+                if key == old_key:
+                    if requested and requested != "old-s3-version":
+                        raise RuntimeError("missing old VersionId")
+                    return {
+                        "VersionId": "old-s3-version",
+                        "ContentLength": len(payload),
+                        "StorageClass": "STANDARD",
+                        "ETag": '"old-etag"',
+                    }
+                if key == new_key:
+                    if requested and requested != "new-s3-version":
+                        raise RuntimeError("missing new VersionId")
+                    return {
+                        "VersionId": "new-s3-version",
+                        "ContentLength": len(payload),
+                        "StorageClass": "STANDARD",
+                        "ETag": '"new-etag"',
+                    }
+                raise RuntimeError(f"unexpected head key {key}")
+
             with patch("app.database.settings", database_settings):
                 summary = reconcile_interrupted_jobs()
                 self.assertEqual(summary["requeued"], 1)
@@ -1117,21 +1246,27 @@ class RenameRestartTests(unittest.TestCase):
                     ),
                     patch("app.storage.validate_cloud_vault"),
                     patch("app.storage.rclone_remote_is_crypt", return_value=False),
-                    patch("app.storage.run_rclone"),
+                    patch(
+                        "app.storage.run_rclone",
+                        side_effect=lambda *args, **kwargs: rclone_calls.append(
+                            tuple(str(arg) for arg in args if not callable(arg))
+                        ),
+                    ),
                     patch(
                         "app.storage.s3_client",
                         return_value=SimpleNamespace(
-                            head_object=lambda **kwargs: {
-                                "VersionId": "old-s3-version",
-                                "ContentLength": len(payload),
-                                "StorageClass": "STANDARD",
-                                "ETag": '"old-etag"',
-                            },
+                            head_object=fake_head_object,
                             delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
                             or {
                                 "VersionId": "delete-marker-resume",
                                 "DeleteMarker": True,
                             },
+                            download_file=_write_versioned_download(
+                                payload=payload,
+                                expected_key=new_key,
+                                expected_version_id="new-s3-version",
+                                calls=download_calls,
+                            ),
                         ),
                     ),
                 ):
@@ -1159,9 +1294,540 @@ class RenameRestartTests(unittest.TestCase):
             self.assertEqual(deleted, [old_key])
             self.assertEqual(version_count, 2)
             self.assertEqual(len(versions), 2)
+            self.assertEqual(rclone_calls, [])
+            self.assertEqual(download_calls, [])
             self.assertEqual(
                 [(row["object_key"], row["provider_version_id"]) for row in markers],
                 [(old_key, "delete-marker-resume")],
+            )
+
+
+def _insert_destination_version(
+    database_path: Path,
+    *,
+    file_id: str,
+    path: str,
+    object_key: str,
+    provider_version_id: str,
+    digest: str | None,
+    payload_size: int,
+    integrity: str = "verified",
+    availability: str = "available",
+) -> str:
+    with SQLiteConnection(str(database_path)) as connection:
+        catalog = ArchiveCatalog(connection)
+        version_id = catalog.record_archive_version(
+            vault_id=2,
+            path=path,
+            object_key=object_key,
+            provider_version_id=provider_version_id,
+            size=payload_size,
+            storage_class="STANDARD",
+            etag="dest-etag",
+            uploaded_at="2026-07-21T11:10:00+00:00",
+            observed_at="2026-07-21T11:10:00+00:00",
+            scan_id="2026-07-21T11:10:00+00:00",
+            origin="upload",
+        )
+        if integrity == "verified":
+            catalog.mark_version_verified(
+                version_id,
+                plaintext_sha256=str(digest),
+                verified_at="2026-07-21T11:11:00+00:00",
+            )
+        if availability != "available":
+            connection.execute(
+                """
+                UPDATE archive_versions
+                SET availability=%s, availability_checked_at=%s
+                WHERE id=%s
+                """,
+                (availability, "2026-07-21T11:12:00+00:00", version_id),
+            )
+        return version_id
+
+
+def _insert_old_key_marker(database_path: Path, *, file_id: str, old_key: str) -> None:
+    with SQLiteConnection(str(database_path)) as connection:
+        ArchiveCatalog(connection).record_delete_marker(
+            vault_id=2,
+            path="new.txt",
+            object_key=old_key,
+            provider_version_id="existing-delete-marker",
+            created_at="2026-07-21T11:13:00+00:00",
+            observed_at="2026-07-21T11:13:00+00:00",
+        )
+
+
+class RenameDestinationProofTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from app import storage
+
+        storage.cancelled_jobs.clear()
+
+    def test_rename_does_not_reuse_missing_destination(self) -> None:
+        """A->B->A->B: a missing prior destination cannot authorize hide."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"rename-missing-dest"
+            old_path = "old.txt"
+            new_path = "new.txt"
+            old_key = f"docs/{old_path}"
+            new_key = f"docs/{new_path}"
+            _source, database_path, file_id = _prepare_renamed_plain_file(
+                root,
+                old_path=old_path,
+                new_path=new_path,
+                payload=payload,
+            )
+            missing_id = _insert_destination_version(
+                database_path,
+                file_id=file_id,
+                path=new_path,
+                object_key=new_key,
+                provider_version_id="missing-s3-version",
+                digest=_sha256_hex(payload),
+                payload_size=len(payload),
+                availability="missing",
+            )
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            with patch("app.database.settings", database_settings):
+                queued = queue_jobs(new_path, "rename", 2, 1)
+                self.assertEqual(queued["item_count"], 1)
+                with _rename_worker(
+                    database_path,
+                    payload=payload,
+                    old_key=old_key,
+                    new_key=new_key,
+                ) as (rclone_calls, deleted_keys, head_calls, download_calls):
+                    process_jobs_once()
+
+            with SQLiteConnection(str(database_path)) as connection:
+                catalog = ArchiveCatalog(connection)
+                versions = catalog.list_versions(2, new_path)
+                job = connection.execute(
+                    "SELECT status, archive_version_id FROM jobs WHERE path=%s",
+                    (new_path,),
+                ).fetchone()
+                missing = connection.execute(
+                    "SELECT availability FROM archive_versions WHERE id=%s",
+                    (missing_id,),
+                ).fetchone()
+
+            self.assertEqual(job["status"], "completed")
+            self.assertEqual(missing["availability"], "missing")
+            self.assertEqual(
+                deleted_keys,
+                [{"Bucket": "bucket", "Key": old_key, "VersionId": ""}],
+            )
+            self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
+            self.assertTrue(any(call[:1] == ("copyto",) for call in rclone_calls))
+            by_provider = {row["provider_version_id"]: row for row in versions}
+            self.assertEqual(by_provider["missing-s3-version"]["availability"], "missing")
+            self.assertEqual(by_provider["new-s3-version"]["integrity"], "verified")
+            self.assertEqual(by_provider["new-s3-version"]["availability"], "available")
+            self.assertNotEqual(job["archive_version_id"], missing_id)
+            self.assertEqual(
+                [call["Key"] for call in head_calls if call["VersionId"] == "missing-s3-version"],
+                [],
+            )
+
+    def test_rename_verification_binds_download_to_recorded_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"rename-version-bind"
+            concurrent = b"concurrent-writer-v3"
+            old_path = "old.txt"
+            new_path = "new.txt"
+            old_key = f"docs/{old_path}"
+            new_key = f"docs/{new_path}"
+            _source, database_path, file_id = _prepare_renamed_plain_file(
+                root,
+                old_path=old_path,
+                new_path=new_path,
+                payload=payload,
+            )
+            current_version = {"id": "new-s3-version"}
+            download_calls: list[dict[str, str]] = []
+            deleted: list[str] = []
+
+            def fake_head_object(**kwargs):
+                key = kwargs["Key"]
+                requested = str(kwargs.get("VersionId") or "")
+                if key == old_key:
+                    return {
+                        "VersionId": "old-s3-version",
+                        "ContentLength": len(payload),
+                        "StorageClass": "STANDARD",
+                        "ETag": '"old-etag"',
+                    }
+                if requested:
+                    if requested != "new-s3-version":
+                        raise RuntimeError("unexpected pinned VersionId")
+                    return {
+                        "VersionId": "new-s3-version",
+                        "ContentLength": len(payload),
+                        "StorageClass": "STANDARD",
+                        "ETag": '"new-etag"',
+                    }
+                observed = current_version["id"]
+                if observed == "new-s3-version":
+                    current_version["id"] = "new-s3-v3"
+                return {
+                    "VersionId": observed,
+                    "ContentLength": len(payload if observed == "new-s3-version" else concurrent),
+                    "StorageClass": "STANDARD",
+                    "ETag": '"new-etag"',
+                }
+
+            def fake_download_file(
+                Bucket: str,
+                Key: str,
+                Filename: str,
+                ExtraArgs: dict | None = None,
+                Callback=None,
+                Config=None,
+            ) -> None:
+                version_id = str((ExtraArgs or {}).get("VersionId") or "")
+                download_calls.append(
+                    {"Bucket": Bucket, "Key": Key, "VersionId": version_id}
+                )
+                body = payload if version_id == "new-s3-version" else concurrent
+                target = Path(Filename)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(body)
+                if Callback is not None:
+                    Callback(len(body))
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            with patch("app.database.settings", database_settings):
+                queue_jobs(new_path, "rename", 2, 1)
+                with (
+                    patch(
+                        "app.storage.settings",
+                        SimpleNamespace(
+                            operation_concurrency=1,
+                            restore_poll_interval=900,
+                        ),
+                    ),
+                    patch("app.storage.validate_cloud_vault"),
+                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
+                    patch("app.storage.run_rclone"),
+                    patch(
+                        "app.storage.s3_client",
+                        return_value=SimpleNamespace(
+                            head_object=fake_head_object,
+                            delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
+                            or {
+                                "VersionId": "delete-marker-1",
+                                "DeleteMarker": True,
+                            },
+                            download_file=fake_download_file,
+                        ),
+                    ),
+                ):
+                    process_jobs_once()
+
+            with SQLiteConnection(str(database_path)) as connection:
+                versions = ArchiveCatalog(connection).list_versions(2, new_path)
+                job = connection.execute(
+                    "SELECT status FROM jobs WHERE path=%s",
+                    (new_path,),
+                ).fetchone()
+
+            self.assertEqual(job["status"], "completed")
+            self.assertEqual(deleted, [old_key])
+            self.assertEqual(
+                download_calls,
+                [
+                    {
+                        "Bucket": "bucket",
+                        "Key": new_key,
+                        "VersionId": "new-s3-version",
+                    }
+                ],
+            )
+            by_provider = {row["provider_version_id"]: row for row in versions}
+            self.assertEqual(by_provider["new-s3-version"]["integrity"], "verified")
+            self.assertEqual(
+                by_provider["new-s3-version"]["plaintext_sha256"],
+                _sha256_hex(payload),
+            )
+            self.assertNotIn("new-s3-v3", by_provider)
+
+    def test_rename_already_completed_requires_live_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"rename-already"
+            old_path = "old.txt"
+            new_path = "new.txt"
+            old_key = f"docs/{old_path}"
+            new_key = f"docs/{new_path}"
+            _source, database_path, file_id = _prepare_renamed_plain_file(
+                root,
+                old_path=old_path,
+                new_path=new_path,
+                payload=payload,
+            )
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            with patch("app.database.settings", database_settings):
+                queued = queue_jobs(new_path, "rename", 2, 1)
+                self.assertEqual(queued["item_count"], 1)
+            live_id = _insert_destination_version(
+                database_path,
+                file_id=file_id,
+                path=new_path,
+                object_key=new_key,
+                provider_version_id="new-s3-version",
+                digest=_sha256_hex(payload),
+                payload_size=len(payload),
+            )
+            _insert_old_key_marker(database_path, file_id=file_id, old_key=old_key)
+            with patch("app.database.settings", database_settings):
+                with _rename_worker(
+                    database_path,
+                    payload=payload,
+                    old_key=old_key,
+                    new_key=new_key,
+                ) as (rclone_calls, deleted_keys, head_calls, download_calls):
+                    process_jobs_once()
+
+            with SQLiteConnection(str(database_path)) as connection:
+                job = connection.execute(
+                    "SELECT status, message_key, archive_version_id FROM jobs WHERE path=%s",
+                    (new_path,),
+                ).fetchone()
+
+            self.assertEqual(job["status"], "completed")
+            self.assertEqual(job["message_key"], "job.rename_already_completed")
+            self.assertEqual(deleted_keys, [])
+            self.assertEqual(rclone_calls, [])
+            self.assertEqual(download_calls, [])
+            self.assertEqual(job["archive_version_id"], live_id)
+            self.assertEqual(
+                [call["VersionId"] for call in head_calls],
+                ["new-s3-version"],
+            )
+
+    def test_missing_destination_with_marker_recopies_without_second_hide(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"rename-restore-dest"
+            old_path = "old.txt"
+            new_path = "new.txt"
+            old_key = f"docs/{old_path}"
+            new_key = f"docs/{new_path}"
+            _source, database_path, file_id = _prepare_renamed_plain_file(
+                root,
+                old_path=old_path,
+                new_path=new_path,
+                payload=payload,
+            )
+            _insert_destination_version(
+                database_path,
+                file_id=file_id,
+                path=new_path,
+                object_key=new_key,
+                provider_version_id="missing-s3-version",
+                digest=_sha256_hex(payload),
+                payload_size=len(payload),
+                availability="missing",
+            )
+            _insert_old_key_marker(database_path, file_id=file_id, old_key=old_key)
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            with patch("app.database.settings", database_settings):
+                queue_jobs(new_path, "rename", 2, 1)
+                with _rename_worker(
+                    database_path,
+                    payload=payload,
+                    old_key=old_key,
+                    new_key=new_key,
+                ) as (rclone_calls, deleted_keys, _head_calls, download_calls):
+                    process_jobs_once()
+
+            with SQLiteConnection(str(database_path)) as connection:
+                versions = ArchiveCatalog(connection).list_versions(2, new_path)
+                job = connection.execute(
+                    "SELECT status, message_key FROM jobs WHERE path=%s",
+                    (new_path,),
+                ).fetchone()
+                markers = connection.execute(
+                    "SELECT provider_version_id FROM delete_markers WHERE vault_file_id=%s",
+                    (file_id,),
+                ).fetchall()
+
+            self.assertEqual(job["status"], "completed")
+            self.assertEqual(job["message_key"], "job.rename_verified")
+            self.assertEqual(deleted_keys, [])
+            self.assertTrue(any(call[:1] == ("copyto",) for call in rclone_calls))
+            self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
+            by_provider = {row["provider_version_id"]: row for row in versions}
+            self.assertEqual(by_provider["new-s3-version"]["integrity"], "verified")
+            self.assertEqual(
+                [row["provider_version_id"] for row in markers],
+                ["existing-delete-marker"],
+            )
+
+    def test_different_digest_destination_does_not_authorize_hide(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"rename-current"
+            old_path = "old.txt"
+            new_path = "new.txt"
+            old_key = f"docs/{old_path}"
+            new_key = f"docs/{new_path}"
+            _source, database_path, file_id = _prepare_renamed_plain_file(
+                root,
+                old_path=old_path,
+                new_path=new_path,
+                payload=payload,
+            )
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            with patch("app.database.settings", database_settings):
+                queued = queue_jobs(new_path, "rename", 2, 1)
+                self.assertEqual(queued["item_count"], 1)
+            stale_id = _insert_destination_version(
+                database_path,
+                file_id=file_id,
+                path=new_path,
+                object_key=new_key,
+                provider_version_id="stale-s3-version",
+                digest=_sha256_hex(b"other-content"),
+                payload_size=13,
+            )
+            with patch("app.database.settings", database_settings):
+                with _rename_worker(
+                    database_path,
+                    payload=payload,
+                    old_key=old_key,
+                    new_key=new_key,
+                ) as (_rclone_calls, deleted_keys, head_calls, download_calls):
+                    process_jobs_once()
+
+            with SQLiteConnection(str(database_path)) as connection:
+                versions = ArchiveCatalog(connection).list_versions(2, new_path)
+                job = connection.execute(
+                    "SELECT status, archive_version_id FROM jobs WHERE path=%s",
+                    (new_path,),
+                ).fetchone()
+
+            self.assertEqual(job["status"], "completed")
+            self.assertEqual(
+                deleted_keys,
+                [{"Bucket": "bucket", "Key": old_key, "VersionId": ""}],
+            )
+            self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
+            self.assertNotEqual(job["archive_version_id"], stale_id)
+            by_provider = {row["provider_version_id"]: row for row in versions}
+            self.assertEqual(by_provider["stale-s3-version"]["id"], stale_id)
+            self.assertEqual(by_provider["new-s3-version"]["integrity"], "verified")
+            self.assertEqual(
+                [call["VersionId"] for call in head_calls if call["VersionId"] == "stale-s3-version"],
+                [],
+            )
+
+    def test_interrupted_verifying_rename_resumes_exact_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"rename-verify-resume"
+            old_path = "old.txt"
+            new_path = "new.txt"
+            old_key = f"docs/{old_path}"
+            new_key = f"docs/{new_path}"
+            _source, database_path, file_id = _prepare_renamed_plain_file(
+                root,
+                old_path=old_path,
+                new_path=new_path,
+                payload=payload,
+            )
+            unverified_id = _insert_destination_version(
+                database_path,
+                file_id=file_id,
+                path=new_path,
+                object_key=new_key,
+                provider_version_id="new-s3-version",
+                digest=None,
+                payload_size=len(payload),
+                integrity="unverified",
+            )
+            with SQLiteConnection(str(database_path)) as connection:
+                old_version = connection.execute(
+                    """
+                    SELECT id FROM archive_versions
+                    WHERE vault_file_id=%s AND object_key=%s
+                    """,
+                    (file_id, old_key),
+                ).fetchone()
+                connection.execute(
+                    """
+                    INSERT INTO jobs(
+                        vault_id, vault_file_id, archive_version_id, path,
+                        action, status, requested_by, requested_at, updated_at,
+                        group_id, group_path, total_bytes, transferred_bytes,
+                        message
+                    ) VALUES (
+                        2, %s, %s, %s, 'rename', 'queued', 1,
+                        '2026-07-21T11:12:00+00:00', '2026-07-21T11:12:00+00:00',
+                        'group-1', %s, %s, 0, 'Verifying the new cloud key'
+                    )
+                    """,
+                    (
+                        file_id,
+                        old_version["id"],
+                        new_path,
+                        new_path,
+                        len(payload),
+                    ),
+                )
+
+            database_settings = SimpleNamespace(
+                db_backend="sqlite",
+                sqlite_path=str(database_path),
+            )
+            with patch("app.database.settings", database_settings):
+                with _rename_worker(
+                    database_path,
+                    payload=payload,
+                    old_key=old_key,
+                    new_key=new_key,
+                ) as (rclone_calls, deleted_keys, _head_calls, download_calls):
+                    process_jobs_once()
+
+            with SQLiteConnection(str(database_path)) as connection:
+                version = connection.execute(
+                    "SELECT integrity, plaintext_sha256 FROM archive_versions WHERE id=%s",
+                    (unverified_id,),
+                ).fetchone()
+                job = connection.execute(
+                    "SELECT status FROM jobs WHERE path=%s",
+                    (new_path,),
+                ).fetchone()
+
+            self.assertEqual(job["status"], "completed")
+            self.assertEqual(version["integrity"], "verified")
+            self.assertEqual(version["plaintext_sha256"], _sha256_hex(payload))
+            self.assertEqual(rclone_calls, [])
+            self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
+            self.assertEqual(
+                deleted_keys,
+                [{"Bucket": "bucket", "Key": old_key, "VersionId": ""}],
             )
 
 
