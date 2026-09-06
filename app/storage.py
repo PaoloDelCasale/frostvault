@@ -148,6 +148,11 @@ UPLOAD_RETRY_MAX_ATTEMPTS = 8
 # avoiding one transaction per catalogued entry.
 LOCAL_SCAN_WRITE_BATCH_SIZE = 250
 
+# Cloud scans keep provider I/O outside write transactions and commit catalog
+# merges in bounded batches so SQLite/PostgreSQL writers (lease renewal,
+# notifications) are not blocked for the full listing.
+CLOUD_SCAN_WRITE_BATCH_SIZE = 250
+
 # S3 CopyObject is limited to objects up to 5 GiB.  Multipart copy keeps the
 # source VersionId on every UploadPartCopy request and uses a deliberately
 # conservative part size so even the largest supported object stays below the
@@ -1397,7 +1402,45 @@ def _apply_filesystem_changes(
     return changed
 
 
+def _cloud_scan_still_current(vault: dict[str, Any], scan_id: str) -> bool:
+    """Skip missing-marks when a newer scan generation has already started."""
+    vault_id = int(vault["id"])
+    with status_lock:
+        status = runtime_status.get(vault_id)
+    if status is None:
+        return True
+    return status.get("scan_id") == scan_id
+
+
+def _path_matches_lifecycle_pins(
+    path: str, pins: tuple[tuple[str, bool], ...]
+) -> bool:
+    from .services.lifecycle_policies import normalize_logical_path
+
+    normalized = normalize_logical_path(path)
+    for pin_path, is_directory in pins:
+        if is_directory:
+            if normalized == pin_path or normalized.startswith(f"{pin_path}/"):
+                return True
+        elif normalized == pin_path:
+            return True
+    return False
+
+
+def _remote_listing_timestamp(item: dict[str, Any], scan_id: str) -> str:
+    value = item.get("LastModified")
+    return value.isoformat() if hasattr(value, "isoformat") else str(value or scan_id)
+
+
 def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
+    """Merge one complete cloud listing into the catalog in bounded writes.
+
+    Provider listing and object-tag reads stay outside write transactions.
+    Catalog merges commit in ``CLOUD_SCAN_WRITE_BATCH_SIZE`` chunks so other
+    SQLite/PostgreSQL writers can renew leases and persist notifications.
+    Unseen versions are marked missing only after a complete listing with no
+    decoder failures, and only if this scan generation is still current.
+    """
     validate_cloud_vault(vault)
     encrypts_names = vault_encrypts_names(vault)
     is_crypt = vault_encrypts_content(vault)
@@ -1407,128 +1450,176 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
     kwargs: dict[str, Any] = {"Bucket": vault["s3_bucket"]}
     if prefix:
         kwargs["Prefix"] = f"{prefix}/"
-    count = 0
-    raw_versions: list[dict[str, Any]] = []
-    raw_markers: list[dict[str, Any]] = []
-
-    # Complete the provider listing before decoding. This lets one bounded
-    # decoder batch reuse a ciphertext name across every historical Version and
-    # Delete Marker, including entries split across paginator pages.
-    for page in paginator.paginate(**kwargs):
-        raw_versions.extend(page.get("Versions", []))
-        raw_markers.extend(page.get("DeleteMarkers", []))
-
+    versions: list[tuple[str, str, str, Any, str, str, str]] = []
+    markers: list[tuple[str, str, str, str]] = []
     decoded_paths: dict[str, str] = {}
     decode_failures: set[str] = set()
+    listing_complete = False
     runtime: Any | None = None
-    if encrypts_names:
-        with vault_rclone_config(vault) as runtime_config:
-            runtime = runtime_config
-            encrypted_relatives = [
-                relative
-                for item in [*raw_versions, *raw_markers]
-                for relative in [_cloud_relative_key(item["Key"], prefix)]
-                if relative is not None
-            ]
-            decoded_paths, decode_failures = decode_object_relative_paths(
-                runtime_config,
-                encrypted_relatives,
-            )
 
-    versions: list[tuple[str, str, dict[str, Any]]] = []
-    markers: list[tuple[str, str, dict[str, Any]]] = []
-
-    def _convert(
-        items: list[dict[str, Any]],
-        destination: list[tuple[str, str, dict[str, Any]]],
-    ) -> None:
+    def convert_page(items: list[dict[str, Any]], kind: str) -> None:
         for item in items:
-            decode = decoded_paths.get(_cloud_relative_key(item["Key"], prefix))
+            object_key = item["Key"]
+            relative = _cloud_relative_key(object_key, prefix)
+            decode = decoded_paths.get(relative) if relative is not None else None
             logical_path = object_key_to_path(
-                item["Key"],
+                object_key,
                 prefix,
                 is_crypt,
                 encrypted_names=encrypts_names,
                 runtime=runtime,
-                decoded_relative_path=decode if encrypts_names else _UNSET_DECODED_PATH,
+                decoded_relative_path=(
+                    decode if encrypts_names else _UNSET_DECODED_PATH
+                ),
             )
-            if logical_path is not None:
-                destination.append((logical_path, item["VersionId"], item))
-
-    _convert(raw_versions, versions)
-    _convert(raw_markers, markers)
-
-    def remote_timestamp(item: dict[str, Any]) -> str:
-        value = item.get("LastModified")
-        return value.isoformat() if hasattr(value, "isoformat") else str(value or scan_id)
-
-    versions.sort(
-        key=lambda entry: (
-            entry[0],
-            remote_timestamp(entry[2]),
-            entry[2]["Key"],
-            entry[1],
-        )
-    )
-    markers.sort(
-        key=lambda entry: (
-            entry[0],
-            remote_timestamp(entry[2]),
-            entry[2]["Key"],
-            entry[1],
-        )
-    )
-    with db() as connection:
-        catalog = ArchiveCatalog(connection)
-        assignments = load_policy_assignments(connection, vault["id"])
-        from .services.lifecycle_pins import is_path_pinned
-
-        for logical_path, version_id, item in versions:
-            if is_path_pinned(connection, vault["id"], logical_path):
-                desired_policy_id = None
-            else:
-                desired_policy_id = resolve_effective_policy_id(
-                    logical_path, assignments
+            if logical_path is None:
+                continue
+            version_id = item["VersionId"]
+            timestamp = _remote_listing_timestamp(item, scan_id)
+            if kind == "version":
+                versions.append(
+                    (
+                        logical_path,
+                        version_id,
+                        object_key,
+                        item.get("Size"),
+                        item.get("StorageClass", "STANDARD"),
+                        str(item.get("ETag", "")).strip('"'),
+                        timestamp,
+                    )
                 )
+            else:
+                markers.append((logical_path, version_id, object_key, timestamp))
+
+    try:
+        page_iter = paginator.paginate(**kwargs)
+        if encrypts_names:
+            with vault_rclone_config(vault) as runtime_config:
+                runtime = runtime_config
+                for page in page_iter:
+                    page_items = [
+                        *page.get("Versions", []),
+                        *page.get("DeleteMarkers", []),
+                    ]
+                    encrypted_relatives = [
+                        relative
+                        for item in page_items
+                        for relative in [_cloud_relative_key(item["Key"], prefix)]
+                        if relative is not None and relative not in decoded_paths
+                    ]
+                    if encrypted_relatives:
+                        page_decoded, page_failures = decode_object_relative_paths(
+                            runtime_config,
+                            encrypted_relatives,
+                        )
+                        decoded_paths.update(page_decoded)
+                        decode_failures.update(page_failures)
+                    convert_page(page.get("Versions", []), "version")
+                    convert_page(page.get("DeleteMarkers", []), "marker")
+        else:
+            for page in page_iter:
+                convert_page(page.get("Versions", []), "version")
+                convert_page(page.get("DeleteMarkers", []), "marker")
+        listing_complete = True
+    except Exception:
+        listing_complete = False
+        raise
+
+    versions.sort(key=lambda entry: (entry[0], entry[6], entry[2], entry[1]))
+    markers.sort(key=lambda entry: (entry[0], entry[3], entry[2], entry[1]))
+
+    from .services.lifecycle_pins import load_lifecycle_pins
+
+    with db() as connection:
+        assignments = load_policy_assignments(connection, vault["id"])
+        pins = load_lifecycle_pins(connection, vault["id"])
+
+    count = 0
+    for offset in range(0, len(versions), CLOUD_SCAN_WRITE_BATCH_SIZE):
+        if not _cloud_scan_still_current(vault, scan_id):
+            return count
+        batch = versions[offset : offset + CLOUD_SCAN_WRITE_BATCH_SIZE]
+        tagged: list[tuple[Any, ...]] = []
+        for logical_path, version_id, object_key, size, storage_class, etag, timestamp in batch:
             applied_policy_id = None
             try:
                 applied_policy_id = read_version_policy_tag(
                     client,
                     bucket=vault["s3_bucket"],
-                    key=item["Key"],
+                    key=object_key,
                     version_id=version_id,
                 )
             except Exception:
                 applied_policy_id = None
-            catalog.record_archive_version(
-                vault_id=vault["id"],
-                path=logical_path,
-                object_key=item["Key"],
-                provider_version_id=version_id,
-                size=item.get("Size"),
-                storage_class=item.get("StorageClass", "STANDARD"),
-                etag=item.get("ETag", "").strip('"'),
-                uploaded_at=remote_timestamp(item),
-                observed_at=now_iso(),
-                scan_id=scan_id,
-                desired_policy_id=desired_policy_id,
-                applied_policy_id=applied_policy_id,
+            tagged.append(
+                (
+                    logical_path,
+                    version_id,
+                    object_key,
+                    size,
+                    storage_class,
+                    etag,
+                    timestamp,
+                    applied_policy_id,
+                )
             )
-            count += 1
-        for logical_path, version_id, item in markers:
-            catalog.record_delete_marker(
-                vault_id=vault["id"],
-                path=logical_path,
-                object_key=item["Key"],
-                provider_version_id=version_id,
-                created_at=remote_timestamp(item),
-                observed_at=now_iso(),
-            )
-            count += 1
-        # An unknown encrypted key is not evidence that its prior catalog rows
-        # disappeared. Fail closed by retaining their last known availability.
-        if not decode_failures:
-            catalog.mark_unseen_archive_versions_missing(
+        with db() as connection:
+            catalog = ArchiveCatalog(connection)
+            for (
+                logical_path,
+                version_id,
+                object_key,
+                size,
+                storage_class,
+                etag,
+                timestamp,
+                applied_policy_id,
+            ) in tagged:
+                desired_policy_id = (
+                    None
+                    if _path_matches_lifecycle_pins(logical_path, pins)
+                    else resolve_effective_policy_id(logical_path, assignments)
+                )
+                catalog.record_archive_version(
+                    vault_id=vault["id"],
+                    path=logical_path,
+                    object_key=object_key,
+                    provider_version_id=version_id,
+                    size=size,
+                    storage_class=storage_class,
+                    etag=etag,
+                    uploaded_at=timestamp,
+                    observed_at=now_iso(),
+                    scan_id=scan_id,
+                    desired_policy_id=desired_policy_id,
+                    applied_policy_id=applied_policy_id,
+                )
+                count += 1
+    for offset in range(0, len(markers), CLOUD_SCAN_WRITE_BATCH_SIZE):
+        if not _cloud_scan_still_current(vault, scan_id):
+            return count
+        batch = markers[offset : offset + CLOUD_SCAN_WRITE_BATCH_SIZE]
+        with db() as connection:
+            catalog = ArchiveCatalog(connection)
+            for logical_path, version_id, object_key, timestamp in batch:
+                catalog.record_delete_marker(
+                    vault_id=vault["id"],
+                    path=logical_path,
+                    object_key=object_key,
+                    provider_version_id=version_id,
+                    created_at=timestamp,
+                    observed_at=now_iso(),
+                )
+                count += 1
+    # An unknown encrypted key or a truncated listing is not evidence that
+    # prior catalog rows disappeared. Fail closed by retaining availability.
+    if (
+        listing_complete
+        and not decode_failures
+        and _cloud_scan_still_current(vault, scan_id)
+    ):
+        with db() as connection:
+            ArchiveCatalog(connection).mark_unseen_archive_versions_missing(
                 vault_id=vault["id"],
                 scan_id=scan_id,
                 scan_started_at=scan_id,
