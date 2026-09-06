@@ -70,9 +70,18 @@ Workflow: [`.github/workflows/security.yml`](../.github/workflows/security.yml)
 | Scanner | Gate | Exceptions |
 | --- | --- | --- |
 | Dependency review via pip-audit | Fails on any known vulnerability in `requirements.txt` | Temporarily add `--ignore-vuln` IDs with a linked issue URL and review date. Native `actions/dependency-review-action` needs Dependency graph + GitHub Advanced Security on private repos; pip-audit is the portable substitute for this Python stack. |
+| Dependency review via npm audit | Fails on any known vulnerability in the `frontend/` lockfile, including transitive copies and `dev` toolchain packages. A second `npm audit --omit=dev` report classifies **runtime** vs **build** exposure. JSON reports upload as the `npm-audit` artifact. The production image only copies `frontend/dist`, so Trivy on the final image does not replace this gate. | Add a GHSA/CVE to [`.github/npm-audit-exceptions.json`](../.github/npm-audit-exceptions.json) with `reason`, GitHub issue URL, `exposure` (`runtime` or `build`), and `review_by`. Expired, unused, or build-classified runtime findings fail the job. Do not use `npm audit fix --force`. |
 | CodeQL | SARIF artifact + job fails on error/high/critical findings; upload to GitHub Code Scanning is disabled during the private bootstrap and enabled automatically when public | Fix or dismiss the finding in a follow-up PR; document false positives in the PR. |
 | Gitleaks (CLI) | Any finding fails the job | Rotate the secret, purge history if needed, then add a documented allow rule only for false positives. |
 | SBOM + Trivy image scan | **CRITICAL** and **HIGH** fail (`ignore-unfixed: true`) | Add CVE lines to [`.trivyignore`](../.trivyignore) with advisory URL + review date. |
+
+The 6 September 2026 production audit (`56ee35d`) reported three `dev:true` advisories. `npm audit --omit=dev` was clean: they were not reachable in the FastAPI/SPA runtime and were not treated as S3 data compromise. Targeted `package.json` overrides (not `npm audit fix --force`) raised every lockfile copy:
+
+| Package | Introduced by | Was | Now | Exposure |
+| --- | --- | --- | --- | --- |
+| brace-expansion | `eslint-plugin-react` → minimatch 3; `vite-plugin-pwa` → workbox-build → filelist/glob; `typescript-eslint`; `shadcn` → ts-morph | 1.1.16, 2.1.2, 5.0.8 | 1.1.18, 2.1.4, 5.0.9 | build |
+| nanoid | `shadcn` → postcss | 3.3.16 | 3.3.18 | build |
+| qs | `shadcn` → MCP SDK → express/body-parser | 6.15.3 | 6.16.0 | build |
 
 Dependabot (`.github/dependabot.yml`) opens weekly update PRs for pip, Actions,
 Docker, and npm in `/frontend`. [Dependabot maintenance](../.github/workflows/dependabot-maintenance.yml)
@@ -112,6 +121,14 @@ npm run typecheck
 npm run lint
 npm run test
 npm run build
+# npm audit gate (same reports the security workflow uploads as artifacts)
+mkdir -p ../artifacts
+npm audit --json > ../artifacts/npm-audit.json || true
+npm audit --omit=dev --json > ../artifacts/npm-audit-prod.json || true
+node scripts/npm-audit-gate.mjs \
+  --full ../artifacts/npm-audit.json \
+  --prod ../artifacts/npm-audit-prod.json \
+  --exceptions ../.github/npm-audit-exceptions.json
 # Generated artifacts are committed; CI fails if the schema or TypeScript drifts.
 # `npm run lint` includes e2e/; `npm run typecheck` covers browser, Node, Vitest, and Playwright projects.
 
