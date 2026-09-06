@@ -750,13 +750,15 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
 
 def enqueue_job_terminal_notification_best_effort(
     connection: Any, *, job_id: int
-) -> int:
+) -> int | None:
     """Enqueue a terminal notification without weakening the Job transition.
 
     The caller's transaction owns the authoritative Job update.  A failed
     notification insert can put a PostgreSQL transaction into the failed state
     (and can leave partial rows on either backend), so isolate the best-effort
     work in a real savepoint rather than merely catching the exception.
+    Returns the enqueue count on success, or ``None`` when the savepoint
+    rolled back so a later reconciliation can retry.
     """
     savepoint = "job_terminal_notification"
     try:
@@ -765,7 +767,7 @@ def enqueue_job_terminal_notification_best_effort(
         # A normal SQLite/PostgreSQL transaction always supports SAVEPOINT.  If
         # a connection wrapper does not, skip optional notification work rather
         # than making the already-authoritative Job transition fail.
-        return 0
+        return None
 
     try:
         enqueued = enqueue_job_terminal_push(connection, job_id=job_id)
@@ -776,10 +778,61 @@ def enqueue_job_terminal_notification_best_effort(
             # RELEASE is required after ROLLBACK TO so the outer transaction
             # remains usable on both SQLite and PostgreSQL.
             connection.execute(f"RELEASE SAVEPOINT {savepoint}")
-        return 0
+        return None
 
     connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+    mark_terminal_notification_done(connection, job_id=job_id)
     return enqueued
+
+
+def mark_terminal_notification_done(connection: Any, *, job_id: int) -> bool:
+    result = connection.execute(
+        """
+        UPDATE jobs
+        SET terminal_notification_status='done'
+        WHERE id=%s AND status IN ('completed', 'failed')
+        """,
+        (job_id,),
+    )
+    return bool(getattr(result, "rowcount", 0))
+
+
+def pending_terminal_notification_count(connection: Any) -> int:
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM jobs
+        WHERE status IN ('completed', 'failed')
+          AND terminal_notification_status='pending'
+        """
+    ).fetchone()
+    return int(row["total"] or 0) if row is not None else 0
+
+
+def reconcile_pending_terminal_notifications(
+    connection: Any, *, limit: int = 100
+) -> int:
+    """Retry terminal notification materialization left pending after a fault."""
+    rows = connection.execute(
+        """
+        SELECT id FROM jobs
+        WHERE status IN ('completed', 'failed')
+          AND terminal_notification_status='pending'
+        ORDER BY updated_at ASC, id ASC
+        LIMIT %s
+        """,
+        (limit,),
+    ).fetchall()
+    recovered = 0
+    for row in rows:
+        result = enqueue_job_terminal_notification_best_effort(
+            connection, job_id=int(row["id"])
+        )
+        if result is None:
+            continue
+        mark_terminal_notification_done(connection, job_id=int(row["id"]))
+        recovered += 1
+    return recovered
 
 
 def _visible_notification_predicate(alias: str = "n") -> str:

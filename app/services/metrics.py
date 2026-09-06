@@ -34,6 +34,7 @@ _ALLOWED_METRICS = {
     "queue_depth": "gauge",
     "jobs_stuck": "gauge",
     "jobs_stuck_oldest_age_seconds": "gauge",
+    "jobs_notification_backlog": "gauge",
     "worker_up": "gauge",
     "metadata_backup_last_success_unixtime": "gauge",
     # Bounded archive-stats / filesystem-health observability (issue #228).

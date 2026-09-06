@@ -217,7 +217,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
             revision = connection.execute(
                 "SELECT version_num FROM alembic_version"
             ).fetchone()["version_num"]
-        self.assertEqual(revision, "0037_directory_aggregates")
+        self.assertEqual(revision, "0038_job_terminal_notification")
 
 
 if __name__ == "__main__":
