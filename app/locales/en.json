@@ -192,6 +192,8 @@
   "notification.job_completed.body": "{action}: {path}",
   "notification.job_failed.title": "Job failed",
   "notification.job_failed.body": "{action}: {path}",
+  "notification.archive_version_missing.title": "Archive version missing from S3",
+  "notification.archive_version_missing.body": "{path} (version {archive_version_id}, S3 {provider_version_id}) was no longer listed at {observed_at}. Review the Vault File and re-upload the Local Copy if it is still present.",
   "ui.notifications_open": "Open notifications",
   "ui.notifications_open_unread": "Open notifications ({count} unread)",
   "ui.notifications_title": "Notifications",

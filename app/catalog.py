@@ -546,6 +546,13 @@ class ArchiveCatalog:
                     existing["id"],
                 ),
             )
+            from .services.catalog_incidents import resolve_archive_version_incidents
+
+            resolve_archive_version_incidents(
+                self.connection,
+                [str(existing["id"])],
+                observed_at=scan_id,
+            )
             self._mark_path_aggregates_dirty(vault_id, path)
             return existing["id"]
         file_id = self._resolve_cloud_path_file(vault_id, path, observed_at)
@@ -1754,9 +1761,44 @@ class ArchiveCatalog:
 
     def mark_unseen_archive_versions_missing(
         self, *, vault_id: int, scan_id: str, scan_started_at: str
-    ) -> None:
+    ) -> list[dict[str, Any]]:
+        """Mark unseen versions missing and return unexpected transitions.
+
+        Concurrent upload Jobs, purged versions, incomplete-scan generations,
+        and versions discovered after the scan started are left unchanged so
+        they cannot open false loss incidents.
+        """
+        placeholders = ",".join(["%s"] * len(TERMINAL_JOB_STATUSES))
+        no_active_upload = f"""
+            NOT EXISTS (
+                SELECT 1 FROM jobs active_upload
+                WHERE active_upload.vault_file_id={{alias}}.vault_file_id
+                  AND active_upload.action='upload'
+                  AND active_upload.status NOT IN ({placeholders})
+            )
+        """
+        newly_missing = self.connection.execute(
+            f"""
+            SELECT av.id, av.vault_id, av.vault_file_id, av.object_key,
+                   av.provider_version_id, fp.path
+            FROM archive_versions av
+            LEFT JOIN file_paths fp
+              ON fp.vault_file_id=av.vault_file_id AND fp.valid_to IS NULL
+            WHERE av.vault_file_id IN (
+                SELECT id FROM vault_files WHERE vault_id=%s
+            )
+              AND (
+                  av.availability_checked_at IS NULL
+                  OR av.availability_checked_at<>%s
+              )
+              AND av.discovered_at<=%s
+              AND av.availability NOT IN ('missing', 'purged')
+              AND {no_active_upload.format(alias='av')}
+            """,
+            (vault_id, scan_id, scan_started_at, *TERMINAL_JOB_STATUSES),
+        ).fetchall()
         self.connection.execute(
-            """
+            f"""
             UPDATE archive_versions
             SET availability='missing', availability_checked_at=%s
             WHERE vault_file_id IN (
@@ -1768,11 +1810,13 @@ class ArchiveCatalog:
               )
               AND discovered_at<=%s
               AND availability<>'purged'
+              AND {no_active_upload.format(alias='archive_versions')}
             """,
-            (scan_id, vault_id, scan_id, scan_started_at),
+            (scan_id, vault_id, scan_id, scan_started_at, *TERMINAL_JOB_STATUSES),
         )
         # Bulk reconciliation can touch an unbounded set of paths.
         self._request_aggregate_rebuild(vault_id)
+        return [dict(row) for row in newly_missing]
 
     def mark_unseen_local_copies_missing(
         self,

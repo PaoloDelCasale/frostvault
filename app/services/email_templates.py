@@ -68,6 +68,13 @@ TEMPLATES: dict[str, dict[str, str]] = {
             "{title}\n{body}\n"
         ),
     },
+    "archive_version_missing": {
+        "subject": f"{SUBJECT_PREFIX} Archive version missing",
+        "body": (
+            "An Archive Version is no longer listed in S3 for vault {vault_id}.\n"
+            "{title}\n{body}\n"
+        ),
+    },
     "default": {
         "subject": f"{SUBJECT_PREFIX} {{title}}",
         "body": "{body}\n",

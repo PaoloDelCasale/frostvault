@@ -799,6 +799,16 @@ _RUNTIME_STATUS_SCALAR_KEYS: tuple[str, ...] = (
     "last_error",
     "scan_id",
     "last_audit",
+    "last_audit_healthy",
+    "last_verified_at",
+    "last_error_source",
+    "last_error_cloud",
+    "last_error_policy",
+    "last_error_audit",
+    "last_success_source",
+    "last_success_cloud",
+    "last_success_policy",
+    "last_success_audit",
 )
 # Schema-bound counters produced by ``audit_vault_catalog``.
 _AUDIT_REPORT_KNOWN_KEYS: tuple[str, ...] = (
@@ -809,6 +819,10 @@ _AUDIT_REPORT_KNOWN_KEYS: tuple[str, ...] = (
     "storage_class_drift",
     "policy_tag_drift",
     "missing_delete_markers",
+    "healthy",
+    "command_ok",
+    "incidents_opened",
+    "incidents_resolved",
 )
 _RUNTIME_STATUS_KNOWN_KEYS: tuple[str, ...] = (
     *_RUNTIME_STATUS_SCALAR_KEYS,
@@ -1628,10 +1642,20 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
         and _cloud_scan_still_current(vault, scan_id)
     ):
         with db() as connection:
-            ArchiveCatalog(connection).mark_unseen_archive_versions_missing(
+            newly_missing = ArchiveCatalog(
+                connection
+            ).mark_unseen_archive_versions_missing(
                 vault_id=vault["id"],
                 scan_id=scan_id,
                 scan_started_at=scan_id,
+            )
+            from .services.catalog_incidents import remember_missing_archives
+
+            remember_missing_archives(
+                connection,
+                newly_missing,
+                reason="cloud_scan_unseen",
+                observed_at=scan_id,
             )
     return count
 
@@ -2058,6 +2082,47 @@ def _verified_local_scan(
         return count, rename_summary, completed_alias
 
 
+def _record_scan_component_health(
+    vault_id: int,
+    component: str,
+    *,
+    ok: bool,
+    error: str | None = None,
+    verified: bool = False,
+    extra: Mapping[str, Any] | None = None,
+) -> None:
+    """Persist one scan/audit component outcome and mirror it on runtime_status."""
+    from .services.component_health import record_component_health
+
+    stamp = now_iso()
+    try:
+        with db() as connection:
+            record_component_health(
+                connection,
+                vault_id=int(vault_id),
+                component=component,
+                ok=ok,
+                error=error,
+                verified=verified,
+                extra=extra,
+                at=stamp,
+            )
+    except Exception:
+        pass
+    with status_lock:
+        status = runtime_status.setdefault(
+            int(vault_id),
+            {"scanning": False, "last_scan": None, "last_error": None},
+        )
+        status[f"last_error_{component}"] = None if ok else error
+        if ok:
+            status[f"last_success_{component}"] = stamp
+            if verified:
+                status["last_verified_at"] = stamp
+        if component == "audit" and extra is not None and "healthy" in extra:
+            status["last_audit_healthy"] = bool(extra.get("healthy"))
+
+
 def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
     vault_id = int(vault["id"])
     lock = scan_lock_for_vault(vault_id)
@@ -2085,8 +2150,12 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
         try:
             _validate_enrolled_scan_root(vault)
         except Exception as exc:
+            message = f"Source scan blocked: {exc}"
             with status_lock:
-                status["last_error"] = f"Source scan blocked: {exc}"
+                status["last_error"] = message
+            _record_scan_component_health(
+                vault_id, "source", ok=False, error=message
+            )
             return {"local": -1, "root_identity_mismatch": 1}
 
         scan_id = now_iso()
@@ -2119,6 +2188,9 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 status["last_error"] = f"Source scan blocked: {exc}"
                 result["local"] = -1
                 result["root_identity_mismatch"] = 1
+                _record_scan_component_health(
+                    vault_id, "source", ok=False, error=status["last_error"]
+                )
             except Exception as exc:
                 journal = _active_scan_journals.pop(
                     (int(vault["id"]), scan_id), None
@@ -2129,6 +2201,13 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                     )
                 status["last_error"] = f"Source scan: {exc}"
                 result["local"] = -1
+                _record_scan_component_health(
+                    vault_id, "source", ok=False, error=status["last_error"]
+                )
+            else:
+                _record_scan_component_health(
+                    vault_id, "source", ok=True, verified=True
+                )
         else:
             result["local_skipped"] = 1
             result["local"] = 0
@@ -2138,6 +2217,13 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
             except Exception as exc:
                 status["last_error"] = f"Cloud scan: {exc}"
                 result["cloud"] = -1
+                _record_scan_component_health(
+                    vault_id, "cloud", ok=False, error=status["last_error"]
+                )
+            else:
+                _record_scan_component_health(
+                    vault_id, "cloud", ok=True, verified=True
+                )
             try:
                 validate_cloud_vault(vault)
                 with db() as connection:
@@ -2179,6 +2265,13 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 status["last_error"] = f"Policy tag reconciliation: {exc}"
                 result["policy_tags"] = -1
                 result["lifecycle_rules"] = -1
+                _record_scan_component_health(
+                    vault_id, "policy", ok=False, error=status["last_error"]
+                )
+            else:
+                _record_scan_component_health(
+                    vault_id, "policy", ok=True
+                )
         status["last_scan"] = now_iso()
         # Full scans are the low-frequency reconciliation net. Publish one
         # catalog revision so open browsers converge without idle polling.
@@ -6635,13 +6728,26 @@ def audit_all_vaults() -> None:
             validate_cloud_vault(vault)
             with db() as connection:
                 report = audit_vault_catalog(connection, vault, s3_client())
+            stamp = now_iso()
             with status_lock:
-                status["last_audit"] = now_iso()
+                status["last_audit"] = stamp
                 status["last_audit_report"] = report
+                status["last_audit_healthy"] = bool(report.get("healthy", 1))
                 status["last_error"] = None
+            _record_scan_component_health(
+                vault_id,
+                "audit",
+                ok=True,
+                verified=True,
+                extra=report,
+            )
         except Exception as exc:
+            message = f"Catalog audit: {exc}"
             with status_lock:
-                status["last_error"] = f"Catalog audit: {exc}"
+                status["last_error"] = message
+            _record_scan_component_health(
+                vault_id, "audit", ok=False, error=message
+            )
 
 
 def _deliver_notifications_once() -> None:

@@ -25,7 +25,9 @@ from ..i18n import catalog as locale_catalog
 from ..i18n import format_message_params, parse_message_params, translate
 
 
-SUPPORTED_NOTIFICATION_EVENTS = frozenset({"job_completed", "job_failed"})
+SUPPORTED_NOTIFICATION_EVENTS = frozenset(
+    {"job_completed", "job_failed", "archive_version_missing"}
+)
 SUPPORTED_PERSONAL_NOTIFICATION_CHANNELS = frozenset({"in_app", "push"})
 DELIVERY_TIMEOUT_SECONDS = 10.0
 DELIVERY_RETRY_CAP_SECONDS = 300
@@ -805,6 +807,89 @@ def enqueue_job_terminal_push(connection: Any, *, job_id: int) -> int:
 def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
     """Descriptive alias for the canonical terminal notification enqueue."""
     return enqueue_job_terminal_push(connection, job_id=job_id)
+
+
+def enqueue_archive_version_missing(
+    connection: Any, *, incident: Mapping[str, Any]
+) -> int:
+    """Notify the Vault owner and authorized admin members of unexpected loss."""
+    vault_id = int(incident["vault_id"])
+    event = "archive_version_missing"
+    title_key = "notification.archive_version_missing.title"
+    body_key = "notification.archive_version_missing.body"
+    params = {
+        "path": str(incident.get("path") or ""),
+        "archive_version_id": str(incident.get("archive_version_id") or ""),
+        "provider_version_id": str(incident.get("provider_version_id") or ""),
+        "observed_at": str(incident.get("opened_at") or now_iso()),
+        "reason": str(incident.get("reason") or "missing_in_cloud"),
+    }
+    members = connection.execute(
+        """
+        SELECT u.id AS user_id
+        FROM vault_members vm
+        JOIN users u ON u.id=vm.user_id
+        WHERE vm.vault_id=%s AND u.active=TRUE
+          AND (vm.role='owner' OR u.is_admin=TRUE)
+        ORDER BY u.id
+        """,
+        (vault_id,),
+    ).fetchall()
+    webhook_enabled = _endpoint_config(connection, "webhook") is not None
+    smtp_enabled = _endpoint_config(connection, "smtp") is not None
+    enqueued = 0
+    for member in members:
+        user_id = int(member["user_id"])
+        preferences = _user_vault_preference_map(
+            connection, user_id=user_id, vault_id=vault_id, event=event
+        )
+        in_app_enabled = preferences.get("in_app", True)
+        channels: list[str] = []
+        if in_app_enabled:
+            channels.append("in_app")
+        if webhook_enabled and _legacy_channel_allowed(
+            connection,
+            user_id=user_id,
+            vault_id=vault_id,
+            event=event,
+            channel="webhook",
+        ):
+            channels.append("webhook")
+        if smtp_enabled and _legacy_channel_allowed(
+            connection,
+            user_id=user_id,
+            vault_id=vault_id,
+            event=event,
+            channel="email",
+        ):
+            channels.append("email")
+        if not channels:
+            continue
+        dedupe_key = f"incident:{int(incident['id'])}"
+        existing = connection.execute(
+            """
+            SELECT id FROM notifications
+            WHERE user_id=%s AND dedupe_key=%s
+            """,
+            (user_id, dedupe_key),
+        ).fetchone()
+        enqueue_notification(
+            connection,
+            user_id=user_id,
+            vault_id=vault_id,
+            event=event,
+            title="",
+            body="",
+            title_key=title_key,
+            body_key=body_key,
+            message_params=params,
+            in_app_enabled=in_app_enabled,
+            dedupe_key=dedupe_key,
+            channels=tuple(channels),
+        )
+        if existing is None:
+            enqueued += 1
+    return enqueued
 
 
 def enqueue_job_terminal_notification_best_effort(
