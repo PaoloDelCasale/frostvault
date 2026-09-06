@@ -32,6 +32,8 @@ _ALLOWED_METRICS = {
     "metadata_backups_total": "counter",
     "metadata_backup_verifications_total": "counter",
     "queue_depth": "gauge",
+    "jobs_stuck": "gauge",
+    "jobs_stuck_oldest_age_seconds": "gauge",
     "worker_up": "gauge",
     "metadata_backup_last_success_unixtime": "gauge",
     # Bounded archive-stats / filesystem-health observability (issue #228).
