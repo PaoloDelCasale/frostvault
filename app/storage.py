@@ -3947,9 +3947,16 @@ def process_upload(job: dict[str, Any]) -> None:
                     job["id"],
                     plaintext_sha256=upload_digest,
                 )
-                reusable = catalog.find_reusable_upload_version(
-                    vault_file_id=str(job["vault_file_id"]),
-                    plaintext_sha256=upload_digest,
+                vault_file_id = job.get("vault_file_id") or (
+                    linked_target or {}
+                ).get("vault_file_id")
+                reusable = (
+                    catalog.find_reusable_upload_version(
+                        vault_file_id=str(vault_file_id),
+                        plaintext_sha256=upload_digest,
+                    )
+                    if vault_file_id
+                    else None
                 )
             job["upload_plaintext_sha256"] = upload_digest
             reusable_integrity = (
