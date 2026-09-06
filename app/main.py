@@ -2624,6 +2624,14 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
     with db() as connection:
         # Cheap SQL aggregates only — never materialize every Vault File row.
         summary = ArchiveCatalog(connection).summary(vault["id"])
+        from .services.component_health import (
+            load_vault_health,
+            runtime_fields_from_health,
+        )
+
+        persisted_health = runtime_fields_from_health(
+            load_vault_health(connection, int(vault["id"]))
+        )
     allowed_bases = [str(get_sources_root())]
     bootstrap_root = (settings.bootstrap_vault_source_root or "").strip()
     if bootstrap_root:
@@ -2634,6 +2642,15 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
     # any merge/response work. Never dict(runtime_status[...]) unlocked while
     # storage mutates filesystem under status_lock.
     runtime = snapshot_runtime_status_for_stats(int(vault["id"]))
+    for key, value in persisted_health.items():
+        if key not in runtime or runtime.get(key) in (None, ""):
+            runtime[key] = value
+    if not runtime.get("last_error"):
+        for component in ("source", "cloud", "policy", "audit"):
+            error = runtime.get(f"last_error_{component}")
+            if error:
+                runtime["last_error"] = error
+                break
     scan_filesystem = runtime.get("filesystem") or {}
     # Prefer the producer synopsis (totals/counts + bounded sample). Merge inputs
     # come from the already-bounded copy so the request path never re-walks the
