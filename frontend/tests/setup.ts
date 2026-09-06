@@ -1,6 +1,43 @@
+import { webcrypto } from "node:crypto";
 import { cleanup } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { afterEach, vi } from "vitest";
+
+/**
+ * jsdom Blob only implements `slice`/`size`/`type`. `new Response(...).blob()`
+ * uses that constructor, so `text()` / `arrayBuffer()` are missing and SHA-256
+ * download checks collapse into "browser cannot verify". Patch the jsdom
+ * prototype instead of replacing Blob with `node:buffer`, which FileReader
+ * rejects (`parameter 1 is not of type 'Blob'`).
+ */
+function installBinaryTestPrimitives(): void {
+  const proto = globalThis.Blob?.prototype;
+  if (proto && typeof proto.arrayBuffer !== "function") {
+    proto.arrayBuffer = function arrayBuffer(this: Blob): Promise<ArrayBuffer> {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.onerror = () =>
+          reject(reader.error ?? new Error("Failed to read blob"));
+        reader.readAsArrayBuffer(this);
+      });
+    };
+  }
+  if (proto && typeof proto.text !== "function") {
+    proto.text = async function text(this: Blob): Promise<string> {
+      return new TextDecoder().decode(await this.arrayBuffer());
+    };
+  }
+  if (typeof globalThis.crypto?.subtle?.digest !== "function") {
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      writable: true,
+      value: webcrypto,
+    });
+  }
+}
+
+installBinaryTestPrimitives();
 
 /**
  * jsdom does not implement EventSource. Provide a minimal injectable stub so

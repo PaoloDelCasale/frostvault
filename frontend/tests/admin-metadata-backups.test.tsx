@@ -119,7 +119,12 @@ function installWebCryptoForTests(): void {
 function stubObjectUrls() {
   const originalCreate = URL.createObjectURL;
   const originalRevoke = URL.revokeObjectURL;
-  const createObjectURL = vi.fn(() => "blob:metadata-backup");
+  const createObjectURL = vi.fn((blob: Blob) => {
+    if (typeof blob?.arrayBuffer !== "function" || typeof blob.size !== "number") {
+      throw new TypeError("expected a Blob");
+    }
+    return "blob:metadata-backup";
+  });
   const revokeObjectURL = vi.fn();
   Object.defineProperty(URL, "createObjectURL", {
     configurable: true,
@@ -320,10 +325,32 @@ describe("MetadataBackupsSection", () => {
       await user.click(screen.getByRole("button", { name: "Download artifact" }));
 
       await waitFor(() => expect(objectUrls.createObjectURL).toHaveBeenCalledOnce());
+      const downloaded = objectUrls.createObjectURL.mock.calls[0]?.[0] as Blob;
+      expect(typeof downloaded.text).toBe("function");
+      expect(await downloaded.text()).toBe("valid metadata backup");
       expect(anchorClick).toHaveBeenCalledOnce();
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     } finally {
       anchorClick.mockRestore();
+      objectUrls.restore();
+    }
+  });
+
+  it("fails closed when the response checksum header does not match the recorded digest", async () => {
+    installWebCryptoForTests();
+    const objectUrls = stubObjectUrls();
+    const user = userEvent.setup();
+    try {
+      configureIntegrityScenario("valid metadata backup", "f".repeat(64));
+      renderSection();
+      await screen.findByRole("heading", { name: "Metadata backups", level: 2 });
+      await user.click(screen.getByRole("button", { name: "Download artifact" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "The downloaded artifact checksum does not match the recorded checksum.",
+      );
+      expect(objectUrls.createObjectURL).not.toHaveBeenCalled();
+    } finally {
       objectUrls.restore();
     }
   });
@@ -399,6 +426,55 @@ describe("MetadataBackupsSection", () => {
       expect(await screen.findByRole("alert")).toHaveTextContent(
         "The downloaded artifact checksum does not match the recorded checksum.",
       );
+      expect(objectUrls.createObjectURL).not.toHaveBeenCalled();
+    } finally {
+      objectUrls.restore();
+    }
+  });
+
+  it("fails closed when WebCrypto is unavailable", async () => {
+    vi.stubGlobal("crypto", {});
+    const objectUrls = stubObjectUrls();
+    const user = userEvent.setup();
+    try {
+      configureIntegrityScenario("valid metadata backup", INTEGRITY_DIGEST);
+      renderSection();
+      await screen.findByRole("heading", { name: "Metadata backups", level: 2 });
+      await user.click(screen.getByRole("button", { name: "Download artifact" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "This browser cannot verify the artifact integrity, so the download was stopped.",
+      );
+      expect(objectUrls.createObjectURL).not.toHaveBeenCalled();
+    } finally {
+      objectUrls.restore();
+    }
+  });
+
+  it("surfaces a network failure without treating it as a checksum mismatch", async () => {
+    installWebCryptoForTests();
+    const objectUrls = stubObjectUrls();
+    const user = userEvent.setup();
+    try {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith("/api/i18n/catalog")) {
+          return jsonResponse({ locale: "en", locales: ["en", "it"], messages });
+        }
+        if (url === "/api/admin/metadata-backups") {
+          return jsonResponse(integrityResponse());
+        }
+        if (url === "/api/admin/metadata-backups/download/10") {
+          return jsonResponse({ detail: "upstream reset" }, 502);
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      configureApiClient({ fetch: fetchMock });
+      renderSection();
+      await screen.findByRole("heading", { name: "Metadata backups", level: 2 });
+      await user.click(screen.getByRole("button", { name: "Download artifact" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent("upstream reset");
       expect(objectUrls.createObjectURL).not.toHaveBeenCalled();
     } finally {
       objectUrls.restore();
