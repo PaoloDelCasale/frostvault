@@ -3,6 +3,8 @@ name: Publish container image
 # Uses only actions/checkout (GitHub-owned). The repository Actions allowlist
 # blocks docker/* marketplace actions, so tagging/login/push use the Docker CLI
 # already available on ubuntu-latest (same approach as the Trivy image build).
+# Image publish is gated on the exact commit SHA's CI check runs. Do not add
+# workflow_run or pull_request_target triggers.
 
 on:
   workflow_dispatch:
@@ -20,16 +22,66 @@ on:
 permissions:
   contents: read
   packages: write
+  checks: read
+  actions: read
 
 jobs:
+  require-ci:
+    name: Require commit checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Resolve commit SHA to gate
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PROMOTE_TAG: ${{ inputs.promote_tag }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && -n "${PROMOTE_TAG:-}" ]]; then
+            if [[ ! "$PROMOTE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "promote_tag must be a semantic version such as 0.3.0" >&2
+              exit 64
+            fi
+            sha="$(git rev-parse "v${PROMOTE_TAG}^{commit}")"
+          else
+            sha="$PUSH_SHA"
+          fi
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "resolved SHA is not a full commit: $sha" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Gating image publish on $sha"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+
+      - name: Require SQLite, PostgreSQL, MinIO, and frontend checks
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/require_commit_checks.py --sha "${{ steps.resolve.outputs.sha }}"
+
   publish:
     name: Build and push GHCR image
+    needs: require-ci
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          ref: ${{ needs.require-ci.outputs.sha }}
 
       - name: Log in to GHCR
         run: |
@@ -41,11 +93,16 @@ jobs:
         env:
           IMAGE: ghcr.io/paolodelcasale/frostvault
           PROMOTE_TAG: ${{ inputs.promote_tag }}
+          GATED_SHA: ${{ needs.require-ci.outputs.sha }}
         run: |
           set -euo pipefail
           if [[ ! "$PROMOTE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "promote_tag must be a semantic version such as 0.3.0" >&2
             exit 64
+          fi
+          if [[ ! "$GATED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "refusing to promote without the gated commit SHA" >&2
+            exit 1
           fi
 
           docker pull "${IMAGE}:${PROMOTE_TAG}"
@@ -66,9 +123,13 @@ jobs:
         env:
           IMAGE: ghcr.io/paolodelcasale/frostvault
           REF_NAME: ${{ github.ref_name }}
-          SHA_SHORT: ${{ github.sha }}
+          SHA_SHORT: ${{ needs.require-ci.outputs.sha }}
         run: |
           set -euo pipefail
+          if [[ ! "$SHA_SHORT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "refusing to build without the gated commit SHA" >&2
+            exit 1
+          fi
           sha_tag="sha-${SHA_SHORT:0:7}"
           tags=("${IMAGE}:${sha_tag}")
 
