@@ -3270,6 +3270,11 @@ export interface components {
             /** Reason */
             reason: string;
             /**
+             * To Address
+             * @default
+             */
+            to_address: string;
+            /**
              * Use Tls
              * @default true
              */

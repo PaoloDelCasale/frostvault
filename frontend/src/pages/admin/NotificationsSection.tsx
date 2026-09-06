@@ -103,6 +103,7 @@ export function NotificationsSection() {
         username: smtpUsername.trim(),
         password: smtpPassword,
         from_address: smtpFromAddress.trim(),
+        to_address: "",
         use_tls: smtpUseTls,
         enabled: smtpEnabled,
         reason: smtpReason.trim(),

@@ -503,6 +503,7 @@ describe("foundation endpoint helpers", () => {
         username: "alerts",
         password,
         from_address: "alerts@example.com",
+        to_address: "",
         use_tls: true,
         enabled: true,
         reason: "configure email alerts",
