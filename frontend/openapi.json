@@ -3439,6 +3439,12 @@
             "title": "Reason",
             "type": "string"
           },
+          "to_address": {
+            "default": "",
+            "maxLength": 320,
+            "title": "To Address",
+            "type": "string"
+          },
           "use_tls": {
             "default": true,
             "title": "Use Tls",
