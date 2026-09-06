@@ -338,19 +338,34 @@ def queue_auto_uploads(
     current = now or datetime.now(timezone.utc)
     if not policy_allows_transfer_now(policy, now=current):
         return 0
+    vault = connection.execute(
+        "SELECT decommission_state FROM vaults WHERE id=%s",
+        (vault_id,),
+    ).fetchone()
+    if vault is None or str(vault["decommission_state"] or "active") != "active":
+        return 0
     catalog = ArchiveCatalog(connection)
     rows = connection.execute(
         """
         SELECT vf.id AS vault_file_id, fp.path, lc.size, lc.mtime_ns,
-               lc.plaintext_sha256, lc.matched_archive_version_id
+               lc.plaintext_sha256, lc.matched_archive_version_id,
+               av.integrity AS matched_integrity,
+               av.availability AS matched_availability,
+               av.plaintext_sha256 AS matched_sha256
         FROM vault_files vf
         JOIN file_paths fp
           ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
         JOIN local_copies lc ON lc.vault_file_id=vf.id
+        LEFT JOIN archive_versions av ON av.id=lc.matched_archive_version_id
         WHERE vf.vault_id=%s
           AND vf.status='active'
           AND lc.presence='present'
           AND lc.file_type='regular'
+          AND NOT EXISTS (
+              SELECT 1 FROM cloud_deletion_items pending_delete
+              WHERE pending_delete.vault_file_id=vf.id
+                AND pending_delete.status='pending'
+          )
         ORDER BY lower(fp.path)
         """,
         (vault_id,),
@@ -362,8 +377,18 @@ def queue_auto_uploads(
         path = row["path"]
         if not path_is_included(path, policy):
             continue
-        if row["matched_archive_version_id"] and row["plaintext_sha256"]:
-            # Already verified against a matching Archive Version.
+        # Already protected only when the linked Archive Version is still
+        # verified, available, and digest-matching. Missing/purged/mismatched
+        # copies must not be treated as uploaded.
+        if (
+            row["matched_archive_version_id"]
+            and row["plaintext_sha256"]
+            and row["matched_integrity"] == "verified"
+            and row["matched_availability"] == "available"
+            and row["matched_sha256"] == row["plaintext_sha256"]
+        ):
+            continue
+        if row["matched_availability"] == "purged":
             continue
         local_path = root.joinpath(*PurePosixPath(path).parts)
         try:

@@ -442,6 +442,164 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         self.assertEqual(jobs[0]["action"], "upload")
         self.assertIsNone(jobs[0]["archive_version_id"])
 
+    def test_missing_cloud_copy_is_automatically_reuploaded(self) -> None:
+        from app.services.operation_policies import queue_auto_uploads
+        import os
+
+        target = self.source / "ready.txt"
+        payload = b"protected-bytes"
+        target.write_bytes(payload)
+        old = datetime(2026, 7, 1, 11, 0, tzinfo=timezone.utc).timestamp()
+        os.utime(target, (old, old))
+        now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+        digest = hashlib.sha256(payload).hexdigest()
+        with SQLiteConnection(str(self.path)) as connection:
+            catalog = ArchiveCatalog(connection)
+            catalog.observe_local_copy(
+                vault_id=2,
+                path="ready.txt",
+                file_type="regular",
+                size=len(payload),
+                mtime_ns=target.stat().st_mtime_ns,
+                observed_at="2026-07-01T11:00:00+00:00",
+            )
+            version_id = catalog.record_archive_version(
+                vault_id=2,
+                path="ready.txt",
+                object_key="docs/ready.txt",
+                provider_version_id="s3-a",
+                size=len(payload),
+                storage_class="STANDARD",
+                etag="etag",
+                uploaded_at="2026-07-01T11:00:00+00:00",
+                observed_at="2026-07-01T11:00:00+00:00",
+                scan_id="scan-a",
+            )
+            catalog.mark_version_verified(
+                version_id,
+                plaintext_sha256=digest,
+                verified_at="2026-07-01T11:01:00+00:00",
+            )
+            catalog.set_local_fingerprint(
+                vault_id=2,
+                path="ready.txt",
+                plaintext_sha256=digest,
+                matched_archive_version_id=version_id,
+            )
+            set_policy(
+                connection,
+                2,
+                OperationPolicy(auto_upload=True, stability_seconds=300),
+            )
+            self.assertEqual(
+                queue_auto_uploads(
+                    connection,
+                    vault_id=2,
+                    source_root=str(self.source),
+                    requested_by=1,
+                    now=now,
+                ),
+                0,
+            )
+            connection.execute(
+                "UPDATE archive_versions SET availability='missing' WHERE id=%s",
+                (version_id,),
+            )
+            queued = queue_auto_uploads(
+                connection,
+                vault_id=2,
+                source_root=str(self.source),
+                requested_by=1,
+                now=now,
+            )
+            again = queue_auto_uploads(
+                connection,
+                vault_id=2,
+                source_root=str(self.source),
+                requested_by=1,
+                now=now,
+            )
+            jobs = connection.execute(
+                "SELECT path, action, archive_version_id, status FROM jobs"
+            ).fetchall()
+            kept = connection.execute(
+                "SELECT availability FROM archive_versions WHERE id=%s",
+                (version_id,),
+            ).fetchone()
+        self.assertEqual(queued, 1)
+        self.assertEqual(again, 0)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["path"], "ready.txt")
+        self.assertEqual(jobs[0]["action"], "upload")
+        self.assertIsNone(jobs[0]["archive_version_id"])
+        self.assertEqual(kept["availability"], "missing")
+
+    def test_purged_cloud_copy_is_not_automatically_reuploaded(self) -> None:
+        from app.services.operation_policies import queue_auto_uploads
+        import os
+
+        target = self.source / "ready.txt"
+        payload = b"protected-bytes"
+        target.write_bytes(payload)
+        old = datetime(2026, 7, 1, 11, 0, tzinfo=timezone.utc).timestamp()
+        os.utime(target, (old, old))
+        now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+        digest = hashlib.sha256(payload).hexdigest()
+        with SQLiteConnection(str(self.path)) as connection:
+            catalog = ArchiveCatalog(connection)
+            catalog.observe_local_copy(
+                vault_id=2,
+                path="ready.txt",
+                file_type="regular",
+                size=len(payload),
+                mtime_ns=target.stat().st_mtime_ns,
+                observed_at="2026-07-01T11:00:00+00:00",
+            )
+            version_id = catalog.record_archive_version(
+                vault_id=2,
+                path="ready.txt",
+                object_key="docs/ready.txt",
+                provider_version_id="s3-a",
+                size=len(payload),
+                storage_class="STANDARD",
+                etag="etag",
+                uploaded_at="2026-07-01T11:00:00+00:00",
+                observed_at="2026-07-01T11:00:00+00:00",
+                scan_id="scan-a",
+            )
+            catalog.mark_version_verified(
+                version_id,
+                plaintext_sha256=digest,
+                verified_at="2026-07-01T11:01:00+00:00",
+            )
+            catalog.set_local_fingerprint(
+                vault_id=2,
+                path="ready.txt",
+                plaintext_sha256=digest,
+                matched_archive_version_id=version_id,
+            )
+            connection.execute(
+                "UPDATE archive_versions SET availability='purged' WHERE id=%s",
+                (version_id,),
+            )
+            set_policy(
+                connection,
+                2,
+                OperationPolicy(auto_upload=True, stability_seconds=300),
+            )
+            queued = queue_auto_uploads(
+                connection,
+                vault_id=2,
+                source_root=str(self.source),
+                requested_by=1,
+                now=now,
+            )
+            total = connection.execute(
+                "SELECT COUNT(*) AS total FROM jobs"
+            ).fetchone()["total"]
+        self.assertEqual(queued, 0)
+        self.assertEqual(total, 0)
+
     def test_auto_cleanup_queues_only_matching_versions_past_retention(self) -> None:
         from app.services.operation_policies import queue_auto_local_cleanups
 
