@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import unittest
 
-from app.storage import classify_upload_failure, upload_retry_delay_seconds
+from app.storage import (
+    UPLOAD_RETRY_MAX_ATTEMPTS,
+    classify_upload_failure,
+    upload_retry_delay_seconds,
+)
 
 
 class UploadRetryPolicyTests(unittest.TestCase):
@@ -42,6 +46,9 @@ class UploadRetryPolicyTests(unittest.TestCase):
         ):
             with self.subTest(message=message):
                 self.assertEqual(classify_upload_failure(message), "transient")
+
+    def test_source_mutation_retries_are_bounded(self) -> None:
+        self.assertGreaterEqual(UPLOAD_RETRY_MAX_ATTEMPTS, 1)
 
     def test_retry_delay_grows_exponentially_up_to_a_cap(self) -> None:
         delays = [upload_retry_delay_seconds(attempt) for attempt in range(1, 6)]

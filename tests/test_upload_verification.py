@@ -391,10 +391,21 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 versions = connection.execute(
                     "SELECT COUNT(*) AS total FROM archive_versions"
                 ).fetchone()["total"]
+                local_copy = connection.execute(
+                    """
+                    SELECT plaintext_sha256, matched_archive_version_id
+                    FROM local_copies
+                    """
+                ).fetchone()
             self.assertEqual(job["status"], "completed")
             self.assertEqual(versions, 1)
             self.assertEqual(len(uploads), 1)
             self.assertEqual(len(streams), 2)
+            self.assertEqual(local_copy["plaintext_sha256"], _sha256_hex(payload))
+            self.assertEqual(
+                local_copy["matched_archive_version_id"],
+                job["archive_version_id"],
+            )
 
     def test_changed_local_copy_between_retries_does_not_mark_remote_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -468,20 +479,34 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 versions = connection.execute(
                     "SELECT COUNT(*) AS total FROM archive_versions"
                 ).fetchone()["total"]
+                local_copy = connection.execute(
+                    """
+                    SELECT plaintext_sha256, matched_archive_version_id
+                    FROM local_copies
+                    """
+                ).fetchone()
 
-            self.assertEqual(observed["latest_version"]["integrity"], "unverified")
-            self.assertEqual(job["status"], "retrying")
-            self.assertIn("changed", (job["message"] or "").lower())
+            self.assertEqual(observed["latest_version"]["integrity"], "verified")
+            self.assertEqual(
+                observed["latest_version"]["plaintext_sha256"],
+                _sha256_hex(original),
+            )
+            self.assertEqual(job["status"], "completed")
             self.assertEqual(job["upload_plaintext_sha256"], _sha256_hex(original))
             self.assertIsNotNone(job["archive_version_id"])
             self.assertEqual(versions, 1)
             self.assertEqual(len(uploads), 1)
-            self.assertEqual(len(streams), 1)
+            self.assertEqual(len(streams), 2)
+            self.assertNotEqual(
+                local_copy["plaintext_sha256"], _sha256_hex(original)
+            )
+            self.assertIsNone(local_copy["matched_archive_version_id"])
 
-    def test_changed_source_after_transfer_leaves_version_unverified(self) -> None:
+    def test_changed_source_after_transfer_verifies_uploaded_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"original-bytes"
+            mutated = b"mutated-after-upload"
             source, database_path = _prepare_plain_vault(
                 root, relative_path="report.txt", payload=payload
             )
@@ -495,12 +520,13 @@ class PlainUploadVerificationTests(unittest.TestCase):
                     return
                 origin, destination = command[1], command[2]
                 if Path(origin).is_file() and ":" in destination:
-                    local_file.write_bytes(b"mutated-after-upload")
-                    return
-                if ":" in origin and not Path(origin).exists():
-                    target = Path(destination)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(payload)
+                    local_file.write_bytes(mutated)
+
+            def fake_stream(*args, **kwargs) -> int:
+                command = tuple(str(arg) for arg in args if not callable(arg))
+                rclone_calls.append(command)
+                kwargs["on_chunk"](payload)
+                return len(payload)
 
             database_settings = SimpleNamespace(
                 db_backend="sqlite",
@@ -517,6 +543,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                     patch("app.storage.validate_cloud_vault"),
                     patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch("app.storage.run_rclone", side_effect=mutating_rclone),
+                    patch("app.storage.run_rclone_stream", side_effect=fake_stream),
                     patch(
                         "app.storage.s3_client",
                         return_value=SimpleNamespace(
@@ -539,11 +566,21 @@ class PlainUploadVerificationTests(unittest.TestCase):
                     "SELECT status, message FROM jobs WHERE path=%s",
                     ("report.txt",),
                 ).fetchone()
+                local_copy = connection.execute(
+                    "SELECT matched_archive_version_id FROM local_copies"
+                ).fetchone()
 
-            self.assertEqual(observed["latest_version"]["integrity"], "unverified")
-            self.assertEqual(job["status"], "retrying")
-            self.assertIn("rescheduled", (job["message"] or "").lower())
-            self.assertGreaterEqual(len(rclone_calls), 1)
+            self.assertEqual(observed["latest_version"]["integrity"], "verified")
+            self.assertEqual(
+                observed["latest_version"]["plaintext_sha256"],
+                _sha256_hex(payload),
+            )
+            self.assertEqual(job["status"], "completed")
+            self.assertIsNone(local_copy["matched_archive_version_id"])
+            self.assertEqual(
+                [command[0] for command in rclone_calls if command],
+                ["copyto", "cat"],
+            )
 
     def test_empty_and_unicode_paths_verify_end_to_end(self) -> None:
         cases = (

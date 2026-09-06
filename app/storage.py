@@ -209,9 +209,10 @@ _TRANSIENT_UPLOAD_FAILURE_MARKERS = (
 def classify_upload_failure(message: str) -> str:
     """Classify an upload/verify error for retry policy.
 
-    Returns ``source_changed`` when the Local Copy mutated during transfer so
-    the Job can be rescheduled after the Vault stability window, ``transient``
-    for retryable transport faults, or ``permanent`` otherwise.
+    Returns ``source_changed`` when the Local Copy mutated before an Archive
+    Version is linked, so the Job can be rescheduled after the Vault stability
+    window up to ``UPLOAD_RETRY_MAX_ATTEMPTS``. ``transient`` covers retryable
+    transport faults; anything else is ``permanent``.
     """
     lowered = (message or "").lower()
     if "changed since fingerprinting" in lowered:
@@ -3847,12 +3848,146 @@ def _record_verification_failure(reason: str) -> None:
         pass
 
 
+def _require_linked_upload_digest(target: Mapping[str, Any]) -> str:
+    """Return the durable snapshot fingerprint for a linked Archive Version."""
+    integrity = str(target.get("integrity") or "unverified")
+    upload_digest = str(
+        target.get("upload_plaintext_sha256")
+        or (target.get("version_sha256") if integrity == "verified" else "")
+        or ""
+    ).lower()
+    if len(upload_digest) != 64:
+        raise RuntimeError(
+            "The linked Archive Version has no durable upload fingerprint"
+        )
+    try:
+        int(upload_digest, 16)
+    except ValueError as exc:
+        raise RuntimeError(
+            "The linked Archive Version has an invalid upload fingerprint"
+        ) from exc
+    return upload_digest
+
+
+def _local_stat_unchanged(path: Path, previous: os.stat_result) -> bool:
+    try:
+        current = path.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    return (
+        current.st_size == previous.st_size
+        and current.st_mtime_ns == previous.st_mtime_ns
+        and current.st_dev == previous.st_dev
+        and current.st_ino == previous.st_ino
+    )
+
+
+def _inspect_local_copy_for_upload_snapshot(
+    job: dict[str, Any],
+    *,
+    source: Path,
+    upload_digest: str,
+    local_digest: str | None,
+    local_stat: os.stat_result | None,
+) -> tuple[str | None, os.stat_result | None, bool]:
+    """Inspect the current Local Copy without holding a catalog transaction.
+
+    Returns ``(digest, stat, matches_snapshot_a)``. A missing or unstable file
+    yields ``(None, None, False)`` so snapshot A can still complete.
+    """
+    if local_digest == upload_digest and local_stat is not None:
+        if _local_stat_unchanged(source, local_stat):
+            return local_digest, local_stat, True
+    if (
+        local_digest
+        and local_digest != upload_digest
+        and local_stat is not None
+        and _local_stat_unchanged(source, local_stat)
+    ):
+        return local_digest, local_stat, False
+    try:
+        current = source.stat(follow_symlinks=False)
+    except OSError:
+        return None, None, False
+    if not stat.S_ISREG(current.st_mode):
+        return None, None, False
+    expected_size = job.get("total_bytes")
+    if expected_size is not None and int(current.st_size) != int(expected_size):
+        return None, current, False
+    try:
+        digest, hashed_stat = hash_stable_regular_file(source)
+    except OperationCancelled:
+        raise
+    except Exception:
+        return None, current, False
+    return digest, hashed_stat, digest == upload_digest
+
+
+def _complete_verified_upload(
+    job: dict[str, Any],
+    *,
+    source: Path,
+    version_id: str,
+    upload_digest: str,
+    mark_verified: bool,
+    local_digest: str | None = None,
+    local_stat: os.stat_result | None = None,
+) -> None:
+    """Persist Integrity for snapshot A without claiming a later Local Copy."""
+    ensure_job_active(job["id"], "Upload claim was lost")
+    observed_digest, observed_stat, matches_snapshot = (
+        _inspect_local_copy_for_upload_snapshot(
+            job,
+            source=source,
+            upload_digest=upload_digest,
+            local_digest=local_digest,
+            local_stat=local_stat,
+        )
+    )
+    verified_at = now_iso()
+    with db() as connection:
+        ensure_job_claim_owned_in_transaction(
+            connection,
+            job,
+            "Upload claim was lost",
+        )
+        catalog = ArchiveCatalog(connection)
+        if mark_verified:
+            catalog.mark_version_verified(
+                version_id,
+                plaintext_sha256=upload_digest,
+                verified_at=verified_at,
+            )
+        if observed_stat is not None:
+            catalog.observe_local_copy(
+                vault_id=job["vault_id"],
+                path=job["path"],
+                file_type="regular",
+                size=observed_stat.st_size,
+                mtime_ns=observed_stat.st_mtime_ns,
+                observed_at=verified_at,
+            )
+        if observed_digest is not None:
+            catalog.set_local_fingerprint(
+                vault_id=job["vault_id"],
+                path=job["path"],
+                plaintext_sha256=observed_digest,
+                matched_archive_version_id=(
+                    version_id if matches_snapshot else None
+                ),
+            )
+    progress_bytes = int(job.get("total_bytes") or 0)
+    if local_stat is not None and progress_bytes <= 0:
+        progress_bytes = int(local_stat.st_size)
+    set_job_progress(job["id"], progress_bytes)
+    set_job(job["id"], "completed", message_key="job.upload_verified")
+
+
 def process_upload(job: dict[str, Any]) -> None:
     ensure_job_active(job["id"], "Upload stopped")
     validate_cloud_vault(job)
     source = safe_local_path(job["source_root"], job["path"])
-    if not source.is_file():
-        raise RuntimeError("The file is no longer available in the source folder")
+    local_present = source.is_file()
     is_crypt = vault_encrypts_content(job)
     encrypts_names = vault_encrypts_names(job)
     secrets = secrets_for_vault(job) if encrypts_names else None
@@ -3860,78 +3995,59 @@ def process_upload(job: dict[str, Any]) -> None:
         assignments = load_policy_assignments(connection, job["vault_id"])
         linked_target = ArchiveCatalog(connection).get_job_target(job["id"])
     policy_id = resolve_effective_policy_id(job["path"], assignments)
+    linked_version_id = (
+        linked_target.get("archive_version_id") if linked_target else None
+    )
+    if not local_present and not linked_version_id:
+        raise RuntimeError("The file is no longer available in the source folder")
     verification_started = False
     verification_failure_reason: str | None = None
+    local_plaintext_sha256: str | None = None
+    source_stat: os.stat_result | None = None
     try:
-        set_job(job["id"], "uploading", message_key="job.hashing_local_file")
-        local_plaintext_sha256, source_stat = hash_stable_regular_file(source)
-        ensure_job_active(job["id"], "Upload claim was lost")
+        if not linked_version_id:
+            if not local_present:
+                raise RuntimeError(
+                    "The file is no longer available in the source folder"
+                )
+            set_job(job["id"], "uploading", message_key="job.hashing_local_file")
+            local_plaintext_sha256, source_stat = hash_stable_regular_file(source)
+            ensure_job_active(job["id"], "Upload claim was lost")
 
         version_id: str
         target: dict[str, Any]
         head: dict[str, Any]
         client = s3_client()
-        linked_version_id = linked_target.get("archive_version_id") if linked_target else None
         if linked_version_id:
             # A retry after catalog linkage is verification-only. Uploading
             # again here would create a second provider VersionId and split the
-            # durable Archive Version history.
+            # durable Archive Version history. The persisted upload digest
+            # identifies snapshot A; a later Local Copy is archived separately.
             target = dict(linked_target)
             version_id = str(linked_version_id)
             integrity = str(target.get("integrity") or "unverified")
-            upload_digest = str(
-                target.get("upload_plaintext_sha256")
-                or (target.get("version_sha256") if integrity == "verified" else "")
-                or ""
-            ).lower()
-            if len(upload_digest) != 64:
-                raise RuntimeError(
-                    "The linked Archive Version has no durable upload fingerprint"
-                )
-            try:
-                int(upload_digest, 16)
-            except ValueError as exc:
-                raise RuntimeError(
-                    "The linked Archive Version has an invalid upload fingerprint"
-                ) from exc
+            upload_digest = _require_linked_upload_digest(target)
             if integrity == "mismatch":
                 raise RuntimeError("The linked Archive Version already mismatches the Local Copy")
             if target.get("availability") not in {None, "available"}:
                 raise RuntimeError("The linked Archive Version is no longer available")
-            if integrity == "verified":
-                if upload_digest != local_plaintext_sha256:
-                    raise RuntimeError(
-                        "Local file digest no longer matches the verified Archive Version"
-                    )
-                _verification_version_head(client, job, target)
-                ensure_job_active(job["id"], "Upload claim was lost")
-                with db() as connection:
-                    ensure_job_claim_owned_in_transaction(
-                        connection,
-                        job,
-                        "Upload claim was lost",
-                    )
-                    ArchiveCatalog(connection).set_local_fingerprint(
-                        vault_id=job["vault_id"],
-                        path=job["path"],
-                        plaintext_sha256=upload_digest,
-                        matched_archive_version_id=version_id,
-                    )
-                set_job_progress(
-                    job["id"], int(job.get("total_bytes") or source_stat.st_size)
-                )
-                set_job(job["id"], "completed", message_key="job.upload_verified")
-                return
-            # A changed Local Copy is a source race, not evidence that the
-            # already-linked remote Archive Version is corrupt.  Do this check
-            # before streaming so a retry cannot compare the remote snapshot
-            # with a newer Local Copy digest and mark a false mismatch.
-            if upload_digest != local_plaintext_sha256:
-                raise RuntimeError("Local file changed since fingerprinting")
             if not target.get("object_key") or not target.get("provider_version_id"):
                 raise RuntimeError("The linked Archive Version cannot be verified safely")
             head = _verification_version_head(client, job, target)
+            if integrity == "verified":
+                _complete_verified_upload(
+                    job,
+                    source=source,
+                    version_id=version_id,
+                    upload_digest=upload_digest,
+                    mark_verified=False,
+                )
+                return
         else:
+            if local_plaintext_sha256 is None:
+                raise RuntimeError(
+                    "The file is no longer available in the source folder"
+                )
             upload_digest = local_plaintext_sha256
             # Keep the upload snapshot on the durable Job before contacting the
             # provider.  Local Copy fingerprints are mutable scan observations
@@ -3970,18 +4086,16 @@ def process_upload(job: dict[str, Any]) -> None:
                         job,
                         "Upload claim was lost",
                     )
-                    catalog = ArchiveCatalog(connection)
-                    catalog.link_job_version(job["id"], version_id)
-                    catalog.set_local_fingerprint(
-                        vault_id=job["vault_id"],
-                        path=job["path"],
-                        plaintext_sha256=upload_digest,
-                        matched_archive_version_id=version_id,
-                    )
-                set_job_progress(
-                    job["id"], int(job.get("total_bytes") or source_stat.st_size)
+                    ArchiveCatalog(connection).link_job_version(job["id"], version_id)
+                _complete_verified_upload(
+                    job,
+                    source=source,
+                    version_id=version_id,
+                    upload_digest=upload_digest,
+                    mark_verified=False,
+                    local_digest=local_plaintext_sha256,
+                    local_stat=source_stat,
                 )
-                set_job(job["id"], "completed", message_key="job.upload_verified")
                 return
             if reusable is not None and reusable_integrity == "unverified":
                 if not reusable.get("object_key") or not reusable.get(
@@ -4093,46 +4207,40 @@ def process_upload(job: dict[str, Any]) -> None:
                 }
 
         ensure_job_active(job["id"], "Upload stopped")
-        after = source.stat(follow_symlinks=False)
-        if (
-            after.st_size != source_stat.st_size
-            or after.st_mtime_ns != source_stat.st_mtime_ns
-            or after.st_dev != source_stat.st_dev
-            or after.st_ino != source_stat.st_ino
-        ):
-            raise RuntimeError("Local file changed since fingerprinting")
+        # Snapshot A is identified by the persisted upload digest. A later
+        # Local Copy must not abort verification or be treated as a mismatch
+        # of the already-linked Archive Version.
         set_job(job["id"], "verifying", message_key="job.verifying_cloud_copy")
         ensure_job_active(job["id"], "Upload claim was lost")
         verification_started = True
+        source_size = (
+            source_stat.st_size
+            if source_stat is not None
+            else int(job.get("total_bytes") or target.get("cloud_size") or 0)
+        )
         remote_digest, remote_size = _stream_plaintext_for_verification(
             job,
             target=target,
-            source_size=source_stat.st_size,
+            source_size=source_size,
         )
         _verification_version_head(client, job, target)
         # Crypt providers report ciphertext ContentLength, while the stream
         # is decrypted plaintext. Only a plain object can use the catalogued
-        # provider length; encrypted modes must be compared with the stable
-        # Local Copy size instead.
-        expected_stream_size = (
-            source_stat.st_size
-            if is_crypt
-            else target.get("cloud_size")
-        )
+        # provider length; encrypted modes must be compared with the upload
+        # snapshot size instead.
+        if is_crypt:
+            expected_stream_size = (
+                source_stat.st_size
+                if source_stat is not None
+                else job.get("total_bytes")
+            )
+        else:
+            expected_stream_size = target.get("cloud_size")
         if expected_stream_size is not None and remote_size != int(expected_stream_size):
             verification_failure_reason = "truncated"
             raise RuntimeError(
                 "Cloud verification stream length did not match the Archive Version"
             )
-        after_verify = source.stat(follow_symlinks=False)
-        if (
-            after_verify.st_size != source_stat.st_size
-            or after_verify.st_mtime_ns != source_stat.st_mtime_ns
-            or after_verify.st_dev != source_stat.st_dev
-            or after_verify.st_ino != source_stat.st_ino
-        ):
-            verification_failure_reason = "source_changed"
-            raise RuntimeError("Local file changed since fingerprinting")
         if remote_digest != upload_digest:
             verification_failure_reason = "mismatch"
             ensure_job_active(job["id"], "Upload claim was lost")
@@ -4148,28 +4256,15 @@ def process_upload(job: dict[str, Any]) -> None:
                     checked_at=now_iso(),
                 )
             raise RuntimeError("Cloud copy digest does not match local file")
-        ensure_job_active(job["id"], "Upload claim was lost")
-        verified_at = now_iso()
-        with db() as connection:
-            ensure_job_claim_owned_in_transaction(
-                connection,
-                job,
-                "Upload claim was lost",
-            )
-            catalog = ArchiveCatalog(connection)
-            catalog.mark_version_verified(
-                version_id,
-                plaintext_sha256=upload_digest,
-                verified_at=verified_at,
-            )
-            catalog.set_local_fingerprint(
-                vault_id=job["vault_id"],
-                path=job["path"],
-                plaintext_sha256=upload_digest,
-                matched_archive_version_id=version_id,
-            )
-        set_job_progress(job["id"], int(job.get("total_bytes") or source_stat.st_size))
-        set_job(job["id"], "completed", message_key="job.upload_verified")
+        _complete_verified_upload(
+            job,
+            source=source,
+            version_id=version_id,
+            upload_digest=upload_digest,
+            mark_verified=True,
+            local_digest=local_plaintext_sha256,
+            local_stat=source_stat,
+        )
     except OperationCancelled:
         raise
     except Exception as exc:
@@ -5829,14 +5924,21 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
         )
         if job["action"] == "upload" and failure_kind == "source_changed":
             next_attempt = int(job.get("retry_count") or 0) + 1
-            with db() as connection:
-                policy = get_policy(connection, int(job["vault_id"]))
-            return schedule_upload_retry(
+            if next_attempt <= UPLOAD_RETRY_MAX_ATTEMPTS:
+                with db() as connection:
+                    policy = get_policy(connection, int(job["vault_id"]))
+                return schedule_upload_retry(
+                    job["id"],
+                    message_key="job.retrying_source_changed",
+                    message_params={"seconds": policy.stability_seconds},
+                    retry_count=next_attempt,
+                    delay_seconds=policy.stability_seconds,
+                )
+            return set_job(
                 job["id"],
-                message_key="job.retrying_source_changed",
-                message_params={"seconds": policy.stability_seconds},
-                retry_count=next_attempt,
-                delay_seconds=policy.stability_seconds,
+                "failed",
+                message_key="job.source_changed_stalled",
+                message_params={"attempts": UPLOAD_RETRY_MAX_ATTEMPTS},
             )
         if job["action"] == "upload" and failure_kind == "transient":
             next_attempt = int(job.get("retry_count") or 0) + 1

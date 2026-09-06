@@ -182,6 +182,7 @@
   "job.recovered_to": "Recovered to {target}",
   "job.retrying_transient": "Retrying after transient error: {error}",
   "job.retrying_source_changed": "Local file changed during transfer; rescheduled after {seconds}s stability window",
+  "job.source_changed_stalled": "Local file kept changing; stopped after {attempts} attempts",
   "job.upload_stopped": "Upload stopped",
   "job.recovery_stopped": "Recovery stopped",
   "job.cleanup_stopped": "Freeing local space stopped",
