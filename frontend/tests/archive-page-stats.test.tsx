@@ -15,7 +15,7 @@ import { ArchivePage } from "@/pages/archive/ArchivePage";
 
 const messages: Record<string, string> = {
   "ui.archive_subtitle":
-    "Your files, on the server and safely stored in the cloud.",
+    "Your files, locally and safely stored in the cloud.",
   "ui.archive_statistics": "Archive statistics",
   "ui.stats_loading": "Loading archive statistics…",
   "ui.stats_error":
@@ -39,11 +39,11 @@ const messages: Record<string, string> = {
   "ui.filesystem_health_checked_at": "Last checked {when}",
   "ui.filesystem_health_revision": "Revision {revision}",
   "ui.file_list_placeholder": "File list",
-  "ui.server_space": "Server space",
+  "ui.local_space": "Local space",
   "ui.cloud_space": "Cloud space",
   "ui.active_operations": "Active operations",
-  "state.both": "Server + cloud",
-  "state.local_only": "Server only",
+  "state.both": "Local and cloud",
+  "state.local_only": "Local only",
   "state.cloud_only": "Cloud only",
   "ui.protected_archive": "Protected archive · {name}",
   "ui.protected_archive_detail":

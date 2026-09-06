@@ -9,5 +9,5 @@ export { PathHistoryPanel } from "./PathHistoryPanel";
 export type { PathHistoryPanelProps } from "./PathHistoryPanel";
 export { SafetyFooter } from "./SafetyFooter";
 export { StatsSummary } from "./StatsSummary";
-export { formatBytes, formatCount, pickDurationUnit } from "./format";
+export { formatBytes, formatCompactCount, formatCount, pickDurationUnit } from "./format";
 export type { DurationUnit } from "./format";

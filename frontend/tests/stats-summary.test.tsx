@@ -5,10 +5,10 @@ import type { StatsResponse } from "@/api/types";
 import { StatsSummary } from "@/pages/archive/StatsSummary";
 
 const messages: Record<string, string> = {
-  "state.both": "Server + cloud",
-  "state.local_only": "Server only",
+  "state.both": "Local and cloud",
+  "state.local_only": "Local only",
   "state.cloud_only": "Cloud only",
-  "ui.server_space": "Server space",
+  "ui.local_space": "Local space",
   "ui.cloud_space": "Cloud space",
   "ui.active_operations": "Active operations",
   "ui.archive_statistics": "Archive statistics",
@@ -66,16 +66,16 @@ describe("StatsSummary from /api/stats", () => {
 
     // Both compact and expanded trees are in the DOM (CSS toggles visibility),
     // so assert via getAllByText that the formatted values are present.
-    expect(screen.getAllByText("Server + cloud").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Local and cloud").length).toBeGreaterThan(0);
     expect(screen.getAllByText("12").length).toBeGreaterThan(0);
 
-    expect(screen.getAllByText("Server only").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Local only").length).toBeGreaterThan(0);
     expect(screen.getAllByText("3").length).toBeGreaterThan(0);
 
     expect(screen.getAllByText("Cloud only").length).toBeGreaterThan(0);
     expect(screen.getAllByText("1,042").length).toBeGreaterThan(0);
 
-    expect(screen.getAllByText("Server space").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Local space").length).toBeGreaterThan(0);
     expect(screen.getAllByText("1.5 KB").length).toBeGreaterThan(0);
 
     expect(screen.getAllByText("Cloud space").length).toBeGreaterThan(0);

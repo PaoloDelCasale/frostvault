@@ -31,7 +31,7 @@ function buildCards(stats: StatsResponse): StatCard[] {
     { labelKey: "state.both", value: formatCount(states.both || 0) },
     { labelKey: "state.local_only", value: formatCount(states.local_only || 0) },
     { labelKey: "state.cloud_only", value: formatCount(states.cloud_only || 0) },
-    { labelKey: "ui.server_space", value: formatBytes(storage.local_bytes || 0) },
+    { labelKey: "ui.local_space", value: formatBytes(storage.local_bytes || 0) },
     { labelKey: "ui.cloud_space", value: formatBytes(storage.cloud_bytes || 0) },
     {
       labelKey: "ui.active_operations",

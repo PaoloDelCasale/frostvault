@@ -34,6 +34,58 @@ export type RowAction = {
   tone: "danger" | "default";
 };
 
+export type RowActionCategory = "copies" | "storage" | "deletion";
+
+export const ROW_ACTION_CATEGORY: Record<RowActionId, RowActionCategory> = {
+  upload: "copies",
+  recover: "copies",
+  "free-space": "copies",
+  "storage-class": "storage",
+  "lifecycle-pin": "storage",
+  "lifecycle-unpin": "storage",
+  "cloud-archive": "deletion",
+  "cloud-purge": "deletion",
+};
+
+export const ROW_ACTION_CATEGORY_LABEL_KEYS: Record<RowActionCategory, string> =
+  {
+    copies: "ui.row_action_category_copies",
+    storage: "ui.row_action_category_storage",
+    deletion: "ui.row_action_category_deletion",
+  };
+
+const CATEGORY_ORDER: RowActionCategory[] = ["copies", "storage", "deletion"];
+
+const PRIMARY_ROW_ACTION_IDS = new Set<RowActionId>(["upload", "recover"]);
+
+export function partitionRowActions(actions: RowAction[]): {
+  primary: RowAction[];
+  overflow: RowAction[];
+} {
+  const primary: RowAction[] = [];
+  const overflow: RowAction[] = [];
+  for (const action of actions) {
+    if (PRIMARY_ROW_ACTION_IDS.has(action.id)) primary.push(action);
+    else overflow.push(action);
+  }
+  return { primary, overflow };
+}
+
+export function groupRowActions(
+  actions: RowAction[],
+): Array<{ category: RowActionCategory; actions: RowAction[] }> {
+  const buckets = new Map<RowActionCategory, RowAction[]>();
+  for (const action of actions) {
+    const category = ROW_ACTION_CATEGORY[action.id];
+    const list = buckets.get(category) ?? [];
+    list.push(action);
+    buckets.set(category, list);
+  }
+  return CATEGORY_ORDER.filter((category) => (buckets.get(category)?.length ?? 0) > 0).map(
+    (category) => ({ category, actions: buckets.get(category)! }),
+  );
+}
+
 const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
 const MANUAL_STORAGE_CLASSES = [

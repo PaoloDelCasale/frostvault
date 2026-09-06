@@ -24,8 +24,8 @@ export const BADGE_STATE_VARIANT_CLASSES = {
 
 /** Independent labels — colour is never the only carrier of state. */
 export const BADGE_STATE_LABELS: Record<BadgeState, string> = {
-  both: "Server + cloud",
-  local_only: "Server only",
+  both: "Local and cloud",
+  local_only: "Local only",
   cloud_only: "Cloud only",
   restoring: "Recovery in progress",
   mixed: "Mixed state",
@@ -34,13 +34,18 @@ export const BADGE_STATE_LABELS: Record<BadgeState, string> = {
 };
 
 const badgeVariants = cva(
-  "inline-flex items-center gap-[7px] rounded-badge px-2.5 py-1.5 text-[13px] font-bold whitespace-nowrap",
+  "inline-flex w-fit max-w-full items-center font-bold whitespace-nowrap",
   {
     variants: {
       state: BADGE_STATE_VARIANT_CLASSES,
+      size: {
+        default: "gap-[7px] rounded-badge px-2.5 py-1.5 text-[13px]",
+        sm: "gap-1 rounded-md px-1.5 py-0.5 text-[11px]",
+      },
     },
     defaultVariants: {
       state: "both",
+      size: "default",
     },
   },
 );
@@ -51,9 +56,12 @@ type BadgeProps = {
   className?: string;
 } & VariantProps<typeof badgeVariants>;
 
-export function Badge({ state, label, className }: BadgeProps) {
+export function Badge({ state, label, size = "default", className }: BadgeProps) {
   return (
-    <span className={cn(badgeVariants({ state }), className)} data-state={state}>
+    <span
+      className={cn(badgeVariants({ state, size }), className)}
+      data-state={state}
+    >
       {label ?? BADGE_STATE_LABELS[state]}
     </span>
   );

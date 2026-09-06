@@ -1,15 +1,40 @@
-import { Badge } from "@/components/Badge";
+import { useEffect, useId, useRef, useState, type ComponentType } from "react";
+import { createPortal } from "react-dom";
+import {
+  ChevronDown,
+  ChevronUp,
+  File,
+  FileArchive,
+  FileAudio,
+  FileCode,
+  FileImage,
+  FileSpreadsheet,
+  FileText,
+  FileType,
+  FileVideo,
+  Folder,
+  Presentation,
+} from "lucide-react";
+
+import { Badge, type BadgeState } from "@/components/Badge";
 import { StorageBadge } from "@/components/StorageBadge";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import type { ArchiveListItem, JobGroup } from "@/api/types";
 
 import {
   actionLabel,
   availableActions,
+  groupRowActions,
+  partitionRowActions,
+  ROW_ACTION_CATEGORY_LABEL_KEYS,
+  type RowAction,
   type RowActionId,
   type VaultCapabilities,
 } from "./actions";
-import { formatBytes, formatCount } from "./format";
+import { formatBytes, formatCompactCount, formatCount } from "./format";
+import { fileKindForItem, type FileKind } from "./fileKind";
+import type { FileSortKey, FileSortOrder } from "./fileSort";
 import {
   cloudStorageDisplay,
   isDirectory,
@@ -26,6 +51,9 @@ export type FileListProps = {
   capabilities: VaultCapabilities;
   onOpenDirectory: (path: string) => void;
   onOpenFile: (path: string) => void;
+  sortKey?: FileSortKey;
+  sortOrder?: FileSortOrder;
+  onSort?: (key: FileSortKey) => void;
   /** Mobile: opens the bottom sheet of row actions. */
   onOpenActions?: (path: string) => void;
   /** Desktop: run an action inline. */
@@ -68,10 +96,14 @@ function MoreActionsButton({
   path,
   t,
   onOpenActions,
+  expanded,
+  testId,
 }: {
   path: string;
   t: Translate;
   onOpenActions?: (path: string) => void;
+  expanded?: boolean;
+  testId?: string;
 }) {
   return (
     <Button
@@ -80,7 +112,9 @@ function MoreActionsButton({
       size="icon"
       className="min-h-11 min-w-11 shrink-0"
       aria-label={t("ui.more_actions")}
-      data-testid={`more-actions-${path}`}
+      aria-haspopup={expanded === undefined ? undefined : "menu"}
+      aria-expanded={expanded}
+      data-testid={testId ?? `more-actions-${path}`}
       onClick={(event) => {
         event.stopPropagation();
         onOpenActions?.(path);
@@ -90,6 +124,144 @@ function MoreActionsButton({
         ⋯
       </span>
     </Button>
+  );
+}
+
+function ActionButton({
+  action,
+  item,
+  t,
+  onDesktopAction,
+  className,
+}: {
+  action: RowAction;
+  item: ArchiveListItem;
+  t: Translate;
+  onDesktopAction?: (path: string, action: RowActionId) => void;
+  className?: string;
+}) {
+  return (
+    <Button
+      type="button"
+      variant={action.tone === "danger" ? "danger" : "secondary"}
+      className={cn("min-h-11 min-w-11 px-3", className)}
+      data-action={action.id}
+      data-path={item.path}
+      data-is-directory={isDirectory(item) ? "true" : "false"}
+      onClick={() => onDesktopAction?.(item.path, action.id)}
+    >
+      {actionLabel(action.id, t, {
+        count: action.count,
+        isDirectory: isDirectory(item),
+      })}
+    </Button>
+  );
+}
+
+function OverflowMenu({
+  item,
+  actions,
+  t,
+  onDesktopAction,
+}: {
+  item: ArchiveListItem;
+  actions: RowAction[];
+  t: Translate;
+  onDesktopAction?: (path: string, action: RowActionId) => void;
+}) {
+  const menuId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<{ top: number; right: number } | null>(
+    null,
+  );
+  const groups = groupRowActions(actions);
+
+  useEffect(() => {
+    if (!open) return;
+    const trigger = rootRef.current?.querySelector("button");
+    if (trigger) {
+      const rect = trigger.getBoundingClientRect();
+      setCoords({
+        top: rect.bottom + 4,
+        right: window.innerWidth - rect.right,
+      });
+    }
+    function onPointerDown(event: MouseEvent) {
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) {
+        return;
+      }
+      setOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <MoreActionsButton
+        path={item.path}
+        t={t}
+        expanded={open}
+        testId={`more-actions-desktop-${item.path}`}
+        onOpenActions={() => setOpen((next) => !next)}
+      />
+      {open && coords && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={menuRef}
+              id={menuId}
+              role="menu"
+              aria-label={t("ui.more_actions")}
+              className="fixed z-[80] min-w-[16rem] overflow-auto rounded-[10px] border border-line bg-surface p-1 text-ink shadow-lg"
+              style={{ top: coords.top, right: coords.right }}
+            >
+              {groups.map((group) => (
+                <div key={group.category} className="py-1">
+                  <p className="px-3 py-1.5 text-xs font-bold tracking-wide text-muted uppercase">
+                    {t(ROW_ACTION_CATEGORY_LABEL_KEYS[group.category])}
+                  </p>
+                  {group.actions.map((action) => (
+                    <button
+                      key={action.id}
+                      type="button"
+                      role="menuitem"
+                      data-action={action.id}
+                      data-path={item.path}
+                      className={cn(
+                        "flex min-h-11 w-full items-center rounded-lg px-3 text-left text-sm font-bold outline-none",
+                        "focus-visible:bg-canvas focus-visible:ring-2 focus-visible:ring-ring/40",
+                        action.tone === "danger"
+                          ? "text-[var(--state-local-fg)]"
+                          : "text-ink",
+                      )}
+                      onClick={() => {
+                        setOpen(false);
+                        onDesktopAction?.(item.path, action.id);
+                      }}
+                    >
+                      {actionLabel(action.id, t, {
+                        count: action.count,
+                        isDirectory: isDirectory(item),
+                      })}
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
   );
 }
 
@@ -106,29 +278,56 @@ function DesktopActions({
 }) {
   const actions = availableActions(item, capabilities);
   if (!actions.length) return null;
+  const { primary, overflow } = partitionRowActions(actions);
   return (
     <div
-      className="row-actions compact flex flex-wrap gap-1"
+      className="row-actions compact flex flex-wrap items-center justify-end gap-1"
       data-testid={`desktop-actions-${item.path}`}
     >
-      {actions.map((action) => (
-        <Button
+      {primary.map((action) => (
+        <ActionButton
           key={action.id}
-          type="button"
-          variant={action.tone === "danger" ? "danger" : "secondary"}
-          className="min-h-11 min-w-11 px-3"
-          data-action={action.id}
-          data-path={item.path}
-          data-is-directory={isDirectory(item) ? "true" : "false"}
-          onClick={() => onDesktopAction?.(item.path, action.id)}
-        >
-          {actionLabel(action.id, t, {
-            count: action.count,
-            isDirectory: isDirectory(item),
-          })}
-        </Button>
+          action={action}
+          item={item}
+          t={t}
+          onDesktopAction={onDesktopAction}
+        />
       ))}
+      {overflow.length ? (
+        <OverflowMenu
+          item={item}
+          actions={overflow}
+          t={t}
+          onDesktopAction={onDesktopAction}
+        />
+      ) : null}
     </div>
+  );
+}
+
+const FILE_KIND_ICON: Record<FileKind, ComponentType<{ className?: string }>> = {
+  folder: Folder,
+  pdf: FileType,
+  image: FileImage,
+  video: FileVideo,
+  audio: FileAudio,
+  archive: FileArchive,
+  spreadsheet: FileSpreadsheet,
+  presentation: Presentation,
+  code: FileCode,
+  text: FileText,
+  file: File,
+};
+
+function EntryIcon({ item }: { item: ArchiveListItem }) {
+  const kind = fileKindForItem(item);
+  const Icon = FILE_KIND_ICON[kind];
+  return (
+    <Icon
+      className="size-4 shrink-0 text-muted"
+      aria-hidden
+      data-file-kind={kind}
+    />
   );
 }
 
@@ -147,13 +346,16 @@ function ItemName({
     return (
       <button
         type="button"
-        className="min-h-11 max-w-full text-left"
+        className="flex min-h-11 max-w-full items-center gap-2.5 text-left"
         data-directory={item.path}
         onClick={() => onOpenDirectory(item.path)}
       >
-        <span className="block truncate font-bold text-ink">{item.name}</span>
-        <span className="block truncate text-xs text-muted">
-          {t("ui.folder_item_count", { count: formatCount(item.item_count) })}
+        <EntryIcon item={item} />
+        <span className="min-w-0">
+          <span className="block truncate font-bold text-ink">{item.name}</span>
+          <span className="block truncate text-xs text-muted">
+            {t("ui.folder_item_count", { count: formatCount(item.item_count) })}
+          </span>
         </span>
       </button>
     );
@@ -161,32 +363,52 @@ function ItemName({
   return (
     <button
       type="button"
-      className="min-h-11 max-w-full text-left"
+      className="flex min-h-11 max-w-full items-center gap-2.5 text-left"
       data-file-path={item.path}
       onClick={() => onOpenFile(item.path)}
     >
-      <span className="block truncate font-bold text-ink">{item.name}</span>
+      <EntryIcon item={item} />
+      <span className="block min-w-0 truncate font-semibold text-ink">
+        {item.name}
+      </span>
     </button>
   );
 }
 
+const STATE_COUNT_ORDER: BadgeState[] = [
+  "both",
+  "local_only",
+  "cloud_only",
+  "restoring",
+  "missing",
+  "unsupported",
+];
+
 function StateCell({ item, t }: { item: ArchiveListItem; t: Translate }) {
   const badge = itemStateBadge(item, t);
   if (isDirectory(item) && item.state_counts) {
-    const details = Object.entries(item.state_counts)
-      .filter(([, count]) => count)
-      .map(([state, count]) => {
-        const key = `state.${state}`;
-        const label = t(key);
-        return `${count} ${label === key ? state : label}`;
-      })
-      .join(" · ");
+    const breakdown = STATE_COUNT_ORDER.flatMap((state) => {
+      const count = item.state_counts?.[state];
+      if (!count) return [];
+      const key = `state.${state}`;
+      const label = t(key);
+      const stateLabel = label === key ? state : label;
+      return [
+        {
+          state,
+          label: `${formatCompactCount(count)} ${stateLabel}`,
+          title: `${formatCount(count)} ${stateLabel}`,
+        },
+      ];
+    });
     return (
-      <div className="flex min-w-0 flex-col gap-1">
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
         <Badge state={badge.state} label={badge.label} />
-        {details ? (
-          <span className="truncate text-xs text-muted">{details}</span>
-        ) : null}
+        {breakdown.map((entry) => (
+          <span key={entry.state} title={entry.title}>
+            <Badge state={entry.state} size="sm" label={entry.label} />
+          </span>
+        ))}
       </div>
     );
   }
@@ -278,12 +500,60 @@ function RowJobOrActions({
  * - Cloud storage → StorageBadge / class summary
  * - Actions → ⋯ bottom sheet (mobile) / inline buttons (desktop)
  */
+function SortableHeader({
+  column,
+  label,
+  sortKey,
+  sortOrder,
+  onSort,
+  className,
+  t,
+}: {
+  column: FileSortKey;
+  label: string;
+  sortKey: FileSortKey;
+  sortOrder: FileSortOrder;
+  onSort?: (key: FileSortKey) => void;
+  className?: string;
+  t: Translate;
+}) {
+  const active = sortKey === column;
+  const ariaSort = active
+    ? sortOrder === "asc"
+      ? "ascending"
+      : "descending"
+    : "none";
+  return (
+    <th className={cn("py-2 pr-3 font-bold", className)} aria-sort={ariaSort}>
+      <button
+        type="button"
+        className="inline-flex min-h-11 items-center gap-1 uppercase tracking-wide text-muted outline-none focus-visible:text-ink"
+        aria-label={t("ui.sort_by", { column: label })}
+        onClick={() => onSort?.(column)}
+      >
+        {label}
+        {active && sortOrder === "asc" ? (
+          <ChevronUp className="size-3.5" aria-hidden />
+        ) : (
+          <ChevronDown
+            className={cn("size-3.5", !active && "opacity-40")}
+            aria-hidden
+          />
+        )}
+      </button>
+    </th>
+  );
+}
+
 export function FileList({
   items,
   t,
   capabilities,
   onOpenDirectory,
   onOpenFile,
+  sortKey = "name",
+  sortOrder = "asc",
+  onSort,
   onOpenActions,
   onDesktopAction,
   jobsByPath,
@@ -378,10 +648,29 @@ export function FileList({
         <table className="w-full border-collapse text-left text-sm">
           <thead>
             <tr className="border-b border-line text-xs uppercase tracking-wide text-muted">
-              <th className="py-2 pr-3 font-bold">{t("ui.name")}</th>
-              <th className="py-2 pr-3 font-bold">{t("ui.size")}</th>
-              <th className="py-2 pr-3 font-bold">{t("ui.state")}</th>
-              <th className="py-2 pr-3 font-bold">{t("ui.cloud_storage")}</th>
+              <SortableHeader
+                column="name"
+                label={t("ui.name")}
+                sortKey={sortKey}
+                sortOrder={sortOrder}
+                onSort={onSort}
+                className="pl-3"
+                t={t}
+              />
+              <SortableHeader
+                column="size"
+                label={t("ui.size")}
+                sortKey={sortKey}
+                sortOrder={sortOrder}
+                onSort={onSort}
+                t={t}
+              />
+              <th className="py-2 pr-3 font-bold uppercase tracking-wide text-muted">
+                {t("ui.state")}
+              </th>
+              <th className="py-2 pr-3 font-bold uppercase tracking-wide text-muted">
+                {t("ui.cloud_storage")}
+              </th>
               <th className="py-2 font-bold">
                 <span className="sr-only">{t("ui.more_actions")}</span>
               </th>
@@ -397,13 +686,13 @@ export function FileList({
                   key={`${item.type}:${item.path}`}
                   className={
                     deep
-                      ? "deep-archive-row border-b border-line bg-[var(--deep-archive-row)] last:border-b-0 [&>td:first-child]:shadow-[inset_4px_0_var(--deep-archive-accent)]"
+                      ? "deep-archive-row border-b border-line bg-[var(--deep-archive-row)] last:border-b-0 [&>td:first-child]:shadow-[inset_4px_0_0_0_var(--deep-archive-accent)]"
                       : "border-b border-line last:border-b-0"
                   }
                   data-path={item.path}
                   data-deep-archive={deep ? "true" : undefined}
                 >
-                  <td className="max-w-[16rem] py-2 pr-3 align-middle">
+                  <td className="max-w-[16rem] py-2 pl-3 pr-3 align-middle">
                     <ItemName
                       item={item}
                       t={t}

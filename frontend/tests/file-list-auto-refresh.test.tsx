@@ -58,14 +58,14 @@ const messages: Record<string, string> = {
   "operation.queued": "Waiting",
   "operation.completed": "Completed",
   "operation.generic": "Operation",
-  "state.both": "Server + cloud",
-  "state.local_only": "Server only",
+  "state.both": "Local and cloud",
+  "state.local_only": "Local only",
   "state.cloud_only": "Cloud only",
   "state.restoring": "Recovery in progress",
   "state.mixed": "Mixed state",
   "state.missing": "Unavailable",
-  "state.filter.local_only": "Server only",
-  "state.filter.both": "Server and cloud",
+  "state.filter.local_only": "Local only",
+  "state.filter.both": "Local and cloud",
   "state.filter.cloud_only": "Cloud only",
   "state.filter.restoring": "Recovery in progress",
   "storage.STANDARD": "Standard",
@@ -255,7 +255,7 @@ describe("File list auto-refresh (issue #128)", () => {
     renderBrowser();
 
     await waitFor(() => {
-      expect(screen.getAllByText("Server only").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Local only").length).toBeGreaterThan(0);
     });
     expect(filesCalls).toBe(1);
 
@@ -263,7 +263,7 @@ describe("File list auto-refresh (issue #128)", () => {
 
     await waitFor(() => {
       expect(filesCalls).toBeGreaterThanOrEqual(2);
-      expect(screen.getAllByText("Server + cloud").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Local and cloud").length).toBeGreaterThan(0);
     });
   });
 
@@ -299,7 +299,7 @@ describe("File list auto-refresh (issue #128)", () => {
     renderBrowser();
 
     await waitFor(() => {
-      expect(screen.getAllByText("Server only").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Local only").length).toBeGreaterThan(0);
       expect(screen.getAllByTestId("job-progress").length).toBeGreaterThan(0);
     });
 
@@ -310,7 +310,7 @@ describe("File list auto-refresh (issue #128)", () => {
     await waitFor(() => {
       expect(jobsCalls).toBeGreaterThanOrEqual(2);
       expect(filesCalls).toBeGreaterThanOrEqual(2);
-      expect(screen.getAllByText("Server + cloud").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Local and cloud").length).toBeGreaterThan(0);
       expect(screen.queryByTestId("job-progress")).not.toBeInTheDocument();
     });
   });

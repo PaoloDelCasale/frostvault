@@ -114,14 +114,14 @@ const messages: Record<string, string> = {
   "operation.completed": "Completed",
   "operation.upload_verified": "Verified",
   "operation.generic": "Operation",
-  "state.both": "Server + cloud",
-  "state.local_only": "Server only",
+  "state.both": "Local and cloud",
+  "state.local_only": "Local only",
   "state.cloud_only": "Cloud only",
   "state.restoring": "Recovery in progress",
   "state.mixed": "Mixed state",
   "state.missing": "Unavailable",
-  "state.filter.local_only": "Server only",
-  "state.filter.both": "Server and cloud",
+  "state.filter.local_only": "Local only",
+  "state.filter.both": "Local and cloud",
   "state.filter.cloud_only": "Cloud only",
   "state.filter.restoring": "Recovery in progress",
   "storage.STANDARD": "Standard",
@@ -144,6 +144,21 @@ function jsonResponse(data: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+async function clickDesktopAction(
+  user: ReturnType<typeof userEvent.setup>,
+  path: string,
+  name: string | RegExp,
+) {
+  const row = screen.getByTestId(`desktop-actions-${path}`);
+  const direct = within(row).queryByRole("button", { name });
+  if (direct) {
+    await user.click(direct);
+    return;
+  }
+  await user.click(within(row).getByRole("button", { name: "More actions" }));
+  await user.click(await screen.findByRole("menuitem", { name }));
 }
 
 const ownerCaps: MeVault = {
@@ -545,23 +560,13 @@ describe("File operations — seams 1–10", () => {
     });
     renderBrowser();
     await screen.findByTestId("desktop-actions-readme.txt");
-    await user.click(
-      within(screen.getByTestId("desktop-actions-readme.txt")).getByRole(
-        "button",
-        { name: "Free local space" },
-      ),
-    );
+    await clickDesktopAction(user, "readme.txt", "Free local space");
     const dialog = await screen.findByRole("alertdialog");
     expect(within(dialog).getByText(/readme\.txt/)).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: /cancel/i }));
     expect(calls.filter((u) => u.includes("/api/free-space"))).toHaveLength(0);
 
-    await user.click(
-      within(screen.getByTestId("desktop-actions-readme.txt")).getByRole(
-        "button",
-        { name: "Free local space" },
-      ),
-    );
+    await clickDesktopAction(user, "readme.txt", "Free local space");
     const again = await screen.findByRole("alertdialog");
     await user.click(
       within(again).getByRole("button", { name: "Free local space" }),
@@ -585,12 +590,7 @@ describe("File operations — seams 1–10", () => {
     });
     renderBrowser();
     await screen.findByTestId("desktop-actions-archive.pdf");
-    await user.click(
-      within(screen.getByTestId("desktop-actions-archive.pdf")).getByRole(
-        "button",
-        { name: "Purge permanently" },
-      ),
-    );
+    await clickDesktopAction(user, "archive.pdf", "Purge permanently");
     await screen.findByRole("dialog");
     expect(screen.getByTestId("cloud-purge-preview")).toHaveTextContent(
       /1 object, 2 versions, 1 marker, 2\.0 KB/,

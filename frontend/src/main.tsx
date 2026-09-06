@@ -13,7 +13,8 @@ import "./index.css";
 
 registerFrostVaultServiceWorker();
 
-if (DEMO_MODE_ENABLED && getDemoSearchParam("demo") === "files") {
+const demoMode = getDemoSearchParam("demo");
+if (DEMO_MODE_ENABLED && demoMode !== "off") {
   installDemoFilesFetch();
 }
 

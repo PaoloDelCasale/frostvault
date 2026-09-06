@@ -306,9 +306,18 @@ export function fetchFiles(
   const params = new URLSearchParams();
   params.set("q", query.q ?? "");
   params.set("state", query.state ?? "");
+  if (typeof query.storage === "string" && query.storage) {
+    params.set("storage", query.storage);
+  }
   params.set("directory", query.directory ?? "");
   params.set("page", String(query.page ?? 1));
   params.set("page_size", String(query.page_size ?? DEFAULT_PAGE_SIZE));
+  if (typeof query.sort === "string" && query.sort) {
+    params.set("sort", query.sort);
+  }
+  if (typeof query.order === "string" && query.order) {
+    params.set("order", query.order);
+  }
   return apiRequest<FilesResponse>(`/api/files?${params.toString()}`, options);
 }
 
