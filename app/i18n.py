@@ -48,6 +48,7 @@ CRITICAL_KEYS: frozenset[str] = frozenset(
         "job.recovered_to",
         "job.retrying_transient",
         "job.retrying_source_changed",
+        "job.source_changed_stalled",
         "job.upload_stopped",
         "job.recovery_stopped",
         "job.cleanup_stopped",

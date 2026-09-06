@@ -182,6 +182,7 @@
   "job.recovered_to": "Recuperato in {target}",
   "job.retrying_transient": "Nuovo tentativo dopo errore temporaneo: {error}",
   "job.retrying_source_changed": "File locale modificato durante il trasferimento; riprogrammato dopo {seconds}s di stabilità",
+  "job.source_changed_stalled": "Il file locale continuava a cambiare; interrotto dopo {attempts} tentativi",
   "job.upload_stopped": "Caricamento interrotto",
   "job.recovery_stopped": "Recupero interrotto",
   "job.cleanup_stopped": "Liberazione spazio locale interrotta",
