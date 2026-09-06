@@ -77,6 +77,43 @@ _ACTION_COLUMNS = {
 }
 
 
+def local_copy_is_protected(row: Mapping[str, Any]) -> bool:
+    """Return True when current Local Copy bytes are already in cloud history.
+
+    Cloud history alone is not protection. The latest non-missing Archive
+    Version must be verified, available, digest-equal, and matched from the
+    Local Copy. Keep this predicate aligned with the SQL ``upload_eligible``
+    CASE in the directory-aggregate rollup.
+    """
+    archive_version_id = row.get("archive_version_id")
+    if archive_version_id is None:
+        return False
+    local_sha256 = row.get("local_sha256")
+    return (
+        row.get("integrity") == "verified"
+        and row.get("availability") == "available"
+        and row.get("matched_archive_version_id") == archive_version_id
+        and local_sha256 is not None
+        and local_sha256 == row.get("version_sha256")
+    )
+
+
+def local_copy_is_upload_eligible(row: Mapping[str, Any]) -> bool:
+    """Admit an upload when a present regular Local Copy is not protected."""
+    presence = row.get("local_presence")
+    if presence is None:
+        presence = row.get("presence")
+    file_type = row.get("local_file_type")
+    if file_type is None:
+        file_type = row.get("file_type")
+    return (
+        presence == "present"
+        and file_type == "regular"
+        and row.get("restore_state") != "restoring"
+        and not local_copy_is_protected(row)
+    )
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1045,11 +1082,7 @@ def _contribution_from_row(
         else int(row["cloud_size"] or 0)
     )
     recoverable_count = int(row["recoverable_version_count"] or 0)
-    upload_eligible = (
-        row["local_presence"] == "present"
-        and row["local_file_type"] == "regular"
-        and not cloud_exists
-    )
+    upload_eligible = local_copy_is_upload_eligible(row)
     recover_eligible = not local_exists and recoverable_count > 0
     cleanup_eligible = (
         row["local_presence"] == "present"
@@ -1196,7 +1229,18 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
                 CASE
                     WHEN lc.presence = 'present'
                      AND lc.file_type = 'regular'
-                     AND av.id IS NULL THEN 1
+                     AND (
+                        av.restore_state IS NULL
+                        OR av.restore_state <> 'restoring'
+                     )
+                     AND NOT (
+                        av.id IS NOT NULL
+                        AND av.integrity = 'verified'
+                        AND av.availability = 'available'
+                        AND lc.matched_archive_version_id = av.id
+                        AND lc.plaintext_sha256 IS NOT NULL
+                        AND lc.plaintext_sha256 = av.plaintext_sha256
+                     ) THEN 1
                     ELSE 0
                 END AS upload_eligible,
                 CASE

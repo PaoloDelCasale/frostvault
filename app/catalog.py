@@ -18,6 +18,7 @@ from .services.directory_aggregates import (
     ensure_directory_aggregates,
     invalidate_for_confirmed_rename,
     list_child_directory_rows,
+    local_copy_is_upload_eligible,
     mark_directory_dirty,
     mark_file_id_dirty,
     mark_path_dirty,
@@ -596,6 +597,61 @@ class ArchiveCatalog:
         )
         self._mark_path_aggregates_dirty(vault_id, path)
         return version_id
+
+    def find_reusable_upload_version(
+        self,
+        *,
+        vault_file_id: str,
+        plaintext_sha256: str,
+    ) -> dict[str, Any] | None:
+        """Return an existing Archive Version that already holds this digest.
+
+        A verified available version is reused so unchanged Local Copy bytes do
+        not create a duplicate S3 object. An unverified available version whose
+        originating Job stored the same upload digest can resume verification
+        without uploading again or deleting the prior version.
+        """
+        digest = plaintext_sha256.lower()
+        verified = self.connection.execute(
+            """
+            SELECT
+                id, object_key, provider_version_id, size AS cloud_size,
+                plaintext_sha256 AS version_sha256, integrity, availability,
+                storage_class, restore_state
+            FROM archive_versions
+            WHERE vault_file_id=%s
+              AND integrity='verified'
+              AND availability='available'
+              AND plaintext_sha256=%s
+              AND (restore_state IS NULL OR restore_state <> 'restoring')
+            ORDER BY version_number DESC
+            LIMIT 1
+            """,
+            (vault_file_id, digest),
+        ).fetchone()
+        if verified is not None:
+            return verified
+        return self.connection.execute(
+            """
+            SELECT
+                av.id, av.object_key, av.provider_version_id,
+                av.size AS cloud_size, av.plaintext_sha256 AS version_sha256,
+                av.integrity, av.availability, av.storage_class, av.restore_state
+            FROM archive_versions av
+            WHERE av.vault_file_id=%s
+              AND av.integrity='unverified'
+              AND av.availability='available'
+              AND (av.restore_state IS NULL OR av.restore_state <> 'restoring')
+              AND EXISTS (
+                  SELECT 1 FROM jobs prior
+                  WHERE prior.archive_version_id=av.id
+                    AND prior.upload_plaintext_sha256=%s
+              )
+            ORDER BY av.version_number DESC
+            LIMIT 1
+            """,
+            (vault_file_id, digest),
+        ).fetchone()
 
     def link_job_version(self, job_id: int, archive_version_id: str) -> None:
         self.connection.execute(
@@ -1977,11 +2033,7 @@ class ArchiveCatalog:
                 if local_exists
                 else "cloud_only"
             )
-            upload_eligible = (
-                row["local_presence"] == "present"
-                and row["local_file_type"] == "regular"
-                and not cloud_exists
-            )
+            upload_eligible = local_copy_is_upload_eligible(row)
             recoverable_count = int(row["recoverable_version_count"] or 0)
             recover_eligible = not local_exists and recoverable_count > 0
             cleanup_eligible = (
@@ -2254,11 +2306,7 @@ class ArchiveCatalog:
                 if local_exists
                 else "cloud_only"
             )
-            upload_eligible = (
-                row["local_presence"] == "present"
-                and row["local_file_type"] == "regular"
-                and not cloud_exists
-            )
+            upload_eligible = local_copy_is_upload_eligible(row)
             recoverable_count = int(row["recoverable_version_count"] or 0)
             recover_eligible = not local_exists and recoverable_count > 0
             cleanup_eligible = (
@@ -3171,11 +3219,11 @@ class ArchiveCatalog:
         target_class = (target_storage_class or "").upper() or None
         for row in candidates:
             if action == "upload":
-                allowed = (
-                    row["presence"] == "present"
-                    and row["file_type"] == "regular"
-                    and row["archive_version_id"] is None
-                )
+                # Cloud history is not protection. Admit a new Archive Version
+                # when the current Local Copy is not backed by a verified,
+                # available, digest-matching version. Unchanged protected
+                # content stays ineligible so duplicates are not queued.
+                allowed = local_copy_is_upload_eligible(row)
             elif action == "recover":
                 allowed = (
                     row["presence"] != "present"

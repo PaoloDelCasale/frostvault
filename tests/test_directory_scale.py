@@ -997,6 +997,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         self._seed_both_file(path="hash/me.bin")
         before = self.catalog.list_files_page(2)["items"][0]
         self.assertEqual(before["available_actions"]["free-space"], 1)
+        self.assertEqual(before["available_actions"]["upload"], 0)
 
         file_id = self.connection.execute(
             """
@@ -1023,6 +1024,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         after = self.catalog.list_files_page(2)["items"][0]
         self.assertEqual(after["available_actions"]["free-space"], 0)
+        self.assertEqual(after["available_actions"]["upload"], 1)
 
     def test_invalidate_for_archive_version_ids_marks_ancestors(self) -> None:
         self._seed_both_file(path="deep/nested/file.bin")

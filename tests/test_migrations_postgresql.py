@@ -555,6 +555,96 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertEqual(len(first), 1)
         self.assertEqual(duplicate, [])
 
+    def test_changed_local_copy_can_queue_second_upload_on_postgresql(self) -> None:
+        upgraded = run_alembic()
+        self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+        digest_a = "a" * 64
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO users(
+                    id, username, display_name, password_hash, is_admin
+                ) VALUES (7, 'owner', 'Owner', 'hash', TRUE)
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO vaults(
+                    id, slug, name, source_root, s3_bucket, s3_prefix,
+                    rclone_remote
+                ) VALUES (
+                    2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote'
+                )
+                """
+            )
+            catalog = ArchiveCatalog(connection)
+            catalog.observe_local_copy(
+                vault_id=2,
+                path="report.txt",
+                file_type="regular",
+                size=12,
+                mtime_ns=1,
+                observed_at="2026-07-21T10:00:00+00:00",
+            )
+            version_id = catalog.record_archive_version(
+                vault_id=2,
+                path="report.txt",
+                object_key="docs/report.txt",
+                provider_version_id="s3-a",
+                size=12,
+                storage_class="STANDARD",
+                etag="etag",
+                uploaded_at="2026-07-21T10:00:00+00:00",
+                observed_at="2026-07-21T10:00:00+00:00",
+                scan_id="scan-a",
+            )
+            catalog.mark_version_verified(
+                version_id,
+                plaintext_sha256=digest_a,
+                verified_at="2026-07-21T10:01:00+00:00",
+            )
+            catalog.set_local_fingerprint(
+                vault_id=2,
+                path="report.txt",
+                plaintext_sha256=digest_a,
+                matched_archive_version_id=version_id,
+            )
+            file_id = catalog.get_file_by_path(2, "report.txt")["id"]
+            protected, _, _ = catalog.queue_jobs(
+                vault_id=2,
+                path="report.txt",
+                action="upload",
+                requested_by=7,
+                requested_at="2026-07-21T10:02:00+00:00",
+                group_id="protected",
+                is_directory=False,
+            )
+            catalog.observe_local_copy(
+                vault_id=2,
+                path="report.txt",
+                file_type="regular",
+                size=20,
+                mtime_ns=2,
+                observed_at="2026-07-21T10:03:00+00:00",
+            )
+            changed, _, eligible = catalog.queue_jobs(
+                vault_id=2,
+                path="report.txt",
+                action="upload",
+                requested_by=7,
+                requested_at="2026-07-21T10:04:00+00:00",
+                group_id="changed",
+                is_directory=False,
+            )
+            row = catalog.list_file_rows(2)[0]
+            after_id = catalog.get_file_by_path(2, "report.txt")["id"]
+        self.assertEqual(protected, [])
+        self.assertEqual(len(changed), 1)
+        self.assertEqual(eligible, 1)
+        self.assertTrue(row["upload_eligible"])
+        self.assertEqual(row["state"], "both")
+        self.assertEqual(after_id, file_id)
+
     def test_terminal_job_commits_when_notification_savepoint_fails_on_postgresql(
         self,
     ) -> None:

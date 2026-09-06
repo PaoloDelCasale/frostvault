@@ -356,6 +356,92 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         self.assertEqual(queued, 0)
         self.assertEqual(total, 0)
 
+    def test_auto_upload_queues_changed_content_already_on_s3(self) -> None:
+        from app.services.operation_policies import queue_auto_uploads
+        from app.storage import now_iso
+        import os
+
+        target = self.source / "ready.txt"
+        original = b"version-a"
+        changed = b"version-b-is-longer"
+        target.write_bytes(original)
+        old = datetime(2026, 7, 1, 11, 0, tzinfo=timezone.utc).timestamp()
+        os.utime(target, (old, old))
+        now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+        digest = hashlib.sha256(original).hexdigest()
+        with SQLiteConnection(str(self.path)) as connection:
+            catalog = ArchiveCatalog(connection)
+            catalog.observe_local_copy(
+                vault_id=2,
+                path="ready.txt",
+                file_type="regular",
+                size=len(original),
+                mtime_ns=target.stat().st_mtime_ns,
+                observed_at=now_iso(),
+            )
+            version_id = catalog.record_archive_version(
+                vault_id=2,
+                path="ready.txt",
+                object_key="docs/ready.txt",
+                provider_version_id="s3-a",
+                size=len(original),
+                storage_class="STANDARD",
+                etag="etag",
+                uploaded_at="2026-07-01T11:00:00+00:00",
+                observed_at="2026-07-01T11:00:00+00:00",
+                scan_id="scan-a",
+            )
+            catalog.mark_version_verified(
+                version_id,
+                plaintext_sha256=digest,
+                verified_at="2026-07-01T11:01:00+00:00",
+            )
+            catalog.set_local_fingerprint(
+                vault_id=2,
+                path="ready.txt",
+                plaintext_sha256=digest,
+                matched_archive_version_id=version_id,
+            )
+            set_policy(
+                connection,
+                2,
+                OperationPolicy(auto_upload=True, stability_seconds=300),
+            )
+            skipped = queue_auto_uploads(
+                connection,
+                vault_id=2,
+                source_root=str(self.source),
+                requested_by=1,
+                now=now,
+            )
+            self.assertEqual(skipped, 0)
+
+            target.write_bytes(changed)
+            os.utime(target, (old, old))
+            catalog.observe_local_copy(
+                vault_id=2,
+                path="ready.txt",
+                file_type="regular",
+                size=len(changed),
+                mtime_ns=target.stat().st_mtime_ns,
+                observed_at=now_iso(),
+            )
+            queued = queue_auto_uploads(
+                connection,
+                vault_id=2,
+                source_root=str(self.source),
+                requested_by=1,
+                now=now,
+            )
+            jobs = connection.execute(
+                "SELECT path, action, archive_version_id FROM jobs"
+            ).fetchall()
+        self.assertEqual(queued, 1)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["path"], "ready.txt")
+        self.assertEqual(jobs[0]["action"], "upload")
+        self.assertIsNone(jobs[0]["archive_version_id"])
+
     def test_auto_cleanup_queues_only_matching_versions_past_retention(self) -> None:
         from app.services.operation_policies import queue_auto_local_cleanups
 
