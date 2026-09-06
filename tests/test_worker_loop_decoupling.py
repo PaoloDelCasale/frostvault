@@ -137,7 +137,7 @@ class WorkerLoopDecouplingTests(unittest.TestCase):
             job_id = int(job["id"])
             if job_id == slow_id:
                 slow_started.set()
-                release_slow.wait(timeout=5)
+                release_slow.wait(timeout=30)
                 finished.append(job_id)
                 return True
             finished.append(job_id)

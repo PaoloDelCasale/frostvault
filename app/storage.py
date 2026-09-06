@@ -6391,10 +6391,13 @@ def process_jobs_once(*, wait: bool = True) -> int:
                 seen_purge_groups.add(purge_group)
             eligible_candidates.append(job)
 
-    in_flight = _active_operation_count()
-    available_slots = max(0, int(runtime.operation_concurrency) - in_flight)
-    if available_slots <= 0:
-        return 0
+    concurrency = int(runtime.operation_concurrency)
+    if wait:
+        available_slots = concurrency
+    else:
+        available_slots = max(0, concurrency - _active_operation_count())
+        if available_slots <= 0:
+            return 0
     selected = select_fair_jobs(
         eligible_candidates,
         limit=available_slots,
@@ -6439,21 +6442,21 @@ def process_jobs_once(*, wait: bool = True) -> int:
                 job.update(claimed)
         claimed_jobs.append(job)
 
-    submitted: list[Future[Any]] = []
     if claimed_jobs:
-        executor = _operation_pool(int(runtime.operation_concurrency))
-        with _operation_lock:
-            for job in claimed_jobs:
-                job_id = int(job["id"])
-                if job_id in _operation_futures and not _operation_futures[job_id].done():
-                    continue
-                future = executor.submit(process_job, job)
-                _operation_futures[job_id] = future
-                submitted.append(future)
         if wait:
-            for future in submitted:
-                future.result()
-            _reap_operation_futures()
+            worker_count = min(concurrency, len(claimed_jobs))
+            with ThreadPoolExecutor(
+                max_workers=worker_count, thread_name_prefix="operation"
+            ) as executor:
+                list(executor.map(process_job, claimed_jobs))
+        else:
+            executor = _operation_pool(concurrency)
+            with _operation_lock:
+                for job in claimed_jobs:
+                    job_id = int(job["id"])
+                    if job_id in _operation_futures and not _operation_futures[job_id].done():
+                        continue
+                    _operation_futures[job_id] = executor.submit(process_job, job)
     return len(claimed_jobs)
 
 
