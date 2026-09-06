@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from itertools import islice
@@ -123,6 +123,15 @@ def scan_lock_for_vault(vault_id: int) -> threading.Lock:
         return scan_locks.setdefault(int(vault_id), threading.Lock())
 active_operation_processes: dict[int, subprocess.Popen[Any]] = {}
 cancelled_jobs: set[int] = set()
+# Long transfers stay on this pool so the worker loop can heartbeat, deliver
+# notifications, and start other Jobs without waiting for the whole batch.
+NOTIFICATION_MAX_LATENCY_SECONDS = 5.0
+_operation_executor: ThreadPoolExecutor | None = None
+_operation_futures: dict[int, Future[Any]] = {}
+_operation_lock = threading.Lock()
+_maintenance_executor: ThreadPoolExecutor | None = None
+_maintenance_futures: dict[str, Future[Any]] = {}
+_maintenance_lock = threading.Lock()
 
 # Streaming verification never materializes the remote plaintext.  Keep every
 # read bounded even when Rclone emits a very large object or a noisy diagnostic
@@ -6256,7 +6265,76 @@ def _restore_due_before(runtime: Any, *, current: datetime | None = None) -> str
     return (reference - timedelta(seconds=interval)).isoformat()
 
 
-def process_jobs_once() -> int:
+def _reap_operation_futures() -> None:
+    with _operation_lock:
+        finished = [
+            job_id
+            for job_id, future in _operation_futures.items()
+            if future.done()
+        ]
+        for job_id in finished:
+            _operation_futures.pop(job_id, None)
+
+
+def _active_operation_count() -> int:
+    _reap_operation_futures()
+    with _operation_lock:
+        return len(_operation_futures)
+
+
+def _operation_pool(max_workers: int) -> ThreadPoolExecutor:
+    global _operation_executor
+    workers = max(1, int(max_workers))
+    with _operation_lock:
+        if _operation_executor is None:
+            _operation_executor = ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix="operation",
+            )
+        return _operation_executor
+
+
+def _maintenance_pool() -> ThreadPoolExecutor:
+    global _maintenance_executor
+    with _maintenance_lock:
+        if _maintenance_executor is None:
+            _maintenance_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="maintenance",
+            )
+        return _maintenance_executor
+
+
+def _submit_maintenance(name: str, func: Callable[..., Any], *args: Any) -> None:
+    with _maintenance_lock:
+        existing = _maintenance_futures.get(name)
+        if existing is not None and not existing.done():
+            return
+        _maintenance_futures[name] = _maintenance_pool().submit(func, *args)
+
+
+def shutdown_background_executors() -> None:
+    """Release worker pools without waiting for long transfers to finish.
+
+    In-flight Jobs keep their durable leases; a later sweep recovers them.
+    Stale workers still cannot publish because claim checks remain in place.
+    """
+    global _operation_executor, _maintenance_executor
+    with _operation_lock:
+        executor = _operation_executor
+        _operation_executor = None
+        _operation_futures.clear()
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
+    with _maintenance_lock:
+        maintenance = _maintenance_executor
+        _maintenance_executor = None
+        _maintenance_futures.clear()
+    if maintenance is not None:
+        maintenance.shutdown(wait=False, cancel_futures=True)
+
+
+def process_jobs_once(*, wait: bool = True) -> int:
     """Claim and dispatch one fair, concurrency-bounded scheduler batch.
 
     Selecting candidates is intentionally separate from acquisition.  Every
@@ -6264,6 +6342,8 @@ def process_jobs_once() -> int:
     two processes may read the same queue but only one receives a claim token.
     Expired intermediate leases are reconciled first so a dead worker does not
     leave ``uploading``/``verifying``/``cleaning`` Jobs invisible to the scheduler.
+    When ``wait`` is false the caller keeps polling, delivering notifications,
+    and refreshing health while transfers continue on the operation pool.
     """
     reconcile_interrupted_jobs()
     now = now_iso()
@@ -6311,9 +6391,16 @@ def process_jobs_once() -> int:
                 seen_purge_groups.add(purge_group)
             eligible_candidates.append(job)
 
+    concurrency = int(runtime.operation_concurrency)
+    if wait:
+        available_slots = concurrency
+    else:
+        available_slots = max(0, concurrency - _active_operation_count())
+        if available_slots <= 0:
+            return 0
     selected = select_fair_jobs(
         eligible_candidates,
-        limit=int(runtime.operation_concurrency),
+        limit=available_slots,
     )
     claimed_jobs: list[dict[str, Any]] = []
     for job in selected:
@@ -6356,11 +6443,20 @@ def process_jobs_once() -> int:
         claimed_jobs.append(job)
 
     if claimed_jobs:
-        worker_count = min(int(runtime.operation_concurrency), len(claimed_jobs))
-        with ThreadPoolExecutor(
-            max_workers=worker_count, thread_name_prefix="operation"
-        ) as executor:
-            list(executor.map(process_job, claimed_jobs))
+        if wait:
+            worker_count = min(concurrency, len(claimed_jobs))
+            with ThreadPoolExecutor(
+                max_workers=worker_count, thread_name_prefix="operation"
+            ) as executor:
+                list(executor.map(process_job, claimed_jobs))
+        else:
+            executor = _operation_pool(concurrency)
+            with _operation_lock:
+                for job in claimed_jobs:
+                    job_id = int(job["id"])
+                    if job_id in _operation_futures and not _operation_futures[job_id].done():
+                        continue
+                    _operation_futures[job_id] = executor.submit(process_job, job)
     return len(claimed_jobs)
 
 
@@ -6692,72 +6788,93 @@ async def background_loop() -> None:
     last_backup = 0.0
     last_backup_verify = 0.0
     loop = asyncio.get_running_loop()
-    while True:
-        queued_count = 0
-        runtime = settings
-        health_service.mark_worker_heartbeat()
-        metrics_service.set_gauge("worker_up", 1)
-        try:
-            runtime = await asyncio.to_thread(_runtime_settings)
-            # Reconcile Source Volume identity even when filesystem watchers are
-            # disabled, before workers or scheduled scans can touch local data.
-            await asyncio.to_thread(source_layout.verify_mounts_once)
-            await asyncio.to_thread(process_jobs_once)
-            # Converge durable directory aggregate dirty/rebuild work off the
-            # /api/files request path (issue #229).
-            await asyncio.to_thread(process_directory_aggregate_maintenance)
-            await asyncio.to_thread(
-                vault_decommission_service.reconcile_all,
-                local_delete_enabled=runtime.allow_local_delete,
-                purge_delay_seconds=runtime.cloud_purge_delay_seconds,
-            )
-            # Backlog is measured independently from the selected batch: an
-            # active lease is no longer claimable, while every remaining due
-            # queued row is visible even when concurrency is small. Stuck
-            # intermediate Jobs with expired leases are a separate series.
-            queued_count = await asyncio.to_thread(claimable_queue_depth)
-            metrics_service.set_gauge("queue_depth", float(queued_count))
-            stuck_count, stuck_age = await asyncio.to_thread(observe_stuck_lease_jobs)
-            metrics_service.set_gauge("jobs_stuck", float(stuck_count))
-            metrics_service.set_gauge("jobs_stuck_oldest_age_seconds", stuck_age)
-            current = loop.time()
-            if current - last_scan >= runtime.scan_interval:
-                await asyncio.to_thread(scan_all_vaults)
-                last_scan = current
-            if current - last_audit >= runtime.audit_interval:
-                await asyncio.to_thread(audit_all_vaults)
-                last_audit = current
-            if (
-                runtime.metadata_backup_interval_seconds > 0
-                and current - last_backup >= runtime.metadata_backup_interval_seconds
-            ):
-                await asyncio.to_thread(_run_scheduled_metadata_backup_once)
-                last_backup = current
-            if (
-                runtime.metadata_backup_verify_interval_seconds > 0
-                and current - last_backup_verify
-                >= runtime.metadata_backup_verify_interval_seconds
-            ):
-                await asyncio.to_thread(_verify_latest_metadata_backup_once)
-                last_backup_verify = current
-            await asyncio.to_thread(_deliver_notifications_once)
-        except Exception as exc:
-            # Persist a classified error and alert seam instead of failing silently.
+    try:
+        while True:
+            queued_count = 0
+            runtime = settings
+            health_service.mark_worker_heartbeat()
+            metrics_service.set_gauge("worker_up", 1)
             try:
-                with db() as connection:
-                    worker_error_store.record_worker_error(
-                        connection,
-                        component="background_loop",
-                        exc=exc,
-                    )
-                metrics_service.inc(
-                    "worker_errors_total",
-                    classification=worker_error_store.classify_exception(exc),
+                runtime = await asyncio.to_thread(_runtime_settings)
+                # Reconcile Source Volume identity even when filesystem watchers are
+                # disabled, before workers or scheduled scans can touch local data.
+                await asyncio.to_thread(source_layout.verify_mounts_once)
+                await asyncio.to_thread(process_jobs_once, wait=False)
+                await asyncio.to_thread(_deliver_notifications_once)
+                # Converge durable directory aggregate dirty/rebuild work off the
+                # /api/files request path (issue #229).
+                await asyncio.to_thread(process_directory_aggregate_maintenance)
+                await asyncio.to_thread(
+                    vault_decommission_service.reconcile_all,
+                    local_delete_enabled=runtime.allow_local_delete,
+                    purge_delay_seconds=runtime.cloud_purge_delay_seconds,
                 )
-            except Exception:
-                # Last-resort: never let error accounting crash the loop.
-                pass
-            metrics_service.set_gauge("worker_up", 0)
-        batch_size = max(10, runtime.operation_concurrency * 10)
-        delay = 0.1 if queued_count >= batch_size else max(2, runtime.queue_poll_interval)
-        await asyncio.sleep(delay)
+                # Backlog is measured independently from the selected batch: an
+                # active lease is no longer claimable, while every remaining due
+                # queued row is visible even when concurrency is small. Stuck
+                # intermediate Jobs with expired leases are a separate series.
+                queued_count = await asyncio.to_thread(claimable_queue_depth)
+                metrics_service.set_gauge("queue_depth", float(queued_count))
+                stuck_count, stuck_age = await asyncio.to_thread(
+                    observe_stuck_lease_jobs
+                )
+                metrics_service.set_gauge("jobs_stuck", float(stuck_count))
+                metrics_service.set_gauge(
+                    "jobs_stuck_oldest_age_seconds", stuck_age
+                )
+                current = loop.time()
+                if current - last_scan >= runtime.scan_interval:
+                    _submit_maintenance("scan", scan_all_vaults)
+                    last_scan = current
+                if current - last_audit >= runtime.audit_interval:
+                    _submit_maintenance("audit", audit_all_vaults)
+                    last_audit = current
+                if (
+                    runtime.metadata_backup_interval_seconds > 0
+                    and current - last_backup
+                    >= runtime.metadata_backup_interval_seconds
+                ):
+                    _submit_maintenance(
+                        "backup", _run_scheduled_metadata_backup_once
+                    )
+                    last_backup = current
+                if (
+                    runtime.metadata_backup_verify_interval_seconds > 0
+                    and current - last_backup_verify
+                    >= runtime.metadata_backup_verify_interval_seconds
+                ):
+                    _submit_maintenance(
+                        "backup_verify", _verify_latest_metadata_backup_once
+                    )
+                    last_backup_verify = current
+                await asyncio.to_thread(_deliver_notifications_once)
+            except Exception as exc:
+                # Persist a classified error and alert seam instead of failing silently.
+                try:
+                    with db() as connection:
+                        worker_error_store.record_worker_error(
+                            connection,
+                            component="background_loop",
+                            exc=exc,
+                        )
+                    metrics_service.inc(
+                        "worker_errors_total",
+                        classification=worker_error_store.classify_exception(exc),
+                    )
+                except Exception:
+                    # Last-resort: never let error accounting crash the loop.
+                    pass
+                metrics_service.set_gauge("worker_up", 0)
+            batch_size = max(10, runtime.operation_concurrency * 10)
+            delay = (
+                0.1
+                if queued_count >= batch_size
+                else min(
+                    NOTIFICATION_MAX_LATENCY_SECONDS,
+                    max(0.1, float(runtime.queue_poll_interval or 2)),
+                )
+            )
+            await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        shutdown_background_executors()
+        raise
