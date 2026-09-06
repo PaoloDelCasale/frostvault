@@ -3730,39 +3730,6 @@ def remove_local_copies(vault: dict[str, Any], logical_path: str) -> list[Path]:
     return [target]
 
 
-def _download_plaintext_for_verification(
-    job: dict[str, Any],
-    *,
-    temporary: Path,
-) -> None:
-    """Materialize a rename verification copy (upload verification is streamed)."""
-    if vault_encrypts_names(job):
-        with vault_rclone_config(job) as runtime:
-            run_rclone(
-                "copyto",
-                f"{runtime.remote_name}:{job['path']}",
-                str(temporary),
-                *rclone_download_perf_args(),
-                job_progress_callback(job),
-                job_id=job["id"],
-                config_path=str(runtime.path),
-                bwlimit=job_bwlimit(job),
-            )
-    else:
-        run_rclone(
-            "copyto",
-            configured_rclone_destination(job, job["path"]),
-            str(temporary),
-            *rclone_download_perf_args(),
-            job_progress_callback(job),
-            job_id=job["id"],
-            bwlimit=job_bwlimit(job),
-        )
-    ensure_job_active(job["id"], "Upload stopped")
-    if not temporary.is_file():
-        raise RuntimeError("Rclone did not create the verification copy")
-
-
 def _verification_version_head(
     client: Any,
     job: dict[str, Any],
@@ -4299,6 +4266,155 @@ def ensure_scheduled_current_version(
         )
 
 
+def _head_exact_archive_version(
+    client: Any,
+    *,
+    bucket: str,
+    object_key: str,
+    provider_version_id: str | None,
+    operation: str,
+) -> dict[str, Any]:
+    """Prove one recorded S3 VersionId still exists and is not a delete marker."""
+    expected_version = str(provider_version_id or "")
+    if not object_key or not expected_version:
+        raise RuntimeError(
+            f"{operation} aborted: destination has no exact S3 VersionId"
+        )
+    try:
+        head = client.head_object(
+            Bucket=bucket,
+            Key=object_key,
+            VersionId=expected_version,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"{operation} aborted: destination VersionId {expected_version!r} "
+            "is not available"
+        ) from exc
+    if head.get("DeleteMarker"):
+        raise RuntimeError(
+            f"{operation} aborted: destination VersionId {expected_version!r} "
+            "is a delete marker"
+        )
+    observed = head.get("VersionId")
+    if not observed or str(observed) != expected_version:
+        raise RuntimeError(
+            f"{operation} aborted: destination VersionId {observed!r} does not "
+            f"match recorded Archive Version {expected_version!r}"
+        )
+    return head
+
+
+def _iter_reusable_rename_destinations(
+    rows: list[Any],
+    expected_digest: str | None,
+):
+    expected = str(expected_digest or "")
+    verified_matches: list[Any] = []
+    unverified: list[Any] = []
+    for row in rows:
+        availability = row["availability"] or "available"
+        integrity = row["integrity"] or "unverified"
+        if availability != "available" or not row["provider_version_id"]:
+            continue
+        if integrity == "verified":
+            if expected and str(row["plaintext_sha256"] or "") == expected:
+                verified_matches.append(row)
+        elif integrity == "unverified":
+            unverified.append(row)
+    yield from verified_matches
+    yield from unverified
+
+
+def _select_live_rename_destination(
+    client: Any,
+    *,
+    bucket: str,
+    rows: list[Any],
+    expected_digest: str | None,
+) -> Any | None:
+    """Return a live destination version that may be reused for rename.
+
+    Missing, purged, or different-digest verified versions never authorize
+    skipping copy or hiding the old key. An unverified available version can
+    resume verification of its exact VersionId.
+    """
+    for row in _iter_reusable_rename_destinations(rows, expected_digest):
+        try:
+            _head_exact_archive_version(
+                client,
+                bucket=bucket,
+                object_key=str(row["object_key"]),
+                provider_version_id=str(row["provider_version_id"]),
+                operation="Rename",
+            )
+        except RuntimeError:
+            continue
+        return row
+    return None
+
+
+def _verify_rename_destination_bytes(
+    job: dict[str, Any],
+    *,
+    version_id: str,
+    object_key: str,
+    provider_version_id: str,
+    expected_digest: str,
+    source: Path,
+) -> None:
+    """Hash the exact recorded destination VersionId before the old key is hidden."""
+    set_job(job["id"], "verifying", message_key="job.rename_verifying_new_key")
+    ensure_job_active(job["id"], "Rename claim was lost")
+    temporary = source.with_name(
+        f".{source.name}.verify-{uuid.uuid4().hex}.tmp"
+    )
+    try:
+        download_exact_version_plaintext(
+            job,
+            object_key=object_key,
+            provider_version_id=provider_version_id,
+            temporary=temporary,
+        )
+        remote_digest, _ = hash_stable_regular_file(temporary)
+    finally:
+        temporary.unlink(missing_ok=True)
+    if remote_digest != expected_digest:
+        ensure_job_active(job["id"], "Rename claim was lost")
+        with db() as connection:
+            ensure_job_claim_owned_in_transaction(
+                connection,
+                job,
+                "Rename claim was lost",
+            )
+            ArchiveCatalog(connection).mark_version_mismatch(
+                version_id,
+                plaintext_sha256=expected_digest,
+                checked_at=now_iso(),
+            )
+        raise RuntimeError("Cloud copy digest does not match local file")
+    ensure_job_active(job["id"], "Rename claim was lost")
+    verified_at = now_iso()
+    with db() as connection:
+        ensure_job_claim_owned_in_transaction(
+            connection,
+            job,
+            "Rename claim was lost",
+        )
+        catalog = ArchiveCatalog(connection)
+        catalog.mark_version_verified(
+            version_id,
+            plaintext_sha256=expected_digest,
+            verified_at=verified_at,
+        )
+        catalog.set_local_fingerprint(
+            vault_id=job["vault_id"],
+            path=job["path"],
+            plaintext_sha256=expected_digest,
+            matched_archive_version_id=version_id,
+        )
+
+
 def process_rename(job: dict[str, Any]) -> None:
     """Copy verified content to the new key, then hide the previous key."""
     ensure_job_active(job["id"], "Rename stopped")
@@ -4341,19 +4457,19 @@ def process_rename(job: dict[str, Any]) -> None:
             set_job(job["id"], "completed", message_key="job.rename_key_matches")
             return
 
+        client = s3_client()
         with db() as connection:
-            existing_new = connection.execute(
+            destination_rows = connection.execute(
                 """
-                SELECT id, plaintext_sha256
+                SELECT id, plaintext_sha256, integrity, availability,
+                       provider_version_id, size, object_key
                 FROM archive_versions
                 WHERE vault_file_id=%s
                   AND object_key=%s
-                  AND integrity='verified'
                 ORDER BY version_number DESC
-                LIMIT 1
                 """,
                 (job["vault_file_id"], new_key),
-            ).fetchone()
+            ).fetchall()
             existing_marker = connection.execute(
                 """
                 SELECT id FROM delete_markers
@@ -4363,8 +4479,18 @@ def process_rename(job: dict[str, Any]) -> None:
                 (job["vault_file_id"], old_key),
             ).fetchone()
 
-        if existing_marker is not None and existing_new is not None:
-            catalog_link = existing_new["id"]
+        live_destination = _select_live_rename_destination(
+            client,
+            bucket=job["s3_bucket"],
+            rows=destination_rows,
+            expected_digest=previous.get("plaintext_sha256"),
+        )
+        if (
+            existing_marker is not None
+            and live_destination is not None
+            and live_destination["integrity"] == "verified"
+        ):
+            catalog_link = str(live_destination["id"])
             with db() as connection:
                 ensure_job_claim_owned_in_transaction(
                     connection,
@@ -4375,15 +4501,35 @@ def process_rename(job: dict[str, Any]) -> None:
             set_job(job["id"], "completed", message_key="job.rename_already_completed")
             return
 
-        version_id: str | None = existing_new["id"] if existing_new else None
+        version_id: str | None = None
+        destination_version_id: str | None = None
         source_stat = source.stat(follow_symlinks=False)
-        plaintext_sha256 = (
-            existing_new["plaintext_sha256"]
-            if existing_new and existing_new["plaintext_sha256"]
-            else None
-        )
+        plaintext_sha256 = previous.get("plaintext_sha256")
 
-        if version_id is None:
+        if live_destination is not None:
+            version_id = str(live_destination["id"])
+            destination_version_id = str(live_destination["provider_version_id"])
+            if live_destination["integrity"] == "verified":
+                plaintext_sha256 = live_destination["plaintext_sha256"]
+            else:
+                set_job(job["id"], "uploading", message_key="job.hashing_local_file")
+                plaintext_sha256, source_stat = hash_stable_regular_file(source)
+                if (
+                    previous["plaintext_sha256"]
+                    and previous["plaintext_sha256"] != plaintext_sha256
+                ):
+                    raise RuntimeError(
+                        "Local file digest no longer matches the archived version"
+                    )
+                _verify_rename_destination_bytes(
+                    job,
+                    version_id=version_id,
+                    object_key=new_key,
+                    provider_version_id=destination_version_id,
+                    expected_digest=str(plaintext_sha256),
+                    source=source,
+                )
+        else:
             set_job(job["id"], "uploading", message_key="job.hashing_local_file")
             plaintext_sha256, source_stat = hash_stable_regular_file(source)
             if (
@@ -4417,7 +4563,7 @@ def process_rename(job: dict[str, Any]) -> None:
                     bwlimit=job_bwlimit(job),
                 )
                 ensure_job_active(job["id"], "Rename stopped")
-            head = s3_client().head_object(Bucket=job["s3_bucket"], Key=new_key)
+            head = client.head_object(Bucket=job["s3_bucket"], Key=new_key)
             provider_version_id = head.get("VersionId")
             if not provider_version_id:
                 raise RuntimeError(
@@ -4426,7 +4572,7 @@ def process_rename(job: dict[str, Any]) -> None:
             applied_policy_id = None
             if policy_id:
                 apply_version_policy_tag(
-                    s3_client(),
+                    client,
                     bucket=job["s3_bucket"],
                     key=new_key,
                     version_id=provider_version_id,
@@ -4457,6 +4603,7 @@ def process_rename(job: dict[str, Any]) -> None:
                     desired_policy_id=policy_id,
                     applied_policy_id=applied_policy_id,
                 )
+            destination_version_id = str(provider_version_id)
             ensure_job_active(job["id"], "Rename stopped")
             after = source.stat(follow_symlinks=False)
             if (
@@ -4466,53 +4613,38 @@ def process_rename(job: dict[str, Any]) -> None:
                 or after.st_ino != source_stat.st_ino
             ):
                 raise RuntimeError("Local file changed since fingerprinting")
-            set_job(job["id"], "verifying", message_key="job.rename_verifying_new_key")
-            ensure_job_active(job["id"], "Rename claim was lost")
-            temporary = source.with_name(
-                f".{source.name}.verify-{uuid.uuid4().hex}.tmp"
+            _verify_rename_destination_bytes(
+                job,
+                version_id=str(version_id),
+                object_key=new_key,
+                provider_version_id=destination_version_id,
+                expected_digest=str(plaintext_sha256),
+                source=source,
             )
-            try:
-                _download_plaintext_for_verification(job, temporary=temporary)
-                remote_digest, _ = hash_stable_regular_file(temporary)
-            finally:
-                temporary.unlink(missing_ok=True)
-            if remote_digest != plaintext_sha256:
-                ensure_job_active(job["id"], "Rename claim was lost")
-                with db() as connection:
-                    ensure_job_claim_owned_in_transaction(
-                        connection,
-                        job,
-                        "Rename claim was lost",
-                    )
-                    ArchiveCatalog(connection).mark_version_mismatch(
-                        version_id,
-                        plaintext_sha256=plaintext_sha256,
-                        checked_at=now_iso(),
-                    )
-                raise RuntimeError("Cloud copy digest does not match local file")
-            ensure_job_active(job["id"], "Rename claim was lost")
-            verified_at = now_iso()
+
+        assert version_id is not None and destination_version_id is not None
+        ensure_job_active(job["id"], "Rename stopped")
+        _head_exact_archive_version(
+            client,
+            bucket=job["s3_bucket"],
+            object_key=new_key,
+            provider_version_id=destination_version_id,
+            operation="Rename",
+        )
+        if existing_marker is not None:
             with db() as connection:
                 ensure_job_claim_owned_in_transaction(
                     connection,
                     job,
                     "Rename claim was lost",
                 )
-                catalog = ArchiveCatalog(connection)
-                catalog.mark_version_verified(
-                    version_id,
-                    plaintext_sha256=plaintext_sha256,
-                    verified_at=verified_at,
-                )
-                catalog.set_local_fingerprint(
-                    vault_id=job["vault_id"],
-                    path=job["path"],
-                    plaintext_sha256=plaintext_sha256,
-                    matched_archive_version_id=version_id,
-                )
-
-        assert version_id is not None
-        ensure_job_active(job["id"], "Rename stopped")
+                ArchiveCatalog(connection).link_job_version(job["id"], version_id)
+            set_job_progress(
+                job["id"],
+                int(job.get("total_bytes") or getattr(source_stat, "st_size", 0) or 0),
+            )
+            set_job(job["id"], "completed", message_key="job.rename_verified")
+            return
         set_job(job["id"], "cleaning", message_key="job.rename_hiding_previous")
         ensure_scheduled_current_version(
             bucket=job["s3_bucket"],
@@ -4521,7 +4653,7 @@ def process_rename(job: dict[str, Any]) -> None:
             operation="Rename hide",
         )
         ensure_job_active(job["id"], "Rename claim was lost")
-        delete_result = s3_client().delete_object(
+        delete_result = client.delete_object(
             Bucket=job["s3_bucket"],
             Key=old_key,
         )
