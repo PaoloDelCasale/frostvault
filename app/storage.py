@@ -3942,93 +3942,148 @@ def process_upload(job: dict[str, Any]) -> None:
                     job,
                     "Upload claim was lost",
                 )
-                ArchiveCatalog(connection).set_upload_plaintext_digest(
+                catalog = ArchiveCatalog(connection)
+                catalog.set_upload_plaintext_digest(
                     job["id"],
                     plaintext_sha256=upload_digest,
                 )
+                reusable = catalog.find_reusable_upload_version(
+                    vault_file_id=str(job["vault_file_id"]),
+                    plaintext_sha256=upload_digest,
+                )
             job["upload_plaintext_sha256"] = upload_digest
-            upload_key = "job.encrypted_upload" if is_crypt else "job.plain_upload"
-            set_job(job["id"], "uploading", message_key=upload_key)
-            if encrypts_names:
-                with vault_rclone_config(job) as runtime:
+            reusable_integrity = (
+                str(reusable.get("integrity") or "") if reusable is not None else ""
+            )
+            if reusable is not None and reusable_integrity == "verified":
+                version_id = str(reusable["id"])
+                with db() as connection:
+                    ensure_job_claim_owned_in_transaction(
+                        connection,
+                        job,
+                        "Upload claim was lost",
+                    )
+                    catalog = ArchiveCatalog(connection)
+                    catalog.link_job_version(job["id"], version_id)
+                    catalog.set_local_fingerprint(
+                        vault_id=job["vault_id"],
+                        path=job["path"],
+                        plaintext_sha256=upload_digest,
+                        matched_archive_version_id=version_id,
+                    )
+                set_job_progress(
+                    job["id"], int(job.get("total_bytes") or source_stat.st_size)
+                )
+                set_job(job["id"], "completed", message_key="job.upload_verified")
+                return
+            if reusable is not None and reusable_integrity == "unverified":
+                if not reusable.get("object_key") or not reusable.get(
+                    "provider_version_id"
+                ):
+                    raise RuntimeError(
+                        "The linked Archive Version cannot be verified safely"
+                    )
+                version_id = str(reusable["id"])
+                with db() as connection:
+                    ensure_job_claim_owned_in_transaction(
+                        connection,
+                        job,
+                        "Upload claim was lost",
+                    )
+                    ArchiveCatalog(connection).link_job_version(job["id"], version_id)
+                target = {
+                    "archive_version_id": version_id,
+                    "object_key": reusable["object_key"],
+                    "provider_version_id": reusable["provider_version_id"],
+                    "cloud_size": reusable["cloud_size"],
+                    "upload_plaintext_sha256": upload_digest,
+                    "integrity": "unverified",
+                    "availability": reusable.get("availability") or "available",
+                }
+                head = _verification_version_head(client, job, target)
+            else:
+                upload_key = "job.encrypted_upload" if is_crypt else "job.plain_upload"
+                set_job(job["id"], "uploading", message_key=upload_key)
+                if encrypts_names:
+                    with vault_rclone_config(job) as runtime:
+                        run_rclone(
+                            "copyto",
+                            str(source),
+                            f"{runtime.remote_name}:{job['path']}",
+                            job_progress_callback(job),
+                            job_id=job["id"],
+                            config_path=str(runtime.path),
+                            bwlimit=job_bwlimit(job),
+                        )
+                        ensure_job_active(job["id"], "Upload stopped")
+                        key = expected_cloud_key(
+                            job["path"],
+                            job["s3_prefix"],
+                            is_crypt,
+                            encrypted_names=True,
+                            runtime=runtime,
+                        )
+                else:
                     run_rclone(
                         "copyto",
                         str(source),
-                        f"{runtime.remote_name}:{job['path']}",
+                        configured_rclone_destination(job, job["path"]),
                         job_progress_callback(job),
                         job_id=job["id"],
-                        config_path=str(runtime.path),
                         bwlimit=job_bwlimit(job),
                     )
                     ensure_job_active(job["id"], "Upload stopped")
-                    key = expected_cloud_key(
-                        job["path"],
-                        job["s3_prefix"],
-                        is_crypt,
-                        encrypted_names=True,
-                        runtime=runtime,
+                    key = expected_cloud_key(job["path"], job["s3_prefix"], is_crypt)
+                head = client.head_object(Bucket=job["s3_bucket"], Key=key)
+                provider_version_id = head.get("VersionId")
+                if not provider_version_id:
+                    raise RuntimeError(
+                        "Upload stored without an S3 VersionId; bucket Versioning is required"
                     )
-            else:
-                run_rclone(
-                    "copyto",
-                    str(source),
-                    configured_rclone_destination(job, job["path"]),
-                    job_progress_callback(job),
-                    job_id=job["id"],
-                    bwlimit=job_bwlimit(job),
-                )
-                ensure_job_active(job["id"], "Upload stopped")
-                key = expected_cloud_key(job["path"], job["s3_prefix"], is_crypt)
-            head = client.head_object(Bucket=job["s3_bucket"], Key=key)
-            provider_version_id = head.get("VersionId")
-            if not provider_version_id:
-                raise RuntimeError(
-                    "Upload stored without an S3 VersionId; bucket Versioning is required"
-                )
-            applied_policy_id = None
-            if policy_id:
-                apply_version_policy_tag(
-                    client,
-                    bucket=job["s3_bucket"],
-                    key=key,
-                    version_id=provider_version_id,
-                    policy_id=policy_id,
-                )
-                applied_policy_id = policy_id
-            ensure_job_active(job["id"], "Upload claim was lost")
-            timestamp = now_iso()
-            with db() as connection:
-                ensure_job_claim_owned_in_transaction(
-                    connection,
-                    job,
-                    "Upload claim was lost",
-                )
-                catalog = ArchiveCatalog(connection)
-                version_id = catalog.record_archive_version(
-                    vault_id=job["vault_id"],
-                    path=job["path"],
-                    object_key=key,
-                    provider_version_id=provider_version_id,
-                    size=head.get("ContentLength"),
-                    storage_class=head.get("StorageClass", "STANDARD"),
-                    etag=head.get("ETag", "").strip('"'),
-                    uploaded_at=timestamp,
-                    observed_at=timestamp,
-                    scan_id=timestamp,
-                    origin="upload",
-                    desired_policy_id=policy_id,
-                    applied_policy_id=applied_policy_id,
-                )
-                catalog.link_job_version(job["id"], version_id)
-            target = {
-                "archive_version_id": version_id,
-                "object_key": key,
-                "provider_version_id": provider_version_id,
-                "cloud_size": head.get("ContentLength"),
-                "upload_plaintext_sha256": upload_digest,
-                "integrity": "unverified",
-                "availability": "available",
-            }
+                applied_policy_id = None
+                if policy_id:
+                    apply_version_policy_tag(
+                        client,
+                        bucket=job["s3_bucket"],
+                        key=key,
+                        version_id=provider_version_id,
+                        policy_id=policy_id,
+                    )
+                    applied_policy_id = policy_id
+                ensure_job_active(job["id"], "Upload claim was lost")
+                timestamp = now_iso()
+                with db() as connection:
+                    ensure_job_claim_owned_in_transaction(
+                        connection,
+                        job,
+                        "Upload claim was lost",
+                    )
+                    catalog = ArchiveCatalog(connection)
+                    version_id = catalog.record_archive_version(
+                        vault_id=job["vault_id"],
+                        path=job["path"],
+                        object_key=key,
+                        provider_version_id=provider_version_id,
+                        size=head.get("ContentLength"),
+                        storage_class=head.get("StorageClass", "STANDARD"),
+                        etag=head.get("ETag", "").strip('"'),
+                        uploaded_at=timestamp,
+                        observed_at=timestamp,
+                        scan_id=timestamp,
+                        origin="upload",
+                        desired_policy_id=policy_id,
+                        applied_policy_id=applied_policy_id,
+                    )
+                    catalog.link_job_version(job["id"], version_id)
+                target = {
+                    "archive_version_id": version_id,
+                    "object_key": key,
+                    "provider_version_id": provider_version_id,
+                    "cloud_size": head.get("ContentLength"),
+                    "upload_plaintext_sha256": upload_digest,
+                    "integrity": "unverified",
+                    "availability": "available",
+                }
 
         ensure_job_active(job["id"], "Upload stopped")
         after = source.stat(follow_symlinks=False)
