@@ -1,4 +1,11 @@
-"""In-process Prometheus-style metrics with low-cardinality labels (issue #16)."""
+"""In-process Prometheus-style metrics with low-cardinality labels (issue #16).
+
+Counters are process-local: a restart starts them at zero, and each worker
+process must be scraped independently. Durable Job failures that happened
+before this process started are visible on the ``jobs_failed_backlog``
+gauges instead. Counter series are omitted until the first increment so a
+dashboard can tell "no events this process" from an explicit zero.
+"""
 from __future__ import annotations
 
 import threading
@@ -34,6 +41,8 @@ _ALLOWED_METRICS = {
     "queue_depth": "gauge",
     "jobs_stuck": "gauge",
     "jobs_stuck_oldest_age_seconds": "gauge",
+    "jobs_failed_backlog": "gauge",
+    "jobs_failed_oldest_age_seconds": "gauge",
     "jobs_notification_backlog": "gauge",
     "worker_up": "gauge",
     "metadata_backup_last_success_unixtime": "gauge",

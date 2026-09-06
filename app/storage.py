@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import configparser
+import contextvars
 import hashlib
 import json
 import os
@@ -13,7 +14,7 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -183,6 +184,20 @@ EXPIRED_LEASE_RECONCILE_BATCH = 100
 JOB_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 JOB_LEASE_HELD_STATUSES = frozenset(
     {"downloading", "uploading", "verifying", "cleaning"}
+)
+_JOB_COUNTER_ACTIONS = frozenset(
+    {
+        "upload",
+        "recover",
+        "free-space",
+        "rename",
+        "cloud-archive",
+        "cloud-purge",
+        "storage-class",
+    }
+)
+_pending_job_counters: contextvars.ContextVar[list[tuple[str, str]] | None] = (
+    contextvars.ContextVar("pending_job_counters", default=None)
 )
 _INTERRUPTED_JOB_SQL = """
 (
@@ -2810,6 +2825,48 @@ def _claim_write_succeeded(result: Any) -> bool:
     return rowcount is None or rowcount != 0
 
 
+def _job_counter_action(action: str | None) -> str:
+    value = str(action or "other")
+    return value if value in _JOB_COUNTER_ACTIONS else "other"
+
+
+def _inc_job_counter(kind: str, action: str | None) -> None:
+    names = {
+        "completed": "jobs_completed_total",
+        "failed": "jobs_failed_total",
+        "retries": "jobs_retries_total",
+    }
+    try:
+        metrics_service.inc(names[kind], action=_job_counter_action(action))
+    except Exception:
+        pass
+
+
+def _record_committed_job_counter(kind: str, action: str | None) -> None:
+    """Count a committed Job outcome, or defer until the outer transaction."""
+    pending = _pending_job_counters.get()
+    if pending is not None:
+        pending.append((kind, _job_counter_action(action)))
+        return
+    _inc_job_counter(kind, action)
+
+
+@contextmanager
+def _defer_job_counters() -> Iterator[None]:
+    """Hold Job counters until the surrounding DB transaction commits."""
+    items: list[tuple[str, str]] = []
+    token = _pending_job_counters.set(items)
+    try:
+        yield
+    except BaseException:
+        raise
+    else:
+        for kind, action in items:
+            _inc_job_counter(kind, action)
+    finally:
+        _pending_job_counters.reset(token)
+
+
 def set_job(
     job_id: int,
     status: str,
@@ -2834,7 +2891,16 @@ def set_job(
         return False
     claim_token = _claim_token_for(job_id)
     held = status in JOB_LEASE_HELD_STATUSES
+    previous_status = None
+    action = None
     with db() as connection:
+        current = connection.execute(
+            "SELECT status, action FROM jobs WHERE id=%s",
+            (job_id,),
+        ).fetchone()
+        if current is not None:
+            previous_status = current["status"]
+            action = current["action"]
         notify_sql = ""
         if status in {"completed", "failed"}:
             notify_sql = ", terminal_notification_status='pending'"
@@ -2899,6 +2965,15 @@ def set_job(
             notification_service.enqueue_job_terminal_notification_best_effort(
                 connection, job_id=job_id
             )
+    if (
+        updated
+        and status in {"completed", "failed"}
+        and previous_status not in JOB_TERMINAL_STATUSES
+    ):
+        _record_committed_job_counter(
+            "completed" if status == "completed" else "failed",
+            action,
+        )
     return updated
 
 
@@ -2928,7 +3003,14 @@ def schedule_upload_retry(
     if _claim_is_lost(job_id):
         return False
     claim_token = _claim_token_for(job_id)
+    action = None
     with db() as connection:
+        current = connection.execute(
+            "SELECT action FROM jobs WHERE id=%s",
+            (job_id,),
+        ).fetchone()
+        if current is not None:
+            action = current["action"]
         if claim_token:
             result = connection.execute(
                 """
@@ -2984,7 +3066,10 @@ def schedule_upload_retry(
                     job_id,
                 ),
             )
-    return _claim_write_succeeded(result)
+    updated = _claim_write_succeeded(result)
+    if updated:
+        _record_committed_job_counter("retries", action)
+    return updated
 
 
 def set_job_progress(
@@ -3115,7 +3200,16 @@ def _reconcile_job_transition(
         """,
         (message, timestamp, timestamp, job_id),
     )
-    return _claim_write_succeeded(result)
+    updated = _claim_write_succeeded(result)
+    if updated and status in {"completed", "failed"}:
+        row = connection.execute(
+            "SELECT action FROM jobs WHERE id=%s",
+            (job_id,),
+        ).fetchone()
+        _record_committed_job_counter(
+            status, row["action"] if row is not None else None
+        )
+    return updated
 
 
 def _object_version_entries(
@@ -3616,7 +3710,33 @@ def observe_stuck_lease_jobs() -> tuple[int, float]:
     return count, max(0.0, (now - stamp).total_seconds())
 
 
+def observe_failed_job_backlog() -> tuple[int, float]:
+    """Count durable failed Jobs so scrapers see pre-restart failures."""
+    now = datetime.now(timezone.utc)
+    with db() as connection:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS total, MIN(updated_at) AS oldest_update
+            FROM jobs
+            WHERE status='failed'
+            """
+        ).fetchone()
+    count = int(row["total"] or 0) if row is not None else 0
+    if count <= 0:
+        return 0, 0.0
+    stamp = _parse_iso_datetime((row or {}).get("oldest_update"))
+    if stamp is None:
+        return count, 0.0
+    return count, max(0.0, (now - stamp).total_seconds())
+
+
 def reconcile_interrupted_jobs() -> dict[str, int]:
+    """Reconcile expired or legacy durable worker states."""
+    with _defer_job_counters():
+        return _reconcile_interrupted_jobs_impl()
+
+
+def _reconcile_interrupted_jobs_impl() -> dict[str, int]:
     """Reconcile expired or legacy durable worker states.
 
     A live lease is authoritative even when another process is sweeping.  The
@@ -6445,6 +6565,14 @@ def process_jobs_once(*, wait: bool = True) -> int:
     and refreshing health while transfers continue on the operation pool.
     """
     reconcile_interrupted_jobs()
+    try:
+        failed_count, failed_age = observe_failed_job_backlog()
+        metrics_service.set_gauge("jobs_failed_backlog", float(failed_count))
+        metrics_service.set_gauge(
+            "jobs_failed_oldest_age_seconds", failed_age
+        )
+    except Exception:
+        pass
     now = now_iso()
     current = datetime.now(timezone.utc)
     with db() as connection:
@@ -6952,6 +7080,15 @@ async def background_loop() -> None:
                 metrics_service.set_gauge("jobs_stuck", float(stuck_count))
                 metrics_service.set_gauge(
                     "jobs_stuck_oldest_age_seconds", stuck_age
+                )
+                failed_count, failed_age = await asyncio.to_thread(
+                    observe_failed_job_backlog
+                )
+                metrics_service.set_gauge(
+                    "jobs_failed_backlog", float(failed_count)
+                )
+                metrics_service.set_gauge(
+                    "jobs_failed_oldest_age_seconds", failed_age
                 )
                 current = loop.time()
                 if current - last_scan >= runtime.scan_interval:
