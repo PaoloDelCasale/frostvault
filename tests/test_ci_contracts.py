@@ -469,6 +469,7 @@ class ContainerPublishContractTests(unittest.TestCase):
         workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
         text = path.read_text(encoding="utf-8")
         self.assertEqual((workflow.get("permissions") or {}).get("packages"), "write")
+        self.assertEqual((workflow.get("permissions") or {}).get("checks"), "read")
         self.assertIn("ghcr.io/paolodelcasale/frostvault", text)
         self.assertIn("docker build", text)
         self.assertIn("docker push", text)
@@ -480,6 +481,28 @@ class ContainerPublishContractTests(unittest.TestCase):
         self.assertIn('pushed_digest" != "$source_digest', text)
         # Repo Actions allowlist blocks docker/* marketplace actions.
         self.assertNotRegex(text, r"(?m)^\s*uses:\s*docker/")
+
+    def test_publish_requires_commit_ci_without_privileged_triggers(self) -> None:
+        path = WORKFLOWS / "publish-image.yml"
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        triggers = _workflow_on(workflow)
+        self.assertNotIn("workflow_run", triggers)
+        self.assertNotIn("pull_request_target", triggers)
+        self.assertIn("require-ci", workflow["jobs"])
+        self.assertEqual(workflow["jobs"]["publish"].get("needs"), "require-ci")
+        self.assertIn("scripts/require_commit_checks.py", text)
+        script = (ROOT / "scripts" / "require_commit_checks.py").read_text(encoding="utf-8")
+        for name in (
+            "Unit and migration tests",
+            "PostgreSQL migration and concurrency tests",
+            "S3-compatible integrity (MinIO)",
+            "Frontend generate and typecheck",
+            "Frontend production build",
+        ):
+            self.assertIn(name, script)
+        self.assertIn('ref: ${{ needs.require-ci.outputs.sha }}', text)
+        self.assertIn('git rev-parse "v${PROMOTE_TAG}^{commit}"', text)
 
 
 class ProductionImagePostgresClientContractTests(unittest.TestCase):

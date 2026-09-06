@@ -53,13 +53,24 @@ or the CLI above against the same bucket/prefix if leftovers remain.
 Workflow: [`.github/workflows/publish-image.yml`](../.github/workflows/publish-image.yml)
 
 - Triggers: push to `main`, version tags `v*`, and `workflow_dispatch`.
+  `workflow_run` and `pull_request_target` are forbidden.
+- A `require-ci` job gates publish on the **exact commit SHA** (or the git tag
+  `vX.Y.Z` when promoting). It waits for GitHub check runs from [CI](../.github/workflows/migrations.yml):
+  SQLite aggregate, PostgreSQL 16, MinIO S3-compatible integrity, frontend
+  generate/typecheck/lint/unit/Node 24/build, Playwright (375 and 1280), and
+  the production-image PostgreSQL backup. Missing, pending, cancelled, skipped,
+  or failed checks block the image. The script is
+  [`scripts/require_commit_checks.py`](../scripts/require_commit_checks.py).
 - Publishes `ghcr.io/paolodelcasale/frostvault`: every build gets a short
-  `sha-` tag; version tags also get the full semver, major/minor, and `latest`
-  tags. Ordinary `main` pushes do not move `latest`, so it remains the newest
-  published release.
+  `sha-` tag from the gated SHA; version tags also get the full semver,
+  major/minor, and `latest` tags. Ordinary `main` pushes do not move `latest`,
+  so it remains the newest published release.
 - A manual dispatch may set `promote_tag` to an existing full semantic version
-  such as `0.3.0`. The workflow then promotes that exact manifest to `latest`
-  without rebuilding it and fails if the resulting digests differ.
+  such as `0.3.0`. The workflow resolves `v0.3.0` to a commit, requires that
+  commit's checks, then promotes that exact manifest to `latest` without
+  rebuilding it and fails if the resulting digests differ.
+- Live AWS S3 proofs stay **manual** via [Optional manual AWS proofs](#optional-manual-aws-proofs).
+  They are not a publish gate; MinIO covers S3-compatible integrity in CI.
 - Compose files pull this image; operators do not need a local image build for a
   standard deploy.
 
