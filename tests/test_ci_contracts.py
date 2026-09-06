@@ -67,6 +67,25 @@ class PullRequestCiContractTests(unittest.TestCase):
             any("tsc -b && vite build" in block for block in build_runs)
         )
 
+        lint_node = next(
+            step["with"]["node-version"]
+            for step in jobs["frontend-lint-test"]["steps"]
+            if str(step.get("uses", "")).startswith("actions/setup-node@")
+        )
+        self.assertEqual(lint_node, "22")
+
+        node24 = jobs["frontend-unit-tests-node24"]
+        node24_runs = [step.get("run", "") for step in node24["steps"]]
+        node24_version = next(
+            step["with"]["node-version"]
+            for step in node24["steps"]
+            if str(step.get("uses", "")).startswith("actions/setup-node@")
+        )
+        self.assertEqual(node24_version, "24")
+        self.assertTrue(any("npm ci" in block for block in node24_runs))
+        self.assertTrue(any("npm run test" in block for block in node24_runs))
+        self.assertFalse(any("npm run lint" in block for block in node24_runs))
+
     def test_frontend_typecheck_refreshes_artifacts_before_strict_checks(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
         steps = workflow["jobs"]["frontend-typecheck"]["steps"]
