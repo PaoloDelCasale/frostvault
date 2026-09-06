@@ -2742,6 +2742,9 @@ def set_job(
     claim_token = _claim_token_for(job_id)
     held = status in JOB_LEASE_HELD_STATUSES
     with db() as connection:
+        notify_sql = ""
+        if status in {"completed", "failed"}:
+            notify_sql = ", terminal_notification_status='pending'"
         if claim_token:
             lease_set = (
                 "claim_expires_at=%s"
@@ -2759,7 +2762,7 @@ def set_job(
                     message_key=%s,
                     message_params=%s,
                     updated_at=%s,
-                    {lease_set}
+                    {lease_set}{notify_sql}
                 WHERE id=%s
                   AND claim_token=%s
                   AND claim_expires_at IS NOT NULL
@@ -2780,13 +2783,13 @@ def set_job(
             )
         else:
             result = connection.execute(
-                """
+                f"""
                 UPDATE jobs
                 SET status=%s,
                     message=%s,
                     message_key=%s,
                     message_params=%s,
-                    updated_at=%s
+                    updated_at=%s{notify_sql}
                 WHERE id=%s
                 """,
                 (
@@ -3006,9 +3009,12 @@ def _reconcile_job_transition(
         progress_sql = ", transferred_bytes=0"
     elif complete_progress:
         progress_sql = ", transferred_bytes=total_bytes"
+    notify_sql = ""
+    if status in {"completed", "failed"}:
+        notify_sql = ", terminal_notification_status='pending'"
     result = connection.execute(
         f"""
-        UPDATE jobs SET status='{status}'{progress_sql},
+        UPDATE jobs SET status='{status}'{progress_sql}{notify_sql},
             message=%s, updated_at=%s,
             claim_token=NULL, claimed_at=NULL, claim_expires_at=NULL
         WHERE {_reconcile_claim_is_stale_sql()} AND id=%s
@@ -6642,6 +6648,20 @@ def _deliver_notifications_once() -> None:
     """Best-effort outbound notification delivery pass."""
     try:
         with db() as connection:
+            notification_service.reconcile_pending_terminal_notifications(
+                connection
+            )
+            try:
+                metrics_service.set_gauge(
+                    "jobs_notification_backlog",
+                    float(
+                        notification_service.pending_terminal_notification_count(
+                            connection
+                        )
+                    ),
+                )
+            except Exception:
+                pass
             push_client = None
             from .config import push_configured
 

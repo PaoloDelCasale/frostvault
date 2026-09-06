@@ -608,7 +608,7 @@ class NotificationDeliveryTests(unittest.TestCase):
                 enqueued = notifications.enqueue_job_terminal_notification_best_effort(
                     connection, job_id=self.job_id
                 )
-            self.assertEqual(enqueued, 0)
+            self.assertIsNone(enqueued)
 
         with SQLiteConnection(str(self.path)) as connection:
             job = connection.execute(

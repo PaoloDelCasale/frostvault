@@ -721,7 +721,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 enqueued = notifications.enqueue_job_terminal_notification_best_effort(
                     connection, job_id=job_id
                 )
-            self.assertEqual(enqueued, 0)
+            self.assertIsNone(enqueued)
             self.assertEqual(
                 connection.execute(
                     "SELECT status FROM jobs WHERE id=%s", (job_id,)
