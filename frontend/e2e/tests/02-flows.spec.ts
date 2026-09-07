@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import {
   applySession,
@@ -28,6 +28,15 @@ async function vaultSelect(page: Page) {
     return drawer.getByLabel(/^vault$/i);
   }
   return page.getByLabel(/^vault$/i).locator("visible=true").first();
+}
+
+async function chooseMenuOption(
+  page: Page,
+  trigger: Locator,
+  name: string | RegExp,
+) {
+  await trigger.click();
+  await page.getByRole("option", { name }).click();
 }
 
 async function languageSelect(page: Page) {
@@ -62,7 +71,11 @@ test.describe("archive flows", () => {
     await expect(page).toHaveURL(/q=readme/, { timeout: 5_000 });
     await expect(page.getByText("readme.txt").locator("visible=true").first()).toBeVisible();
 
-    await page.getByTestId("state-filter").selectOption("both");
+    await chooseMenuOption(
+      page,
+      page.getByTestId("state-filter"),
+      /local and cloud/i,
+    );
     await expect(page).toHaveURL(/state=both/);
   });
 
@@ -89,9 +102,8 @@ test.describe("archive flows", () => {
         .getByRole("button", { name: /free local space|libera spazio/i })
         .click();
     } else {
-      await page
-        .locator('[data-testid="desktop-actions-note.txt"] button[data-action="free-space"]')
-        .click();
+      await page.getByTestId("more-actions-desktop-note.txt").click();
+      await page.getByRole("menuitem", { name: /free local space/i }).click();
     }
 
     const dialog = page.getByRole("alertdialog");
@@ -108,7 +120,7 @@ test.describe("archive flows", () => {
     }
     const select = await vaultSelect(page);
     await expect(select).toBeVisible();
-    await select.selectOption({ label: "Secondary Archive" });
+    await chooseMenuOption(page, select, "Secondary Archive");
     await expect(page.getByRole("heading", { name: /secondary archive/i })).toBeVisible();
     await expect(page.getByText("hello.txt").locator("visible=true").first()).toBeVisible();
   });

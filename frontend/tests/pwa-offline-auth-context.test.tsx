@@ -448,10 +448,8 @@ describe("App offline cache authorization transitions", () => {
     await screen.findAllByText("vault-a.txt");
     const baseline = worker.posted.length;
     transitionStart = baseline;
-    await user.selectOptions(
-      screen.getAllByRole("combobox", { name: "Vault" })[0]!,
-      "202",
-    );
+    await user.click(screen.getAllByRole("combobox", { name: "Vault" })[0]!);
+    await user.click(await screen.findByRole("option", { name: "Vault B" }));
 
     await waitFor(() => {
       expect(timeline).toContain("begin-then-select");
@@ -497,9 +495,8 @@ describe("App offline cache authorization transitions", () => {
     vi.useFakeTimers();
     worker.setResponsive(false);
 
-    fireEvent.change(screen.getAllByRole("combobox", { name: "Vault" })[0]!, {
-      target: { value: "202" },
-    });
+    fireEvent.click(screen.getAllByRole("combobox", { name: "Vault" })[0]!);
+    fireEvent.click(screen.getByRole("option", { name: "Vault B" }));
     expect(offlineFileStorageKeys()).toEqual([]);
     expect(selected).toBe(false);
 
