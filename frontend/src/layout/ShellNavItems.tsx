@@ -1,3 +1,5 @@
+import { MenuSelect } from "@/components/MenuSelect";
+
 import { shellLabel } from "./labels";
 import type { ShellCapabilities, ShellNavHandlers } from "./types";
 
@@ -32,13 +34,26 @@ export function ShellNavItems({
   const compact = density === "primary";
   const actionClass =
     "min-h-11 rounded-[10px] border border-input bg-surface px-4 text-left font-bold text-ink";
-  const selectClass =
-    "min-h-11 rounded-[10px] border border-input bg-surface px-3 text-ink";
-  // Desktop primary sits in a shrink-0 / nowrap cluster; cap intrinsic option
-  // width so long Vault names cannot blow out the single-row header.
-  const compactSelectClass = `${selectClass} min-w-0 max-w-[12rem]`;
   const vaultLabel = shellLabel(t, "ui.vault", "Vault");
   const manageAccessLabel = shellLabel(t, "ui.manage_access", "Manage access");
+
+  const switcher = (
+    <MenuSelect
+      label={vaultLabel}
+      value={String(selectedVaultId || "")}
+      options={vaults.map((vault) => ({
+        value: String(vault.id),
+        label: vault.name,
+      }))}
+      onValueChange={(next) => {
+        const id = Number(next);
+        if (!Number.isNaN(id)) handlers?.onVaultChange?.(id);
+      }}
+      placement={compact ? "overlay" : "inline"}
+      className={compact ? "min-w-0 max-w-[12rem]" : "w-full"}
+      triggerClassName={compact ? "min-w-0 max-w-[12rem]" : undefined}
+    />
+  );
 
   return (
     <div
@@ -50,40 +65,12 @@ export function ShellNavItems({
       }
     >
       {compact ? (
-        <select
-          aria-label={vaultLabel}
-          className={compactSelectClass}
-          value={selectedVaultId}
-          onChange={(event) => {
-            const id = Number(event.target.value);
-            if (!Number.isNaN(id)) handlers?.onVaultChange?.(id);
-          }}
-        >
-          {vaults.map((vault) => (
-            <option key={vault.id} value={vault.id}>
-              {vault.name}
-            </option>
-          ))}
-        </select>
+        switcher
       ) : (
-        <label className="flex min-h-11 flex-col justify-center gap-1 text-sm font-bold text-muted">
+        <div className="flex min-h-11 flex-col justify-center gap-1 text-sm font-bold text-muted">
           <span>{vaultLabel}</span>
-          <select
-            aria-label={vaultLabel}
-            className={selectClass}
-            value={selectedVaultId}
-            onChange={(event) => {
-              const id = Number(event.target.value);
-              if (!Number.isNaN(id)) handlers?.onVaultChange?.(id);
-            }}
-          >
-            {vaults.map((vault) => (
-              <option key={vault.id} value={vault.id}>
-                {vault.name}
-              </option>
-            ))}
-          </select>
-        </label>
+          {switcher}
+        </div>
       )}
 
       {isVaultOwner ? (

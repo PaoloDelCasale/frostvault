@@ -259,14 +259,17 @@ describe("App drawer capability filtering", () => {
         expect.stringMatching(/^max-w-/),
       ]),
     );
-    expect(desktopSelect).toHaveValue("1");
+    expect(desktopSelect).toHaveTextContent(longName);
+    await user.click(desktopSelect);
+    const desktopList = await screen.findByRole("listbox");
     expect(
-      within(desktopSelect).getByRole("option", { name: longName }),
+      within(desktopList).getByRole("option", { name: longName }),
     ).toBeInTheDocument();
     // Ordinary short names remain first-class options in the same control.
     expect(
-      within(desktopSelect).getByRole("option", { name: "Docs" }),
+      within(desktopList).getByRole("option", { name: "Docs" }),
     ).toBeInTheDocument();
+    await user.keyboard("{Escape}");
 
     // Mobile stacked drawer select stays unconstrained by the desktop clamp.
     const drawer = await openDrawer(user);
@@ -277,9 +280,10 @@ describe("App drawer capability filtering", () => {
     expect(drawerClasses).not.toEqual(
       expect.arrayContaining([expect.stringMatching(/^max-w-/)]),
     );
-    expect(drawerSelect).toHaveValue("1");
+    expect(drawerSelect).toHaveTextContent(longName);
+    await user.click(drawerSelect);
     expect(
-      within(drawerSelect).getByRole("option", { name: longName }),
+      await screen.findByRole("option", { name: longName }),
     ).toBeInTheDocument();
   });
 });

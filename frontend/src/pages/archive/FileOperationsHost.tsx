@@ -38,7 +38,7 @@ import type {
   JobGroup,
   RecoverEstimateResponse,
 } from "@/api/types";
-import { BottomSheet, type BottomSheetAction } from "@/components/BottomSheet";
+import { BottomSheet } from "@/components/BottomSheet";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Toast } from "@/components/Toast";
 import { ensurePushSubscription } from "@/pwa";
@@ -48,6 +48,8 @@ import {
   actionLabel,
   availableActions,
   endpointForAction,
+  groupRowActions,
+  ROW_ACTION_CATEGORY_LABEL_KEYS,
   isDestructiveAction,
   type ManualStorageClass,
   type RowActionId,
@@ -474,15 +476,18 @@ export function FileOperationsHost({
   );
 
   const sheetItem = sheetPath ? itemsByPath.get(sheetPath) : undefined;
-  const sheetActions: BottomSheetAction[] = sheetItem
-    ? availableActions(sheetItem, capabilities).map((action) => ({
-        id: action.id,
-        label: actionLabel(action.id, t, {
-          count: action.count,
-          isDirectory: isDirectory(sheetItem),
-        }),
-        description: actionHint(action.id, t),
-        tone: action.tone,
+  const sheetGroups = sheetItem
+    ? groupRowActions(availableActions(sheetItem, capabilities)).map((group) => ({
+        label: t(ROW_ACTION_CATEGORY_LABEL_KEYS[group.category]),
+        actions: group.actions.map((action) => ({
+          id: action.id,
+          label: actionLabel(action.id, t, {
+            count: action.count,
+            isDirectory: isDirectory(sheetItem),
+          }),
+          description: actionHint(action.id, t),
+          tone: action.tone,
+        })),
       }))
     : [];
 
@@ -642,7 +647,7 @@ export function FileOperationsHost({
             ? t("ui.row_actions_title", { name: sheetItem.name })
             : t("ui.more_actions")
         }
-        actions={sheetActions}
+        groups={sheetGroups}
         onAction={(actionId) => {
           if (!sheetPath) return;
           void startActionFlow(actionId as RowActionId, sheetPath);

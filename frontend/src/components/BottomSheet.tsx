@@ -11,21 +11,78 @@ export type BottomSheetAction = {
   tone?: "danger" | "default";
 };
 
+export type BottomSheetActionGroup = {
+  label: string;
+  actions: BottomSheetAction[];
+};
+
 type BottomSheetProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
-  actions: BottomSheetAction[];
+  actions?: BottomSheetAction[];
+  groups?: BottomSheetActionGroup[];
   onAction: (actionId: string) => void;
 };
+
+function ActionList({
+  actions,
+  onAction,
+  onOpenChange,
+}: {
+  actions: BottomSheetAction[];
+  onAction: (actionId: string) => void;
+  onOpenChange: (open: boolean) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      {actions.map((action) => (
+        <Button
+          key={action.id}
+          type="button"
+          variant={action.tone === "danger" ? "danger" : "secondary"}
+          className={cn(
+            "min-h-11 w-full justify-start px-4",
+            action.description &&
+              "h-auto min-h-11 flex-col items-start gap-1 whitespace-normal py-3",
+          )}
+          onClick={() => {
+            onAction(action.id);
+            onOpenChange(false);
+          }}
+        >
+          <span className="w-full text-left font-semibold text-wrap">
+            {action.label}
+          </span>
+          {action.description ? (
+            <span
+              className={cn(
+                "w-full text-left text-sm font-normal leading-snug text-pretty",
+                action.tone === "danger" ? "text-white" : "text-ink",
+              )}
+            >
+              {action.description}
+            </span>
+          ) : null}
+        </Button>
+      ))}
+    </div>
+  );
+}
 
 export function BottomSheet({
   open,
   onOpenChange,
   title,
-  actions,
+  actions = [],
+  groups,
   onAction,
 }: BottomSheetProps) {
+  const renderedGroups =
+    groups && groups.length > 0
+      ? groups
+      : [{ label: "", actions }];
+
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -41,36 +98,20 @@ export function BottomSheet({
           <Dialog.Title className="mb-3 break-words text-base font-bold leading-snug text-ink">
             {title}
           </Dialog.Title>
-          <div className="flex flex-col gap-2">
-            {actions.map((action) => (
-              <Button
-                key={action.id}
-                type="button"
-                variant={action.tone === "danger" ? "danger" : "secondary"}
-                className={cn(
-                  "min-h-11 w-full justify-start px-4",
-                  action.description &&
-                    "h-auto min-h-11 flex-col items-start gap-1 whitespace-normal py-3",
-                )}
-                onClick={() => {
-                  onAction(action.id);
-                  onOpenChange(false);
-                }}
-              >
-                <span className="w-full text-left font-semibold text-wrap">
-                  {action.label}
-                </span>
-                {action.description ? (
-                  <span
-                    className={cn(
-                      "w-full text-left text-sm font-normal leading-snug text-pretty",
-                      action.tone === "danger" ? "text-white" : "text-ink",
-                    )}
-                  >
-                    {action.description}
-                  </span>
+          <div className="flex max-h-[min(70svh,32rem)] flex-col gap-4 overflow-y-auto">
+            {renderedGroups.map((group, index) => (
+              <div key={group.label || `group-${index}`} className="flex flex-col gap-2">
+                {group.label ? (
+                  <p className="text-xs font-bold tracking-wide text-muted uppercase">
+                    {group.label}
+                  </p>
                 ) : null}
-              </Button>
+                <ActionList
+                  actions={group.actions}
+                  onAction={onAction}
+                  onOpenChange={onOpenChange}
+                />
+              </div>
             ))}
           </div>
         </Dialog.Content>

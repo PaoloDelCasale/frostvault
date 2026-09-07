@@ -10,6 +10,7 @@ import {
   jobsQueryOptions,
 } from "@/api";
 import type { FilesResponse } from "@/api/types";
+import { MenuSelect } from "@/components/MenuSelect";
 import { Button } from "@/components/ui/button";
 import {
   isBrowserOffline,
@@ -31,6 +32,12 @@ import {
   isBreadcrumbEllipsis,
   parentDirectory,
 } from "./fileLabels";
+import {
+  parseFileSortKey,
+  parseFileSortOrder,
+  type FileSortKey,
+  type FileSortOrder,
+} from "./fileSort";
 import { PathHistoryPanel } from "./PathHistoryPanel";
 import { RenameCandidatesPanel } from "./RenameCandidatesPanel";
 
@@ -59,7 +66,10 @@ function readSearchParams(): {
   directory: string;
   q: string;
   state: string;
+  storage: string;
   page: number;
+  sort: FileSortKey;
+  order: FileSortOrder;
 } {
   const params = new URLSearchParams(window.location.search);
   const pageRaw = Number(params.get("page") || "1");
@@ -67,7 +77,10 @@ function readSearchParams(): {
     directory: params.get("directory") || "",
     q: params.get("q") || "",
     state: params.get("state") || "",
+    storage: params.get("storage") || "",
     page: Number.isFinite(pageRaw) && pageRaw >= 1 ? pageRaw : 1,
+    sort: parseFileSortKey(params.get("sort")),
+    order: parseFileSortOrder(params.get("order")),
   };
 }
 
@@ -76,7 +89,10 @@ function writeSearchParams(
     directory: string;
     q: string;
     state: string;
+    storage: string;
     page: number;
+    sort: FileSortKey;
+    order: FileSortOrder;
   },
   mode: "push" | "replace",
 ) {
@@ -87,8 +103,14 @@ function writeSearchParams(
   else url.searchParams.delete("q");
   if (next.state) url.searchParams.set("state", next.state);
   else url.searchParams.delete("state");
+  if (next.storage) url.searchParams.set("storage", next.storage);
+  else url.searchParams.delete("storage");
   if (next.page > 1) url.searchParams.set("page", String(next.page));
   else url.searchParams.delete("page");
+  if (next.sort !== "name") url.searchParams.set("sort", next.sort);
+  else url.searchParams.delete("sort");
+  if (next.order !== "asc") url.searchParams.set("order", next.order);
+  else url.searchParams.delete("order");
   const href = `${url.pathname}${url.search}${url.hash}`;
   if (mode === "push") {
     window.history.pushState({ ...next }, "", href);
@@ -115,7 +137,10 @@ export function FileBrowser({
   const [qInput, setQInput] = useState(initial.q);
   const [q, setQ] = useState(initial.q);
   const [state, setState] = useState(initial.state);
+  const [storage, setStorage] = useState(initial.storage);
   const [page, setPage] = useState(initial.page);
+  const [sortKey, setSortKey] = useState<FileSortKey>(initial.sort);
+  const [sortOrder, setSortOrder] = useState<FileSortOrder>(initial.order);
   const [sheetPath, setSheetPath] = useState<string | null>(() => {
     // Capture helper: ?sheet=<path> opens the actions bottom sheet.
     return getDemoSearchParam("sheet");
@@ -132,11 +157,14 @@ export function FileBrowser({
     () => ({
       q,
       state,
+      storage,
       directory,
       page,
       page_size: DEFAULT_PAGE_SIZE,
+      sort: sortKey,
+      order: sortOrder,
     }),
-    [q, state, directory, page],
+    [q, state, storage, directory, page, sortKey, sortOrder],
   );
   const offlineCacheContext = useMemo<OfflineCacheContext | null>(() => {
     const context = {
@@ -154,9 +182,12 @@ export function FileBrowser({
     offlineCacheContext?.authorizationGeneration ?? "no-authorization",
     query.q ?? "",
     query.state ?? "",
+    typeof query.storage === "string" ? query.storage : "",
     query.directory ?? "",
     query.page ?? 1,
     query.page_size ?? DEFAULT_PAGE_SIZE,
+    query.sort ?? "name",
+    query.order ?? "asc",
   ] as const;
   const offlineCacheHeaders = offlineFileCacheRequestHeaders(
     offlineCacheLease,
@@ -292,10 +323,21 @@ export function FileBrowser({
       if (qInput === q) return;
       setQ(qInput);
       setPage(1);
-      writeSearchParams({ directory, q: qInput, state, page: 1 }, "replace");
+      writeSearchParams(
+        {
+          directory,
+          q: qInput,
+          state,
+          storage,
+          page: 1,
+          sort: sortKey,
+          order: sortOrder,
+        },
+        "replace",
+      );
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [qInput, q, directory, state]);
+  }, [qInput, q, directory, state, storage, sortKey, sortOrder]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -304,7 +346,10 @@ export function FileBrowser({
       setQInput(next.q);
       setQ(next.q);
       setState(next.state);
+      setStorage(next.storage);
       setPage(next.page);
+      setSortKey(next.sort);
+      setSortOrder(next.order);
       setHistoryPath(null);
     };
     window.addEventListener("popstate", onPopState);
@@ -318,20 +363,92 @@ export function FileBrowser({
     setDirectory(path);
     setQInput("");
     setQ("");
+    setState("");
+    setStorage("");
     setPage(1);
     setHistoryPath(null);
-    writeSearchParams({ directory: path, q: "", state, page: 1 }, historyMode);
+    writeSearchParams(
+      {
+        directory: path,
+        q: "",
+        state: "",
+        storage: "",
+        page: 1,
+        sort: sortKey,
+        order: sortOrder,
+      },
+      historyMode,
+    );
   }
 
   function changeState(nextState: string) {
     setState(nextState);
     setPage(1);
-    writeSearchParams({ directory, q, state: nextState, page: 1 }, "replace");
+    writeSearchParams(
+      {
+        directory,
+        q,
+        state: nextState,
+        storage,
+        page: 1,
+        sort: sortKey,
+        order: sortOrder,
+      },
+      "replace",
+    );
+  }
+
+  function changeStorage(nextStorage: string) {
+    setStorage(nextStorage);
+    setPage(1);
+    writeSearchParams(
+      {
+        directory,
+        q,
+        state,
+        storage: nextStorage,
+        page: 1,
+        sort: sortKey,
+        order: sortOrder,
+      },
+      "replace",
+    );
   }
 
   function changePage(nextPage: number) {
     setPage(nextPage);
-    writeSearchParams({ directory, q, state, page: nextPage }, "replace");
+    writeSearchParams(
+      {
+        directory,
+        q,
+        state,
+        storage,
+        page: nextPage,
+        sort: sortKey,
+        order: sortOrder,
+      },
+      "replace",
+    );
+  }
+
+  function changeSort(nextKey: FileSortKey) {
+    const nextOrder: FileSortOrder =
+      sortKey === nextKey && sortOrder === "asc" ? "desc" : "asc";
+    setSortKey(nextKey);
+    setSortOrder(nextOrder);
+    setPage(1);
+    writeSearchParams(
+      {
+        directory,
+        q,
+        state,
+        storage,
+        page: 1,
+        sort: nextKey,
+        order: nextOrder,
+      },
+      "replace",
+    );
   }
 
   const crumbs = buildBreadcrumbs(directory, t("ui.breadcrumb_archive"));
@@ -353,7 +470,43 @@ export function FileBrowser({
       : Math.max(1, Math.ceil(total / DEFAULT_PAGE_SIZE));
   const unit =
     data?.mode === "search" ? t("ui.files_found_unit") : t("ui.items_unit");
-  const hasFilter = Boolean(q || state);
+  const listingFacets = displayData as
+    | (FilesResponse & {
+        state_counts?: Record<string, number>;
+        storage_counts?: Record<string, number>;
+      })
+    | undefined;
+  const stateCounts = listingFacets?.state_counts;
+  const storageCounts = listingFacets?.storage_counts;
+  const hasFilter = Boolean(q || state || storage);
+  const stateFilterOptions = [
+    { value: "", label: t("ui.all_items") },
+    { value: "local_only", label: t("state.filter.local_only") },
+    { value: "both", label: t("state.filter.both") },
+    { value: "cloud_only", label: t("state.filter.cloud_only") },
+    { value: "restoring", label: t("state.filter.restoring") },
+  ].filter(
+    (option) =>
+      !option.value ||
+      option.value === state ||
+      !stateCounts ||
+      (stateCounts[option.value] ?? 0) > 0,
+  );
+  const storageFilterOptions = [
+    { value: "", label: t("ui.all_storage_classes") },
+    { value: "STANDARD", label: t("storage.STANDARD") },
+    { value: "STANDARD_IA", label: t("storage.STANDARD_IA") },
+    { value: "GLACIER_IR", label: t("storage.GLACIER_IR") },
+    { value: "GLACIER", label: t("storage.GLACIER") },
+    { value: "DEEP_ARCHIVE", label: t("storage.DEEP_ARCHIVE") },
+    { value: "none", label: t("ui.storage_none") },
+  ].filter(
+    (option) =>
+      !option.value ||
+      option.value === storage ||
+      !storageCounts ||
+      (storageCounts[option.value] ?? 0) > 0,
+  );
   const emptyMessage = hasFilter
     ? t("ui.empty_no_matches")
     : t("ui.empty_no_files");
@@ -401,19 +554,25 @@ export function FileBrowser({
           </label>
           <label className="shrink-0">
             <span className="sr-only">{t("ui.filter_by_state")}</span>
-            <select
+            <MenuSelect
+              label={t("ui.filter_by_state")}
               value={state}
-              onChange={(event) => changeState(event.target.value)}
-              className="min-h-11 w-full rounded-lg border border-input bg-surface px-3 text-sm font-bold text-ink sm:w-auto"
+              onValueChange={changeState}
               data-testid="state-filter"
-              aria-label={t("ui.filter_by_state")}
-            >
-              <option value="">{t("ui.all_items")}</option>
-              <option value="local_only">{t("state.filter.local_only")}</option>
-              <option value="both">{t("state.filter.both")}</option>
-              <option value="cloud_only">{t("state.filter.cloud_only")}</option>
-              <option value="restoring">{t("state.filter.restoring")}</option>
-            </select>
+              className="w-full sm:w-[16rem]"
+              options={stateFilterOptions}
+            />
+          </label>
+          <label className="shrink-0">
+            <span className="sr-only">{t("ui.filter_by_storage")}</span>
+            <MenuSelect
+              label={t("ui.filter_by_storage")}
+              value={storage}
+              onValueChange={changeStorage}
+              data-testid="storage-filter"
+              className="w-full sm:w-[16rem]"
+              options={storageFilterOptions}
+            />
           </label>
         </div>
 
@@ -581,6 +740,9 @@ export function FileBrowser({
                 items={data.items}
                 t={t}
                 capabilities={capabilities}
+                sortKey={sortKey}
+                sortOrder={sortOrder}
+                onSort={changeSort}
                 onOpenDirectory={(path) => navigateDirectory(path)}
                 onOpenFile={(path) => setHistoryPath(path)}
                 onOpenActions={onOpenActions}

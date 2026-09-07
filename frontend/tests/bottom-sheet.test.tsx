@@ -41,7 +41,7 @@ describe("BottomSheet", () => {
 
   it("wraps long action descriptions instead of clipping them", async () => {
     const longHint =
-      "Deletes every Archive Version and Delete Marker in the cloud. Local files on the server are not deleted.";
+      "Deletes every Archive Version and Delete Marker in the cloud. Local files are not deleted.";
 
     render(
       <BottomSheet

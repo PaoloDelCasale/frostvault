@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { formatBytes, formatCount, pickDurationUnit } from "@/pages/archive/format";
+import {
+  formatBytes,
+  formatCompactCount,
+  formatCount,
+  pickDurationUnit,
+} from "@/pages/archive/format";
 
 describe("formatBytes", () => {
   // Independent expected values (not recomputed via /1024 loops).
@@ -43,5 +48,14 @@ describe("formatCount", () => {
     expect(formatCount(0)).toBe("0");
     expect(formatCount(12)).toBe("12");
     expect(formatCount(1234)).toBe("1,234");
+  });
+});
+
+describe("formatCompactCount", () => {
+  it("keeps small counts exact and compactifies large ones", () => {
+    expect(formatCompactCount(0)).toBe("0");
+    expect(formatCompactCount(999)).toBe("999");
+    expect(formatCompactCount(1200)).toBe("1.2K");
+    expect(formatCompactCount(1_000_000)).toBe("1M");
   });
 });

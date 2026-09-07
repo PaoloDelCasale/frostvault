@@ -5,6 +5,8 @@ import {
   actionHint,
   availableActions,
   endpointForAction,
+  groupRowActions,
+  partitionRowActions,
   type VaultCapabilities,
 } from "@/pages/archive/actions";
 
@@ -230,6 +232,25 @@ describe("availableActions — capability gating (seam 2)", () => {
       (a) => a.id === "cloud-purge",
     );
     expect(purge?.count).toBe(3);
+  });
+});
+
+describe("partitionRowActions — essential vs overflow", () => {
+  it("keeps upload/recover inline and groups the rest", () => {
+    const { primary, overflow } = partitionRowActions(
+      availableActions(eligibleFile, ownerCaps),
+    );
+    expect(primary.map((action) => action.id)).toEqual(["upload", "recover"]);
+    expect(overflow.map((action) => action.id)).toEqual([
+      "free-space",
+      "storage-class",
+      "lifecycle-pin",
+      "cloud-archive",
+      "cloud-purge",
+    ]);
+    expect(
+      groupRowActions(overflow).map((group) => group.category),
+    ).toEqual(["copies", "storage", "deletion"]);
   });
 });
 

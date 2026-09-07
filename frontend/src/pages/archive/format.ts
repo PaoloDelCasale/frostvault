@@ -33,3 +33,14 @@ export function pickDurationUnit(seconds: number): { value: number; unit: Durati
 export function formatCount(value: number): string {
   return value.toLocaleString("en-US");
 }
+
+/** Short counts for tight UI (state breakdown chips). 999 stays 999; 1200 → 1.2K. */
+export function formatCompactCount(value: number): string {
+  const n = Math.max(0, Math.round(Number(value)));
+  if (!Number.isFinite(n)) return "0";
+  if (n < 1000) return String(n);
+  return new Intl.NumberFormat("en", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(n);
+}

@@ -50,14 +50,14 @@ const messages: Record<string, string> = {
   "ui.file_list_loading": "Loading folder…",
   "ui.file_list_error": "Unable to load this folder.",
   "ui.file_list_retry": "Retry",
-  "state.both": "Server + cloud",
-  "state.local_only": "Server only",
+  "state.both": "Local and cloud",
+  "state.local_only": "Local only",
   "state.cloud_only": "Cloud only",
   "state.restoring": "Recovery in progress",
   "state.mixed": "Mixed state",
   "state.missing": "Unavailable",
-  "state.filter.local_only": "Server only",
-  "state.filter.both": "Server and cloud",
+  "state.filter.local_only": "Local only",
+  "state.filter.both": "Local and cloud",
   "state.filter.cloud_only": "Cloud only",
   "state.filter.restoring": "Recovery in progress",
   "storage.STANDARD": "Standard",
@@ -207,22 +207,22 @@ describe("FileBrowser — cards and table from /api/files", () => {
     expect(within(table).getAllByText("1.5 KB").length).toBeGreaterThan(0);
     expect(within(cards).getAllByText("Mixed state").length).toBeGreaterThan(0);
     expect(within(table).getAllByText("Mixed state").length).toBeGreaterThan(0);
-    expect(within(cards).getAllByText("Server + cloud").length).toBeGreaterThan(0);
-    expect(within(table).getAllByText("Server + cloud").length).toBeGreaterThan(0);
+    expect(within(cards).getAllByText("Local and cloud").length).toBeGreaterThan(0);
+    expect(within(table).getAllByText("Local and cloud").length).toBeGreaterThan(0);
     expect(within(cards).getAllByText("Deep Archive").length).toBeGreaterThan(0);
     expect(within(table).getAllByText("Deep Archive").length).toBeGreaterThan(0);
     expect(within(cards).getAllByText("2 cloud classes").length).toBeGreaterThan(0);
     expect(within(table).getAllByText("2 cloud classes").length).toBeGreaterThan(0);
 
-    // Actions: ⋯ on cards (bottom sheet in #67); inline buttons on the table
+    // Actions: ⋯ on cards; table keeps Upload/Recover inline and the rest in ⋯
     expect(within(cards).getAllByRole("button", { name: "More actions" })).toHaveLength(3);
-    expect(within(table).queryAllByRole("button", { name: "More actions" })).toHaveLength(0);
+    expect(within(table).getAllByRole("button", { name: "More actions" })).toHaveLength(3);
     expect(
       within(table).getByTestId("desktop-actions-readme.txt"),
     ).toBeInTheDocument();
     expect(
-      within(table).getByRole("button", { name: "Free local space" }),
-    ).toBeInTheDocument();
+      within(table).queryByRole("button", { name: "Free local space" }),
+    ).not.toBeInTheDocument();
     expect(
       within(table).getByRole("button", { name: "Recover" }),
     ).toBeInTheDocument();
@@ -556,7 +556,8 @@ describe("FileBrowser — search, filter, pagination", () => {
     renderBrowser();
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
-    await user.selectOptions(screen.getByTestId("state-filter"), "cloud_only");
+    await user.click(screen.getByTestId("state-filter"));
+    await user.click(screen.getByRole("option", { name: messages["state.filter.cloud_only"] }));
     await waitFor(() => {
       expect(lastFilesParams().get("state")).toBe("cloud_only");
     });
