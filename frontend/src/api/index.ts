@@ -85,6 +85,7 @@ export {
   fetchVaultQuotas,
   fetchVaults,
   lookupVaultUser,
+  suggestVaultUsers,
   logout,
   previewCloudDeletion,
   previewOperationGlobs,

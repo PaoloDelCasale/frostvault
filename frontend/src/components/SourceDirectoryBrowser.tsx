@@ -153,7 +153,7 @@ export function SourceDirectoryBrowser({
                       type="button"
                       disabled={disabledSelect}
                       aria-pressed={selected}
-                      className="shrink-0 rounded-[10px] border border-edge px-3 py-1 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-50"
+                      className="shrink-0 rounded-[10px] border border-edge px-3 py-1 text-xs font-bold transition-[background-color,border-color] duration-150 hover:border-[var(--interactive-border-hover)] hover:bg-green-soft focus-visible:border-ring focus-visible:bg-green-soft disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
                       onClick={() => onSelect(entry.relative_path)}
                     >
                       {selected
@@ -172,7 +172,7 @@ export function SourceDirectoryBrowser({
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            className="rounded-[10px] border border-edge px-3 py-1 text-xs font-bold"
+            className="rounded-[10px] border border-edge px-3 py-1 text-xs font-bold transition-[background-color,border-color] duration-150 hover:border-[var(--interactive-border-hover)] hover:bg-green-soft focus-visible:border-ring focus-visible:bg-green-soft motion-reduce:transition-none"
             onClick={() => onSelect("")}
             aria-pressed={selectedPath === ""}
           >

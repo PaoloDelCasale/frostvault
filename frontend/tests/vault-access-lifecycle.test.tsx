@@ -84,11 +84,16 @@ describe("VaultAccessPage — lifecycle (seam 7)", () => {
 
     renderVaultAccess({ fetchImpl: fetchMock });
     await screen.findByText(/lifecycle policy loaded/i);
+    const lifecyclePanel = document.querySelector('[data-panel="lifecycle"]');
+    expect(lifecyclePanel?.querySelector("select")).toBeNull();
+    expect(lifecyclePanel?.querySelector('input[type="checkbox"]')).toBeNull();
 
-    await user.selectOptions(
-      screen.getByLabelText(/vault default profile/i),
-      "ia_after_30",
-    );
+    const defaultProfileMenu = screen.getByRole("combobox", { name: /vault default profile/i });
+    await user.click(screen.getByText("Vault default profile", { exact: true }));
+    expect(defaultProfileMenu).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(defaultProfileMenu);
+    await user.click(screen.getByRole("option", { name: /infrequent access/i }));
     await user.click(
       screen.getByRole("button", { name: /save default profile/i }),
     );
@@ -101,10 +106,8 @@ describe("VaultAccessPage — lifecycle (seam 7)", () => {
     });
 
     await user.type(screen.getByLabelText(/folder path/i), "photos/2024");
-    await user.selectOptions(
-      screen.getByLabelText(/^profile$/i),
-      "archive_tiered",
-    );
+    await user.click(screen.getByRole("combobox", { name: /^profile$/i }));
+    await user.click(screen.getByRole("option", { name: /tiered archive/i }));
     await user.click(
       screen.getByRole("button", { name: /add or update override/i }),
     );
@@ -119,10 +122,8 @@ describe("VaultAccessPage — lifecycle (seam 7)", () => {
 
     // Edit same path with a different profile (upsert)
     await user.type(screen.getByLabelText(/folder path/i), "photos/2024");
-    await user.selectOptions(
-      screen.getByLabelText(/^profile$/i),
-      "ia_after_30",
-    );
+    await user.click(screen.getByRole("combobox", { name: /^profile$/i }));
+    await user.click(screen.getByRole("option", { name: /infrequent access/i }));
     await user.click(
       screen.getByRole("button", { name: /add or update override/i }),
     );
@@ -166,13 +167,11 @@ describe("VaultAccessPage — lifecycle (seam 7)", () => {
 
     renderVaultAccess({ fetchImpl: fetchMock });
     await screen.findByText(/lifecycle policy loaded/i);
-    await user.selectOptions(
-      screen.getByLabelText(/vault default profile/i),
-      "archive_tiered",
-    );
+    await user.click(screen.getByRole("combobox", { name: /vault default profile/i }));
+    await user.click(screen.getByRole("option", { name: /tiered archive/i }));
     await user.click(screen.getAllByRole("button", { name: /customize/i })[0]);
 
-    const dayInputs = screen.getAllByLabelText(/after n days from creation/i);
+    const dayInputs = screen.getAllByLabelText(/move after/i);
     expect(dayInputs).toHaveLength(2);
     expect(dayInputs[0]).toHaveValue(30);
     expect(dayInputs[1]).toHaveValue(90);
@@ -180,10 +179,8 @@ describe("VaultAccessPage — lifecycle (seam 7)", () => {
 
     await user.clear(dayInputs[1]);
     await user.type(dayInputs[1], "20");
-    await user.selectOptions(
-      screen.getAllByLabelText(/target storage class/i)[1],
-      "ONEZONE_IA",
-    );
+    await user.click(screen.getAllByRole("combobox", { name: /move to/i })[1]);
+    await user.click(screen.getByRole("option", { name: /one zone-ia/i }));
     await user.click(screen.getByRole("button", { name: /save custom rules/i }));
     expect(screen.getByText(/same-band classes are not allowed/i)).toBeInTheDocument();
     expect(screen.getByText(/onezone_ia requires at least 30 days/i)).toBeInTheDocument();
@@ -191,21 +188,17 @@ describe("VaultAccessPage — lifecycle (seam 7)", () => {
 
     await user.clear(dayInputs[1]);
     await user.type(dayInputs[1], "180");
-    await user.selectOptions(
-      screen.getAllByLabelText(/target storage class/i)[1],
-      "DEEP_ARCHIVE",
-    );
+    await user.click(screen.getAllByRole("combobox", { name: /move to/i })[1]);
+    await user.click(screen.getByRole("option", { name: /glacier deep archive/i }));
     await user.click(
-      screen.getByLabelText(/add rules for noncurrent archive versions/i),
+      screen.getByRole("switch", { name: /separate journey for previous versions/i }),
     );
     await user.type(
-      screen.getAllByLabelText(/after n days from creation/i)[2],
+      screen.getAllByLabelText(/move after/i)[2],
       "180",
     );
-    await user.selectOptions(
-      screen.getAllByLabelText(/target storage class/i)[2],
-      "DEEP_ARCHIVE",
-    );
+    await user.click(screen.getAllByRole("combobox", { name: /move to/i })[2]);
+    await user.click(screen.getByRole("option", { name: /glacier deep archive/i }));
     await user.click(screen.getByRole("button", { name: /save custom rules/i }));
     await waitFor(() => expect(calls).toHaveLength(1));
     expect(calls[0]).toEqual({
@@ -221,7 +214,7 @@ describe("VaultAccessPage — lifecycle (seam 7)", () => {
         ],
       },
     });
-    expect(screen.getByLabelText(/vault default profile/i)).toHaveValue("__custom__");
+    expect(screen.getByRole("combobox", { name: /vault default profile/i })).toHaveTextContent(/custom rules/i);
   });
 
   it("saves a custom folder ladder and renders it in the override list", async () => {

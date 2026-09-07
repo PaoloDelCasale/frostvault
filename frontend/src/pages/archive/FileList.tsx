@@ -1,7 +1,17 @@
-import { useEffect, useId, useRef, useState, type ComponentType } from "react";
+import {
+  Fragment,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ComponentType,
+} from "react";
 import { createPortal } from "react-dom";
+import { Dialog, Popover } from "radix-ui";
 import {
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   File,
   FileArchive,
@@ -14,6 +24,7 @@ import {
   FileVideo,
   Folder,
   Presentation,
+  X,
 } from "lucide-react";
 
 import { Badge, type BadgeState } from "@/components/Badge";
@@ -32,7 +43,7 @@ import {
   type RowActionId,
   type VaultCapabilities,
 } from "./actions";
-import { formatBytes, formatCompactCount, formatCount } from "./format";
+import { formatBytes, formatCount } from "./format";
 import { fileKindForItem, type FileKind } from "./fileKind";
 import type { FileSortKey, FileSortOrder } from "./fileSort";
 import {
@@ -42,6 +53,7 @@ import {
   itemStateBadge,
 } from "./fileLabels";
 import { JobProgress } from "./JobProgress";
+import { PathHistoryPanel } from "./PathHistoryPanel";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
@@ -51,6 +63,12 @@ export type FileListProps = {
   capabilities: VaultCapabilities;
   onOpenDirectory: (path: string) => void;
   onOpenFile: (path: string) => void;
+  /** File whose Path History is actively open and highlighted. */
+  selectedFilePath?: string | null;
+  /** File detail retained briefly while its closing animation runs. */
+  renderedFilePath?: string | null;
+  onCloseFile?: () => void;
+  onFileDetailExited?: () => void;
   sortKey?: FileSortKey;
   sortOrder?: FileSortOrder;
   onSort?: (key: FileSortKey) => void;
@@ -98,20 +116,26 @@ function MoreActionsButton({
   onOpenActions,
   expanded,
   testId,
+  showLabel = false,
 }: {
   path: string;
   t: Translate;
   onOpenActions?: (path: string) => void;
   expanded?: boolean;
   testId?: string;
+  showLabel?: boolean;
 }) {
+  const label = showLabel ? t("ui.actions") : t("ui.more_actions");
   return (
     <Button
       type="button"
-      variant="ghost"
-      size="icon"
-      className="min-h-11 min-w-11 shrink-0"
-      aria-label={t("ui.more_actions")}
+      variant={showLabel ? "secondary" : "ghost"}
+      size={showLabel ? "default" : "icon"}
+      className={cn(
+        "min-h-11 min-w-11 shrink-0",
+        showLabel && "gap-1.5 whitespace-nowrap px-3",
+      )}
+      aria-label={label}
       aria-haspopup={expanded === undefined ? undefined : "menu"}
       aria-expanded={expanded}
       data-testid={testId ?? `more-actions-${path}`}
@@ -120,9 +144,22 @@ function MoreActionsButton({
         onOpenActions?.(path);
       }}
     >
-      <span aria-hidden="true" className="text-lg leading-none">
-        ⋯
-      </span>
+      {showLabel ? (
+        <>
+          <span>{label}</span>
+          <ChevronDown
+            className={cn(
+              "size-4 transition-transform motion-reduce:transition-none",
+              expanded && "rotate-180",
+            )}
+            aria-hidden="true"
+          />
+        </>
+      ) : (
+        <span aria-hidden="true" className="text-lg leading-none">
+          ⋯
+        </span>
+      )}
     </Button>
   );
 }
@@ -163,11 +200,13 @@ function OverflowMenu({
   actions,
   t,
   onDesktopAction,
+  showTriggerLabel = false,
 }: {
   item: ArchiveListItem;
   actions: RowAction[];
   t: Translate;
   onDesktopAction?: (path: string, action: RowActionId) => void;
+  showTriggerLabel?: boolean;
 }) {
   const menuId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -213,6 +252,7 @@ function OverflowMenu({
         t={t}
         expanded={open}
         testId={`more-actions-desktop-${item.path}`}
+        showLabel={showTriggerLabel}
         onOpenActions={() => setOpen((next) => !next)}
       />
       {open && coords && typeof document !== "undefined"
@@ -238,8 +278,8 @@ function OverflowMenu({
                       data-action={action.id}
                       data-path={item.path}
                       className={cn(
-                        "flex min-h-11 w-full items-center rounded-lg px-3 text-left text-sm font-bold outline-none",
-                        "focus-visible:bg-canvas focus-visible:ring-2 focus-visible:ring-ring/40",
+                        "flex min-h-11 w-full items-center rounded-lg px-3 text-left text-sm font-bold outline-none transition-colors duration-150",
+                        "hover:bg-green-soft focus-visible:bg-green-soft focus-visible:ring-2 focus-visible:ring-ring/40 motion-reduce:transition-none",
                         action.tone === "danger"
                           ? "text-[var(--state-local-fg)]"
                           : "text-ink",
@@ -305,6 +345,63 @@ function DesktopActions({
   );
 }
 
+function DirectoryActions({
+  item,
+  t,
+  capabilities,
+  onDesktopAction,
+  compact,
+}: {
+  item: ArchiveListItem;
+  t: Translate;
+  capabilities: VaultCapabilities;
+  onDesktopAction?: (path: string, action: RowActionId) => void;
+  compact: boolean;
+}) {
+  const actions = availableActions(item, capabilities);
+  const { primary, overflow } = partitionRowActions(actions);
+
+  if (!actions.length) return null;
+  return (
+    <div
+      className="directory-actions flex min-w-11 items-center justify-end gap-1"
+      data-testid={`desktop-actions-${item.path}`}
+      data-layout={compact ? "compact" : "wide"}
+    >
+      {compact ? (
+        <OverflowMenu
+          item={item}
+          actions={actions}
+          t={t}
+          onDesktopAction={onDesktopAction}
+          showTriggerLabel
+        />
+      ) : (
+        <>
+          {primary.map((action) => (
+            <ActionButton
+              key={action.id}
+              action={action}
+              item={item}
+              t={t}
+              onDesktopAction={onDesktopAction}
+              className="whitespace-nowrap"
+            />
+          ))}
+          {overflow.length ? (
+            <OverflowMenu
+              item={item}
+              actions={overflow}
+              t={t}
+              onDesktopAction={onDesktopAction}
+            />
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
 const FILE_KIND_ICON: Record<FileKind, ComponentType<{ className?: string }>> = {
   folder: Folder,
   pdf: FileType,
@@ -324,10 +421,37 @@ function EntryIcon({ item }: { item: ArchiveListItem }) {
   const Icon = FILE_KIND_ICON[kind];
   return (
     <Icon
-      className="size-4 shrink-0 text-muted"
+      className="size-4 shrink-0 text-muted transition-[color,transform] duration-150 group-hover/entry:scale-110 group-hover/entry:text-ink group-focus-visible/entry:scale-110 group-focus-visible/entry:text-ink motion-reduce:transition-none"
       aria-hidden
       data-file-kind={kind}
     />
+  );
+}
+
+function ItemNameContent({
+  item,
+  t,
+}: {
+  item: ArchiveListItem;
+  t: Translate;
+}) {
+  return (
+    <>
+      <EntryIcon item={item} />
+      <span className="min-w-0">
+        <span className={cn(
+          "block truncate text-ink",
+          isDirectory(item) ? "font-bold" : "font-semibold",
+        )}>
+          {item.name}
+        </span>
+        {isDirectory(item) ? (
+          <span className="block truncate text-xs text-muted">
+            {t("ui.folder_item_count", { count: formatCount(item.item_count) })}
+          </span>
+        ) : null}
+      </span>
+    </>
   );
 }
 
@@ -346,31 +470,22 @@ function ItemName({
     return (
       <button
         type="button"
-        className="flex min-h-11 max-w-full items-center gap-2.5 text-left"
+        className="group/entry flex min-h-11 max-w-full items-center gap-2.5 rounded-lg text-left outline-none transition-colors duration-150 hover:text-ink hover:underline hover:decoration-green hover:decoration-2 hover:underline-offset-4 focus-visible:text-ink focus-visible:underline focus-visible:decoration-green focus-visible:decoration-2 focus-visible:underline-offset-4 motion-reduce:transition-none"
         data-directory={item.path}
         onClick={() => onOpenDirectory(item.path)}
       >
-        <EntryIcon item={item} />
-        <span className="min-w-0">
-          <span className="block truncate font-bold text-ink">{item.name}</span>
-          <span className="block truncate text-xs text-muted">
-            {t("ui.folder_item_count", { count: formatCount(item.item_count) })}
-          </span>
-        </span>
+        <ItemNameContent item={item} t={t} />
       </button>
     );
   }
   return (
     <button
       type="button"
-      className="flex min-h-11 max-w-full items-center gap-2.5 text-left"
+      className="group/entry flex min-h-11 max-w-full items-center gap-2.5 rounded-lg text-left outline-none transition-colors duration-150 hover:text-ink hover:underline hover:decoration-green hover:decoration-2 hover:underline-offset-4 focus-visible:text-ink focus-visible:underline focus-visible:decoration-green focus-visible:decoration-2 focus-visible:underline-offset-4 motion-reduce:transition-none"
       data-file-path={item.path}
       onClick={() => onOpenFile(item.path)}
     >
-      <EntryIcon item={item} />
-      <span className="block min-w-0 truncate font-semibold text-ink">
-        {item.name}
-      </span>
+      <ItemNameContent item={item} t={t} />
     </button>
   );
 }
@@ -384,33 +499,205 @@ const STATE_COUNT_ORDER: BadgeState[] = [
   "unsupported",
 ];
 
+type DirectoryStateBreakdownEntry = {
+  state: BadgeState;
+  label: string;
+  count: number;
+};
+
+// Miniature two-tone versions of the primary state Badges: the fill uses
+// the Badge background and the inset outline uses its foreground colour.
+const STATE_DOT_CLASSES: Record<BadgeState, string> = {
+  both:
+    "bg-[var(--state-both-bg)] ring-1 ring-inset ring-[var(--state-both-fg)]/50",
+  local_only:
+    "bg-[var(--state-local-bg)] ring-1 ring-inset ring-[var(--state-local-fg)]/50",
+  cloud_only:
+    "bg-[var(--state-cloud-bg)] ring-1 ring-inset ring-[var(--state-cloud-fg)]/50",
+  restoring:
+    "bg-[var(--state-restoring-bg)] ring-1 ring-inset ring-[var(--state-restoring-fg)]/50",
+  mixed:
+    "bg-[var(--state-mixed-bg)] ring-1 ring-inset ring-[var(--state-mixed-fg)]/50",
+  missing:
+    "bg-[var(--state-missing-bg)] ring-1 ring-inset ring-[var(--state-missing-fg)]/50",
+  unsupported:
+    "bg-[var(--state-unsupported-bg)] ring-1 ring-inset ring-[var(--state-unsupported-fg)]/50",
+};
+
+function directoryStateBreakdown(
+  item: ArchiveListItem,
+  t: Translate,
+): DirectoryStateBreakdownEntry[] {
+  if (!isDirectory(item) || !item.state_counts) return [];
+  return STATE_COUNT_ORDER.flatMap((state) => {
+    const count = item.state_counts?.[state];
+    if (!count) return [];
+    const key = `state.${state}`;
+    const translated = t(key);
+    const stateLabel = translated === key ? state : translated;
+    return [{ state, label: stateLabel, count }];
+  });
+}
+
+function StateBreakdownList({
+  entries,
+  total,
+  t,
+}: {
+  entries: DirectoryStateBreakdownEntry[];
+  total?: number | null;
+  t: Translate;
+}) {
+  return (
+    <div className="grid gap-3">
+      <div className="flex items-baseline justify-between gap-3 border-b border-line pb-2">
+        <span className="text-sm font-bold text-ink">{t("ui.files_by_state")}</span>
+        {typeof total === "number" ? (
+          <span className="text-sm font-bold text-muted">
+            {t("ui.state_file_count", { count: formatCount(total) })}
+          </span>
+        ) : null}
+      </div>
+      <ul className="grid gap-2" role="list">
+        {entries.map((entry) => (
+          <li key={entry.state} className="flex min-h-10 items-center justify-between gap-4">
+            <span className="flex min-w-0 items-center gap-2 text-sm font-semibold text-ink">
+              <span
+                className={cn(
+                  "size-3 shrink-0 rounded-full",
+                  STATE_DOT_CLASSES[entry.state],
+                )}
+                aria-hidden="true"
+              />
+              <span className="truncate">{entry.label}</span>
+            </span>
+            <strong className="text-sm text-ink">{formatCount(entry.count)}</strong>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function DirectoryStateControl({
+  item,
+  t,
+  mobile = false,
+}: {
+  item: ArchiveListItem;
+  t: Translate;
+  mobile?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const badge = itemStateBadge(item, t);
+  const entries = directoryStateBreakdown(item, t);
+  const total = typeof item.item_count === "number" ? item.item_count : null;
+  if (!entries.length) return <Badge state={badge.state} label={badge.label} />;
+
+  const dots = (
+    <span className="flex -space-x-0.5" aria-hidden="true">
+      {entries.slice(0, 3).map((entry) => (
+        <span
+          key={entry.state}
+          className={cn(
+            "size-3 rounded-full",
+            STATE_DOT_CLASSES[entry.state],
+          )}
+        />
+      ))}
+    </span>
+  );
+
+  if (mobile) {
+    return (
+      <Dialog.Root open={open} onOpenChange={setOpen}>
+        <Dialog.Trigger asChild>
+          <button
+            type="button"
+            className="relative z-10 flex min-h-11 w-full max-w-full items-center gap-2 rounded-lg border border-line bg-canvas px-3 text-left outline-none transition-colors hover:border-[var(--interactive-border-hover)] hover:bg-green-soft/35 focus-visible:ring-2 focus-visible:ring-ring/40 motion-reduce:transition-none"
+            aria-label={`${badge.label}. ${t("ui.view_state_details")}`}
+            data-testid={`state-details-mobile-${item.path}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            {dots}
+            <span className="truncate text-sm font-bold text-ink">{badge.label}</span>
+            <span className="ml-auto shrink-0 text-xs font-bold text-green">
+              {t("ui.view_details")}
+            </span>
+            <ChevronRight className="size-4 shrink-0 text-green" aria-hidden="true" />
+          </button>
+        </Dialog.Trigger>
+        <Dialog.Portal>
+          <Dialog.Content
+            className="path-history-sheet fixed inset-x-0 bottom-0 z-50 max-h-[78svh] overflow-y-auto rounded-t-panel border border-b-0 border-line bg-surface px-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-[0_-18px_48px_var(--shadow-color)] outline-none"
+            aria-describedby={undefined}
+            data-open={open ? "true" : "false"}
+            data-testid={`state-details-sheet-${item.path}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-line" aria-hidden="true" />
+            <div className="mb-3 flex items-start justify-between gap-2">
+              <div className="min-w-0 pt-1">
+                <Dialog.Title className="text-base font-bold text-ink">
+                  {t("ui.state_details")}
+                </Dialog.Title>
+                <p className="truncate text-xs text-muted">{item.path}</p>
+              </div>
+              <Dialog.Close asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="rounded-full"
+                  aria-label={t("ui.close")}
+                >
+                  <X className="size-5" aria-hidden="true" />
+                </Button>
+              </Dialog.Close>
+            </div>
+            <div className="path-history-sheet-content">
+              <StateBreakdownList entries={entries} total={total} t={t} />
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+    );
+  }
+
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          className="inline-flex max-w-full items-center gap-[7px] rounded-badge bg-[var(--state-mixed-bg)] px-2.5 py-1.5 text-[13px] font-bold whitespace-nowrap text-[var(--state-mixed-fg)] outline-none ring-1 ring-transparent transition-[box-shadow,filter] hover:brightness-110 hover:ring-[var(--state-mixed-fg)]/25 focus-visible:ring-2 focus-visible:ring-ring/50 motion-reduce:transition-none"
+          aria-label={`${badge.label}. ${t("ui.view_state_details")}`}
+          data-testid={`state-details-desktop-${item.path}`}
+        >
+          {dots}
+          <span className="truncate">{badge.label}</span>
+          <ChevronDown className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-180")} aria-hidden="true" />
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          side="bottom"
+          align="start"
+          sideOffset={6}
+          className="z-[90] w-64 rounded-xl border border-line bg-surface p-3 text-ink shadow-lg outline-none"
+          data-testid={`state-details-popover-${item.path}`}
+        >
+          <StateBreakdownList entries={entries} total={total} t={t} />
+          <Popover.Arrow className="fill-line" />
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
 function StateCell({ item, t }: { item: ArchiveListItem; t: Translate }) {
   const badge = itemStateBadge(item, t);
   if (isDirectory(item) && item.state_counts) {
-    const breakdown = STATE_COUNT_ORDER.flatMap((state) => {
-      const count = item.state_counts?.[state];
-      if (!count) return [];
-      const key = `state.${state}`;
-      const label = t(key);
-      const stateLabel = label === key ? state : label;
-      return [
-        {
-          state,
-          label: `${formatCompactCount(count)} ${stateLabel}`,
-          title: `${formatCount(count)} ${stateLabel}`,
-        },
-      ];
-    });
-    return (
-      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-        <Badge state={badge.state} label={badge.label} />
-        {breakdown.map((entry) => (
-          <span key={entry.state} title={entry.title}>
-            <Badge state={entry.state} size="sm" label={entry.label} />
-          </span>
-        ))}
-      </div>
-    );
+    return <DirectoryStateControl item={item} t={t} />;
   }
   return <Badge state={badge.state} label={badge.label} />;
 }
@@ -527,7 +814,7 @@ function SortableHeader({
     <th className={cn("py-2 pr-3 font-bold", className)} aria-sort={ariaSort}>
       <button
         type="button"
-        className="inline-flex min-h-11 items-center gap-1 uppercase tracking-wide text-muted outline-none focus-visible:text-ink"
+        className="inline-flex min-h-11 items-center gap-1 uppercase tracking-wide text-muted outline-none transition-colors duration-150 hover:text-ink hover:underline hover:decoration-green hover:underline-offset-4 focus-visible:text-ink focus-visible:underline focus-visible:decoration-green focus-visible:underline-offset-4 motion-reduce:transition-none"
         aria-label={t("ui.sort_by", { column: label })}
         onClick={() => onSort?.(column)}
       >
@@ -551,6 +838,10 @@ export function FileList({
   capabilities,
   onOpenDirectory,
   onOpenFile,
+  selectedFilePath = null,
+  renderedFilePath = selectedFilePath,
+  onCloseFile,
+  onFileDetailExited,
   sortKey = "name",
   sortOrder = "asc",
   onSort,
@@ -564,36 +855,78 @@ export function FileList({
   approveBusyId,
   accelerateBusyId,
 }: FileListProps) {
+  const desktopListRef = useRef<HTMLDivElement>(null);
+  const [compactDirectoryActions, setCompactDirectoryActions] = useState(false);
+
+  useLayoutEffect(() => {
+    const list = desktopListRef.current;
+    if (!list || typeof ResizeObserver === "undefined") return;
+    const updateLayout = (width: number) => {
+      if (width > 0) {
+        // At intermediate widths, preserving one stable row is more important
+        // than squeezing two primary buttons into the actions cell.
+        setCompactDirectoryActions(width < 1040);
+      }
+    };
+    updateLayout(list.getBoundingClientRect().width);
+    const observer = new ResizeObserver(([entry]) => {
+      updateLayout(entry.contentRect.width);
+    });
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <>
       <ul
         data-testid="file-list-cards"
-        className="divide-y divide-line md:hidden"
+        className="grid gap-2 md:hidden"
       >
         {items.map((item) => {
           const size = itemSizeBytes(item);
           const deep = isDeepArchiveRow(item);
           const jobs = jobsByPath?.get(item.path) ?? [];
+          const selected = item.type === "file" && selectedFilePath === item.path;
+          const openItem = () => {
+            if (isDirectory(item)) onOpenDirectory(item.path);
+            else onOpenFile(item.path);
+          };
           return (
             <li
               key={`${item.type}:${item.path}`}
-              className={
-                deep
-                  ? "deep-archive-row flex items-start gap-2 border-l-4 border-[var(--deep-archive-accent)] bg-[var(--deep-archive-row)] py-3 pl-2 first:pt-0 last:pb-0"
-                  : "flex items-start gap-2 py-3 first:pt-0 last:pb-0"
-              }
+              className={cn(
+                "group/mobile-card relative isolate flex min-h-[6.25rem] items-start gap-2 overflow-hidden rounded-card border bg-surface p-3 transition-[background-color,border-color,box-shadow] duration-150 motion-reduce:transition-none",
+                "hover:border-[var(--interactive-border-hover)] hover:bg-green-soft/25 has-[[aria-expanded=true]]:border-green/60 has-[[aria-expanded=true]]:bg-green-soft/55 has-[[aria-expanded=true]]:ring-2 has-[[aria-expanded=true]]:ring-ring/35",
+                deep && "deep-archive-row border-l-4 border-l-[var(--deep-archive-accent)] bg-[var(--deep-archive-row)]",
+                selected && "border-green/60 bg-green-soft/55 shadow-[0_5px_18px_var(--interactive-shadow-hover)]",
+              )}
               data-path={item.path}
               data-deep-archive={deep ? "true" : undefined}
+              data-selected={selected ? "true" : undefined}
+              data-testid={`mobile-file-card-${item.path}`}
             >
-              <div className="min-w-0 flex-1">
-                <ItemName
-                  item={item}
-                  t={t}
-                  onOpenDirectory={onOpenDirectory}
-                  onOpenFile={onOpenFile}
-                />
+              <button
+                type="button"
+                className="absolute inset-0 z-0 rounded-[inherit] outline-none"
+                aria-label={item.name}
+                aria-expanded={item.type === "file" ? selected : undefined}
+                data-directory={isDirectory(item) ? item.path : undefined}
+                data-file-path={item.type === "file" ? item.path : undefined}
+                data-testid={`mobile-file-card-trigger-${item.path}`}
+                onClick={openItem}
+              />
+              <div className="pointer-events-none relative z-[1] min-w-0 flex-1">
+                <div className="group/entry flex min-h-11 items-center gap-2.5 text-left">
+                  <ItemNameContent item={item} t={t} />
+                </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <StateCell item={item} t={t} />
+                  {isDirectory(item) && item.state_counts ? (
+                    <div className="pointer-events-auto relative z-10 w-full">
+                      <DirectoryStateControl item={item} t={t} mobile />
+                    </div>
+                  ) : (
+                    <StateCell item={item} t={t} />
+                  )}
                   <span className="text-sm font-bold text-ink">
                     {formatBytes(size)}
                   </span>
@@ -615,7 +948,7 @@ export function FileList({
                   ) : null}
                 </div>
                 {jobs.length ? (
-                  <div className="mt-2">
+                  <div className="pointer-events-auto relative z-10 mt-2">
                     <RowJobOrActions
                       item={item}
                       t={t}
@@ -633,18 +966,25 @@ export function FileList({
                 ) : null}
               </div>
               {!jobs.length && availableActions(item, capabilities).length ? (
-                <MoreActionsButton
-                  path={item.path}
-                  t={t}
-                  onOpenActions={onOpenActions}
-                />
+                <div className="relative z-10">
+                  <MoreActionsButton
+                    path={item.path}
+                    t={t}
+                    onOpenActions={onOpenActions}
+                  />
+                </div>
               ) : null}
             </li>
           );
         })}
       </ul>
 
-      <div data-testid="file-list-table" className="hidden md:block">
+      <div
+        ref={desktopListRef}
+        data-testid="file-list-table"
+        data-desktop-file-list
+        className="hidden md:block"
+      >
         <table className="w-full border-collapse text-left text-sm">
           <thead>
             <tr className="border-b border-line text-xs uppercase tracking-wide text-muted">
@@ -671,7 +1011,7 @@ export function FileList({
               <th className="py-2 pr-3 font-bold uppercase tracking-wide text-muted">
                 {t("ui.cloud_storage")}
               </th>
-              <th className="py-2 font-bold">
+              <th className="py-2 pr-3 font-bold">
                 <span className="sr-only">{t("ui.more_actions")}</span>
               </th>
             </tr>
@@ -681,16 +1021,29 @@ export function FileList({
               const size = itemSizeBytes(item);
               const deep = isDeepArchiveRow(item);
               const jobs = jobsByPath?.get(item.path) ?? [];
+              const selected = item.type === "file" && selectedFilePath === item.path;
+              const detailRendered =
+                item.type === "file" && renderedFilePath === item.path;
+              const directory = isDirectory(item);
               return (
+                <Fragment key={`${item.type}:${item.path}`}>
                 <tr
-                  key={`${item.type}:${item.path}`}
-                  className={
+                  className={cn(
                     deep
-                      ? "deep-archive-row border-b border-line bg-[var(--deep-archive-row)] last:border-b-0 [&>td:first-child]:shadow-[inset_4px_0_0_0_var(--deep-archive-accent)]"
-                      : "border-b border-line last:border-b-0"
-                  }
+                      ? "deep-archive-row border-b border-line bg-[var(--deep-archive-row)] transition-[background-color,box-shadow] duration-150 has-[[aria-expanded=true]]:shadow-[inset_0_0_0_999px_color-mix(in_srgb,var(--green-soft)_36%,transparent)] last:border-b-0 [&>td:first-child]:shadow-[inset_4px_0_0_0_var(--deep-archive-accent)] motion-reduce:transition-none"
+                      : "border-b border-line transition-colors duration-150 hover:bg-green-soft/60 has-[[aria-expanded=true]]:bg-green-soft/60 last:border-b-0 motion-reduce:transition-none",
+                    deep &&
+                      !selected &&
+                      "hover:shadow-[inset_0_0_0_999px_color-mix(in_srgb,var(--green-soft)_36%,transparent)]",
+                    selected &&
+                      (deep
+                        ? "shadow-[inset_0_0_0_999px_color-mix(in_srgb,var(--green-soft)_36%,transparent)]"
+                        : "bg-green-soft/70 shadow-[inset_3px_0_0_var(--green)]"),
+                  )}
                   data-path={item.path}
                   data-deep-archive={deep ? "true" : undefined}
+                  data-selected={selected ? "true" : undefined}
+                  data-testid={`desktop-file-row-${item.path}`}
                 >
                   <td className="max-w-[16rem] py-2 pl-3 pr-3 align-middle">
                     <ItemName
@@ -712,7 +1065,7 @@ export function FileList({
                     <StateCell item={item} t={t} />
                   </td>
                   <td className="py-2 pr-3 align-middle">
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-nowrap items-center gap-2">
                       <CloudStorageCell item={item} t={t} />
                       {item.lifecycle_pinned ||
                       (item.type === "directory" && item.lifecycle_pinned_partial) ? (
@@ -728,24 +1081,61 @@ export function FileList({
                       ) : null}
                     </div>
                   </td>
-                  <td className="py-2 align-middle">
-                    <RowJobOrActions
-                      item={item}
-                      t={t}
-                      capabilities={capabilities}
-                      jobs={jobs}
-                      onOpenActions={onOpenActions}
-                      onDesktopAction={onDesktopAction}
-                      onCancelJob={onCancelJob}
-                      onApproveJob={onApproveJob}
-                      onAcceleratePurge={onAcceleratePurge}
-                      cancelBusyId={cancelBusyId}
-                      approveBusyId={approveBusyId}
-                      accelerateBusyId={accelerateBusyId}
-                      layout="table"
-                    />
+                  <td className="whitespace-nowrap py-2 pr-3 align-middle">
+                    {directory && !jobs.length ? (
+                      <DirectoryActions
+                        item={item}
+                        t={t}
+                        capabilities={capabilities}
+                        onDesktopAction={onDesktopAction}
+                        compact={compactDirectoryActions}
+                      />
+                    ) : (
+                      <RowJobOrActions
+                        item={item}
+                        t={t}
+                        capabilities={capabilities}
+                        jobs={jobs}
+                        onOpenActions={onOpenActions}
+                        onDesktopAction={onDesktopAction}
+                        onCancelJob={onCancelJob}
+                        onApproveJob={onApproveJob}
+                        onAcceleratePurge={onAcceleratePurge}
+                        cancelBusyId={cancelBusyId}
+                        approveBusyId={approveBusyId}
+                        accelerateBusyId={accelerateBusyId}
+                        layout="table"
+                      />
+                    )}
                   </td>
                 </tr>
+                {detailRendered ? (
+                  <tr
+                    className="bg-surface"
+                    data-testid={`desktop-file-detail-${item.path}`}
+                  >
+                    <td colSpan={5} className="p-0">
+                      <div
+                        className="path-history-inline-shell"
+                        data-open={selected ? "true" : "false"}
+                      >
+                        <div className="path-history-inline-clip">
+                          <div className="px-3 pb-3 pt-2">
+                            <PathHistoryPanel
+                              path={item.path}
+                              t={t}
+                              variant="inline"
+                              open={selected}
+                              onClose={onCloseFile}
+                              onExited={onFileDetailExited}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                ) : null}
+                </Fragment>
               );
             })}
           </tbody>

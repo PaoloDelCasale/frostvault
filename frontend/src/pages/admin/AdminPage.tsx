@@ -329,7 +329,7 @@ export function AdminPage() {
           </div>
           <a
             href="/"
-            className="inline-flex min-h-11 items-center rounded-[10px] border border-input bg-surface px-4 font-bold"
+            className="inline-flex min-h-11 items-center rounded-[10px] border border-input bg-surface px-4 font-bold transition-[background-color,border-color,box-shadow] duration-150 hover:border-[var(--interactive-border-hover)] hover:bg-green-soft focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none"
           >
             {t("admin.back_to_archive")}
           </a>
@@ -359,7 +359,7 @@ export function AdminPage() {
                 <a
                   href={href}
                   aria-current={pathname === href ? "page" : undefined}
-                  className="inline-flex min-h-11 items-center rounded-[10px] px-3 text-sm font-bold text-muted hover:bg-canvas hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-green aria-[current=page]:bg-canvas aria-[current=page]:text-ink"
+                  className="inline-flex min-h-11 items-center rounded-[10px] px-3 text-sm font-bold text-muted transition-colors duration-150 hover:bg-green-soft hover:text-ink focus-visible:bg-green-soft focus-visible:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-green aria-[current=page]:bg-green-soft aria-[current=page]:text-ink motion-reduce:transition-none"
                 >
                   {t(labelKey)}
                 </a>

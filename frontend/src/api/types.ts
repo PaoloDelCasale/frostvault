@@ -137,6 +137,7 @@ export type SystemSettingsUpdatePayload = components["schemas"]["SystemSettingsU
 export type UserCreate = components["schemas"]["UserCreate"];
 export type UserLookup = components["schemas"]["UserLookup"];
 export type UserLookupResult = components["schemas"]["UserLookupResult"];
+export type UserSuggestResponse = components["schemas"]["UserSuggestResponse"];
 export type UserUpdate = components["schemas"]["UserUpdate"];
 export type ValidationError = components["schemas"]["ValidationError"];
 export type VaultCreate = components["schemas"]["VaultCreate"];

@@ -30,7 +30,7 @@ for _flag, _value in (
     if not hasattr(os, _flag):
         setattr(os, _flag, _value)
 
-from app.catalog import ArchiveCatalog
+from app.catalog import ArchiveCatalog, VaultFileNotFound
 from app.database import SQLiteConnection
 from app.main import queue_jobs
 from app.storage import process_jobs_once
@@ -332,6 +332,120 @@ class RenameMatchingTests(unittest.TestCase):
             self.assertEqual(
                 [entry["path"] for entry in history],
                 ["reports/old-name.txt", "reports/new-name.txt"],
+            )
+
+    def test_unique_but_stale_digest_match_requires_review(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "stale-rename.db"
+            migrated = run_alembic(database_path)
+            self.assertEqual(migrated.returncode, 0, migrated.stderr)
+            with SQLiteConnection(str(database_path)) as connection:
+                _seed_vault(connection)
+                catalog = ArchiveCatalog(connection)
+                old_id = catalog.observe_local_copy(
+                    vault_id=2,
+                    path="reports/old-name.txt",
+                    file_type="regular",
+                    size=9,
+                    mtime_ns=100,
+                    observed_at="2026-01-01T10:00:00+00:00",
+                )
+                catalog.set_local_fingerprint(
+                    vault_id=2,
+                    path="reports/old-name.txt",
+                    plaintext_sha256=DIGEST_A,
+                    matched_archive_version_id=None,
+                )
+                catalog.mark_local_copy_missing(
+                    old_id, observed_at="2026-01-01T11:00:00+00:00"
+                )
+                new_id = catalog.observe_local_copy(
+                    vault_id=2,
+                    path="archive/old-name.txt",
+                    file_type="regular",
+                    size=9,
+                    mtime_ns=100,
+                    observed_at="2026-07-21T11:00:00+00:00",
+                )
+                catalog.set_local_fingerprint(
+                    vault_id=2,
+                    path="archive/old-name.txt",
+                    plaintext_sha256=DIGEST_A,
+                    matched_archive_version_id=None,
+                )
+
+                candidates = catalog.list_rename_candidates(vault_id=2)
+
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0]["decision"], "review")
+            self.assertEqual(candidates[0]["missing_vault_file_id"], old_id)
+            self.assertEqual(candidates[0]["new_vault_file_id"], new_id)
+
+    def test_same_name_changed_content_is_reviewable_not_automatic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "changed-content.db"
+            migrated = run_alembic(database_path)
+            self.assertEqual(migrated.returncode, 0, migrated.stderr)
+            with SQLiteConnection(str(database_path)) as connection:
+                _seed_vault(connection)
+                catalog = ArchiveCatalog(connection)
+                old_id = catalog.observe_local_copy(
+                    vault_id=2,
+                    path="reports/notes.txt",
+                    file_type="regular",
+                    size=9,
+                    mtime_ns=100,
+                    observed_at="2026-07-21T10:00:00+00:00",
+                )
+                catalog.set_local_fingerprint(
+                    vault_id=2,
+                    path="reports/notes.txt",
+                    plaintext_sha256=DIGEST_A,
+                    matched_archive_version_id=None,
+                )
+                catalog.mark_local_copy_missing(
+                    old_id, observed_at="2026-07-21T11:00:00+00:00"
+                )
+                new_id = catalog.observe_local_copy(
+                    vault_id=2,
+                    path="archive/notes.txt",
+                    file_type="regular",
+                    size=12,
+                    mtime_ns=200,
+                    observed_at="2026-07-21T11:00:00+00:00",
+                )
+                catalog.set_local_fingerprint(
+                    vault_id=2,
+                    path="archive/notes.txt",
+                    plaintext_sha256=DIGEST_B,
+                    matched_archive_version_id=None,
+                )
+
+                candidates = catalog.list_rename_candidates(vault_id=2)
+                auto = [item for item in candidates if item["decision"] == "auto"]
+                with self.assertRaises(VaultFileNotFound):
+                    catalog.confirm_file_rename(
+                        vault_file_id=old_id,
+                        new_path="archive/notes.txt",
+                        changed_at="2026-07-21T11:05:00+00:00",
+                        vault_id=2,
+                    )
+                confirmed_id = catalog.confirm_file_rename(
+                    vault_file_id=old_id,
+                    new_path="archive/notes.txt",
+                    changed_at="2026-07-21T11:05:00+00:00",
+                    vault_id=2,
+                    allow_digest_mismatch=True,
+                )
+                history = catalog.list_path_history(confirmed_id, vault_id=2)
+
+            self.assertEqual(auto, [])
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0]["decision"], "content_changed")
+            self.assertEqual(confirmed_id, old_id)
+            self.assertEqual(
+                [entry["path"] for entry in history],
+                ["reports/notes.txt", "archive/notes.txt"],
             )
 
     def test_ambiguous_equal_digest_candidates_are_never_auto_merged(self) -> None:
@@ -1885,6 +1999,10 @@ class FileHistoryApiTests(unittest.TestCase):
             )
             keys = [version["object_key"] for version in body["versions"]]
             self.assertEqual(keys, [f"docs/{new_path}", f"docs/{old_path}"])
+            self.assertEqual(
+                body["versions"][0]["uploaded_at"],
+                "2026-07-21T11:10:00+00:00",
+            )
 
 
 if __name__ == "__main__":

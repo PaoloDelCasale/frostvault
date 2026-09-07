@@ -8,15 +8,34 @@ type FormFieldProps = {
   help?: string;
   children: ReactNode;
   className?: string;
+  /** Use a non-activating text heading for composite controls such as custom menus. */
+  labelAsText?: boolean;
 };
 
-export function FormField({ label, htmlFor, help, children, className }: FormFieldProps) {
-  return (
-    <label htmlFor={htmlFor} className={cn("grid gap-1.5 text-[13px] font-bold text-muted", className)}>
+export function FormField({
+  label,
+  htmlFor,
+  help,
+  children,
+  className,
+  labelAsText = false,
+}: FormFieldProps) {
+  const content = (
+    <>
       <span>{label}</span>
       {children}
       {help ? <span className="font-medium text-muted">{help}</span> : null}
-    </label>
+    </>
+  );
+  const fieldClassName = cn(
+    "grid gap-1.5 text-[13px] font-bold text-muted",
+    className,
+  );
+
+  return labelAsText ? (
+    <div className={fieldClassName}>{content}</div>
+  ) : (
+    <label htmlFor={htmlFor} className={fieldClassName}>{content}</label>
   );
 }
 

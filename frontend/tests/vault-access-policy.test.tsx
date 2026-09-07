@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -16,8 +16,9 @@ describe("VaultAccessPage — operation policy globs (seam 6)", () => {
     resetApiClientForTests();
   });
 
-  it("glob preview shows what the globs match before saving", async () => {
+  it("renders include and exclude rules as chips and previews one path", async () => {
     const user = userEvent.setup();
+    const previews: unknown[] = [];
     const fetchMock = createVaultAccessFetch({
       "GET /api/vault/operation-policy": () =>
         jsonResponse({
@@ -31,38 +32,60 @@ describe("VaultAccessPage — operation policy globs (seam 6)", () => {
           include_globs: string[];
           exclude_globs: string[];
         };
+        previews.push(body);
         expect(body.include_globs).toEqual(["**/*.txt"]);
-        expect(body.exclude_globs).toEqual(["tmp/**"]);
-        expect(body.paths).toEqual(["docs/a.txt", "tmp/b.txt", "docs/c.pdf"]);
-        return jsonResponse({
-          included: ["docs/a.txt"],
-          excluded: ["tmp/b.txt", "docs/c.pdf"],
-        });
+        expect(body.paths).toEqual(["docs/a.txt"]);
+        if (body.exclude_globs.length) {
+          return jsonResponse({
+            included: ["docs/a.txt"],
+            excluded: [],
+          });
+        }
+        return jsonResponse({ included: ["docs/a.txt"], excluded: [] });
       },
     });
 
     renderVaultAccess({ fetchImpl: fetchMock });
     await screen.findByText(/operation policy loaded/i);
+    expect(within(screen.getByTestId("include-globs-rules")).getByText("**/*.txt")).toBeInTheDocument();
+    expect(within(screen.getByTestId("exclude-globs-rules")).getByText("tmp/**")).toBeInTheDocument();
 
-    await user.type(
-      screen.getByLabelText(/sample paths to preview/i),
-      "docs/a.txt\ntmp/b.txt\ndocs/c.pdf",
-    );
-    await user.click(screen.getByRole("button", { name: /preview globs/i }));
+    await user.type(screen.getByLabelText(/vault-relative path/i), "docs/a.txt");
+    await user.click(screen.getByRole("button", { name: /^try$/i }));
 
     const preview = await screen.findByTestId("glob-preview");
     expect(preview).toHaveTextContent("docs/a.txt");
-    expect(preview).toHaveTextContent("tmp/b.txt");
-    expect(preview).toHaveTextContent("docs/c.pdf");
-    expect(preview.querySelector("h3")).toHaveTextContent(/included/i);
+    expect(preview).toHaveTextContent(/would be uploaded automatically/i);
+    await waitFor(() => expect(previews).toHaveLength(1));
+  });
 
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(
-          (call) =>
-            String(call[0]) === "/api/vault/operation-policy/preview-globs",
-        ),
-      ).toBe(true);
+  it("explains a path skipped by an exclude rule", async () => {
+    const user = userEvent.setup();
+    const fetchMock = createVaultAccessFetch({
+      "GET /api/vault/operation-policy": () =>
+        jsonResponse({
+          ...defaultPolicy,
+          include_globs: ["**/*.txt"],
+          exclude_globs: ["tmp/**"],
+        }),
+      "POST /api/vault/operation-policy/preview-globs": (init) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          paths: string[];
+          exclude_globs: string[];
+        };
+        if (body.exclude_globs.length) {
+          return jsonResponse({ included: [], excluded: body.paths });
+        }
+        return jsonResponse({ included: body.paths, excluded: [] });
+      },
     });
+
+    renderVaultAccess({ fetchImpl: fetchMock });
+    await screen.findByText(/operation policy loaded/i);
+    await user.type(screen.getByLabelText(/vault-relative path/i), "tmp/b.txt");
+    await user.click(screen.getByRole("button", { name: /^try$/i }));
+    expect(await screen.findByTestId("glob-preview")).toHaveTextContent(
+      /skipped by an exclude rule/i,
+    );
   });
 });

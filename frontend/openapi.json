@@ -592,6 +592,12 @@
               "null"
             ]
           },
+          "storage_class_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "version_number": {
             "type": "number"
           }
@@ -619,6 +625,18 @@
             ]
           },
           "storage_class": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "storage_class_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "uploaded_at": {
             "type": [
               "string",
               "null"
@@ -907,6 +925,11 @@
       },
       "ConfirmRenameAction": {
         "properties": {
+          "allow_content_change": {
+            "default": false,
+            "title": "Allow Content Change",
+            "type": "boolean"
+          },
           "new_path": {
             "maxLength": 1024,
             "title": "New Path",
@@ -4211,6 +4234,21 @@
           "username",
           "display_name",
           "current_vault_role"
+        ],
+        "type": "object"
+      },
+      "UserSuggestResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UserLookupResult"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
         ],
         "type": "object"
       },
@@ -9502,6 +9540,45 @@
           }
         },
         "summary": "Lookup Vault User"
+      }
+    },
+    "/api/vault/user-suggest": {
+      "post": {
+        "description": "Return a bounded username prefix match without listing the directory.\n\nSuggestions require at least two characters, never include inactive users,\nand are capped so a vault owner cannot paginate the full user table.",
+        "operationId": "suggest_vault_users_api_vault_user_suggest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserLookup"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserSuggestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Suggest Vault Users"
       }
     },
     "/api/vaults": {

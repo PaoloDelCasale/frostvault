@@ -1835,6 +1835,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/vault/user-suggest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Suggest Vault Users
+         * @description Return a bounded username prefix match without listing the directory.
+         *
+         *     Suggestions require at least two characters, never include inactive users,
+         *     and are capped so a vault owner cannot paginate the full user table.
+         */
+        post: operations["suggest_vault_users_api_vault_user_suggest_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/vaults": {
         parameters: {
             query?: never;
@@ -2366,6 +2389,7 @@ export interface components {
             recoverable: boolean;
             size?: number | null;
             storage_class?: string | null;
+            storage_class_source?: string | null;
             version_number: number;
         } & {
             [key: string]: unknown;
@@ -2374,6 +2398,8 @@ export interface components {
             object_key?: string | null;
             size?: number | null;
             storage_class?: string | null;
+            storage_class_source?: string | null;
+            uploaded_at?: string | null;
             version_number?: number;
         } & {
             [key: string]: unknown;
@@ -2471,6 +2497,11 @@ export interface components {
         };
         /** ConfirmRenameAction */
         ConfirmRenameAction: {
+            /**
+             * Allow Content Change
+             * @default false
+             */
+            allow_content_change: boolean;
             /** New Path */
             new_path: string;
             /** Vault File Id */
@@ -3533,6 +3564,11 @@ export interface components {
             display_name: string;
             id: number;
             username: string;
+        } & {
+            [key: string]: unknown;
+        };
+        UserSuggestResponse: {
+            items: components["schemas"]["UserLookupResult"][];
         } & {
             [key: string]: unknown;
         };
@@ -7184,6 +7220,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UserLookupResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    suggest_vault_users_api_vault_user_suggest_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserLookup"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserSuggestResponse"];
                 };
             };
             /** @description Validation Error */

@@ -61,7 +61,7 @@ export function NoVaultPage({ onNavigate = defaultNavigate }: NoVaultPageProps) 
           <div className="mt-6 flex flex-wrap items-center gap-2.5">
             <a
               href="/vaults/new"
-              className="inline-flex min-h-11 items-center justify-center rounded-lg bg-primary px-[15px] py-2.5 text-sm font-bold text-primary-foreground"
+              className="inline-flex min-h-11 items-center justify-center rounded-lg bg-primary px-[15px] py-2.5 text-sm font-bold text-primary-foreground transition-[box-shadow,filter,transform] duration-150 hover:-translate-y-px hover:brightness-105 hover:shadow-[0_5px_14px_var(--interactive-shadow-hover)] focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none"
             >
               {t("no_vault.create")}
             </a>

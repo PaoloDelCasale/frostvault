@@ -33,7 +33,7 @@ export function ShellNavItems({
   const selectedVaultId = currentVaultId ?? vaults[0]?.id ?? "";
   const compact = density === "primary";
   const actionClass =
-    "min-h-11 rounded-[10px] border border-input bg-surface px-4 text-left font-bold text-ink";
+    "min-h-11 rounded-[10px] border border-input bg-surface px-4 text-left font-bold text-ink transition-[background-color,border-color,box-shadow] duration-150 hover:border-[var(--interactive-border-hover)] hover:bg-green-soft focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none";
   const vaultLabel = shellLabel(t, "ui.vault", "Vault");
   const manageAccessLabel = shellLabel(t, "ui.manage_access", "Manage access");
 

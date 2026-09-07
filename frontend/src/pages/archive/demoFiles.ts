@@ -16,7 +16,8 @@ import {
   parseFileSortOrder,
 } from "./fileSort";
 import type {
-  FileHistoryResponse,
+  ArchiveVersionItem,
+  ArchiveVersionSummary,
   FilesResponse,
   JobGroup,
   JobsResponse,
@@ -262,18 +263,60 @@ const demoPhotosFolder = {
   },
 };
 
-const demoFileHistory: FileHistoryResponse = {
-  vault_file_id: "vf-readme",
-  path: "readme.txt",
-  path_history: [
-    { path: "docs/old-readme.txt", valid_from: "2024-01-01T00:00:00Z" },
-    { path: "readme.txt", valid_from: "2024-06-01T00:00:00Z" },
-  ],
-  versions: [
-    { object_key: "vault/readme.txt" },
-    { object_key: "vault/docs/old-readme.txt" },
-  ],
-};
+const demoArchiveVersions: ArchiveVersionItem[] = [
+  {
+    id: "ver-old",
+    version_number: 1,
+    storage_class: "DEEP_ARCHIVE",
+    size: 100,
+    recoverable: true,
+    created_at: "2024-01-01T00:00:00Z",
+    object_key: "vault/archive.pdf",
+    storage_class_source: "policy",
+  },
+  {
+    id: "ver-new",
+    version_number: 2,
+    storage_class: "DEEP_ARCHIVE",
+    size: 2048,
+    recoverable: true,
+    created_at: "2025-06-01T12:00:00Z",
+    object_key: "vault/archive.pdf",
+    storage_class_source: "manual",
+  },
+];
+
+function demoVersionsForPath(path: string): ArchiveVersionItem[] {
+  const versions =
+    path === "archive.pdf"
+      ? demoArchiveVersions
+      : [
+          {
+            id: `demo-version-${path}`,
+            version_number: 1,
+            storage_class: path === "readme.txt" ? "STANDARD" : null,
+            size: path === "readme.txt" ? 1024 : null,
+            recoverable: true,
+            created_at: "2024-06-01T00:00:00Z",
+            object_key: `vault/${path}`,
+            storage_class_source: path === "readme.txt" ? "upload" : "discovered",
+          },
+        ];
+  return [...versions].sort(
+    (left, right) => right.version_number - left.version_number,
+  );
+}
+
+function demoVersionSummaries(path: string): ArchiveVersionSummary[] {
+  return demoVersionsForPath(path).map((version) => ({
+    version_number: version.version_number,
+    uploaded_at: version.created_at,
+    storage_class: version.storage_class,
+    size: version.size,
+    object_key: version.object_key,
+    storage_class_source: version.storage_class_source,
+  }));
+}
 
 const demoActiveJobs: JobsResponse = {
   items: [],
@@ -312,6 +355,19 @@ type DemoNotification = {
   read_at: string | null;
 };
 
+type DemoAuditEvent = {
+  id: number;
+  created_at: string;
+  event: string;
+  outcome: string;
+  actor_user_id: number | null;
+  vault_id: number | null;
+  job_id: number | null;
+  correlation_id: string | null;
+  visibility: string;
+  detail: Record<string, unknown>;
+};
+
 type DemoUser = {
   id: number;
   display_name: string;
@@ -341,6 +397,36 @@ type DemoMember = {
   role: string;
 };
 
+type DemoLifecycleProfile = {
+  transitions: Array<{ days: number; storage_class: string }>;
+  expiration_days?: number | null;
+  noncurrent_expiration_days?: number | null;
+  noncurrent_transitions?: Array<{ days: number; storage_class: string }>;
+};
+
+type DemoLifecycle = {
+  default_policy_id: number | string | null;
+  folder_overrides: Array<{ folder_path: string; policy_id: number | string }>;
+  policies: Array<{
+    id: number | string;
+    name?: string;
+    profile?: DemoLifecycleProfile;
+  }>;
+  guided_profiles: Record<string, DemoLifecycleProfile>;
+  warnings: string[];
+};
+
+type DemoPolicy = {
+  auto_upload: boolean;
+  auto_local_cleanup: boolean;
+  local_retention_days: number | null;
+  stability_seconds: number;
+  include_globs: string[];
+  exclude_globs: string[];
+  bandwidth_limit_kibps: number | null;
+  operating_windows: unknown[];
+};
+
 type DemoState = {
   root: FilesResponse;
   nested: FilesResponse;
@@ -354,6 +440,8 @@ type DemoState = {
   vaults: DemoVault[];
   members: DemoMember[];
   locale: string;
+  policy: DemoPolicy;
+  lifecycle: DemoLifecycle;
 };
 
 function clone<T>(value: T): T {
@@ -462,7 +550,189 @@ function seedDemoState(): DemoState {
       },
     ],
     locale: "en",
+    lifecycle: {
+      default_policy_id: null,
+      folder_overrides: [],
+      policies: [],
+      guided_profiles: {
+        standard_only: { transitions: [] },
+        ia_after_30: {
+          transitions: [{ days: 30, storage_class: "STANDARD_IA" }],
+        },
+        archive_tiered: {
+          transitions: [
+            { days: 30, storage_class: "STANDARD_IA" },
+            { days: 90, storage_class: "GLACIER_IR" },
+            { days: 365, storage_class: "DEEP_ARCHIVE" },
+          ],
+          noncurrent_transitions: [
+            { days: 180, storage_class: "DEEP_ARCHIVE" },
+          ],
+        },
+      },
+      warnings: [],
+    },
+    policy: {
+      auto_upload: true,
+      auto_local_cleanup: false,
+      local_retention_days: 45,
+      stability_seconds: 300,
+      include_globs: [],
+      exclude_globs: [],
+      bandwidth_limit_kibps: null,
+      operating_windows: [],
+    },
   };
+}
+
+function demoNormalizePath(path: string): string {
+  return String(path).trim().replaceAll("\\", "/").replace(/^\/+/, "");
+}
+
+function demoGlobToRegExp(pattern: string): RegExp {
+  const escaped = demoNormalizePath(pattern)
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "{{GLOBSTAR}}")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\{\{GLOBSTAR\}\}/g, ".*");
+  return new RegExp(`^${escaped}$`);
+}
+
+function demoPathMatches(path: string, pattern: string): boolean {
+  const normalized = demoNormalizePath(path);
+  const glob = demoNormalizePath(pattern);
+  if (glob.endsWith("/")) {
+    const prefix = glob.replace(/\/+$/, "");
+    return normalized === prefix || normalized.startsWith(`${prefix}/`);
+  }
+  if (glob.endsWith("/**")) {
+    const prefix = glob.slice(0, -3);
+    return normalized === prefix || normalized.startsWith(`${prefix}/`);
+  }
+  return demoGlobToRegExp(glob).test(normalized);
+}
+
+function demoPathIsIncluded(
+  path: string,
+  includeGlobs: string[],
+  excludeGlobs: string[],
+): boolean {
+  const normalized = demoNormalizePath(path);
+  if (
+    includeGlobs.length > 0 &&
+    !includeGlobs.some((pattern) => demoPathMatches(normalized, pattern))
+  ) {
+    return false;
+  }
+  if (excludeGlobs.some((pattern) => demoPathMatches(normalized, pattern))) {
+    return false;
+  }
+  return true;
+}
+
+function demoAuditEvents(): DemoAuditEvent[] {
+  const daysAgo = (days: number, hour: number) => {
+    const date = new Date();
+    date.setDate(date.getDate() - days);
+    date.setHours(hour, 15, 0, 0);
+    return date.toISOString();
+  };
+  return [
+    {
+      id: 107,
+      created_at: daysAgo(0, 10),
+      event: "vault_file_renamed",
+      outcome: "success",
+      actor_user_id: 2,
+      vault_id: 1,
+      job_id: null,
+      correlation_id: "demo-rename-107",
+      visibility: "vault",
+      detail: {
+        vault_file_id: "file-archive-pdf",
+        old_path: "incoming/archive-draft.pdf",
+        new_path: "documents/archive.pdf",
+      },
+    },
+    {
+      id: 106,
+      created_at: daysAgo(1, 16),
+      event: "vault_lifecycle_default_updated",
+      outcome: "updated",
+      actor_user_id: 1,
+      vault_id: 1,
+      job_id: null,
+      correlation_id: "demo-lifecycle-106",
+      visibility: "vault",
+      detail: { guided_profile: "archive_tiered" },
+    },
+    {
+      id: 105,
+      created_at: daysAgo(2, 9),
+      event: "operation_policy_updated",
+      outcome: "success",
+      actor_user_id: 1,
+      vault_id: 1,
+      job_id: null,
+      correlation_id: null,
+      visibility: "vault",
+      detail: {
+        include_globs: ["documents/**", "photos/**"],
+        exclude_globs: ["**/*.tmp"],
+      },
+    },
+    {
+      id: 104,
+      created_at: daysAgo(4, 14),
+      event: "storage_class_change_started",
+      outcome: "queued",
+      actor_user_id: 2,
+      vault_id: 1,
+      job_id: 42,
+      correlation_id: "demo-storage-104",
+      visibility: "vault",
+      detail: {
+        path: "photos/2024",
+        target_storage_class: "DEEP_ARCHIVE",
+      },
+    },
+    {
+      id: 103,
+      created_at: daysAgo(7, 11),
+      event: "vault_member_added",
+      outcome: "created",
+      actor_user_id: 1,
+      vault_id: 1,
+      job_id: null,
+      correlation_id: null,
+      visibility: "vault",
+      detail: { username: "alex", role: "operator" },
+    },
+    {
+      id: 102,
+      created_at: daysAgo(12, 8),
+      event: "cloud_deletion.archive_requested",
+      outcome: "requested",
+      actor_user_id: 1,
+      vault_id: 1,
+      job_id: 38,
+      correlation_id: "demo-archive-102",
+      visibility: "vault",
+      detail: { path: "reports/obsolete.csv", mode: "delete_marker" },
+    },
+    {
+      id: 101,
+      created_at: daysAgo(20, 3),
+      event: "catalog_scan_completed",
+      outcome: "completed",
+      actor_user_id: null,
+      vault_id: 1,
+      job_id: 31,
+      correlation_id: null,
+      visibility: "vault",
+      detail: { discovered: 148, changed: 6, missing: 1 },
+    },
+  ];
 }
 
 function json(data: unknown, status = 200): Response {
@@ -887,28 +1157,14 @@ export function installDemoFilesFetch(): void {
     }
 
     if (path === "/api/files/versions") {
+      const versionsPath = search.get("path") || "archive.pdf";
+      const versions = demoVersionsForPath(versionsPath);
+      const recoverable = versions.filter((version) => version.recoverable);
       return json({
-        path: search.get("path") || "archive.pdf",
-        items: [
-          {
-            id: "ver-old",
-            version_number: 1,
-            storage_class: "STANDARD",
-            size: 100,
-            recoverable: true,
-            created_at: "2024-01-01T00:00:00Z",
-          },
-          {
-            id: "ver-new",
-            version_number: 2,
-            storage_class: "DEEP_ARCHIVE",
-            size: 2048,
-            recoverable: true,
-            created_at: "2025-06-01T12:00:00Z",
-          },
-        ],
-        recoverable_count: 2,
-        default_archive_version_id: "ver-new",
+        path: versionsPath,
+        items: versions,
+        recoverable_count: recoverable.length,
+        default_archive_version_id: recoverable.at(-1)?.id ?? null,
         supported_restore_tiers: ["Standard", "Bulk"],
         default_restore_tier: "Standard",
         default_restore_days: 7,
@@ -952,7 +1208,12 @@ export function installDemoFilesFetch(): void {
 
     if (path === "/api/file-history") {
       const historyPath = search.get("path") || "readme.txt";
-      return json({ ...demoFileHistory, path: historyPath });
+      return json({
+        vault_file_id: `demo-${historyPath}`,
+        path: historyPath,
+        path_history: [{ path: historyPath, valid_from: "2024-06-01T00:00:00Z" }],
+        versions: demoVersionSummaries(historyPath),
+      });
     }
 
     if (path === "/api/files") {
@@ -1105,6 +1366,23 @@ export function installDemoFilesFetch(): void {
       return json({ message: "ok" });
     }
 
+    if (path === "/api/vault/user-suggest" && method === "POST") {
+      const prefix = String(body.username ?? "").toLowerCase();
+      const items = state.users
+        .filter((entry) => entry.active !== false && entry.username.startsWith(prefix))
+        .slice(0, 8)
+        .map((user) => {
+          const member = state.members.find((entry) => entry.id === user.id);
+          return {
+            id: user.id,
+            username: user.username,
+            display_name: user.display_name,
+            current_vault_role: member?.role ?? null,
+          };
+        });
+      return json({ items });
+    }
+
     if (path === "/api/vault/user-lookup" && method === "POST") {
       const username = String(body.username ?? "");
       const user = state.users.find((entry) => entry.username === username);
@@ -1127,40 +1405,111 @@ export function installDemoFilesFetch(): void {
     }
 
     if (path === "/api/vault/lifecycle" || path === "/api/lifecycle") {
-      return json({
-        default_policy_id: null,
-        folder_overrides: [],
-        policies: [],
-        guided_profiles: {
-          standard_only: { transitions: [] },
-          ia_after_30: {
-            transitions: [{ days: 30, storage_class: "STANDARD_IA" }],
-          },
-          archive_tiered: {
-            transitions: [
-              { days: 30, storage_class: "STANDARD_IA" },
-              { days: 90, storage_class: "GLACIER" },
-            ],
-          },
-        },
-      });
+      return json(state.lifecycle);
+    }
+
+    if (path === "/api/vault/lifecycle/default" && method === "PUT") {
+      const guidedName = typeof body.guided_profile === "string"
+        ? body.guided_profile
+        : null;
+      const profile = guidedName
+        ? state.lifecycle.guided_profiles[guidedName]
+        : (body.profile as DemoLifecycleProfile | undefined);
+      if (!profile) return json({ detail: "Choose a valid lifecycle profile" }, 422);
+      const policyId = "demo-default";
+      state.lifecycle.default_policy_id = policyId;
+      state.lifecycle.policies = [
+        ...state.lifecycle.policies.filter((item) => item.id !== policyId),
+        { id: policyId, name: guidedName ?? "Vault default", profile: clone(profile) },
+      ];
+      return json(state.lifecycle);
+    }
+
+    if (path === "/api/vault/lifecycle/folder-overrides" && method === "PUT") {
+      const folderPath = demoNormalizePath(String(body.folder_path ?? ""));
+      const guidedName = typeof body.guided_profile === "string"
+        ? body.guided_profile
+        : null;
+      const profile = guidedName
+        ? state.lifecycle.guided_profiles[guidedName]
+        : (body.profile as DemoLifecycleProfile | undefined);
+      if (!folderPath) return json({ detail: "Enter a folder path" }, 422);
+      if (!profile) return json({ detail: "Choose a valid lifecycle profile" }, 422);
+      const policyId = `demo-folder:${folderPath}`;
+      state.lifecycle.policies = [
+        ...state.lifecycle.policies.filter((item) => item.id !== policyId),
+        { id: policyId, name: guidedName ?? `Folder ${folderPath}`, profile: clone(profile) },
+      ];
+      state.lifecycle.folder_overrides = [
+        ...state.lifecycle.folder_overrides.filter(
+          (item) => item.folder_path !== folderPath,
+        ),
+        { folder_path: folderPath, policy_id: policyId },
+      ];
+      return json(state.lifecycle);
+    }
+
+    if (path === "/api/vault/lifecycle/folder-overrides" && method === "DELETE") {
+      const folderPath = demoNormalizePath(String(body.folder_path ?? ""));
+      const removedPolicyIds = new Set(
+        state.lifecycle.folder_overrides
+          .filter((item) => item.folder_path === folderPath)
+          .map((item) => item.policy_id),
+      );
+      state.lifecycle.folder_overrides = state.lifecycle.folder_overrides.filter(
+        (item) => item.folder_path !== folderPath,
+      );
+      state.lifecycle.policies = state.lifecycle.policies.filter(
+        (item) => !removedPolicyIds.has(item.id),
+      );
+      return json(state.lifecycle);
     }
 
     if (path === "/api/vault/operation-policy" || path === "/api/operation-policy") {
-      return json({
-        auto_upload: true,
-        auto_local_cleanup: false,
-        local_retention_days: 45,
-        stability_seconds: 300,
-        include_globs: [],
-        exclude_globs: [],
-        bandwidth_limit_kibps: null,
-        operating_windows: [],
-      });
+      if (method === "PUT" || method === "POST") {
+        state.policy = {
+          ...state.policy,
+          auto_upload: Boolean(body.auto_upload ?? state.policy.auto_upload),
+          auto_local_cleanup: Boolean(
+            body.auto_local_cleanup ?? state.policy.auto_local_cleanup,
+          ),
+          local_retention_days:
+            body.local_retention_days === undefined
+              ? state.policy.local_retention_days
+              : (body.local_retention_days as number | null),
+          include_globs: Array.isArray(body.include_globs)
+            ? body.include_globs.map(String)
+            : state.policy.include_globs,
+          exclude_globs: Array.isArray(body.exclude_globs)
+            ? body.exclude_globs.map(String)
+            : state.policy.exclude_globs,
+        };
+      }
+      return json(state.policy);
+    }
+
+    if (path === "/api/vault/operation-policy/preview-globs" && method === "POST") {
+      const paths = Array.isArray(body.paths) ? body.paths.map(String) : [];
+      const includeGlobs = Array.isArray(body.include_globs)
+        ? body.include_globs.map(String)
+        : [];
+      const excludeGlobs = Array.isArray(body.exclude_globs)
+        ? body.exclude_globs.map(String)
+        : [];
+      const included: string[] = [];
+      const excluded: string[] = [];
+      for (const sample of paths) {
+        if (demoPathIsIncluded(sample, includeGlobs, excludeGlobs)) {
+          included.push(sample);
+        } else {
+          excluded.push(sample);
+        }
+      }
+      return json({ included, excluded });
     }
 
     if (path === "/api/audit-events") {
-      return json({ items: [] });
+      return json({ events: demoAuditEvents() });
     }
 
     if (path === "/api/admin/users" && method === "GET") {

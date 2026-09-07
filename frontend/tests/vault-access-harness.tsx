@@ -111,6 +111,9 @@ export function createVaultAccessFetch(
       return typeof byUrl === "function" ? byUrl(init) : byUrl;
     }
 
+    if (url === "/api/vault/user-suggest" && method === "POST") {
+      return jsonResponse({ items: [] });
+    }
     if (url === "/api/vault/members" && method === "GET") {
       return jsonResponse({ items: [] });
     }

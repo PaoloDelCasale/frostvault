@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -127,16 +127,24 @@ describe("VaultAccessPage audit panel", () => {
     const auditList = screen.getByRole("list", { name: "Loaded audit events" });
     expect(within(auditList).getAllByRole("article")).toHaveLength(3);
 
-    await user.selectOptions(screen.getByLabelText("Actor"), "5");
+    await user.click(screen.getByRole("combobox", { name: "Actor" }));
+    await user.click(screen.getByRole("option", { name: "Ada Lovelace" }));
     expect(within(auditList).getAllByRole("article")).toHaveLength(2);
 
-    await user.selectOptions(screen.getByLabelText("Action"), "vault_file_renamed");
+    await user.click(screen.getByRole("combobox", { name: "Action" }));
+    await user.click(screen.getByRole("option", { name: "vault file renamed" }));
     expect(within(auditList).getAllByRole("article")).toHaveLength(1);
 
-    await user.selectOptions(screen.getByLabelText("Action"), "");
-    fireEvent.change(screen.getByLabelText("From date"), {
-      target: { value: "2026-07-02" },
-    });
+    await user.click(screen.getByRole("combobox", { name: "Action" }));
+    await user.click(screen.getByRole("option", { name: "All actions" }));
+    await user.click(screen.getByRole("button", { name: "From date" }));
+    const now = new Date();
+    const monthDelta = (2026 - now.getFullYear()) * 12 + (6 - now.getMonth());
+    const monthButton = monthDelta >= 0 ? /next month/i : /previous month/i;
+    for (let index = 0; index < Math.abs(monthDelta); index += 1) {
+      await user.click(screen.getByRole("button", { name: monthButton }));
+    }
+    await user.click(screen.getByRole("button", { name: /July 2, 2026/i }));
     expect(within(auditList).getAllByRole("article")).toHaveLength(1);
     expect(
       within(auditList).getByRole("article", { name: "vault_file_renamed" }),

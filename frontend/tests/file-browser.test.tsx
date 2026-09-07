@@ -19,6 +19,11 @@ const messages: Record<string, string> = {
   "ui.name": "Name",
   "ui.size": "Size",
   "ui.state": "State",
+  "ui.state_details": "State details",
+  "ui.files_by_state": "Files by state",
+  "ui.state_file_count": "{count} files",
+  "ui.view_details": "View details",
+  "ui.view_state_details": "View state details",
   "ui.cloud_storage": "Cloud storage",
   "ui.previous": "Previous",
   "ui.next": "Next",
@@ -32,6 +37,7 @@ const messages: Record<string, string> = {
   "ui.file_total": "File total",
   "ui.cloud_classes": "{count} cloud classes",
   "ui.more_actions": "More actions",
+  "ui.actions": "Actions",
   "ui.row_action_upload": "Upload",
   "ui.row_action_recover": "Recover",
   "ui.row_action_free_space": "Free local space",
@@ -41,11 +47,15 @@ const messages: Record<string, string> = {
   "ui.row_actions_title": "Actions for {name}",
   "ui.cancel": "Cancel",
   "ui.path_history": "Path History",
+  "ui.path_changes": "Path changes",
   "ui.path_history_versions": "{count} Archive Versions",
   "ui.path_history_no_versions": "No Archive Versions",
   "ui.path_history_loading": "Loading Path History…",
   "ui.path_history_error": "Unable to load Path History.",
   "ui.close_path_history": "Close",
+  "ui.version_option": "Version #{number} · {storage} · {size}",
+  "ui.version_date_storage": "#{number} · {date} · {storage}",
+  "ui.version_title_date": "Version #{number} · {date}",
   "ui.file_list_placeholder": "File list",
   "ui.file_list_loading": "Loading folder…",
   "ui.file_list_error": "Unable to load this folder.",
@@ -227,10 +237,117 @@ describe("FileBrowser — cards and table from /api/files", () => {
       within(table).getByRole("button", { name: "Recover" }),
     ).toBeInTheDocument();
 
+    // Directory aggregates stay on one row. The mixed-state summary is an
+    // explicit disclosure instead of a wrapping list of pills.
+    const directoryRow = within(table).getByTestId("desktop-file-row-reports");
+    expect(within(table).queryByTestId("desktop-directory-meta-reports")).not.toBeInTheDocument();
+    const stateDisclosure = within(directoryRow).getByTestId(
+      "state-details-desktop-reports",
+    );
+    expect(stateDisclosure).toHaveAccessibleName(/View state details/);
+    const directoryActions = within(directoryRow).getByTestId("desktop-actions-reports");
+    expect(within(directoryActions).getByRole("button", { name: "Upload" })).toBeInTheDocument();
+    expect(within(directoryActions).getByTestId("more-actions-desktop-reports")).toBeInTheDocument();
+
+    const { userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup();
+    await user.click(stateDisclosure);
+    const stateDetails = await screen.findByTestId("state-details-popover-reports");
+    expect(within(stateDetails).getByText("2")).toBeInTheDocument();
+    expect(within(stateDetails).getByText("1")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(stateDisclosure).toHaveFocus();
+    expect(directoryRow.className).not.toContain("focus-within:");
+    expect(directoryRow.className).toContain("has-[[aria-expanded=true]]:");
+
+    const mobileStateDisclosure = within(cards).getByTestId(
+      "state-details-mobile-reports",
+    );
+    expect(mobileStateDisclosure).toHaveTextContent("View details");
+    expect(mobileStateDisclosure).toHaveAttribute("aria-haspopup", "dialog");
+    await user.click(mobileStateDisclosure);
+    const stateSheet = await screen.findByTestId("state-details-sheet-reports");
+    expect(stateSheet).toHaveAccessibleName("State details");
+    expect(stateSheet).toHaveClass(
+      "path-history-sheet",
+      "max-h-[78svh]",
+      "rounded-t-panel",
+      "px-4",
+      "pt-2",
+    );
+    expect(within(stateSheet).getByText("reports")).toHaveClass(
+      "text-xs",
+      "text-muted",
+    );
+    expect(window.location.search).toBe("");
+    await user.keyboard("{Escape}");
+    expect(mobileStateDisclosure).toHaveFocus();
+    const mobileDirectoryCard = within(cards).getByTestId(
+      "mobile-file-card-reports",
+    );
+    expect(mobileDirectoryCard.className).not.toContain("focus-within:");
+    expect(mobileDirectoryCard.className).toContain(
+      "has-[[aria-expanded=true]]:",
+    );
+
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringMatching(/^\/api\/files\?/),
       expect.anything(),
     );
+  });
+
+  it("collapses directory actions into one labeled menu at intermediate widths", async () => {
+    const OriginalResizeObserver = globalThis.ResizeObserver;
+    class NarrowListResizeObserver implements ResizeObserver {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+
+      observe(target: Element): void {
+        if (!(target instanceof HTMLElement) || !target.hasAttribute("data-desktop-file-list")) {
+          return;
+        }
+        this.callback(
+          [{ contentRect: { width: 900 } } as ResizeObserverEntry],
+          this,
+        );
+      }
+
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    vi.stubGlobal("ResizeObserver", NarrowListResizeObserver);
+
+    try {
+      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+        if (String(input).includes("/api/jobs")) {
+          return jsonResponse({ items: [], groups: [] });
+        }
+        return jsonResponse(realisticBrowse);
+      });
+      renderBrowser();
+
+      const directoryActions = await screen.findByTestId("desktop-actions-reports");
+      await waitFor(() => expect(directoryActions).toHaveAttribute("data-layout", "compact"));
+      expect(
+        within(directoryActions).queryByRole("button", { name: "Upload" }),
+      ).not.toBeInTheDocument();
+
+      const actionsButton = within(directoryActions).getByRole("button", {
+        name: "Actions",
+      });
+      expect(actionsButton).toHaveAttribute("aria-expanded", "false");
+
+      const { userEvent } = await import("@testing-library/user-event");
+      const user = userEvent.setup();
+      await user.click(actionsButton);
+      expect(actionsButton).toHaveAttribute("aria-expanded", "true");
+      const menu = await screen.findByRole("menu", { name: "More actions" });
+      expect(within(menu).getByRole("menuitem", { name: "Upload" })).toBeInTheDocument();
+      expect(
+        within(menu).getByRole("menuitem", { name: "Free local space 2 files" }),
+      ).toBeInTheDocument();
+    } finally {
+      vi.stubGlobal("ResizeObserver", OriginalResizeObserver);
+    }
   });
 });
 
@@ -325,7 +442,7 @@ describe("FileBrowser — directory navigation", () => {
     });
   });
 
-  it("navigates via Up and breadcrumbs, and the browser back button returns to the previous directory", async () => {
+  it("navigates via breadcrumbs without a redundant Up button, and browser back returns to the previous directory", async () => {
     const { userEvent } = await import("@testing-library/user-event");
     const user = userEvent.setup();
 
@@ -374,8 +491,10 @@ describe("FileBrowser — directory navigation", () => {
     renderBrowser();
 
     await waitFor(() => {
-      expect(screen.getByTestId("up-directory")).not.toBeDisabled();
+      expect(screen.getByTestId("breadcrumbs")).toBeInTheDocument();
     });
+    expect(screen.queryByTestId("up-directory")).not.toBeInTheDocument();
+    expect(screen.getByTestId("breadcrumb-icon")).toBeInTheDocument();
 
     // Breadcrumb to "reports"
     const reportsCrumbs = screen
@@ -390,8 +509,12 @@ describe("FileBrowser — directory navigation", () => {
       );
     });
 
-    // Up to archive root
-    await user.click(screen.getByTestId("up-directory"));
+    // Breadcrumb to archive root
+    const archiveCrumbs = screen
+      .getAllByRole("button")
+      .filter((el) => el.getAttribute("data-directory") === "");
+    expect(archiveCrumbs.length).toBeGreaterThan(0);
+    await user.click(archiveCrumbs[0]!);
     await waitFor(() => {
       expect(
         new URLSearchParams(window.location.search).get("directory"),
@@ -447,10 +570,12 @@ describe("FileBrowser — directory navigation", () => {
     expect(narrow.className.split(/\s+/)).toEqual(
       expect.arrayContaining(["md:hidden"]),
     );
-    // Ellipsis present; intermediate segments like "b" and "c" omitted
-    expect(within(narrow).getByText("…")).toBeInTheDocument();
-    expect(within(narrow).queryByText("b")).not.toBeInTheDocument();
-    expect(within(narrow).queryByText("c")).not.toBeInTheDocument();
+    // Ellipsis selector contains intermediate segments without widening the trail.
+    const overflow = within(narrow).getByRole("combobox", { name: /Archive/ });
+    expect(overflow).toBeInTheDocument();
+    expect(within(overflow).getByRole("option", { name: "a" })).toBeInTheDocument();
+    expect(within(overflow).getByRole("option", { name: "b" })).toBeInTheDocument();
+    expect(within(overflow).getByRole("option", { name: "c" })).toBeInTheDocument();
     // Root and last segments remain
     expect(within(narrow).getByText("Archive")).toBeInTheDocument();
     expect(within(narrow).getByText("f")).toBeInTheDocument();
@@ -656,6 +781,183 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
     );
   }
 
+  it("keeps each mobile card tied to its own detail and toggles it from the full card", async () => {
+    const { userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup();
+    const items = ["q1-report.pdf", "q2-report.pdf"].map((name) => ({
+      type: "file" as const,
+      name,
+      path: `reports/2024/${name}`,
+      local_size: 512,
+      cloud_size: 512,
+      state: "both",
+      storage_class: "STANDARD",
+      cloud_exists: 1,
+      local_exists: 1,
+    }));
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const raw = String(input);
+      if (raw.includes("/api/jobs")) return jsonResponse({ items: [], groups: [] });
+      if (raw.startsWith("/api/file-history")) {
+        const path = new URL(raw, "http://localhost").searchParams.get("path")!;
+        return jsonResponse({
+          vault_file_id: path,
+          path,
+          path_history: [{ path, valid_from: "2024-06-01" }],
+          versions: [{ object_key: `vault/${path}` }],
+        });
+      }
+      return jsonResponse({
+        items,
+        total: items.length,
+        page: 1,
+        directory: "reports/2024",
+        mode: "browse",
+      });
+    });
+
+    renderBrowser();
+    const q1Card = await screen.findByTestId("mobile-file-card-reports/2024/q1-report.pdf");
+    const q2Card = screen.getByTestId("mobile-file-card-reports/2024/q2-report.pdf");
+    const q1Trigger = within(q1Card).getByTestId(
+      "mobile-file-card-trigger-reports/2024/q1-report.pdf",
+    );
+    const q2Trigger = within(q2Card).getByTestId(
+      "mobile-file-card-trigger-reports/2024/q2-report.pdf",
+    );
+
+    // The full-card trigger, rather than only its text, opens the right file.
+    await user.click(q1Trigger);
+    await waitFor(() => {
+      expect(screen.getByTestId("path-history")).toHaveTextContent(
+        "reports/2024/q1-report.pdf",
+      );
+    });
+    expect(screen.queryByTestId("path-history-timeline")).not.toBeInTheDocument();
+    expect(q1Card).toHaveAttribute("data-selected", "true");
+    expect(q2Card).not.toHaveAttribute("data-selected");
+
+    await user.click(q2Trigger);
+    await waitFor(() => {
+      expect(screen.getByTestId("path-history")).toHaveTextContent(
+        "reports/2024/q2-report.pdf",
+      );
+    });
+    expect(q1Card).not.toHaveAttribute("data-selected");
+    expect(q2Card).toHaveAttribute("data-selected", "true");
+    expect(screen.queryByText("Close", { selector: "button" })).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("path-history")).getByRole("button", { name: "Close" })).toHaveClass("rounded-full");
+
+    // Tapping the selected card again starts the animated exit.
+    await user.click(q2Trigger);
+    expect(screen.getByTestId("path-history")).toHaveAttribute("data-open", "false");
+    await waitFor(() => {
+      expect(screen.queryByTestId("path-history")).not.toBeInTheDocument();
+    });
+  });
+
+  it("keeps desktop q1/q2 rows tied to the selected Path History", async () => {
+    const { userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup();
+    const items = ["q1-report.pdf", "q2-report.pdf"].map((name) => ({
+      type: "file" as const,
+      name,
+      path: `reports/2024/${name}`,
+      local_size: 512,
+      cloud_size: 512,
+      state: "both",
+      storage_class: name === "q2-report.pdf" ? "DEEP_ARCHIVE" : "STANDARD",
+      cloud_exists: 1,
+      local_exists: 1,
+    }));
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const raw = String(input);
+      if (raw.includes("/api/jobs")) return jsonResponse({ items: [], groups: [] });
+      if (raw.startsWith("/api/file-history")) {
+        const path = new URL(raw, "http://localhost").searchParams.get("path")!;
+        return jsonResponse({
+          vault_file_id: path,
+          path,
+          path_history: [{ path, valid_from: "2024-06-01" }],
+          versions: [{ object_key: `vault/${path}` }],
+        });
+      }
+      return jsonResponse({ items, total: 2, page: 1, directory: "reports/2024", mode: "browse" });
+    });
+
+    renderBrowser();
+    const table = await screen.findByTestId("file-list-table");
+    const q1 = within(table).getByRole("button", { name: /q1-report\.pdf/i });
+    const q2 = within(table).getByRole("button", { name: /q2-report\.pdf/i });
+
+    await user.click(q1);
+    const q1Detail = await screen.findByTestId(
+      "desktop-file-detail-reports/2024/q1-report.pdf",
+    );
+    expect(within(q1Detail).getByTestId("path-history-inline")).toHaveAttribute(
+      "data-path",
+      "reports/2024/q1-report.pdf",
+    );
+    expect(q1Detail.previousElementSibling).toBe(
+      screen.getByTestId("desktop-file-row-reports/2024/q1-report.pdf"),
+    );
+    expect(q1Detail.nextElementSibling).toBe(
+      screen.getByTestId("desktop-file-row-reports/2024/q2-report.pdf"),
+    );
+    expect(screen.getByTestId("desktop-file-row-reports/2024/q1-report.pdf")).toHaveAttribute(
+      "data-selected",
+      "true",
+    );
+
+    await user.click(q2);
+    const q2Detail = await screen.findByTestId(
+      "desktop-file-detail-reports/2024/q2-report.pdf",
+    );
+    expect(within(q2Detail).getByTestId("path-history-inline")).toHaveAttribute(
+      "data-path",
+      "reports/2024/q2-report.pdf",
+    );
+    expect(q2Detail.previousElementSibling).toBe(
+      screen.getByTestId("desktop-file-row-reports/2024/q2-report.pdf"),
+    );
+    expect(screen.getByTestId("desktop-file-row-reports/2024/q1-report.pdf")).not.toHaveAttribute(
+      "data-selected",
+    );
+    const selectedQ2Row = screen.getByTestId(
+      "desktop-file-row-reports/2024/q2-report.pdf",
+    );
+    expect(selectedQ2Row).toHaveAttribute("data-selected", "true");
+    expect(selectedQ2Row).toHaveAttribute("data-deep-archive", "true");
+    expect(selectedQ2Row.className).not.toContain("hover:shadow-");
+    expect(selectedQ2Row.className).not.toContain("bg-green-soft/70");
+    expect(selectedQ2Row.className).toContain(
+      "shadow-[inset_0_0_0_999px_color-mix(in_srgb,var(--green-soft)_36%,transparent)]",
+    );
+
+    // Closing from the same file control returns focus without leaving the
+    // whole row in its old focus-within highlight.
+    await user.click(q2);
+    const closingQ2Detail = screen.getByTestId(
+      "desktop-file-detail-reports/2024/q2-report.pdf",
+    );
+    expect(
+      within(closingQ2Detail).getByTestId("path-history-inline"),
+    ).toHaveAttribute("data-open", "false");
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("desktop-file-detail-reports/2024/q2-report.pdf"),
+      ).not.toBeInTheDocument();
+    });
+    const closedQ2Row = screen.getByTestId(
+      "desktop-file-row-reports/2024/q2-report.pdf",
+    );
+    expect(closedQ2Row).not.toHaveAttribute("data-selected");
+    expect(q2).toHaveFocus();
+    expect(closedQ2Row.className).not.toContain("focus-within:");
+  });
+
   it("loads and displays Path History when a Vault File is tapped", async () => {
     const { userEvent } = await import("@testing-library/user-event");
     const user = userEvent.setup();
@@ -672,8 +974,20 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
             { path: "readme.txt", valid_from: "2024-06-01" },
           ],
           versions: [
-            { object_key: "bucket/readme.txt" },
-            { object_key: "bucket/docs/old-readme.txt" },
+            {
+              version_number: 2,
+              object_key: "bucket/readme.txt",
+              storage_class: "DEEP_ARCHIVE",
+              size: 2048,
+              uploaded_at: "2025-06-01T12:00:00Z",
+            },
+            {
+              version_number: 1,
+              object_key: "bucket/docs/old-readme.txt",
+              storage_class: "STANDARD",
+              size: 100,
+              uploaded_at: "2024-01-01T00:00:00Z",
+            },
           ],
         });
       }
@@ -699,6 +1013,20 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
     const timeline = screen.getByTestId("path-history-timeline");
     expect(within(timeline).getByText("docs/old-readme.txt")).toBeInTheDocument();
     expect(within(timeline).getByText("readme.txt")).toBeInTheDocument();
+    const historyPanel = screen.getByTestId("path-history");
+    expect(within(historyPanel).getByText("Path changes")).toBeInTheDocument();
+    const versionList = within(historyPanel).getByTestId(
+      "path-history-version-list",
+    );
+    const versionItems = within(versionList).getAllByRole("listitem");
+    expect(versionItems[0]).toHaveTextContent(/Version #2/);
+    expect(versionItems[0]).toHaveTextContent("Deep Archive");
+    expect(versionItems[0]).toHaveTextContent("2.0 KB");
+    expect(versionItems[1]).toHaveTextContent(/Version #1/);
+    expect(versionItems[1]).toHaveTextContent("Standard");
+    expect(versionItems[1]).toHaveTextContent("100 B");
+    expect(historyPanel).not.toHaveTextContent("2024-01-01T00:00:00Z");
+    expect(historyPanel).not.toHaveTextContent("2024-06-01");
     expect(screen.getByTestId("path-history-versions")).toHaveTextContent(
       "2 Archive Versions",
     );

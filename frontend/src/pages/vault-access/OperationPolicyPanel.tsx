@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
+import { X } from "lucide-react";
 
 import {
   fetchOperationPolicy,
   previewOperationGlobs,
   updateOperationPolicy,
-  type GlobPreviewResponse,
   type OperationPolicy,
 } from "@/api";
-import { FormField } from "@/components/FormField";
+import { FormField, FormInput } from "@/components/FormField";
 import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
@@ -16,25 +16,123 @@ type OperationPolicyPanelProps = {
   onNotice: (message: string, error?: boolean) => void;
 };
 
-function linesToGlobs(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+type Translate = (key: string, params?: Record<string, string | number>) => string;
+
+function normalizePolicyPath(path: string): string {
+  return path.trim().replaceAll("\\", "/").replace(/^\/+/, "");
 }
 
-function globsToText(globs: string[]): string {
-  return globs.join("\n");
+function listHasPath(list: string[] | undefined, path: string): boolean {
+  if (!Array.isArray(list)) return false;
+  const normalized = normalizePolicyPath(path);
+  return list.some((item) => normalizePolicyPath(item) === normalized);
+}
+
+function addRule(rules: string[], raw: string): string[] {
+  const rule = raw.trim();
+  if (!rule || rules.includes(rule)) return rules;
+  return [...rules, rule];
+}
+
+function RuleList({
+  id,
+  title,
+  help,
+  emptyLabel,
+  addLabel,
+  rules,
+  draft,
+  onDraftChange,
+  onAdd,
+  onRemove,
+  t,
+}: {
+  id: string;
+  title: string;
+  help: string;
+  emptyLabel: string;
+  addLabel: string;
+  rules: string[];
+  draft: string;
+  onDraftChange: (value: string) => void;
+  onAdd: () => void;
+  onRemove: (rule: string) => void;
+  t: Translate;
+}) {
+  return (
+    <div className="rounded-[14px] border border-line bg-canvas p-3">
+      <h3 className="text-sm font-bold text-ink">{title}</h3>
+      <p className="mt-1 text-sm text-muted">{help}</p>
+      <div className="mt-3 flex flex-wrap gap-2" data-testid={`${id}-rules`}>
+        {rules.length === 0 ? (
+          <p className="text-sm font-bold text-ink">{emptyLabel}</p>
+        ) : (
+          rules.map((rule) => (
+            <span
+              key={rule}
+              className="inline-flex max-w-full items-center gap-1 rounded-badge border border-line bg-surface py-1 pr-1 pl-2.5 font-mono text-xs font-bold text-ink"
+            >
+              <span className="truncate">{rule}</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-7 min-h-7 min-w-7 rounded-full"
+                aria-label={t("access.policy_remove_rule", { rule })}
+                onClick={() => onRemove(rule)}
+              >
+                <X className="size-3.5" aria-hidden="true" />
+              </Button>
+            </span>
+          ))
+        )}
+      </div>
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <FormField
+          label={addLabel}
+          htmlFor={`${id}-new`}
+          className="min-w-0 flex-1"
+        >
+          <FormInput
+            id={`${id}-new`}
+            value={draft}
+            placeholder={t("access.policy_rule_placeholder")}
+            onChange={(event) => onDraftChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                onAdd();
+              }
+            }}
+          />
+        </FormField>
+        <Button
+          type="button"
+          variant="secondary"
+          className="min-h-11 sm:self-end"
+          onClick={onAdd}
+        >
+          {t("access.policy_add_rule")}
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 export function OperationPolicyPanel({ onNotice }: OperationPolicyPanelProps) {
   const { t, ready } = useI18n();
   const [loadState, setLoadState] = useState("");
   const [policy, setPolicy] = useState<OperationPolicy | null>(null);
-  const [includeText, setIncludeText] = useState("");
-  const [excludeText, setExcludeText] = useState("");
-  const [samplePaths, setSamplePaths] = useState("");
-  const [preview, setPreview] = useState<GlobPreviewResponse | null>(null);
+  const [includeRules, setIncludeRules] = useState<string[]>([]);
+  const [excludeRules, setExcludeRules] = useState<string[]>([]);
+  const [includeDraft, setIncludeDraft] = useState("");
+  const [excludeDraft, setExcludeDraft] = useState("");
+  const [previewPath, setPreviewPath] = useState("");
+  const [preview, setPreview] = useState<{
+    path: string;
+    included: boolean;
+    reason: string;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -44,8 +142,8 @@ export function OperationPolicyPanel({ onNotice }: OperationPolicyPanelProps) {
       try {
         const data = await fetchOperationPolicy();
         setPolicy(data);
-        setIncludeText(globsToText(data.include_globs));
-        setExcludeText(globsToText(data.exclude_globs));
+        setIncludeRules(data.include_globs);
+        setExcludeRules(data.exclude_globs);
         setLoadState(t("access.policy_loaded"));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -57,19 +155,47 @@ export function OperationPolicyPanel({ onNotice }: OperationPolicyPanelProps) {
 
   async function onPreview(event: React.FormEvent) {
     event.preventDefault();
-    const paths = linesToGlobs(samplePaths);
-    if (!paths.length) {
+    const path = normalizePolicyPath(previewPath.split(/\s+/)[0] ?? "");
+    if (!path) {
       onNotice(t("access.policy_preview_empty"), true);
       return;
     }
     setBusy(true);
     try {
-      const result = await previewOperationGlobs({
-        paths,
-        include_globs: linesToGlobs(includeText),
-        exclude_globs: linesToGlobs(excludeText),
+      const withExcludes = await previewOperationGlobs({
+        paths: [path],
+        include_globs: includeRules,
+        exclude_globs: excludeRules,
       });
-      setPreview(result);
+      const included = listHasPath(withExcludes.included, path);
+      if (included) {
+        setPreview({
+          path,
+          included: true,
+          reason: t("access.policy_preview_would_upload"),
+        });
+        return;
+      }
+      if (excludeRules.length) {
+        const withoutExcludes = await previewOperationGlobs({
+          paths: [path],
+          include_globs: includeRules,
+          exclude_globs: [],
+        });
+        if (listHasPath(withoutExcludes.included, path)) {
+          setPreview({
+            path,
+            included: false,
+            reason: t("access.policy_preview_skipped_exclude"),
+          });
+          return;
+        }
+      }
+      setPreview({
+        path,
+        included: false,
+        reason: t("access.policy_preview_skipped_include"),
+      });
     } catch (error) {
       onNotice(error instanceof Error ? error.message : String(error), true);
     } finally {
@@ -84,12 +210,12 @@ export function OperationPolicyPanel({ onNotice }: OperationPolicyPanelProps) {
     try {
       const updated = await updateOperationPolicy({
         ...policy,
-        include_globs: linesToGlobs(includeText),
-        exclude_globs: linesToGlobs(excludeText),
+        include_globs: includeRules,
+        exclude_globs: excludeRules,
       });
       setPolicy(updated);
-      setIncludeText(globsToText(updated.include_globs));
-      setExcludeText(globsToText(updated.exclude_globs));
+      setIncludeRules(updated.include_globs);
+      setExcludeRules(updated.exclude_globs);
       onNotice(t("access.policy_saved"));
     } catch (error) {
       onNotice(error instanceof Error ? error.message : String(error), true);
@@ -97,9 +223,6 @@ export function OperationPolicyPanel({ onNotice }: OperationPolicyPanelProps) {
       setBusy(false);
     }
   }
-
-  const textareaClass =
-    "min-h-28 w-full rounded-[10px] border border-input bg-surface px-3.5 py-[11px] font-mono text-sm text-ink";
 
   return (
     <section data-panel="operation-policy">
@@ -111,71 +234,88 @@ export function OperationPolicyPanel({ onNotice }: OperationPolicyPanelProps) {
         </p>
 
         <form className="mt-4 grid gap-3" onSubmit={(event) => void onSave(event)}>
-          <FormField
-            label={t("access.policy_include_globs")}
-            htmlFor="include-globs"
-            help={t("access.policy_globs_help")}
-          >
-            <textarea
-              id="include-globs"
-              className={textareaClass}
-              value={includeText}
-              onChange={(event) => setIncludeText(event.target.value)}
-            />
-          </FormField>
-          <FormField
-            label={t("access.policy_exclude_globs")}
-            htmlFor="exclude-globs"
-            help={t("access.policy_globs_help")}
-          >
-            <textarea
-              id="exclude-globs"
-              className={textareaClass}
-              value={excludeText}
-              onChange={(event) => setExcludeText(event.target.value)}
-            />
-          </FormField>
+          <RuleList
+            id="include-globs"
+            title={t("access.policy_include_globs")}
+            help={t("access.policy_include_help")}
+            emptyLabel={t("access.policy_include_empty")}
+            addLabel={t("access.policy_new_include")}
+            rules={includeRules}
+            draft={includeDraft}
+            onDraftChange={setIncludeDraft}
+            onAdd={() => {
+              setIncludeRules((current) => addRule(current, includeDraft));
+              setIncludeDraft("");
+            }}
+            onRemove={(rule) =>
+              setIncludeRules((current) => current.filter((item) => item !== rule))
+            }
+            t={t}
+          />
+          <RuleList
+            id="exclude-globs"
+            title={t("access.policy_exclude_globs")}
+            help={t("access.policy_exclude_help")}
+            emptyLabel={t("access.policy_exclude_empty")}
+            addLabel={t("access.policy_new_exclude")}
+            rules={excludeRules}
+            draft={excludeDraft}
+            onDraftChange={setExcludeDraft}
+            onAdd={() => {
+              setExcludeRules((current) => addRule(current, excludeDraft));
+              setExcludeDraft("");
+            }}
+            onRemove={(rule) =>
+              setExcludeRules((current) => current.filter((item) => item !== rule))
+            }
+            t={t}
+          />
           <Button type="submit" className="min-h-11 w-full sm:w-auto" disabled={busy || !policy}>
             {t("access.policy_save")}
           </Button>
         </form>
 
-        <form className="mt-6 grid gap-3 border-t border-line pt-4" onSubmit={(event) => void onPreview(event)}>
-          <FormField
-            label={t("access.policy_preview_paths")}
-            htmlFor="preview-paths"
-            help={t("access.policy_globs_help")}
-          >
-            <textarea
-              id="preview-paths"
-              className={textareaClass}
-              value={samplePaths}
-              onChange={(event) => setSamplePaths(event.target.value)}
-            />
-          </FormField>
-          <Button type="submit" variant="secondary" className="min-h-11 w-full sm:w-auto" disabled={busy}>
-            {t("access.policy_preview")}
-          </Button>
+        <form
+          className="mt-6 grid gap-3 border-t border-line pt-4"
+          onSubmit={(event) => void onPreview(event)}
+        >
+          <h3 className="text-sm font-bold text-ink">{t("access.policy_preview_title")}</h3>
+          <p className="text-sm text-muted">{t("access.policy_preview_help")}</p>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <FormField
+              label={t("access.policy_preview_path")}
+              htmlFor="preview-path"
+              className="min-w-0 flex-1"
+            >
+              <FormInput
+                id="preview-path"
+                value={previewPath}
+                placeholder={t("access.policy_preview_placeholder")}
+                onChange={(event) => setPreviewPath(event.target.value)}
+              />
+            </FormField>
+            <Button
+              type="submit"
+              variant="secondary"
+              className="min-h-11 sm:self-end"
+              disabled={busy}
+            >
+              {t("access.policy_preview")}
+            </Button>
+          </div>
         </form>
 
         {preview ? (
-          <div className="mt-4 grid gap-3 text-sm" data-testid="glob-preview">
-            <div>
-              <h3 className="font-bold">{t("access.policy_preview_included")}</h3>
-              <ul className="mt-1 list-disc pl-5">
-                {preview.included.map((path) => (
-                  <li key={`in-${path}`}>{path}</li>
-                ))}
-              </ul>
-            </div>
-            <div>
-              <h3 className="font-bold">{t("access.policy_preview_excluded")}</h3>
-              <ul className="mt-1 list-disc pl-5">
-                {preview.excluded.map((path) => (
-                  <li key={`ex-${path}`}>{path}</li>
-                ))}
-              </ul>
-            </div>
+          <div
+            className={
+              preview.included
+                ? "mt-4 rounded-[14px] bg-green-soft px-3 py-3 text-sm font-bold text-ink"
+                : "mt-4 rounded-[14px] bg-amber-soft px-3 py-3 text-sm font-bold text-ink"
+            }
+            data-testid="glob-preview"
+          >
+            <p className="font-mono text-xs font-medium text-muted">{preview.path}</p>
+            <p className="mt-1">{preview.reason}</p>
           </div>
         ) : null}
       </Panel>

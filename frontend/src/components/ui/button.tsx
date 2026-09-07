@@ -5,22 +5,23 @@ import { Slot } from "radix-ui"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
-  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,filter,transform] duration-150 ease-out outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
         // FrostVault names (primary / secondary / danger) plus shadcn aliases
-        primary: "bg-primary text-primary-foreground font-bold hover:brightness-95",
-        default: "bg-primary text-primary-foreground font-bold hover:brightness-95",
+        primary: "bg-primary text-primary-foreground font-bold hover:-translate-y-px hover:brightness-105 hover:shadow-[0_5px_14px_var(--interactive-shadow-hover)]",
+        default: "bg-primary text-primary-foreground font-bold hover:-translate-y-px hover:brightness-105 hover:shadow-[0_5px_14px_var(--interactive-shadow-hover)]",
         outline:
-          "border-input bg-surface text-ink font-bold hover:bg-canvas aria-expanded:bg-canvas",
+          "border-input bg-surface text-ink font-bold hover:border-[var(--interactive-border-hover)] hover:bg-green-soft aria-expanded:border-[var(--interactive-border-hover)] aria-expanded:bg-green-soft",
         secondary:
-          "border border-input bg-surface text-ink font-bold hover:bg-canvas aria-expanded:bg-canvas",
+          "border border-input bg-surface text-ink font-bold hover:border-[var(--interactive-border-hover)] hover:bg-green-soft aria-expanded:border-[var(--interactive-border-hover)] aria-expanded:bg-green-soft",
         ghost:
-          "hover:bg-canvas hover:text-ink aria-expanded:bg-canvas aria-expanded:text-ink",
-        danger: "bg-destructive text-white font-bold hover:brightness-95",
-        destructive: "bg-destructive text-white font-bold hover:brightness-95",
-        link: "text-primary underline-offset-4 hover:underline",
+          "hover:bg-green-soft hover:text-ink aria-expanded:bg-green-soft aria-expanded:text-ink",
+        danger: "bg-destructive text-white font-bold hover:-translate-y-px hover:brightness-105 hover:shadow-[0_5px_14px_var(--shadow-color)]",
+        destructive: "bg-destructive text-white font-bold hover:-translate-y-px hover:brightness-105 hover:shadow-[0_5px_14px_var(--shadow-color)]",
+        link: "text-primary underline-offset-4 hover:underline hover:decoration-2",
+
       },
       size: {
         default:

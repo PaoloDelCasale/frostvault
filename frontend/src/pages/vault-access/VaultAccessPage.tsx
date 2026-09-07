@@ -8,6 +8,7 @@ import {
   fetchOwnVaultDecommissionStatus,
   fetchVaultMembers,
   lookupVaultUser,
+  suggestVaultUsers,
   previewOwnVaultDecommission,
   removeVaultMember,
   startOwnVaultDecommission,
@@ -65,6 +66,8 @@ export function VaultAccessPage({
   const [lookupUser, setLookupUser] = useState<UserLookupResult | null>(null);
   const [lookupRole, setLookupRole] = useState("viewer");
   const [lookupBusy, setLookupBusy] = useState(false);
+  const [suggestions, setSuggestions] = useState<UserLookupResult[]>([]);
+  const [suggestOpen, setSuggestOpen] = useState(false);
   const [members, setMembers] = useState<VaultMember[]>([]);
   const [membersBusy, setMembersBusy] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<VaultMember | null>(null);
@@ -111,6 +114,28 @@ export function VaultAccessPage({
   useEffect(() => {
     if (decommissionState !== "active") setDecommissionOpen(true);
   }, [decommissionState]);
+
+  useEffect(() => {
+    const query = lookupUsername.trim();
+    if (query.length < 2) {
+      setSuggestions([]);
+      setSuggestOpen(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const data = await suggestVaultUsers(query);
+          setSuggestions(data.items);
+          setSuggestOpen(data.items.length > 0);
+        } catch {
+          setSuggestions([]);
+          setSuggestOpen(false);
+        }
+      })();
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [lookupUsername]);
 
   if (!ready) {
     return (
@@ -226,17 +251,58 @@ export function VaultAccessPage({
           onSubmit={(event) => void onLookup(event)}
         >
           <FormField label={t("access.lookup_username")} htmlFor="lookup-username">
-            <FormInput
-              id="lookup-username"
-              name="username"
-              minLength={2}
-              maxLength={80}
-              pattern="[A-Za-z0-9._-]+"
-              autoComplete="off"
-              required
-              value={lookupUsername}
-              onChange={(event) => setLookupUsername(event.target.value)}
-            />
+            <div className="relative">
+              <FormInput
+                id="lookup-username"
+                name="username"
+                minLength={2}
+                maxLength={80}
+                pattern="[A-Za-z0-9._-]+"
+                autoComplete="off"
+                aria-autocomplete="list"
+                aria-expanded={suggestOpen}
+                aria-controls="username-suggestions"
+                required
+                value={lookupUsername}
+                onChange={(event) => setLookupUsername(event.target.value)}
+                onBlur={() => {
+                  window.setTimeout(() => setSuggestOpen(false), 120);
+                }}
+              />
+              {suggestOpen ? (
+                <ul
+                  id="username-suggestions"
+                  role="listbox"
+                  className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-[10px] border border-line bg-surface p-1 shadow-lg"
+                >
+                  {suggestions.map((item) => (
+                    <li key={item.id}>
+                      <button
+                        type="button"
+                        role="option"
+                        className="flex min-h-11 w-full flex-col items-start rounded-lg px-3 py-2 text-left text-sm font-bold text-ink hover:bg-green-soft/45 focus-visible:bg-green-soft/45"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => {
+                          setLookupUsername(item.username);
+                          setLookupUser(item);
+                          setLookupRole(
+                            item.current_vault_role === "operator"
+                              ? "operator"
+                              : "viewer",
+                          );
+                          setSuggestOpen(false);
+                        }}
+                      >
+                        <span>{item.display_name}</span>
+                        <span className="text-xs font-medium text-muted">
+                          @{item.username}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
           </FormField>
           <Button type="submit" disabled={lookupBusy} className="min-h-11 w-full sm:w-auto">
             {t("access.lookup_submit")}
