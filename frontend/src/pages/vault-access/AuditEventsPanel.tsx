@@ -8,7 +8,9 @@ import {
   type VaultMember,
 } from "@/api";
 import { Badge, type BadgeState } from "@/components/Badge";
-import { FormField, FormInput, FormSelect } from "@/components/FormField";
+import { DatePicker } from "@/components/DatePicker";
+import { FormField } from "@/components/FormField";
+import { MenuSelect, type MenuSelectOption } from "@/components/MenuSelect";
 import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
@@ -142,11 +144,28 @@ export function AuditEventCards({
     return [...options.entries()].sort(([, left], [, right]) => left.localeCompare(right));
   }, [events, resolveActor]);
 
+  const actorMenuOptions = useMemo<MenuSelectOption[]>(
+    () => [
+      { value: "", label: t("audit.all_actors") },
+      ...actorOptions.map(([value, label]) => ({ value, label })),
+    ],
+    [actorOptions, t],
+  );
   const actionOptions = useMemo(
     () => [...new Set(events.map((event) => event.event))].sort((left, right) =>
       left.localeCompare(right),
     ),
     [events],
+  );
+  const actionMenuOptions = useMemo<MenuSelectOption[]>(
+    () => [
+      { value: "", label: t("audit.all_actions") },
+      ...actionOptions.map((action) => ({
+        value: action,
+        label: action.replaceAll("_", " ").replaceAll(".", " · "),
+      })),
+    ],
+    [actionOptions, t],
   );
   const filteredEvents = useMemo(
     () => filterAuditEvents(events, filters),
@@ -169,65 +188,55 @@ export function AuditEventCards({
         <fieldset className="grid gap-3 border-0 p-0">
           <legend className="text-sm font-bold text-ink">{t("audit.filters")}</legend>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            <FormField label={t("audit.actor")} htmlFor={`${filtersId}-actor`}>
-              <FormSelect
+            <FormField label={t("audit.actor")} htmlFor={`${filtersId}-actor`} labelAsText>
+              <MenuSelect
                 id={`${filtersId}-actor`}
                 value={filters.actor}
-                onChange={(event) =>
-                  setFilters((current) => ({ ...current, actor: event.target.value }))
+                options={actorMenuOptions}
+                label={t("audit.actor")}
+                onValueChange={(actor) =>
+                  setFilters((current) => ({ ...current, actor }))
                 }
-              >
-                <option value="">{t("audit.all_actors")}</option>
-                {actorOptions.map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </FormSelect>
+              />
             </FormField>
 
-            <FormField label={t("audit.action")} htmlFor={`${filtersId}-action`}>
-              <FormSelect
+            <FormField label={t("audit.action")} htmlFor={`${filtersId}-action`} labelAsText>
+              <MenuSelect
                 id={`${filtersId}-action`}
                 value={filters.action}
-                onChange={(event) =>
-                  setFilters((current) => ({ ...current, action: event.target.value }))
+                options={actionMenuOptions}
+                label={t("audit.action")}
+                onValueChange={(action) =>
+                  setFilters((current) => ({ ...current, action }))
                 }
-              >
-                <option value="">{t("audit.all_actions")}</option>
-                {actionOptions.map((action) => (
-                  <option key={action} value={action}>
-                    {action}
-                  </option>
-                ))}
-              </FormSelect>
+              />
             </FormField>
 
-            <FormField label={t("audit.from_date")} htmlFor={`${filtersId}-from`}>
-              <FormInput
+            <FormField label={t("audit.from_date")} htmlFor={`${filtersId}-from`} labelAsText>
+              <DatePicker
                 id={`${filtersId}-from`}
-                type="date"
+                label={t("audit.from_date")}
                 value={filters.from}
                 max={filters.to || undefined}
-                onChange={(event) =>
-                  setFilters((current) => ({ ...current, from: event.target.value }))
+                onValueChange={(from) =>
+                  setFilters((current) => ({ ...current, from }))
                 }
               />
             </FormField>
 
-            <FormField label={t("audit.to_date")} htmlFor={`${filtersId}-to`}>
-              <FormInput
+            <FormField label={t("audit.to_date")} htmlFor={`${filtersId}-to`} labelAsText>
+              <DatePicker
                 id={`${filtersId}-to`}
-                type="date"
+                label={t("audit.to_date")}
                 value={filters.to}
                 min={filters.from || undefined}
-                onChange={(event) =>
-                  setFilters((current) => ({ ...current, to: event.target.value }))
+                onValueChange={(to) =>
+                  setFilters((current) => ({ ...current, to }))
                 }
               />
             </FormField>
 
-            <div className="flex items-end">
+            <div className="flex items-end sm:col-span-2 xl:col-span-1">
               <Button
                 type="button"
                 variant="secondary"

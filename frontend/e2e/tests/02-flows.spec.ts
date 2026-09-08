@@ -10,7 +10,7 @@ import {
 function visibleFileButton(page: Page, name: string) {
   return page
     .locator(
-      `[data-testid="file-list-cards"] button:has-text("${name}"), [data-testid="file-list-table"] button:has-text("${name}")`,
+      `[data-testid="file-list-cards"] button[aria-label="${name}"], [data-testid="file-list-table"] button:has-text("${name}")`,
     )
     .locator("visible=true")
     .first();
@@ -19,7 +19,10 @@ function visibleFileButton(page: Page, name: string) {
 async function openDirectory(page: Page, name: string) {
   const target = visibleFileButton(page, name);
   await expect(target).toBeVisible();
-  await target.click();
+  const mobileCard = (await target.getAttribute("data-testid"))?.startsWith(
+    "mobile-file-card-trigger-",
+  );
+  await target.click(mobileCard ? { position: { x: 20, y: 20 } } : undefined);
 }
 
 async function vaultSelect(page: Page) {
@@ -47,7 +50,7 @@ async function languageSelect(page: Page) {
 }
 
 test.describe("archive flows", () => {
-  test("flow 2 — navigate directories, breadcrumbs, Up, browser back", async ({
+  test("flow 2 — navigate directories, breadcrumbs, root, browser back", async ({
     page,
   }) => {
     await breakGlassLogin(page);
@@ -55,8 +58,9 @@ test.describe("archive flows", () => {
     await expect(page).toHaveURL(/directory=reports/);
     await expect(page.getByText("readme.txt").locator("visible=true").first()).toBeVisible();
 
-    await expect(page.getByTestId("breadcrumbs")).toBeVisible();
-    await page.getByTestId("up-directory").click();
+    const breadcrumbs = page.getByTestId("breadcrumbs");
+    await expect(breadcrumbs).toBeVisible();
+    await breadcrumbs.locator('button[data-directory=""]:visible').click();
     await expect(page).not.toHaveURL(/directory=reports/);
     await expect(page.getByText("reports").locator("visible=true").first()).toBeVisible();
 
@@ -79,12 +83,15 @@ test.describe("archive flows", () => {
     await expect(page).toHaveURL(/state=both/);
   });
 
-  test("flow 4 — open a Vault File and read Path History", async ({ page }) => {
+  test("flow 4 — open a Vault File and read Path History", async ({
+    page,
+  }, testInfo) => {
     await breakGlassLogin(page);
     await openDirectory(page, "reports");
     await visibleFileButton(page, "readme.txt").click();
-    await expect(page.getByTestId("path-history")).toBeVisible();
-    await expect(page.getByTestId("path-history-timeline")).toContainText(
+    const suffix = testInfo.project.name === "mobile-375" ? "" : "-inline";
+    await expect(page.getByTestId(`path-history${suffix}`)).toBeVisible();
+    await expect(page.getByTestId(`path-history-timeline${suffix}`)).toContainText(
       "old-readme.txt",
     );
   });
@@ -155,7 +162,6 @@ test.describe("archive flows", () => {
     await expect(page.locator('[data-panel="quotas"]')).toBeVisible();
 
     await page.locator('input[name="storage_soft_limit_bytes"]').fill("1000");
-    await page.locator('input[name="reason"]').fill("e2e quota tweak");
     await page.getByRole("button", { name: /save quotas|salva quote/i }).click();
     await expect(page.getByText(/quotas updated|quote del vault aggiornate/i)).toBeVisible();
   });

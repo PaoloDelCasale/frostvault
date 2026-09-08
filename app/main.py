@@ -1016,6 +1016,7 @@ class RecoverApproveAction(BaseModel):
 class ConfirmRenameAction(BaseModel):
     vault_file_id: str = Field(min_length=36, max_length=36)
     new_path: str = Field(max_length=1024)
+    allow_content_change: bool = False
 
 
 class ConfirmFolderRenameAction(BaseModel):
@@ -2526,6 +2527,7 @@ def confirm_rename(
                 new_path=new_path,
                 changed_at=now_iso(),
                 vault_id=vault["id"],
+                allow_digest_mismatch=action.allow_content_change,
             )
         except VaultFileNotFound as exc:
             # Do not reveal whether a supplied ID is foreign, retired, or absent.
@@ -5455,6 +5457,67 @@ def lookup_vault_user(
         "username": target["username"],
         "display_name": target["display_name"],
         "current_vault_role": target["current_vault_role"],
+    }
+
+
+@app.post("/api/vault/user-suggest", response_model=response_model("UserSuggestResponse"))
+def suggest_vault_users(
+    action: UserLookup,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    vault: dict[str, Any] = Depends(owner_vault),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    """Return a bounded username prefix match without listing the directory.
+
+    Suggestions require at least two characters, never include inactive users,
+    and are capped so a vault owner cannot paginate the full user table.
+    """
+    prefix = action.username.strip().lower()
+    if not 2 <= len(prefix) <= 80 or not re.fullmatch(
+        r"[A-Za-z0-9._-]+", prefix
+    ):
+        raise HTTPException(422, "Enter a valid username")
+    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    with db() as connection:
+        retry_after = check_lookup_rate_limit(
+            connection,
+            backend=settings.db_backend,
+            user_id=user["id"],
+            client_ip=_client_ip(request) or "unknown",
+            namespace="suggest",
+            max_attempts=40,
+        )
+        if retry_after is not None:
+            raise HTTPException(
+                429,
+                "Too many lookup attempts; try again later",
+                headers={"Retry-After": str(retry_after)},
+            )
+        rows = connection.execute(
+            """
+            SELECT u.id, u.username, u.display_name,
+                   vm.role AS current_vault_role
+            FROM users u
+            LEFT JOIN vault_members vm
+              ON vm.vault_id=%s AND vm.user_id=u.id
+            WHERE u.active=TRUE
+              AND lower(u.username) LIKE lower(%s) ESCAPE '\\'
+            ORDER BY lower(u.username)
+            LIMIT 8
+            """,
+            (vault["id"], f"{escaped}%"),
+        ).fetchall()
+    return {
+        "items": [
+            {
+                "id": row["id"],
+                "username": row["username"],
+                "display_name": row["display_name"],
+                "current_vault_role": row["current_vault_role"],
+            }
+            for row in rows
+        ]
     }
 
 

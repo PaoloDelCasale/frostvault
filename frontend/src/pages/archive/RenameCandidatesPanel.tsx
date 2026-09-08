@@ -259,6 +259,21 @@ export function RenameCandidatesPanel({
                 <p className="font-bold text-ink">
                   {t("ui.rename_candidate_statement")}
                 </p>
+                {candidate.decision === "review" ? (
+                  <p className="mt-2 text-sm text-muted">
+                    {t("ui.rename_decision_review")}
+                  </p>
+                ) : null}
+                {candidate.decision === "ambiguous" ? (
+                  <p className="mt-2 text-sm text-muted">
+                    {t("ui.rename_decision_ambiguous")}
+                  </p>
+                ) : null}
+                {candidate.decision === "content_changed" ? (
+                  <p className="mt-2 text-sm text-muted">
+                    {t("ui.rename_decision_content_changed")}
+                  </p>
+                ) : null}
                 <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
                   <div className="min-w-0">
                     <dt className="font-bold text-muted">{t("ui.previous_path")}</dt>
@@ -303,6 +318,8 @@ export function RenameCandidatesPanel({
                       () => confirmFileRename({
                         vault_file_id: candidate.missing_vault_file_id,
                         new_path: candidate.new_path,
+                        allow_content_change:
+                          candidate.decision === "content_changed",
                       }),
                     )}
                   >

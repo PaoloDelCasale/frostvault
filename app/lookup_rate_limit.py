@@ -17,6 +17,8 @@ def check_lookup_rate_limit(
     client_ip: str,
     backend: str | None = None,
     now: float | None = None,
+    namespace: str = "lookup",
+    max_attempts: int = MAX_ATTEMPTS,
 ) -> int | None:
     """Atomically record one lookup attempt.
 
@@ -28,7 +30,8 @@ def check_lookup_rate_limit(
     """
     now = time.time() if now is None else now
     backend = backend or getattr(connection, "backend", "postgresql")
-    key = (int(user_id), client_ip)
+    scoped_ip = client_ip if namespace == "lookup" else f"{namespace}:{client_ip}"
+    key = (int(user_id), scoped_ip)
 
     if backend == "sqlite":
         # SQLite serializes writers at the database level. This must happen
@@ -70,7 +73,7 @@ def check_lookup_rate_limit(
         """,
         key,
     ).fetchone()["total"]
-    if count >= MAX_ATTEMPTS:
+    if count >= max_attempts:
         oldest = connection.execute(
             """
             SELECT MIN(attempted_at) AS attempted_at

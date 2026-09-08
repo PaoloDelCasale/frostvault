@@ -710,7 +710,13 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             "id": self.vault_id,
             "source_root": str(self.source_root),
         }
-        summary = apply_auto_renames(vault, requested_by=self.owner_id)
+        # Keep the scan timestamp correlated with the disappearance fixture;
+        # automatic rename matching intentionally rejects stale digest matches.
+        with patch(
+            "app.storage.now_iso",
+            return_value="2026-07-21T11:00:00+00:00",
+        ):
+            summary = apply_auto_renames(vault, requested_by=self.owner_id)
         self.assertGreaterEqual(summary["confirmed"], 1)
 
         with SQLiteConnection(str(self.database_path)) as connection:

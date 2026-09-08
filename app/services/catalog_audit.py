@@ -142,9 +142,16 @@ def audit_vault_catalog(
         became_available = False
         if storage_class != (row["storage_class"] or "STANDARD"):
             report["storage_class_drift"] += 1
+            source = "policy" if row.get("desired_policy_id") else "discovered"
             connection.execute(
-                "UPDATE archive_versions SET storage_class=%s, availability='available' WHERE id=%s",
-                (storage_class, row["id"]),
+                """
+                UPDATE archive_versions
+                SET storage_class=%s,
+                    storage_class_source=%s,
+                    availability='available'
+                WHERE id=%s
+                """,
+                (storage_class, source, row["id"]),
             )
             dirty_version_ids.append(str(row["id"]))
             became_available = True

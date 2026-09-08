@@ -17,6 +17,9 @@ const messages: Record<string, string> = {
   "ui.folder_rename_candidates": "Folder rename candidates",
   "ui.rename_candidate_statement":
     "Local Copy appears to be this Vault File under a new name",
+  "ui.rename_decision_review": "Unique but outside the scan window.",
+  "ui.rename_decision_ambiguous": "Multiple files share this fingerprint.",
+  "ui.rename_decision_content_changed": "Name matches, content changed.",
   "ui.previous_path": "Previous path",
   "ui.new_path": "New path",
   "ui.fingerprint_evidence": "Fingerprint evidence",
@@ -118,6 +121,9 @@ describe("RenameCandidatesPanel", () => {
     expect(within(panel).getByText("reports-old/a.txt")).toBeInTheDocument();
     expect(within(panel).getByText("reports-new/a.txt")).toBeInTheDocument();
     expect(within(panel).getByText("aaaa1111")).toBeInTheDocument();
+    expect(
+      within(panel).getAllByText("Multiple files share this fingerprint.").length,
+    ).toBeGreaterThan(0);
     expect(within(panel).getByText("1.0 KB")).toBeInTheDocument();
     expect(
       within(panel).getByText("Not provided by the rename-candidate API"),
@@ -135,6 +141,7 @@ describe("RenameCandidatesPanel", () => {
         body: JSON.stringify({
           vault_file_id: "00000000-0000-0000-0000-000000000001",
           new_path: "reports-new/a.txt",
+          allow_content_change: false,
         }),
       });
       expect(new Headers(post?.[1]?.headers).get("X-CSRF-Token")).toBe(

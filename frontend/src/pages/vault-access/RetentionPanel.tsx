@@ -88,6 +88,8 @@ export function RetentionPanel({ onNotice }: RetentionPanelProps) {
       <Panel className="p-4 sm:p-5">
         <h2 className="text-lg font-bold">{t("access.retention_title")}</h2>
         <p className="mt-1 text-sm text-muted">{t("access.retention_help")}</p>
+        <p className="mt-2 text-sm text-muted">{t("access.retention_example")}</p>
+        <p className="mt-2 text-sm text-muted">{t("access.retention_never")}</p>
         <p className="mt-2 text-sm text-muted" role="status">
           {loadState}
         </p>

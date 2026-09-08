@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import threading
 import unittest
@@ -7,6 +8,14 @@ from dataclasses import replace
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+
+for _flag, _value in (
+    ("O_DIRECTORY", 0x10000),
+    ("O_NOFOLLOW", 0x20000),
+    ("O_CLOEXEC", 0x80000),
+):
+    if not hasattr(os, _flag):
+        setattr(os, _flag, _value)
 
 from app import main
 from app.config import settings
@@ -560,6 +569,54 @@ class VaultAuthorizationHttpTests(unittest.TestCase):
         self.assertTrue(all(response.status_code == 404 for response in responses[:10]))
         self.assertEqual(responses[-1].status_code, 429, responses[-1].text)
         self.assertGreaterEqual(int(responses[-1].headers["Retry-After"]), 1)
+
+    def test_owner_suggest_returns_prefix_matches_without_inactive_users(self) -> None:
+        with SQLiteConnection(str(self.database_path)) as connection:
+            inactive_id = self._create_user(connection, "opera-old")
+            connection.execute(
+                "UPDATE users SET active=FALSE WHERE id=%s", (inactive_id,)
+            )
+
+        self._authenticate(self.owner_id)
+        too_short = self.client.post(
+            "/api/vault/user-suggest",
+            json={"username": "o"},
+            headers=self._csrf(),
+        )
+        self.assertEqual(too_short.status_code, 422, too_short.text)
+
+        response = self.client.post(
+            "/api/vault/user-suggest",
+            json={"username": "op"},
+            headers=self._csrf(),
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        usernames = [item["username"] for item in response.json()["items"]]
+        self.assertIn("operator", usernames)
+        self.assertNotIn("opera-old", usernames)
+        self.assertNotIn("owner", usernames)
+        self.assertLessEqual(len(usernames), 8)
+
+    def test_suggest_requires_owner_and_is_separately_rate_limited(self) -> None:
+        self._authenticate(self.operator_id)
+        forbidden = self.client.post(
+            "/api/vault/user-suggest",
+            json={"username": "ow"},
+            headers=self._csrf(),
+        )
+        self.assertEqual(forbidden.status_code, 403, forbidden.text)
+
+        self._authenticate(self.owner_id)
+        responses = [
+            self.client.post(
+                "/api/vault/user-suggest",
+                json={"username": "ow"},
+                headers=self._csrf(),
+            )
+            for _ in range(41)
+        ]
+        self.assertTrue(all(response.status_code == 200 for response in responses[:40]))
+        self.assertEqual(responses[-1].status_code, 429, responses[-1].text)
 
     def test_operator_and_viewer_cannot_manage_sharing(self) -> None:
         for user_id in (self.operator_id, self.viewer_id):

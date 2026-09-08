@@ -37,7 +37,7 @@ describe("VaultAccessPage — members (seams 1–2)", () => {
     renderVaultAccess({ fetchImpl: fetchMock });
     await screen.findByRole("heading", { name: /add a member/i });
 
-    await user.type(screen.getByLabelText(/exact username/i), "alice");
+    await user.type(screen.getByLabelText(/^username$/i), "alice");
     await user.click(screen.getByRole("button", { name: /look up user/i }));
 
     expect(await screen.findByText("Alice Example")).toBeInTheDocument();
@@ -47,8 +47,8 @@ describe("VaultAccessPage — members (seams 1–2)", () => {
     ).toBeInTheDocument();
     expect(screen.getByLabelText(/vault role/i)).toBeInTheDocument();
 
-    await user.clear(screen.getByLabelText(/exact username/i));
-    await user.type(screen.getByLabelText(/exact username/i), "ghost");
+    await user.clear(screen.getByLabelText(/^username$/i));
+    await user.type(screen.getByLabelText(/^username$/i), "ghost");
     await user.click(screen.getByRole("button", { name: /look up user/i }));
 
     await waitFor(() => {
@@ -102,7 +102,7 @@ describe("VaultAccessPage — members (seams 1–2)", () => {
     renderVaultAccess({ fetchImpl: fetchMock });
     await screen.findByText("Owner");
 
-    await user.type(screen.getByLabelText(/exact username/i), "alice");
+    await user.type(screen.getByLabelText(/^username$/i), "alice");
     await user.click(screen.getByRole("button", { name: /look up user/i }));
     await screen.findByText("Alice Example");
     await user.selectOptions(screen.getByLabelText(/vault role/i), "operator");
@@ -130,5 +130,35 @@ describe("VaultAccessPage — members (seams 1–2)", () => {
         (call) => String(call[0]) === "/api/vault/members/42",
       ),
     ).toBe(true);
+  });
+
+  it("suggests matching usernames while typing without listing the directory", async () => {
+    const user = userEvent.setup();
+    const fetchMock = createVaultAccessFetch({
+      "POST /api/vault/user-suggest": (init) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          username?: string;
+        };
+        expect(body.username).toBe("al");
+        return jsonResponse({
+          items: [
+            {
+              id: 42,
+              username: "alice",
+              display_name: "Alice Example",
+              current_vault_role: null,
+            },
+          ],
+        });
+      },
+    });
+
+    renderVaultAccess({ fetchImpl: fetchMock });
+    await screen.findByRole("heading", { name: /add a member/i });
+    await user.type(screen.getByLabelText(/^username$/i), "al");
+    const option = await screen.findByRole("option", { name: /alice example/i });
+    await user.click(option);
+    expect(screen.getByLabelText(/^username$/i)).toHaveValue("alice");
+    expect(await screen.findByText("Alice Example")).toBeInTheDocument();
   });
 });

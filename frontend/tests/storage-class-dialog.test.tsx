@@ -12,6 +12,8 @@ const catalog: Record<string, string> = {
   "ui.storage_class_confirm_body":
     "Change {count} cloud object(s) ({bytes}) from their current class to {target}.",
   "ui.storage_class_picker_label": "Target storage class",
+  "ui.storage_class_name_standard": "Standard",
+  "ui.storage_class_name_deep_archive": "Glacier Deep Archive",
   "ui.storage_class_confirm_warning": "Cold class warning",
   "ui.storage_class_policy_note": "Policy note",
   "ui.storage_class_restore_warning":
@@ -102,7 +104,7 @@ describe("StorageClassDialog descriptions (seam 6)", () => {
 
     await user.click(picker);
     const menu = await screen.findByTestId("storage-class-picker-menu");
-    expect(within(menu).getByText("DEEP_ARCHIVE")).toBeInTheDocument();
+    expect(within(menu).getByText("Glacier Deep Archive")).toBeInTheDocument();
     expect(within(menu).getByText(/€0.00099\/GiB/)).toBeInTheDocument();
     expect(within(menu).getByText(/Restore ~48h/)).toBeInTheDocument();
     expect(within(menu).getByText(/Recovery €0.0025\/GiB/)).toBeInTheDocument();

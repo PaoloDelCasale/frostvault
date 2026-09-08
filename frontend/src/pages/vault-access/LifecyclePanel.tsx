@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 
 import {
   deleteLifecycleFolderOverride,
@@ -12,7 +13,8 @@ import {
   type LifecycleResponse,
 } from "@/api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { FormField, FormInput, FormSelect } from "@/components/FormField";
+import { FormField, FormInput } from "@/components/FormField";
+import { MenuSelect, type MenuSelectOption } from "@/components/MenuSelect";
 import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
@@ -67,18 +69,70 @@ function normalizeProfile(profile?: LifecycleGuidedProfile): LifecycleProfile {
   };
 }
 
+type LifecycleTranslate = (
+  key: string,
+  params?: Record<string, unknown>,
+) => string;
+
+function readableProfileName(name: string, t: LifecycleTranslate): string {
+  const knownNames: Record<string, string> = {
+    standard_only: t("access.lifecycle_profile_standard"),
+    ia_after_30: t("access.lifecycle_profile_ia"),
+    archive_tiered: t("access.lifecycle_profile_archive"),
+  };
+  if (knownNames[name]) return knownNames[name];
+  return name
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function readableStorageClass(storageClass: string, t: LifecycleTranslate): string {
+  const knownClasses: Record<string, string> = {
+    STANDARD: t("access.lifecycle_class_standard"),
+    STANDARD_IA: t("access.lifecycle_class_standard_ia"),
+    ONEZONE_IA: t("access.lifecycle_class_onezone_ia"),
+    GLACIER_IR: t("access.lifecycle_class_glacier_ir"),
+    GLACIER: t("access.lifecycle_class_glacier"),
+    DEEP_ARCHIVE: t("access.lifecycle_class_deep_archive"),
+  };
+  return knownClasses[storageClass] ?? storageClass;
+}
+
+function storageClassDescription(storageClass: string, t: LifecycleTranslate): string {
+  const descriptions: Record<string, string> = {
+    STANDARD: t("access.lifecycle_class_standard_help"),
+    STANDARD_IA: t("access.lifecycle_class_standard_ia_help"),
+    ONEZONE_IA: t("access.lifecycle_class_onezone_ia_help"),
+    GLACIER_IR: t("access.lifecycle_class_glacier_ir_help"),
+    GLACIER: t("access.lifecycle_class_glacier_help"),
+    DEEP_ARCHIVE: t("access.lifecycle_class_deep_archive_help"),
+  };
+  return descriptions[storageClass] ?? "";
+}
+
+function profileTimeline(
+  profile: LifecycleGuidedProfile | undefined,
+  t: LifecycleTranslate,
+): string {
+  if (!profile?.transitions?.length) {
+    return t("access.lifecycle_profile_no_transitions");
+  }
+  return profile.transitions
+    .map((step) =>
+      t("access.lifecycle_profile_step", {
+        storageClass: readableStorageClass(step.storage_class, t),
+        days: step.days,
+      }),
+    )
+    .join(" → ");
+}
+
 function profileLabel(
   name: string,
   profile: LifecycleGuidedProfile | undefined,
-  t: (key: string, params?: Record<string, unknown>) => string,
+  t: LifecycleTranslate,
 ): string {
-  if (!profile?.transitions?.length) {
-    return t("access.lifecycle_keep_standard", { name });
-  }
-  const steps = profile.transitions
-    .map((step) => `${step.storage_class} @ ${step.days}d`)
-    .join(" → ");
-  return t("access.lifecycle_profile_steps", { name, steps });
+  return `${readableProfileName(name, t)} · ${profileTimeline(profile, t)}`;
 }
 
 function profileSignature(profile?: LifecycleGuidedProfile): string {
@@ -157,6 +211,35 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
   }, [ready]);
 
   const profiles = Object.entries(data?.guided_profiles ?? {});
+  const guidedProfileOptions: MenuSelectOption[] = profiles.map(([name, profile]) => ({
+    value: name,
+    label: readableProfileName(name, t),
+    description: profileTimeline(profile, t),
+  }));
+  const defaultProfileOptions: MenuSelectOption[] = [
+    ...guidedProfileOptions,
+    ...(defaultProfile === CUSTOM_PROFILE
+      ? [{
+          value: CUSTOM_PROFILE,
+          label: t("access.lifecycle_custom_profile"),
+          description: t("access.lifecycle_custom_profile_help"),
+        }]
+      : []),
+  ];
+  const hasValidDefaultProfile = defaultProfileOptions.some(
+    (option) => option.value === defaultProfile,
+  );
+  const hasValidFolderProfile = guidedProfileOptions.some(
+    (option) => option.value === folderProfile,
+  );
+  const lifecycleClassOptions: MenuSelectOption[] = [
+    { value: "", label: t("access.lifecycle_choose_class") },
+    ...LIFECYCLE_CLASSES.map((storageClass) => ({
+      value: storageClass,
+      label: readableStorageClass(storageClass, t),
+      description: storageClassDescription(storageClass, t),
+    })),
+  ];
 
   function profileForDefault(): LifecycleProfile {
     if (defaultProfile !== CUSTOM_PROFILE) {
@@ -264,25 +347,74 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
   ) {
     return (
       <div className="grid min-w-0 gap-3">
+        <div className="flex items-center gap-2 rounded-lg bg-green-soft/45 px-3 py-2 text-sm">
+          <span className="size-2 shrink-0 rounded-full bg-green" aria-hidden="true" />
+          <span className="font-bold">{t("access.lifecycle_starts_standard")}</span>
+        </div>
         {rules.map((rule, index) => (
-          <div key={`${prefix}-${index}`} className="grid min-w-0 gap-2 rounded-xl border border-line p-3">
-            <strong className="text-sm">{t("access.lifecycle_rule_number", { number: index + 1 })}</strong>
-            <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
+          <div key={`${prefix}-${index}`} className="relative grid min-w-0 gap-3 rounded-[14px] border border-line bg-canvas p-3 sm:p-4">
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <strong className="text-sm">{t("access.lifecycle_transition_number", { number: index + 1 })}</strong>
+              <div className="flex shrink-0 gap-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-9 min-h-9"
+                  disabled={index === 0}
+                  aria-label={t("access.lifecycle_move_up")}
+                  title={t("access.lifecycle_move_up")}
+                  onClick={() => moveRule(rules, setRules, index, -1)}
+                >
+                  <ArrowUp aria-hidden="true" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-9 min-h-9"
+                  disabled={index === rules.length - 1}
+                  aria-label={t("access.lifecycle_move_down")}
+                  title={t("access.lifecycle_move_down")}
+                  onClick={() => moveRule(rules, setRules, index, 1)}
+                >
+                  <ArrowDown aria-hidden="true" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-9 min-h-9 text-danger"
+                  aria-label={t("access.lifecycle_remove_rule")}
+                  title={t("access.lifecycle_remove_rule")}
+                  onClick={() => setRules(rules.filter((_, ruleIndex) => ruleIndex !== index))}
+                >
+                  <Trash2 aria-hidden="true" />
+                </Button>
+              </div>
+            </div>
+            <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-[minmax(9rem,0.65fr)_minmax(0,1.35fr)]">
               <FormField
-                label={t("access.lifecycle_rule_days")}
+                label={t("access.lifecycle_rule_days_short")}
                 htmlFor={`${prefix}-days-${index}`}
               >
-                <FormInput
-                  id={`${prefix}-days-${index}`}
-                  type="number"
-                  inputMode="numeric"
-                  min={1}
-                  value={rule.days}
-                  aria-invalid={showErrors && Boolean(errors[index]?.days)}
-                  onChange={(event) =>
-                    updateRule(rules, setRules, index, { days: event.target.value })
-                  }
-                />
+                <div className="relative">
+                  <FormInput
+                    id={`${prefix}-days-${index}`}
+                    className="pr-16"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    value={rule.days}
+                    aria-invalid={showErrors && Boolean(errors[index]?.days)}
+                    onChange={(event) =>
+                      updateRule(rules, setRules, index, { days: event.target.value })
+                    }
+                  />
+                  <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm font-medium text-muted">
+                    {t("access.lifecycle_days_suffix")}
+                  </span>
+                </div>
                 {showErrors && errors[index]?.days ? (
                   <span className="font-medium text-danger" role="alert">{errors[index].days}</span>
                 ) : null}
@@ -290,40 +422,36 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
               <FormField
                 label={t("access.lifecycle_rule_class")}
                 htmlFor={`${prefix}-class-${index}`}
+                labelAsText
               >
-                <FormSelect
+                <MenuSelect
                   id={`${prefix}-class-${index}`}
                   value={rule.storage_class}
-                  aria-invalid={showErrors && Boolean(errors[index]?.storage_class)}
-                  onChange={(event) =>
-                    updateRule(rules, setRules, index, { storage_class: event.target.value })
+                  options={lifecycleClassOptions}
+                  label={t("access.lifecycle_rule_class")}
+                  invalid={showErrors && Boolean(errors[index]?.storage_class)}
+                  onValueChange={(storageClass) =>
+                    updateRule(rules, setRules, index, { storage_class: storageClass })
                   }
-                >
-                  <option value="">{t("access.lifecycle_choose_class")}</option>
-                  {LIFECYCLE_CLASSES.map((storageClass) => (
-                    <option key={storageClass} value={storageClass}>{storageClass}</option>
-                  ))}
-                </FormSelect>
+                />
                 {showErrors && errors[index]?.storage_class ? (
                   <span className="font-medium text-danger" role="alert">{errors[index].storage_class}</span>
                 ) : null}
               </FormField>
             </div>
-            <div className="grid grid-cols-3 gap-2">
-              <Button type="button" variant="secondary" disabled={index === 0} onClick={() => moveRule(rules, setRules, index, -1)}>
-                {t("access.lifecycle_move_up")}
-              </Button>
-              <Button type="button" variant="secondary" disabled={index === rules.length - 1} onClick={() => moveRule(rules, setRules, index, 1)}>
-                {t("access.lifecycle_move_down")}
-              </Button>
-              <Button type="button" variant="secondary" onClick={() => setRules(rules.filter((_, ruleIndex) => ruleIndex !== index))}>
-                {t("access.lifecycle_remove_rule")}
-              </Button>
-            </div>
+            {rule.days && rule.storage_class ? (
+              <p className="text-xs text-muted">
+                {t("access.lifecycle_transition_summary", {
+                  days: rule.days,
+                  storageClass: rule.storage_class,
+                })}
+              </p>
+            ) : null}
           </div>
         ))}
         <Button type="button" variant="secondary" className="min-h-11 w-full sm:w-auto" onClick={() => setRules([...rules, { days: "", storage_class: "" }])}>
-          {t("access.lifecycle_add_rule")}
+          <Plus aria-hidden="true" />
+          {t("access.lifecycle_add_transition")}
         </Button>
       </div>
     );
@@ -331,6 +459,10 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
 
   async function onSaveDefault(event: React.FormEvent) {
     event.preventDefault();
+    if (!hasValidDefaultProfile) {
+      onNotice(t("access.lifecycle_choose_profile_error"), true);
+      return;
+    }
     if (defaultProfile === CUSTOM_PROFILE) {
       openEditor("default", profileForDefault());
       return;
@@ -349,6 +481,10 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
 
   async function onSaveOverride(event: React.FormEvent) {
     event.preventDefault();
+    if (!folderPath.trim() || !hasValidFolderProfile) {
+      onNotice(t("access.lifecycle_override_incomplete"), true);
+      return;
+    }
     setBusy(true);
     try {
       const next = await upsertLifecycleFolderOverride(folderPath, folderProfile);
@@ -419,18 +555,17 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
         <p className="mt-2 text-sm text-muted" role="status">{loadState}</p>
 
         <form className="mt-4 grid min-w-0 gap-3" onSubmit={(event) => void onSaveDefault(event)}>
-          <FormField label={t("access.lifecycle_default")} htmlFor="lifecycle-default-profile">
-            <FormSelect id="lifecycle-default-profile" value={defaultProfile} onChange={(event) => setDefaultProfile(event.target.value)} required>
-              {profiles.map(([name, profile]) => (
-                <option key={name} value={name}>{profileLabel(name, profile, t)}</option>
-              ))}
-              {defaultProfile === CUSTOM_PROFILE ? (
-                <option value={CUSTOM_PROFILE}>{t("access.lifecycle_custom_profile")}</option>
-              ) : null}
-            </FormSelect>
+          <FormField label={t("access.lifecycle_default")} htmlFor="lifecycle-default-profile" labelAsText>
+            <MenuSelect
+              id="lifecycle-default-profile"
+              value={defaultProfile}
+              options={defaultProfileOptions}
+              label={t("access.lifecycle_default")}
+              onValueChange={setDefaultProfile}
+            />
           </FormField>
           <div className="grid grid-cols-1 gap-2 sm:flex">
-            <Button type="submit" className="min-h-11 w-full sm:w-auto" disabled={busy || !data}>
+            <Button type="submit" className="min-h-11 w-full sm:w-auto" disabled={busy || !data || !hasValidDefaultProfile}>
               {defaultProfile === CUSTOM_PROFILE ? t("access.lifecycle_edit_custom") : t("access.lifecycle_save_default")}
             </Button>
             <Button type="button" variant="secondary" className="min-h-11 w-full sm:w-auto" disabled={busy || !data} onClick={() => customizeGuided("default")}>
@@ -444,15 +579,17 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
           <FormField label={t("access.lifecycle_folder_path")} htmlFor="lifecycle-folder-path">
             <FormInput id="lifecycle-folder-path" maxLength={500} required value={folderPath} onChange={(event) => setFolderPath(event.target.value)} placeholder="photos/2024" />
           </FormField>
-          <FormField label={t("access.lifecycle_folder_profile")} htmlFor="lifecycle-folder-profile">
-            <FormSelect id="lifecycle-folder-profile" value={folderProfile} onChange={(event) => setFolderProfile(event.target.value)} required>
-              {profiles.map(([name, profile]) => (
-                <option key={name} value={name}>{profileLabel(name, profile, t)}</option>
-              ))}
-            </FormSelect>
+          <FormField label={t("access.lifecycle_folder_profile")} htmlFor="lifecycle-folder-profile" labelAsText>
+            <MenuSelect
+              id="lifecycle-folder-profile"
+              value={folderProfile}
+              options={guidedProfileOptions}
+              label={t("access.lifecycle_folder_profile")}
+              onValueChange={setFolderProfile}
+            />
           </FormField>
           <div className="grid grid-cols-1 gap-2 sm:flex">
-            <Button type="submit" className="min-h-11 w-full sm:w-auto" disabled={busy || !data}>{t("access.lifecycle_save_override")}</Button>
+            <Button type="submit" className="min-h-11 w-full sm:w-auto" disabled={busy || !data || !folderPath.trim() || !hasValidFolderProfile}>{t("access.lifecycle_save_override")}</Button>
             <Button type="button" variant="secondary" className="min-h-11 w-full sm:w-auto" disabled={busy || !data || !folderPath.trim()} onClick={() => customizeGuided("folder")}>
               {t("access.lifecycle_customize")}
             </Button>
@@ -469,13 +606,30 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
               <h4 className="text-sm font-bold">{t("access.lifecycle_current_rules")}</h4>
               {renderRules(currentRules, setCurrentRules, currentErrors, "current")}
             </div>
-            <label className="flex min-h-11 items-center gap-2 text-sm font-bold">
-              <input type="checkbox" checked={noncurrentEnabled} onChange={(event) => {
-                setNoncurrentEnabled(event.target.checked);
-                if (event.target.checked && noncurrentRules.length === 0) setNoncurrentRules([{ days: "", storage_class: "" }]);
-              }} />
-              {t("access.lifecycle_enable_noncurrent")}
-            </label>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={noncurrentEnabled}
+              className="flex min-h-11 w-full items-center justify-between gap-3 rounded-[14px] border border-line bg-canvas px-3 py-2 text-left text-sm font-bold outline-none transition-colors hover:bg-green-soft/45 focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none"
+              onClick={() => {
+                const enabled = !noncurrentEnabled;
+                setNoncurrentEnabled(enabled);
+                if (enabled && noncurrentRules.length === 0) {
+                  setNoncurrentRules([{ days: "", storage_class: "" }]);
+                }
+              }}
+            >
+              <span>
+                <span className="block">{t("access.lifecycle_enable_noncurrent")}</span>
+                <span className="mt-0.5 block text-xs font-medium text-muted">{t("access.lifecycle_noncurrent_help")}</span>
+              </span>
+              <span
+                className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${noncurrentEnabled ? "bg-green" : "bg-line"}`}
+                aria-hidden="true"
+              >
+                <span className={`absolute top-1 size-4 rounded-full bg-white shadow-sm transition-transform ${noncurrentEnabled ? "translate-x-6" : "translate-x-1"}`} />
+              </span>
+            </button>
             {noncurrentEnabled ? (
               <div className="grid gap-2">
                 <h4 className="text-sm font-bold">{t("access.lifecycle_noncurrent_rules")}</h4>
@@ -493,7 +647,7 @@ export function LifecyclePanel({ onNotice }: LifecyclePanelProps) {
         <div className="mt-6 grid gap-3 border-t border-line pt-4">
           <h3 className="text-sm font-bold">{t("ui.vault_storage_class_action")}</h3>
           <p className="text-sm text-muted">{t("ui.vault_storage_class_hint")}</p>
-          <FormField label={t("ui.storage_class_picker_label")} htmlFor="vault-storage-class-target">
+          <FormField label={t("ui.storage_class_picker_label")} htmlFor="vault-storage-class-target" labelAsText>
             <StorageClassSelect
               id="vault-storage-class-target"
               value={vaultTarget}

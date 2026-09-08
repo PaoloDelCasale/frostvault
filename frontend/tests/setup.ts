@@ -110,6 +110,15 @@ Object.defineProperty(globalThis, "EventSource", {
 });
 vi.stubGlobal("EventSource", MockEventSource);
 
+if (typeof globalThis.ResizeObserver === "undefined") {
+  class MockResizeObserver {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  vi.stubGlobal("ResizeObserver", MockResizeObserver);
+}
+
 afterEach(() => {
   cleanup();
 });

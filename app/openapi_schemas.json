@@ -511,6 +511,12 @@
             "null"
           ]
         },
+        "storage_class_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "version_number": {
           "type": "number"
         }
@@ -525,6 +531,12 @@
     "ArchiveVersionSummary": {
       "additionalProperties": {},
       "properties": {
+        "uploaded_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "object_key": {
           "type": [
             "string",
@@ -538,6 +550,12 @@
           ]
         },
         "storage_class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "storage_class_source": {
           "type": [
             "string",
             "null"
@@ -2895,6 +2913,21 @@
         "revision",
         "overrides",
         "removals"
+      ],
+      "type": "object"
+    },
+    "UserSuggestResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/UserLookupResult"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
       ],
       "type": "object"
     },

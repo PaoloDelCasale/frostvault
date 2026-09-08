@@ -50,7 +50,7 @@ export function Toast({
       </span>
       <button
         type="button"
-        className="grid size-7 place-items-center rounded-lg bg-transparent p-0 text-[21px] leading-none opacity-55"
+        className="grid size-7 place-items-center rounded-lg bg-transparent p-0 text-[21px] leading-none opacity-55 transition-[background-color,opacity] duration-150 hover:bg-green-soft hover:opacity-100 focus-visible:bg-green-soft focus-visible:opacity-100 motion-reduce:transition-none"
         aria-label="Close notification"
         onClick={onClose}
       >

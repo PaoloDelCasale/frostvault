@@ -92,7 +92,7 @@ export type RenameCandidate = {
   new_vault_file_id: string;
   new_path: string;
   digest: string;
-  decision: "auto" | "ambiguous" | string;
+  decision: "auto" | "ambiguous" | "review" | "content_changed" | string;
   size?: number | null;
 };
 
@@ -334,6 +334,7 @@ export function fetchRenameCandidates(): Promise<RenameCandidatesResponse> {
 export function confirmFileRename(payload: {
   vault_file_id: string;
   new_path: string;
+  allow_content_change?: boolean;
 }): Promise<RenameConfirmationResponse> {
   return apiRequest<RenameConfirmationResponse>("/api/confirm-rename", {
     method: "POST",
@@ -420,6 +421,15 @@ export function updateLocale(locale: string): Promise<LocaleUpdateResponse> {
 
 export function lookupVaultUser(username: string): Promise<UserLookupResult> {
   return apiRequest<UserLookupResult>("/api/vault/user-lookup", {
+    method: "POST",
+    body: JSON.stringify({ username }),
+  });
+}
+
+export function suggestVaultUsers(
+  username: string,
+): Promise<{ items: UserLookupResult[] }> {
+  return apiRequest<{ items: UserLookupResult[] }>("/api/vault/user-suggest", {
     method: "POST",
     body: JSON.stringify({ username }),
   });

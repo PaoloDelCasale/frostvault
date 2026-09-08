@@ -67,6 +67,7 @@ const messages: Record<string, string> = {
   "ui.select_archive_version_description": "Choose version for {path}.",
   "ui.version_option": "Version #{number} · {storage} · {size}",
   "ui.version_date_storage": "#{number} · {date} · {storage}",
+  "ui.version_title_date": "Version #{number} · {date}",
   "ui.recover_confirm_title": "Recover {path}?",
   "ui.recover_version_summary": "Version #{number} ({storage})",
   "ui.recover_estimate_line": "Restore tier: {tier} for {days} days · ~€{cost} / ~{hours}h",
@@ -469,8 +470,9 @@ describe("File operations — seams 1–10", () => {
       ),
     );
     const versionDialog = await screen.findByRole("dialog");
-    expect(within(versionDialog).getAllByText(/#1 ·/).length).toBeGreaterThan(0);
-    expect(within(versionDialog).getAllByText(/#2 ·|DEEP_ARCHIVE/).length).toBeGreaterThan(0);
+    expect(within(versionDialog).getByText(/Version #1/)).toBeInTheDocument();
+    expect(within(versionDialog).getByText(/Version #2/)).toBeInTheDocument();
+    expect(within(versionDialog).getByText("Deep Archive")).toBeInTheDocument();
     await user.click(screen.getByTestId("version-option-ver-old"));
     const confirm = await screen.findByRole("alertdialog");
     expect(within(confirm).getByText(/Version #1/)).toBeInTheDocument();

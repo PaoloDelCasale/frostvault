@@ -55,10 +55,6 @@ describe("VaultAccessPage — quotas (seams 3, 5)", () => {
     await user.type(softStorage, "9");
     await user.clear(hardStorage);
     await user.type(hardStorage, "4");
-    await user.type(
-      screen.getByLabelText(/reason for this quota change/i),
-      "bad order",
-    );
     await user.click(screen.getByRole("button", { name: /save quotas/i }));
 
     await waitFor(() => {
@@ -68,17 +64,6 @@ describe("VaultAccessPage — quotas (seams 3, 5)", () => {
 
     await user.clear(hardStorage);
     await user.type(hardStorage, "10");
-    await user.clear(screen.getByLabelText(/reason for this quota change/i));
-    await user.click(screen.getByRole("button", { name: /save quotas/i }));
-    await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(/reason/i);
-    });
-    expect(putBodies).toHaveLength(0);
-
-    await user.type(
-      screen.getByLabelText(/reason for this quota change/i),
-      "remove quota limits",
-    );
     await user.clear(softStorage);
     await user.clear(hardStorage);
     await user.click(screen.getByRole("button", { name: /save quotas/i }));
@@ -93,7 +78,7 @@ describe("VaultAccessPage — quotas (seams 3, 5)", () => {
       concurrency_hard_limit: null,
       restore_30d_soft_limit_bytes: null,
       restore_30d_hard_limit_bytes: null,
-      reason: "remove quota limits",
+      reason: "Updated vault quota limits",
     });
   });
 

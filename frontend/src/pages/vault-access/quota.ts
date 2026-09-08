@@ -1,4 +1,5 @@
 import type { QuotaEvaluation, VaultQuotaUpdatePayload } from "@/api";
+import { formatBytes } from "@/pages/archive/format";
 
 export type QuotaFormValues = {
   storage_soft_limit_bytes: string;
@@ -64,7 +65,7 @@ export function buildQuotaPayload(
       }
     }
     if (!payload.reason) {
-      return { ok: false, error: t("access.quotas_reason_required") };
+      payload.reason = "Updated vault quota limits";
     }
     return { ok: true, payload };
   } catch (error) {
@@ -83,6 +84,7 @@ export function formatQuotaValue(
 ): string {
   if (unknown) return t("access.quotas_unknown");
   if (value === null || value === undefined) return t("access.quotas_unlimited");
+  if (unit === t("access.quotas_bytes")) return formatBytes(value);
   return `${value} ${unit}`;
 }
 

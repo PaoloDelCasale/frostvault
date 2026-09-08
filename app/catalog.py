@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
 from .audit import audit_log
@@ -31,6 +32,38 @@ class VaultFileNotFound(LookupError):
     """A Vault File could not be resolved in the expected Vault."""
 
 
+AUTO_RENAME_WINDOW = timedelta(hours=1)
+
+
+def _parse_catalog_timestamp(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _within_rename_window(left: Any, right: Any) -> bool:
+    start = _parse_catalog_timestamp(left)
+    end = _parse_catalog_timestamp(right)
+    if start is None or end is None:
+        return False
+    return abs(start - end) <= AUTO_RENAME_WINDOW
+
+
+def _path_basename(path: str) -> str:
+    return str(path).rsplit("/", 1)[-1]
+
+
 class ArchiveCatalog:
     """Keep versioned file invariants behind one persistence interface."""
 
@@ -39,6 +72,34 @@ class ArchiveCatalog:
         self.last_quota_evaluation = QuotaEvaluation(allowed=True)
         self.last_skipped_same_class = 0
         self.last_listing_rows_materialized = 0
+        self._storage_class_source_supported: bool | None = None
+
+    def _supports_storage_class_source(self) -> bool:
+        """Keep migration-time catalog writes compatible with pre-0040 schemas."""
+        if self._storage_class_source_supported is not None:
+            return self._storage_class_source_supported
+        if getattr(self.connection, "backend", None) == "sqlite":
+            present = any(
+                column["name"] == "storage_class_source"
+                for column in self.connection.execute(
+                    "PRAGMA table_info(archive_versions)"
+                ).fetchall()
+            )
+        else:
+            present = bool(
+                self.connection.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema=current_schema()
+                          AND table_name='archive_versions'
+                          AND column_name='storage_class_source'
+                    ) AS present
+                    """
+                ).fetchone()["present"]
+            )
+        self._storage_class_source_supported = present
+        return present
 
     def _mark_path_aggregates_dirty(self, vault_id: int, path: str | None) -> None:
         mark_path_dirty(self.connection, vault_id, path)
@@ -518,33 +579,51 @@ class ArchiveCatalog:
     ) -> str:
         # Resolve existing Archive Version BEFORE minting a Vault File so a
         # cloud scan of a renamed file's old key cannot orphan a new identity.
+        source_supported = self._supports_storage_class_source()
+        source_column = ", storage_class_source" if source_supported else ""
         existing = self.connection.execute(
-            """
-            SELECT id FROM archive_versions
+            f"""
+            SELECT id, storage_class{source_column}
+            FROM archive_versions
             WHERE vault_id=%s AND object_key=%s AND provider_version_id=%s
             """,
             (vault_id, object_key, provider_version_id),
         ).fetchone()
         if existing:
+            source = (
+                existing["storage_class_source"] or "unknown"
+                if source_supported
+                else "unknown"
+            )
+            if storage_class and storage_class != existing["storage_class"]:
+                if (
+                    desired_policy_id
+                    and applied_policy_id
+                    and desired_policy_id == applied_policy_id
+                ):
+                    source = "policy"
+                elif source != "manual":
+                    source = "discovered"
+            source_assignment = ", storage_class_source=%s" if source_supported else ""
+            update_params = [scan_id, storage_class, etag]
+            if source_supported:
+                update_params.append(source)
+            update_params.extend(
+                [desired_policy_id, applied_policy_id, existing["id"]]
+            )
             self.connection.execute(
-                """
+                f"""
                 UPDATE archive_versions
                 SET availability='available',
                     availability_checked_at=%s,
                     storage_class=%s,
-                    etag=%s,
+                    etag=%s
+                    {source_assignment},
                     desired_policy_id=COALESCE(%s, desired_policy_id),
                     applied_policy_id=COALESCE(%s, applied_policy_id)
                 WHERE id=%s
                 """,
-                (
-                    scan_id,
-                    storage_class,
-                    etag,
-                    desired_policy_id,
-                    applied_policy_id,
-                    existing["id"],
-                ),
+                update_params,
             )
             from .services.catalog_incidents import resolve_archive_version_incidents
 
@@ -568,8 +647,35 @@ class ArchiveCatalog:
             (file_id,),
         ).fetchone()
         version_id = str(uuid.uuid4())
+        source_insert_column = ", storage_class_source" if source_supported else ""
+        source_insert_value = ", %s" if source_supported else ""
+        insert_params = [
+            version_id,
+            file_id,
+            vault_id,
+            int(latest["version_number"]) + 1,
+            object_key,
+            provider_version_id,
+            size,
+            storage_class,
+            etag,
+            uploaded_at,
+            observed_at,
+            origin,
+            scan_id,
+            desired_policy_id,
+            applied_policy_id,
+        ]
+        if source_supported:
+            insert_params.append(
+                "upload"
+                if origin == "upload"
+                else "discovered"
+                if origin == "discovered"
+                else "unknown"
+            )
         self.connection.execute(
-            """
+            f"""
             INSERT INTO archive_versions(
                 id, vault_file_id, vault_id, version_number, object_key,
                 provider_version_id, size, storage_class, etag,
@@ -577,30 +683,14 @@ class ArchiveCatalog:
                 discovered_at, origin, integrity, verified_at,
                 availability, availability_checked_at, restore_state,
                 restore_expiry, restore_checked_at, desired_policy_id,
-                applied_policy_id
+                applied_policy_id{source_insert_column}
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 NULL, NULL, %s, %s, %s, 'unverified', NULL,
-                'available', %s, NULL, NULL, NULL, %s, %s
+                'available', %s, NULL, NULL, NULL, %s, %s{source_insert_value}
             )
             """,
-            (
-                version_id,
-                file_id,
-                vault_id,
-                int(latest["version_number"]) + 1,
-                object_key,
-                provider_version_id,
-                size,
-                storage_class,
-                etag,
-                uploaded_at,
-                observed_at,
-                origin,
-                scan_id,
-                desired_policy_id,
-                applied_policy_id,
-            ),
+            insert_params,
         )
         self._mark_path_aggregates_dirty(vault_id, path)
         return version_id
@@ -758,6 +848,7 @@ class ArchiveCatalog:
         storage_class: str,
         etag: str | None = None,
         observed_at: str,
+        storage_class_source: str = "manual",
     ) -> None:
         """Preserve Archive Version identity while recording a class/placement change."""
         owned = self.connection.execute(
@@ -774,6 +865,7 @@ class ArchiveCatalog:
             SET provider_version_id=%s,
                 storage_class=%s,
                 etag=COALESCE(%s, etag),
+                storage_class_source=%s,
                 availability='available',
                 availability_checked_at=%s,
                 restore_state=NULL,
@@ -785,6 +877,7 @@ class ArchiveCatalog:
                 provider_version_id,
                 storage_class,
                 etag,
+                storage_class_source,
                 observed_at,
                 observed_at,
                 archive_version_id,
@@ -1045,6 +1138,8 @@ class ArchiveCatalog:
                 vf.id AS vault_file_id,
                 fp.path,
                 lc.presence,
+                lc.size,
+                lc.observed_at,
                 lc.plaintext_sha256 AS digest
             FROM vault_files vf
             JOIN file_paths fp
@@ -1063,25 +1158,33 @@ class ArchiveCatalog:
         ).fetchall()
         missing_by_digest: dict[str, list[dict[str, Any]]] = {}
         present_by_digest: dict[str, list[dict[str, Any]]] = {}
+        missing_rows: list[dict[str, Any]] = []
+        present_rows: list[dict[str, Any]] = []
         for row in rows:
             digest = str(row["digest"]).lower()
-            bucket = (
-                missing_by_digest
-                if row["presence"] == "missing"
-                else present_by_digest
-            )
-            bucket.setdefault(digest, []).append(row)
-        candidates: list[dict[str, Any]] = []
-        for digest, missing_rows in missing_by_digest.items():
-            present_rows = present_by_digest.get(digest, [])
-            if not present_rows:
-                continue
-            if len(missing_rows) == 1 and len(present_rows) == 1:
-                decision = "auto"
+            if row["presence"] == "missing":
+                missing_by_digest.setdefault(digest, []).append(row)
+                missing_rows.append(row)
             else:
-                decision = "ambiguous"
-            for missing in missing_rows:
-                for present in present_rows:
+                present_by_digest.setdefault(digest, []).append(row)
+                present_rows.append(row)
+        candidates: list[dict[str, Any]] = []
+        claimed_ids: set[str] = set()
+        for digest, digest_missing in missing_by_digest.items():
+            digest_present = present_by_digest.get(digest, [])
+            if not digest_present:
+                continue
+            unique = len(digest_missing) == 1 and len(digest_present) == 1
+            decision = "auto" if unique else "ambiguous"
+            if unique and not _within_rename_window(
+                digest_missing[0]["observed_at"],
+                digest_present[0]["observed_at"],
+            ):
+                decision = "review"
+            for missing in digest_missing:
+                for present in digest_present:
+                    claimed_ids.add(str(missing["vault_file_id"]))
+                    claimed_ids.add(str(present["vault_file_id"]))
                     candidates.append(
                         {
                             "missing_vault_file_id": missing["vault_file_id"],
@@ -1090,8 +1193,42 @@ class ArchiveCatalog:
                             "new_path": present["path"],
                             "digest": digest,
                             "decision": decision,
+                            "size": present.get("size"),
                         }
                     )
+        missing_by_name: dict[str, list[dict[str, Any]]] = {}
+        present_by_name: dict[str, list[dict[str, Any]]] = {}
+        for row in missing_rows:
+            if str(row["vault_file_id"]) in claimed_ids:
+                continue
+            missing_by_name.setdefault(_path_basename(row["path"]), []).append(row)
+        for row in present_rows:
+            if str(row["vault_file_id"]) in claimed_ids:
+                continue
+            present_by_name.setdefault(_path_basename(row["path"]), []).append(row)
+        for basename, named_missing in missing_by_name.items():
+            named_present = present_by_name.get(basename, [])
+            if len(named_missing) != 1 or len(named_present) != 1:
+                continue
+            missing = named_missing[0]
+            present = named_present[0]
+            if str(missing["digest"]).lower() == str(present["digest"]).lower():
+                continue
+            if not _within_rename_window(
+                missing["observed_at"], present["observed_at"]
+            ):
+                continue
+            candidates.append(
+                {
+                    "missing_vault_file_id": missing["vault_file_id"],
+                    "missing_path": missing["path"],
+                    "new_vault_file_id": present["vault_file_id"],
+                    "new_path": present["path"],
+                    "digest": str(present["digest"]).lower(),
+                    "decision": "content_changed",
+                    "size": present.get("size"),
+                }
+            )
         return candidates
 
     def _rename_backend(self) -> str:
@@ -1336,6 +1473,7 @@ class ArchiveCatalog:
         vault_file_id: str,
         new_path: str,
         vault_id: int,
+        require_matching_digest: bool = True,
     ) -> dict[str, Any] | None:
         query = """
             SELECT
@@ -1395,9 +1533,12 @@ class ArchiveCatalog:
               AND provisional_copy.file_type='regular'
               AND provisional_copy.presence='present'
               AND provisional_copy.plaintext_sha256 IS NOT NULL
+        """
+        if require_matching_digest:
+            query += """
               AND lower(provisional_copy.plaintext_sha256)
                   = lower(missing_copy.plaintext_sha256)
-        """
+            """
         if self._rename_backend() != "sqlite":
             query += """
                 FOR UPDATE OF
@@ -1419,6 +1560,7 @@ class ArchiveCatalog:
         new_path: str,
         changed_at: str,
         vault_id: int,
+        allow_digest_mismatch: bool = False,
     ) -> str:
         """Atomically consume one current, Vault-local rename candidate.
 
@@ -1432,8 +1574,13 @@ class ArchiveCatalog:
             vault_file_id=vault_file_id,
             new_path=new_path,
             vault_id=vault_id,
+            require_matching_digest=not allow_digest_mismatch,
         )
         if snapshot is None:
+            raise VaultFileNotFound()
+        if allow_digest_mismatch and _path_basename(
+            snapshot["missing_path"]
+        ) != _path_basename(snapshot["provisional_path"]):
             raise VaultFileNotFound()
         # The endpoint maps VaultFileNotFound to its non-oracular 404 outside
         # the transaction. Keep this scoped rollback too, so direct catalog
@@ -1963,6 +2110,8 @@ class ArchiveCatalog:
                 av.provider_version_id,
                 av.size,
                 av.storage_class,
+                av.storage_class_source,
+                av.origin,
                 av.etag,
                 av.plaintext_sha256,
                 av.uploaded_at,

@@ -1,4 +1,5 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronRight, FolderClosed, MoreHorizontal } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { DEMO_MODE_ENABLED, getDemoSearchParam } from "@/demoGate";
@@ -30,7 +31,6 @@ import {
   buildBreadcrumbs,
   collapseBreadcrumbs,
   isBreadcrumbEllipsis,
-  parentDirectory,
 } from "./fileLabels";
 import {
   parseFileSortKey,
@@ -149,6 +149,13 @@ export function FileBrowser({
     // Capture / deep-link helper: ?history=<path> opens Path History.
     return getDemoSearchParam("history");
   });
+  const [renderedHistoryPath, setRenderedHistoryPath] = useState<string | null>(
+    historyPath,
+  );
+  useEffect(() => {
+    if (historyPath) setRenderedHistoryPath(historyPath);
+  }, [historyPath]);
+
   const demoConfirm = getDemoSearchParam("confirm");
   const demoConfirmTarget = getDemoSearchParam("target") || "readme.txt";
   const demoVersions = getDemoSearchParam("versions");
@@ -453,6 +460,8 @@ export function FileBrowser({
 
   const crumbs = buildBreadcrumbs(directory, t("ui.breadcrumb_archive"));
   const narrowCrumbs = collapseBreadcrumbs(crumbs);
+  const hiddenNarrowCrumbs =
+    crumbs.length > 4 ? crumbs.slice(1, -(4 - 2)) : [];
   const data = displayData;
   // Server may return quickly with aggregate_status=loading and empty items
   // while a background rebuild converges — never treat that as authoritative empty.
@@ -576,82 +585,111 @@ export function FileBrowser({
           </label>
         </div>
 
-        <div className="mt-2 flex min-w-0 items-center gap-2">
-          <Button
-            type="button"
-            variant="secondary"
-            className="shrink-0"
-            disabled={!directory}
-            aria-label={t("ui.go_up")}
-            data-testid="up-directory"
-            onClick={() => navigateDirectory(parentDirectory(directory))}
+        <div className="mt-3 flex min-w-0 items-center gap-2 rounded-xl border border-line bg-canvas/45 px-2 py-1.5">
+          <span
+            className="grid size-9 shrink-0 place-items-center rounded-lg bg-green-soft text-green"
+            aria-hidden="true"
+            data-testid="breadcrumb-icon"
           >
-            {t("ui.up")}
-          </Button>
+            <FolderClosed className="size-4" />
+          </span>
           <nav
             aria-label={t("ui.breadcrumb_archive")}
             data-testid="breadcrumbs"
             className="min-w-0 flex-1 overflow-hidden"
           >
-            {/* Narrow: collapsed trail — no horizontal scroll */}
+            {/* Narrow: root, overflow menu, and the last two segments. */}
             <ol
-              className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1 text-sm md:hidden"
+              className="flex min-w-0 items-center text-sm md:hidden"
               data-testid="breadcrumbs-narrow"
             >
               {narrowCrumbs.map((crumb, index) => {
                 if (isBreadcrumbEllipsis(crumb)) {
                   return (
-                    <li key={`ellipsis-${index}`} className="px-1 text-muted" aria-hidden="true">
-                      …
+                    <li key={`ellipsis-${index}`} className="flex shrink-0 items-center">
+                      <ChevronRight className="size-4 text-muted/70" aria-hidden="true" />
+                      <label className="relative grid size-9 place-items-center rounded-lg text-muted transition-colors duration-150 hover:bg-green-soft/35 hover:text-ink focus-within:bg-green-soft/35 focus-within:text-ink focus-within:ring-2 focus-within:ring-ring/40">
+                        <span className="sr-only">{`${t("ui.breadcrumb_archive")} …`}</span>
+                        <MoreHorizontal className="size-4" aria-hidden="true" />
+                        <select
+                          aria-label={`${t("ui.breadcrumb_archive")} …`}
+                          value=""
+                          className="absolute inset-0 cursor-pointer opacity-0"
+                          onChange={(event) => navigateDirectory(event.target.value)}
+                        >
+                          <option value="" disabled>…</option>
+                          {hiddenNarrowCrumbs.map((hiddenCrumb) => (
+                            <option key={hiddenCrumb.path} value={hiddenCrumb.path}>
+                              {hiddenCrumb.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
                     </li>
                   );
                 }
                 const current = index === narrowCrumbs.length - 1;
                 return (
-                  <li key={`n-${crumb.path}`} className="flex min-w-0 items-center gap-1">
+                  <li key={`n-${crumb.path}`} className="flex min-w-0 items-center">
                     {index > 0 ? (
-                      <span className="shrink-0 text-muted" aria-hidden="true">
-                        /
-                      </span>
+                      <ChevronRight className="size-4 shrink-0 text-muted/70" aria-hidden="true" />
                     ) : null}
-                    <button
-                      type="button"
-                      data-directory={crumb.path}
-                      disabled={current}
-                      aria-current={current ? "page" : undefined}
-                      className="max-w-[7rem] truncate font-bold text-ink disabled:cursor-default disabled:text-muted"
-                      onClick={() => navigateDirectory(crumb.path)}
-                    >
-                      {crumb.name}
-                    </button>
+                    {current ? (
+                      <span
+                        data-directory={crumb.path}
+                        aria-current="page"
+                        title={crumb.name}
+                        className="max-w-[8rem] truncate px-2 py-2 font-bold text-ink"
+                      >
+                        {crumb.name}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        data-directory={crumb.path}
+                        title={crumb.name}
+                        className="max-w-[8rem] truncate rounded-lg px-2 py-2 font-semibold text-muted outline-none transition-colors duration-150 hover:bg-green-soft/35 hover:text-ink focus-visible:bg-green-soft/35 focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-ring/40"
+                        onClick={() => navigateDirectory(crumb.path)}
+                      >
+                        {crumb.name}
+                      </button>
+                    )}
                   </li>
                 );
               })}
             </ol>
-            {/* md+: full trail */}
+            {/* md+: full trail. */}
             <ol
-              className="hidden min-w-0 flex-wrap items-center gap-x-1 gap-y-1 text-sm md:flex"
+              className="hidden min-w-0 flex-wrap items-center text-sm md:flex"
               data-testid="breadcrumbs-wide"
             >
               {crumbs.map((crumb, index) => {
                 const current = index === crumbs.length - 1;
                 return (
-                  <li key={`w-${crumb.path || "root"}`} className="flex min-w-0 items-center gap-1">
+                  <li key={`w-${crumb.path || "root"}`} className="flex min-w-0 items-center">
                     {index > 0 ? (
-                      <span className="shrink-0 text-muted" aria-hidden="true">
-                        /
-                      </span>
+                      <ChevronRight className="size-4 shrink-0 text-muted/70" aria-hidden="true" />
                     ) : null}
-                    <button
-                      type="button"
-                      data-directory={crumb.path}
-                      disabled={current}
-                      aria-current={current ? "page" : undefined}
-                      className="max-w-[12rem] truncate font-bold text-ink disabled:cursor-default disabled:text-muted"
-                      onClick={() => navigateDirectory(crumb.path)}
-                    >
-                      {crumb.name}
-                    </button>
+                    {current ? (
+                      <span
+                        data-directory={crumb.path}
+                        aria-current="page"
+                        title={crumb.name}
+                        className="max-w-[14rem] truncate px-2 py-2 font-bold text-ink"
+                      >
+                        {crumb.name}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        data-directory={crumb.path}
+                        title={crumb.name}
+                        className="max-w-[14rem] truncate rounded-lg px-2 py-2 font-semibold text-muted outline-none transition-colors duration-150 hover:bg-green-soft/35 hover:text-ink focus-visible:bg-green-soft/35 focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-ring/40"
+                        onClick={() => navigateDirectory(crumb.path)}
+                      >
+                        {crumb.name}
+                      </button>
+                    )}
                   </li>
                 );
               })}
@@ -744,7 +782,15 @@ export function FileBrowser({
                 sortOrder={sortOrder}
                 onSort={changeSort}
                 onOpenDirectory={(path) => navigateDirectory(path)}
-                onOpenFile={(path) => setHistoryPath(path)}
+                onOpenFile={(path) =>
+                  setHistoryPath((current) => (current === path ? null : path))
+                }
+                selectedFilePath={historyPath}
+                renderedFilePath={renderedHistoryPath}
+                onCloseFile={() => setHistoryPath(null)}
+                onFileDetailExited={() => {
+                  if (historyPath === null) setRenderedHistoryPath(null);
+                }}
                 onOpenActions={onOpenActions}
                 onDesktopAction={onDesktopAction}
                 jobsByPath={jobsByPath}
@@ -759,12 +805,19 @@ export function FileBrowser({
           </FileOperationsHost>
         ) : null}
 
-        {historyPath ? (
-          <PathHistoryPanel
-            path={historyPath}
-            t={t}
-            onClose={() => setHistoryPath(null)}
-          />
+        {renderedHistoryPath ? (
+          <div className="md:hidden">
+            <PathHistoryPanel
+              key={renderedHistoryPath}
+              path={renderedHistoryPath}
+              t={t}
+              open={historyPath !== null}
+              onClose={() => setHistoryPath(null)}
+              onExited={() => {
+                if (historyPath === null) setRenderedHistoryPath(null);
+              }}
+            />
+          </div>
         ) : null}
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
