@@ -72,6 +72,34 @@ class ArchiveCatalog:
         self.last_quota_evaluation = QuotaEvaluation(allowed=True)
         self.last_skipped_same_class = 0
         self.last_listing_rows_materialized = 0
+        self._storage_class_source_supported: bool | None = None
+
+    def _supports_storage_class_source(self) -> bool:
+        """Keep migration-time catalog writes compatible with pre-0040 schemas."""
+        if self._storage_class_source_supported is not None:
+            return self._storage_class_source_supported
+        if getattr(self.connection, "backend", None) == "sqlite":
+            present = any(
+                column["name"] == "storage_class_source"
+                for column in self.connection.execute(
+                    "PRAGMA table_info(archive_versions)"
+                ).fetchall()
+            )
+        else:
+            present = bool(
+                self.connection.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema=current_schema()
+                          AND table_name='archive_versions'
+                          AND column_name='storage_class_source'
+                    ) AS present
+                    """
+                ).fetchone()["present"]
+            )
+        self._storage_class_source_supported = present
+        return present
 
     def _mark_path_aggregates_dirty(self, vault_id: int, path: str | None) -> None:
         mark_path_dirty(self.connection, vault_id, path)
@@ -551,16 +579,22 @@ class ArchiveCatalog:
     ) -> str:
         # Resolve existing Archive Version BEFORE minting a Vault File so a
         # cloud scan of a renamed file's old key cannot orphan a new identity.
+        source_supported = self._supports_storage_class_source()
+        source_column = ", storage_class_source" if source_supported else ""
         existing = self.connection.execute(
-            """
-            SELECT id, storage_class, storage_class_source
+            f"""
+            SELECT id, storage_class{source_column}
             FROM archive_versions
             WHERE vault_id=%s AND object_key=%s AND provider_version_id=%s
             """,
             (vault_id, object_key, provider_version_id),
         ).fetchone()
         if existing:
-            source = existing["storage_class_source"] or "unknown"
+            source = (
+                existing["storage_class_source"] or "unknown"
+                if source_supported
+                else "unknown"
+            )
             if storage_class and storage_class != existing["storage_class"]:
                 if (
                     desired_policy_id
@@ -570,27 +604,26 @@ class ArchiveCatalog:
                     source = "policy"
                 elif source != "manual":
                     source = "discovered"
+            source_assignment = ", storage_class_source=%s" if source_supported else ""
+            update_params = [scan_id, storage_class, etag]
+            if source_supported:
+                update_params.append(source)
+            update_params.extend(
+                [desired_policy_id, applied_policy_id, existing["id"]]
+            )
             self.connection.execute(
-                """
+                f"""
                 UPDATE archive_versions
                 SET availability='available',
                     availability_checked_at=%s,
                     storage_class=%s,
-                    etag=%s,
-                    storage_class_source=%s,
+                    etag=%s
+                    {source_assignment},
                     desired_policy_id=COALESCE(%s, desired_policy_id),
                     applied_policy_id=COALESCE(%s, applied_policy_id)
                 WHERE id=%s
                 """,
-                (
-                    scan_id,
-                    storage_class,
-                    etag,
-                    source,
-                    desired_policy_id,
-                    applied_policy_id,
-                    existing["id"],
-                ),
+                update_params,
             )
             from .services.catalog_incidents import resolve_archive_version_incidents
 
@@ -614,8 +647,35 @@ class ArchiveCatalog:
             (file_id,),
         ).fetchone()
         version_id = str(uuid.uuid4())
+        source_insert_column = ", storage_class_source" if source_supported else ""
+        source_insert_value = ", %s" if source_supported else ""
+        insert_params = [
+            version_id,
+            file_id,
+            vault_id,
+            int(latest["version_number"]) + 1,
+            object_key,
+            provider_version_id,
+            size,
+            storage_class,
+            etag,
+            uploaded_at,
+            observed_at,
+            origin,
+            scan_id,
+            desired_policy_id,
+            applied_policy_id,
+        ]
+        if source_supported:
+            insert_params.append(
+                "upload"
+                if origin == "upload"
+                else "discovered"
+                if origin == "discovered"
+                else "unknown"
+            )
         self.connection.execute(
-            """
+            f"""
             INSERT INTO archive_versions(
                 id, vault_file_id, vault_id, version_number, object_key,
                 provider_version_id, size, storage_class, etag,
@@ -623,37 +683,14 @@ class ArchiveCatalog:
                 discovered_at, origin, integrity, verified_at,
                 availability, availability_checked_at, restore_state,
                 restore_expiry, restore_checked_at, desired_policy_id,
-                applied_policy_id, storage_class_source
+                applied_policy_id{source_insert_column}
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 NULL, NULL, %s, %s, %s, 'unverified', NULL,
-                'available', %s, NULL, NULL, NULL, %s, %s, %s
+                'available', %s, NULL, NULL, NULL, %s, %s{source_insert_value}
             )
             """,
-            (
-                version_id,
-                file_id,
-                vault_id,
-                int(latest["version_number"]) + 1,
-                object_key,
-                provider_version_id,
-                size,
-                storage_class,
-                etag,
-                uploaded_at,
-                observed_at,
-                origin,
-                scan_id,
-                desired_policy_id,
-                applied_policy_id,
-                (
-                    "upload"
-                    if origin == "upload"
-                    else "discovered"
-                    if origin == "discovered"
-                    else "unknown"
-                ),
-            ),
+            insert_params,
         )
         self._mark_path_aggregates_dirty(vault_id, path)
         return version_id
