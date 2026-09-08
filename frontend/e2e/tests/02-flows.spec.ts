@@ -19,7 +19,10 @@ function visibleFileButton(page: Page, name: string) {
 async function openDirectory(page: Page, name: string) {
   const target = visibleFileButton(page, name);
   await expect(target).toBeVisible();
-  await target.click();
+  const mobileCard = (await target.getAttribute("data-testid"))?.startsWith(
+    "mobile-file-card-trigger-",
+  );
+  await target.click(mobileCard ? { position: { x: 20, y: 20 } } : undefined);
 }
 
 async function vaultSelect(page: Page) {
