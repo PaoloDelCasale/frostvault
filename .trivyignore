@@ -1,26 +1,15 @@
-# rclone v1.75.0 is still the latest release as of 2026-09-04.
-# It embeds Go v1.26.5, golang.org/x/crypto v0.54.0, and
-# golang.org/x/image v0.44.0. No rclone rebuild includes the
-# patched toolchain or modules yet. Track the next release at:
+# rclone v1.75.1 (2026-09-04) is built with Go v1.26.6, golang.org/x/crypto
+# v0.56.0 and golang.org/x/image v0.45.0, so the advisories that v1.75.0
+# needed exceptions for are fixed and no longer listed here:
+# CVE-2026-33818, CVE-2026-39821, CVE-2026-46600, CVE-2026-56853,
+# CVE-2026-56858, CVE-2026-56859, CVE-2026-56860, CVE-2026-56862 (Go stdlib),
+# CVE-2026-56854 (x/crypto) and CVE-2026-46603 (x/image).
+#
+# Still open: the rclone release embeds a vulnerable google.golang.org/grpc
+# (GPRC-Go xDS servers denial of service via crash), fixed upstream in
+# 1.82.2, 1.83.2 and 1.85.0-dev. No rclone build carries the fixed module
+# yet. Track the next release at:
 # https://github.com/rclone/rclone/releases
-# Review and remove these exceptions by 2026-09-18.
-#
-# Go stdlib (fixed in Go v1.26.6):
-CVE-2026-33818
-CVE-2026-39821
-CVE-2026-46600
-CVE-2026-56853
-CVE-2026-56858
-CVE-2026-56859
-CVE-2026-56860
-CVE-2026-56862
-#
-# golang.org/x/crypto/ssh authentication bypass via unenforced
-# source-address restrictions, fixed in v0.55.0:
-# https://avd.aquasec.com/nvd/cve-2026-56854
-CVE-2026-56854
-#
-# golang.org/x/image/vp8l denial of service via excessive memory
-# allocation, fixed in v0.45.0:
-# https://avd.aquasec.com/nvd/cve-2026-46603
-CVE-2026-46603
+# Review and remove this exception by 2026-09-25.
+# https://avd.aquasec.com/nvd/cve-2026-84445
+CVE-2026-84445

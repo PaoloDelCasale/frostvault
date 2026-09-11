@@ -110,7 +110,6 @@ export default function App() {
   const [pathname, setPathname] = useState(currentPathname);
   const [me, setMe] = useState<MeResponse | null>(null);
   const [vaults, setVaults] = useState<VaultListItem[]>([]);
-  const [authChecked, setAuthChecked] = useState(pathname === "/login");
   const [offlineCacheLease, setOfflineCacheLease] =
     useState<OfflineFileCacheLease | null>(null);
   const [offlineCacheTransitioning, setOfflineCacheTransitioning] =
@@ -290,12 +289,10 @@ export default function App() {
 
   useEffect(() => {
     if (pathname === "/login") {
-      setAuthChecked(true);
       return;
     }
 
     let cancelled = false;
-    setAuthChecked(false);
     void refreshSession()
       .then((data) => {
         if (cancelled) return;
@@ -315,9 +312,6 @@ export default function App() {
         if (pathname !== "/login") {
           window.location.assign("/login");
         }
-      })
-      .finally(() => {
-        if (!cancelled) setAuthChecked(true);
       });
     return () => {
       cancelled = true;
@@ -332,7 +326,11 @@ export default function App() {
     return <LoginPage />;
   }
 
-  if (!authChecked || !me) {
+  // Keep AppShell mounted once a Session exists. Re-checking authority
+  // (Worker controllerchange, another tab, in-flight /api/me) must not
+  // detach #main-content or the skip link; capability chrome is gated by
+  // authReconciliationPending instead.
+  if (!me) {
     return (
       <div className="grid min-h-svh place-items-center bg-canvas text-sm text-muted">
         {shellLabel(t, "ui.loading", "Loading…")}

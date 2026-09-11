@@ -438,28 +438,49 @@ class TrivyBaselineContractTests(unittest.TestCase):
     def test_runtime_security_pins_and_rclone_checksums_stay_coherent(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-        self.assertIn("FROM rclone/rclone:1.75.0 AS rclone", dockerfile)
+        pin = re.search(
+            r"^FROM rclone/rclone:(\d+\.\d+\.\d+) AS rclone$",
+            dockerfile,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(pin, "Dockerfile must pin rclone/rclone:<semver> AS rclone")
         self.assertIn("RUN npm run build:ci", dockerfile)
         self.assertRegex(requirements, r"(?m)^msgpack==\d+\.\d+\.\d+\n")
         self.assertRegex(requirements, r"(?m)^setuptools==\d+\.\d+\.\d+\n")
         self.assertIn("apt-get upgrade -y", dockerfile)
         self.assertIn("pip uninstall --yes pip", dockerfile)
         trivyignore = (ROOT / ".trivyignore").read_text(encoding="utf-8")
-        self.assertIn("CVE-2026-56854", trivyignore)
-        self.assertIn("CVE-2026-46603", trivyignore)
+        exceptions = {
+            line.strip()
+            for line in trivyignore.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        for cve in exceptions:
+            with self.subTest(cve=cve):
+                self.assertRegex(cve, r"^CVE-\d{4}-\d+$")
+        if exceptions:
+            self.assertRegex(
+                trivyignore,
+                r"Review and remove .+ by \d{4}-\d{2}-\d{2}",
+            )
+            self.assertRegex(trivyignore, r"https://\S+")
 
-        rclone_checksum = (
-            "aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa"
-        )
         for path in (
             WORKFLOWS / "migrations.yml",
             WORKFLOWS / "aws-s3-integrity.yml",
         ):
             text = path.read_text(encoding="utf-8")
             with self.subTest(path=path.name):
-                self.assertIn("RCLONE_VERSION=1.75.0", text)
-                self.assertIn(rclone_checksum, text)
-                self.assertNotIn("1.74.4", text)
+                self.assertIn(
+                    "sed -n 's/^FROM rclone\\/rclone:\\([^ ]*\\) AS rclone$/\\1/p' Dockerfile",
+                    text,
+                )
+                self.assertIn("SHA256SUMS", text)
+                self.assertIn("sha256sum --check --strict", text)
+                self.assertIsNone(
+                    re.search(r"RCLONE_VERSION=\d+\.\d+\.\d+", text),
+                    "CI must follow the Dockerfile rclone pin, not a hardcoded version",
+                )
 
 
 class ContainerPublishContractTests(unittest.TestCase):
