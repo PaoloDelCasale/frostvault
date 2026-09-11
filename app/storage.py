@@ -25,6 +25,7 @@ from urllib.parse import urlencode
 
 import boto3
 from boto3.s3.transfer import TransferConfig
+from botocore.exceptions import ClientError
 from watchfiles import Change, awatch
 
 from .config import Settings, is_placeholder, settings
@@ -44,6 +45,10 @@ from .services.rclone_runtime import (
 )
 from .services.vault_crypto import safe_error_message
 from .services.vault_recovery import secrets_for_vault
+from .services.cloud_history import (
+    is_current_snapshot,
+    keep_discovered_snapshot_version,
+)
 from .services.s3_preflight import check_bucket_readiness, preflight_failure_message
 from .services.catalog_audit import audit_vault_catalog
 from .services.directory_aggregates import (
@@ -1565,6 +1570,16 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
 
     versions.sort(key=lambda entry: (entry[0], entry[6], entry[2], entry[1]))
     markers.sort(key=lambda entry: (entry[0], entry[3], entry[2], entry[1]))
+    snapshot_mode = is_current_snapshot(vault)
+    if snapshot_mode:
+        grouped: dict[str, list[tuple[str, str, str, Any, str, str, str]]] = {}
+        for entry in versions:
+            grouped.setdefault(entry[0], []).append(entry)
+        versions = []
+        for path in sorted(grouped):
+            versions.extend(
+                sorted(grouped[path], key=lambda item: item[6], reverse=True)
+            )
 
     from .services.lifecycle_pins import load_lifecycle_pins
 
@@ -1573,6 +1588,8 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
         pins = load_lifecycle_pins(connection, vault["id"])
 
     count = 0
+    snapshot_extras: list[tuple[str, str, str]] = []
+    snapshot_kept_by_path: dict[str, str] = {}
     for offset in range(0, len(versions), CLOUD_SCAN_WRITE_BATCH_SIZE):
         if not _cloud_scan_still_current(vault, scan_id):
             return count
@@ -1613,6 +1630,22 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                 timestamp,
                 applied_policy_id,
             ) in tagged:
+                if snapshot_mode:
+                    catalog_keep = catalog.latest_available_provider_version_id(
+                        int(vault["id"]), logical_path
+                    )
+                    if not keep_discovered_snapshot_version(
+                        provider_version_id=str(version_id),
+                        catalog_keep_provider_version_id=catalog_keep,
+                        already_kept_provider_version_id=snapshot_kept_by_path.get(
+                            logical_path
+                        ),
+                    ):
+                        snapshot_extras.append(
+                            (logical_path, str(version_id), object_key)
+                        )
+                        continue
+                    snapshot_kept_by_path[logical_path] = str(version_id)
                 desired_policy_id = (
                     None
                     if _path_matches_lifecycle_pins(logical_path, pins)
@@ -1633,6 +1666,8 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                     applied_policy_id=applied_policy_id,
                 )
                 count += 1
+    if snapshot_extras:
+        _purge_current_snapshot_scan_extras(vault, snapshot_extras, client)
     for offset in range(0, len(markers), CLOUD_SCAN_WRITE_BATCH_SIZE):
         if not _cloud_scan_still_current(vault, scan_id):
             return count
@@ -3246,6 +3281,144 @@ def _object_version_entries(
     return versions, markers
 
 
+def _s3_version_already_gone(exc: BaseException) -> bool:
+    if not isinstance(exc, ClientError):
+        return False
+    code = str(exc.response.get("Error", {}).get("Code") or "")
+    return code in {"NoSuchVersion", "NoSuchKey", "NotFound", "404"}
+
+
+def _delete_s3_version(
+    client: Any,
+    *,
+    bucket: str,
+    object_key: str,
+    version_id: str,
+) -> None:
+    try:
+        client.delete_object(
+            Bucket=bucket, Key=object_key, VersionId=version_id
+        )
+    except Exception as exc:
+        if _s3_version_already_gone(exc):
+            return
+        raise
+
+
+def purge_current_snapshot_superseded(
+    job: dict[str, Any],
+    *,
+    keep_version_id: str,
+    client: Any,
+) -> None:
+    """Destroy every S3 VersionId except the verified Current Snapshot.
+
+    The upload/rename Job is not complete until this succeeds. Missing provider
+    versions are treated as already gone so a retry can finish catalog purge.
+    """
+    if not is_current_snapshot(job):
+        return
+    if not keep_version_id:
+        raise RuntimeError("Current Snapshot purge requires the kept Archive Version")
+    with db() as connection:
+        keep = connection.execute(
+            """
+            SELECT id, vault_file_id, object_key, provider_version_id
+            FROM archive_versions WHERE id=%s
+            """,
+            (keep_version_id,),
+        ).fetchone()
+        if keep is None:
+            raise RuntimeError("Current Snapshot keep Archive Version is missing")
+        superseded = connection.execute(
+            """
+            SELECT id, object_key, provider_version_id
+            FROM archive_versions
+            WHERE vault_file_id=%s
+              AND id<>%s
+              AND availability NOT IN ('purged')
+            """,
+            (keep["vault_file_id"], keep_version_id),
+        ).fetchall()
+    keys = {str(keep["object_key"])} if keep.get("object_key") else set()
+    keys.update(
+        str(row["object_key"]) for row in superseded if row.get("object_key")
+    )
+    keep_provider = str(keep.get("provider_version_id") or "")
+    keep_key = str(keep.get("object_key") or "")
+    for object_key in keys:
+        versions, markers = _object_version_entries(
+            client, bucket=job["s3_bucket"], object_key=object_key
+        )
+        for version_id in versions:
+            if object_key == keep_key and str(version_id) == keep_provider:
+                continue
+            _delete_s3_version(
+                client,
+                bucket=job["s3_bucket"],
+                object_key=object_key,
+                version_id=str(version_id),
+            )
+        for version_id in markers:
+            _delete_s3_version(
+                client,
+                bucket=job["s3_bucket"],
+                object_key=object_key,
+                version_id=str(version_id),
+            )
+    stamp = now_iso()
+    with db() as connection:
+        ensure_job_claim_owned_in_transaction(
+            connection,
+            job,
+            "Upload claim was lost",
+        )
+        catalog = ArchiveCatalog(connection)
+        catalog.mark_versions_purged(
+            [str(row["id"]) for row in superseded],
+            checked_at=stamp,
+        )
+        catalog.clear_delete_markers_for_file(str(keep["vault_file_id"]))
+
+
+def _purge_current_snapshot_scan_extras(
+    vault: dict[str, Any],
+    extras: list[tuple[str, str, str]],
+    client: Any,
+) -> None:
+    """Delete uncatalogued extra VersionIds found during a Current Snapshot scan."""
+    for _path, version_id, object_key in extras:
+        try:
+            _delete_s3_version(
+                client,
+                bucket=vault["s3_bucket"],
+                object_key=object_key,
+                version_id=version_id,
+            )
+        except Exception as exc:
+            with db() as connection:
+                worker_error_store.record_worker_error(
+                    connection,
+                    component="current_snapshot_purge",
+                    exc=exc,
+                    vault_id=vault.get("id"),
+                )
+            continue
+        with db() as connection:
+            existing = connection.execute(
+                """
+                SELECT id FROM archive_versions
+                WHERE vault_id=%s AND object_key=%s AND provider_version_id=%s
+                """,
+                (vault["id"], object_key, version_id),
+            ).fetchone()
+            if existing:
+                ArchiveCatalog(connection).mark_versions_purged(
+                    [str(existing["id"])],
+                    checked_at=now_iso(),
+                )
+
+
 def _storage_head_matches_catalog(
     version: dict[str, Any],
     head: dict[str, Any],
@@ -4317,6 +4490,14 @@ def _complete_verified_upload(
                     version_id if matches_snapshot else None
                 ),
             )
+    if is_current_snapshot(job):
+        set_job(job["id"], "uploading", message_key="job.purging_previous_snapshot")
+        ensure_job_active(job["id"], "Upload claim was lost")
+        purge_current_snapshot_superseded(
+            job,
+            keep_version_id=str(version_id),
+            client=s3_client(),
+        )
     progress_bytes = int(job.get("total_bytes") or 0)
     if local_stat is not None and progress_bytes <= 0:
         progress_bytes = int(local_stat.st_size)
@@ -5005,6 +5186,31 @@ def process_rename(job: dict[str, Any]) -> None:
             provider_version_id=destination_version_id,
             operation="Rename",
         )
+        if is_current_snapshot(job):
+            set_job(
+                job["id"],
+                "cleaning",
+                message_key="job.purging_previous_snapshot",
+            )
+            ensure_job_active(job["id"], "Rename claim was lost")
+            purge_current_snapshot_superseded(
+                job,
+                keep_version_id=str(version_id),
+                client=client,
+            )
+            with db() as connection:
+                ensure_job_claim_owned_in_transaction(
+                    connection,
+                    job,
+                    "Rename claim was lost",
+                )
+                ArchiveCatalog(connection).link_job_version(job["id"], version_id)
+            set_job_progress(
+                job["id"],
+                int(job.get("total_bytes") or getattr(source_stat, "st_size", 0) or 0),
+            )
+            set_job(job["id"], "completed", message_key="job.rename_verified")
+            return
         if existing_marker is not None:
             with db() as connection:
                 ensure_job_claim_owned_in_transaction(

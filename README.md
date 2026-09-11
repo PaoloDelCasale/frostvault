@@ -27,7 +27,12 @@ Search remains global across every file in the selected vault.
 - Local cleanup runs in the background and reports progress for each file or
   folder.
 - Authenticated users can create their own vaults; administrators retain global
-  access with reauthentication for sensitive actions.
+  access with reauthentication for sensitive actions. Creation requires an
+  explicit **Cloud History Policy**: **Archive History** keeps every verified
+  Archive Version recoverable; **Current Snapshot** keeps only the last verified
+  upload and destroys previous cloud bytes after that verification. The choice
+  is immutable. Bootstrap Vaults remain Archive History. The shared S3 bucket
+  stays versioned either way.
 - New vaults can use an empty managed root or adopt an existing directory from
   an exclusive Source Area assigned to the user. Source Areas authorize vault
   creation only; vault membership remains the sole data-access boundary.

@@ -49,6 +49,12 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertIn("sqlite-and-postgresql", job_names)
         self.assertIn("s3-compatible-integrity", job_names)
         self.assertIn("playwright-e2e", job_names)
+        start_minio = "\n".join(
+            step.get("run", "")
+            for step in workflow["jobs"]["s3-compatible-integrity"]["steps"]
+        )
+        self.assertIn("quay.io/minio/minio:", start_minio)
+        self.assertNotIn("minio/minio:", start_minio.replace("quay.io/minio/minio:", ""))
 
     def test_pr_runs_frontend_checks_in_parallel_jobs(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))

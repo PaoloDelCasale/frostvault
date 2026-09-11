@@ -83,6 +83,7 @@ const testCapabilities = {
   delete_enabled: true,
   cloud_deletion_enabled: false,
   is_vault_owner: true,
+    cloud_history_policy: "archive_history" as const,
 };
 
 function t(key: string, params?: Record<string, string | number>): string {

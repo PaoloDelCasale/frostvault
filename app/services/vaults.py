@@ -19,6 +19,11 @@ is immutable afterwards. Crypt vaults receive a unique sealed secret pair;
 mode changes are a guided migration to a *new* vault, never an in-place
 reinterpretation of existing object keys.
 
+``cloud_history_policy`` (``archive_history`` or ``current_snapshot``) is the
+same kind of creation-time immutable choice. Interactive callers must supply
+it; omitted values persist Archive History so bootstrap and existing tests keep
+that promise.
+
 Vault row, owner membership, and the local root are provisioned as one
 unit. Empty mode creates the managed directory inside the transaction;
 adoption binds an existing directory in place and never moves, copies,
@@ -39,6 +44,10 @@ from ..config import settings
 from ..database import INTEGRITY_ERRORS, db
 from . import source_areas
 from .source_layout import ensure_managed_directory, managed_vault_path
+from .cloud_history import (
+    InvalidCloudHistoryPolicy,
+    normalize_cloud_history_policy,
+)
 from .vault_crypto import encrypt_vault_secrets, generate_crypt_secrets
 from .vault_relocation import enroll_vault_root_identity
 
@@ -85,6 +94,7 @@ _ADMIN_VAULT_PUBLIC_FIELDS = (
     "rclone_remote",
     "enabled",
     "encryption_mode",
+    "cloud_history_policy",
     "decommission_state",
     "decommissioned_at",
     "root_released_at",
@@ -113,6 +123,7 @@ def list_admin_vaults(connection: Any) -> list[dict[str, Any]]:
         """
         SELECT v.id, v.uuid, v.slug, v.name, v.source_root, v.s3_bucket,
                v.s3_prefix, v.rclone_remote, v.enabled, v.encryption_mode,
+               v.cloud_history_policy,
                v.decommission_state, v.decommissioned_at, v.root_released_at,
                COUNT(vm.user_id) AS member_count
         FROM vaults v LEFT JOIN vault_members vm ON vm.vault_id=v.id
@@ -140,12 +151,14 @@ def _create_vault(
     name: str,
     slug: str | None = None,
     encryption_mode: str = "plain",
+    cloud_history_policy: str | None = None,
     *,
     creation_mode: str = "empty",
     volume_alias: str | None = None,
     relative_path: str | None = None,
     actor_is_admin: bool = False,
     return_ciphertexts: bool = False,
+    require_cloud_history_policy: bool = False,
 ) -> dict[str, Any] | _SecretVaultCreation:
     """Create a Vault while retaining sealed material inside this service.
 
@@ -157,6 +170,13 @@ def _create_vault(
     mode = (encryption_mode or "plain").strip().lower()
     if mode not in _ENCRYPTION_MODES:
         raise InvalidVaultName("encryption_mode must be 'plain' or 'crypt'")
+    try:
+        history_policy = normalize_cloud_history_policy(
+            cloud_history_policy,
+            required=require_cloud_history_policy,
+        )
+    except InvalidCloudHistoryPolicy as exc:
+        raise InvalidVaultName(str(exc)) from exc
 
     create_mode = (creation_mode or "empty").strip().lower()
     if create_mode not in _CREATION_MODES:
@@ -240,13 +260,14 @@ def _create_vault(
                 """
                 INSERT INTO vaults(
                     uuid, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote, encryption_mode,
+                    rclone_remote, encryption_mode, cloud_history_policy,
                     crypt_password_ciphertext, crypt_password2_ciphertext
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING
                     id, uuid, slug, name, source_root, s3_bucket, s3_prefix,
                     rclone_remote, enabled, encryption_mode,
+                    cloud_history_policy,
                     recovery_custody_confirmed_at, decommission_state,
                     decommissioned_at, root_released_at
                 """,
@@ -259,6 +280,7 @@ def _create_vault(
                     s3_prefix,
                     default_remote,
                     mode,
+                    history_policy,
                     password_ciphertext,
                     password2_ciphertext,
                 ),
@@ -309,11 +331,13 @@ def create_vault_for_user(
     name: str,
     slug: str | None = None,
     encryption_mode: str = "plain",
+    cloud_history_policy: str | None = None,
     *,
     creation_mode: str = "empty",
     volume_alias: str | None = None,
     relative_path: str | None = None,
     actor_is_admin: bool = False,
+    require_cloud_history_policy: bool = False,
 ) -> dict[str, Any]:
     """Create a self-service Vault with its recovery ciphertexts in-process."""
     created = _create_vault(
@@ -321,11 +345,13 @@ def create_vault_for_user(
         name,
         slug,
         encryption_mode,
+        cloud_history_policy,
         creation_mode=creation_mode,
         volume_alias=volume_alias,
         relative_path=relative_path,
         actor_is_admin=actor_is_admin,
         return_ciphertexts=True,
+        require_cloud_history_policy=require_cloud_history_policy,
     )
     if not isinstance(created, _SecretVaultCreation):  # pragma: no cover - invariant
         raise RuntimeError("Self-service Vault creation lost its recovery material")
@@ -341,10 +367,12 @@ def create_admin_vault(
     name: str,
     slug: str | None = None,
     encryption_mode: str = "plain",
+    cloud_history_policy: str | None = None,
     *,
     creation_mode: str = "empty",
     volume_alias: str | None = None,
     relative_path: str | None = None,
+    require_cloud_history_policy: bool = False,
 ) -> dict[str, Any]:
     """Create an administrator-requested Vault without exporting ciphertexts."""
     created = _create_vault(
@@ -352,11 +380,13 @@ def create_admin_vault(
         name,
         slug,
         encryption_mode,
+        cloud_history_policy,
         creation_mode=creation_mode,
         volume_alias=volume_alias,
         relative_path=relative_path,
         actor_is_admin=True,
         return_ciphertexts=False,
+        require_cloud_history_policy=require_cloud_history_policy,
     )
     if not isinstance(created, dict):  # pragma: no cover - invariant
         raise RuntimeError("Admin Vault creation received recovery material")
