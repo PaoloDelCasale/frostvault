@@ -14,6 +14,8 @@ import type {
   VaultCreateResponse,
   VaultCreationMode,
 } from "@/api";
+
+type CloudHistoryPolicy = "archive_history" | "current_snapshot";
 import { AccountPreferencesMenu } from "@/components/AccountPreferencesMenu";
 import { AuthCard } from "@/components/AuthCard";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -49,6 +51,9 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [encryptionMode, setEncryptionMode] = useState<EncryptionMode>("plain");
+  const [cloudHistoryPolicy, setCloudHistoryPolicy] = useState<
+    CloudHistoryPolicy | ""
+  >("");
   const [creationMode, setCreationMode] = useState<VaultCreationMode>("empty");
   const [sourceAreas, setSourceAreas] = useState<SourceAreaGrant[]>([]);
   const [volumeAlias, setVolumeAlias] = useState("");
@@ -92,6 +97,10 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
+    if (!cloudHistoryPolicy) {
+      setError(t("ui.vault_create.cloud_history_required"));
+      return;
+    }
     if (creationMode === "adopt") {
       if (!volumeAlias || relativePath === null) {
         setError(t("ui.vault_create.adopt_path_required"));
@@ -103,6 +112,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
       const payload: {
         name: string;
         encryption_mode: EncryptionMode;
+        cloud_history_policy: CloudHistoryPolicy;
         creation_mode: VaultCreationMode;
         slug?: string;
         volume_alias?: string;
@@ -110,6 +120,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
       } = {
         name: name.trim(),
         encryption_mode: encryptionMode,
+        cloud_history_policy: cloudHistoryPolicy,
         creation_mode: creationMode,
       };
       const trimmedSlug = slug.trim();
@@ -338,6 +349,36 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
                     className="size-4 accent-green"
                   />
                   {t("ui.vault_create.encryption_crypt")}
+                </label>
+              </fieldset>
+
+              <fieldset className="grid gap-2 border-0 p-0">
+                <legend className="text-[13px] font-bold text-muted">
+                  {t("ui.vault_create.cloud_history")}
+                </legend>
+                <label className="flex min-h-11 items-center gap-3 text-sm text-ink">
+                  <input
+                    type="radio"
+                    name="cloud_history_policy"
+                    value="archive_history"
+                    required
+                    checked={cloudHistoryPolicy === "archive_history"}
+                    onChange={() => setCloudHistoryPolicy("archive_history")}
+                    className="size-4 accent-green"
+                  />
+                  {t("ui.vault_create.cloud_history_archive_history")}
+                </label>
+                <label className="flex min-h-11 items-center gap-3 text-sm text-ink">
+                  <input
+                    type="radio"
+                    name="cloud_history_policy"
+                    value="current_snapshot"
+                    required
+                    checked={cloudHistoryPolicy === "current_snapshot"}
+                    onChange={() => setCloudHistoryPolicy("current_snapshot")}
+                    className="size-4 accent-green"
+                  />
+                  {t("ui.vault_create.cloud_history_current_snapshot")}
                 </label>
               </fieldset>
 

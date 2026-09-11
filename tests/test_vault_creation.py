@@ -101,10 +101,12 @@ class VaultCreationServiceTestCase(unittest.TestCase):
                 "name",
                 "slug",
                 "encryption_mode",
+                "cloud_history_policy",
                 "creation_mode",
                 "volume_alias",
                 "relative_path",
                 "actor_is_admin",
+                "require_cloud_history_policy",
             ],
         )
         forbidden = {

@@ -171,6 +171,7 @@ const ownerCaps: MeVault = {
   delete_enabled: true,
   cloud_deletion_enabled: true,
   is_vault_owner: true,
+    cloud_history_policy: "archive_history" as const,
 };
 
 const browsePayload: FilesResponse = {
@@ -420,6 +421,7 @@ describe("File operations — seams 1–10", () => {
       role: "operator" as const,
       can_operate: true,
       is_vault_owner: false,
+    cloud_history_policy: "archive_history" as const,
       cloud_deletion_enabled: false,
     };
     renderBrowser(operator);

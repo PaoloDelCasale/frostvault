@@ -75,6 +75,9 @@ export function AdminPage() {
   const [encryptionMode, setEncryptionMode] = useState<"plain" | "crypt">(
     "plain",
   );
+  const [cloudHistoryPolicy, setCloudHistoryPolicy] = useState<
+    "archive_history" | "current_snapshot" | ""
+  >("");
   const [vaultCreationMode, setVaultCreationMode] = useState<"empty" | "adopt">(
     "empty",
   );
@@ -210,12 +213,17 @@ export function AdminPage() {
         showNotice(t("admin.vault_adopt_path_required"), true);
         return;
       }
+      if (!cloudHistoryPolicy) {
+        showNotice(t("ui.vault_create.cloud_history_required"), true);
+        return;
+      }
       await createAdminVault({
         name: vaultName,
         slug: vaultSlug,
         owner_user_id: Number(ownerUserId),
         reason: vaultReason,
         encryption_mode: encryptionMode,
+        cloud_history_policy: cloudHistoryPolicy,
         creation_mode: vaultCreationMode,
         ...(vaultCreationMode === "adopt"
           ? {
@@ -228,6 +236,7 @@ export function AdminPage() {
       setVaultSlug("");
       setVaultReason("");
       setEncryptionMode("plain");
+      setCloudHistoryPolicy("");
       setVaultCreationMode("empty");
       setAdoptRelativePath(null);
       showNotice(t("admin.vault_created"));
@@ -512,6 +521,33 @@ export function AdminPage() {
                   <option value="crypt">{t("admin.encryption_crypt")}</option>
                 </FormSelect>
               </FormField>
+              <fieldset className="grid gap-2 border-0 p-0">
+                <legend className="text-[13px] font-bold text-muted">
+                  {t("admin.cloud_history_policy")}
+                </legend>
+                <label className="flex min-h-11 items-center gap-3 text-sm">
+                  <input
+                    type="radio"
+                    name="admin_cloud_history_policy"
+                    value="archive_history"
+                    required
+                    checked={cloudHistoryPolicy === "archive_history"}
+                    onChange={() => setCloudHistoryPolicy("archive_history")}
+                  />
+                  {t("admin.cloud_history_archive_history")}
+                </label>
+                <label className="flex min-h-11 items-center gap-3 text-sm">
+                  <input
+                    type="radio"
+                    name="admin_cloud_history_policy"
+                    value="current_snapshot"
+                    required
+                    checked={cloudHistoryPolicy === "current_snapshot"}
+                    onChange={() => setCloudHistoryPolicy("current_snapshot")}
+                  />
+                  {t("admin.cloud_history_current_snapshot")}
+                </label>
+              </fieldset>
               <fieldset className="grid gap-2 border-0 p-0">
                 <legend className="text-[13px] font-bold text-muted">
                   {t("admin.vault_creation_mode")}

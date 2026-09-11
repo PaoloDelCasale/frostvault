@@ -1,7 +1,8 @@
 # FrostVault
 
-This context tracks logical files in isolated vaults and preserves recoverable
-cloud history while local copies can appear, change, or be removed.
+This context tracks logical files in isolated vaults. Local Copies can appear,
+change, or be removed. A Vault's Cloud History Policy is Archive History or
+Current Snapshot.
 
 ## Language
 
@@ -66,6 +67,20 @@ _Avoid_: Source file, local version
 **Archive Version**:
 One immutable, recoverable cloud representation of a Vault File's content.
 _Avoid_: Object, backup, revision
+
+**Cloud History Policy**:
+The creation-time, immutable choice of how many Archive Versions a Vault keeps
+recoverable.
+_Avoid_: Versioning mode, Sync mode, Bucket versioning
+
+**Archive History**:
+A Cloud History Policy that keeps every verified Archive Version recoverable.
+_Avoid_: Versioned, Full history, Versioning
+
+**Current Snapshot**:
+A Cloud History Policy that permits at most one recoverable Archive Version per
+Vault File.
+_Avoid_: Sync, Mirror, Unversioned, Revision
 
 **Delete Marker**:
 A reversible cloud marker that hides a key without containing or deleting an
