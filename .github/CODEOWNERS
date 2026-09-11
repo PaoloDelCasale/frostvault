@@ -1,5 +1,3 @@
-* @PaoloDelCasale
-
 .github/ @PaoloDelCasale
 app/security.py @PaoloDelCasale
 app/sessions.py @PaoloDelCasale
