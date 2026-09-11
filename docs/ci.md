@@ -98,11 +98,14 @@ Dependabot (`.github/dependabot.yml`) opens weekly update PRs for pip, Actions,
 Docker, and npm in `/frontend`. [Dependabot maintenance](../.github/workflows/dependabot-maintenance.yml)
 queues minor, patch, and security updates (including advisories that omit
 `update-type`) for squash auto-merge; branch protection and all required checks
-still gate each merge. Major updates remain manual. The same workflow always
-tries to refresh open Dependabot PRs against `main` after every push and every
-15 minutes, with a short delay on push so GitHub's merge state has time to
-settle. CodeQL `init` and `analyze` updates are grouped because those steps must
-use exactly the same version.
+still gate each merge. Major updates remain manual. The workflow refreshes
+open Dependabot PRs against `main`, squash-merges any that are already `CLEAN`,
+and immediately updates the remaining heads so a GITHUB_TOKEN auto-merge cannot
+leave every other PR "out of date" (that merge does not retrigger workflows).
+A 15-minute cron is only a backstop: GitHub often delays high-frequency
+schedules. The repository also allows updating a behind PR head
+(`allow_update_branch`). CodeQL `init` and `analyze` updates are grouped
+because those steps must use exactly the same version.
 
 The privileged maintenance workflow runs only from the trusted default branch
 and never checks out dependency-PR code. `workflow_run` and

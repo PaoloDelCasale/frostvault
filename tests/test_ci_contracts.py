@@ -595,6 +595,9 @@ class DependabotContractTests(unittest.TestCase):
         self.assertNotIn('state" == "BEHIND"', text)
         self.assertIn("gh pr merge", text)
         self.assertIn("--auto --squash", text)
+        self.assertIn("mergeStateStatus", text)
+        self.assertIn("CLEAN", text)
+        self.assertIn("refresh_all", text)
 
 class ContributorCiDocsTests(unittest.TestCase):
     def test_ci_status_is_documented(self) -> None:
