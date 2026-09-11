@@ -438,18 +438,21 @@ class TrivyBaselineContractTests(unittest.TestCase):
     def test_runtime_security_pins_and_rclone_checksums_stay_coherent(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-        self.assertIn("FROM rclone/rclone:1.75.0 AS rclone", dockerfile)
+        self.assertIn("FROM rclone/rclone:1.75.1 AS rclone", dockerfile)
         self.assertIn("RUN npm run build:ci", dockerfile)
         self.assertRegex(requirements, r"(?m)^msgpack==\d+\.\d+\.\d+\n")
         self.assertRegex(requirements, r"(?m)^setuptools==\d+\.\d+\.\d+\n")
         self.assertIn("apt-get upgrade -y", dockerfile)
         self.assertIn("pip uninstall --yes pip", dockerfile)
         trivyignore = (ROOT / ".trivyignore").read_text(encoding="utf-8")
-        self.assertIn("CVE-2026-56854", trivyignore)
-        self.assertIn("CVE-2026-46603", trivyignore)
+        self.assertIn("CVE-2026-84445", trivyignore)
+        # rclone 1.75.1 ships Go 1.26.6, x/crypto 0.56.0 and x/image 0.45.0, so
+        # the advisories that the 1.75.0 pin required exceptions for are fixed.
+        self.assertNotIn("CVE-2026-56854", trivyignore)
+        self.assertNotIn("CVE-2026-46603", trivyignore)
 
         rclone_checksum = (
-            "aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa"
+            "982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab"
         )
         for path in (
             WORKFLOWS / "migrations.yml",
@@ -457,7 +460,7 @@ class TrivyBaselineContractTests(unittest.TestCase):
         ):
             text = path.read_text(encoding="utf-8")
             with self.subTest(path=path.name):
-                self.assertIn("RCLONE_VERSION=1.75.0", text)
+                self.assertIn("RCLONE_VERSION=1.75.1", text)
                 self.assertIn(rclone_checksum, text)
                 self.assertNotIn("1.74.4", text)
 
