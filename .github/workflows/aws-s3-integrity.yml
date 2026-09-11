@@ -34,12 +34,22 @@ jobs:
           cache: pip
       - name: Install rclone
         run: |
-          RCLONE_VERSION=1.75.1
+          RCLONE_VERSION="$(sed -n 's/^FROM rclone\/rclone:\([^ ]*\) AS rclone$/\1/p' Dockerfile)"
+          if [ -z "${RCLONE_VERSION}" ]; then
+            echo "Could not read rclone pin from Dockerfile" >&2
+            exit 1
+          fi
           RCLONE_ARCHIVE="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
           curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/${RCLONE_ARCHIVE}" \
             -o "/tmp/${RCLONE_ARCHIVE}"
-          echo "982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab  /tmp/${RCLONE_ARCHIVE}" \
-            | sha256sum --check --strict
+          curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/SHA256SUMS" \
+            -o /tmp/rclone-SHA256SUMS
+          EXPECTED="$(awk -v name="${RCLONE_ARCHIVE}" '$2 == name { print $1; exit }' /tmp/rclone-SHA256SUMS)"
+          if [ -z "${EXPECTED}" ]; then
+            echo "No SHA256 for ${RCLONE_ARCHIVE} in official SHA256SUMS" >&2
+            exit 1
+          fi
+          echo "${EXPECTED}  /tmp/${RCLONE_ARCHIVE}" | sha256sum --check --strict
           sudo unzip -qo "/tmp/${RCLONE_ARCHIVE}" -d /tmp
           sudo cp "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
       - name: Configure AWS credentials (OIDC)
