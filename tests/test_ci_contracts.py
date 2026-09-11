@@ -564,6 +564,14 @@ class DependabotContractTests(unittest.TestCase):
         self.assertEqual(ecosystems, {"pip", "github-actions", "docker", "npm"})
         for item in config["updates"]:
             self.assertEqual(item.get("rebase-strategy"), "auto")
+            self.assertEqual(item.get("open-pull-requests-limit"), 3)
+            groups = item.get("groups") or {}
+            minor_patch = [
+                group
+                for group in groups.values()
+                if group.get("update-types") == ["minor", "patch"]
+            ]
+            self.assertEqual(len(minor_patch), 1, item["package-ecosystem"])
         npm = next(
             item
             for item in config["updates"]
@@ -584,6 +592,10 @@ class DependabotContractTests(unittest.TestCase):
         self.assertIn(
             "github/codeql-action/*",
             actions["groups"]["codeql-action"]["patterns"],
+        )
+        self.assertIn(
+            "github/codeql-action/*",
+            actions["groups"]["actions-minor-and-patch"]["exclude-patterns"],
         )
 
     def test_maintenance_updates_stale_prs_and_auto_merges_safe_updates(self) -> None:
