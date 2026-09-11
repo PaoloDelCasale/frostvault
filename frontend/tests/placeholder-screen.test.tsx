@@ -49,6 +49,7 @@ describe("App shell screen", () => {
             delete_enabled: true,
             cloud_deletion_enabled: true,
             is_vault_owner: true,
+    cloud_history_policy: "archive_history" as const,
           },
         });
       }

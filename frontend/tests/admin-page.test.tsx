@@ -563,6 +563,9 @@ describe("AdminPage — create vault (seam 2)", () => {
       "provision for ops",
     );
     await user.click(
+      screen.getByRole("radio", { name: /archive history/i }),
+    );
+    await user.click(
       screen.getByRole("button", { name: /create private vault/i }),
     );
 
@@ -578,6 +581,7 @@ describe("AdminPage — create vault (seam 2)", () => {
         owner_user_id: 10,
         reason: "provision for ops",
         encryption_mode: "plain",
+        cloud_history_policy: "archive_history",
         creation_mode: "empty",
       });
       // Source root is minted by the server — never sent by the client.

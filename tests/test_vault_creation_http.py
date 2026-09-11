@@ -85,7 +85,10 @@ class VaultCreationHttpTestCase(unittest.TestCase):
         return self.client.get("/api/me").json()["csrf_token"]
 
     def _create(self, name: str, slug: str | None = None, csrf: str | None = None):
-        payload: dict[str, object] = {"name": name}
+        payload: dict[str, object] = {
+            "name": name,
+            "cloud_history_policy": "archive_history",
+        }
         if slug is not None:
             payload["slug"] = slug
         headers = {"X-CSRF-Token": csrf if csrf is not None else self._csrf()}
@@ -101,7 +104,7 @@ class SelfServiceVaultCreationTests(VaultCreationHttpTestCase):
 
         denied = self.client.post(
             "/api/vaults",
-            json={"name": "My Archive"},
+            json={"name": "My Archive", "cloud_history_policy": "archive_history"},
             headers={"X-CSRF-Token": "missing"},
         )
         self.assertEqual(denied.status_code, 401, denied.text)
@@ -172,7 +175,7 @@ class SelfServiceVaultCreationTests(VaultCreationHttpTestCase):
         self.assertEqual(created_dirs, [body["uuid"]])
 
     def test_creation_requires_authentication(self) -> None:
-        response = self.client.post("/api/vaults", json={"name": "Docs"})
+        response = self.client.post("/api/vaults", json={"name": "Docs", "cloud_history_policy": "archive_history"})
 
         self.assertEqual(response.status_code, 401)
 
@@ -183,6 +186,25 @@ class SelfServiceVaultCreationTests(VaultCreationHttpTestCase):
 
         self.assertEqual(response.status_code, 403, response.text)
 
+    def test_creation_requires_an_explicit_cloud_history_policy(self) -> None:
+        self._login()
+        response = self.client.post(
+            "/api/vaults",
+            json={"name": "Docs"},
+            headers={"X-CSRF-Token": self._csrf()},
+        )
+        self.assertEqual(response.status_code, 422, response.text)
+        created = self.client.post(
+            "/api/vaults",
+            json={
+                "name": "Snapshot Docs",
+                "cloud_history_policy": "current_snapshot",
+            },
+            headers={"X-CSRF-Token": self._csrf()},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.json()["cloud_history_policy"], "current_snapshot")
+
     def test_caller_supplied_storage_fields_are_rejected_outright(self) -> None:
         self._login()
         headers = {"X-CSRF-Token": self._csrf()}
@@ -191,6 +213,7 @@ class SelfServiceVaultCreationTests(VaultCreationHttpTestCase):
             "/api/vaults",
             json={
                 "name": "Docs",
+                "cloud_history_policy": "archive_history",
                 "source_root": "/sources/whatever-i-want",
                 "s3_bucket": "attacker-bucket",
                 "s3_prefix": "not/my/prefix",
@@ -231,12 +254,12 @@ class SelfServiceVaultCreationTests(VaultCreationHttpTestCase):
 
         response_a = client_a.post(
             "/api/vaults",
-            json={"name": "Alice's Archive"},
+            json={"name": "Alice's Archive", "cloud_history_policy": "archive_history"},
             headers={"X-CSRF-Token": csrf_a},
         )
         response_b = client_b.post(
             "/api/vaults",
-            json={"name": "Bob's Archive"},
+            json={"name": "Bob's Archive", "cloud_history_policy": "archive_history"},
             headers={"X-CSRF-Token": csrf_b},
         )
 
@@ -275,12 +298,12 @@ class SelfServiceVaultCreationTests(VaultCreationHttpTestCase):
 
         response_a = client_a.post(
             "/api/vaults",
-            json={"name": "Archive"},
+            json={"name": "Archive", "cloud_history_policy": "archive_history"},
             headers={"X-CSRF-Token": csrf_a},
         )
         response_b = client_b.post(
             "/api/vaults",
-            json={"name": "Archive"},
+            json={"name": "Archive", "cloud_history_policy": "archive_history"},
             headers={"X-CSRF-Token": csrf_b},
         )
 
@@ -316,7 +339,10 @@ class SelfServiceVaultCreationTests(VaultCreationHttpTestCase):
         def _create(index: int):
             return self.client.post(
                 "/api/vaults",
-                json={"name": f"Vault {index}"},
+                json={
+                    "name": f"Vault {index}",
+                    "cloud_history_policy": "archive_history",
+                },
                 headers={"X-CSRF-Token": csrf},
             )
 
@@ -396,6 +422,7 @@ class AdminVaultCreationHttpTests(unittest.TestCase):
                 "slug": "managed-archive",
                 "owner_user_id": self.owner_id,
                 "reason": "provision archive for owner",
+                "cloud_history_policy": "archive_history",
             },
             headers={"X-CSRF-Token": self._csrf()},
         )
@@ -421,6 +448,7 @@ class AdminVaultCreationHttpTests(unittest.TestCase):
                         "slug": "managed-archive",
                         "owner_user_id": self.owner_id,
                         "reason": "provision archive for owner",
+                "cloud_history_policy": "archive_history",
                     },
                     headers={"X-CSRF-Token": self._csrf()},
                 )
@@ -449,6 +477,7 @@ class AdminVaultCreationHttpTests(unittest.TestCase):
                 "slug": "managed-archive",
                 "owner_user_id": self.owner_id,
                 "reason": "provision archive for owner",
+                "cloud_history_policy": "archive_history",
                 "source_root": "/sources/attacker",
                 "s3_bucket": "attacker-bucket",
                 "s3_prefix": "attacker-prefix",
@@ -487,6 +516,7 @@ class AdminVaultCreationHttpTests(unittest.TestCase):
                     "slug": "managed-archive",
                     "owner_user_id": self.owner_id,
                     "reason": "provision archive for owner",
+                "cloud_history_policy": "archive_history",
                 },
                 headers={"X-CSRF-Token": self._csrf()},
             )

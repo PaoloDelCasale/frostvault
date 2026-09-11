@@ -967,9 +967,10 @@ class VaultSelection(BaseModel):
 class VaultSelfServiceCreate(BaseModel):
     """Self-service vault creation payload (issues #7, #6, and #150).
 
-    Labels and encryption_mode are always accepted. Adoption adds a constrained
-    ``volume_alias`` + ``relative_path`` pair — never an absolute filesystem
-    path, S3 identity, rclone remote, or crypt secret.
+    Labels, encryption_mode, and cloud_history_policy are always accepted.
+    Cloud History Policy is required (no implicit default). Adoption adds a
+    constrained ``volume_alias`` + ``relative_path`` pair — never an absolute
+    filesystem path, S3 identity, rclone remote, or crypt secret.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -977,6 +978,9 @@ class VaultSelfServiceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     slug: str | None = Field(default=None, min_length=2, max_length=60)
     encryption_mode: str = Field(default="plain", pattern="^(plain|crypt)$")
+    cloud_history_policy: str = Field(
+        pattern="^(archive_history|current_snapshot)$"
+    )
     creation_mode: str = Field(default="empty", pattern="^(empty|adopt)$")
     volume_alias: str | None = Field(default=None, min_length=1, max_length=120)
     relative_path: str | None = Field(default=None, max_length=1024)
@@ -1112,6 +1116,9 @@ class VaultCreate(BaseModel):
     owner_user_id: int
     reason: str = Field(min_length=3, max_length=500)
     encryption_mode: str = Field(default="plain", pattern="^(plain|crypt)$")
+    cloud_history_policy: str = Field(
+        pattern="^(archive_history|current_snapshot)$"
+    )
     creation_mode: str = Field(default="empty", pattern="^(empty|adopt)$")
     volume_alias: str | None = Field(default=None, min_length=1, max_length=120)
     relative_path: str | None = Field(default=None, max_length=1024)
@@ -1925,6 +1932,8 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
             "cloud_deletion_enabled": bool(vault.get("cloud_deletion_enabled"))
             and is_owner(role),
             "is_vault_owner": is_owner(role),
+            "cloud_history_policy": vault.get("cloud_history_policy")
+            or "archive_history",
         }
     else:
         selected_id = request.state.session.get("vault_id")
@@ -2021,7 +2030,7 @@ def user_vaults(user: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         rows = connection.execute(
             """
-            SELECT v.id, v.slug, v.name, vm.role
+            SELECT v.id, v.slug, v.name, vm.role, v.cloud_history_policy
             FROM vaults v
             JOIN vault_members vm ON vm.vault_id=v.id
             WHERE vm.user_id=%s AND v.enabled=TRUE
@@ -2053,10 +2062,12 @@ def create_own_vault(
             action.name,
             action.slug,
             encryption_mode=action.encryption_mode,
+            cloud_history_policy=action.cloud_history_policy,
             creation_mode=action.creation_mode,
             volume_alias=action.volume_alias,
             relative_path=action.relative_path,
             actor_is_admin=False,
+            require_cloud_history_policy=True,
         )
     except VaultSlugTaken as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -2079,6 +2090,7 @@ def create_own_vault(
         "name": vault["name"],
         "role": "owner",
         "encryption_mode": vault["encryption_mode"],
+        "cloud_history_policy": vault["cloud_history_policy"],
         "recovery_custody_confirmed": bool(
             vault.get("recovery_custody_confirmed_at")
         ),
@@ -4747,9 +4759,11 @@ def create_vault(
             action.name,
             action.slug,
             encryption_mode=action.encryption_mode,
+            cloud_history_policy=action.cloud_history_policy,
             creation_mode=action.creation_mode,
             volume_alias=action.volume_alias,
             relative_path=action.relative_path,
+            require_cloud_history_policy=True,
         )
     except VaultSlugTaken as exc:
         raise HTTPException(409, str(exc)) from exc

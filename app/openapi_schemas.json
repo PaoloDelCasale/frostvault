@@ -252,6 +252,9 @@
         "encryption_mode": {
           "type": "string"
         },
+        "cloud_history_policy": {
+          "$ref": "#/components/schemas/CloudHistoryPolicy"
+        },
         "id": {
           "type": "number"
         },
@@ -314,6 +317,9 @@
           ],
           "type": "string"
         },
+        "cloud_history_policy": {
+          "$ref": "#/components/schemas/CloudHistoryPolicy"
+        },
         "name": {
           "type": "string"
         },
@@ -337,7 +343,8 @@
         "name",
         "slug",
         "owner_user_id",
-        "reason"
+        "reason",
+        "cloud_history_policy"
       ],
       "type": "object"
     },
@@ -753,6 +760,13 @@
       "enum": [
         "plain",
         "crypt"
+      ],
+      "type": "string"
+    },
+    "CloudHistoryPolicy": {
+      "enum": [
+        "archive_history",
+        "current_snapshot"
       ],
       "type": "string"
     },
@@ -1836,6 +1850,9 @@
         "cloud_deletion_enabled": {
           "type": "boolean"
         },
+        "cloud_history_policy": {
+          "$ref": "#/components/schemas/CloudHistoryPolicy"
+        },
         "delete_enabled": {
           "type": "boolean"
         },
@@ -1863,7 +1880,8 @@
         "can_operate",
         "delete_enabled",
         "cloud_deletion_enabled",
-        "is_vault_owner"
+        "is_vault_owner",
+        "cloud_history_policy"
       ],
       "type": "object"
     },
@@ -2971,6 +2989,9 @@
         "encryption_mode": {
           "$ref": "#/components/schemas/EncryptionMode"
         },
+        "cloud_history_policy": {
+          "$ref": "#/components/schemas/CloudHistoryPolicy"
+        },
         "name": {
           "type": "string"
         },
@@ -2986,7 +3007,8 @@
       },
       "required": [
         "name",
-        "encryption_mode"
+        "encryption_mode",
+        "cloud_history_policy"
       ],
       "type": "object"
     },
@@ -2998,6 +3020,9 @@
         },
         "encryption_mode": {
           "$ref": "#/components/schemas/EncryptionMode"
+        },
+        "cloud_history_policy": {
+          "$ref": "#/components/schemas/CloudHistoryPolicy"
         },
         "id": {
           "type": "number"
@@ -3028,6 +3053,7 @@
         "name",
         "role",
         "encryption_mode",
+        "cloud_history_policy",
         "recovery_custody_confirmed"
       ],
       "type": "object"
@@ -3538,6 +3564,9 @@
         },
         "slug": {
           "type": "string"
+        },
+        "cloud_history_policy": {
+          "$ref": "#/components/schemas/CloudHistoryPolicy"
         }
       },
       "required": [

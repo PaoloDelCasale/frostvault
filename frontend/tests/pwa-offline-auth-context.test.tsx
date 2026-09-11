@@ -77,6 +77,7 @@ function meResponse(
       delete_enabled: false,
       cloud_deletion_enabled: false,
       is_vault_owner: true,
+    cloud_history_policy: "archive_history" as const,
     },
   };
 }

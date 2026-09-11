@@ -1055,6 +1055,65 @@ class ArchiveCatalog:
                 int(owned["vault_id"]), owned["vault_file_id"]
             )
 
+    def latest_available_provider_version_id(
+        self, vault_id: int, path: str
+    ) -> str | None:
+        """Return the recoverable Archive Version's S3 VersionId for one path."""
+        row = self.connection.execute(
+            """
+            SELECT av.provider_version_id
+            FROM vault_files vf
+            JOIN file_paths fp
+              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+            JOIN archive_versions av ON av.vault_file_id=vf.id
+            WHERE vf.vault_id=%s AND fp.path=%s
+              AND av.availability NOT IN ('missing', 'purged')
+            ORDER BY av.version_number DESC
+            LIMIT 1
+            """,
+            (vault_id, path),
+        ).fetchone()
+        if row is None or not row["provider_version_id"]:
+            return None
+        return str(row["provider_version_id"])
+
+    def mark_versions_purged(
+        self,
+        version_ids: Sequence[str],
+        *,
+        checked_at: str,
+    ) -> None:
+        ids = [str(item) for item in version_ids if item]
+        if not ids:
+            return
+        placeholders = ", ".join(["%s"] * len(ids))
+        owned = self.connection.execute(
+            f"""
+            SELECT DISTINCT vault_id, vault_file_id
+            FROM archive_versions
+            WHERE id IN ({placeholders})
+            """,
+            ids,
+        ).fetchall()
+        self.connection.execute(
+            f"""
+            UPDATE archive_versions
+            SET availability='purged', availability_checked_at=%s
+            WHERE id IN ({placeholders})
+            """,
+            [checked_at, *ids],
+        )
+        for row in owned:
+            self._mark_file_aggregates_dirty(
+                int(row["vault_id"]), row["vault_file_id"]
+            )
+
+    def clear_delete_markers_for_file(self, vault_file_id: str) -> None:
+        self.connection.execute(
+            "DELETE FROM delete_markers WHERE vault_file_id=%s",
+            (vault_file_id,),
+        )
+
     def set_local_fingerprint(
         self,
         *,
@@ -2816,6 +2875,7 @@ class ArchiveCatalog:
             f"""
             SELECT j.*, v.source_root, v.s3_bucket,
                    v.s3_prefix, v.rclone_remote, v.encryption_mode,
+                   v.cloud_history_policy,
                    v.crypt_password_ciphertext, v.crypt_password2_ciphertext,
                    v.uuid AS vault_uuid, v.name AS vault_name,
                    v.cloud_deletion_enabled, v.decommission_state

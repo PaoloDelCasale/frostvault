@@ -2310,6 +2310,7 @@ export interface components {
             [key: string]: unknown;
         };
         AdminVault: {
+            cloud_history_policy?: components["schemas"]["CloudHistoryPolicy"];
             /** @enum {string} */
             decommission_state?: "active" | "decommissioning" | "decommissioned";
             decommissioned_at?: string | null;
@@ -2327,6 +2328,7 @@ export interface components {
             uuid?: string;
         };
         AdminVaultCreatePayload: {
+            cloud_history_policy: components["schemas"]["CloudHistoryPolicy"];
             /** @enum {string} */
             creation_mode?: "empty" | "adopt";
             /** @enum {string} */
@@ -2461,6 +2463,8 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** @enum {string} */
+        CloudHistoryPolicy: "archive_history" | "current_snapshot";
         CloudPurgePayload: {
             confirmation: string;
             generated_phrase: string;
@@ -2997,6 +3001,7 @@ export interface components {
         MeVault: {
             can_operate: boolean;
             cloud_deletion_enabled: boolean;
+            cloud_history_policy: components["schemas"]["CloudHistoryPolicy"];
             delete_enabled: boolean;
             id: number;
             is_vault_owner: boolean;
@@ -3598,6 +3603,8 @@ export interface components {
         };
         /** VaultCreate */
         VaultCreate: {
+            /** Cloud History Policy */
+            cloud_history_policy: string;
             /**
              * Creation Mode
              * @default empty
@@ -3622,6 +3629,7 @@ export interface components {
             volume_alias?: string | null;
         };
         VaultCreateRequest: {
+            cloud_history_policy: components["schemas"]["CloudHistoryPolicy"];
             creation_mode?: components["schemas"]["VaultCreationMode"];
             encryption_mode: components["schemas"]["EncryptionMode"];
             name: string;
@@ -3632,6 +3640,7 @@ export interface components {
             [key: string]: unknown;
         };
         VaultCreateResponse: {
+            cloud_history_policy: components["schemas"]["CloudHistoryPolicy"];
             creation_mode?: components["schemas"]["VaultCreationMode"];
             encryption_mode: components["schemas"]["EncryptionMode"];
             id: number;
@@ -3808,6 +3817,7 @@ export interface components {
             [key: string]: unknown;
         };
         VaultListItem: {
+            cloud_history_policy?: components["schemas"]["CloudHistoryPolicy"];
             id: number;
             name: string;
             role: components["schemas"]["VaultRole"];
@@ -3931,11 +3941,14 @@ export interface components {
          * VaultSelfServiceCreate
          * @description Self-service vault creation payload (issues #7, #6, and #150).
          *
-         *     Labels and encryption_mode are always accepted. Adoption adds a constrained
-         *     ``volume_alias`` + ``relative_path`` pair — never an absolute filesystem
-         *     path, S3 identity, rclone remote, or crypt secret.
+         *     Labels, encryption_mode, and cloud_history_policy are always accepted.
+         *     Cloud History Policy is required (no implicit default). Adoption adds a
+         *     constrained ``volume_alias`` + ``relative_path`` pair — never an absolute
+         *     filesystem path, S3 identity, rclone remote, or crypt secret.
          */
         VaultSelfServiceCreate: {
+            /** Cloud History Policy */
+            cloud_history_policy: string;
             /**
              * Creation Mode
              * @default empty
