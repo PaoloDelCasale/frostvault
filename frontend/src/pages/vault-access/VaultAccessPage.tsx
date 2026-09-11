@@ -139,7 +139,7 @@ export function VaultAccessPage({
 
   if (!ready) {
     return (
-      <div className="mx-auto grid w-full max-w-[960px] gap-4 px-3 py-4 sm:px-4">
+      <div className="mx-auto grid w-full min-w-0 max-w-[960px] gap-4 px-3 py-4 sm:px-4">
         <p className="text-sm text-muted" role="status">
           {t("access.title")}
         </p>
@@ -195,9 +195,9 @@ export function VaultAccessPage({
   }
 
   return (
-    <div className="mx-auto grid w-full max-w-[960px] gap-4 px-3 py-4 sm:px-4">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
+    <div className="mx-auto grid w-full min-w-0 max-w-[960px] gap-4 px-3 py-4 sm:px-4">
+      <header className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
           <p className="text-[11px] font-black tracking-[0.14em] text-muted uppercase">
             {t("ui.private_archive")}
           </p>
