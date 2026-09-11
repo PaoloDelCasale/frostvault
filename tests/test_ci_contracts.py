@@ -562,6 +562,8 @@ class DependabotContractTests(unittest.TestCase):
         )
         ecosystems = {item["package-ecosystem"] for item in config["updates"]}
         self.assertEqual(ecosystems, {"pip", "github-actions", "docker", "npm"})
+        for item in config["updates"]:
+            self.assertEqual(item.get("rebase-strategy"), "auto")
         actions = next(
             item
             for item in config["updates"]
@@ -585,14 +587,16 @@ class DependabotContractTests(unittest.TestCase):
         self.assertEqual(workflow["permissions"]["contents"], "write")
         self.assertEqual(workflow["permissions"]["pull-requests"], "write")
         self.assertIn("--author app/dependabot", text)
-        self.assertIn("pulls/$number/update-branch", text)
-        self.assertIn("expected_head_sha=$head_sha", text)
+        self.assertNotIn("pulls/$number/update-branch", text)
+        self.assertNotIn("expected_head_sha", text)
+        self.assertIn("@dependabot rebase", text)
         self.assertIn("pulls/$number/commits?per_page=100", text)
         self.assertIn("version-update:semver-(minor|patch)", text)
         self.assertIn("version-update:semver-major", text)
         self.assertIn("update-type: version-update:", text)
         self.assertIn("sleep 15", text)
-        self.assertNotIn('state" == "BEHIND"', text)
+        self.assertIn('state" == "BEHIND"', text)
+        self.assertIn("refresh_all force", text)
         self.assertIn("gh pr merge", text)
         self.assertIn("--auto --squash", text)
         self.assertIn("mergeStateStatus", text)

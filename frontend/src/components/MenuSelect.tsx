@@ -175,7 +175,7 @@ export function MenuSelect({
   ) : null;
 
   return (
-    <div ref={rootRef} className={cn("relative", className)}>
+    <div ref={rootRef} className={cn("relative min-w-0", className)}>
       <button
         id={id}
         type="button"
@@ -188,7 +188,7 @@ export function MenuSelect({
         aria-controls={listId}
         data-testid={testId}
         className={cn(
-          "inline-flex min-h-11 w-full items-center justify-between gap-2 rounded-[10px] border border-input bg-surface px-3 font-bold text-ink",
+          "inline-flex min-h-11 w-full min-w-0 items-center justify-between gap-2 rounded-[10px] border border-input bg-surface px-3 font-bold text-ink",
           "outline-none transition-[background-color,border-color,box-shadow] duration-150 hover:border-[var(--interactive-border-hover)] hover:bg-green-soft focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none",
           open && "border-ring ring-3 ring-ring/50",
           invalid && "border-danger ring-3 ring-danger/20",
