@@ -5,12 +5,14 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    rebase-strategy: auto
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    rebase-strategy: auto
     groups:
       codeql-action:
         # init and analyze must run at the same version.
@@ -22,9 +24,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    rebase-strategy: auto
 
   - package-ecosystem: npm
     directory: "/frontend"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    rebase-strategy: auto

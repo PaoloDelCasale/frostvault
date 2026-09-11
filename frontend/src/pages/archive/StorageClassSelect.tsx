@@ -185,13 +185,13 @@ export function StorageClassSelect({
   ) : null;
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative min-w-0">
       <button
         id={id}
         type="button"
         data-testid={testId}
         className={cn(
-          "inline-flex min-h-11 w-full items-center justify-between gap-2 rounded-[10px] border border-input bg-surface px-3 font-bold text-ink",
+          "inline-flex min-h-11 w-full min-w-0 max-w-full items-center justify-between gap-2 rounded-[10px] border border-input bg-surface px-3 font-bold text-ink",
           "text-left outline-none transition-[background-color,border-color,box-shadow] duration-150 hover:border-[var(--interactive-border-hover)] hover:bg-green-soft focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none",
           open && "border-ring ring-3 ring-ring/50",
         )}
@@ -205,7 +205,7 @@ export function StorageClassSelect({
           {selected ? (
             <span className="flex flex-col gap-0.5">
               <span className="font-bold tracking-wide">{storageClassLabel(selected.id, t)}</span>
-              <span className="text-xs text-muted">
+              <span className="truncate text-xs text-muted">
                 {formatStorageClassRate(selected, t)}
                 {" · "}
                 {formatStorageClassRetrieval(selected, t)}
