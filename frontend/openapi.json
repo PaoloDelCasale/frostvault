@@ -313,6 +313,9 @@
       "AdminVault": {
         "additionalProperties": false,
         "properties": {
+          "cloud_history_policy": {
+            "$ref": "#/components/schemas/CloudHistoryPolicy"
+          },
           "decommission_state": {
             "enum": [
               "active",
@@ -381,6 +384,9 @@
       "AdminVaultCreatePayload": {
         "additionalProperties": true,
         "properties": {
+          "cloud_history_policy": {
+            "$ref": "#/components/schemas/CloudHistoryPolicy"
+          },
           "creation_mode": {
             "enum": [
               "empty",
@@ -418,7 +424,8 @@
           "name",
           "slug",
           "owner_user_id",
-          "reason"
+          "reason",
+          "cloud_history_policy"
         ],
         "type": "object"
       },
@@ -819,6 +826,13 @@
           "enabled"
         ],
         "type": "object"
+      },
+      "CloudHistoryPolicy": {
+        "enum": [
+          "archive_history",
+          "current_snapshot"
+        ],
+        "type": "string"
       },
       "CloudPurgePayload": {
         "additionalProperties": true,
@@ -2553,6 +2567,9 @@
           "cloud_deletion_enabled": {
             "type": "boolean"
           },
+          "cloud_history_policy": {
+            "$ref": "#/components/schemas/CloudHistoryPolicy"
+          },
           "delete_enabled": {
             "type": "boolean"
           },
@@ -2580,7 +2597,8 @@
           "can_operate",
           "delete_enabled",
           "cloud_deletion_enabled",
-          "is_vault_owner"
+          "is_vault_owner",
+          "cloud_history_policy"
         ],
         "type": "object"
       },
@@ -4349,6 +4367,11 @@
       "VaultCreate": {
         "additionalProperties": false,
         "properties": {
+          "cloud_history_policy": {
+            "pattern": "^(archive_history|current_snapshot)$",
+            "title": "Cloud History Policy",
+            "type": "string"
+          },
           "creation_mode": {
             "default": "empty",
             "pattern": "^(empty|adopt)$",
@@ -4413,7 +4436,8 @@
           "name",
           "slug",
           "owner_user_id",
-          "reason"
+          "reason",
+          "cloud_history_policy"
         ],
         "title": "VaultCreate",
         "type": "object"
@@ -4421,6 +4445,9 @@
       "VaultCreateRequest": {
         "additionalProperties": true,
         "properties": {
+          "cloud_history_policy": {
+            "$ref": "#/components/schemas/CloudHistoryPolicy"
+          },
           "creation_mode": {
             "$ref": "#/components/schemas/VaultCreationMode"
           },
@@ -4442,13 +4469,17 @@
         },
         "required": [
           "name",
-          "encryption_mode"
+          "encryption_mode",
+          "cloud_history_policy"
         ],
         "type": "object"
       },
       "VaultCreateResponse": {
         "additionalProperties": true,
         "properties": {
+          "cloud_history_policy": {
+            "$ref": "#/components/schemas/CloudHistoryPolicy"
+          },
           "creation_mode": {
             "$ref": "#/components/schemas/VaultCreationMode"
           },
@@ -4484,6 +4515,7 @@
           "name",
           "role",
           "encryption_mode",
+          "cloud_history_policy",
           "recovery_custody_confirmed"
         ],
         "type": "object"
@@ -5051,6 +5083,9 @@
       "VaultListItem": {
         "additionalProperties": true,
         "properties": {
+          "cloud_history_policy": {
+            "$ref": "#/components/schemas/CloudHistoryPolicy"
+          },
           "id": {
             "type": "number"
           },
@@ -5438,8 +5473,13 @@
       },
       "VaultSelfServiceCreate": {
         "additionalProperties": false,
-        "description": "Self-service vault creation payload (issues #7, #6, and #150).\n\nLabels and encryption_mode are always accepted. Adoption adds a constrained\n``volume_alias`` + ``relative_path`` pair \u2014 never an absolute filesystem\npath, S3 identity, rclone remote, or crypt secret.",
+        "description": "Self-service vault creation payload (issues #7, #6, and #150).\n\nLabels, encryption_mode, and cloud_history_policy are always accepted.\nCloud History Policy is required (no implicit default). Adoption adds a\nconstrained ``volume_alias`` + ``relative_path`` pair \u2014 never an absolute\nfilesystem path, S3 identity, rclone remote, or crypt secret.",
         "properties": {
+          "cloud_history_policy": {
+            "pattern": "^(archive_history|current_snapshot)$",
+            "title": "Cloud History Policy",
+            "type": "string"
+          },
           "creation_mode": {
             "default": "empty",
             "pattern": "^(empty|adopt)$",
@@ -5498,7 +5538,8 @@
           }
         },
         "required": [
-          "name"
+          "name",
+          "cloud_history_policy"
         ],
         "title": "VaultSelfServiceCreate",
         "type": "object"

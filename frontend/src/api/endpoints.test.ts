@@ -657,7 +657,11 @@ describe("foundation endpoint helpers", () => {
       .mockResolvedValueOnce(jsonResponse({ recovery_export: "re-export" }));
 
     await expect(
-      createVault({ name: "Docs", encryption_mode: "crypt" }),
+      createVault({
+        name: "Docs",
+        encryption_mode: "crypt",
+        cloud_history_policy: "archive_history",
+      }),
     ).resolves.toMatchObject({ recovery_export: "export-body" });
     await expect(selectVault({ vault_id: 3 })).resolves.toEqual({ vault_id: 3 });
     await expect(confirmRecoveryCustody({ acknowledged: true })).resolves.toMatchObject({

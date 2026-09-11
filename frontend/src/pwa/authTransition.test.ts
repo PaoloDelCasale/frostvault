@@ -47,6 +47,7 @@ const authority: MeResponse = {
     name: "Vault A",
     role: "owner",
     can_operate: true,
+    cloud_history_policy: "archive_history",
     delete_enabled: false,
     cloud_deletion_enabled: false,
     is_vault_owner: true,

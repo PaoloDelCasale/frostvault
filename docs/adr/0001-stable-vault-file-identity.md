@@ -11,3 +11,6 @@ unifies versions across old and new keys without rewriting immutable history.
 Rename synchronization must create and verify content at the new key before
 hiding the old key. Automatic rename detection is safe only for an unambiguous
 plaintext digest match; ambiguous candidates require confirmation.
+
+Under Current Snapshot, the old key is purged (every VersionId deleted) rather
+than hidden, so only one recoverable Archive Version remains. See ADR-0016.
