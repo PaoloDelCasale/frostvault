@@ -32,3 +32,7 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     rebase-strategy: auto
+    ignore:
+      # eslint-plugin-react@7 still peers eslint ^9.7 only (jsx-eslint#3977).
+      - dependency-name: eslint
+        update-types: ["version-update:semver-major"]
