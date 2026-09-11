@@ -95,10 +95,12 @@ The 6 September 2026 production audit (`56ee35d`) reported three `dev:true` advi
 | qs | `shadcn` → MCP SDK → express/body-parser | 6.15.3 | 6.16.0 | build |
 
 Dependabot (`.github/dependabot.yml`) opens weekly update PRs for pip, Actions,
-Docker, and npm in `/frontend`. [Dependabot maintenance](../.github/workflows/dependabot-maintenance.yml)
+Docker, and npm in `/frontend`. Minor and patch bumps in each ecosystem are
+grouped into one PR (`open-pull-requests-limit` is 3 so a grouped PR can sit
+beside at most two majors). [Dependabot maintenance](../.github/workflows/dependabot-maintenance.yml)
 queues minor, patch, and security updates (including advisories that omit
 `update-type`) for squash auto-merge; branch protection and all required checks
-still gate each merge. Major updates remain manual. The workflow refreshes
+still gate each merge. Major updates remain manual and ungrouped. The workflow refreshes
 open Dependabot PRs against `main`, squash-merges any that are already `CLEAN`,
 and comments `@dependabot rebase` on remaining behind heads. A GITHUB_TOKEN
 `update-branch` merge would start CI as `github-actions[bot]`, which sits in
