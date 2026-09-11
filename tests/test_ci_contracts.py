@@ -564,6 +564,18 @@ class DependabotContractTests(unittest.TestCase):
         self.assertEqual(ecosystems, {"pip", "github-actions", "docker", "npm"})
         for item in config["updates"]:
             self.assertEqual(item.get("rebase-strategy"), "auto")
+        npm = next(
+            item
+            for item in config["updates"]
+            if item["package-ecosystem"] == "npm"
+        )
+        self.assertIn(
+            {
+                "dependency-name": "eslint",
+                "update-types": ["version-update:semver-major"],
+            },
+            npm.get("ignore") or [],
+        )
         actions = next(
             item
             for item in config["updates"]
