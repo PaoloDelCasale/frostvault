@@ -12,7 +12,7 @@ export function Panel({ children, className }: PanelProps) {
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-panel border border-line bg-surface",
+        "min-w-0 overflow-hidden rounded-panel border border-line bg-surface",
         className,
       )}
     >
