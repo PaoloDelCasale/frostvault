@@ -123,6 +123,8 @@ export default function App() {
   });
   const refreshSessionInFlightRef = useRef<Promise<MeResponse> | null>(null);
   const refreshSessionQueuedRef = useRef(false);
+  const meRef = useRef<MeResponse | null>(null);
+  meRef.current = me;
 
   useCatalogEvents({
     vaultId: me?.vault?.id ?? null,
@@ -197,10 +199,26 @@ export default function App() {
       }
 
       const operation = (async () => {
-        const reconciliation = await reconcileOfflineAuthTransition({
-          transition: initialTransition,
-        });
-        return applyOfflineAuthReconciliation(reconciliation);
+        for (;;) {
+          try {
+            const reconciliation = await reconcileOfflineAuthTransition({
+              transition: initialTransition,
+            });
+            return applyOfflineAuthReconciliation(reconciliation);
+          } catch (error) {
+            // A bounded /api/me wait that expires is unknown authority, not a
+            // proven logout. Keep the Session landmark and retry until a real
+            // response or a definitive failure arrives.
+            if (
+              error instanceof AuthTransitionTimeoutError &&
+              meRef.current !== null
+            ) {
+              clearOfflineFileData();
+              continue;
+            }
+            throw error;
+          }
+        }
       })();
       refreshSessionInFlightRef.current = operation;
       void operation.then(
@@ -220,7 +238,7 @@ export default function App() {
       );
       return operation;
     },
-    [applyOfflineAuthReconciliation],
+    [applyOfflineAuthReconciliation, clearOfflineFileData],
   );
 
   useEffect(() => {
@@ -300,8 +318,12 @@ export default function App() {
           navigate("/no-vault");
         }
       })
-      .catch(() => {
+      .catch((error) => {
         if (cancelled) return;
+        if (error instanceof AuthTransitionTimeoutError && meRef.current) {
+          clearOfflineFileData();
+          return;
+        }
         // No request/ACK wait is allowed to leave stale persisted data alive.
         // The bounded helper records a local close even if no Worker exists.
         void beginOfflineAuthTransition();
