@@ -5,7 +5,7 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build:ci
 
-FROM rclone/rclone:1.75.0 AS rclone
+FROM rclone/rclone:1.75.1 AS rclone
 
 FROM python:3.14-slim
 
