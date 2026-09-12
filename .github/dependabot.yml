@@ -57,3 +57,6 @@ updates:
       # eslint-plugin-react@7 still peers eslint ^9.7 only (jsx-eslint#3977).
       - dependency-name: eslint
         update-types: ["version-update:semver-major"]
+      # openapi-typescript@7 still peers typescript ^5.x only (#351).
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]

@@ -590,6 +590,13 @@ class DependabotContractTests(unittest.TestCase):
             },
             npm.get("ignore") or [],
         )
+        self.assertIn(
+            {
+                "dependency-name": "typescript",
+                "update-types": ["version-update:semver-major"],
+            },
+            npm.get("ignore") or [],
+        )
         actions = next(
             item
             for item in config["updates"]
