@@ -57,6 +57,12 @@ updates:
       # eslint-plugin-react@7 still peers eslint ^9.7 only (jsx-eslint#3977).
       - dependency-name: eslint
         update-types: ["version-update:semver-major"]
+      # @eslint/js@10 peers eslint ^10, which is ignored above (#354).
+      - dependency-name: "@eslint/js"
+        update-types: ["version-update:semver-major"]
+      # v7 recommended rules (set-state-in-effect, refs) fail current lint (#355).
+      - dependency-name: eslint-plugin-react-hooks
+        update-types: ["version-update:semver-major"]
       # openapi-typescript@7 still peers typescript ^5.x only (#351).
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
