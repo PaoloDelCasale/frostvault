@@ -583,20 +583,20 @@ class DependabotContractTests(unittest.TestCase):
             for item in config["updates"]
             if item["package-ecosystem"] == "npm"
         )
-        self.assertIn(
-            {
-                "dependency-name": "eslint",
-                "update-types": ["version-update:semver-major"],
-            },
-            npm.get("ignore") or [],
-        )
-        self.assertIn(
-            {
-                "dependency-name": "typescript",
-                "update-types": ["version-update:semver-major"],
-            },
-            npm.get("ignore") or [],
-        )
+        ignored_majors = npm.get("ignore") or []
+        for name in (
+            "eslint",
+            "@eslint/js",
+            "eslint-plugin-react-hooks",
+            "typescript",
+        ):
+            self.assertIn(
+                {
+                    "dependency-name": name,
+                    "update-types": ["version-update:semver-major"],
+                },
+                ignored_majors,
+            )
         actions = next(
             item
             for item in config["updates"]
