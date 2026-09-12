@@ -25,4 +25,11 @@ describe("PWA toolchain (seams 1–2)", () => {
     expect(sw).not.toMatch(/cacheName:\s*"frostvault-file-listing"/);
     expect(sw).toMatch(/addEventListener\(\s*"push"/);
   });
+
+  it("does not reload the document when a replacement Worker activates", () => {
+    const register = readFileSync(path.join(root, "src/pwa/register.ts"), "utf8");
+    expect(register).toMatch(/onNeedReload:\s*\(\)\s*=>\s*undefined/);
+    expect(register).not.toMatch(/location\.reload/);
+
+  });
 });
