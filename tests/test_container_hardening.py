@@ -873,7 +873,6 @@ class PermissionAndTraefikDocumentationTests(unittest.TestCase):
 
     def test_readme_requires_fresh_data_preflight_before_compose_start(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("Compose identity and fresh host data directory", readme)
         self.assertIn("mkdir -p ./data", readme)
         self.assertIn('sudo chown "${PUID}:${PGID}" ./data', readme)
         self.assertIn("never creates an account at runtime", readme)

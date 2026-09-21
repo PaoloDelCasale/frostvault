@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -11,25 +12,25 @@ README = (ROOT / "README.md").read_text(encoding="utf-8")
 
 
 class ReadmeUsersRoleDocsTests(unittest.TestCase):
-    """BUG-005: README Users must not advertise operator free-space (REQ-003)."""
+    """BUG-005: README must not advertise operator free-space (REQ-003)."""
 
-    def test_bug_005_readme_users_owner_only_free_space(self) -> None:
-        """[BUG-005][Req: REQ-003] Users section must match owner-only free-space.
+    def test_bug_005_readme_owner_only_free_space(self) -> None:
+        """[BUG-005][Req: REQ-003] README must match owner-only free-space.
 
         Desired: operator capabilities exclude free local space.
         Previously: README Users claimed operator can free local space.
         Authoritative runtime: vault_roles.is_owner; /api/free-space owner gate.
         """
-        users_start = README.index("## Users and vaults")
-        users_end = README.index("## Local cleanup safety", users_start)
-        users = README[users_start:users_end]
         self.assertNotRegex(
-            users,
+            README,
             r"operator`[^.\n]*free",
-            "README Users must not claim operators can free local space",
+            "README must not claim operators can free local space",
         )
-        # Local cleanup safety remains the authoritative owner-only wording.
-        self.assertIn("for owners, and when", README)
+        self.assertRegex(
+            README,
+            re.compile(r"free local space[^\n]*owner", re.IGNORECASE),
+            "README must say free local space is owner-only",
+        )
 
 
 if __name__ == "__main__":
