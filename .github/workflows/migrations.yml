@@ -353,22 +353,23 @@ jobs:
           sudo unzip -qo "/tmp/${RCLONE_ARCHIVE}" -d /tmp
           sudo cp "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
           rclone version
-      - name: Start MinIO
+      # MinIO stopped publishing community images: Docker Hub minio/minio is
+      # gone and quay.io/minio/minio now refuses anonymous pulls. moto's S3
+      # server comes from PyPI, supports bucket versioning, exact VersionId
+      # reads and deletes, and runs the same Rclone upload/recovery proofs.
+      # The job keeps its name because release gates require it.
+      - name: Start S3-compatible server (moto)
         run: |
-          docker run -d --name minio-ci \
-            -p 9000:9000 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z \
-            server /data --address :9000
+          python -m pip install "moto[server]==5.2.3"
+          nohup moto_server -H 127.0.0.1 -p 9000 > /tmp/moto-server.log 2>&1 &
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:9000/minio/health/live; then
+            if curl -fsS -o /dev/null http://127.0.0.1:9000/moto-api/; then
               exit 0
             fi
             sleep 1
           done
-          echo "MinIO failed to become healthy" >&2
-          docker logs minio-ci >&2 || true
+          echo "moto S3 server failed to become healthy" >&2
+          cat /tmp/moto-server.log >&2 || true
           exit 1
       - run: python -m pip install -r requirements.txt
       - name: Create versioned test bucket

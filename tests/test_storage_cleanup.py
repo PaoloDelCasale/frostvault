@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import tempfile
 import threading
 import unittest
@@ -1168,6 +1169,10 @@ class StorageCleanupTests(unittest.TestCase):
         target = source / "docs" / "file.txt"
         target.parent.mkdir(parents=True)
         target.write_text("content", encoding="utf-8")
+        # The Local Copy predates its verification; automatic retention counts
+        # from the later of the two, so a freshly written file would never be due.
+        seeded_mtime = datetime(2026, 7, 21, 9, 0, tzinfo=timezone.utc).timestamp()
+        os.utime(target, (seeded_mtime, seeded_mtime))
         database_path = base / "catalog.db"
         migrated = run_alembic(database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)

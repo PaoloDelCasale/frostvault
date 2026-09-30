@@ -131,7 +131,7 @@ class ArchiveCatalog:
             FROM vault_files vf
             JOIN file_paths fp
               ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            WHERE vf.vault_id=%s AND fp.path=%s
+            WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
             """,
             (vault_id, path),
         ).fetchone()
@@ -167,7 +167,7 @@ class ArchiveCatalog:
             FROM vault_files vf
             JOIN file_paths fp
               ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            WHERE vf.vault_id=%s AND fp.path=%s
+            WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
             """,
             (vault_id, path),
         ).fetchone()
@@ -178,7 +178,7 @@ class ArchiveCatalog:
             SELECT vf.id
             FROM vault_files vf
             JOIN file_paths fp ON fp.vault_file_id=vf.id
-            WHERE vf.vault_id=%s AND fp.path=%s AND vf.status='active'
+            WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s AND vf.status='active'
             ORDER BY fp.valid_from DESC
             LIMIT 1
             """,
@@ -1066,7 +1066,7 @@ class ArchiveCatalog:
             JOIN file_paths fp
               ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
             JOIN archive_versions av ON av.vault_file_id=vf.id
-            WHERE vf.vault_id=%s AND fp.path=%s
+            WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
               AND av.availability NOT IN ('missing', 'purged')
             ORDER BY av.version_number DESC
             LIMIT 1
@@ -1134,7 +1134,7 @@ class ArchiveCatalog:
                 FROM vault_files vf
                 JOIN file_paths fp
                   ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                WHERE vf.vault_id=%s AND fp.path=%s
+                WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
             )
             """,
             (
@@ -2119,7 +2119,7 @@ class ArchiveCatalog:
                  FROM archive_versions latest
                  WHERE latest.vault_file_id=vf.id
              )
-            WHERE vf.vault_id=%s AND fp.path=%s
+            WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
             """,
             (vault_id, path),
         ).fetchone()
@@ -2182,7 +2182,7 @@ class ArchiveCatalog:
             JOIN vault_files vf ON vf.id=av.vault_file_id
             JOIN file_paths fp
               ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            WHERE vf.vault_id=%s AND fp.path=%s
+            WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
             ORDER BY av.version_number DESC
             """,
             (vault_id, path),
@@ -2215,7 +2215,7 @@ class ArchiveCatalog:
         search: str = "",
         path_prefix: str = "",
     ) -> list[dict[str, Any]]:
-        clauses = ["vf.vault_id=%s", "vf.status='active'"]
+        clauses = ["vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'"]
         params: list[Any] = [vault_id]
         if search:
             clauses.append("lower(fp.path) LIKE lower(%s)")
@@ -2445,7 +2445,7 @@ class ArchiveCatalog:
         state: str,
         search: str = "",
     ) -> tuple[list[str], list[Any]]:
-        clauses = ["vf.vault_id=%s", "vf.status='active'"]
+        clauses = ["vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'"]
         params: list[Any] = [vault_id]
         if search:
             clauses.append("lower(fp.path) LIKE lower(%s)")
@@ -2688,7 +2688,7 @@ class ArchiveCatalog:
         )
         # Search ignores the root-only instr() clause added for browse.
         # Rebuild clauses specifically for search.
-        clauses = ["vf.vault_id=%s", "vf.status='active'"]
+        clauses = ["vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'"]
         params = [vault_id]
         clauses.append("lower(fp.path) LIKE lower(%s)")
         params.append(f"%{search}%")
@@ -3367,7 +3367,7 @@ class ArchiveCatalog:
             raise ValueError("Decommission Jobs require a quiesced Vault")
         if action == "upload":
             require_upload_custody(vault)
-        clauses = ["vf.vault_id=%s", "vf.status='active'"]
+        clauses = ["vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'"]
         params: list[Any] = [vault_id]
         clauses.append(
             """

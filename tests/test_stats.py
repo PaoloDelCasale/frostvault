@@ -2705,21 +2705,26 @@ class BoundedScanFindingsTests(unittest.TestCase):
         self.assertGreaterEqual(sum(counts.values()), known_total + 1)
 
     def test_public_normalize_finding_counts_seam_is_exported(self) -> None:
-        """storage must use the public normalize seam, not a private import."""
+        """The scan-finding producer must use the public normalize seam."""
         import app.storage as storage_mod
+        from app.services import runtime_status as producer_mod
 
         self.assertTrue(hasattr(fs_preflight, "normalize_finding_counts"))
-        self.assertFalse(
-            hasattr(storage_mod, "_normalize_finding_counts")
-            and "_normalize_finding_counts"
-            in getattr(storage_mod, "__dict__", {})
-        )
+        for module in (storage_mod, producer_mod):
+            self.assertFalse(
+                hasattr(module, "_normalize_finding_counts")
+                and "_normalize_finding_counts"
+                in getattr(module, "__dict__", {})
+            )
         # Public name is the callable used by producers/tests.
         self.assertIs(
             fs_preflight.normalize_finding_counts,
             normalize_finding_counts,
         )
-        src_path = Path(storage_mod.__file__ or "")
+        # ``_record_scan_finding`` lives in the runtime-status module; storage
+        # re-exports it for the scan and watcher producers.
+        self.assertIs(storage_mod._record_scan_finding, producer_mod._record_scan_finding)
+        src_path = Path(producer_mod.__file__ or "")
         source = src_path.read_text(encoding="utf-8")
         self.assertNotIn("_normalize_finding_counts", source)
         self.assertIn("normalize_finding_counts", source)

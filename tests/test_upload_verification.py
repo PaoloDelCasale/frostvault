@@ -904,7 +904,7 @@ class CryptUploadVerificationTests(unittest.TestCase):
                         side_effect=fake_vault_rclone_config,
                     ),
                     patch(
-                        "app.storage.encode_object_relative_path",
+                        "app.services.vault_paths.encode_object_relative_path",
                         return_value=encrypted_relative,
                     ),
                     patch(

@@ -1176,7 +1176,7 @@ class CryptRenameTests(unittest.TestCase):
                         side_effect=fake_vault_rclone_config,
                     ),
                     patch(
-                        "app.storage.encode_object_relative_path",
+                        "app.services.vault_paths.encode_object_relative_path",
                         side_effect=lambda _runtime, path: (
                             new_encrypted if path == new_path else old_encrypted
                         ),

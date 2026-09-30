@@ -9,6 +9,7 @@ Seams under test:
 from __future__ import annotations
 
 import hashlib
+import os
 import tempfile
 import threading
 import unittest
@@ -160,6 +161,35 @@ class LocalRetentionWindowTests(unittest.TestCase):
                 verified_at=verified_at,
                 retention_days=30,
                 now=datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc),
+            )
+        )
+
+    def test_local_modification_after_verification_restarts_the_window(self) -> None:
+        """A recovered or edited Local Copy must not be removed on the next scan."""
+        from app.services.operation_policies import local_cleanup_is_due
+
+        verified_at = "2026-01-01T12:00:00+00:00"
+        recovered_mtime_ns = int(
+            datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc).timestamp() * 1e9
+        )
+        now = datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc)
+        self.assertTrue(
+            local_cleanup_is_due(verified_at=verified_at, retention_days=30, now=now)
+        )
+        self.assertFalse(
+            local_cleanup_is_due(
+                verified_at=verified_at,
+                retention_days=30,
+                now=now,
+                local_mtime_ns=recovered_mtime_ns,
+            )
+        )
+        self.assertTrue(
+            local_cleanup_is_due(
+                verified_at=verified_at,
+                retention_days=30,
+                now=datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc),
+                local_mtime_ns=recovered_mtime_ns,
             )
         )
 
@@ -610,10 +640,19 @@ class AutoUploadEligibilityTests(unittest.TestCase):
             for name, verified_at in (
                 ("due.txt", "2026-07-01T12:00:00+00:00"),
                 ("not-due.txt", "2026-07-02T12:00:00+00:00"),
+                # Verified long ago, but written back locally yesterday: a
+                # recovered Local Copy starts a fresh retention window.
+                ("recovered.txt", "2026-01-01T12:00:00+00:00"),
             ):
                 target = self.source / name
                 content = name.encode()
                 target.write_bytes(content)
+                local_mtime = datetime.fromisoformat(
+                    "2026-07-30T12:00:00+00:00"
+                    if name == "recovered.txt"
+                    else verified_at
+                ).timestamp()
+                os.utime(target, (local_mtime, local_mtime))
                 digest = hashlib.sha256(content).hexdigest()
                 catalog.observe_local_copy(
                     vault_id=2,

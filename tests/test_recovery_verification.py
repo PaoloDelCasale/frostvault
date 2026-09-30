@@ -627,7 +627,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
                     side_effect=fake_vault_rclone_config,
                 ),
                 patch(
-                    "app.storage.decode_object_relative_path",
+                    "app.services.vault_paths.decode_object_relative_path",
                     return_value=logical_from_key,
                 ),
                 patch("app.storage.run_rclone", side_effect=fake_rclone),

@@ -49,12 +49,16 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertIn("sqlite-and-postgresql", job_names)
         self.assertIn("s3-compatible-integrity", job_names)
         self.assertIn("playwright-e2e", job_names)
-        start_minio = "\n".join(
+        s3_job_runs = "\n".join(
             step.get("run", "")
             for step in workflow["jobs"]["s3-compatible-integrity"]["steps"]
         )
-        self.assertIn("quay.io/minio/minio:", start_minio)
-        self.assertNotIn("minio/minio:", start_minio.replace("quay.io/minio/minio:", ""))
+        # The S3-compatible endpoint comes from a pinned PyPI package, not a
+        # container registry: MinIO community images are no longer published.
+        self.assertRegex(s3_job_runs, r'"moto\[server\]==\d+\.\d+\.\d+"')
+        self.assertIn("moto_server -H 127.0.0.1 -p 9000", s3_job_runs)
+        self.assertNotIn("minio/minio:", s3_job_runs)
+        self.assertNotIn("docker run", s3_job_runs)
 
     def test_pr_runs_frontend_checks_in_parallel_jobs(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
@@ -360,18 +364,28 @@ class NpmAuditBaselineContractTests(unittest.TestCase):
     def test_frontend_overrides_floor_patched_advisory_lines(self) -> None:
         package = json.loads((ROOT / "frontend" / "package.json").read_text(encoding="utf-8"))
         overrides = package["overrides"]
-        self.assertEqual(overrides["brace-expansion@1"], "^1.1.18")
-        self.assertEqual(overrides["brace-expansion@2"], "^2.1.4")
-        self.assertEqual(overrides["brace-expansion@5"], "^5.0.9")
+        self.assertEqual(overrides["brace-expansion@1"], "^1.1.21")
+        self.assertEqual(overrides["brace-expansion@2"], "^2.1.7")
+        self.assertEqual(overrides["brace-expansion@5"], "^5.0.12")
+        self.assertEqual(overrides["fast-uri@3"], "^3.1.8")
+        self.assertEqual(overrides["ip-address@10"], "^10.7.1")
         self.assertEqual(overrides["nanoid@3"], "^3.3.18")
         self.assertEqual(overrides["qs@6"], "^6.16.0")
+        self.assertEqual(overrides["undici@7"], "^7.29.1")
         self.assertNotIn("qs", overrides)
 
     def test_lockfile_copies_are_at_or_above_advisory_floors(self) -> None:
         lock = json.loads(
             (ROOT / "frontend" / "package-lock.json").read_text(encoding="utf-8")
         )
-        found = {"brace-expansion": [], "nanoid": [], "qs": []}
+        found = {
+            "brace-expansion": [],
+            "fast-uri": [],
+            "ip-address": [],
+            "nanoid": [],
+            "qs": [],
+            "undici": [],
+        }
         for path, pkg in lock["packages"].items():
             if "node_modules/" not in path:
                 continue
@@ -385,13 +399,34 @@ class NpmAuditBaselineContractTests(unittest.TestCase):
             major, minor, patch = _semver(version)
             with self.subTest(path=path, version=version):
                 if major == 1:
-                    self.assertGreaterEqual((minor, patch), (1, 18), path)
+                    self.assertGreaterEqual((minor, patch), (1, 21), path)
                 elif major == 2:
-                    self.assertGreaterEqual((minor, patch), (1, 4), path)
+                    self.assertGreaterEqual((minor, patch), (1, 7), path)
                 elif major == 3:
                     self.assertGreaterEqual((minor, patch), (0, 6), path)
                 else:
-                    self.assertGreaterEqual((major, minor, patch), (5, 0, 9), path)
+                    self.assertGreaterEqual((major, minor, patch), (5, 0, 12), path)
+
+        for path, version in found["fast-uri"]:
+            major, minor, patch = _semver(version)
+            with self.subTest(path=path, version=version):
+                if major == 3:
+                    self.assertGreaterEqual((minor, patch), (1, 8), path)
+                else:
+                    self.assertGreaterEqual(major, 4, path)
+
+        for path, version in found["ip-address"]:
+            major, minor, patch = _semver(version)
+            with self.subTest(path=path, version=version):
+                self.assertGreaterEqual((major, minor, patch), (10, 7, 1), path)
+
+        for path, version in found["undici"]:
+            major, minor, patch = _semver(version)
+            with self.subTest(path=path, version=version):
+                if major == 7:
+                    self.assertGreaterEqual((minor, patch), (29, 1), path)
+                else:
+                    self.assertGreaterEqual(major, 8, path)
 
         for path, version in found["nanoid"]:
             major, minor, patch = _semver(version)
