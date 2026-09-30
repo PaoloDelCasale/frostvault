@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import configparser
 import contextvars
 import hashlib
@@ -18,14 +17,12 @@ from collections.abc import Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from itertools import islice
-from pathlib import Path, PurePosixPath
+from functools import partial
+from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlencode
 
 import boto3
 from boto3.s3.transfer import TransferConfig
-from botocore.exceptions import ClientError
 from watchfiles import Change, awatch
 
 from .config import Settings, is_placeholder, settings
@@ -38,9 +35,7 @@ from .services.catalog_events import record_catalog_revision
 from .i18n import DEFAULT_LOCALE, format_message_params, translate
 from .system_settings import effective_settings
 from .services.rclone_runtime import (
-    decode_object_relative_path,
     decode_object_relative_paths,
-    encode_object_relative_path,
     vault_rclone_config,
 )
 from .services.vault_crypto import safe_error_message
@@ -66,14 +61,62 @@ from .services.s3_object_tags import apply_version_policy_tag, read_version_poli
 from .services import health as health_service
 from .services import metadata_backups as metadata_backup_service
 from .services import metrics as metrics_service
-from .services.fs_preflight import (
-    FINDING_COUNTS_UNKNOWN_KEY_BUDGET,
-    FINDINGS_SAMPLE_LIMIT,
-    KNOWN_FINDING_COUNT_CODES,
-    bound_mapping_key_name,
-    bound_runtime_filesystem_synopsis,
-    bound_synopsis_text,
-    normalize_finding_counts,
+# Helpers extracted from this module.  Names storage itself no longer calls
+# stay importable here because tests and ``app.main`` reach them through
+# ``app.storage`` (``patch("app.storage.<name>")`` and direct imports).
+from .services.s3_copy import (
+    S3_SINGLE_COPY_MAX_BYTES,
+    _object_version_entries,
+    _delete_s3_version,
+    _verification_version_head,
+    _head_object_with_checksum,
+    _full_object_sha256_checksum,
+    _sha256_s3_version,
+    _copy_storage_class_version,
+    _verify_storage_class_destination,
+    restore_header_state,
+    storage_class_requires_restore,
+)
+from .services.vault_paths import (
+    InvalidLogicalPath,
+    RESTORE_TEMPORARY_RE,
+    CLEANUP_TEMPORARY_RE,
+    VERIFY_TEMPORARY_RE,
+    safe_relative_path,
+    safe_local_path,
+    safe_local_entry_path,
+    _cloud_relative_key,
+    _UNSET_DECODED_PATH,
+    object_key_to_path,
+    expected_cloud_key,
+    plain_rclone_destination,
+    is_restore_temporary_name,
+)
+from .services.upload_retry import (
+    UPLOAD_RETRY_MAX_ATTEMPTS,
+    classify_upload_failure,
+    upload_retry_delay_seconds,
+)
+from .services.runtime_status import (
+    _AUDIT_REPORT_KNOWN_KEYS,
+    _RUNTIME_STATUS_LIST_ITEM_BUDGET,
+    _RUNTIME_STATUS_MAPPING_KEY_BUDGET,
+    _RUNTIME_STATUS_MAX_DEPTH,
+    _RUNTIME_STATUS_MAX_STRING_CHARS,
+    _RUNTIME_STATUS_UNKNOWN_KEY_BUDGET,
+    runtime_status,
+    scan_locks,
+    status_lock,
+    scan_lock_for_vault,
+    _empty_scan_filesystem_status,
+    snapshot_runtime_status_for_stats,
+    _record_scan_finding,
+)
+from .services.local_files import (
+    hash_stable_regular_file,
+    restore_claimed_local_copy,
+    _local_stat_unchanged,
+    _require_linked_upload_digest,
 )
 
 
@@ -112,21 +155,14 @@ from .services.operation_policies import (
 )
 
 
-runtime_status: dict[int, dict[str, Any]] = {}
 # Short-lived journals compensate committed observation batches if a pinned root
 # or scan generation fails before the final catalog transaction. They are
 # process-local; a crash remains conservative because no missing transition is
 # committed until the scan completes.
 _active_scan_journals: dict[tuple[int, str], dict[str, Any]] = {}
-scan_locks: dict[int, threading.Lock] = {}
-status_lock = threading.Lock()
 operation_process_lock = threading.Lock()
 
 
-def scan_lock_for_vault(vault_id: int) -> threading.Lock:
-    """Return the process-wide scan/relocation lock for one Vault."""
-    with status_lock:
-        return scan_locks.setdefault(int(vault_id), threading.Lock())
 active_operation_processes: dict[int, subprocess.Popen[Any]] = {}
 cancelled_jobs: set[int] = set()
 # Long transfers stay on this pool so the worker loop can heartbeat, deliver
@@ -148,15 +184,6 @@ RCLONE_STDERR_TAIL_BYTES = 16 * 1024
 RCLONE_STDERR_LINE_BYTES = 64 * 1024
 RCLONE_PROCESS_TERMINATION_GRACE_SECONDS = 1.0
 
-RESTORE_TEMPORARY_RE = re.compile(
-    r"\..+\.restore-[0-9a-f]{32}\.tmp(?:\..+\.partial)?"
-)
-CLEANUP_TEMPORARY_RE = re.compile(r"\..+\.cleanup-[0-9a-f]{32}\.tmp")
-VERIFY_TEMPORARY_RE = re.compile(r"\..+\.verify-[0-9a-f]{32}\.tmp")
-
-UPLOAD_RETRY_BASE_SECONDS = 2
-UPLOAD_RETRY_CAP_SECONDS = 300
-UPLOAD_RETRY_MAX_ATTEMPTS = 8
 
 # Local scans deliberately keep filesystem work outside write transactions.
 # This is small enough to give other SQLite writers frequent admission while
@@ -168,17 +195,6 @@ LOCAL_SCAN_WRITE_BATCH_SIZE = 250
 # notifications) are not blocked for the full listing.
 CLOUD_SCAN_WRITE_BATCH_SIZE = 250
 
-# S3 CopyObject is limited to objects up to 5 GiB.  Multipart copy keeps the
-# source VersionId on every UploadPartCopy request and uses a deliberately
-# conservative part size so even the largest supported object stays below the
-# provider's 10,000-part limit.
-S3_SINGLE_COPY_MAX_BYTES = 5 * 1024**3
-S3_MULTIPART_COPY_MIN_PART_BYTES = 5 * 1024**2
-S3_MULTIPART_COPY_PART_BYTES = 128 * 1024**2
-S3_MULTIPART_COPY_MAX_PARTS = 10_000
-S3_COPY_CHECKSUM_ALGORITHM = "SHA256"
-S3_COPY_CHECKSUM_TYPE = "FULL_OBJECT"
-S3_OBJECT_HASH_CHUNK_BYTES = 1024 * 1024
 
 # A claim is intentionally durable rather than process-local.  Five minutes is
 # long enough for ordinary provider calls while status/progress checkpoints renew
@@ -216,81 +232,6 @@ _INTERRUPTED_JOB_SQL = """
 )
 """
 _worker_claim = threading.local()
-
-_PERMANENT_UPLOAD_FAILURE_MARKERS = (
-    "digest does not match",
-    "did not create the verification copy",
-    "accessdenied",
-    "invalidaccesskeyid",
-    "rclone configuration not found",
-    "without an s3 versionid",
-    "bucket versioning is required",
-    "not authorized",
-    "access denied",
-    "forbidden",
-    "signaturedoesnotmatch",
-)
-_TRANSIENT_UPLOAD_FAILURE_MARKERS = (
-    "slowdown",
-    "service unavailable",
-    "requesttimeout",
-    "connection reset",
-    "connection refused",
-    "connection aborted",
-    "network is unreachable",
-    "no route to host",
-    "broken pipe",
-    "unexpected eof",
-    "temporary failure",
-    "timeout",
-    "throttl",
-    "503",
-    "500",
-    "internal error",
-    "econnreset",
-    "unavailable",
-    "verification stream length",
-)
-
-
-def classify_upload_failure(message: str) -> str:
-    """Classify an upload/verify error for retry policy.
-
-    Returns ``source_changed`` when the Local Copy mutated before an Archive
-    Version is linked, so the Job can be rescheduled after the Vault stability
-    window up to ``UPLOAD_RETRY_MAX_ATTEMPTS``. ``transient`` covers retryable
-    transport faults; anything else is ``permanent``.
-    """
-    lowered = (message or "").lower()
-    if "changed since fingerprinting" in lowered:
-        return "source_changed"
-    if any(marker in lowered for marker in _PERMANENT_UPLOAD_FAILURE_MARKERS):
-        return "permanent"
-    if any(marker in lowered for marker in _TRANSIENT_UPLOAD_FAILURE_MARKERS):
-        return "transient"
-    return "permanent"
-
-
-def upload_retry_delay_seconds(attempt: int) -> int:
-    """Exponential backoff delay for the next upload retry attempt."""
-    if attempt < 1:
-        attempt = 1
-    delay = UPLOAD_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
-    return min(delay, UPLOAD_RETRY_CAP_SECONDS)
-
-
-class InvalidLogicalPath(ValueError):
-    """A caller supplied a path that cannot be a Vault-relative logical path.
-
-    This remains a ``ValueError`` subclass for direct-call compatibility, but
-    the API maps this dedicated domain exception rather than catching every
-    ``ValueError`` raised by application code.
-    """
-
-    message_key = "api.invalid_path"
-
-    def __init__(self) -> None:
-        super().__init__("Invalid path")
 
 
 class OperationCancelled(RuntimeError):
@@ -582,51 +523,6 @@ class _ThrottledByteProgress:
         )
 
 
-def safe_relative_path(value: str) -> PurePosixPath:
-    """Normalize one non-empty, traversal-safe Vault-relative logical path."""
-    if not isinstance(value, str) or "\x00" in value:
-        raise InvalidLogicalPath()
-    normalized = value.replace("\\", "/")
-    # PurePosixPath intentionally does not treat a Windows drive prefix as an
-    # absolute path. Reject it explicitly because callers may submit paths
-    # produced on another platform.
-    if re.match(r"^[A-Za-z]:/", normalized):
-        raise InvalidLogicalPath()
-    candidate = PurePosixPath(normalized)
-    if candidate.is_absolute() or not candidate.parts or ".." in candidate.parts:
-        raise InvalidLogicalPath()
-    return candidate
-
-
-def safe_local_path(root_value: str, logical_path: str) -> Path:
-    """Resolve a vault-relative path without following a final symbolic link."""
-    root = Path(root_value).resolve()
-    relative = safe_relative_path(logical_path)
-    candidate = root.joinpath(*relative.parts)
-    parent = candidate.parent.resolve()
-    if parent != root and root not in parent.parents:
-        raise ValueError("Path is outside the allowed folder")
-    if candidate.is_symlink():
-        raise ValueError("Symbolic links are not allowed")
-    resolved = candidate.resolve()
-    if resolved != root and root not in resolved.parents:
-        raise ValueError("Path is outside the allowed folder")
-    return resolved
-
-
-def safe_local_entry_path(root_value: str, logical_path: str) -> Path:
-    """Return an on-disk entry without following a final symlink."""
-    root = Path(root_value).resolve()
-    relative = safe_relative_path(logical_path)
-    candidate = root.joinpath(*relative.parts)
-    parent = candidate.parent.resolve()
-    if parent != root and root not in parent.parents:
-        raise ValueError("Path is outside the allowed folder")
-    if candidate.is_symlink():
-        raise ValueError("Symbolic links are not allowed")
-    return candidate
-
-
 def s3_client():
     access_key = os.getenv("AWS_ACCESS_KEY_ID", "")
     secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "")
@@ -696,89 +592,6 @@ def vault_encrypts_names(vault: dict[str, Any]) -> bool:
     return vault.get("encryption_mode") == "crypt"
 
 
-_UNSET_DECODED_PATH = object()
-
-
-def _cloud_relative_key(key: str, prefix_value: str) -> str | None:
-    prefix = f"{prefix_value.strip('/')}/" if prefix_value.strip('/') else ""
-    if prefix and not key.startswith(prefix):
-        return None
-    relative = key[len(prefix):]
-    if not relative or relative.endswith('/'):
-        return None
-    return relative
-
-
-def object_key_to_path(
-    key: str,
-    prefix_value: str,
-    is_crypt: bool,
-    *,
-    encrypted_names: bool = False,
-    runtime: Any | None = None,
-    decoded_relative_path: str | None | object = _UNSET_DECODED_PATH,
-) -> str | None:
-    relative = _cloud_relative_key(key, prefix_value)
-    if relative is None:
-        return None
-    if encrypted_names:
-        if runtime is None:
-            return None
-        if decoded_relative_path is _UNSET_DECODED_PATH:
-            try:
-                relative = decode_object_relative_path(runtime, relative)
-            except RuntimeError:
-                return None
-        elif decoded_relative_path is None:
-            # The batch decoder deliberately makes one bad key unknown rather
-            # than allowing a partial/ambiguous plaintext path into the catalog.
-            return None
-        else:
-            relative = str(decoded_relative_path)
-    elif is_crypt:
-        if not relative.endswith('.bin'):
-            return None
-        relative = relative[:-4]
-    if not relative or relative.endswith('/'):
-        return None
-    try:
-        return safe_relative_path(relative).as_posix()
-    except ValueError:
-        return None
-
-
-def expected_cloud_key(
-    logical_path: str,
-    prefix_value: str,
-    is_crypt: bool,
-    *,
-    encrypted_names: bool = False,
-    runtime: Any | None = None,
-) -> str:
-    relative = safe_relative_path(logical_path).as_posix()
-    if encrypted_names:
-        if runtime is None:
-            raise RuntimeError("Filename-encrypted keys require a runtime Rclone config")
-        relative = encode_object_relative_path(runtime, relative)
-    elif is_crypt:
-        relative += ".bin"
-    prefix = prefix_value.strip("/")
-    return f"{prefix}/{relative}" if prefix else relative
-
-
-def plain_rclone_destination(
-    remote_name: str,
-    s3_prefix: str,
-    logical_path: str,
-) -> str:
-    """Build a bucket-rooted plain Rclone object spec including the vault prefix."""
-    remote = remote_name.strip().rstrip(":")
-    if not remote:
-        raise ValueError("Rclone remote name is required")
-    key = expected_cloud_key(logical_path, s3_prefix, is_crypt=False)
-    return f"{remote}:{key}"
-
-
 def configured_rclone_destination(job: dict[str, Any], logical_path: str) -> str:
     """Object spec for a preconfigured Rclone remote (not a runtime crypt remote)."""
     if vault_encrypts_content(job):
@@ -786,359 +599,6 @@ def configured_rclone_destination(job: dict[str, Any], logical_path: str) -> str
     return plain_rclone_destination(
         job["rclone_remote"], job["s3_prefix"], logical_path
     )
-
-
-def is_restore_temporary_name(name: str) -> bool:
-    return (
-        RESTORE_TEMPORARY_RE.fullmatch(name) is not None
-        or CLEANUP_TEMPORARY_RE.fullmatch(name) is not None
-        or VERIFY_TEMPORARY_RE.fullmatch(name) is not None
-    )
-
-
-def _empty_scan_filesystem_status(*, ok: bool) -> dict[str, Any]:
-    """Bounded scan-time filesystem synopsis stored on ``runtime_status``."""
-    return {
-        "ok": ok,
-        "uid": None,
-        "gid": None,
-        "checks": [],
-        # Sample only — full progressive detail is not kept on the hot path.
-        "findings": [],
-        "findings_total": 0,
-        "finding_counts": {},
-        "findings_truncated": False,
-        "synopsis_truncated": False,
-    }
-
-
-# Top-level runtime_status keys copied into /api/stats (never dict(shared)).
-_RUNTIME_STATUS_SCALAR_KEYS: tuple[str, ...] = (
-    "scanning",
-    "last_scan",
-    "last_error",
-    "scan_id",
-    "last_audit",
-    "last_audit_healthy",
-    "last_verified_at",
-    "last_error_source",
-    "last_error_cloud",
-    "last_error_policy",
-    "last_error_audit",
-    "last_success_source",
-    "last_success_cloud",
-    "last_success_policy",
-    "last_success_audit",
-)
-# Schema-bound counters produced by ``audit_vault_catalog``.
-_AUDIT_REPORT_KNOWN_KEYS: tuple[str, ...] = (
-    "catalog_versions",
-    "cloud_versions",
-    "missing_in_cloud",
-    "missing_in_catalog",
-    "storage_class_drift",
-    "policy_tag_drift",
-    "missing_delete_markers",
-    "healthy",
-    "command_ok",
-    "incidents_opened",
-    "incidents_resolved",
-)
-_RUNTIME_STATUS_KNOWN_KEYS: tuple[str, ...] = (
-    *_RUNTIME_STATUS_SCALAR_KEYS,
-    "last_audit_report",
-)
-# Bound any unexpected top-level keys for forward-compatible responses.
-_RUNTIME_STATUS_UNKNOWN_KEY_BUDGET = 16
-# Mapping/list budgets for schema-supported nested values (audit report).
-_RUNTIME_STATUS_MAPPING_KEY_BUDGET = 32
-_RUNTIME_STATUS_LIST_ITEM_BUDGET = 16
-# Explicit depth budget — never recursive unbounded deepcopy.
-_RUNTIME_STATUS_MAX_DEPTH = 2
-_RUNTIME_STATUS_MAX_STRING_CHARS = 512
-
-
-def _runtime_scalar_snapshot(value: Any) -> tuple[Any, bool, bool]:
-    """Return ``(detached_value, supported, truncated)`` for JSON-safe scalars.
-
-    Oversized strings are clipped and reported as ``truncated=True`` so callers
-    can set a truthful runtime truncation marker. Unsupported types return
-    ``supported=False`` without invoking producer ``__str__``.
-    """
-    if value is None or isinstance(value, (bool, int, float)):
-        return value, True, False
-    if isinstance(value, str):
-        if len(value) > _RUNTIME_STATUS_MAX_STRING_CHARS:
-            return value[:_RUNTIME_STATUS_MAX_STRING_CHARS], True, True
-        return value, True, False
-    return None, False, False
-
-
-def _bound_last_audit_report(raw: Any) -> tuple[dict[str, Any] | None, bool]:
-    """Detach a bounded audit-report mapping; signal truncation fail-closed.
-
-    Known counter keys are read by exact lookup. A hard key budget covers a few
-    forward-compatible unknown *scalar* counters. Nested mappings/lists and
-    self-references are never walked recursively. Key names use
-    :func:`bound_mapping_key_name` — never bare ``str(key)``.
-    """
-    if raw is None:
-        return None, False
-    if not isinstance(raw, Mapping):
-        return None, True
-
-    out: dict[str, Any] = {}
-    truncated = False
-    known = frozenset(_AUDIT_REPORT_KNOWN_KEYS)
-
-    for key in _AUDIT_REPORT_KNOWN_KEYS:
-        try:
-            present = key in raw
-        except Exception:
-            present = False
-        if not present:
-            continue
-        try:
-            value = raw.get(key)  # type: ignore[attr-defined]
-        except Exception:
-            value = None
-        detached, supported, value_truncated = _runtime_scalar_snapshot(value)
-        if not supported:
-            truncated = True
-            continue
-        if value_truncated:
-            truncated = True
-        out[key] = detached
-
-    examine_limit = len(_AUDIT_REPORT_KNOWN_KEYS) + _RUNTIME_STATUS_MAPPING_KEY_BUDGET
-    try:
-        item_view = raw.items()
-    except Exception:
-        item_view = ()
-
-    for key, value in islice(item_view, examine_limit):
-        name = bound_mapping_key_name(key)
-        if name is None:
-            truncated = True
-            continue
-        if name in known or name in out:
-            continue
-        detached, supported, value_truncated = _runtime_scalar_snapshot(value)
-        if not supported:
-            truncated = True
-            continue
-        if value_truncated:
-            truncated = True
-        if len(out) >= _RUNTIME_STATUS_MAPPING_KEY_BUDGET:
-            truncated = True
-            break
-        out[name] = detached
-
-    try:
-        raw_len = int(len(raw))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        raw_len = None
-    if raw_len is not None and raw_len > examine_limit:
-        truncated = True
-    if truncated:
-        # Leave room for the marker even when the scalar budget is saturated.
-        out["truncated"] = True
-    return out, truncated
-
-
-def _bound_unknown_runtime_value(value: Any, *, depth: int) -> tuple[Any, bool, bool]:
-    """Detach a forward-compatible unknown value under explicit budgets.
-
-    Returns ``(detached, supported, truncated)``. Unsupported nested shapes are
-    omitted (caller signals overflow). Depth and item budgets prevent O(n)
-    walks and self-referential blow-ups; there is no generic deepcopy path.
-    """
-    detached, supported, truncated = _runtime_scalar_snapshot(value)
-    if supported:
-        return detached, True, truncated
-    if depth >= _RUNTIME_STATUS_MAX_DEPTH:
-        return None, False, False
-    # Nested unknowns are fail-closed: do not serialize arbitrary graphs.
-    if isinstance(value, Mapping) or (
-        isinstance(value, (list, tuple)) and not isinstance(value, (str, bytes))
-    ):
-        return None, False, False
-    return None, False, False
-
-
-def snapshot_runtime_status_for_stats(vault_id: int) -> dict[str, Any]:
-    """Consistent bounded runtime snapshot for ``GET /api/stats``.
-
-    Lock ownership: the entire detached object graph is built under
-    ``status_lock`` (known scalars, schema-bound ``last_audit_report``,
-    bounded filesystem synopsis, and a hard budget of unknown *scalar*
-    extras). Nested producer containers are never shared by reference.
-    Callers must not perform DB/FS work while this lock is held;
-    merge/response assembly happens after release on the detached values only.
-    """
-    with status_lock:
-        shared = runtime_status.get(int(vault_id))
-        if not shared:
-            return {
-                "scanning": False,
-                "last_scan": None,
-                "last_error": None,
-                "filesystem": bound_runtime_filesystem_synopsis(None),
-            }
-        runtime: dict[str, Any] = {}
-        truncated = False
-        known = frozenset(_RUNTIME_STATUS_KNOWN_KEYS)
-
-        for key in _RUNTIME_STATUS_SCALAR_KEYS:
-            if key not in shared:
-                continue
-            detached, supported, value_truncated = _runtime_scalar_snapshot(
-                shared.get(key)
-            )
-            if supported:
-                runtime[key] = detached
-                if value_truncated:
-                    truncated = True
-            else:
-                truncated = True
-
-        if "last_audit_report" in shared:
-            report, report_truncated = _bound_last_audit_report(
-                shared.get("last_audit_report")
-            )
-            if report is not None:
-                runtime["last_audit_report"] = report
-            if report_truncated or report is None:
-                truncated = True
-
-        # Forward-compatible extras: hard budget, scalars only, never by ref.
-        extras = 0
-        try:
-            items = shared.items()
-        except Exception:
-            items = ()
-        examine_limit = (
-            len(_RUNTIME_STATUS_KNOWN_KEYS) + _RUNTIME_STATUS_UNKNOWN_KEY_BUDGET
-        )
-        for key, value in islice(items, examine_limit):
-            if key == "filesystem":
-                continue
-            name = bound_mapping_key_name(key)
-            if name is None:
-                # Refuse arbitrary key objects (no str(key) / __str__ call).
-                truncated = True
-                continue
-            if name in runtime or name in known:
-                continue
-            if extras >= _RUNTIME_STATUS_UNKNOWN_KEY_BUDGET:
-                truncated = True
-                break
-            detached, supported, value_truncated = _bound_unknown_runtime_value(
-                value, depth=0
-            )
-            if not supported:
-                truncated = True
-                continue
-            if value_truncated:
-                truncated = True
-            runtime[name] = detached
-            extras += 1
-
-        try:
-            shared_len = int(len(shared))
-        except (TypeError, ValueError):
-            shared_len = None
-        if shared_len is not None and shared_len > examine_limit:
-            truncated = True
-
-        raw_fs = shared.get("filesystem")
-        filesystem = bound_runtime_filesystem_synopsis(
-            raw_fs if isinstance(raw_fs, Mapping) else None
-        )
-        runtime["filesystem"] = filesystem
-        # Propagate synopsis/field/checks truncation to the top-level runtime marker.
-        if filesystem.get("synopsis_truncated") is True:
-            truncated = True
-        if truncated:
-            runtime["runtime_truncated"] = True
-        return runtime
-
-
-def _record_scan_finding(
-    vault_id: int, *, path: str, code: str, message: str
-) -> None:
-    """Record one scan-time finding into a bounded runtime synopsis.
-
-    Keeps accurate totals/code counts while capping the sample so ``/api/stats``
-    never has to merge an unbounded findings list. Mutates owned containers in
-    place under ``status_lock`` — never ``dict()``/full ``list()`` copies of
-    legacy oversized mappings.
-    """
-    with status_lock:
-        status = runtime_status.setdefault(
-            vault_id,
-            {"scanning": False, "last_scan": None, "last_error": None},
-        )
-        filesystem = status.setdefault(
-            "filesystem",
-            _empty_scan_filesystem_status(ok=False),
-        )
-        findings_raw = filesystem.get("findings")
-        if isinstance(findings_raw, list):
-            if len(findings_raw) > FINDINGS_SAMPLE_LIMIT:
-                # Bound in O(limit) — drop the oversized tail without walking it.
-                findings = findings_raw[:FINDINGS_SAMPLE_LIMIT]
-                filesystem["findings"] = findings
-            else:
-                findings = findings_raw
-        else:
-            findings = []
-            filesystem["findings"] = findings
-
-        counts_raw = filesystem.get("finding_counts")
-        counts_cap = len(KNOWN_FINDING_COUNT_CODES) + FINDING_COUNTS_UNKNOWN_KEY_BUDGET
-        if isinstance(counts_raw, dict) and len(counts_raw) <= counts_cap:
-            counts = counts_raw
-        else:
-            counts = normalize_finding_counts(
-                counts_raw if isinstance(counts_raw, Mapping) else None
-            )
-            filesystem["finding_counts"] = counts
-
-        try:
-            total = int(filesystem.get("findings_total") or 0)
-        except (TypeError, ValueError):
-            total = 0
-        if total < 0:
-            total = 0
-        synopsis_truncated = bool(filesystem.get("synopsis_truncated"))
-        path_text, path_trunc = bound_synopsis_text(path)
-        synopsis_truncated = synopsis_truncated or path_trunc
-        if code is None or code == "":
-            code_text = "fs.unknown"
-        else:
-            code_text, code_trunc = bound_synopsis_text(code)
-            synopsis_truncated = synopsis_truncated or code_trunc
-            if not code_text:
-                code_text = "fs.unknown"
-                synopsis_truncated = True
-        message_text, message_trunc = bound_synopsis_text(message)
-        synopsis_truncated = synopsis_truncated or message_trunc
-        total += 1
-        counts[code_text] = int(counts.get(code_text, 0) or 0) + 1
-        if len(findings) < FINDINGS_SAMPLE_LIMIT:
-            findings.append(
-                {
-                    "path": path_text,
-                    "code": code_text,
-                    "message": message_text,
-                }
-            )
-        filesystem["findings_total"] = total
-        filesystem["findings_truncated"] = total > len(findings)
-        if synopsis_truncated:
-            filesystem["synopsis_truncated"] = True
-        filesystem["ok"] = False
 
 
 def _scan_tree(
@@ -3247,64 +2707,6 @@ def _reconcile_job_transition(
     return updated
 
 
-def _object_version_entries(
-    client: Any,
-    *,
-    bucket: str,
-    object_key: str,
-) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-    """Read exact-version postconditions without treating a retry as evidence.
-
-    S3's list API is used rather than a current-key HEAD because a delete marker
-    and a noncurrent Archive Version are both meaningful durable outcomes.
-    """
-    kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": object_key}
-    versions: dict[str, dict[str, Any]] = {}
-    markers: dict[str, dict[str, Any]] = {}
-    while True:
-        page = client.list_object_versions(**kwargs)
-        for item in page.get("Versions") or []:
-            if item.get("Key") == object_key and item.get("VersionId"):
-                versions[str(item["VersionId"])] = item
-        for item in page.get("DeleteMarkers") or []:
-            if item.get("Key") == object_key and item.get("VersionId"):
-                markers[str(item["VersionId"])] = item
-        if not page.get("IsTruncated"):
-            break
-        next_key = page.get("NextKeyMarker")
-        next_version = page.get("NextVersionIdMarker")
-        if not next_key:
-            raise RuntimeError("S3 version listing omitted its continuation marker")
-        kwargs["KeyMarker"] = next_key
-        if next_version:
-            kwargs["VersionIdMarker"] = next_version
-    return versions, markers
-
-
-def _s3_version_already_gone(exc: BaseException) -> bool:
-    if not isinstance(exc, ClientError):
-        return False
-    code = str(exc.response.get("Error", {}).get("Code") or "")
-    return code in {"NoSuchVersion", "NoSuchKey", "NotFound", "404"}
-
-
-def _delete_s3_version(
-    client: Any,
-    *,
-    bucket: str,
-    object_key: str,
-    version_id: str,
-) -> None:
-    try:
-        client.delete_object(
-            Bucket=bucket, Key=object_key, VersionId=version_id
-        )
-    except Exception as exc:
-        if _s3_version_already_gone(exc):
-            return
-        raise
-
-
 def purge_current_snapshot_superseded(
     job: dict[str, Any],
     *,
@@ -4217,55 +3619,6 @@ def download_with_rclone(job: dict[str, Any]) -> None:
     )
 
 
-def hash_stable_regular_file(path: Path) -> tuple[str, os.stat_result]:
-    before = path.stat(follow_symlinks=False)
-    if not stat.S_ISREG(before.st_mode):
-        raise RuntimeError("Local file is not a regular file")
-    expected = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        opened = os.fstat(source.fileno())
-        if (
-            opened.st_dev,
-            opened.st_ino,
-            opened.st_size,
-            opened.st_mtime_ns,
-        ) != expected:
-            raise RuntimeError("Local file changed since fingerprinting")
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-        after = os.fstat(source.fileno())
-    if (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-    ) != expected:
-        raise RuntimeError("Local file changed since fingerprinting")
-    return digest.hexdigest(), after
-
-
-def restore_claimed_local_copy(claimed: Path, target: Path) -> bool:
-    try:
-        claimed.lstat()
-    except FileNotFoundError:
-        return True
-    try:
-        os.link(claimed, target, follow_symlinks=False)
-    except FileExistsError:
-        return False
-    except OSError:
-        try:
-            claimed.lstat()
-        except FileNotFoundError as exc:
-            raise RuntimeError(
-                "Cleanup claim disappeared while restoring local content"
-            ) from exc
-        return False
-    claimed.unlink()
-    return True
-
-
 def remove_local_copies(vault: dict[str, Any], logical_path: str) -> list[Path]:
     """Delete the source copy after the caller has verified the cloud copy."""
     target = safe_local_entry_path(vault["source_root"], logical_path)
@@ -4275,30 +3628,6 @@ def remove_local_copies(vault: dict[str, Any], logical_path: str) -> list[Path]:
         raise RuntimeError(f"The local path is not a file: {target}")
     target.unlink()
     return [target]
-
-
-def _verification_version_head(
-    client: Any,
-    job: dict[str, Any],
-    target: dict[str, Any],
-) -> dict[str, Any]:
-    """Reconfirm the exact provider VersionId around a streamed read."""
-    object_key = str(target.get("object_key") or "")
-    expected_version = str(target.get("provider_version_id") or "")
-    if not object_key or not expected_version:
-        raise RuntimeError("Upload verification target has no exact S3 VersionId")
-    head = client.head_object(Bucket=job["s3_bucket"], Key=object_key)
-    observed_version = head.get("VersionId")
-    if not observed_version:
-        raise RuntimeError("Upload verification found no S3 VersionId")
-    if str(observed_version) != expected_version:
-        raise RuntimeError("Archive Version changed during upload verification")
-    expected_size = target.get("cloud_size")
-    observed_size = head.get("ContentLength")
-    if expected_size is not None and observed_size is not None:
-        if int(observed_size) != int(expected_size):
-            raise RuntimeError("Archive Version size changed during upload verification")
-    return head
 
 
 def _stream_plaintext_for_verification(
@@ -4360,40 +3689,6 @@ def _record_verification_failure(reason: str) -> None:
     except Exception:
         # Metrics are observability only and must never change Job durability.
         pass
-
-
-def _require_linked_upload_digest(target: Mapping[str, Any]) -> str:
-    """Return the durable snapshot fingerprint for a linked Archive Version."""
-    integrity = str(target.get("integrity") or "unverified")
-    upload_digest = str(
-        target.get("upload_plaintext_sha256")
-        or (target.get("version_sha256") if integrity == "verified" else "")
-        or ""
-    ).lower()
-    if len(upload_digest) != 64:
-        raise RuntimeError(
-            "The linked Archive Version has no durable upload fingerprint"
-        )
-    try:
-        int(upload_digest, 16)
-    except ValueError as exc:
-        raise RuntimeError(
-            "The linked Archive Version has an invalid upload fingerprint"
-        ) from exc
-    return upload_digest
-
-
-def _local_stat_unchanged(path: Path, previous: os.stat_result) -> bool:
-    try:
-        current = path.stat(follow_symlinks=False)
-    except OSError:
-        return False
-    return (
-        current.st_size == previous.st_size
-        and current.st_mtime_ns == previous.st_mtime_ns
-        and current.st_dev == previous.st_dev
-        and current.st_ino == previous.st_ino
-    )
 
 
 def _inspect_local_copy_for_upload_snapshot(
@@ -5422,342 +4717,8 @@ def process_free_space(job: dict[str, Any]) -> None:
         )
 
 
-def _head_object_with_checksum(client: Any, **kwargs: Any) -> dict[str, Any]:
-    """Read a version with provider checksum fields when supported.
-
-    Some S3-compatible providers reject ``ChecksumMode``. Falling back to a
-    normal HEAD keeps the operation portable; the caller then obtains an
-    equivalent proof by hashing the exact VersionId instead of publishing on
-    size/ETag metadata alone.
-    """
-    try:
-        return client.head_object(**kwargs, ChecksumMode="ENABLED")
-    except Exception:
-        return client.head_object(**kwargs)
-
-
-def _full_object_sha256_checksum(head: dict[str, Any]) -> str | None:
-    checksum = head.get("ChecksumSHA256")
-    if not checksum:
-        return None
-    checksum_type = str(head.get("ChecksumType") or "FULL_OBJECT").upper()
-    if checksum_type != S3_COPY_CHECKSUM_TYPE:
-        return None
-    return str(checksum)
-
-
-def _sha256_s3_version(
-    client: Any,
-    *,
-    bucket: str,
-    object_key: str,
-    version_id: str,
-    job_id: int | None = None,
-) -> str:
-    """Hash one exact provider VersionId and return its S3 checksum encoding."""
-    response = client.get_object(
-        Bucket=bucket,
-        Key=object_key,
-        VersionId=version_id,
-    )
-    body = response.get("Body") if isinstance(response, dict) else None
-    if body is None:
-        raise RuntimeError("S3 did not return a body for integrity verification")
-    digest = hashlib.sha256()
-    try:
-        iter_chunks = getattr(body, "iter_chunks", None)
-        if callable(iter_chunks):
-            chunks = iter_chunks(chunk_size=S3_OBJECT_HASH_CHUNK_BYTES)
-        else:
-            read = getattr(body, "read", None)
-            if not callable(read):
-                raise RuntimeError("S3 returned an unreadable body")
-
-            def read_chunks():
-                while True:
-                    chunk = read(S3_OBJECT_HASH_CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    yield chunk
-
-            chunks = read_chunks()
-        for chunk in chunks:
-            if not isinstance(chunk, (bytes, bytearray, memoryview)):
-                raise RuntimeError("S3 returned a non-binary body")
-            digest.update(chunk)
-            if job_id is not None:
-                ensure_job_active(job_id, "Storage class change stopped")
-    finally:
-        close = getattr(body, "close", None)
-        if callable(close):
-            close()
-    return base64.b64encode(digest.digest()).decode("ascii")
-
-
-def _source_object_tagging(
-    client: Any,
-    *,
-    bucket: str,
-    object_key: str,
-    version_id: str,
-) -> str | None:
-    """Return source Version tags in CreateMultipartUpload's wire format."""
-    response = client.get_object_tagging(
-        Bucket=bucket,
-        Key=object_key,
-        VersionId=version_id,
-    )
-    if not isinstance(response, dict):
-        raise RuntimeError("S3 returned an invalid object-tag response")
-    tag_set = response.get("TagSet") or []
-    if not isinstance(tag_set, (list, tuple)):
-        raise RuntimeError("S3 returned an invalid object-tag set")
-    tags: list[tuple[str, str]] = []
-    for tag in tag_set:
-        if not isinstance(tag, dict) or tag.get("Key") is None or tag.get("Value") is None:
-            raise RuntimeError("S3 returned an invalid object tag")
-        tags.append((str(tag["Key"]), str(tag["Value"])))
-    return urlencode(tags) if tags else None
-
-
-def _multipart_copy_storage_class(
-    client: Any,
-    *,
-    job: dict[str, Any],
-    bucket: str,
-    object_key: str,
-    source_version_id: str,
-    target_class: str,
-    size_bytes: int,
-    source_head: dict[str, Any],
-) -> str | None:
-    """Copy one exact S3 Version with multipart UploadPartCopy operations."""
-    if size_bytes <= S3_SINGLE_COPY_MAX_BYTES:
-        raise ValueError("Multipart storage-class copy requires an oversized object")
-
-    part_size = max(
-        S3_MULTIPART_COPY_MIN_PART_BYTES,
-        S3_MULTIPART_COPY_PART_BYTES,
-        (size_bytes + S3_MULTIPART_COPY_MAX_PARTS - 1)
-        // S3_MULTIPART_COPY_MAX_PARTS,
-    )
-    part_count = (size_bytes + part_size - 1) // part_size
-    if part_count > S3_MULTIPART_COPY_MAX_PARTS:
-        raise RuntimeError("S3 multipart copy would exceed the part limit")
-
-    tagging = _source_object_tagging(
-        client,
-        bucket=bucket,
-        object_key=object_key,
-        version_id=source_version_id,
-    )
-    create_kwargs: dict[str, Any] = {
-        "Bucket": bucket,
-        "Key": object_key,
-        "StorageClass": target_class,
-        "ChecksumAlgorithm": S3_COPY_CHECKSUM_ALGORITHM,
-        "ChecksumType": S3_COPY_CHECKSUM_TYPE,
-    }
-    if tagging:
-        # UploadPartCopy does not inherit tags from its source Version. The
-        # tag set must be supplied when the multipart upload is initiated.
-        create_kwargs["Tagging"] = tagging
-    # Multipart initiation does not have CopyObject's metadata directives.  Set
-    # the source headers that S3 exposes so the new representation does not
-    # unexpectedly lose content metadata while its bytes are copied.
-    for field in (
-        "CacheControl",
-        "ContentDisposition",
-        "ContentEncoding",
-        "ContentLanguage",
-        "ContentType",
-        "Expires",
-        "Metadata",
-    ):
-        if source_head.get(field) is not None:
-            create_kwargs[field] = source_head[field]
-
-    upload_id: str | None = None
-    try:
-        initiated = client.create_multipart_upload(**create_kwargs)
-        upload_id = initiated.get("UploadId")
-        if not upload_id:
-            raise RuntimeError("S3 did not return a multipart UploadId")
-
-        parts: list[dict[str, Any]] = []
-        copy_source = {
-            "Bucket": bucket,
-            "Key": object_key,
-            "VersionId": source_version_id,
-        }
-        for part_number in range(1, part_count + 1):
-            ensure_job_active(job["id"], "Storage class change stopped")
-            start = (part_number - 1) * part_size
-            end = min(size_bytes, start + part_size) - 1
-            result = client.upload_part_copy(
-                Bucket=bucket,
-                Key=object_key,
-                UploadId=upload_id,
-                PartNumber=part_number,
-                CopySource=copy_source,
-                CopySourceRange=f"bytes={start}-{end}",
-            )
-            copy_result = result.get("CopyPartResult") or {}
-            etag = copy_result.get("ETag") or result.get("ETag")
-            if not etag:
-                raise RuntimeError(
-                    f"S3 did not return an ETag for multipart part {part_number}"
-                )
-            part = {"PartNumber": part_number, "ETag": etag}
-            for checksum_name in (
-                "ChecksumCRC32",
-                "ChecksumCRC32C",
-                "ChecksumSHA1",
-                "ChecksumSHA256",
-                "ChecksumCRC64NVME",
-            ):
-                checksum = copy_result.get(checksum_name)
-                if checksum:
-                    part[checksum_name] = checksum
-            parts.append(part)
-
-        ensure_job_active(job["id"], "Storage class change stopped")
-        completed = client.complete_multipart_upload(
-            Bucket=bucket,
-            Key=object_key,
-            UploadId=upload_id,
-            MultipartUpload={"Parts": parts},
-            ChecksumType=S3_COPY_CHECKSUM_TYPE,
-        )
-        # Completion makes the upload no longer abortable.  A missing VersionId
-        # is handled by the destination read-back, not by guessing the source.
-        upload_id = None
-        return completed.get("VersionId")
-    except BaseException as exc:
-        if upload_id:
-            try:
-                client.abort_multipart_upload(
-                    Bucket=bucket,
-                    Key=object_key,
-                    UploadId=upload_id,
-                )
-            except Exception as abort_exc:
-                raise RuntimeError(
-                    "Multipart storage-class copy failed and its upload could not be aborted"
-                ) from abort_exc
-        raise
-
-
-def _copy_storage_class_version(
-    client: Any,
-    *,
-    job: dict[str, Any],
-    bucket: str,
-    object_key: str,
-    source_version_id: str,
-    target_class: str,
-    source_size: int,
-    source_head: dict[str, Any],
-) -> str | None:
-    """Use CopyObject for small objects and exact multipart copy for large ones."""
-    if source_size > S3_SINGLE_COPY_MAX_BYTES:
-        return _multipart_copy_storage_class(
-            client,
-            job=job,
-            bucket=bucket,
-            object_key=object_key,
-            source_version_id=source_version_id,
-            target_class=target_class,
-            size_bytes=source_size,
-            source_head=source_head,
-        )
-    copy_result = client.copy_object(
-        Bucket=bucket,
-        Key=object_key,
-        CopySource={
-            "Bucket": bucket,
-            "Key": object_key,
-            "VersionId": source_version_id,
-        },
-        StorageClass=target_class,
-        MetadataDirective="COPY",
-        TaggingDirective="COPY",
-        ChecksumAlgorithm=S3_COPY_CHECKSUM_ALGORITHM,
-    )
-    return copy_result.get("VersionId")
-
-
-def _verify_storage_class_destination(
-    client: Any,
-    *,
-    bucket: str,
-    object_key: str,
-    source_version_id: str,
-    candidate_version_id: str | None,
-    target_class: str,
-    expected_size: int,
-    expected_sha256_checksum: str | None = None,
-    job_id: int | None = None,
-) -> tuple[str, str | None]:
-    """Read back the exact destination before publishing catalog state.
-
-    Size and ETag are useful metadata checks but are not content proofs (in
-    particular, multipart ETags are not object digests). The destination must
-    expose the same full-object SHA-256 checksum as the source, or be streamed
-    and hashed when the provider does not expose checksum metadata.
-    """
-    if not expected_sha256_checksum:
-        raise RuntimeError("Storage class copy lacks a source integrity proof")
-    kwargs: dict[str, Any] = {"Bucket": bucket, "Key": object_key}
-    if candidate_version_id:
-        kwargs["VersionId"] = candidate_version_id
-    destination = _head_object_with_checksum(client, **kwargs)
-    observed_version_id = destination.get("VersionId") or candidate_version_id
-    if not observed_version_id:
-        raise RuntimeError(
-            "Storage class copy did not produce a verifiable S3 VersionId"
-        )
-    if candidate_version_id and str(observed_version_id) != str(candidate_version_id):
-        raise RuntimeError(
-            "Storage class copy read-back returned a different S3 VersionId"
-        )
-    if str(observed_version_id) == str(source_version_id):
-        raise RuntimeError(
-            "Storage class copy read-back still points at the source S3 VersionId"
-        )
-    if destination.get("DeleteMarker"):
-        raise RuntimeError("Storage class copy read-back returned a Delete Marker")
-    observed_class = (destination.get("StorageClass") or "STANDARD").upper()
-    if observed_class != target_class:
-        raise RuntimeError(
-            "Storage class copy read-back returned the wrong storage class"
-        )
-    content_length = destination.get("ContentLength")
-    if content_length is None or int(content_length) != int(expected_size):
-        raise RuntimeError(
-            "Storage class copy read-back returned the wrong object size"
-        )
-    destination_checksum = _full_object_sha256_checksum(destination)
-    if destination_checksum is None:
-        destination_checksum = _sha256_s3_version(
-            client,
-            bucket=bucket,
-            object_key=object_key,
-            version_id=str(observed_version_id),
-            job_id=job_id,
-        )
-    if destination_checksum != expected_sha256_checksum:
-        raise RuntimeError(
-            "Storage class copy read-back failed its content-integrity check"
-        )
-    return str(observed_version_id), (
-        str(destination.get("ETag")).strip('"')
-        if destination.get("ETag")
-        else None
-    )
-
-
 def process_storage_class(job: dict[str, Any]) -> None:
+    check_active = partial(ensure_job_active, int(job["id"]))
     """Restore if needed, then copy an Archive Version onto a new storage class.
 
     Warming from GLACIER / DEEP_ARCHIVE chains RestoreObject inside this Job so
@@ -5885,18 +4846,18 @@ def process_storage_class(job: dict[str, Any]) -> None:
             bucket=job["s3_bucket"],
             object_key=target["object_key"],
             version_id=str(target["provider_version_id"]),
-            job_id=int(job["id"]),
+            check_active=check_active,
         )
     ensure_job_active(job["id"], "Storage class claim was lost")
     new_version_id = _copy_storage_class_version(
         client,
-        job=job,
         bucket=job["s3_bucket"],
         object_key=target["object_key"],
         source_version_id=str(target["provider_version_id"]),
         target_class=target_class,
         source_size=source_size,
         source_head=head,
+        check_active=check_active,
     )
     ensure_job_active(job["id"], "Storage class change stopped")
     new_version_id, etag = _verify_storage_class_destination(
@@ -5908,7 +4869,7 @@ def process_storage_class(job: dict[str, Any]) -> None:
         target_class=target_class,
         expected_size=source_size,
         expected_sha256_checksum=source_checksum,
-        job_id=int(job["id"]),
+        check_active=check_active,
     )
     ensure_job_active(job["id"], "Storage class claim was lost")
     timestamp = now_iso()
@@ -5935,22 +4896,6 @@ def process_storage_class(job: dict[str, Any]) -> None:
         message_key="job.storage_class_completed",
         message_params={"storage_class": target_class},
     )
-
-
-def restore_header_state(value: str | None) -> tuple[str, str | None]:
-    if not value:
-        return "not_requested", None
-    if 'ongoing-request="true"' in value:
-        return "restoring", None
-    match = re.search(r'expiry-date="([^"]+)"', value)
-    return "available", match.group(1) if match else None
-
-
-ARCHIVE_RESTORE_REQUIRED = frozenset({"GLACIER", "DEEP_ARCHIVE"})
-
-
-def storage_class_requires_restore(storage_class: str | None) -> bool:
-    return (storage_class or "").upper() in ARCHIVE_RESTORE_REQUIRED
 
 
 def download_exact_version_plaintext(
