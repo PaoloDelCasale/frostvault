@@ -17,9 +17,9 @@ Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.y
 | Frontend production build | Vite production build only (`npm run build:ci`); TypeScript is already checked in the parallel typecheck job. | None. |
 | Playwright e2e (mobile-375 / desktop-1280) | Chromium Playwright against uvicorn + SQLite with seeded fixtures, split into two parallel projects: 375×667 and 1280×800. | None. Placeholder AWS env only; no live cloud calls. Browsers cached under `~/.cache/ms-playwright`. Uses `E2E_PYTHON=python` (setup-python on PATH; no repo `.venv` in CI). Failure screenshots upload as `playwright-e2e-failures-<project>`; successful 375px shots as `playwright-e2e-375px`. |
 | Production image PostgreSQL backup | Builds the production Docker image, checks `pg_dump`/`pg_restore`/`createdb`/`dropdb`/`psql`, then runs Alembic + `backup_upgrade --skip-upgrade` + isolated restore verification against `postgres:16` | Ephemeral Postgres service only. |
-| S3-compatible integrity (MinIO) | Real Rclone + MinIO upload/recovery SHA-256 proofs (plain, crypt, empty, Unicode, multipart cutoff) plus prefix cleanup | Ephemeral MinIO from `quay.io/minio/minio` (`minioadmin`). No AWS account. Docker Hub `minio/minio` denies anonymous pulls. |
+| S3-compatible integrity (MinIO) | Real Rclone upload/recovery SHA-256 proofs against a versioned S3-compatible endpoint (plain, crypt, empty, Unicode, multipart cutoff) plus prefix cleanup | Ephemeral moto S3 server (`moto[server]` pinned, from PyPI) on `127.0.0.1:9000`. No AWS account. The job keeps its historical name because release gates require it; MinIO no longer publishes community images (Docker Hub `minio/minio` is gone and `quay.io/minio/minio` refuses anonymous pulls). |
 
-Failed MinIO cleanup writes `artifacts/s3-cleanup-report.json` and uploads it as a
+Failed S3-compatible cleanup writes `artifacts/s3-cleanup-report.json` and uploads it as a
 workflow artifact. Rerun cleanup locally or in CI with:
 
 ```bash
@@ -163,7 +163,11 @@ node scripts/capture-storage-class-screenshots.mjs
 # Other 375px capture scripts use mocked/seeded API routes and need no demo flag:
 # capture-vault-access-375.mjs, screenshot-admin.mjs, screenshot-auth-pages.mjs
 
-# MinIO integrity (requires a local MinIO on :9000 and rclone on PATH)
+# S3-compatible integrity (the CI job still named "MinIO"): start a local
+# S3 server on :9000 and put rclone on PATH, then create the versioned bucket
+# as the workflow does.
+.venv/bin/pip install "moto[server]==5.2.3"
+.venv/bin/moto_server -H 127.0.0.1 -p 9000 &
 export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
 export AWS_DEFAULT_REGION=us-east-1
 export AWS_ENDPOINT_URL=http://127.0.0.1:9000

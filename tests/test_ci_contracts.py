@@ -49,12 +49,16 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertIn("sqlite-and-postgresql", job_names)
         self.assertIn("s3-compatible-integrity", job_names)
         self.assertIn("playwright-e2e", job_names)
-        start_minio = "\n".join(
+        s3_job_runs = "\n".join(
             step.get("run", "")
             for step in workflow["jobs"]["s3-compatible-integrity"]["steps"]
         )
-        self.assertIn("quay.io/minio/minio:", start_minio)
-        self.assertNotIn("minio/minio:", start_minio.replace("quay.io/minio/minio:", ""))
+        # The S3-compatible endpoint comes from a pinned PyPI package, not a
+        # container registry: MinIO community images are no longer published.
+        self.assertRegex(s3_job_runs, r'"moto\[server\]==\d+\.\d+\.\d+"')
+        self.assertIn("moto_server -H 127.0.0.1 -p 9000", s3_job_runs)
+        self.assertNotIn("minio/minio:", s3_job_runs)
+        self.assertNotIn("docker run", s3_job_runs)
 
     def test_pr_runs_frontend_checks_in_parallel_jobs(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
