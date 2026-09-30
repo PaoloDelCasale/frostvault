@@ -7246,13 +7246,96 @@ def _verify_latest_metadata_backup_once() -> None:
             pass
 
 
+MAINTENANCE_TASKS = ("scan", "audit", "backup", "backup_verify")
+
+
+def _seconds_since(value: Any, *, now: datetime | None = None) -> float | None:
+    parsed = _parse_iso_datetime(value)
+    if parsed is None:
+        return None
+    current = now or datetime.now(timezone.utc)
+    return max(0.0, (current - parsed).total_seconds())
+
+
+def persisted_maintenance_ages(
+    *, now: datetime | None = None
+) -> dict[str, float | None]:
+    """Return seconds since each maintenance task last ran, or None when never.
+
+    The full scan is always due at startup: it is the reconciliation net for
+    events missed while the process was down.  Audit, scheduled backup, and
+    restore verification are read back from their durable records so a
+    restart neither skips an overdue run nor repeats a recent one.
+    """
+    ages: dict[str, float | None] = {name: None for name in MAINTENANCE_TASKS}
+    with db() as connection:
+        vaults = connection.execute(
+            """
+            SELECT id FROM vaults
+            WHERE enabled=TRUE AND decommission_state='active'
+            """
+        ).fetchall()
+        audit_ages: list[float] = []
+        for vault in vaults:
+            row = connection.execute(
+                """
+                SELECT updated_at FROM vault_component_health
+                WHERE vault_id=%s AND component='audit'
+                """,
+                (int(vault["id"]),),
+            ).fetchone()
+            age = _seconds_since(row["updated_at"], now=now) if row else None
+            if age is None:
+                audit_ages = []
+                break
+            audit_ages.append(age)
+        if vaults and audit_ages:
+            # The Vault audited longest ago decides when the next pass is due.
+            ages["audit"] = max(audit_ages)
+        backup = connection.execute(
+            """
+            SELECT MAX(created_at) AS at FROM metadata_backup_runs
+            WHERE reason='scheduled'
+            """
+        ).fetchone()
+        ages["backup"] = _seconds_since(backup["at"], now=now) if backup else None
+        verify = connection.execute(
+            "SELECT MAX(verified_at) AS at FROM metadata_backup_runs"
+        ).fetchone()
+        ages["backup_verify"] = (
+            _seconds_since(verify["at"], now=now) if verify else None
+        )
+    return ages
+
+
+def initial_maintenance_marks(
+    current: float, ages: Mapping[str, float | None]
+) -> dict[str, float]:
+    """Translate persisted ages into loop-clock marks for ``background_loop``.
+
+    ``loop.time()`` is a monotonic clock whose zero is arbitrary (seconds
+    since boot on Linux), so a literal ``0.0`` mark would tie every schedule
+    to host uptime.  A task that never ran gets ``-inf`` and is due at once.
+    """
+    marks: dict[str, float] = {}
+    for name in MAINTENANCE_TASKS:
+        age = ages.get(name)
+        marks[name] = float("-inf") if age is None else float(current) - float(age)
+    return marks
+
+
 async def background_loop() -> None:
     await asyncio.sleep(5)
-    last_scan = 0.0
-    last_audit = 0.0
-    last_backup = 0.0
-    last_backup_verify = 0.0
     loop = asyncio.get_running_loop()
+    try:
+        ages = await asyncio.to_thread(persisted_maintenance_ages)
+    except Exception:
+        ages = {}
+    marks = initial_maintenance_marks(loop.time(), ages)
+    last_scan = marks["scan"]
+    last_audit = marks["audit"]
+    last_backup = marks["backup"]
+    last_backup_verify = marks["backup_verify"]
     try:
         while True:
             queued_count = 0

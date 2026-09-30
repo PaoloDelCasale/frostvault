@@ -288,12 +288,26 @@ def local_cleanup_is_due(
     verified_at: str,
     retention_days: int,
     now: datetime,
+    local_mtime_ns: int | None = None,
 ) -> bool:
+    """Return True once the Local Copy has been both protected and untouched.
+
+    The retention window counts from the later of the Archive Version's
+    verification and the Local Copy's own modification time.  A recovered
+    file therefore starts a fresh window from the moment it was written back,
+    instead of being removed again on the next scan because its cloud copy was
+    verified long ago.
+    """
     verified = datetime.fromisoformat(verified_at)
     if verified.tzinfo is None:
         verified = verified.replace(tzinfo=timezone.utc)
+    reference = verified
+    if local_mtime_ns is not None:
+        modified = datetime.fromtimestamp(int(local_mtime_ns) / 1e9, tz=timezone.utc)
+        if modified > reference:
+            reference = modified
     current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
-    return current >= verified + timedelta(days=retention_days)
+    return current >= reference + timedelta(days=retention_days)
 
 
 def effective_bandwidth_kibps(
@@ -448,7 +462,8 @@ def queue_auto_local_cleanups(
 
     rows = connection.execute(
         """
-        SELECT fp.path, av.id AS archive_version_id, av.verified_at
+        SELECT fp.path, av.id AS archive_version_id, av.verified_at,
+               lc.mtime_ns AS local_mtime_ns
         FROM vault_files vf
         JOIN file_paths fp
           ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
@@ -477,6 +492,7 @@ def queue_auto_local_cleanups(
             verified_at=row["verified_at"],
             retention_days=policy.local_retention_days,
             now=current,
+            local_mtime_ns=row["local_mtime_ns"],
         ):
             continue
         try:
