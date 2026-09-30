@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,6 +38,56 @@ class InitialMarksTests(unittest.TestCase):
         self.assertEqual(marks["backup"], 5_000.0)
         self.assertTrue(math.isinf(marks["scan"]))
         self.assertTrue(math.isinf(marks["backup_verify"]))
+
+
+class MaintenanceSubmissionTests(unittest.TestCase):
+    """``_submit_maintenance`` must not re-acquire its own non-reentrant lock.
+
+    It runs on the event-loop thread inside ``background_loop``; a nested
+    acquisition froze HTTP, Jobs and notifications on the first scheduled
+    scan, audit or backup.
+    """
+
+    def setUp(self) -> None:
+        storage.shutdown_background_executors()
+        self.addCleanup(self._reset_executors)
+
+    @staticmethod
+    def _reset_executors() -> None:
+        # On a regression the stuck submitter keeps the lock forever; do not
+        # hang cleanup behind it, so the assertion failure is reported.
+        if storage._maintenance_lock.acquire(timeout=1):
+            storage._maintenance_lock.release()
+            storage.shutdown_background_executors()
+
+    def test_first_submission_returns_and_runs_the_task(self) -> None:
+        ran = threading.Event()
+        submitter = threading.Thread(
+            target=storage._submit_maintenance,
+            args=("regression-scan", ran.set),
+            daemon=True,
+        )
+        submitter.start()
+        submitter.join(timeout=5)
+        self.assertFalse(
+            submitter.is_alive(),
+            "_submit_maintenance deadlocked on _maintenance_lock",
+        )
+        self.assertTrue(ran.wait(timeout=5))
+
+    def test_running_task_is_not_submitted_twice(self) -> None:
+        release = threading.Event()
+        calls: list[int] = []
+
+        def slow() -> None:
+            calls.append(1)
+            release.wait(timeout=5)
+
+        storage._submit_maintenance("regression-backup", slow)
+        storage._submit_maintenance("regression-backup", slow)
+        release.set()
+        storage._maintenance_futures["regression-backup"].result(timeout=5)
+        self.assertEqual(calls, [1])
 
 
 class PersistedAgesTests(unittest.TestCase):

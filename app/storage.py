@@ -5664,23 +5664,31 @@ def _operation_pool(max_workers: int) -> ThreadPoolExecutor:
         return _operation_executor
 
 
-def _maintenance_pool() -> ThreadPoolExecutor:
+def _maintenance_pool_locked() -> ThreadPoolExecutor:
+    """Return the maintenance pool; the caller must hold ``_maintenance_lock``."""
     global _maintenance_executor
+    if _maintenance_executor is None:
+        _maintenance_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="maintenance",
+        )
+    return _maintenance_executor
+
+
+def _maintenance_pool() -> ThreadPoolExecutor:
     with _maintenance_lock:
-        if _maintenance_executor is None:
-            _maintenance_executor = ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix="maintenance",
-            )
-        return _maintenance_executor
+        return _maintenance_pool_locked()
 
 
 def _submit_maintenance(name: str, func: Callable[..., Any], *args: Any) -> None:
+    # ``_maintenance_lock`` is not reentrant.  Calling ``_maintenance_pool()``
+    # here would re-acquire it and freeze the event loop thread that runs
+    # ``background_loop`` on the first scheduled scan, audit or backup.
     with _maintenance_lock:
         existing = _maintenance_futures.get(name)
         if existing is not None and not existing.done():
             return
-        _maintenance_futures[name] = _maintenance_pool().submit(func, *args)
+        _maintenance_futures[name] = _maintenance_pool_locked().submit(func, *args)
 
 
 def shutdown_background_executors() -> None:

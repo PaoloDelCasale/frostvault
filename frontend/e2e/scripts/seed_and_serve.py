@@ -278,6 +278,11 @@ def _apply_env(paths: dict[str, Path]) -> None:
         "FILESYSTEM_WATCH_ENABLED": "false",
         "SCAN_INTERVAL_SECONDS": "86400",
         "AUDIT_INTERVAL_SECONDS": "86400",
+        # Maintenance that never ran is due at startup. The seeded bucket is
+        # fake, so scheduled metadata backups and their restore verification
+        # would only race the flows under test; 0 is the documented off switch.
+        "METADATA_BACKUP_INTERVAL_SECONDS": "0",
+        "METADATA_BACKUP_VERIFY_INTERVAL_SECONDS": "0",
     }
     os.environ.update(env)
 
