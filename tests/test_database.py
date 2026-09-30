@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-import tempfile
+import atexit
+import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,10 +18,10 @@ from app.database import (
 )
 
 
-def run_alembic(
+def _run_alembic_subprocess(
     path: Path,
-    revision: str = "head",
-    command: str = "upgrade",
+    revision: str,
+    command: str,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -35,6 +38,60 @@ def run_alembic(
         text=True,
         check=False,
     )
+
+
+_HEAD_TEMPLATE_LOCK = threading.Lock()
+_HEAD_TEMPLATE: dict[str, Path | subprocess.CompletedProcess[str]] = {}
+
+
+def _head_schema_template() -> tuple[Path | None, subprocess.CompletedProcess[str]]:
+    """Migrate one fresh SQLite database to HEAD per test process and reuse it.
+
+    Hundreds of tests start from an empty database at HEAD.  Running the Alembic
+    subprocess once and copying the resulting file keeps every test on the real
+    migration graph while removing a ~1 s subprocess from each setUp.
+    """
+    with _HEAD_TEMPLATE_LOCK:
+        if "result" not in _HEAD_TEMPLATE:
+            directory = Path(tempfile.mkdtemp(prefix="frostvault-schema-"))
+            atexit.register(shutil.rmtree, directory, True)
+            template = directory / "head.db"
+            result = _run_alembic_subprocess(template, "head", "upgrade")
+            _HEAD_TEMPLATE["result"] = result
+            _HEAD_TEMPLATE["path"] = template if result.returncode == 0 else None
+        template_path = _HEAD_TEMPLATE["path"]
+        result = _HEAD_TEMPLATE["result"]
+        assert isinstance(result, subprocess.CompletedProcess)
+        return (template_path if isinstance(template_path, Path) else None), result
+
+
+def run_alembic(
+    path: Path,
+    revision: str = "head",
+    command: str = "upgrade",
+) -> subprocess.CompletedProcess[str]:
+    """Bring ``path`` to ``revision`` with Alembic.
+
+    A fresh database upgraded straight to HEAD is served from a per-process
+    template copy; every other request (existing file, downgrade, pinned
+    revision) runs the real Alembic subprocess against ``path``.
+    """
+    fresh_head = (
+        command == "upgrade"
+        and revision == "head"
+        and not path.exists()
+        and not path.with_name(path.name + "-wal").exists()
+    )
+    if fresh_head:
+        template, result = _head_schema_template()
+        if template is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(template, path)
+            return subprocess.CompletedProcess(
+                result.args, 0, result.stdout, result.stderr
+            )
+        return result
+    return _run_alembic_subprocess(path, revision, command)
 
 
 class DatabaseMigrationTests(unittest.TestCase):
