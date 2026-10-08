@@ -102,7 +102,7 @@ queues minor, patch, and security updates (including advisories that omit
 `update-type`) for squash auto-merge; branch protection and all required checks
 still gate each merge. Major updates remain manual and ungrouped. The workflow refreshes
 open Dependabot PRs against `main`, squash-merges any that are already `CLEAN`,
-and comments `@dependabot rebase` on remaining behind heads. A GITHUB_TOKEN
+and comments `@dependabot rebase` on remaining behind heads (on a push to `main` it rebases every open Dependabot PR, because PRs whose checks failed on the old base report `BLOCKED`, not `BEHIND`). A GITHUB_TOKEN
 `update-branch` merge would start CI as `github-actions[bot]`, which sits in
 `action_required` until a human approves it; Dependabot's own rebase push is
 trusted and starts checks immediately. A 15-minute cron is only a backstop:
