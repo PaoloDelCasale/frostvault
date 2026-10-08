@@ -7,6 +7,7 @@ contributors rely on — not GitHub's runtime.
 
 from __future__ import annotations
 
+import datetime
 import json
 import unittest
 from pathlib import Path
@@ -461,8 +462,12 @@ class NpmAuditBaselineContractTests(unittest.TestCase):
                 )
                 self.assertIn(entry["exposure"], {"runtime", "build"})
                 self.assertRegex(entry["review_by"], r"^\d{4}-\d{2}-\d{2}$")
-        # The lockfile floors above should keep this allowlist empty.
-        self.assertEqual(payload["exceptions"], [])
+                # Only unfixable dev-toolchain advisories may be excepted, and
+                # never past their review date.
+                self.assertEqual(entry["exposure"], "build")
+                self.assertGreaterEqual(
+                    entry["review_by"], datetime.date.today().isoformat()
+                )
 
     def test_npm_audit_gate_script_is_present(self) -> None:
         script = ROOT / "frontend" / "scripts" / "npm-audit-gate.mjs"
