@@ -1,4 +1,12 @@
 {
   "_comment": "Temporary npm audit exceptions. Each entry needs id (GHSA or CVE), reason, issue (GitHub issue URL), exposure (runtime|build), and review_by (YYYY-MM-DD). Expired, unused, or build-classified runtime findings fail the security gate. Prefer a targeted lockfile/override fix over an exception.",
-  "exceptions": []
+  "exceptions": [
+    {
+      "id": "GHSA-vfj7-8cjw-p6xm",
+      "reason": "braces <=3.0.3 stack-exhaustion DoS; no patched release exists yet. Reached only via the dev-only shadcn CLI (fast-glob -> micromatch -> braces); not in npm audit --omit=dev nor in frontend/dist.",
+      "issue": "https://github.com/PaoloDelCasale/frostvault/issues/381",
+      "exposure": "build",
+      "review_by": "2026-11-08"
+    }
+  ]
 }
