@@ -7,8 +7,8 @@ on:
       - main
   schedule:
     # Catch newly opened PRs without using a privileged pull-request trigger.
-    # GitHub may delay high-frequency crons; this is a backstop, not the
-    # primary keep-up-to-date path (see the drain loop below).
+    # GitHub may delay high-frequency crons; this is a backstop for PRs that
+    # opened or turned mergeable between pushes to main.
     - cron: "7,22,37,52 * * * *"
 
 permissions:
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   maintain:
-    name: Enable auto-merge and update stale branches
+    name: Enable auto-merge for Dependabot PRs
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -29,15 +29,8 @@ jobs:
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-
-          # mergeStateStatus lags for tens of seconds after a merge to main.
-          # After a drain merge we force @dependabot rebase on remaining PRs.
-          if [[ "$EVENT_NAME" == "push" ]]; then
-            sleep 15
-          fi
 
           list_prs() {
             gh pr list \
@@ -71,46 +64,10 @@ jobs:
             }
           }
 
-          refresh_pr() {
-            local number="$1"
-            echo "Asking Dependabot to rebase PR #$number onto current main"
-            # GITHUB_TOKEN update-branch writes a merge commit whose CI runs
-            # as github-actions[bot] and sits in action_required until a human
-            # approves it. Dependabot's own rebase push is trusted and starts
-            # checks immediately.
-            if ! gh pr comment --repo "$GH_REPO" "$number" --body "@dependabot rebase"; then
-              echo "::warning::Could not ask Dependabot to rebase PR #$number"
-            fi
-          }
-
-          refresh_all() {
-            local force="${1:-}"
-            local prs
-            prs="$(list_prs)"
-            while IFS= read -r pr; do
-              [[ -n "$pr" ]] || continue
-              local number draft state
-              number="$(jq -r '.number' <<<"$pr")"
-              draft="$(jq -r '.isDraft' <<<"$pr")"
-              state="$(jq -r '.mergeStateStatus' <<<"$pr")"
-              [[ "$draft" == "false" ]] || continue
-              if [[ "$force" == "force" || "$state" == "BEHIND" ]]; then
-                refresh_pr "$number"
-              fi
-            done < <(jq -c '.[]' <<<"$prs")
-          }
-
-          # A push to main moves the base under every open Dependabot PR, but
-          # mergeStateStatus is BLOCKED (not BEHIND) when their last checks
-          # failed on the old base, e.g. after a fix that repairs a red gate on
-          # main. Rebase them all so CI re-runs against the new main; the
-          # schedule/dispatch runs only refresh PRs that report BEHIND.
-          if [[ "$EVENT_NAME" == "push" ]]; then
-            refresh_all force
-          else
-            refresh_all
-          fi
-
+          # The branch protection on main does not require up-to-date branches,
+          # so auto-merge fires as soon as a PR's own checks pass. Branches are
+          # not refreshed here: a GITHUB_TOKEN comment cannot make Dependabot
+          # rebase ("only users with push access can use that command").
           prs="$(list_prs)"
           while IFS= read -r pr; do
             [[ -n "$pr" ]] || continue
@@ -127,10 +84,9 @@ jobs:
             fi
           done < <(jq -c '.[]' <<<"$prs")
 
-          # GitHub auto-merge performed by GITHUB_TOKEN does not retrigger
-          # this workflow, so a queued --auto merge would leave every other
-          # Dependabot PR "out of date" until a delayed schedule run.
-          # Drain CLEAN minors here, then ask Dependabot to rebase the rest.
+          # --auto is refused for a PR that is already mergeable, and a merge
+          # performed by GITHUB_TOKEN does not retrigger this workflow, so
+          # drain the CLEAN minors and patches here.
           merged=1
           while [[ "$merged" == "1" ]]; do
             merged=0
@@ -150,8 +106,6 @@ jobs:
                 echo "Merging Dependabot PR #$number (mergeStateStatus=CLEAN)"
                 if gh pr merge --repo "$GH_REPO" --squash "$url"; then
                   merged=1
-                  sleep 15
-                  refresh_all force
                   break
                 fi
               fi
