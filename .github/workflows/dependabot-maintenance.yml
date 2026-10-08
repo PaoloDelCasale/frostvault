@@ -100,7 +100,16 @@ jobs:
             done < <(jq -c '.[]' <<<"$prs")
           }
 
-          refresh_all
+          # A push to main moves the base under every open Dependabot PR, but
+          # mergeStateStatus is BLOCKED (not BEHIND) when their last checks
+          # failed on the old base, e.g. after a fix that repairs a red gate on
+          # main. Rebase them all so CI re-runs against the new main; the
+          # schedule/dispatch runs only refresh PRs that report BEHIND.
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            refresh_all force
+          else
+            refresh_all
+          fi
 
           prs="$(list_prs)"
           while IFS= read -r pr; do
