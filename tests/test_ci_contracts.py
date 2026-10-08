@@ -651,7 +651,7 @@ class DependabotContractTests(unittest.TestCase):
             actions["groups"]["actions-minor-and-patch"]["exclude-patterns"],
         )
 
-    def test_maintenance_updates_stale_prs_and_auto_merges_safe_updates(self) -> None:
+    def test_maintenance_auto_merges_safe_updates(self) -> None:
         path = WORKFLOWS / "dependabot-maintenance.yml"
         text = path.read_text(encoding="utf-8")
         workflow = yaml.safe_load(text)
@@ -666,19 +666,17 @@ class DependabotContractTests(unittest.TestCase):
         self.assertIn("--author app/dependabot", text)
         self.assertNotIn("pulls/$number/update-branch", text)
         self.assertNotIn("expected_head_sha", text)
-        self.assertIn("@dependabot rebase", text)
+        # A comment from GITHUB_TOKEN is refused by Dependabot ("only users with
+        # push access can use that command"), so the workflow must not rely on it.
+        self.assertNotIn("@dependabot rebase", text)
         self.assertIn("pulls/$number/commits?per_page=100", text)
         self.assertIn("version-update:semver-(minor|patch)", text)
         self.assertIn("version-update:semver-major", text)
         self.assertIn("update-type: version-update:", text)
-        self.assertIn("sleep 15", text)
-        self.assertIn('state" == "BEHIND"', text)
-        self.assertIn("refresh_all force", text)
         self.assertIn("gh pr merge", text)
         self.assertIn("--auto --squash", text)
         self.assertIn("mergeStateStatus", text)
         self.assertIn("CLEAN", text)
-        self.assertIn("refresh_all", text)
 
 class ContributorCiDocsTests(unittest.TestCase):
     def test_ci_status_is_documented(self) -> None:

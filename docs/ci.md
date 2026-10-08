@@ -100,14 +100,18 @@ grouped into one PR (`open-pull-requests-limit` is 3 so a grouped PR can sit
 beside at most two majors). [Dependabot maintenance](../.github/workflows/dependabot-maintenance.yml)
 queues minor, patch, and security updates (including advisories that omit
 `update-type`) for squash auto-merge; branch protection and all required checks
-still gate each merge. Major updates remain manual and ungrouped. The workflow refreshes
-open Dependabot PRs against `main`, squash-merges any that are already `CLEAN`,
-and comments `@dependabot rebase` on remaining behind heads (on a push to `main` it rebases every open Dependabot PR, because PRs whose checks failed on the old base report `BLOCKED`, not `BEHIND`). A GITHUB_TOKEN
-`update-branch` merge would start CI as `github-actions[bot]`, which sits in
-`action_required` until a human approves it; Dependabot's own rebase push is
-trusted and starts checks immediately. A 15-minute cron is only a backstop:
-GitHub often delays high-frequency schedules. CodeQL `init` and `analyze`
-updates are grouped
+still gate each merge. Major updates remain manual and ungrouped. The workflow
+also squash-merges any eligible PR that is already `CLEAN`, since `--auto` is
+refused for a PR that is mergeable. The branch protection on `main` does not
+require up-to-date branches, so auto-merge fires as soon as a PR's own checks
+pass and nothing has to rebase the others after each merge. The workflow does
+not ask Dependabot to rebase: a `@dependabot rebase` comment posted with
+`GITHUB_TOKEN` is refused ("only users with push access can use that command"),
+and a `GITHUB_TOKEN` `update-branch` merge would start CI as
+`github-actions[bot]`. When a PR's checks failed on an old base (for example
+after a fix to a red gate on `main`), comment `@dependabot rebase` yourself to
+rerun them. A 15-minute cron is only a backstop: GitHub often delays
+high-frequency schedules. CodeQL `init` and `analyze` updates are grouped
 because those steps must use exactly the same version.
 
 The privileged maintenance workflow runs only from the trusted default branch
