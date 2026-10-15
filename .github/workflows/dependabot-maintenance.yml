@@ -29,6 +29,8 @@ jobs:
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: only used to post "@dependabot rebase" (see below).
+          REFRESH_GH_TOKEN: ${{ secrets.DEPENDABOT_REFRESH_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -65,9 +67,61 @@ jobs:
           }
 
           # The branch protection on main does not require up-to-date branches,
-          # so auto-merge fires as soon as a PR's own checks pass. Branches are
-          # not refreshed here: a GITHUB_TOKEN comment cannot make Dependabot
-          # rebase ("only users with push access can use that command").
+          # so auto-merge fires as soon as a PR's own checks pass. Healthy
+          # branches are never refreshed. The exception is a PR whose checks
+          # failed on an old base that main has since moved past (for example
+          # a Trivy finding fixed by a later rclone bump): its red check is
+          # pinned to the old merge commit, auto-merge waits on it forever and
+          # Dependabot only rebases on conflicts. A GITHUB_TOKEN comment cannot
+          # make Dependabot rebase ("only users with push access can use that
+          # command") and a GITHUB_TOKEN push does not start CI, so the rebase
+          # request is posted with the optional DEPENDABOT_REFRESH_TOKEN secret
+          # (a token of a user with push access, pull requests: write).
+          request_rebase_of_stale_red_prs() {
+            local pr number url draft commit_messages detail base head_sha
+            local state red behind last_comment
+            while IFS= read -r pr; do
+              [[ -n "$pr" ]] || continue
+              number="$(jq -r '.number' <<<"$pr")"
+              draft="$(jq -r '.isDraft' <<<"$pr")"
+              commit_messages="$(pr_commit_messages "$number")"
+              is_automerge_candidate "$draft" "$commit_messages" || continue
+              detail="$(
+                gh pr view --repo "$GH_REPO" "$number" \
+                  --json mergeStateStatus,baseRefName,headRefOid,statusCheckRollup,comments
+              )"
+              state="$(jq -r '.mergeStateStatus' <<<"$detail")"
+              # DIRTY means a real conflict, which Dependabot rebases itself.
+              [[ "$state" == "BLOCKED" || "$state" == "BEHIND" ]] || continue
+              red="$(
+                jq '[.statusCheckRollup[]?
+                     | (.conclusion // .state // "")
+                     | select(test("^(FAILURE|TIMED_OUT|STARTUP_FAILURE|ERROR)$"))]
+                    | length' <<<"$detail"
+              )"
+              [[ "$red" -gt 0 ]] || continue
+              base="$(jq -r '.baseRefName' <<<"$detail")"
+              head_sha="$(jq -r '.headRefOid' <<<"$detail")"
+              behind="$(
+                gh api "repos/$GH_REPO/compare/${base}...${head_sha}" \
+                  --jq '.behind_by'
+              )"
+              [[ "$behind" -gt 0 ]] || continue
+              last_comment="$(jq -r '.comments[-1].body // ""' <<<"$detail")"
+              [[ "$last_comment" != "@dependabot rebase" ]] || continue
+
+              if [[ -z "${REFRESH_GH_TOKEN:-}" ]]; then
+                echo "::warning::Dependabot PR #$number failed checks on an old base ($behind commits behind $base); set the DEPENDABOT_REFRESH_TOKEN secret or comment '@dependabot rebase' yourself."
+                continue
+              fi
+              echo "Requesting rebase of stale-red Dependabot PR #$number ($behind commits behind $base)"
+              if ! GH_TOKEN="$REFRESH_GH_TOKEN" gh pr comment \
+                --repo "$GH_REPO" "$number" --body "@dependabot rebase"; then
+                echo "::warning::Could not request a rebase of Dependabot PR #$number"
+              fi
+            done < <(jq -c '.[]' <<<"$(list_prs)")
+          }
+
           prs="$(list_prs)"
           while IFS= read -r pr; do
             [[ -n "$pr" ]] || continue
@@ -111,3 +165,5 @@ jobs:
               fi
             done < <(jq -c '.[]' <<<"$prs")
           done
+
+          request_rebase_of_stale_red_prs

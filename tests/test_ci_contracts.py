@@ -667,8 +667,17 @@ class DependabotContractTests(unittest.TestCase):
         self.assertNotIn("pulls/$number/update-branch", text)
         self.assertNotIn("expected_head_sha", text)
         # A comment from GITHUB_TOKEN is refused by Dependabot ("only users with
-        # push access can use that command"), so the workflow must not rely on it.
-        self.assertNotIn("@dependabot rebase", text)
+        # push access can use that command"), so the rebase request for PRs whose
+        # checks went red on an old base must use the optional refresh token and
+        # only fire for BLOCKED/BEHIND PRs that are behind the base branch.
+        self.assertIn(
+            "REFRESH_GH_TOKEN: ${{ secrets.DEPENDABOT_REFRESH_TOKEN }}", text
+        )
+        self.assertIn('GH_TOKEN="$REFRESH_GH_TOKEN" gh pr comment', text)
+        self.assertEqual(text.count("@dependabot rebase"), 4)
+        self.assertIn("behind_by", text)
+        self.assertIn('"$state" == "BLOCKED" || "$state" == "BEHIND"', text)
+        self.assertIn("request_rebase_of_stale_red_prs", text)
         self.assertIn("pulls/$number/commits?per_page=100", text)
         self.assertIn("version-update:semver-(minor|patch)", text)
         self.assertIn("version-update:semver-major", text)

@@ -105,12 +105,18 @@ also squash-merges any eligible PR that is already `CLEAN`, since `--auto` is
 refused for a PR that is mergeable. The branch protection on `main` does not
 require up-to-date branches, so auto-merge fires as soon as a PR's own checks
 pass and nothing has to rebase the others after each merge. The workflow does
-not ask Dependabot to rebase: a `@dependabot rebase` comment posted with
-`GITHUB_TOKEN` is refused ("only users with push access can use that command"),
-and a `GITHUB_TOKEN` `update-branch` merge would start CI as
-`github-actions[bot]`. When a PR's checks failed on an old base (for example
-after a fix to a red gate on `main`), comment `@dependabot rebase` yourself to
-rerun them. A 15-minute cron is only a backstop: GitHub often delays
+not refresh healthy branches. A PR whose checks failed on an old base that
+`main` has since moved past (for example a Trivy finding fixed by a later
+rclone bump) is the exception: its red check is pinned to the old merge
+commit, auto-merge waits on it forever, and Dependabot only rebases on
+conflicts. For those PRs (eligible, `BLOCKED` or `BEHIND`, with a failed check
+and behind `main`) the workflow comments `@dependabot rebase` using the
+optional `DEPENDABOT_REFRESH_TOKEN` secret, a fine-grained token of a user with
+push access (Pull requests: read and write). `GITHUB_TOKEN` cannot be used
+for this: Dependabot refuses its comment ("only users with push access can use
+that command") and a `GITHUB_TOKEN` push does not start CI. Without the
+secret the workflow only logs a warning naming the PR; comment
+`@dependabot rebase` yourself to rerun its checks. A 15-minute cron is only a backstop: GitHub often delays
 high-frequency schedules. CodeQL `init` and `analyze` updates are grouped
 because those steps must use exactly the same version.
 
