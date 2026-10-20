@@ -78,6 +78,12 @@ test.describe("auth reconciliation shell safety", () => {
   }, testInfo) => {
     await applySession(context, "admin");
     await page.goto("/");
+    // The app registers its own Service Worker at bootstrap. On a fresh
+    // context that Worker claims this page and emits one controllerchange,
+    // which legitimately swaps the shell for its "Loading…" placeholder while
+    // /api/me is reconciled. Let that first-load transition finish before
+    // sampling shell state, or the Vault name below can be read mid-swap.
+    await page.waitForFunction(() => Boolean(navigator.serviceWorker?.controller));
     await expect(page.getByTestId("file-browser")).toBeVisible();
     await expect(page.locator("header h1")).toHaveText(/Archive/);
     const priorVaultName = await page.locator("header h1").innerText();
