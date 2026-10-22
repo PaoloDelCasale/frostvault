@@ -5,7 +5,15 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build:ci
 
-FROM rclone/rclone:1.75.2 AS rclone
+# rclone 1.75.2 release binaries are built with Go 1.27.2, which carries
+# CVE-2026-111943 (crypto/x509), fixed in Go 1.27.3. Build the same rclone tag
+# with a patched toolchain until upstream ships a release built with Go >=1.27.3,
+# then switch back to `FROM rclone/rclone:<version> AS rclone`.
+FROM golang:1.27.3-bookworm AS rclone
+ARG RCLONE_VERSION=1.75.2
+RUN CGO_ENABLED=0 GOBIN=/usr/local/bin go install -trimpath \
+        -ldflags "-s -w -X github.com/rclone/rclone/fs.Version=v${RCLONE_VERSION}" \
+        "github.com/rclone/rclone@v${RCLONE_VERSION}"
 
 FROM python:3.14-slim
 
