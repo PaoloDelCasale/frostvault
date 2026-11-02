@@ -194,6 +194,35 @@ class LocalRetentionWindowTests(unittest.TestCase):
         )
 
 
+    def test_recovery_restarts_the_window_even_with_an_old_mtime(self) -> None:
+        """#409: a recovered file may keep its original mtime from years ago."""
+        from app.services.operation_policies import local_cleanup_is_due
+
+        verified_at = "2026-01-01T12:00:00+00:00"
+        original_mtime_ns = int(
+            datetime(2019, 5, 1, 12, 0, tzinfo=timezone.utc).timestamp() * 1e9
+        )
+        recovered_at = "2026-07-30T12:00:00+00:00"
+        self.assertFalse(
+            local_cleanup_is_due(
+                verified_at=verified_at,
+                retention_days=30,
+                now=datetime(2026, 8, 29, 11, 59, 59, tzinfo=timezone.utc),
+                local_mtime_ns=original_mtime_ns,
+                recovered_at=recovered_at,
+            )
+        )
+        self.assertTrue(
+            local_cleanup_is_due(
+                verified_at=verified_at,
+                retention_days=30,
+                now=datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc),
+                local_mtime_ns=original_mtime_ns,
+                recovered_at=recovered_at,
+            )
+        )
+
+
 class BandwidthPolicyTests(unittest.TestCase):
     def test_vault_override_beats_global_limit(self) -> None:
         self.assertEqual(

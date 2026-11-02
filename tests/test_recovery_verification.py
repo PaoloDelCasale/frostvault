@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import tempfile
 import unittest
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -171,6 +173,7 @@ def _run_plain_recover(
     object_key: str = "docs/report.txt",
     storage_class: str = "STANDARD",
     restore_header: str | None = None,
+    downloaded_mtime: float | None = None,
 ) -> Mock:
     get_calls: list[dict] = []
     head_calls: list[dict] = []
@@ -201,6 +204,16 @@ def _run_plain_recover(
     client.get_object = Mock(side_effect=get_object)
     client.restore_object = Mock()
     _attach_download_file(client)
+    if downloaded_mtime is not None:
+        write_download = client.download_file.side_effect
+
+        def download_with_original_mtime(*args, **kwargs) -> None:
+            # Mirrors rclone restoring the object's stored modification time.
+            write_download(*args, **kwargs)
+            filename = kwargs.get("Filename") or args[2]
+            os.utime(filename, (downloaded_mtime, downloaded_mtime))
+
+        client.download_file.side_effect = download_with_original_mtime
     client.get_calls = get_calls
     client.head_calls = head_calls
 
@@ -458,6 +471,75 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             file_row = next(row for row in listed if row["path"] == "report.txt")
             self.assertTrue(file_row["cleanup_eligible"])
             self.assertEqual(job["status"], "completed")
+
+    def test_recovered_file_with_original_mtime_is_not_freed_again(self) -> None:
+        """#409: a recovery starts a full retention window, whatever the mtime.
+
+        The Archive Version was verified long ago and the download restores
+        the file's original 2019 modification time, as rclone does. Automatic
+        cleanup must still wait a full retention period from the recovery.
+        """
+        from app.services.operation_policies import (
+            OperationPolicy,
+            queue_auto_local_cleanups,
+            set_policy,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"photo-from-2019"
+            source, database_path, _version_id = _prepare_cloud_only_version(
+                root,
+                relative_path="photo.jpg",
+                payload=payload,
+                object_key="docs/photo.jpg",
+            )
+            original_mtime = datetime(
+                2019, 5, 1, 12, 0, tzinfo=timezone.utc
+            ).timestamp()
+            before_recovery = datetime.now(timezone.utc)
+            _run_plain_recover(
+                database_path,
+                relative_path="photo.jpg",
+                downloaded_bytes=payload,
+                downloaded_mtime=original_mtime,
+            )
+            target = source / "photo.jpg"
+            self.assertEqual(target.read_bytes(), payload)
+            self.assertEqual(target.stat().st_mtime, original_mtime)
+
+            with SQLiteConnection(str(database_path)) as connection:
+                connection.execute("DELETE FROM jobs")
+                set_policy(
+                    connection,
+                    2,
+                    OperationPolicy(
+                        auto_local_cleanup=True,
+                        local_retention_days=30,
+                    ),
+                )
+                next_pass = queue_auto_local_cleanups(
+                    connection,
+                    vault_id=2,
+                    requested_by=1,
+                    local_delete_enabled=True,
+                    now=before_recovery + timedelta(days=1),
+                )
+                after_retention = queue_auto_local_cleanups(
+                    connection,
+                    vault_id=2,
+                    requested_by=1,
+                    local_delete_enabled=True,
+                    now=before_recovery + timedelta(days=31),
+                )
+
+            self.assertEqual(next_pass, 0)
+            self.assertEqual(after_retention, 1)
+            self.assertEqual(
+                target.stat().st_mtime,
+                original_mtime,
+                "recovery must not rewrite the user's modification time",
+            )
 
     def test_mismatched_recovery_digest_does_not_replace_destination(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
