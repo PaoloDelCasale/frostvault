@@ -197,9 +197,6 @@ describe("NotificationCenter", () => {
           ],
         });
       }
-      if (url === "/api/vault/notification-preferences") {
-        return jsonResponse({ items: [] });
-      }
       throw new Error(`unexpected ${url}`);
     });
 
@@ -256,9 +253,6 @@ describe("NotificationCenter", () => {
           ],
         });
       }
-      if (url === "/api/vault/notification-preferences") {
-        return jsonResponse({ items: [] });
-      }
       if (url === "/api/notifications/read-all" && init?.method === "POST") {
         markAllCalls += 1;
         if (markAllCalls === 1) {
@@ -314,9 +308,6 @@ describe("NotificationCenter", () => {
             notificationItem({ id: 2, title: "Beta unread" }),
           ],
         });
-      }
-      if (url === "/api/vault/notification-preferences") {
-        return jsonResponse({ items: [] });
       }
       if (url === "/api/notifications/read" && init?.method === "POST") {
         markCalls += 1;
@@ -401,9 +392,6 @@ describe("NotificationCenter", () => {
           ],
         });
       }
-      if (url === "/api/vault/notification-preferences") {
-        return jsonResponse({ items: [] });
-      }
       if (url === "/api/notifications/read" && init?.method === "POST") {
         markOneCalls += 1;
         return jsonResponse(notificationItem({ id: 1, read: true }));
@@ -464,9 +452,6 @@ describe("NotificationCenter", () => {
           items: [notificationItem({ id: 44, title: "Sticky unread" })],
         });
       }
-      if (url === "/api/vault/notification-preferences") {
-        return jsonResponse({ items: [] });
-      }
       if (url === "/api/notifications/read" && init?.method === "POST") {
         return new Response("nope", { status: 500 });
       }
@@ -507,9 +492,6 @@ describe("NotificationCenter", () => {
           has_more: true,
           items: [notificationItem({ id: 2, title: "Newer unread" })],
         });
-      }
-      if (url === "/api/vault/notification-preferences") {
-        return jsonResponse({ items: [] });
       }
       if (url === "/api/notifications/read" && init?.method === "POST") {
         return new Response("nope", { status: 500 });
@@ -569,9 +551,6 @@ describe("NotificationCenter", () => {
           items: [notificationItem({ id: 2, title: "Page one" })],
         });
       }
-      if (url === "/api/vault/notification-preferences") {
-        return jsonResponse({ items: [] });
-      }
       if (url === "/api/notifications/read-all" && init?.method === "POST") {
         return new Response("nope", { status: 500 });
       }
@@ -626,9 +605,6 @@ describe("NotificationCenter", () => {
           has_more: true,
           items: [notificationItem({ id: 20, title: "Visible first page" })],
         });
-      }
-      if (url === "/api/vault/notification-preferences") {
-        return jsonResponse({ items: [] });
       }
       if (url === "/api/notifications/read-all" && init?.method === "POST") {
         allRead = true;
@@ -690,9 +666,6 @@ describe("NotificationCenter", () => {
           has_more: false,
           items,
         });
-      }
-      if (url === "/api/vault/notification-preferences") {
-        return jsonResponse({ items: [] });
       }
       throw new Error(`unexpected ${url}`);
     });
@@ -800,9 +773,6 @@ describe("NotificationCenter", () => {
           has_more: false,
           items: [notificationItem({ id: 1, title: "Ciao" })],
         });
-      }
-      if (url === "/api/vault/notification-preferences") {
-        return jsonResponse({ items: [] });
       }
       throw new Error(url);
     });

@@ -178,6 +178,10 @@ class DatabaseMigrationTests(unittest.TestCase):
                     "lookup_rate_limit_attempts",
                     "vault_quotas",
                     "cost_price_books",
+                    "notification_endpoints",
+                    "vault_notification_preferences",
+                    "user_vault_notification_preferences",
+                    "push_subscriptions",
                 },
                 set(),
             )
@@ -799,6 +803,42 @@ class DatabaseMigrationTests(unittest.TestCase):
                 },
             )
             self.assertEqual(tables & {"vault_quotas", "cost_price_books"}, set())
+
+    def test_notification_cut_preserves_inbox_email_and_only_cloud_copy(self) -> None:
+        from tests.notification_migration_contract import (
+            REMOVED_TABLES, preserved_state, seed_legacy_notifications,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "notifications.db"
+            baseline = run_alembic(path, "0045_drop_quotas_windows")
+            self.assertEqual(baseline.returncode, 0, baseline.stderr)
+            with SQLiteConnection(str(path)) as connection:
+                seed_legacy_notifications(connection)
+                before = preserved_state(connection)
+            for revision, command in (
+                ("head", "upgrade"),
+                ("0045_drop_quotas_windows", "downgrade"),
+                ("head", "upgrade"),
+            ):
+                result = run_alembic(path, revision, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                with SQLiteConnection(str(path)) as connection:
+                    self.assertEqual(preserved_state(connection), before)
+                    tables = {row["name"] for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()}
+                    if command == "upgrade":
+                        self.assertFalse(tables & REMOVED_TABLES)
+                        self.assertEqual(connection.execute(
+                            "SELECT COUNT(*) AS total FROM notification_deliveries"
+                        ).fetchone()["total"], 1)
+                    else:
+                        self.assertTrue(REMOVED_TABLES <= tables)
+                        for table in REMOVED_TABLES:
+                            self.assertEqual(connection.execute(
+                                f"SELECT COUNT(*) AS total FROM {table}"
+                            ).fetchone()["total"], 0)
 
     def test_invites_migration_preserves_existing_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

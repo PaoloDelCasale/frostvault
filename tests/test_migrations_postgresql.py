@@ -109,6 +109,38 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             )
         return missing_id
 
+    def test_notification_cut_preserves_inbox_email_and_only_cloud_copy(self) -> None:
+        from tests.notification_migration_contract import (
+            REMOVED_TABLES, preserved_state, seed_legacy_notifications,
+        )
+
+        baseline = run_alembic("0045_drop_quotas_windows")
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        with self._connection() as connection:
+            seed_legacy_notifications(connection)
+            before = preserved_state(connection)
+        for revision, command in (
+            ("head", "upgrade"),
+            ("0045_drop_quotas_windows", "downgrade"),
+            ("head", "upgrade"),
+        ):
+            result = run_alembic(revision, command)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            tables = set(sa.inspect(self.engine).get_table_names())
+            with self._connection() as connection:
+                self.assertEqual(preserved_state(connection), before)
+                if command == "upgrade":
+                    self.assertFalse(tables & REMOVED_TABLES)
+                    self.assertEqual(connection.execute(
+                        "SELECT COUNT(*) AS total FROM notification_deliveries"
+                    ).fetchone()["total"], 1)
+                else:
+                    self.assertTrue(REMOVED_TABLES <= tables)
+                    for table in REMOVED_TABLES:
+                        self.assertEqual(connection.execute(
+                            f"SELECT COUNT(*) AS total FROM {table}"
+                        ).fetchone()["total"], 0)
+
     def test_fresh_database_upgrades_and_rolls_back_losslessly(self) -> None:
         upgraded = run_alembic()
         self.assertEqual(upgraded.returncode, 0, upgraded.stderr)

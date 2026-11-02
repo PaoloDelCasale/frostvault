@@ -117,43 +117,95 @@ class NotificationDeliveryTests(unittest.TestCase):
     def test_terminal_events_always_reach_the_owner_inbox_without_email(self) -> None:
         with patch.object(notifications, "settings", replace(settings, smtp_host="")):
             with SQLiteConnection(str(self.path)) as connection:
-                for status, event in (("completed", "job_completed"), ("failed", "job_failed")):
-                    connection.execute("UPDATE jobs SET status=%s WHERE id=%s", (status, self.job_id))
-                    self.assertEqual(notifications.enqueue_job_terminal_notification(connection, job_id=self.job_id), 1)
+                for status, event in (
+                    ("completed", "job_completed"), ("failed", "job_failed"),
+                ):
+                    connection.execute(
+                        "UPDATE jobs SET status=%s WHERE id=%s", (status, self.job_id)
+                    )
+                    self.assertEqual(
+                        notifications.enqueue_job_terminal_notification(
+                            connection, job_id=self.job_id
+                        ), 1,
+                    )
                     row = connection.execute(
-                        "SELECT in_app_enabled, dedupe_key FROM notifications WHERE user_id=%s AND job_id=%s AND event=%s",
+                        "SELECT in_app_enabled, dedupe_key FROM notifications "
+                        "WHERE user_id=%s AND job_id=%s AND event=%s",
                         (self.user_id, self.job_id, event),
                     ).fetchone()
                     self.assertTrue(row["in_app_enabled"])
                     self.assertEqual(row["dedupe_key"], f"job:{self.job_id}:{event}")
-                self.assertEqual(len(notifications.list_in_app_notifications(connection, user_id=self.user_id)), 2)
-                self.assertEqual(notifications.list_in_app_notifications(connection, user_id=self.outsider_id), [])
-                self.assertEqual(connection.execute("SELECT COUNT(*) AS total FROM notification_deliveries").fetchone()["total"], 0)
+                self.assertEqual(len(notifications.list_in_app_notifications(
+                    connection, user_id=self.user_id
+                )), 2)
+                self.assertEqual(notifications.list_in_app_notifications(
+                    connection, user_id=self.outsider_id
+                ), [])
+                self.assertEqual(connection.execute(
+                    "SELECT COUNT(*) AS total FROM notification_deliveries"
+                ).fetchone()["total"], 0)
 
     def test_unread_count_ignores_limit_and_historical_email_only_rows(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
             for index in range(3):
-                notifications.enqueue_notification(connection, user_id=self.user_id, vault_id=self.vault_id, event="upload_verified", title=f"Upload {index}")
-            notifications.enqueue_notification(connection, user_id=self.user_id, vault_id=self.vault_id, event="job_completed", title="Email only", channels=("email",))
-            listed = notifications.list_in_app_notifications(connection, user_id=self.user_id, limit=1)
-            unread_count = notifications.count_unread_notifications(connection, user_id=self.user_id)
+                notifications.enqueue_notification(
+                    connection, user_id=self.user_id, vault_id=self.vault_id,
+                    event="upload_verified", title=f"Upload {index}",
+                )
+            notifications.enqueue_notification(
+                connection, user_id=self.user_id, vault_id=self.vault_id,
+                event="job_completed", title="Email only", channels=("email",),
+            )
+            listed = notifications.list_in_app_notifications(
+                connection, user_id=self.user_id, limit=1
+            )
+            unread_count = notifications.count_unread_notifications(
+                connection, user_id=self.user_id
+            )
         self.assertEqual(len(listed), 1)
         self.assertEqual(unread_count, 3)
         self.assertNotIn("Email only", {item["title"] for item in listed})
 
     def test_terminal_notification_deduplicates_canonical_row_and_delivery(self) -> None:
-        email_settings = replace(settings, smtp_host="smtp.example.test", smtp_from_address="alerts@example.test", smtp_to_address="owner@example.test")
-        with patch.object(notifications, "settings", email_settings), SQLiteConnection(str(self.path)) as connection:
-            connection.execute("UPDATE jobs SET status='failed' WHERE id=%s", (self.job_id,))
-            first = notifications.enqueue_job_terminal_notification(connection, job_id=self.job_id)
-            second = notifications.enqueue_job_terminal_notification(connection, job_id=self.job_id)
-            rows = connection.execute("SELECT id, dedupe_key FROM notifications WHERE job_id=%s", (self.job_id,)).fetchall()
-            deliveries = connection.execute("SELECT channel FROM notification_deliveries").fetchall()
+        email_settings = replace(
+            settings, smtp_host="smtp.example.test",
+            smtp_from_address="alerts@example.com", smtp_to_address="owner@example.com",
+        )
+        with patch.object(notifications, "settings", email_settings):
+            with SQLiteConnection(str(self.path)) as connection:
+                connection.execute(
+                    "UPDATE jobs SET status='failed' WHERE id=%s", (self.job_id,)
+                )
+                first = notifications.enqueue_job_terminal_notification(
+                    connection, job_id=self.job_id
+                )
+                second = notifications.enqueue_job_terminal_notification(
+                    connection, job_id=self.job_id
+                )
+                rows = connection.execute(
+                    "SELECT id, dedupe_key FROM notifications WHERE job_id=%s",
+                    (self.job_id,),
+                ).fetchall()
+                deliveries = connection.execute(
+                    "SELECT channel FROM notification_deliveries"
+                ).fetchall()
         self.assertEqual(first, 1)
         self.assertEqual(second, 0)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["dedupe_key"], f"job:{self.job_id}:job_failed")
         self.assertEqual([row["channel"] for row in deliveries], ["email"])
+
+    def test_removed_channels_are_rejected_before_writing_any_notification(self) -> None:
+        with SQLiteConnection(str(self.path)) as connection:
+            for channel in ("webhook", "push"):
+                with self.subTest(channel=channel), self.assertRaises(ValueError):
+                    notifications.enqueue_notification(
+                        connection, user_id=self.user_id, event="job_completed",
+                        title="Unsupported", channels=("in_app", channel),
+                    )
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) AS total FROM notifications"
+            ).fetchone()["total"], 0)
 
     def test_keyed_terminal_notification_renders_italian_and_legacy_fallback(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
@@ -405,16 +457,36 @@ class NotificationDeliveryTests(unittest.TestCase):
 
     def test_email_retries_are_bounded_and_do_not_change_job_result_or_inbox(self) -> None:
         smtp = _FailingSmtp()
-        email_settings = replace(settings, smtp_host="smtp.example.test", smtp_from_address="alerts@example.test", smtp_to_address="owner@example.test")
-        with patch.object(notifications, "settings", email_settings), SQLiteConnection(str(self.path)) as connection:
-            notifications.enqueue_notification(connection, user_id=self.user_id, vault_id=self.vault_id, event="upload_verified", title="Upload verified", job_id=self.job_id, channels=("in_app", "email"))
-            # Four delivery passes with max_attempts=3 must stop retrying.
-            for _ in range(4):
-                connection.execute("UPDATE notification_deliveries SET next_attempt_at='2000-01-01T00:00:00+00:00' WHERE status='pending'")
-                notifications.deliver_pending_notifications(connection, smtp_client=smtp, max_attempts=3)
-            job = connection.execute("SELECT status FROM jobs WHERE id=%s", (self.job_id,)).fetchone()
-            delivery = connection.execute("SELECT status, attempt_count FROM notification_deliveries").fetchone()
-            self.assertEqual(len(notifications.list_in_app_notifications(connection, user_id=self.user_id)), 1)
+        email_settings = replace(
+            settings, smtp_host="smtp.example.test",
+            smtp_from_address="alerts@example.com", smtp_to_address="owner@example.com",
+        )
+        with patch.object(notifications, "settings", email_settings):
+            with SQLiteConnection(str(self.path)) as connection:
+                notifications.enqueue_notification(
+                    connection, user_id=self.user_id, vault_id=self.vault_id,
+                    event="upload_verified", title="Upload verified",
+                    job_id=self.job_id, channels=("in_app", "email"),
+                )
+                # Four delivery passes with max_attempts=3 must stop retrying.
+                for _ in range(4):
+                    connection.execute(
+                        "UPDATE notification_deliveries "
+                        "SET next_attempt_at='2000-01-01T00:00:00+00:00' "
+                        "WHERE status='pending'"
+                    )
+                    notifications.deliver_pending_notifications(
+                        connection, smtp_client=smtp, max_attempts=3
+                    )
+                job = connection.execute(
+                    "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
+                ).fetchone()
+                delivery = connection.execute(
+                    "SELECT status, attempt_count FROM notification_deliveries"
+                ).fetchone()
+                self.assertEqual(len(notifications.list_in_app_notifications(
+                    connection, user_id=self.user_id
+                )), 1)
         self.assertEqual(job["status"], "completed")
         self.assertEqual(delivery["status"], "failed")
         self.assertEqual(delivery["attempt_count"], 3)
@@ -528,6 +600,23 @@ class NotificationReadHttpTests(unittest.TestCase):
         self.assertEqual(len(response.json()["items"]), 1)
         self.assertEqual(response.json()["unread_count"], 3)
         self.assertNotEqual(response.json()["items"][0]["title"], "Email only")
+
+    def test_removed_notification_routes_are_not_exposed(self) -> None:
+        self._authenticate(self.owner_token, self.owner_csrf)
+        for path, methods in (
+            ("/api/push/config", ("GET",)),
+            ("/api/push/subscriptions", ("POST",)),
+            ("/api/admin/notification-endpoints/webhook", ("POST",)),
+            ("/api/admin/notification-endpoints/smtp", ("POST",)),
+            ("/api/vault/notification-preferences", ("GET", "POST")),
+        ):
+            self.assertNotIn(path, app.openapi()["paths"])
+            for method in methods:
+                with self.subTest(path=path, method=method):
+                    response = self.client.request(
+                        method, path, headers={"X-CSRF-Token": self.owner_csrf}
+                    )
+                    self.assertEqual(response.status_code, 404, response.text)
 
     def test_mark_read_persists_through_http(self) -> None:
         notification_id = self._create_notification()

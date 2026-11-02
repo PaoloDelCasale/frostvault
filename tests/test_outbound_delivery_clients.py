@@ -243,7 +243,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
                 factory.return_value = smtp
                 notifications.SmtpNotificationClient().send({
                     "host": "smtp.example.test", "port": port,
-                    "from_address": "alerts@example.test", "to_address": "owner@example.test",
+                    "from_address": "alerts@example.com", "to_address": "owner@example.com",
                     "username": "alerts", "password": "test-only-password", "use_tls": True,
                 })
                 factory.assert_called_once()

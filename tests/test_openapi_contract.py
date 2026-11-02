@@ -44,7 +44,9 @@ class OpenApiResponseContractTests(unittest.TestCase):
             success = operation["responses"][str(route.status_code or 200)]
             response_schema = success["content"]["application/json"]["schema"]
             self.assertTrue(response_schema, route.path)
-        self.assertGreater(checked, 70)
+        # Guard against an empty traversal, not a minimum API size: the core
+        # simplification deliberately removes routes (#410).
+        self.assertGreater(checked, 0)
 
     def test_response_serialization_preserves_all_existing_fields(self) -> None:
         probe = FastAPI()
