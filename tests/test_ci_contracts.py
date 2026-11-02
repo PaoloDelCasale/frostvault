@@ -30,6 +30,11 @@ def _semver(version: str) -> tuple[int, int, int]:
     )
 
 
+def _override_floor(spec: str) -> tuple[int, int, int]:
+    """Lower bound of an override range such as ``^10.7.5`` or ``>=2.4.0``."""
+    return _semver(spec.lstrip("^~>=< "))
+
+
 def _workflow_on(workflow: dict) -> dict | list | str:
     # PyYAML 1.1 may parse the key ``on`` as boolean True.
     if "on" in workflow:
@@ -359,22 +364,90 @@ class SecurityWorkflowContractTests(unittest.TestCase):
         self.assertTrue(any("gitleaks detect" in block for block in gitleaks_runs))
 
 
+class AuditGatesDoNotBlockUnrelatedMergesTests(unittest.TestCase):
+    """Advisories published after a PR opens must not block unrelated merges.
+
+    Pull requests audit in baseline mode (only findings the change introduces
+    fail); main and the daily schedule stay strict and keep a tracking issue.
+    """
+
+    def setUp(self) -> None:
+        self.workflow = yaml.safe_load(
+            (WORKFLOWS / "security.yml").read_text(encoding="utf-8")
+        )
+        self.jobs = self.workflow["jobs"]
+
+    def test_schedule_is_daily(self) -> None:
+        crons = [item["cron"] for item in _workflow_on(self.workflow)["schedule"]]
+        self.assertEqual(len(crons), 1)
+        minute, hour, dom, month, dow = crons[0].split()
+        self.assertEqual((dom, month, dow), ("*", "*", "*"))
+
+    def test_each_audit_has_baseline_mode_and_issue_tracking(self) -> None:
+        for job_name, gate_script, baseline_flag in (
+            ("dependency-review", "scripts/pip_audit_gate.py", "--baseline"),
+            ("npm-audit", "scripts/npm-audit-gate.mjs", "--baseline-full"),
+        ):
+            with self.subTest(job=job_name):
+                job = self.jobs[job_name]
+                self.assertEqual(job["permissions"].get("issues"), "write")
+                steps = job["steps"]
+                gate = next(step for step in steps if step.get("id") == "gate")
+                self.assertIn(gate_script, gate["run"])
+                self.assertIn(baseline_flag, gate["run"])
+                self.assertIn('"$GITHUB_EVENT_NAME" = "pull_request"', gate["run"])
+                self.assertIn("origin/${BASE_REF}", gate["run"])
+                checkout = next(
+                    step
+                    for step in steps
+                    if str(step.get("uses", "")).startswith("actions/checkout@")
+                )
+                self.assertEqual(checkout["with"]["fetch-depth"], 0)
+                self.assertIs(checkout["with"]["persist-credentials"], False)
+                tracker = next(
+                    step for step in steps if "ci_audit_issue.sh" in step.get("run", "")
+                )
+                self.assertIn("github.event_name != 'pull_request'", tracker["if"])
+                self.assertIn("steps.gate.outcome", tracker["env"]["GATE_OUTCOME"])
+
+    def test_issue_tracker_script_is_one_self_closing_issue(self) -> None:
+        script = (ROOT / "scripts" / "ci_audit_issue.sh").read_text(encoding="utf-8")
+        self.assertIn("set -euo pipefail", script)
+        self.assertIn("gh issue edit", script)
+        self.assertIn("gh issue create", script)
+        self.assertIn("gh issue close", script)
+
+    def test_docs_describe_the_two_modes(self) -> None:
+        docs = (ROOT / "docs" / "ci.md").read_text(encoding="utf-8")
+        self.assertIn("baseline mode", docs)
+        self.assertIn("Security audit failing on main", docs)
+
+
 class NpmAuditBaselineContractTests(unittest.TestCase):
     """Issue #308: patched npm lockfile copies plus a dated exception process."""
 
     def test_frontend_overrides_floor_patched_advisory_lines(self) -> None:
         package = json.loads((ROOT / "frontend" / "package.json").read_text(encoding="utf-8"))
         overrides = package["overrides"]
-        self.assertEqual(overrides["brace-expansion@1"], "^1.1.21")
-        self.assertEqual(overrides["brace-expansion@2"], "^2.1.7")
-        self.assertEqual(overrides["brace-expansion@5"], "^5.0.12")
-        self.assertEqual(overrides["fast-uri@3"], "^3.1.8")
-        self.assertEqual(overrides["ip-address@10"], "^10.7.5")
-        self.assertEqual(overrides["body-parser"], "^2.4.0")
-        self.assertEqual(overrides["glob"], "^14.0.3")
-        self.assertEqual(overrides["nanoid@3"], "^3.3.18")
-        self.assertEqual(overrides["qs@6"], "^6.16.0")
-        self.assertEqual(overrides["undici@7"], "^7.29.1")
+        # Floors, not exact pins: a Dependabot/advisory bump to a newer patched
+        # release must not fail this contract. Each override must still require
+        # at least the first patched release of its advisory line.
+        floors = {
+            "body-parser": (2, 4, 0),
+            "brace-expansion@1": (1, 1, 21),
+            "brace-expansion@2": (2, 1, 7),
+            "brace-expansion@5": (5, 0, 12),
+            "fast-uri@3": (3, 1, 8),
+            "glob": (14, 0, 2),
+            "ip-address@10": (10, 7, 5),
+            "nanoid@3": (3, 3, 18),
+            "qs@6": (6, 16, 0),
+            "undici@7": (7, 29, 1),
+        }
+        for name, floor in floors.items():
+            with self.subTest(override=name):
+                self.assertIn(name, overrides)
+                self.assertGreaterEqual(_override_floor(overrides[name]), floor, name)
         self.assertNotIn("qs", overrides)
 
     def test_lockfile_copies_are_at_or_above_advisory_floors(self) -> None:
