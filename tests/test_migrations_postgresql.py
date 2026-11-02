@@ -475,8 +475,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 sa.text(
                     """
                     INSERT INTO users(
-                        id, username, display_name, password_hash, is_admin
-                    ) VALUES (7, 'owner', 'Owner', 'hash', TRUE)
+                        id, username, display_name, password_hash
+                    ) VALUES (7, 'owner', 'Owner', 'hash')
                     """
                 )
             )
