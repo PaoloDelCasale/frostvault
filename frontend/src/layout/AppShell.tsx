@@ -65,7 +65,6 @@ export function AppShell({
         onAdministration: handlers.onAdministration,
         onSignOut: handlers.onSignOut,
         onLocaleChange: handlers.onLocaleChange,
-        onVaultChange: handlers.onVaultChange,
       }
     : undefined;
 

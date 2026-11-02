@@ -76,7 +76,6 @@ export type AccountMenuHandlers = {
   onAdministration?: () => void;
   onSignOut?: () => void;
   onLocaleChange?: (locale: string) => void;
-  onVaultChange?: (vaultId: number) => void;
 };
 
 type AccountPreferencesMenuProps = {
