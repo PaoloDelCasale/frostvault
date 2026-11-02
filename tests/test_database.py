@@ -40,6 +40,9 @@ def _run_alembic_subprocess(
     )
 
 
+# Resolved at import: some tests patch ``tempfile.gettempdir`` to a directory
+# they delete, which must never host the process-wide template.
+_HEAD_TEMPLATE_ROOT = tempfile.gettempdir()
 _HEAD_TEMPLATE_LOCK = threading.Lock()
 _HEAD_TEMPLATE: dict[str, Path | subprocess.CompletedProcess[str]] = {}
 
@@ -53,7 +56,9 @@ def _head_schema_template() -> tuple[Path | None, subprocess.CompletedProcess[st
     """
     with _HEAD_TEMPLATE_LOCK:
         if "result" not in _HEAD_TEMPLATE:
-            directory = Path(tempfile.mkdtemp(prefix="frostvault-schema-"))
+            directory = Path(
+                tempfile.mkdtemp(prefix="frostvault-schema-", dir=_HEAD_TEMPLATE_ROOT)
+            )
             atexit.register(shutil.rmtree, directory, True)
             template = directory / "head.db"
             result = _run_alembic_subprocess(template, "head", "upgrade")
