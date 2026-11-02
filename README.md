@@ -33,6 +33,16 @@ Search remains global across every file in the selected vault.
   upload and destroys previous cloud bytes after that verification. The choice
   is immutable. Bootstrap Vaults remain Archive History. The shared S3 bucket
   stays versioned either way.
+- A file whose Local Copy is gone (freed or deleted via SMB) keeps its verified
+  cloud copy as the only copy. If **different** content later appears at the
+  same path, FrostVault does not upload it: the file shows a conflict with a
+  file kept only in the cloud, and an immediate notification (in-app, plus
+  email when SMTP is configured) explains it. Rename the new file to protect
+  it at its new path, or confirm the replacement with
+  `POST /api/files/cloud-only-conflict/replace` (primary owner only): the new
+  content is uploaded and verified before the previous cloud copy is deleted.
+  Identical content is never a conflict; it becomes the Local Copy again
+  without an upload.
 - New vaults can use an empty managed root or adopt an existing directory from
   an exclusive Source Area assigned to the user. Source Areas authorize vault
   creation only; vault membership remains the sole data-access boundary.

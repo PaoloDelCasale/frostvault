@@ -381,6 +381,7 @@ def queue_auto_uploads(
           AND vf.status='active'
           AND lc.presence='present'
           AND lc.file_type='regular'
+          AND lc.cloud_only_version_id IS NULL
           AND NOT EXISTS (
               SELECT 1 FROM cloud_deletion_items pending_delete
               WHERE pending_delete.vault_file_id=vf.id

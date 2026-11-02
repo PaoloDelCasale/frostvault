@@ -61,6 +61,8 @@ CRITICAL_KEYS: frozenset[str] = frozenset(
         "notification.job_failed.body",
         "notification.archive_version_missing.title",
         "notification.archive_version_missing.body",
+        "notification.cloud_only_conflict.title",
+        "notification.cloud_only_conflict.body",
         "api.upload_started",
         "api.recovery_started",
         "api.free_space_started",

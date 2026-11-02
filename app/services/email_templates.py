@@ -75,6 +75,14 @@ TEMPLATES: dict[str, dict[str, str]] = {
             "{title}\n{body}\n"
         ),
     },
+    "cloud_only_conflict": {
+        "subject": f"{SUBJECT_PREFIX} Conflict with a file kept only in the cloud",
+        "body": (
+            "New content was not uploaded in vault {vault_id}: it would replace "
+            "the only cloud copy of a file at the same path.\n"
+            "{title}\n{body}\n"
+        ),
+    },
     "default": {
         "subject": f"{SUBJECT_PREFIX} {{title}}",
         "body": "{body}\n",

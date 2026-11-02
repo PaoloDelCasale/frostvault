@@ -212,6 +212,8 @@
   "notification.job_failed.body": "{action}: {path}",
   "notification.archive_version_missing.title": "Archive version missing from S3",
   "notification.archive_version_missing.body": "{path} (version {archive_version_id}, S3 {provider_version_id}) was no longer listed at {observed_at}. Review the Vault File and re-upload the Local Copy if it is still present.",
+  "notification.cloud_only_conflict.title": "Conflict with a file kept only in the cloud",
+  "notification.cloud_only_conflict.body": "{path} now has different content, observed at {observed_at}, but the only copy of the previous file is in the cloud. The new content was not uploaded. Rename the new file to protect it at its new path, or confirm the replacement.",
   "ui.notifications_open": "Open notifications",
   "ui.notifications_open_unread": "Open notifications ({count} unread)",
   "ui.notifications_title": "Notifications",

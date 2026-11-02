@@ -834,6 +834,20 @@
         ],
         "type": "string"
       },
+      "CloudOnlyReplacementAction": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "CloudOnlyReplacementAction",
+        "type": "object"
+      },
       "CloudPurgePayload": {
         "additionalProperties": true,
         "properties": {
@@ -7939,6 +7953,45 @@
           }
         },
         "summary": "List Files"
+      }
+    },
+    "/api/files/cloud-only-conflict/replace": {
+      "post": {
+        "description": "Confirm that new content replaces the only cloud copy at its path.",
+        "operationId": "replace_cloud_only_copy_api_files_cloud_only_conflict_replace_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloudOnlyReplacementAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonObjectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
+          }
+        },
+        "summary": "Replace Cloud Only Copy"
       }
     },
     "/api/files/versions": {

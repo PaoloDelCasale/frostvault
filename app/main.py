@@ -113,6 +113,7 @@ from .services.vault_recovery import (
 )
 from .services.vault_roles import can_operate, is_owner
 from .services import audit_events as audit_event_store
+from .services import catalog_incidents as catalog_incident_service
 from .services import health as health_service
 from .services import metadata_backups as metadata_backup_service
 from .services import metrics as metrics_service
@@ -1004,6 +1005,12 @@ class FileAction(BaseModel):
     archive_version_id: str | None = None
     restore_tier: str | None = None
     restore_days: int | None = Field(default=None, ge=1, le=30)
+
+
+class CloudOnlyReplacementAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
 
 
 class RecoverEstimateRequest(BaseModel):
@@ -3861,6 +3868,51 @@ def upload(
     if not can_operate(vault["role"]):
         raise HTTPException(403, "Vault is read-only")
     queued = queue_jobs(action.path, "upload", vault["id"], user["id"], action.is_directory)
+    return {**queued, **_api_message(request, "api.upload_started")}
+
+
+def confirm_cloud_only_replacement(
+    path: str, vault_id: int, user_id: int
+) -> dict[str, Any]:
+    """Release held-back content and queue the upload that replaces the copy.
+
+    The previous Archive Version was the only cloud copy; Current Snapshot
+    deletes it only after the new upload is verified (#411, #363 D7).
+    """
+    logical_path = safe_relative_path(path).as_posix()
+    with db() as connection:
+        try:
+            catalog_incident_service.confirm_cloud_only_replacement(
+                connection,
+                vault_id=vault_id,
+                path=logical_path,
+                actor_user_id=user_id,
+            )
+        except catalog_incident_service.NoCloudOnlyConflict as exc:
+            raise HTTPException(
+                409, "No conflict with a cloud-only file at this path"
+            ) from exc
+    return queue_jobs(logical_path, "upload", vault_id, user_id)
+
+
+@app.post(
+    "/api/files/cloud-only-conflict/replace",
+    status_code=202,
+    response_model=JsonObjectResponse,
+    responses=LOGICAL_PATH_ERROR_RESPONSES,
+)
+def replace_cloud_only_copy(
+    action: CloudOnlyReplacementAction,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    vault: dict[str, Any] = Depends(current_vault),
+):
+    """Confirm that new content replaces the only cloud copy at its path."""
+    if not is_owner(vault["role"]):
+        raise HTTPException(
+            403, "Only the primary owner can replace a cloud-only copy"
+        )
+    queued = confirm_cloud_only_replacement(action.path, vault["id"], user["id"])
     return {**queued, **_api_message(request, "api.upload_started")}
 
 
