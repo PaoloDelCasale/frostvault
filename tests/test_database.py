@@ -134,9 +134,11 @@ class DatabaseMigrationTests(unittest.TestCase):
             with patch("app.database.settings", test_settings):
                 initialize_database()
             with SQLiteConnection(str(path)) as connection:
-                columns = {
+                policy_columns = {
                     row["name"]
-                    for row in connection.execute("PRAGMA table_info(vault_quotas)").fetchall()
+                    for row in connection.execute(
+                        "PRAGMA table_info(vault_operation_policies)"
+                    ).fetchall()
                 }
                 system_setting_columns = {
                     row["name"]
@@ -154,17 +156,11 @@ class DatabaseMigrationTests(unittest.TestCase):
                     row["name"]
                     for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
                 }
+            # No quotas, operating windows or per-Vault bandwidth (#413).
             self.assertEqual(
-                columns,
-                {
-                    "vault_id",
-                    "storage_soft_limit_bytes",
-                    "storage_hard_limit_bytes",
-                    "concurrency_soft_limit",
-                    "concurrency_hard_limit",
-                    "restore_30d_soft_limit_bytes",
-                    "restore_30d_hard_limit_bytes",
-                },
+                policy_columns
+                & {"bandwidth_limit_kibps", "operating_windows_json"},
+                set(),
             )
             self.assertEqual(
                 system_setting_columns,
@@ -180,6 +176,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                     "vault_members",
                     "lookup_rate_limit_keys",
                     "lookup_rate_limit_attempts",
+                    "vault_quotas",
+                    "cost_price_books",
                 },
                 set(),
             )
@@ -741,6 +739,66 @@ class DatabaseMigrationTests(unittest.TestCase):
             )
             self.assertEqual(vaults, [{"id": 5}])
             self.assertEqual(settings_rows, [{"key": "scan_interval", "updated_by": 2}])
+
+    def test_quota_window_migration_keeps_the_rest_of_the_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "quotas.db"
+            baseline = run_alembic(path, "0044_single_owner")
+            self.assertEqual(baseline.returncode, 0, baseline.stderr)
+            with SQLiteConnection(str(path)) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO vaults(
+                        id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
+                    ) VALUES (5, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO vault_operation_policies(
+                        vault_id, auto_upload, stability_seconds, include_globs_json,
+                        exclude_globs_json, auto_local_cleanup, local_retention_days,
+                        bandwidth_limit_kibps, operating_windows_json
+                    ) VALUES (
+                        5, TRUE, 600, '["**/*.jpg"]', '["tmp/**"]', TRUE, 30, 256,
+                        '[{"weekday": 0, "start": "09:00", "end": "17:00"}]'
+                    )
+                    """
+                )
+                connection.execute(
+                    "INSERT INTO vault_quotas(vault_id, storage_hard_limit_bytes) "
+                    "VALUES (5, 1)"
+                )
+                connection.execute(
+                    "INSERT INTO cost_price_books(name, effective_at, updated_at, is_active) "
+                    "VALUES ('custom', '2026-07-01', '2026-07-01', TRUE)"
+                )
+
+            migrated = run_alembic(path)
+            self.assertEqual(migrated.returncode, 0, migrated.stderr)
+            with SQLiteConnection(str(path)) as connection:
+                policy = connection.execute(
+                    "SELECT * FROM vault_operation_policies WHERE vault_id=5"
+                ).fetchone()
+                tables = {
+                    row["name"]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+            self.assertEqual(
+                dict(policy),
+                {
+                    "vault_id": 5,
+                    "auto_upload": 1,
+                    "stability_seconds": 600,
+                    "include_globs_json": '["**/*.jpg"]',
+                    "exclude_globs_json": '["tmp/**"]',
+                    "auto_local_cleanup": 1,
+                    "local_retention_days": 30,
+                },
+            )
+            self.assertEqual(tables & {"vault_quotas", "cost_price_books"}, set())
 
     def test_invites_migration_preserves_existing_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

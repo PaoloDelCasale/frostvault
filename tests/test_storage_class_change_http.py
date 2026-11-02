@@ -23,6 +23,7 @@ from app.catalog import ArchiveCatalog
 from app.config import settings
 from app.database import SQLiteConnection
 from app.security import hash_password
+from app.services.cost_estimates import list_prices
 from app.sessions import create_session, csrf_token_for
 from app import storage as storage_module
 from tests.test_database import run_alembic
@@ -159,28 +160,37 @@ class StorageClassChangeHttpTests(unittest.TestCase):
         response = self.client.get("/api/storage-classes", headers=self._headers())
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
+        prices = list_prices(settings.aws_region)
         items = {item["id"]: item for item in payload["items"]}
         self.assertIn("STANDARD", items)
         self.assertIn("DEEP_ARCHIVE", items)
         standard = items["STANDARD"]
         deep = items["DEEP_ARCHIVE"]
         self.assertEqual(standard["currency"], "EUR")
-        self.assertEqual(standard["storage_rate_eur_per_gib_month"], 0.023)
+        self.assertEqual(
+            standard["storage_rate_eur_per_gib_month"], prices.storage_rates["STANDARD"]
+        )
         self.assertEqual(standard["retrieval"], "instant")
         self.assertEqual(standard["min_duration_days"], 0)
         self.assertFalse(standard["requires_restore"])
-        self.assertEqual(deep["storage_rate_eur_per_gib_month"], 0.00099)
+        self.assertEqual(
+            deep["storage_rate_eur_per_gib_month"], prices.storage_rates["DEEP_ARCHIVE"]
+        )
         self.assertEqual(deep["retrieval"], "restore")
         self.assertEqual(deep["min_duration_days"], 180)
         self.assertTrue(deep["requires_restore"])
         self.assertEqual(deep["restore_hours_bulk"], 48.0)
-        self.assertEqual(deep["restore_rate_eur_per_gib_bulk"], 0.0025)
+        self.assertEqual(
+            deep["restore_rate_eur_per_gib_bulk"],
+            prices.restore_rates["DEEP_ARCHIVE"]["Bulk"],
+        )
         glacier_ir = items["GLACIER_IR"]
         self.assertEqual(glacier_ir["retrieval"], "instant")
         self.assertFalse(glacier_ir["requires_restore"])
         self.assertEqual(glacier_ir["retrieval_rate_eur_per_gib"], 0.03)
         self.assertNotIn("retrieval_rate_eur_per_gib", standard)
         self.assertIn("disclaimer", payload["assumptions"])
+        self.assertEqual(payload["assumptions"]["region"], prices.region)
 
     def test_deep_archive_warm_enqueue_attaches_restore_estimate(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
@@ -210,7 +220,8 @@ class StorageClassChangeHttpTests(unittest.TestCase):
         self.assertTrue(payload["requires_restore"])
         self.assertEqual(payload["restore_tier"], "Bulk")
         self.assertEqual(payload["estimated_hours"], 48.0)
-        self.assertAlmostEqual(payload["estimated_cost_eur"], 0.0025, places=6)
+        bulk_rate = list_prices(settings.aws_region).restore_rates["DEEP_ARCHIVE"]["Bulk"]
+        self.assertAlmostEqual(payload["estimated_cost_eur"], bulk_rate, places=6)
         with SQLiteConnection(str(self.path)) as connection:
             job = connection.execute(
                 """
@@ -222,7 +233,7 @@ class StorageClassChangeHttpTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(job["target_storage_class"], "STANDARD")
         self.assertEqual(job["restore_tier"], "Bulk")
-        self.assertAlmostEqual(float(job["estimated_cost_eur"]), 0.0025, places=6)
+        self.assertAlmostEqual(float(job["estimated_cost_eur"]), bulk_rate, places=6)
         self.assertEqual(float(job["estimated_hours"]), 48.0)
 
     def test_single_file_noop_target_class_is_rejected(self) -> None:

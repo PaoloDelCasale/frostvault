@@ -1,0 +1,925 @@
+{
+  "currency": "USD",
+  "publication_date": "2026-10-15T17:35:40Z",
+  "regions": {
+    "af-south-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.024
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.036,
+          "Standard": 0.012
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0018,
+        "GLACIER": 0.00405,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.0274,
+        "ONEZONE_IA": 0.0119,
+        "STANDARD": 0.0274,
+        "STANDARD_IA": 0.0149
+      }
+    },
+    "ap-east-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.024
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.036,
+          "Standard": 0.012
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.002,
+        "GLACIER": 0.0045,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.011,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "ap-east-2": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.022
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.033,
+          "Standard": 0.011
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.002,
+        "GLACIER": 0.0045,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.0225,
+        "ONEZONE_IA": 0.0099,
+        "STANDARD": 0.0225,
+        "STANDARD_IA": 0.01242
+      }
+    },
+    "ap-northeast-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.022
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.033,
+          "Standard": 0.011
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.002,
+        "GLACIER": 0.0045,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.011,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "ap-northeast-2": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.022
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.033,
+          "Standard": 0.011
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.002,
+        "GLACIER": 0.0045,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.011,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "ap-northeast-3": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.022
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.033,
+          "Standard": 0.011
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.002,
+        "GLACIER": 0.0045,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.011,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "ap-south-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.024
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.036,
+          "Standard": 0.012
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.002,
+        "GLACIER": 0.0045,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.011,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "ap-south-2": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.024
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.036,
+          "Standard": 0.012
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.002,
+        "GLACIER": 0.0045,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.011,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "ap-southeast-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.024
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.036,
+          "Standard": 0.012
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.002,
+        "GLACIER": 0.0045,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.011,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "ap-southeast-2": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.024
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.036,
+          "Standard": 0.012
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.002,
+        "GLACIER": 0.0045,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.011,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "ap-southeast-3": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.024
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.036,
+          "Standard": 0.012
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.002,
+        "GLACIER": 0.0045,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.011,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "ap-southeast-4": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.024
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.036,
+          "Standard": 0.012
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.002,
+        "GLACIER": 0.0045,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.011,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "ap-southeast-5": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.0045,
+          "Standard": 0.0216
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.0324,
+          "Standard": 0.0108
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0018,
+        "GLACIER": 0.00405,
+        "GLACIER_IR": 0.0045,
+        "INTELLIGENT_TIERING": 0.0225,
+        "ONEZONE_IA": 0.0099,
+        "STANDARD": 0.0225,
+        "STANDARD_IA": 0.01242
+      }
+    },
+    "ap-southeast-6": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.00525,
+          "Standard": 0.0252
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.0378,
+          "Standard": 0.0126
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0021,
+        "GLACIER": 0.004725,
+        "GLACIER_IR": 0.00525,
+        "INTELLIGENT_TIERING": 0.02625,
+        "ONEZONE_IA": 0.01155,
+        "STANDARD": 0.02625,
+        "STANDARD_IA": 0.01449
+      }
+    },
+    "ap-southeast-7": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.0045,
+          "Standard": 0.0216
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.0324,
+          "Standard": 0.0108
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0018,
+        "GLACIER": 0.00405,
+        "GLACIER_IR": 0.0045,
+        "INTELLIGENT_TIERING": 0.0225,
+        "ONEZONE_IA": 0.0099,
+        "STANDARD": 0.0225,
+        "STANDARD_IA": 0.01242
+      }
+    },
+    "ca-central-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.022
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.033,
+          "Standard": 0.011
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0018,
+        "GLACIER": 0.00405,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.01104,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "ca-west-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.022
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.033,
+          "Standard": 0.011
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0018,
+        "GLACIER": 0.00405,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.01104,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "eu-central-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.024
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.036,
+          "Standard": 0.012
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0018,
+        "GLACIER": 0.00405,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.0245,
+        "ONEZONE_IA": 0.0108,
+        "STANDARD": 0.0245,
+        "STANDARD_IA": 0.0135
+      }
+    },
+    "eu-central-2": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.024
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.036,
+          "Standard": 0.012
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.00198,
+        "GLACIER": 0.004455,
+        "GLACIER_IR": 0.0055,
+        "INTELLIGENT_TIERING": 0.02695,
+        "ONEZONE_IA": 0.01188,
+        "STANDARD": 0.02695,
+        "STANDARD_IA": 0.01485
+      }
+    },
+    "eu-north-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.003,
+          "Standard": 0.02
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.03,
+          "Standard": 0.01
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.00099,
+        "GLACIER": 0.0036,
+        "GLACIER_IR": 0.004,
+        "INTELLIGENT_TIERING": 0.023,
+        "ONEZONE_IA": 0.01,
+        "STANDARD": 0.023,
+        "STANDARD_IA": 0.0125
+      }
+    },
+    "eu-south-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.024
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.036,
+          "Standard": 0.012
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0018,
+        "GLACIER": 0.00405,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.024,
+        "ONEZONE_IA": 0.0105,
+        "STANDARD": 0.024,
+        "STANDARD_IA": 0.0131
+      }
+    },
+    "eu-south-2": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.024
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.036,
+          "Standard": 0.012
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0018,
+        "GLACIER": 0.00405,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.023,
+        "ONEZONE_IA": 0.01,
+        "STANDARD": 0.023,
+        "STANDARD_IA": 0.0125
+      }
+    },
+    "eu-west-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.003,
+          "Standard": 0.02
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.03,
+          "Standard": 0.01
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.00099,
+        "GLACIER": 0.0036,
+        "GLACIER_IR": 0.004,
+        "INTELLIGENT_TIERING": 0.023,
+        "ONEZONE_IA": 0.01,
+        "STANDARD": 0.023,
+        "STANDARD_IA": 0.0125
+      }
+    },
+    "eu-west-2": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.021
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.0315,
+          "Standard": 0.0105
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0018,
+        "GLACIER": 0.00405,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.024,
+        "ONEZONE_IA": 0.01048,
+        "STANDARD": 0.024,
+        "STANDARD_IA": 0.0131
+      }
+    },
+    "eu-west-3": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.005,
+          "Standard": 0.021
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.0315,
+          "Standard": 0.0105
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0018,
+        "GLACIER": 0.00405,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.024,
+        "ONEZONE_IA": 0.01048,
+        "STANDARD": 0.024,
+        "STANDARD_IA": 0.0131
+      }
+    },
+    "il-central-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.0033,
+          "Standard": 0.022
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.033,
+          "Standard": 0.011
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0018,
+        "GLACIER": 0.00405,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.01104,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "me-central-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.0033,
+          "Standard": 0.022
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.033,
+          "Standard": 0.011
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0018,
+        "GLACIER": 0.00405,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.01104,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "me-south-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.0033,
+          "Standard": 0.022
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.033,
+          "Standard": 0.011
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0018,
+        "GLACIER": 0.00405,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.025,
+        "ONEZONE_IA": 0.01104,
+        "STANDARD": 0.025,
+        "STANDARD_IA": 0.0138
+      }
+    },
+    "mx-central-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.002625,
+          "Standard": 0.021
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.0315,
+          "Standard": 0.0105
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.002,
+        "GLACIER": 0.00378,
+        "GLACIER_IR": 0.0042,
+        "INTELLIGENT_TIERING": 0.02415,
+        "ONEZONE_IA": 0.0105,
+        "STANDARD": 0.02415,
+        "STANDARD_IA": 0.013125
+      }
+    },
+    "sa-east-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.008,
+          "Standard": 0.028
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.042,
+          "Standard": 0.014
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.0032,
+        "GLACIER": 0.00765,
+        "GLACIER_IR": 0.0083,
+        "INTELLIGENT_TIERING": 0.0405,
+        "ONEZONE_IA": 0.0177,
+        "STANDARD": 0.0405,
+        "STANDARD_IA": 0.0221
+      }
+    },
+    "us-east-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.0025,
+          "Standard": 0.02
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.03,
+          "Standard": 0.01
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.00099,
+        "GLACIER": 0.0036,
+        "GLACIER_IR": 0.004,
+        "INTELLIGENT_TIERING": 0.023,
+        "ONEZONE_IA": 0.01,
+        "STANDARD": 0.023,
+        "STANDARD_IA": 0.0125
+      }
+    },
+    "us-east-2": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.0025,
+          "Standard": 0.02
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.03,
+          "Standard": 0.01
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.00099,
+        "GLACIER": 0.0036,
+        "GLACIER_IR": 0.004,
+        "INTELLIGENT_TIERING": 0.023,
+        "ONEZONE_IA": 0.01,
+        "STANDARD": 0.023,
+        "STANDARD_IA": 0.0125
+      }
+    },
+    "us-west-1": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.0035,
+          "Standard": 0.022
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.033,
+          "Standard": 0.011
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.002,
+        "GLACIER": 0.0045,
+        "GLACIER_IR": 0.005,
+        "INTELLIGENT_TIERING": 0.026,
+        "ONEZONE_IA": 0.0115,
+        "STANDARD": 0.026,
+        "STANDARD_IA": 0.0144
+      }
+    },
+    "us-west-2": {
+      "instant_retrieval": {
+        "GLACIER_IR": 0.03,
+        "ONEZONE_IA": 0.01,
+        "STANDARD_IA": 0.01
+      },
+      "restore": {
+        "DEEP_ARCHIVE": {
+          "Bulk": 0.0025,
+          "Standard": 0.02
+        },
+        "GLACIER": {
+          "Bulk": 0.0,
+          "Expedited": 0.03,
+          "Standard": 0.01
+        }
+      },
+      "storage": {
+        "DEEP_ARCHIVE": 0.00099,
+        "GLACIER": 0.0036,
+        "GLACIER_IR": 0.004,
+        "INTELLIGENT_TIERING": 0.023,
+        "ONEZONE_IA": 0.01,
+        "STANDARD": 0.023,
+        "STANDARD_IA": 0.0125
+      }
+    }
+  },
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3 and AmazonS3GlacierDeepArchive"
+}

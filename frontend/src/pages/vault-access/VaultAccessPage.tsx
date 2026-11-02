@@ -16,7 +16,6 @@ import { VaultAuditEventsPanel } from "./AuditEventsPanel";
 import { CloudDeletionPanel } from "./CloudDeletionPanel";
 import { LifecyclePanel } from "./LifecyclePanel";
 import { OperationPolicyPanel } from "./OperationPolicyPanel";
-import { QuotasPanel } from "./QuotasPanel";
 import { RetentionPanel } from "./RetentionPanel";
 
 export type VaultAccessPageProps = {
@@ -112,7 +111,6 @@ export function VaultAccessPage({
         </section>
       ) : (
         <>
-      <QuotasPanel vaultId={vaultId} onNotice={show} />
       <RetentionPanel onNotice={show} />
       <OperationPolicyPanel onNotice={show} />
       <LifecyclePanel onNotice={show} />

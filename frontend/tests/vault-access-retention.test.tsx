@@ -52,8 +52,6 @@ describe("VaultAccessPage — Local Copy retention (seam 4)", () => {
           stability_seconds: 300,
           include_globs: [],
           exclude_globs: [],
-          bandwidth_limit_kibps: null,
-          operating_windows: [],
         },
       ]);
     });

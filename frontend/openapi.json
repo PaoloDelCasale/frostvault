@@ -573,81 +573,6 @@
         "title": "ConfirmRenameAction",
         "type": "object"
       },
-      "CostPriceBookActivate": {
-        "additionalProperties": false,
-        "properties": {
-          "reason": {
-            "maxLength": 500,
-            "minLength": 3,
-            "title": "Reason",
-            "type": "string"
-          }
-        },
-        "required": [
-          "reason"
-        ],
-        "title": "CostPriceBookActivate",
-        "type": "object"
-      },
-      "CostPriceBookCreate": {
-        "additionalProperties": false,
-        "properties": {
-          "assumptions": {
-            "additionalProperties": true,
-            "title": "Assumptions",
-            "type": "object"
-          },
-          "currency": {
-            "default": "EUR",
-            "maxLength": 8,
-            "minLength": 3,
-            "title": "Currency",
-            "type": "string"
-          },
-          "effective_at": {
-            "maxLength": 64,
-            "minLength": 10,
-            "title": "Effective At",
-            "type": "string"
-          },
-          "name": {
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "reason": {
-            "maxLength": 500,
-            "minLength": 3,
-            "title": "Reason",
-            "type": "string"
-          },
-          "restore_rates": {
-            "additionalProperties": {
-              "additionalProperties": {
-                "type": "number"
-              },
-              "type": "object"
-            },
-            "title": "Restore Rates",
-            "type": "object"
-          },
-          "storage_rates": {
-            "additionalProperties": {
-              "type": "number"
-            },
-            "title": "Storage Rates",
-            "type": "object"
-          }
-        },
-        "required": [
-          "name",
-          "effective_at",
-          "reason"
-        ],
-        "title": "CostPriceBookCreate",
-        "type": "object"
-      },
       "DirectoryListItem": {
         "additionalProperties": true,
         "description": "Directory aggregate as returned by /api/files browse mode.",
@@ -885,7 +810,6 @@
           "preview": {
             "$ref": "#/components/schemas/CloudDeletionPreview"
           },
-          "quota": {},
           "restore_days": {
             "type": [
               "number",
@@ -2207,56 +2131,6 @@
         "title": "NotificationReadAction",
         "type": "object"
       },
-      "OperatingWindow": {
-        "additionalProperties": true,
-        "properties": {
-          "end": {
-            "type": "string"
-          },
-          "start": {
-            "type": "string"
-          },
-          "weekday": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "weekday",
-          "start",
-          "end"
-        ],
-        "type": "object"
-      },
-      "OperatingWindowModel": {
-        "additionalProperties": false,
-        "properties": {
-          "end": {
-            "maxLength": 5,
-            "minLength": 4,
-            "title": "End",
-            "type": "string"
-          },
-          "start": {
-            "maxLength": 5,
-            "minLength": 4,
-            "title": "Start",
-            "type": "string"
-          },
-          "weekday": {
-            "maximum": 6.0,
-            "minimum": 0.0,
-            "title": "Weekday",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "weekday",
-          "start",
-          "end"
-        ],
-        "title": "OperatingWindowModel",
-        "type": "object"
-      },
       "OperationPolicy": {
         "additionalProperties": true,
         "properties": {
@@ -2265,12 +2139,6 @@
           },
           "auto_upload": {
             "type": "boolean"
-          },
-          "bandwidth_limit_kibps": {
-            "type": [
-              "number",
-              "null"
-            ]
           },
           "exclude_globs": {
             "items": {
@@ -2290,12 +2158,6 @@
               "null"
             ]
           },
-          "operating_windows": {
-            "items": {
-              "$ref": "#/components/schemas/OperatingWindow"
-            },
-            "type": "array"
-          },
           "stability_seconds": {
             "type": "number"
           }
@@ -2306,9 +2168,7 @@
           "local_retention_days",
           "stability_seconds",
           "include_globs",
-          "exclude_globs",
-          "bandwidth_limit_kibps",
-          "operating_windows"
+          "exclude_globs"
         ],
         "type": "object"
       },
@@ -2324,18 +2184,6 @@
             "default": false,
             "title": "Auto Upload",
             "type": "boolean"
-          },
-          "bandwidth_limit_kibps": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Bandwidth Limit Kibps"
           },
           "exclude_globs": {
             "items": {
@@ -2362,13 +2210,6 @@
               }
             ],
             "title": "Local Retention Days"
-          },
-          "operating_windows": {
-            "items": {
-              "$ref": "#/components/schemas/OperatingWindowModel"
-            },
-            "title": "Operating Windows",
-            "type": "array"
           },
           "stability_seconds": {
             "default": 300,
@@ -2425,114 +2266,6 @@
           "keys"
         ],
         "title": "PushSubscribeAction",
-        "type": "object"
-      },
-      "QuotaDecision": {
-        "additionalProperties": true,
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "limit": {
-            "type": "number"
-          },
-          "projected": {
-            "type": "number"
-          },
-          "severity": {
-            "type": "string"
-          }
-        },
-        "type": "object"
-      },
-      "QuotaEvaluation": {
-        "additionalProperties": true,
-        "properties": {
-          "allowed": {
-            "type": "boolean"
-          },
-          "decisions": {
-            "items": {
-              "$ref": "#/components/schemas/QuotaDecision"
-            },
-            "type": "array"
-          },
-          "state": {
-            "type": "string"
-          }
-        },
-        "type": "object"
-      },
-      "QuotaLimits": {
-        "additionalProperties": true,
-        "properties": {
-          "concurrency_hard_limit": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "concurrency_soft_limit": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "restore_30d_hard_limit_bytes": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "restore_30d_soft_limit_bytes": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "storage_hard_limit_bytes": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "storage_soft_limit_bytes": {
-            "type": [
-              "number",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "QuotaUsage": {
-        "additionalProperties": true,
-        "properties": {
-          "concurrency": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "restore_30d_bytes": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "restore_request_unknown": {
-            "type": "boolean"
-          },
-          "storage_bytes": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "storage_unknown": {
-            "type": "boolean"
-          }
-        },
         "type": "object"
       },
       "ReauthRequest": {
@@ -2744,15 +2477,6 @@
           "estimated_hours": {
             "type": "number"
           },
-          "price_book_id": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "price_book_name": {
-            "type": "string"
-          },
           "pricing_effective_at": {
             "type": [
               "string",
@@ -2760,6 +2484,9 @@
             ]
           },
           "pricing_note": {
+            "type": "string"
+          },
+          "region": {
             "type": "string"
           },
           "restore_object_irreversible": {
@@ -2774,8 +2501,7 @@
           "days",
           "estimated_cost_eur",
           "estimated_hours",
-          "price_book_id",
-          "price_book_name"
+          "region"
         ],
         "type": "object"
       },
@@ -3214,11 +2940,19 @@
       },
       "StorageEstimateRequest": {
         "additionalProperties": false,
+        "description": "Monthly storage estimate for an explicit size or a Vault's cloud data.",
         "properties": {
           "size_bytes": {
-            "minimum": 0.0,
-            "title": "Size Bytes",
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
           },
           "storage_class": {
             "default": "STANDARD",
@@ -3226,11 +2960,20 @@
             "minLength": 1,
             "title": "Storage Class",
             "type": "string"
+          },
+          "vault_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vault Id"
           }
         },
-        "required": [
-          "size_bytes"
-        ],
         "title": "StorageEstimateRequest",
         "type": "object"
       },
@@ -3257,16 +3000,10 @@
             "const": "storage_month",
             "type": "string"
           },
-          "price_book_id": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "price_book_name": {
+          "pricing_effective_at": {
             "type": "string"
           },
-          "pricing_effective_at": {
+          "region": {
             "type": "string"
           },
           "size_bytes": {
@@ -3290,8 +3027,7 @@
           "estimated_cost_eur",
           "estimated_hours",
           "currency",
-          "price_book_id",
-          "price_book_name",
+          "region",
           "pricing_effective_at",
           "assumptions"
         ],
@@ -4160,217 +3896,6 @@
         "title": "VaultNotificationPreferenceAction",
         "type": "object"
       },
-      "VaultQuotaUpdate": {
-        "additionalProperties": false,
-        "description": "Global-admin quota replacement; omitted limits mean unlimited.",
-        "properties": {
-          "concurrency_hard_limit": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Concurrency Hard Limit"
-          },
-          "concurrency_soft_limit": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Concurrency Soft Limit"
-          },
-          "reason": {
-            "maxLength": 500,
-            "minLength": 3,
-            "title": "Reason",
-            "type": "string"
-          },
-          "restore_30d_hard_limit_bytes": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Restore 30D Hard Limit Bytes"
-          },
-          "restore_30d_soft_limit_bytes": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Restore 30D Soft Limit Bytes"
-          },
-          "storage_hard_limit_bytes": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Storage Hard Limit Bytes"
-          },
-          "storage_soft_limit_bytes": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Storage Soft Limit Bytes"
-          }
-        },
-        "required": [
-          "reason"
-        ],
-        "title": "VaultQuotaUpdate",
-        "type": "object"
-      },
-      "VaultQuotaUpdatePayload": {
-        "additionalProperties": true,
-        "properties": {
-          "concurrency_hard_limit": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "concurrency_soft_limit": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "reason": {
-            "type": "string"
-          },
-          "restore_30d_hard_limit_bytes": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "restore_30d_soft_limit_bytes": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "storage_hard_limit_bytes": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "storage_soft_limit_bytes": {
-            "type": [
-              "number",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "storage_soft_limit_bytes",
-          "storage_hard_limit_bytes",
-          "concurrency_soft_limit",
-          "concurrency_hard_limit",
-          "restore_30d_soft_limit_bytes",
-          "restore_30d_hard_limit_bytes",
-          "reason"
-        ],
-        "type": "object"
-      },
-      "VaultQuotasResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "evaluation": {
-            "$ref": "#/components/schemas/QuotaEvaluation"
-          },
-          "limits": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/QuotaLimits"
-              },
-              {
-                "additionalProperties": true,
-                "properties": {
-                  "concurrency_hard_limit": {
-                    "type": [
-                      "number",
-                      "null"
-                    ]
-                  },
-                  "concurrency_soft_limit": {
-                    "type": [
-                      "number",
-                      "null"
-                    ]
-                  },
-                  "restore_30d_hard_limit_bytes": {
-                    "type": [
-                      "number",
-                      "null"
-                    ]
-                  },
-                  "restore_30d_soft_limit_bytes": {
-                    "type": [
-                      "number",
-                      "null"
-                    ]
-                  },
-                  "storage_hard_limit_bytes": {
-                    "type": [
-                      "number",
-                      "null"
-                    ]
-                  },
-                  "storage_soft_limit_bytes": {
-                    "type": [
-                      "number",
-                      "null"
-                    ]
-                  }
-                },
-                "type": "object"
-              }
-            ]
-          },
-          "usage": {
-            "$ref": "#/components/schemas/QuotaUsage"
-          },
-          "vault_id": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "limits",
-          "usage"
-        ],
-        "type": "object"
-      },
       "VaultRelocate": {
         "additionalProperties": false,
         "description": "Constrained destination within the Vault's existing Source Volume.",
@@ -4650,127 +4175,6 @@
         "summary": "Admin Storage Cost Estimate"
       }
     },
-    "/api/admin/cost-price-books": {
-      "get": {
-        "operationId": "admin_list_cost_price_books_api_admin_cost_price_books_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Admin List Cost Price Books"
-      },
-      "post": {
-        "operationId": "admin_create_cost_price_book_api_admin_cost_price_books_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CostPriceBookCreate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Create Cost Price Book"
-      }
-    },
-    "/api/admin/cost-price-books/active": {
-      "get": {
-        "operationId": "admin_active_cost_price_book_api_admin_cost_price_books_active_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Admin Active Cost Price Book"
-      }
-    },
-    "/api/admin/cost-price-books/{price_book_id}/activate": {
-      "post": {
-        "operationId": "admin_activate_cost_price_book_api_admin_cost_price_books__price_book_id__activate_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "price_book_id",
-            "required": true,
-            "schema": {
-              "title": "Price Book Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CostPriceBookActivate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Activate Cost Price Book"
-      }
-    },
     "/api/admin/metadata-backups": {
       "get": {
         "operationId": "admin_list_metadata_backups_api_admin_metadata_backups_get",
@@ -5032,92 +4436,6 @@
           }
         },
         "summary": "Admin Vaults"
-      }
-    },
-    "/api/admin/vaults/{vault_id}/quotas": {
-      "get": {
-        "operationId": "admin_vault_quotas_api_admin_vaults__vault_id__quotas_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vault_id",
-            "required": true,
-            "schema": {
-              "title": "Vault Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VaultQuotasResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Vault Quotas"
-      },
-      "put": {
-        "operationId": "update_admin_vault_quotas_api_admin_vaults__vault_id__quotas_put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vault_id",
-            "required": true,
-            "schema": {
-              "title": "Vault Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VaultQuotaUpdate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VaultQuotasResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Update Admin Vault Quotas"
       }
     },
     "/api/admin/vaults/{vault_id}/relocate": {
@@ -7182,25 +6500,6 @@
           }
         },
         "summary": "Preview Vault Operation Globs"
-      }
-    },
-    "/api/vault/quotas": {
-      "get": {
-        "description": "Quota limits and usage of the selected Vault.",
-        "operationId": "own_vault_quotas_api_vault_quotas_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VaultQuotasResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Own Vault Quotas"
       }
     },
     "/api/vault/recovery/confirm": {

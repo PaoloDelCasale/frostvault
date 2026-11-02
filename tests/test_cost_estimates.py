@@ -1,124 +1,128 @@
-"""Configurable, timestamped cost estimates (issue #12).
+"""Cost estimates from bundled AWS list prices (#12, #413).
 
 Seams under test:
-- ``app.services.cost_estimates`` — active price book CRUD, storage estimates,
-  and restore estimates that expose assumptions plus the pricing timestamp.
+- ``app.services.cost_estimates`` — per-region bundled prices, storage and
+  restore estimates that expose region, assumptions and the pricing timestamp.
 """
 
 from __future__ import annotations
 
-import tempfile
 import unittest
-from pathlib import Path
 
-from app.database import SQLiteConnection
 from app.services.cost_estimates import (
+    FALLBACK_REGION,
     CostEstimate,
-    PriceBook,
-    activate_price_book,
+    available_regions,
+    estimate_restore_cost,
     estimate_storage_month,
-    get_active_price_book,
-    list_price_books,
-    upsert_price_book,
+    list_prices,
 )
-from tests.test_database import run_alembic
+from app.services.storage_classes import MANUAL_STORAGE_CLASSES, list_storage_class_options
+
+REQUIRED_STORAGE_CLASSES = set(MANUAL_STORAGE_CLASSES)
 
 
-class PriceBookDefaultTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "pricing.db"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
+class BundledListPriceTests(unittest.TestCase):
+    def test_every_bundled_region_prices_every_class_and_restore_tier(self) -> None:
+        self.assertIn("eu-south-1", available_regions())
+        self.assertIn(FALLBACK_REGION, available_regions())
+        for region in available_regions():
+            with self.subTest(region=region):
+                prices = list_prices(region)
+                self.assertEqual(prices.region, region)
+                self.assertTrue(REQUIRED_STORAGE_CLASSES <= set(prices.storage_rates))
+                self.assertEqual(
+                    set(prices.restore_rates["GLACIER"]),
+                    {"Expedited", "Standard", "Bulk"},
+                )
+                self.assertEqual(
+                    set(prices.restore_rates["DEEP_ARCHIVE"]), {"Standard", "Bulk"}
+                )
+                for storage_class in ("STANDARD_IA", "ONEZONE_IA", "GLACIER_IR"):
+                    self.assertIn("Instant", prices.restore_rates[storage_class])
+                rates = [
+                    *prices.storage_rates.values(),
+                    *(
+                        rate
+                        for tiers in prices.restore_rates.values()
+                        for rate in tiers.values()
+                    ),
+                ]
+                self.assertTrue(all(rate >= 0 for rate in rates))
+                # Colder classes are never priced above Standard storage.
+                self.assertLess(
+                    prices.storage_rates["DEEP_ARCHIVE"], prices.storage_rates["STANDARD"]
+                )
 
-    def test_missing_active_book_uses_builtin_defaults_with_timestamp(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
-            book = get_active_price_book(connection)
-        self.assertEqual(book.currency, "EUR")
-        self.assertTrue(book.effective_at)
-        self.assertIn("not an AWS Billing quote", book.assumptions["disclaimer"])
+    def test_regions_have_their_own_list_prices(self) -> None:
+        milan = list_prices("eu-south-1")
+        virginia = list_prices("us-east-1")
+        self.assertEqual(milan.storage_rates["STANDARD"], 0.024)
+        self.assertEqual(virginia.storage_rates["STANDARD"], 0.023)
+        self.assertEqual(milan.assumptions["region"], "eu-south-1")
+        self.assertIn("not an AWS Billing quote", milan.assumptions["disclaimer"])
+        self.assertTrue(milan.effective_at)
+
+    def test_unknown_region_falls_back_and_says_so(self) -> None:
+        prices = list_prices("xx-nowhere-9")
+        self.assertEqual(prices.region, FALLBACK_REGION)
+        self.assertEqual(prices.assumptions["region"], FALLBACK_REGION)
+        self.assertEqual(prices.assumptions["requested_region"], "xx-nowhere-9")
+        self.assertNotIn("requested_region", list_prices("eu-south-1").assumptions)
+
+
+class StorageEstimateTests(unittest.TestCase):
+    def test_monthly_estimate_uses_the_region_rate(self) -> None:
+        prices = list_prices("eu-south-1")
         estimate = estimate_storage_month(
-            book,
-            size_bytes=2 * (1024**3),
-            storage_class="STANDARD",
+            prices, size_bytes=2 * 1024**3, storage_class="standard"
         )
         self.assertIsInstance(estimate, CostEstimate)
-        self.assertEqual(estimate.estimated_cost_eur, 0.046)
-        self.assertEqual(estimate.pricing_effective_at, book.effective_at)
-        self.assertIsNone(estimate.price_book_id)
-        self.assertEqual(estimate.price_book_name, "builtin-defaults")
-        self.assertEqual(estimate.assumptions, book.assumptions)
+        self.assertEqual(estimate.storage_class, "STANDARD")
+        self.assertEqual(estimate.estimated_cost_eur, 0.048)
+        self.assertEqual(estimate.region, "eu-south-1")
+        self.assertEqual(estimate.pricing_effective_at, prices.effective_at)
+        self.assertEqual(estimate.assumptions, prices.assumptions)
+        payload = estimate.as_dict()
+        self.assertEqual(payload["region"], "eu-south-1")
+        self.assertNotIn("price_book_id", payload)
 
 
-class PriceBookPersistenceTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "pricing.db"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_activated_book_is_used_for_estimates(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
-            created = upsert_price_book(
-                connection,
-                PriceBook(
-                    name="eu-south-1 2026-07",
-                    currency="EUR",
-                    effective_at="2026-07-01T00:00:00+00:00",
-                    assumptions={
-                        "region": "eu-south-1",
-                        "disclaimer": "Internal estimate from configured price data.",
-                    },
-                    storage_rates={"STANDARD": 0.01, "GLACIER": 0.004},
-                    restore_rates={
-                        "GLACIER": {"Bulk": 0.0025, "Standard": 0.01},
-                    },
-                ),
-            )
-            activate_price_book(connection, created.id)
-            active = get_active_price_book(connection)
-            books = list_price_books(connection)
-        self.assertEqual(active.id, created.id)
-        self.assertEqual(active.name, "eu-south-1 2026-07")
-        self.assertTrue(any(item.is_active for item in books))
-        estimate = estimate_storage_month(
-            active,
-            size_bytes=1024**3,
-            storage_class="STANDARD",
-        )
-        self.assertEqual(estimate.estimated_cost_eur, 0.01)
-        self.assertEqual(estimate.price_book_id, created.id)
-        self.assertEqual(estimate.price_book_name, "eu-south-1 2026-07")
-        self.assertEqual(estimate.pricing_effective_at, "2026-07-01T00:00:00+00:00")
-
-
-class RestoreEstimateFromPriceBookTests(unittest.TestCase):
-    def test_restore_estimate_exposes_assumptions_and_timestamp(self) -> None:
-        from app.services.cost_estimates import estimate_restore_cost
-
-        book = PriceBook(
-            name="builtin",
-            currency="EUR",
-            effective_at="2026-06-01T00:00:00+00:00",
-            assumptions={"disclaimer": "Internal estimate."},
-            storage_rates={},
-            restore_rates={
-                "GLACIER": {"Bulk": 0.0025, "Standard": 0.01, "Expedited": 0.03},
-            },
-        )
+class RestoreEstimateTests(unittest.TestCase):
+    def test_restore_estimate_exposes_rate_hours_and_assumptions(self) -> None:
+        prices = list_prices("eu-south-1")
         estimate = estimate_restore_cost(
-            book,
+            prices,
             size_bytes=1024**3,
-            storage_class="GLACIER",
-            tier="Bulk",
+            storage_class="DEEP_ARCHIVE",
+            tier="Standard",
+            days=5,
         )
-        self.assertEqual(estimate.estimated_cost_eur, 0.0025)
-        self.assertIsNone(estimate.price_book_id)
-        self.assertEqual(estimate.price_book_name, "builtin")
-        self.assertEqual(estimate.pricing_effective_at, "2026-06-01T00:00:00+00:00")
-        self.assertEqual(estimate.assumptions["disclaimer"], "Internal estimate.")
+        self.assertEqual(estimate.estimated_cost_eur, 0.024)
+        self.assertEqual(estimate.estimated_hours, 12.0)
+        self.assertEqual(estimate.tier, "Standard")
+        self.assertEqual(estimate.assumptions["restore_days"], 5)
+        self.assertTrue(estimate.assumptions["restore_object_irreversible"])
+
+    def test_unsupported_tier_falls_back_to_bulk(self) -> None:
+        estimate = estimate_restore_cost(
+            list_prices("eu-south-1"),
+            size_bytes=1024**3,
+            storage_class="DEEP_ARCHIVE",
+            tier="Expedited",
+        )
+        self.assertEqual(estimate.tier, "Bulk")
+        self.assertEqual(estimate.estimated_cost_eur, 0.005)
+
+
+class StorageClassPickerTests(unittest.TestCase):
+    def test_picker_rates_come_from_the_region_list_prices(self) -> None:
+        options = list_storage_class_options(list_prices("eu-south-1"))
+        by_id = {item["id"]: item for item in options["items"]}
+        self.assertEqual(by_id["STANDARD"]["storage_rate_eur_per_gib_month"], 0.024)
+        self.assertEqual(by_id["GLACIER_IR"]["retrieval_rate_eur_per_gib"], 0.03)
+        self.assertEqual(by_id["DEEP_ARCHIVE"]["restore_rate_eur_per_gib_standard"], 0.024)
+        self.assertEqual(options["assumptions"]["region"], "eu-south-1")
 
 
 if __name__ == "__main__":

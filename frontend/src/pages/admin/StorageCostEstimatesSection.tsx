@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import {
+  ApiError,
   estimateAdminStorageCost,
-  fetchAdminVaultQuotas,
   fetchAdminVaults,
   type AdminVault,
   type StorageEstimateResponse,
@@ -85,29 +85,24 @@ export function StorageCostEstimatesSection() {
       setEstimates([]);
       setError("");
       try {
-        const quota = await fetchAdminVaultQuotas(vaultId);
-        if (quota.usage?.storage_unknown) {
-          throw new Error(
-            translateRef.current("admin.storage_estimates_size_unknown"),
-          );
-        }
-        const aggregateSize = Number(quota.usage?.storage_bytes ?? 0);
         const results = await Promise.all(
           SCENARIOS.map(async (scenario) => ({
             key: scenario.key,
             estimate: await estimateAdminStorageCost({
-              size_bytes: aggregateSize,
+              vault_id: vaultId,
               storage_class: scenario.storageClass,
             }),
           })),
         );
         if (sequence !== requestSequence.current) return;
-        setSizeBytes(aggregateSize);
+        setSizeBytes(Number(results[0]?.estimate.size_bytes ?? 0));
         setEstimates(results);
       } catch (failure) {
         if (sequence !== requestSequence.current) return;
         setError(
-          errorMessage(failure, translateRef.current("admin.storage_estimates_error")),
+          failure instanceof ApiError && failure.status === 409
+            ? translateRef.current("admin.storage_estimates_size_unknown")
+            : errorMessage(failure, translateRef.current("admin.storage_estimates_error")),
         );
       } finally {
         if (sequence === requestSequence.current) setEstimatesLoading(false);
@@ -234,21 +229,14 @@ export function StorageCostEstimatesSection() {
                       </p>
                       <div className="mt-5 rounded-[10px] border-2 border-green bg-green-soft p-3">
                         <p className="text-xs font-extrabold tracking-wide text-green uppercase">
-                          {t("admin.storage_estimates_price_book")}
-                        </p>
-                        <p className="mt-1 break-words text-base font-bold">
-                          {estimate.price_book_name}
+                          {t("admin.storage_estimates_list_prices")}
                         </p>
                         <dl className="mt-2 grid gap-2 text-sm">
                           <div>
                             <dt className="font-bold text-muted">
-                              {t("admin.storage_estimates_price_book_id")}
+                              {t("admin.storage_estimates_region")}
                             </dt>
-                            <dd>
-                              {estimate.price_book_id === null
-                                ? t("admin.storage_estimates_builtin_id")
-                                : estimate.price_book_id}
-                            </dd>
+                            <dd className="font-bold">{estimate.region}</dd>
                           </div>
                           <div>
                             <dt className="font-bold text-muted">

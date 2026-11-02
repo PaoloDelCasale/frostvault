@@ -130,6 +130,10 @@ Detected drift updates storage class, applied policy tags, and availability
 - **Storage classes** (Standard, IA, Glacier tiers) affect retrieval cost and
   minimum retention; guided profiles will surface estimates before apply.
 - **Restore requests** from Glacier tiers incur per-GB and per-request charges.
+- FrostVault estimates storage and restore costs from AWS list prices bundled
+  per region (`app/services/aws_list_prices.json`, selected by
+  `AWS_DEFAULT_REGION`). Regenerate them with
+  `python scripts/update_aws_list_prices.py` when AWS changes S3 prices.
 
 ## Teardown and recovery
 

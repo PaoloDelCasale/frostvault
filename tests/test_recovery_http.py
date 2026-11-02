@@ -147,8 +147,8 @@ class RecoveryHttpTests(unittest.TestCase):
         self.assertTrue(payload["requires_restore"])
         self.assertTrue(payload["restore_object_irreversible"])
         self.assertEqual(payload["estimate"]["tier"], "Bulk")
-        self.assertIsNone(payload["estimate"]["price_book_id"])
-        self.assertEqual(payload["estimate"]["price_book_name"], "builtin-defaults")
+        self.assertNotIn("price_book_id", payload["estimate"])
+        self.assertEqual(payload["estimate"]["region"], payload["estimate"]["assumptions"]["region"])
 
     def test_owner_approves_high_impact_restore(self) -> None:
         with SQLiteConnection(str(self.database_path)) as connection:

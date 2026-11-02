@@ -103,7 +103,7 @@ class OpenApiResponseContractTests(unittest.TestCase):
             catalog_events["responses"]["200"].get("content", {}),
         )
 
-    def test_storage_estimate_response_documents_atomic_price_book_identity(self) -> None:
+    def test_storage_estimate_response_documents_region_and_pricing_date(self) -> None:
         schema = app.openapi()
         operation = schema["paths"]["/api/admin/cost-estimates/storage"]["post"]
         response = operation["responses"]["200"]["content"]["application/json"]["schema"]
@@ -112,8 +112,8 @@ class OpenApiResponseContractTests(unittest.TestCase):
             {"$ref": "#/components/schemas/StorageEstimateResponse"},
         )
         estimate = schema["components"]["schemas"]["StorageEstimateResponse"]
-        self.assertIn("price_book_id", estimate["required"])
-        self.assertIn("price_book_name", estimate["required"])
+        self.assertIn("region", estimate["required"])
+        self.assertNotIn("price_book_id", estimate["properties"])
         self.assertIn("pricing_effective_at", estimate["required"])
 
     def test_files_documents_offline_cache_authorization_headers_and_conflict(self) -> None:

@@ -79,14 +79,14 @@ describe("createLatestRequestScope", () => {
     expect(await transferSettle).toBeUndefined();
   });
 
-  // Ported from: "stale quota loads and saves cannot replace the selected vault"
-  it("keeps only the newest load/save results for a selection (stale quota loads and saves)", async () => {
-    const quotas = createLatestRequestScope();
+  // Ported from: "stale policy loads and saves cannot replace the selected vault"
+  it("keeps only the newest load/save results for a selection (stale policy loads and saves)", async () => {
+    const policies = createLatestRequestScope();
     const loadA = deferred<{ soft: number }>();
     const loadB = deferred<{ soft: number }>();
 
-    const settleA = quotas.begin().settle(loadA.promise);
-    const settleB = quotas.begin().settle(loadB.promise);
+    const settleA = policies.begin().settle(loadA.promise);
+    const settleB = policies.begin().settle(loadB.promise);
 
     loadB.resolve({ soft: 22 });
     loadA.resolve({ soft: 11 });
@@ -94,8 +94,8 @@ describe("createLatestRequestScope", () => {
     expect(await settleB).toEqual({ soft: 22 });
 
     const save = deferred<{ soft: number }>();
-    const saveSettle = quotas.begin().settle(save.promise);
-    quotas.begin(); // selection changed before save completed
+    const saveSettle = policies.begin().settle(save.promise);
+    policies.begin(); // selection changed before save completed
     save.resolve({ soft: 999 });
     expect(await saveSettle).toBeUndefined();
   });

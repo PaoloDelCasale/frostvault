@@ -8,7 +8,6 @@ deterministic so tests can pin fairness without racing a thread pool.
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from datetime import datetime, time, timezone
 from typing import Any, Mapping, Sequence
 
 
@@ -79,33 +78,3 @@ def select_fair_jobs(
 
 def item_vault_id(job: Mapping[str, Any]) -> Any:
     return job.get("vault_id")
-
-
-def _parse_hhmm(value: str) -> time:
-    hour_text, minute_text = value.split(":", 1)
-    return time(hour=int(hour_text), minute=int(minute_text))
-
-
-def job_is_within_operating_window(
-    now: datetime,
-    windows: Sequence[Mapping[str, Any]],
-) -> bool:
-    """Return True when no windows are configured or ``now`` falls in one.
-
-    Each window is ``{weekday, start, end}`` in the process local interpretation
-    of the provided timezone-aware ``now`` (UTC in the worker). ``weekday`` uses
-    Python's Monday=0 convention. An empty window list means always allow.
-    """
-    if not windows:
-        return True
-    current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
-    weekday = current.weekday()
-    clock = current.timetz().replace(tzinfo=None)
-    for window in windows:
-        if int(window["weekday"]) != weekday:
-            continue
-        start = _parse_hhmm(str(window["start"]))
-        end = _parse_hhmm(str(window["end"]))
-        if start <= clock < end:
-            return True
-    return False

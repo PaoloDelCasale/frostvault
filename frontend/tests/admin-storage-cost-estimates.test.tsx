@@ -45,8 +45,7 @@ function estimate(storageClass: string, sizeBytes: number) {
     estimated_cost_eur: rates[storageClass] ?? 0,
     estimated_hours: null,
     currency: "EUR",
-    price_book_id: 7,
-    price_book_name: "July 2026 rates",
+    region: "eu-south-1",
     pricing_effective_at: "2026-07-01T00:00:00+00:00",
     assumptions: { region: "eu-south-1" },
   };
@@ -87,38 +86,24 @@ afterEach(() => {
   window.history.replaceState({}, "", "/");
 });
 
+const vaultSizes: Record<number, number> = { 1: 2 * 1024 ** 3, 2: 0 };
+
 it("prices the selected Vault aggregate as three clearly labelled alternatives", async () => {
   const user = userEvent.setup();
-  const estimateBodies: Array<{ size_bytes: number; storage_class: string }> = [];
+  const estimateBodies: Array<{ vault_id: number; storage_class: string }> = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.startsWith("/api/i18n/catalog")) {
       return jsonResponse({ locale: "en", locales: ["en", "it"], messages });
     }
     if (url === "/api/admin/vaults") return jsonResponse({ items: vaults });
-    if (url === "/api/admin/vaults/1/quotas") {
-      return jsonResponse({
-        vault_id: 1,
-        limits: {},
-        usage: { storage_bytes: 2 * 1024 ** 3, storage_unknown: false },
-        evaluation: {},
-      });
-    }
-    if (url === "/api/admin/vaults/2/quotas") {
-      return jsonResponse({
-        vault_id: 2,
-        limits: {},
-        usage: { storage_bytes: 0, storage_unknown: false },
-        evaluation: {},
-      });
-    }
     if (url === "/api/admin/cost-estimates/storage") {
       const body = JSON.parse(String(init?.body)) as {
-        size_bytes: number;
+        vault_id: number;
         storage_class: string;
       };
       estimateBodies.push(body);
-      return jsonResponse(estimate(body.storage_class, body.size_bytes));
+      return jsonResponse(estimate(body.storage_class, vaultSizes[body.vault_id] ?? 0));
     }
     throw new Error(`Unexpected request: ${url}`);
   });
@@ -129,21 +114,21 @@ it("prices the selected Vault aggregate as three clearly labelled alternatives",
   expect(screen.getByRole("heading", { name: "Standard scenario" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Glacier scenario" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Deep Archive scenario" })).toBeInTheDocument();
-  expect(screen.getAllByText("July 2026 rates")).toHaveLength(3);
+  expect(screen.getAllByText("eu-south-1")).toHaveLength(3);
   expect(screen.getAllByText("2026-07-01T00:00:00+00:00")).toHaveLength(3);
   expect(estimateBodies).toEqual([
-    { size_bytes: 2 * 1024 ** 3, storage_class: "STANDARD" },
-    { size_bytes: 2 * 1024 ** 3, storage_class: "GLACIER" },
-    { size_bytes: 2 * 1024 ** 3, storage_class: "DEEP_ARCHIVE" },
+    { vault_id: 1, storage_class: "STANDARD" },
+    { vault_id: 1, storage_class: "GLACIER" },
+    { vault_id: 1, storage_class: "DEEP_ARCHIVE" },
   ]);
 
   await user.selectOptions(screen.getByLabelText("Vault"), "2");
   expect(await screen.findByText(/all three estimates are zero/i)).toBeInTheDocument();
   await waitFor(() => expect(estimateBodies).toHaveLength(6));
   expect(estimateBodies.slice(3)).toEqual([
-    { size_bytes: 0, storage_class: "STANDARD" },
-    { size_bytes: 0, storage_class: "GLACIER" },
-    { size_bytes: 0, storage_class: "DEEP_ARCHIVE" },
+    { vault_id: 2, storage_class: "STANDARD" },
+    { vault_id: 2, storage_class: "GLACIER" },
+    { vault_id: 2, storage_class: "DEEP_ARCHIVE" },
   ]);
 });
 
@@ -169,20 +154,15 @@ it("shows loading and empty Vault states without requesting estimates", async ()
   expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("cost-estimates"))).toBe(false);
 });
 
-it("does not estimate a Vault whose aggregate stored size is unknown", async () => {
+it("explains when the server cannot size a Vault with unknown Archive Version sizes", async () => {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.startsWith("/api/i18n/catalog")) {
       return jsonResponse({ locale: "en", locales: ["en", "it"], messages });
     }
     if (url === "/api/admin/vaults") return jsonResponse({ items: [vaults[0]] });
-    if (url === "/api/admin/vaults/1/quotas") {
-      return jsonResponse({
-        vault_id: 1,
-        limits: {},
-        usage: { storage_bytes: 123, storage_unknown: true },
-        evaluation: {},
-      });
+    if (url === "/api/admin/cost-estimates/storage") {
+      return jsonResponse({ detail: "The Vault's cloud storage size is unknown" }, 409);
     }
     throw new Error(`Unexpected request: ${url}`);
   });
@@ -192,7 +172,7 @@ it("does not estimate a Vault whose aggregate stored size is unknown", async () 
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "includes Archive Versions with an unknown size",
   );
-  expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("cost-estimates"))).toBe(false);
+  expect(screen.queryByTestId("aggregate-vault-size")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
 });
 
@@ -219,15 +199,9 @@ it("routes the pathname-only admin navigation to storage estimates", async () =>
       });
     }
     if (url === "/api/admin/vaults") return jsonResponse({ items: [vaults[0]] });
-    if (url === "/api/admin/vaults/1/quotas") {
-      return jsonResponse({ limits: {}, usage: { storage_bytes: 1024 }, evaluation: {} });
-    }
     if (url === "/api/admin/cost-estimates/storage") {
-      const body = JSON.parse(String(init?.body)) as {
-        size_bytes: number;
-        storage_class: string;
-      };
-      return jsonResponse(estimate(body.storage_class, body.size_bytes));
+      const body = JSON.parse(String(init?.body)) as { storage_class: string };
+      return jsonResponse(estimate(body.storage_class, 1024));
     }
     throw new Error(`Unexpected request: ${url}`);
   });

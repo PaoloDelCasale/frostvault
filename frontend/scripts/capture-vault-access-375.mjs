@@ -85,28 +85,6 @@ await page.route("**/api/**", async (route) => {
       body: JSON.stringify({ items: [] }),
     });
   }
-  if (url.includes("/api/vault/quotas")) {
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        limits: {
-          storage_soft_limit_bytes: 1000,
-          storage_hard_limit_bytes: 2000,
-          concurrency_soft_limit: 2,
-          concurrency_hard_limit: 4,
-          restore_30d_soft_limit_bytes: null,
-          restore_30d_hard_limit_bytes: null,
-        },
-        usage: { storage_bytes: 500, concurrency: 1, restore_30d_bytes: 0 },
-        evaluation: {
-          state: "evaluated",
-          allowed: true,
-          decisions: [{ code: "quota.storage.soft_exceeded", severity: "warning" }],
-        },
-      }),
-    });
-  }
   if (url.includes("/api/vault/operation-policy")) {
     return route.fulfill({
       status: 200,
@@ -118,8 +96,6 @@ await page.route("**/api/**", async (route) => {
         stability_seconds: 300,
         include_globs: ["**/*.txt"],
         exclude_globs: ["tmp/**"],
-        bandwidth_limit_kibps: null,
-        operating_windows: [],
       }),
     });
   }
@@ -237,7 +213,6 @@ const overflow = await page.evaluate(() => document.documentElement.scrollWidth 
 if (overflow > 0) throw new Error(`375px layout overflows horizontally by ${overflow}px`);
 
 const panels = [
-  "quotas",
   "retention",
   "operation-policy",
   "lifecycle",

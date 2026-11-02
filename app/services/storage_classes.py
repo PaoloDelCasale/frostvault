@@ -3,12 +3,9 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .cost_estimates import PriceBook, builtin_price_book
+from .cost_estimates import PriceList, list_prices
 from .lifecycle_profiles import COST_WARNING_CLASSES, SUPPORTED_STORAGE_CLASSES
-from .restore_estimates import (
-    DEFAULT_INSTANT_RETRIEVAL_EUR_PER_GIB,
-    DEFAULT_RESTORE_HOURS,
-)
+from .restore_estimates import DEFAULT_RESTORE_HOURS
 
 # Manual Jobs may also warm back to STANDARD; lifecycle never uses STANDARD as a target.
 MANUAL_STORAGE_CLASSES = ("STANDARD",) + SUPPORTED_STORAGE_CLASSES
@@ -103,20 +100,20 @@ def cold_class_warning(target: str) -> str | None:
 
 
 def list_storage_class_options(
-    book: PriceBook | None = None,
+    prices: PriceList | None = None,
 ) -> dict[str, Any]:
-    """Public picker catalog: rates from the active price book + retrieval traits."""
-    price_book = book or builtin_price_book()
+    """Public picker catalog: bundled AWS list prices + retrieval traits."""
+    prices = prices or list_prices()
     items: list[dict[str, Any]] = []
     for class_id in MANUAL_STORAGE_CLASSES:
         traits = STORAGE_CLASS_TRAITS[class_id]
-        restore_rates = price_book.restore_rates.get(class_id, {})
+        restore_rates = prices.restore_rates.get(class_id, {})
         restore_hours = DEFAULT_RESTORE_HOURS.get(class_id, {})
         item: dict[str, Any] = {
             "id": class_id,
-            "currency": price_book.currency,
+            "currency": prices.currency,
             "storage_rate_eur_per_gib_month": float(
-                price_book.storage_rates.get(class_id, 0.0)
+                prices.storage_rates.get(class_id, 0.0)
             ),
             "retrieval": traits["retrieval"],
             "min_duration_days": int(traits["min_duration_days"]),
@@ -136,16 +133,14 @@ def list_storage_class_options(
             )
         else:
             instant_rate = restore_rates.get("Instant")
-            if instant_rate is None:
-                instant_rate = DEFAULT_INSTANT_RETRIEVAL_EUR_PER_GIB.get(class_id)
             if instant_rate is not None and float(instant_rate) > 0:
                 item["retrieval_rate_eur_per_gib"] = float(instant_rate)
         items.append(item)
     return {
         "items": items,
-        "pricing_effective_at": price_book.effective_at,
-        "assumptions": dict(price_book.assumptions),
-        "currency": price_book.currency,
+        "pricing_effective_at": prices.effective_at,
+        "assumptions": dict(prices.assumptions),
+        "currency": prices.currency,
     }
 
 

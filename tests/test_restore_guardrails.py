@@ -7,8 +7,8 @@ Seams under test:
   until primary-owner approval with recent reauthentication.
 
 BUG-015 (REQ-027): the same recovery worker high-impact seam must price Glacier
-restores from the active ``cost_price_books`` rates (parity with
-``POST /api/recover/estimate``), not hardcoded DEFAULT restore rates.
+restores from the bundled AWS list prices of the configured region (parity
+with ``POST /api/recover/estimate``), not from another region's rates (#413).
 """
 
 from __future__ import annotations
@@ -23,11 +23,7 @@ from unittest.mock import Mock, patch
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
 from app.main import queue_jobs
-from app.services.cost_estimates import (
-    PriceBook,
-    activate_price_book,
-    upsert_price_book,
-)
+from app.services.cost_estimates import list_prices
 from app.services.restore_estimates import (
     estimate_restore,
     is_high_impact_restore,
@@ -153,20 +149,21 @@ class HighImpactApprovalTests(unittest.TestCase):
             self.assertIsNotNone(job["pending_until"])
             self.assertFalse((source / "huge.bin").exists())
 
-    def test_bug_015_recover_uses_active_price_book(self) -> None:
-        """[BUG-015][Req: REQ-027] worker high-impact uses active price book.
+    def test_bug_015_recover_uses_configured_region_list_prices(self) -> None:
+        """[BUG-015][Req: REQ-027] worker high-impact uses the region's prices.
 
-        Size stays under the GiB threshold; custom Bulk rates alone push cost
-        over ``restore_high_impact_eur``. With DEFAULT rates the same object
-        would not hold — so pending_approval proves the worker consulted the
-        active book (not hardcoded defaults).
+        Size stays under the GiB threshold. The Glacier Standard list price of
+        eu-south-1 crosses ``restore_high_impact_eur`` while us-east-1's does
+        not, so pending_approval proves the worker priced the configured region.
         """
+        milan = list_prices("eu-south-1").restore_rates["GLACIER"]["Standard"]
+        virginia = list_prices("us-east-1").restore_rates["GLACIER"]["Standard"]
+        self.assertGreater(milan, virginia)
+        threshold = (milan + virginia) / 2
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            # 1 GiB: below size threshold (100); custom Bulk 15 EUR/GiB → 15 EUR
             size = 1 * 1024**3
-            custom_bulk_rate = 15.0
-            expected_cost = custom_bulk_rate  # 1 GiB × 15 EUR/GiB
+            expected_cost = milan  # 1 GiB × eu-south-1 Glacier Standard rate
             source, database_path, version_id = _prepare_cloud_only_version(
                 root,
                 relative_path="priced.bin",
@@ -179,29 +176,6 @@ class HighImpactApprovalTests(unittest.TestCase):
                     "UPDATE archive_versions SET size=%s WHERE id=%s",
                     (size, version_id),
                 )
-                created = upsert_price_book(
-                    connection,
-                    PriceBook(
-                        name="custom-glacier-bulk",
-                        currency="EUR",
-                        effective_at="2026-07-01T00:00:00+00:00",
-                        assumptions={
-                            "disclaimer": (
-                                "Internal estimate from configured price data."
-                            ),
-                        },
-                        storage_rates={"GLACIER": 0.004},
-                        restore_rates={
-                            "GLACIER": {
-                                "Bulk": custom_bulk_rate,
-                                "Standard": 0.01,
-                                "Expedited": 0.03,
-                            },
-                            "DEEP_ARCHIVE": {"Standard": 0.02, "Bulk": 0.0025},
-                        },
-                    ),
-                )
-                activate_price_book(connection, created.id)
 
             database_settings = SimpleNamespace(
                 db_backend="sqlite",
@@ -211,10 +185,11 @@ class HighImpactApprovalTests(unittest.TestCase):
                 operation_concurrency=1,
                 restore_poll_interval=900,
                 restore_days=3,
-                restore_tier="Bulk",
+                restore_tier="Standard",
                 restore_high_impact_gib=100,
-                restore_high_impact_eur=10.0,
+                restore_high_impact_eur=threshold,
                 restore_approval_hold_seconds=3600,
+                aws_region="eu-south-1",
             )
             client = Mock()
             client.head_object = Mock(
@@ -227,7 +202,7 @@ class HighImpactApprovalTests(unittest.TestCase):
             client.restore_object = Mock()
             client.get_object = Mock()
             with patch("app.database.settings", database_settings):
-                queue_jobs("priced.bin", "recover", 2, 1)
+                queue_jobs("priced.bin", "recover", 2, 1, restore_tier="Standard")
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
@@ -248,13 +223,13 @@ class HighImpactApprovalTests(unittest.TestCase):
             self.assertEqual(
                 job["status"],
                 "pending_approval",
-                "custom Bulk rates must trigger high-impact hold",
+                "eu-south-1 list prices must trigger the high-impact hold",
             )
             self.assertIsNotNone(job["pending_until"])
             self.assertAlmostEqual(
                 float(job["estimated_cost_eur"]),
                 expected_cost,
                 places=6,
-                msg="worker estimate must use active price-book restore rates",
+                msg="worker estimate must use the configured region's list prices",
             )
             self.assertFalse((source / "priced.bin").exists())

@@ -6,19 +6,6 @@ from dataclasses import dataclass
 from typing import Mapping
 
 
-DEFAULT_RESTORE_PRICING_EUR_PER_GIB: dict[str, dict[str, float]] = {
-    "GLACIER": {"Expedited": 0.03, "Standard": 0.01, "Bulk": 0.0025},
-    "DEEP_ARCHIVE": {"Standard": 0.02, "Bulk": 0.0025},
-}
-
-# Per-GiB GET retrieval fees for classes that return bytes without a RestoreObject job.
-# Approximate published list prices (same EUR-as-list-USD convention as storage rates).
-DEFAULT_INSTANT_RETRIEVAL_EUR_PER_GIB: dict[str, float] = {
-    "STANDARD_IA": 0.01,
-    "ONEZONE_IA": 0.01,
-    "GLACIER_IR": 0.03,
-}
-
 DEFAULT_RESTORE_HOURS: dict[str, dict[str, float]] = {
     "GLACIER": {"Expedited": 5 / 60, "Standard": 5.0, "Bulk": 12.0},
     "DEEP_ARCHIVE": {"Standard": 12.0, "Bulk": 48.0},
@@ -36,15 +23,13 @@ class RestoreEstimate:
     estimated_cost_eur: float
     estimated_hours: float
     restore_object_irreversible: bool = True
-    pricing_note: str = (
-        "Internal estimate from configured price data; not an AWS Billing quote."
-    )
+    pricing_note: str = "Estimate from AWS list prices; not an AWS Billing quote."
 
 
 def normalize_restore_tier(tier: str | None, *, storage_class: str) -> str:
     candidate = (tier or "Bulk").strip()
     class_key = (storage_class or "").upper()
-    allowed = DEFAULT_RESTORE_PRICING_EUR_PER_GIB.get(class_key, {})
+    allowed = DEFAULT_RESTORE_HOURS.get(class_key, {})
     if candidate not in allowed:
         if "Bulk" in allowed:
             return "Bulk"
@@ -64,7 +49,11 @@ def estimate_restore(
     hours: Mapping[str, Mapping[str, float]] | None = None,
 ) -> RestoreEstimate:
     class_key = (storage_class or "").upper()
-    price_table = pricing or DEFAULT_RESTORE_PRICING_EUR_PER_GIB
+    if pricing is None:
+        from .cost_estimates import list_prices
+
+        pricing = list_prices().restore_rates
+    price_table = pricing
     hour_table = hours or DEFAULT_RESTORE_HOURS
     resolved_tier = normalize_restore_tier(tier, storage_class=class_key)
     gib = max(0, int(size_bytes)) / (1024**3)

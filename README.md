@@ -56,7 +56,9 @@ Search remains global across every file in the selected vault.
   directory, or whole vault. Moving data out of Glacier or Deep Archive performs
   the required restore before copying it to the selected class.
 - The storage-class picker shows storage and retrieval rates, expected restore
-  time, and early-deletion warnings. Rates are estimates; AWS billing remains
+  time, and early-deletion warnings. Rates are the AWS list prices bundled for
+  the configured `AWS_DEFAULT_REGION` (not editable; regenerate with
+  `scripts/update_aws_list_prices.py`). They are estimates; AWS billing remains
   authoritative.
 - A lifecycle pin suspends automatic storage-class transitions for a path until
   it is unpinned. Automatic lifecycle policies may move data only to deeper

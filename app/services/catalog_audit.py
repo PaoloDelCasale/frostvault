@@ -14,7 +14,7 @@ from .catalog_incidents import (
 )
 from .directory_aggregates import invalidate_for_archive_version_ids
 from .s3_object_tags import read_version_policy_tag
-from .vault_quotas import TERMINAL_JOB_STATUSES
+from .job_admission import TERMINAL_JOB_STATUSES
 
 
 def _object_prefix(vault: dict[str, Any]) -> str:

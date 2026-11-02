@@ -404,8 +404,6 @@ type DemoPolicy = {
   stability_seconds: number;
   include_globs: string[];
   exclude_globs: string[];
-  bandwidth_limit_kibps: number | null;
-  operating_windows: unknown[];
 };
 
 type DemoState = {
@@ -521,8 +519,6 @@ function seedDemoState(): DemoState {
       stability_seconds: 300,
       include_globs: [],
       exclude_globs: [],
-      bandwidth_limit_kibps: null,
-      operating_windows: [],
     },
   };
 }
@@ -1267,14 +1263,6 @@ export function installDemoFilesFetch(): void {
       return json({ configured: false, vapid_public_key: null });
     }
 
-    if (path === "/api/vault/quotas") {
-      return json({
-        limits: {},
-        usage: {},
-        evaluation: { state: "evaluated", allowed: true, decisions: [] },
-      });
-    }
-
     if (path === "/api/vault/lifecycle" || path === "/api/lifecycle") {
       return json(state.lifecycle);
     }
@@ -1448,10 +1436,6 @@ export function installDemoFilesFetch(): void {
 
     if (path === "/api/admin/metadata-backups") {
       return json({ items: [], status: { last_run: null, last_error: null } });
-    }
-
-    if (path === "/api/admin/cost-price-books") {
-      return json({ items: [] });
     }
 
     if (path === "/api/login" && method === "POST") {

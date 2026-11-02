@@ -1,9 +1,10 @@
 """Per-Vault operation policies for automation and transfer controls.
 
-This module is the operation-policy seam used by scan auto-upload, the worker
-bandwidth/window gates, and HTTP configuration. A missing row means the
-product defaults: manual upload, a five-minute stability window, and no
+This module is the operation-policy seam used by scan auto-upload, automatic
+local cleanup, and HTTP configuration. A missing row means the product
+defaults: manual upload, a five-minute stability window, and no
 include/exclude globs (every cataloged path is eligible for manual ops).
+The only transfer throttle is the global ``BANDWIDTH_LIMIT_KIBPS`` for uploads.
 """
 
 from __future__ import annotations
@@ -16,8 +17,6 @@ from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
-from .job_scheduler import job_is_within_operating_window
-from .vault_quotas import QuotaBlocked
 
 
 DEFAULT_STABILITY_SECONDS = 300
@@ -31,8 +30,6 @@ class OperationPolicy:
     stability_seconds: int = DEFAULT_STABILITY_SECONDS
     include_globs: tuple[str, ...] = ()
     exclude_globs: tuple[str, ...] = ()
-    bandwidth_limit_kibps: int | None = None
-    operating_windows: tuple[dict[str, Any], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -42,8 +39,6 @@ class OperationPolicy:
             "stability_seconds": self.stability_seconds,
             "include_globs": list(self.include_globs),
             "exclude_globs": list(self.exclude_globs),
-            "bandwidth_limit_kibps": self.bandwidth_limit_kibps,
-            "operating_windows": [dict(item) for item in self.operating_windows],
         }
 
 
@@ -76,31 +71,6 @@ def _normalize_globs(values: Sequence[str]) -> tuple[str, ...]:
     return tuple(normalized)
 
 
-def _normalize_windows(
-    values: Sequence[dict[str, Any]],
-) -> tuple[dict[str, Any], ...]:
-    windows: list[dict[str, Any]] = []
-    for item in values:
-        weekday = int(item["weekday"])
-        if weekday < 0 or weekday > 6:
-            raise ValueError("weekday must be in 0..6")
-        start = str(item["start"])
-        end = str(item["end"])
-        # Validate HH:MM shape early so HTTP callers get a clear 422.
-        parsed: dict[str, tuple[int, int]] = {}
-        for label, stamp in (("start", start), ("end", end)):
-            hour_text, minute_text = stamp.split(":", 1)
-            hour = int(hour_text)
-            minute = int(minute_text)
-            if hour < 0 or hour > 23 or minute < 0 or minute > 59:
-                raise ValueError(f"invalid {label} time")
-            parsed[label] = (hour, minute)
-        if parsed["start"] >= parsed["end"]:
-            raise ValueError("operating window start must be before end")
-        windows.append({"weekday": weekday, "start": start, "end": end})
-    return tuple(windows)
-
-
 def validate_policy(policy: OperationPolicy) -> None:
     if policy.stability_seconds < 0:
         raise ValueError("stability_seconds must be nonnegative")
@@ -113,14 +83,8 @@ def validate_policy(policy: OperationPolicy) -> None:
         raise ValueError(
             "local_retention_days is required when automatic local cleanup is enabled"
         )
-    if (
-        policy.bandwidth_limit_kibps is not None
-        and policy.bandwidth_limit_kibps < 0
-    ):
-        raise ValueError("bandwidth_limit_kibps must be nonnegative")
     _normalize_globs(policy.include_globs)
     _normalize_globs(policy.exclude_globs)
-    _normalize_windows(policy.operating_windows)
 
 
 def get_policy(connection: Any, vault_id: int) -> OperationPolicy:
@@ -141,14 +105,6 @@ def get_policy(connection: Any, vault_id: int) -> OperationPolicy:
         stability_seconds=int(row["stability_seconds"]),
         include_globs=tuple(_load_json_list(row["include_globs_json"])),
         exclude_globs=tuple(_load_json_list(row["exclude_globs_json"])),
-        bandwidth_limit_kibps=(
-            int(row["bandwidth_limit_kibps"])
-            if row["bandwidth_limit_kibps"] is not None
-            else None
-        ),
-        operating_windows=tuple(
-            dict(item) for item in _load_json_list(row["operating_windows_json"])
-        ),
     )
 
 
@@ -170,7 +126,6 @@ def set_policy(
         raise LookupError("vault_quiesced")
     include_globs = _normalize_globs(policy.include_globs)
     exclude_globs = _normalize_globs(policy.exclude_globs)
-    windows = _normalize_windows(policy.operating_windows)
     canonical = OperationPolicy(
         auto_upload=bool(policy.auto_upload),
         auto_local_cleanup=bool(policy.auto_local_cleanup),
@@ -178,26 +133,21 @@ def set_policy(
         stability_seconds=int(policy.stability_seconds),
         include_globs=include_globs,
         exclude_globs=exclude_globs,
-        bandwidth_limit_kibps=policy.bandwidth_limit_kibps,
-        operating_windows=windows,
     )
     connection.execute(
         """
         INSERT INTO vault_operation_policies(
             vault_id, auto_upload, auto_local_cleanup, local_retention_days,
             stability_seconds,
-            include_globs_json, exclude_globs_json,
-            bandwidth_limit_kibps, operating_windows_json
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            include_globs_json, exclude_globs_json
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT(vault_id) DO UPDATE SET
             auto_upload=excluded.auto_upload,
             auto_local_cleanup=excluded.auto_local_cleanup,
             local_retention_days=excluded.local_retention_days,
             stability_seconds=excluded.stability_seconds,
             include_globs_json=excluded.include_globs_json,
-            exclude_globs_json=excluded.exclude_globs_json,
-            bandwidth_limit_kibps=excluded.bandwidth_limit_kibps,
-            operating_windows_json=excluded.operating_windows_json
+            exclude_globs_json=excluded.exclude_globs_json
         """,
         (
             vault_id,
@@ -207,8 +157,6 @@ def set_policy(
             canonical.stability_seconds,
             json.dumps(list(canonical.include_globs)),
             json.dumps(list(canonical.exclude_globs)),
-            canonical.bandwidth_limit_kibps,
-            json.dumps(list(canonical.operating_windows)),
         ),
     )
     return canonical
@@ -316,29 +264,11 @@ def local_cleanup_is_due(
     return _aware(now) >= reference + timedelta(days=retention_days)
 
 
-def effective_bandwidth_kibps(
-    *,
-    global_limit: int | None,
-    vault_limit: int | None,
-) -> int | None:
-    if vault_limit is not None:
-        return vault_limit
-    return global_limit
-
-
-def rclone_bwlimit_arg(limit_kibps: int | None) -> str | None:
-    if limit_kibps is None:
+def upload_bwlimit_arg(limit_kibps: int | None) -> str | None:
+    """Return the rclone ``--bwlimit`` of the global upload limit, if any."""
+    if not limit_kibps or int(limit_kibps) <= 0:
         return None
     return f"{int(limit_kibps)}k"
-
-
-def policy_allows_transfer_now(
-    policy: OperationPolicy,
-    *,
-    now: datetime | None = None,
-) -> bool:
-    current = now or datetime.now(timezone.utc)
-    return job_is_within_operating_window(current, policy.operating_windows)
 
 
 def queue_auto_uploads(
@@ -356,8 +286,6 @@ def queue_auto_uploads(
     if not policy.auto_upload:
         return 0
     current = now or datetime.now(timezone.utc)
-    if not policy_allows_transfer_now(policy, now=current):
-        return 0
     vault = connection.execute(
         "SELECT decommission_state FROM vaults WHERE id=%s",
         (vault_id,),
@@ -427,18 +355,15 @@ def queue_auto_uploads(
             stability_seconds=policy.stability_seconds,
         ):
             continue
-        try:
-            job_ids, _total, _eligible = catalog.queue_jobs(
-                vault_id=vault_id,
-                path=path,
-                action="upload",
-                requested_by=requested_by,
-                requested_at=timestamp,
-                group_id=uuid.uuid4().hex,
-                is_directory=False,
-            )
-        except QuotaBlocked:
-            break
+        job_ids, _total, _eligible = catalog.queue_jobs(
+            vault_id=vault_id,
+            path=path,
+            action="upload",
+            requested_by=requested_by,
+            requested_at=timestamp,
+            group_id=uuid.uuid4().hex,
+            is_directory=False,
+        )
         queued += len(job_ids)
     return queued
 
@@ -464,9 +389,6 @@ def queue_auto_local_cleanups(
     ):
         return 0
     current = now or datetime.now(timezone.utc)
-    if not policy_allows_transfer_now(policy, now=current):
-        return 0
-
     rows = connection.execute(
         """
         SELECT fp.path, av.id AS archive_version_id, av.verified_at,
@@ -504,20 +426,17 @@ def queue_auto_local_cleanups(
             recovered_at=row["local_recovered_at"],
         ):
             continue
-        try:
-            job_ids, _total, _eligible = catalog.queue_jobs(
-                vault_id=vault_id,
-                path=row["path"],
-                action="free-space",
-                requested_by=requested_by,
-                requested_at=timestamp,
-                group_id=uuid.uuid4().hex,
-                is_directory=False,
-                archive_version_id=row["archive_version_id"],
-                origin="automatic",
-            )
-        except QuotaBlocked:
-            break
+        job_ids, _total, _eligible = catalog.queue_jobs(
+            vault_id=vault_id,
+            path=row["path"],
+            action="free-space",
+            requested_by=requested_by,
+            requested_at=timestamp,
+            group_id=uuid.uuid4().hex,
+            is_directory=False,
+            archive_version_id=row["archive_version_id"],
+            origin="automatic",
+        )
         for job_id in job_ids:
             record_audit_event(
                 connection,
