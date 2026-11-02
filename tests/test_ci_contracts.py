@@ -369,7 +369,9 @@ class NpmAuditBaselineContractTests(unittest.TestCase):
         self.assertEqual(overrides["brace-expansion@2"], "^2.1.7")
         self.assertEqual(overrides["brace-expansion@5"], "^5.0.12")
         self.assertEqual(overrides["fast-uri@3"], "^3.1.8")
-        self.assertEqual(overrides["ip-address@10"], "^10.7.1")
+        self.assertEqual(overrides["ip-address@10"], "^10.7.5")
+        self.assertEqual(overrides["body-parser"], "^2.4.0")
+        self.assertEqual(overrides["glob"], "^14.0.3")
         self.assertEqual(overrides["nanoid@3"], "^3.3.18")
         self.assertEqual(overrides["qs@6"], "^6.16.0")
         self.assertEqual(overrides["undici@7"], "^7.29.1")
@@ -380,8 +382,10 @@ class NpmAuditBaselineContractTests(unittest.TestCase):
             (ROOT / "frontend" / "package-lock.json").read_text(encoding="utf-8")
         )
         found = {
+            "body-parser": [],
             "brace-expansion": [],
             "fast-uri": [],
+            "glob": [],
             "ip-address": [],
             "nanoid": [],
             "qs": [],
@@ -419,7 +423,17 @@ class NpmAuditBaselineContractTests(unittest.TestCase):
         for path, version in found["ip-address"]:
             major, minor, patch = _semver(version)
             with self.subTest(path=path, version=version):
-                self.assertGreaterEqual((major, minor, patch), (10, 7, 1), path)
+                self.assertGreaterEqual((major, minor, patch), (10, 7, 5), path)
+
+        for path, version in found["body-parser"]:
+            major, minor, patch = _semver(version)
+            with self.subTest(path=path, version=version):
+                self.assertGreaterEqual((major, minor, patch), (2, 4, 0), path)
+
+        for path, version in found["glob"]:
+            major, minor, patch = _semver(version)
+            with self.subTest(path=path, version=version):
+                self.assertGreaterEqual((major, minor, patch), (14, 0, 2), path)
 
         for path, version in found["undici"]:
             major, minor, patch = _semver(version)
