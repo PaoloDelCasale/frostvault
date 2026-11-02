@@ -7,7 +7,9 @@ on:
     branches:
       - main
   schedule:
-    - cron: "41 5 * * 1"
+    # Daily so a newly published advisory shows up as a tracking issue within a
+    # day instead of surfacing on whichever unrelated PR runs next.
+    - cron: "41 5 * * *"
 
 permissions:
   contents: read
@@ -19,36 +21,101 @@ concurrency:
 jobs:
   # Native actions/dependency-review-action needs Dependency graph + GitHub
   # Advanced Security on private repositories. pip-audit is the portable gate
-  # for this Python stack and enforces a high+ severity policy without GHAS.
+  # for this Python stack.
+  #
+  # Pull requests run in baseline mode: only vulnerabilities the PR introduces
+  # fail, so an advisory published after a PR was opened (or against a package
+  # the PR does not touch) cannot block unrelated merges such as Dependabot
+  # updates. main and the daily schedule run strict and keep one tracking issue
+  # in sync (scripts/ci_audit_issue.sh).
   dependency-review:
     name: Dependency review (pip-audit)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # Pull requests need the base branch to compute the baseline.
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
       - name: Install pip-audit
         run: python -m pip install pip-audit==2.10.1
-      - name: Audit Python dependencies (fail on known vulnerabilities)
+      - name: Audit Python dependencies (fail on new known vulnerabilities)
+        id: gate
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          pip-audit -r requirements.txt --progress-spinner off
-        # Severity gate: any known vulnerability fails the job. Exception
-        # process: temporarily add --ignore-vuln IDs with a linked issue URL
-        # and review date in a workflow comment.
+          set -euo pipefail
+          mkdir -p artifacts
+          audit() {
+            local requirements="$1" dest="$2"
+            rm -f "$dest"
+            set +e
+            pip-audit -r "$requirements" --progress-spinner off --format json --output "$dest"
+            local status=$?
+            set -e
+            # Exit 1 means "vulnerabilities found" (or an error). The gate script
+            # validates the JSON and fails closed when it is missing or broken.
+            if [ "$status" -gt 1 ]; then
+              echo "pip-audit failed with exit ${status}" >&2
+              exit "$status"
+            fi
+          }
+          audit requirements.txt artifacts/pip-audit.json
+          baseline_args=()
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            git show "origin/${BASE_REF}:requirements.txt" > "$RUNNER_TEMP/base-requirements.txt"
+            audit "$RUNNER_TEMP/base-requirements.txt" artifacts/pip-audit-base.json
+            baseline_args=(--baseline artifacts/pip-audit-base.json)
+          fi
+          python scripts/pip_audit_gate.py \
+            --head artifacts/pip-audit.json "${baseline_args[@]}" \
+            2>&1 | tee artifacts/pip-audit-gate.log
+        # Exception process: temporarily add --ignore-vuln IDs to the
+        # pip-audit calls above with a linked issue URL and review date in a
+        # workflow comment.
+      - name: Upload pip-audit reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: pip-audit
+          path: |
+            artifacts/pip-audit.json
+            artifacts/pip-audit-base.json
+            artifacts/pip-audit-gate.log
+          if-no-files-found: ignore
+      - name: Track audit drift in an issue
+        if: always() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          GATE_OUTCOME: ${{ steps.gate.outcome }}
+        run: scripts/ci_audit_issue.sh "pip-audit" "$GATE_OUTCOME" artifacts/pip-audit-gate.log
 
   # Trivy on the runtime image only sees frontend/dist, so it cannot replace
   # an npm lockfile audit of the build toolchain (including transitive copies).
+  #
+  # Same policy as pip-audit: baseline mode on pull requests (only findings the
+  # PR introduces fail), strict on main and the daily schedule, which keep one
+  # tracking issue in sync.
   npm-audit:
     name: Dependency review (npm audit)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # Pull requests need the base branch to compute the baseline.
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
@@ -61,11 +128,15 @@ jobs:
       - name: Verify npm audit gate unit tests
         working-directory: frontend
         run: node --test scripts/npm-audit-gate.test.mjs
-      - name: Audit npm dependencies (fail on known vulnerabilities)
+      - name: Audit npm dependencies (fail on new known vulnerabilities)
+        id: gate
         working-directory: frontend
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          mkdir -p ../artifacts
+          artifacts="$GITHUB_WORKSPACE/artifacts"
+          mkdir -p "$artifacts"
           run_audit() {
             local dest="$1"
             shift
@@ -79,14 +150,26 @@ jobs:
               exit "$status"
             fi
           }
-          run_audit ../artifacts/npm-audit.json
-          run_audit ../artifacts/npm-audit-prod.json --omit=dev
+          run_audit "$artifacts/npm-audit.json"
+          run_audit "$artifacts/npm-audit-prod.json" --omit=dev
+          baseline_args=()
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            # Audit the base branch's lockfile on its own: no install needed.
+            base_dir="$(mktemp -d)"
+            git show "origin/${BASE_REF}:frontend/package.json" > "$base_dir/package.json"
+            git show "origin/${BASE_REF}:frontend/package-lock.json" > "$base_dir/package-lock.json"
+            (cd "$base_dir" && run_audit "$artifacts/npm-audit-base.json" --package-lock-only)
+            baseline_args=(--baseline-full "$artifacts/npm-audit-base.json")
+          fi
           node scripts/npm-audit-gate.mjs \
-            --full ../artifacts/npm-audit.json \
-            --prod ../artifacts/npm-audit-prod.json \
-            --exceptions ../.github/npm-audit-exceptions.json
-        # Severity gate: any known vulnerability fails the job, including
-        # transitive and dev/build toolchain packages. Exception process:
+            --full "$artifacts/npm-audit.json" \
+            --prod "$artifacts/npm-audit-prod.json" \
+            --exceptions ../.github/npm-audit-exceptions.json \
+            "${baseline_args[@]}" \
+            2>&1 | tee "$artifacts/npm-audit-gate.log"
+        # Severity gate: on main every unexcepted vulnerability fails the job,
+        # including transitive and dev/build toolchain packages. On pull
+        # requests only findings new to the PR fail. Exception process:
         # add a GHSA/CVE to .github/npm-audit-exceptions.json with reason,
         # GitHub issue URL, exposure (runtime|build), and review_by date.
       - name: Upload npm audit reports
@@ -97,7 +180,16 @@ jobs:
           path: |
             artifacts/npm-audit.json
             artifacts/npm-audit-prod.json
+            artifacts/npm-audit-base.json
+            artifacts/npm-audit-gate.log
           if-no-files-found: ignore
+      - name: Track audit drift in an issue
+        if: always() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          GATE_OUTCOME: ${{ steps.gate.outcome }}
+        run: scripts/ci_audit_issue.sh "npm audit" "$GATE_OUTCOME" artifacts/npm-audit-gate.log
 
   codeql:
     name: CodeQL

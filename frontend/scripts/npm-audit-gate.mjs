@@ -5,6 +5,14 @@
  * Distinguishes runtime (present in `npm audit --omit=dev`) from build/toolchain
  * exposure (dev-only, including transitive copies). Exceptions must name a GHSA
  * or CVE, a reason, a GitHub issue URL, an exposure class, and a review date.
+ *
+ * Two modes:
+ * - strict (default): every unexcepted finding fails. Used on main and on the
+ *   scheduled run, which report drift through a tracking issue.
+ * - baseline (`--baseline-full`): used on pull requests. Findings that the base
+ *   branch already has are reported as pre-existing and never fail the PR, so a
+ *   newly published advisory cannot block unrelated merges (for example
+ *   Dependabot PRs). Only findings the PR itself introduces fail.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -24,7 +32,7 @@ const ISSUE_PATTERN = /^https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/\d+$/;
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 export function parseArgs(argv) {
-  const options = { full: "", prod: "", exceptions: "", now: "" };
+  const options = { full: "", prod: "", exceptions: "", now: "", baselineFull: "" };
   for (let index = 0; index < argv.length; index += 1) {
     const key = argv[index];
     const value = argv[index + 1];
@@ -32,6 +40,7 @@ export function parseArgs(argv) {
     else if (key === "--prod" && value) options.prod = value;
     else if (key === "--exceptions" && value) options.exceptions = value;
     else if (key === "--now" && value) options.now = value;
+    else if (key === "--baseline-full" && value) options.baselineFull = value;
     else continue;
     index += 1;
   }
@@ -203,9 +212,14 @@ export function loadExceptions(payload) {
   });
 }
 
-export function evaluate({ full, prod, exceptions, now }) {
+export function evaluate({ full, prod, exceptions, now, baseline }) {
   const lines = [];
   const errors = [];
+  const preexisting = [];
+  const baselineMode = baseline !== undefined && baseline !== null;
+  const baselineIds = baselineMode
+    ? new Set(collectFindings(baseline, "baseline").map((item) => item.id))
+    : new Set();
   const today = utcDateString(now || new Date());
   const fullFindings = collectFindings(full, "full");
   const prodIds = new Set(collectFindings(prod, "prod").map((item) => item.id));
@@ -218,6 +232,12 @@ export function evaluate({ full, prod, exceptions, now }) {
 
   for (const finding of classified) {
     const exception = allow.get(finding.id);
+    if (!exception && baselineIds.has(finding.id)) {
+      preexisting.push(
+        `[${finding.exposure}] ${finding.severity} ${finding.id} ${finding.packages.join(", ")}: ${finding.title}`,
+      );
+      continue;
+    }
     if (!exception) {
       errors.push(
         `[${finding.exposure}] ${finding.severity} ${finding.id} ${finding.packages.join(", ")}: ${finding.title}\n    nodes: ${finding.nodes.join(", ") || "(none)"}\n    exception: none`,
@@ -238,6 +258,9 @@ export function evaluate({ full, prod, exceptions, now }) {
 
   for (const exception of exceptions) {
     if (!classified.some((finding) => finding.id === exception.id)) {
+      // Housekeeping of the exception list is not something a PR introduces;
+      // the strict run on main reports it.
+      if (baselineMode) continue;
       errors.push(
         `exception ${exception.id} is unused (${exception.issue}); remove it`,
       );
@@ -250,6 +273,11 @@ export function evaluate({ full, prod, exceptions, now }) {
   lines.push(`  runtime findings: ${runtimeCount}`);
   lines.push(`  build findings: ${buildCount}`);
   lines.push(`  exceptions: ${exceptions.length}`);
+  if (baselineMode) {
+    lines.push(`  mode: baseline (only findings new to this change fail)`);
+    lines.push(`  pre-existing on base (not blocking): ${preexisting.length}`);
+    for (const item of preexisting) lines.push(`    - ${item}`);
+  }
   if (errors.length) {
     lines.push("  status: fail");
     lines.push("npm audit gate failed:");
@@ -261,14 +289,20 @@ export function evaluate({ full, prod, exceptions, now }) {
   } else {
     lines.push("  status: pass");
   }
-  return { ok: errors.length === 0, lines, findings: classified, errors };
+  return {
+    ok: errors.length === 0,
+    lines,
+    findings: classified,
+    errors,
+    preexisting,
+  };
 }
 
 export function main(argv) {
   const options = parseArgs(argv);
   if (!options.full || !options.prod || !options.exceptions) {
     console.error(
-      "usage: node scripts/npm-audit-gate.mjs --full <audit.json> --prod <audit-prod.json> --exceptions <exceptions.json> [--now YYYY-MM-DD]",
+      "usage: node scripts/npm-audit-gate.mjs --full <audit.json> --prod <audit-prod.json> --exceptions <exceptions.json> [--baseline-full <base-audit.json>] [--now YYYY-MM-DD]",
     );
     return 2;
   }
@@ -278,6 +312,9 @@ export function main(argv) {
       prod: loadJson(options.prod, "prod audit"),
       exceptions: loadExceptions(loadJson(options.exceptions, "exceptions")),
       now: options.now || new Date(),
+      baseline: options.baselineFull
+        ? loadJson(options.baselineFull, "baseline audit")
+        : undefined,
     });
     console.log(result.lines.join("\n"));
     return result.ok ? 0 : 1;

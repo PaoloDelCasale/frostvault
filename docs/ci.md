@@ -80,8 +80,8 @@ Workflow: [`.github/workflows/security.yml`](../.github/workflows/security.yml)
 
 | Scanner | Gate | Exceptions |
 | --- | --- | --- |
-| Dependency review via pip-audit | Fails on any known vulnerability in `requirements.txt` | Temporarily add `--ignore-vuln` IDs with a linked issue URL and review date. Native `actions/dependency-review-action` needs Dependency graph + GitHub Advanced Security on private repos; pip-audit is the portable substitute for this Python stack. |
-| Dependency review via npm audit | Fails on any known vulnerability in the `frontend/` lockfile, including transitive copies and `dev` toolchain packages. A second `npm audit --omit=dev` report classifies **runtime** vs **build** exposure. JSON reports upload as the `npm-audit` artifact. The production image only copies `frontend/dist`, so Trivy on the final image does not replace this gate. | Add a GHSA/CVE to [`.github/npm-audit-exceptions.json`](../.github/npm-audit-exceptions.json) with `reason`, GitHub issue URL, `exposure` (`runtime` or `build`), and `review_by`. Expired, unused, or build-classified runtime findings fail the job. Do not use `npm audit fix --force`. |
+| Dependency review via pip-audit | **Pull requests** run in baseline mode ([`scripts/pip_audit_gate.py`](../scripts/pip_audit_gate.py)): the base branch's `requirements.txt` is audited too and only vulnerabilities the PR introduces fail. **`main` and the daily schedule** are strict: any known vulnerability in `requirements.txt` fails. | Temporarily add `--ignore-vuln` IDs with a linked issue URL and review date. Native `actions/dependency-review-action` needs Dependency graph + GitHub Advanced Security on private repos; pip-audit is the portable substitute for this Python stack. |
+| Dependency review via npm audit | Same two modes as pip-audit (`--baseline-full` on pull requests, strict on `main` and the schedule). Strict mode fails on any known vulnerability in the `frontend/` lockfile, including transitive copies and `dev` toolchain packages. A second `npm audit --omit=dev` report classifies **runtime** vs **build** exposure. JSON reports upload as the `npm-audit` artifact. The production image only copies `frontend/dist`, so Trivy on the final image does not replace this gate. | Add a GHSA/CVE to [`.github/npm-audit-exceptions.json`](../.github/npm-audit-exceptions.json) with `reason`, GitHub issue URL, `exposure` (`runtime` or `build`), and `review_by`. Expired, unused, or build-classified runtime findings fail the job. Do not use `npm audit fix --force`. |
 | CodeQL | SARIF artifact + job fails on error/high/critical findings; upload to GitHub Code Scanning is disabled during the private bootstrap and enabled automatically when public | Fix or dismiss the finding in a follow-up PR; document false positives in the PR. |
 | Gitleaks (CLI) | Any finding fails the job | Rotate the secret, purge history if needed, then add a documented allow rule only for false positives. |
 | SBOM + Trivy image scan | **CRITICAL** and **HIGH** fail (`ignore-unfixed: true`) | Add CVE lines to [`.trivyignore`](../.trivyignore) with advisory URL + review date. |
@@ -93,6 +93,29 @@ The 6 September 2026 production audit (`56ee35d`) reported three `dev:true` advi
 | brace-expansion | `eslint-plugin-react` → minimatch 3; `vite-plugin-pwa` → workbox-build → filelist/glob; `typescript-eslint`; `shadcn` → ts-morph | 1.1.16, 2.1.2, 5.0.8 | 1.1.18, 2.1.4, 5.0.9 | build |
 | nanoid | `shadcn` → postcss | 3.3.16 | 3.3.18 | build |
 | qs | `shadcn` → MCP SDK → express/body-parser | 6.15.3 | 6.16.0 | build |
+
+### Why pull requests only fail on new findings
+
+Advisories are published independently of our changes. With a strict gate, a new
+advisory turned `main` and every open Dependabot PR red at once, and a required
+`Dependency review (pip-audit)` result computed against an old base kept
+auto-merge blocked until someone refreshed each branch. The audits therefore run
+in two modes:
+
+- **Pull requests (baseline mode):** the same audit runs on the base branch's
+  lockfile/requirements. Findings the base already has are listed as
+  pre-existing and never fail the PR; only findings the change introduces fail.
+  Unused or expired npm exceptions are not a PR's concern either.
+- **`main` and the daily schedule (strict):** every unexcepted finding fails the
+  job, which is how drift stays visible. [`scripts/ci_audit_issue.sh`](../scripts/ci_audit_issue.sh)
+  keeps one open issue per audit titled `Security audit failing on main: <audit>`
+  (created or refreshed on failure, closed when the audit passes again), so the
+  drift is triaged on its own instead of on unrelated PRs.
+
+A strict failure therefore never blocks a merge by itself. Fix it with a targeted
+lockfile/override bump, or a dated exception, in a dedicated PR. Contract tests
+pin override floors (not exact versions) so a newer patched release does not
+break them.
 
 Dependabot (`.github/dependabot.yml`) opens weekly update PRs for pip, Actions,
 Docker, and npm in `/frontend`. Minor and patch bumps in each ecosystem are
@@ -150,6 +173,7 @@ node scripts/npm-audit-gate.mjs \
   --full ../artifacts/npm-audit.json \
   --prod ../artifacts/npm-audit-prod.json \
   --exceptions ../.github/npm-audit-exceptions.json
+# Add --baseline-full <audit-of-base-lockfile.json> to mimic the pull-request mode.
 # Generated artifacts are committed; CI fails if the schema or TypeScript drifts.
 # `npm run lint` includes e2e/; `npm run typecheck` covers browser, Node, Vitest, and Playwright projects.
 

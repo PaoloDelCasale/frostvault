@@ -58,8 +58,68 @@ test("parseArgs reads required paths", () => {
       "--now",
       "2026-09-06",
     ]),
-    { full: "a.json", prod: "b.json", exceptions: "c.json", now: "2026-09-06" },
+    {
+      full: "a.json",
+      prod: "b.json",
+      exceptions: "c.json",
+      now: "2026-09-06",
+      baselineFull: "",
+    },
   );
+  assert.equal(
+    parseArgs(["--baseline-full", "base.json"]).baselineFull,
+    "base.json",
+  );
+});
+
+test("baseline mode does not fail on findings the base already has", () => {
+  const result = evaluate({
+    full: buildHigh,
+    prod: empty,
+    exceptions: [],
+    now: "2026-09-06",
+    baseline: buildHigh,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.preexisting.length, 1);
+  assert.match(result.lines.join("\n"), /pre-existing on base \(not blocking\): 1/);
+});
+
+test("baseline mode still fails on a finding the change introduces", () => {
+  const result = evaluate({
+    full: runtimeModerate,
+    prod: runtimeModerate,
+    exceptions: [],
+    now: "2026-09-06",
+    baseline: buildHigh,
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.errors[0], /^\[runtime\] moderate GHSA-4mjr-xmp4-gh2g/);
+});
+
+test("baseline mode ignores unused exceptions that strict mode reports", () => {
+  const exceptions = loadExceptions({
+    exceptions: [
+      {
+        id: "GHSA-rgw5-rvv9-x895",
+        reason: "Toolchain-only.",
+        issue: "https://github.com/PaoloDelCasale/frostvault/issues/308",
+        exposure: "build",
+        review_by: "2026-09-18",
+      },
+    ],
+  });
+  const strict = evaluate({ full: empty, prod: empty, exceptions, now: "2026-09-06" });
+  assert.equal(strict.ok, false);
+  const pr = evaluate({
+    full: empty,
+    prod: empty,
+    exceptions,
+    now: "2026-09-06",
+    baseline: empty,
+  });
+  assert.equal(pr.ok, true);
 });
 
 test("collectFindings ignores parent-package via strings", () => {
