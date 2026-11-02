@@ -1,5 +1,8 @@
 # Bind external Identities to existing Users by invite only
 
+> **Status: superseded by ADR-0017 (Issue #412).** Invites no longer exist; the
+> first OIDC login binds the Owner's Identity. Kept as historical context.
+
 Every external Identity is attached to a pre-existing User through a single-use,
 expiring Invite, and never provisioned automatically from an id_token. An OIDC
 callback that resolves an unknown `(issuer, subject)` pair signs nobody in unless

@@ -38,13 +38,13 @@ Docker is not installed; run natively with the SQLite backend instead of `docker
 - The app does NOT auto-load `.env` (`app/config.py` reads `os.getenv` at import), so export
   the vars yourself. A local `.env` (gitignored) is used for this; load it with
   `set -a && . ./.env && set +a`. If it is missing, recreate it from `.env.local.example`,
-  and quote values containing spaces (e.g. `BOOTSTRAP_ADMIN_DISPLAY_NAME="Local Admin"`,
-  `BOOTSTRAP_VAULT_NAME="Test Archive"`) or `source` will fail.
+  and quote values containing spaces (e.g. `BOOTSTRAP_ADMIN_DISPLAY_NAME="Local Admin"`)
+  or `source` will fail.
 - `.env.local.example` uses container-style paths (`/data/...`, `/sources/...`,
   `/config/rclone/rclone.conf`). For a native run, repoint them at real writable paths under
-  the repo and create the dirs first, e.g. `SQLITE_PATH=/workspace/data/frostvault.db`,
-  `BOOTSTRAP_VAULT_SOURCE_ROOT` pointing at a directory under the fixed `/sources`
-  layout (or set `FROSTVAULT_TEST_SOURCES_ROOT` for native/test seams). Empty Vaults
+  the repo and create the dirs first, e.g. `SQLITE_PATH=/workspace/data/frostvault.db`
+  (set `FROSTVAULT_TEST_SOURCES_ROOT` to relocate the fixed `/sources` layout for
+  native/test seams). Vaults are created from the UI; empty Vaults
   use `/sources/managed/<uuid>`; custom volumes must be direct mounts under
   `/sources/<alias>` (nested mounts unsupported), and `BOOTSTRAP_ADMIN_PASSWORD` needs >= 12 chars.
 - With `AUTO_MIGRATE=1` (default), schema upgrades run on app start (fresh →

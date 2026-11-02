@@ -15,7 +15,7 @@ wakes the wait.
 
 Each tick opens **one short-lived DB connection** and runs at most:
 
-1. Session + user + membership authorization (single JOIN)
+1. Session + Owner + Vault authorization (single JOIN)
 2. Catalog high-water / retention markers
 3. At most `MAX_CATCHUP_EVENTS + 1` journal rows (`64` by default)
 

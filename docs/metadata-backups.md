@@ -15,7 +15,7 @@ Each backup artifact is a Fernet-encrypted archive (sealed with
 `ARCHIVE_MASTER_KEY`) that contains:
 
 - a consistent database dump (SQLite file image or PostgreSQL `pg_dump`
-  custom format), with `oidc_configuration` data deliberately omitted
+  custom format)
 - a reconstructable configuration snapshot
 - a manifest with reason, backend, timestamps, and content digests
 
@@ -136,9 +136,9 @@ before a deliberate manual recovery.
 6. Replace the live SQLite file with the restored image only after validation.
 7. Confirm `alembic_version` matches the application release, or run
    `python -m app.backup_upgrade` / `alembic upgrade head` as appropriate.
-8. Start the application and confirm administrators can sign in.
-9. Re-enter and validate the OIDC configuration, or rely on the deployment
-   environment fallback; its managed lifecycle row is intentionally absent.
+8. Start the application and confirm the Owner can sign in. OIDC comes from
+   the `OIDC_*` environment and the restored Identity binding; the
+   `BOOTSTRAP_ADMIN_*` Emergency Password is re-applied at start.
 
 ## Restore flow — PostgreSQL
 
@@ -152,9 +152,8 @@ before a deliberate manual recovery.
    pg_restore --clean --if-exists --no-owner --no-acl -d frostvault restore.dump
    ```
 
-5. Start the application against the restored database after schema validation.
-6. Re-enter and validate the OIDC configuration, or rely on the deployment
-   environment fallback; its managed lifecycle row is intentionally absent.
+5. Start the application against the restored database after schema validation
+   and confirm the Owner can sign in.
 
 ## Master key and recovery-export custody
 
@@ -163,11 +162,10 @@ Keep these materials in **separate** offline locations:
 | Material | Role | Must not be stored with |
 | --- | --- | --- |
 | `ARCHIVE_MASTER_KEY` | Seals per-vault crypt secrets and metadata backup artifacts | Database backups, recovery exports, S3 copies of either |
-| `OIDC_SETTINGS_ENCRYPTION_KEY` | Seals the runtime-managed OIDC client secret | `ARCHIVE_MASTER_KEY`, database backups |
 | Encrypted vault recovery exports | Standalone rclone crypt credentials for one vault | Application master key, live DB dumps |
-| Metadata backup artifacts | Users, vaults, versions, policies, sessions, audit | Application master key in cleartext |
+| Metadata backup artifacts | Owner, vaults, versions, policies, sessions, audit | Application master key in cleartext |
 
-A clean installation can restore users, vaults, Archive Versions metadata,
+A clean installation can restore the Owner, vaults, Archive Versions metadata,
 policies, sessions/revocations, audit, and pending workflows from a metadata
 backup **plus** the separately custodied master key. Vault content recovery from
 S3 still requires the per-vault recovery material when using crypt vaults.

@@ -29,14 +29,14 @@ stolen cookie alone is useless. `POST /api/login` is exempt because there is no
 Session yet; the OIDC `state` parameter plays the same role for the login/callback
 round-trip.
 
-**Reauthentication edge.** Sensitive actions — every `/api/admin/*` mutation,
-invite creation, and freeing local space — require a `reauth_at` no older than
+**Reauthentication edge.** Sensitive actions — since ADR-0017 only the
+Recovery Kit download and deleting from the cloud — require a `reauth_at` no older than
 `REAUTH_WINDOW_SECONDS` (default 10 minutes). The `require_recent_reauth`
 dependency raises a `403 {"error": "reauth_required"}` marker that the frontend
 keys on to trigger a **step-up with the user's own method**: OIDC users bounce
 through the provider with `prompt=login` (the callback refreshes `reauth_at` and
-rotates the existing Session rather than minting a new one), while local admins
-re-enter their password at `POST /api/reauth`. A fresh login already counts as a
+rotates the existing Session rather than minting a new one), while the Owner on
+the LAN re-enters the Emergency Password at `POST /api/reauth`. A fresh login already counts as a
 recent reauthentication, so the window only bites on long-lived sessions.
 
 ## Consequences

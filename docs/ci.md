@@ -189,7 +189,7 @@ node scripts/capture-pwa-offline-screenshot.mjs
 node scripts/capture-storage-class-screenshots.mjs
 
 # Other 375px capture scripts use mocked/seeded API routes and need no demo flag:
-# capture-vault-access-375.mjs, screenshot-admin.mjs, screenshot-auth-pages.mjs
+# capture-vault-access-375.mjs, screenshot-auth-pages.mjs
 
 # S3-compatible integrity (the CI job still named "MinIO"): start a local
 # S3 server on :9000 and put rclone on PATH, then create the versioned bucket

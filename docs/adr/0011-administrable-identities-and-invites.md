@@ -1,5 +1,9 @@
 # Administer Identities and Invites without ever weakening sign-in
 
+> **Status: superseded by ADR-0017 (Issue #412).** There is a single Owner, so
+> user, Identity and Invite administration were removed. Kept as historical
+> context.
+
 Administrators can now inspect the Identities linked to any User, unlink one of
 them, list pending Invites and revoke an Invite before it is redeemed. Every one
 of those actions is a *removal*: an Identity binding is deleted, never

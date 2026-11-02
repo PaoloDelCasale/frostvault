@@ -1,5 +1,9 @@
 # Store managed OIDC secrets with a dedicated deployment key
 
+> **Status: superseded by ADR-0017 (Issue #412).** OIDC is configured only from
+> the environment; the managed lifecycle and `OIDC_SETTINGS_ENCRYPTION_KEY` were
+> removed. Kept as historical context.
+
 FrostVault manages one generic OIDC provider through a validated lifecycle
 module. Environment values remain the initial active fallback. Administrators
 use a dedicated interface to save a draft, validate discovery and JWKS, activate

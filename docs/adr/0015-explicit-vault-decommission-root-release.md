@@ -12,8 +12,8 @@ administrator must have recent Reauthentication, request an authoritative
 preview, type the exact Vault name, give a reason, and submit that preview's
 fingerprint. The fingerprint covers the choices, Vault/root identity and health,
 filesystem inventory, Local Copy protection state, cloud provider-version
-identities, active work, memberships, Jobs, and file/version/byte counts. The
-start transaction re-creates the preview under the shared Source Area/Vault-root
+identities, active work, Jobs, and file/version/byte counts. The
+start transaction re-creates the preview under the shared Vault-root
 lock and rejects stale or blocked confirmation.
 
 Local and cloud dispositions are independent and never inferred:
@@ -39,7 +39,7 @@ occupied.
 The terminal transaction writes the operation completion, Vault tombstone,
 `decommissioned_at`, and `root_released_at` together, and only after rechecking
 the enrolled root identity and the selected disposition. The Vault row, UUID,
-cloud namespace, sealed crypt material, memberships, Vault Files, Path History,
+cloud namespace, sealed crypt material, Vault Files, Path History,
 Archive Version/Delete Marker catalog, Jobs, notifications, and append-only
 audit history remain as evidence. A cloud purge records Archive Versions as
 purged; retained catalog rows are history, not evidence that cloud bytes remain.
