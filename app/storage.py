@@ -1031,10 +1031,12 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
     versions.sort(key=lambda entry: (entry[0], entry[6], entry[2], entry[1]))
     markers.sort(key=lambda entry: (entry[0], entry[3], entry[2], entry[1]))
     snapshot_mode = is_current_snapshot(vault)
+    listed_version_ids: dict[str, set[str]] = {}
     if snapshot_mode:
         grouped: dict[str, list[tuple[str, str, str, Any, str, str, str]]] = {}
         for entry in versions:
             grouped.setdefault(entry[0], []).append(entry)
+            listed_version_ids.setdefault(entry[0], set()).add(str(entry[1]))
         versions = []
         for path in sorted(grouped):
             versions.extend(
@@ -1050,6 +1052,8 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
     count = 0
     snapshot_extras: list[tuple[str, str, str]] = []
     snapshot_kept_by_path: dict[str, str] = {}
+    # Paths whose catalogued keeper is absent from a complete listing.
+    stale_keeper_paths: set[str] = set()
     for offset in range(0, len(versions), CLOUD_SCAN_WRITE_BATCH_SIZE):
         if not _cloud_scan_still_current(vault, scan_id):
             return count
@@ -1094,6 +1098,14 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                     catalog_keep = catalog.latest_available_provider_version_id(
                         int(vault["id"]), logical_path
                     )
+                    # A catalog behind S3 (restored metadata backup) may name a
+                    # version already purged. Trusting it would delete the
+                    # only copy left, so keep the newest listed version.
+                    if catalog_keep is not None and catalog_keep not in (
+                        listed_version_ids.get(logical_path, set())
+                    ):
+                        catalog_keep = None
+                        stale_keeper_paths.add(logical_path)
                     if not keep_discovered_snapshot_version(
                         provider_version_id=str(version_id),
                         catalog_keep_provider_version_id=catalog_keep,
@@ -1111,7 +1123,7 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                     if _path_matches_lifecycle_pins(logical_path, pins)
                     else resolve_effective_policy_id(logical_path, assignments)
                 )
-                catalog.record_archive_version(
+                kept_archive_version_id = catalog.record_archive_version(
                     vault_id=vault["id"],
                     path=logical_path,
                     object_key=object_key,
@@ -1125,6 +1137,12 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                     desired_policy_id=desired_policy_id,
                     applied_policy_id=applied_policy_id,
                 )
+                if logical_path in stale_keeper_paths and not decode_failures:
+                    catalog.mark_unlisted_snapshot_versions_superseded(
+                        kept_archive_version_id=str(kept_archive_version_id),
+                        scan_id=scan_id,
+                        scan_started_at=scan_id,
+                    )
                 count += 1
     if snapshot_extras:
         _purge_current_snapshot_scan_extras(vault, snapshot_extras, client)

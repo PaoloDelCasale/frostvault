@@ -1077,6 +1077,59 @@ class ArchiveCatalog:
             return None
         return str(row["provider_version_id"])
 
+    def mark_unlisted_snapshot_versions_superseded(
+        self,
+        *,
+        kept_archive_version_id: str,
+        scan_id: str,
+        scan_started_at: str,
+    ) -> None:
+        """Mark a Current Snapshot file's unlisted older versions purged.
+
+        Used when a complete listing no longer contains the catalogued
+        Archive Version but a newer S3 version of the same file is kept (for
+        example after restoring an older metadata backup). Rows seen in this
+        scan, discovered after it started, or owned by an active upload stay.
+        """
+        placeholders = ",".join(["%s"] * len(TERMINAL_JOB_STATUSES))
+        owner = self.connection.execute(
+            "SELECT vault_id, vault_file_id FROM archive_versions WHERE id=%s",
+            (kept_archive_version_id,),
+        ).fetchone()
+        if owner is None:
+            return
+        self.connection.execute(
+            f"""
+            UPDATE archive_versions
+            SET availability='purged', availability_checked_at=%s
+            WHERE vault_file_id=%s
+              AND id<>%s
+              AND availability NOT IN ('missing', 'purged')
+              AND (
+                  availability_checked_at IS NULL
+                  OR availability_checked_at<>%s
+              )
+              AND discovered_at<=%s
+              AND NOT EXISTS (
+                  SELECT 1 FROM jobs active_upload
+                  WHERE active_upload.vault_file_id=archive_versions.vault_file_id
+                    AND active_upload.action='upload'
+                    AND active_upload.status NOT IN ({placeholders})
+              )
+            """,
+            (
+                scan_id,
+                owner["vault_file_id"],
+                kept_archive_version_id,
+                scan_id,
+                scan_started_at,
+                *TERMINAL_JOB_STATUSES,
+            ),
+        )
+        self._mark_file_aggregates_dirty(
+            int(owner["vault_id"]), owner["vault_file_id"]
+        )
+
     def mark_versions_purged(
         self,
         version_ids: Sequence[str],
