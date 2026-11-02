@@ -33,6 +33,7 @@ export type CloudDeletionPreviewRequest = components["schemas"]["CloudDeletionPr
 export type CloudDeletionSettingUpdate = components["schemas"]["CloudDeletionSettingUpdate"];
 export type CloudDeletionSettings = components["schemas"]["CloudDeletionSettings"];
 export type CloudHistoryPolicy = components["schemas"]["CloudHistoryPolicy"];
+export type CloudOnlyReplacementAction = components["schemas"]["CloudOnlyReplacementAction"];
 export type CloudPurgePayload = components["schemas"]["CloudPurgePayload"];
 export type CloudPurgeRequest = components["schemas"]["CloudPurgeRequest"];
 export type ConfirmFolderRenameAction = components["schemas"]["ConfirmFolderRenameAction"];

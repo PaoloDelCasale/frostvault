@@ -99,7 +99,11 @@ def local_copy_is_protected(row: Mapping[str, Any]) -> bool:
 
 
 def local_copy_is_upload_eligible(row: Mapping[str, Any]) -> bool:
-    """Admit an upload when a present regular Local Copy is not protected."""
+    """Admit an upload when a present regular Local Copy is not protected.
+
+    Rows must select ``lc.cloud_only_version_id`` so held-back content at a
+    cloud-only path is never admitted.
+    """
     presence = row.get("local_presence")
     if presence is None:
         presence = row.get("presence")
@@ -110,6 +114,8 @@ def local_copy_is_upload_eligible(row: Mapping[str, Any]) -> bool:
         presence == "present"
         and file_type == "regular"
         and row.get("restore_state") != "restoring"
+        # Content held back at a cloud-only path waits for the owner (#411).
+        and not row.get("cloud_only_version_id")
         and not local_copy_is_protected(row)
     )
 
@@ -960,6 +966,7 @@ def _visible_file_select_sql(
             lc.size AS local_size,
             lc.plaintext_sha256 AS local_sha256,
             lc.matched_archive_version_id,
+            lc.cloud_only_version_id,
             av.id AS archive_version_id,
             av.size AS cloud_size,
             av.storage_class,
@@ -1233,6 +1240,7 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
                         av.restore_state IS NULL
                         OR av.restore_state <> 'restoring'
                      )
+                     AND lc.cloud_only_version_id IS NULL
                      AND NOT (
                         av.id IS NOT NULL
                         AND av.integrity = 'verified'

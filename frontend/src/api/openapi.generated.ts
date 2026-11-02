@@ -988,6 +988,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/files/cloud-only-conflict/replace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Replace Cloud Only Copy
+         * @description Confirm that new content replaces the only cloud copy at its path.
+         */
+        post: operations["replace_cloud_only_copy_api_files_cloud_only_conflict_replace_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/files/versions": {
         parameters: {
             query?: never;
@@ -2465,6 +2485,11 @@ export interface components {
         };
         /** @enum {string} */
         CloudHistoryPolicy: "archive_history" | "current_snapshot";
+        /** CloudOnlyReplacementAction */
+        CloudOnlyReplacementAction: {
+            /** Path */
+            path: string;
+        };
         CloudPurgePayload: {
             confirmation: string;
             generated_phrase: string;
@@ -5799,6 +5824,39 @@ export interface operations {
                         /** @enum {string} */
                         detail: "Offline cache authorization changed";
                     };
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    replace_cloud_only_copy_api_files_cloud_only_conflict_replace_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudOnlyReplacementAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
             /** @description The logical path is empty, absolute, or traverses outside the Vault */

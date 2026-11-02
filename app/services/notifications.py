@@ -813,17 +813,46 @@ def enqueue_archive_version_missing(
     connection: Any, *, incident: Mapping[str, Any]
 ) -> int:
     """Notify the Vault owner and authorized admin members of unexpected loss."""
+    return _enqueue_incident_notification(
+        connection,
+        incident=incident,
+        event="archive_version_missing",
+        params={
+            "path": str(incident.get("path") or ""),
+            "archive_version_id": str(incident.get("archive_version_id") or ""),
+            "provider_version_id": str(incident.get("provider_version_id") or ""),
+            "observed_at": str(incident.get("opened_at") or now_iso()),
+            "reason": str(incident.get("reason") or "missing_in_cloud"),
+        },
+    )
+
+
+def enqueue_cloud_only_conflict(
+    connection: Any, *, incident: Mapping[str, Any]
+) -> int:
+    """Tell the owner that new content is held back at a cloud-only path."""
+    return _enqueue_incident_notification(
+        connection,
+        incident=incident,
+        event="cloud_only_conflict",
+        params={
+            "path": str(incident.get("path") or ""),
+            "observed_at": str(incident.get("opened_at") or now_iso()),
+        },
+    )
+
+
+def _enqueue_incident_notification(
+    connection: Any,
+    *,
+    incident: Mapping[str, Any],
+    event: str,
+    params: Mapping[str, Any],
+) -> int:
+    """Notify the Vault owner and admin members once per catalog incident."""
     vault_id = int(incident["vault_id"])
-    event = "archive_version_missing"
-    title_key = "notification.archive_version_missing.title"
-    body_key = "notification.archive_version_missing.body"
-    params = {
-        "path": str(incident.get("path") or ""),
-        "archive_version_id": str(incident.get("archive_version_id") or ""),
-        "provider_version_id": str(incident.get("provider_version_id") or ""),
-        "observed_at": str(incident.get("opened_at") or now_iso()),
-        "reason": str(incident.get("reason") or "missing_in_cloud"),
-    }
+    title_key = f"notification.{event}.title"
+    body_key = f"notification.{event}.body"
     members = connection.execute(
         """
         SELECT u.id AS user_id

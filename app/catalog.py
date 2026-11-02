@@ -35,6 +35,24 @@ class VaultFileNotFound(LookupError):
 AUTO_RENAME_WINDOW = timedelta(hours=1)
 
 
+def _only_cloud_copy_sql(file_id_sql: str) -> str:
+    """The recoverable Archive Version a reappearing Local Copy must respect.
+
+    A Local Copy that was absent (freed, deleted via SMB, never restored after
+    a catalog rebuild) leaves this verified version as the only copy. Content
+    that reappears at the path stays held back until it proves identical or
+    the owner confirms the replacement (#411, #363 D7).
+    """
+    return f"""(
+        SELECT only_copy.id FROM archive_versions only_copy
+        WHERE only_copy.vault_file_id={file_id_sql}
+          AND only_copy.integrity='verified'
+          AND only_copy.availability='available'
+        ORDER BY only_copy.version_number DESC
+        LIMIT 1
+    )"""
+
+
 def _parse_catalog_timestamp(value: Any) -> datetime | None:
     if value is None:
         return None
@@ -73,6 +91,7 @@ class ArchiveCatalog:
         self.last_skipped_same_class = 0
         self.last_listing_rows_materialized = 0
         self._storage_class_source_supported: bool | None = None
+        self._cloud_only_hold_supported: bool | None = None
 
     def _supports_storage_class_source(self) -> bool:
         """Keep migration-time catalog writes compatible with pre-0040 schemas."""
@@ -99,6 +118,33 @@ class ArchiveCatalog:
                 ).fetchone()["present"]
             )
         self._storage_class_source_supported = present
+        return present
+
+    def _supports_cloud_only_hold(self) -> bool:
+        """Keep migration-time catalog writes compatible with pre-0043 schemas."""
+        if self._cloud_only_hold_supported is not None:
+            return self._cloud_only_hold_supported
+        if getattr(self.connection, "backend", None) == "sqlite":
+            present = any(
+                column["name"] == "cloud_only_version_id"
+                for column in self.connection.execute(
+                    "PRAGMA table_info(local_copies)"
+                ).fetchall()
+            )
+        else:
+            present = bool(
+                self.connection.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema=current_schema()
+                          AND table_name='local_copies'
+                          AND column_name='cloud_only_version_id'
+                    ) AS present
+                    """
+                ).fetchone()["present"]
+            )
+        self._cloud_only_hold_supported = present
         return present
 
     def _mark_path_aggregates_dirty(self, vault_id: int, path: str | None) -> None:
@@ -208,14 +254,40 @@ class ArchiveCatalog:
         file_id = self._get_or_create_file(vault_id, path, observed_at)
         presence = "present" if file_type == "regular" else "unsupported"
         last_seen_at = seen_at or observed_at
-        self.connection.execute(
+        hold = self._supports_cloud_only_hold()
+        # A recovery writes back the cloud-only content itself: nothing to hold.
+        hold_from_recovery = recovered_at is None
+        only_cloud_copy = (
+            _only_cloud_copy_sql("%s") if hold_from_recovery else "NULL"
+        )
+        hold_column = ", cloud_only_version_id" if hold else ""
+        hold_value = (
+            f",\n                CASE WHEN CAST(%s AS TEXT)='present'"
+            f" THEN {only_cloud_copy} END"
+            if hold
+            else ""
+        )
+        hold_update = (
             """
+                cloud_only_version_id=CASE
+                    WHEN excluded.presence='present'
+                     AND local_copies.presence<>'present'
+                    THEN excluded.cloud_only_version_id
+                    ELSE local_copies.cloud_only_version_id
+                END,"""
+            if hold
+            else ""
+        )
+        self.connection.execute(
+            f"""
             INSERT INTO local_copies(
                 vault_file_id, presence, file_type, size, mtime_ns,
                 plaintext_sha256, matched_archive_version_id,
-                last_seen_at, observed_at
-            ) VALUES (%s, %s, %s, %s, %s, NULL, NULL, %s, %s)
-            ON CONFLICT(vault_file_id) DO UPDATE SET
+                last_seen_at, observed_at{hold_column}
+            ) VALUES (
+                %s, %s, %s, %s, %s, NULL, NULL, %s, %s{hold_value}
+            )
+            ON CONFLICT(vault_file_id) DO UPDATE SET{hold_update}
                 presence=excluded.presence,
                 file_type=excluded.file_type,
                 size=excluded.size,
@@ -263,6 +335,8 @@ class ArchiveCatalog:
                 mtime_ns,
                 last_seen_at,
                 observed_at,
+                *((presence,) if hold else ()),
+                *((file_id,) if hold and hold_from_recovery else ()),
             ),
         )
         if recovered_at is not None:
@@ -449,6 +523,15 @@ class ArchiveCatalog:
             ) AS ({values})
             UPDATE local_copies
             SET
+                cloud_only_version_id=CASE
+                    WHEN local_copies.presence<>'present'
+                     AND (
+                        SELECT s.presence FROM s
+                        WHERE s.vault_file_id=local_copies.vault_file_id
+                     )='present'
+                    THEN {_only_cloud_copy_sql("local_copies.vault_file_id")}
+                    ELSE local_copies.cloud_only_version_id
+                END,
                 presence=(
                     SELECT s.presence FROM s
                     WHERE s.vault_file_id=local_copies.vault_file_id
@@ -554,12 +637,16 @@ class ArchiveCatalog:
             INSERT INTO local_copies(
                 vault_file_id, presence, file_type, size, mtime_ns,
                 plaintext_sha256, matched_archive_version_id,
-                last_seen_at, observed_at
+                last_seen_at, observed_at, cloud_only_version_id
             )
             SELECT
                 s.vault_file_id, s.presence, s.file_type, s.size, s.mtime_ns,
                 NULL, NULL,
-                s.last_seen_at, s.observed_at
+                s.last_seen_at, s.observed_at,
+                CASE
+                    WHEN s.presence='present'
+                    THEN {_only_cloud_copy_sql("s.vault_file_id")}
+                END
             FROM s
             WHERE NOT EXISTS (
                 SELECT 1 FROM local_copies lc
@@ -801,6 +888,7 @@ class ArchiveCatalog:
                 lc.mtime_ns AS local_mtime_ns,
                 lc.plaintext_sha256 AS local_sha256,
                 lc.matched_archive_version_id,
+                lc.cloud_only_version_id,
                 av.object_key,
                 av.provider_version_id,
                 av.size AS cloud_size,
@@ -981,11 +1069,18 @@ class ArchiveCatalog:
             """,
             (vault_file_id,),
         ).fetchone()
+        # The previous content was just freed, so the cloud holds its only
+        # copy: a replacement observed in that race is held back like any
+        # content reappearing at a cloud-only path.
         self.connection.execute(
-            """
+            f"""
             UPDATE local_copies
             SET presence=%s, file_type=%s, size=%s, mtime_ns=%s,
                 plaintext_sha256=NULL, matched_archive_version_id=NULL,
+                cloud_only_version_id=CASE
+                    WHEN CAST(%s AS TEXT)='present'
+                    THEN {_only_cloud_copy_sql("local_copies.vault_file_id")}
+                END,
                 last_seen_at=%s, observed_at=%s
             WHERE vault_file_id=%s
             """,
@@ -994,6 +1089,7 @@ class ArchiveCatalog:
                 file_type,
                 size,
                 mtime_ns,
+                presence,
                 observed_at,
                 observed_at,
                 vault_file_id,
@@ -1208,6 +1304,12 @@ class ArchiveCatalog:
                 path,
             ),
         )
+        # Settle a reappearance at a cloud-only path as soon as it is hashed.
+        from .services.catalog_incidents import settle_cloud_only_copies
+
+        settle_cloud_only_copies(
+            self.connection, vault_id=vault_id, path=path
+        )
         self._mark_path_aggregates_dirty(vault_id, path)
 
     def rename_file(
@@ -1275,6 +1377,7 @@ class ArchiveCatalog:
               AND lc.file_type='regular'
               AND lc.plaintext_sha256 IS NOT NULL
               AND lc.presence IN ('missing', 'present')
+              AND lc.cloud_only_version_id IS NULL
             ORDER BY lower(fp.path)
             """,
             (vault_id,),
@@ -1650,12 +1753,14 @@ class ArchiveCatalog:
               AND missing_copy.file_type='regular'
               AND missing_copy.presence='missing'
               AND missing_copy.plaintext_sha256 IS NOT NULL
+              AND missing_copy.cloud_only_version_id IS NULL
               AND provisional.id<>missing.id
               AND provisional.vault_id=%s
               AND provisional_path.path=%s
               AND provisional_copy.file_type='regular'
               AND provisional_copy.presence='present'
               AND provisional_copy.plaintext_sha256 IS NOT NULL
+              AND provisional_copy.cloud_only_version_id IS NULL
         """
         if require_matching_digest:
             query += """
@@ -2301,6 +2406,7 @@ class ArchiveCatalog:
                 lc.size AS local_size,
                 lc.plaintext_sha256 AS local_sha256,
                 lc.matched_archive_version_id,
+                lc.cloud_only_version_id,
                 av.id AS archive_version_id,
                 av.size AS cloud_size,
                 av.storage_class,
@@ -2567,6 +2673,7 @@ class ArchiveCatalog:
                 lc.size AS local_size,
                 lc.plaintext_sha256 AS local_sha256,
                 lc.matched_archive_version_id,
+                lc.cloud_only_version_id,
                 av.id AS archive_version_id,
                 av.size AS cloud_size,
                 av.storage_class,
@@ -3468,6 +3575,7 @@ class ArchiveCatalog:
                     lc.size AS local_size,
                     lc.plaintext_sha256 AS local_sha256,
                     lc.matched_archive_version_id,
+                    lc.cloud_only_version_id,
                     av.id AS archive_version_id,
                     av.size AS cloud_size,
                     av.plaintext_sha256 AS version_sha256,
@@ -3496,6 +3604,7 @@ class ArchiveCatalog:
                     lc.size AS local_size,
                     lc.plaintext_sha256 AS local_sha256,
                     lc.matched_archive_version_id,
+                    lc.cloud_only_version_id,
                     av.id AS archive_version_id,
                     av.size AS cloud_size,
                     av.plaintext_sha256 AS version_sha256,

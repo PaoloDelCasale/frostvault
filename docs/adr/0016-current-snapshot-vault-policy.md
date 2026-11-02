@@ -19,6 +19,13 @@ verified, every VersionId at the old key is deleted rather than hidden
 both remain: Hide is a reversible Delete Marker on the single copy; Purge
 destroys it. A Local Copy can still be removed without touching cloud.
 
+Because a verified upload deletes the previous version, content that appears
+at the path of a file whose Local Copy was absent is never uploaded
+automatically: the single cloud copy would be destroyed by an unrelated file
+(a reset camera counter, a different file copied over). It becomes a
+Cloud-only Conflict until the new file is renamed away or the owner confirms
+the replacement. Identical content simply becomes the Local Copy again.
+
 The Vault S3 prefix is application-owned. Manual edits in the bucket are
 unsupported. Extra VersionIds (crash before purge, external drift) are not
 recoverable; they raise an incident and the worker retries purge.

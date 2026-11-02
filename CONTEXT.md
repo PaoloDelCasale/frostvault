@@ -82,6 +82,13 @@ A Cloud History Policy that permits at most one recoverable Archive Version per
 Vault File.
 _Avoid_: Sync, Mirror, Unversioned, Revision
 
+**Cloud-only Conflict**:
+Different content observed at the path of a Vault File whose Local Copy was
+absent, so its verified Archive Version was the only copy. The content is held
+back from upload until it is renamed away or the owner confirms the replacement;
+identical content is not a conflict.
+_Avoid_: Overwrite, Collision, Duplicate
+
 **Delete Marker**:
 A reversible cloud marker that hides a key without containing or deleting an
 Archive Version's data.

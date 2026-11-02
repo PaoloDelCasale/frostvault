@@ -1851,6 +1851,7 @@ def _apply_auto_renames(
     summary = {"hashed": 0, "confirmed": 0, "queued": 0, "ambiguous": 0}
     confirmed_paths: list[str] = []
     catalog = ArchiveCatalog(connection)
+    from .services.catalog_incidents import settle_cloud_only_copies
     if requested_by is None:
         owner = connection.execute(
             """
@@ -1912,6 +1913,9 @@ def _apply_auto_renames(
                     matched_archive_version_id=None,
                 )
 
+    # Hashed content that reappeared at a cloud-only path is decided before
+    # renames and uploads: identical → Local Copy, different → held back.
+    settle_cloud_only_copies(connection, vault_id=int(vault["id"]))
     candidates = catalog.list_rename_candidates(vault_id=vault["id"])
     changed_at = now_iso()
     for candidate in candidates:
@@ -3838,6 +3842,15 @@ def process_upload(job: dict[str, Any]) -> None:
     )
     if not local_present and not linked_version_id:
         raise RuntimeError("The file is no longer available in the source folder")
+    if not linked_version_id and linked_target and linked_target.get(
+        "cloud_only_version_id"
+    ):
+        # A Job queued before the path became cloud-only must not replace
+        # the only cloud copy; the owner decides (#411, #363 D7).
+        raise RuntimeError(
+            "Upload held back: the path holds different content than a file "
+            "kept only in the cloud"
+        )
     verification_started = False
     verification_failure_reason: str | None = None
     local_plaintext_sha256: str | None = None
