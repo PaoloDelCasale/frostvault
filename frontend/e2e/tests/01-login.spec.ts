@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-import { breakGlassLogin } from "../helpers/auth";
+import { emergencyPasswordLogin } from "../helpers/auth";
 
 test.describe("flow 1 — Break-glass Login", () => {
   test("Break-glass Login shows the archive", async ({ page }, testInfo) => {
-    await breakGlassLogin(page);
+    await emergencyPasswordLogin(page);
     await expect(page.getByTestId("file-browser")).toBeVisible();
     await expect(page.getByText("reports").locator("visible=true").first()).toBeVisible();
     await expect(page.getByText("note.txt").locator("visible=true").first()).toBeVisible();

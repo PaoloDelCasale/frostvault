@@ -35,7 +35,7 @@ class VaultRelocationTests(unittest.TestCase):
         )
         for target in (
             "app.database.settings",
-            "app.services.source_areas.settings",
+            "app.services.source_directories.settings",
         ):
             patcher = patch(target, self.settings)
             patcher.start()
@@ -53,8 +53,8 @@ class VaultRelocationTests(unittest.TestCase):
         self.addCleanup(mount.stop)
         with SQLiteConnection(str(self.db_path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (1, 'owner', 'Owner', 'hash', 0), (9, 'admin', 'Admin', 'hash', 1)"
+                "INSERT INTO users(id, username, display_name, password_hash) "
+                "VALUES (1, 'owner', 'Owner', 'hash'), (9, 'admin', 'Admin', 'hash')"
             )
             self.vault = connection.execute(
                 """
@@ -68,9 +68,6 @@ class VaultRelocationTests(unittest.TestCase):
                 """,
                 (str(self.old),),
             ).fetchone()
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (7, 1, 'owner')"
-            )
             vault_relocation.enroll_vault_root_identity(connection, 7, str(self.old))
         self.new = self.volume / "new-name"
         self.old.rename(self.new)
@@ -95,7 +92,7 @@ class VaultRelocationTests(unittest.TestCase):
         self.assertEqual(row["source_root"], str(self.old))
         return raised.exception.reason
 
-    def test_verified_relocation_preserves_identity_and_notifies_owner(self) -> None:
+    def test_verified_relocation_preserves_identity_and_is_audited(self) -> None:
         before = dict(self.vault)
         relocated = self.relocate()
         self.assertEqual(relocated["source_root"], str(self.new.resolve()))
@@ -103,9 +100,6 @@ class VaultRelocationTests(unittest.TestCase):
         for field in ("id", "uuid", "s3_bucket", "s3_prefix", "rclone_remote", "encryption_mode"):
             self.assertEqual(relocated[field], before[field])
         with SQLiteConnection(str(self.db_path)) as connection:
-            member = connection.execute(
-                "SELECT user_id, role FROM vault_members WHERE vault_id=7"
-            ).fetchone()
             event = connection.execute(
                 "SELECT event, actor_user_id, detail_json "
                 "FROM audit_events WHERE vault_id=7 ORDER BY id DESC"
@@ -113,14 +107,14 @@ class VaultRelocationTests(unittest.TestCase):
             notice = connection.execute(
                 "SELECT user_id, event FROM notifications WHERE vault_id=7 ORDER BY id DESC"
             ).fetchone()
-        self.assertEqual(member, {"user_id": 1, "role": "owner"})
         self.assertEqual(event["event"], "vault_root_relocated")
         self.assertEqual(event["actor_user_id"], 9)
         self.assertEqual(
             json.loads(event["detail_json"])["reason"],
             "operator renamed the directory",
         )
-        self.assertEqual(notice, {"user_id": 1, "event": "vault_root_relocated"})
+        # The owner relocates its own Vault: no notification about it (#412).
+        self.assertIsNone(notice)
 
     def test_destination_rejection_matrix_fails_without_update(self) -> None:
         self.assertEqual(self.reason(volume_alias="other"), "different_volume")
@@ -216,7 +210,6 @@ class VaultRelocationTests(unittest.TestCase):
                             ),
                             BackgroundTasks(),
                             {"id": 9},
-                            None,
                         )
                     )
                 except BaseException as exc:  # pragma: no cover - assertion below

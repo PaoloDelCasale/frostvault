@@ -80,24 +80,6 @@ class CatalogIntegrityTests(unittest.TestCase):
     def test_english_and_italian_catalogs_have_matching_keys(self) -> None:
         self.assertEqual(i18n.locale_key_parity(), {})
 
-    def test_email_templates_render_from_stable_keys(self) -> None:
-        subject = i18n.render_email(
-            "email.subject.admin_action",
-            locale="it",
-            vault="Family",
-        )
-        body = i18n.render_email(
-            "email.body.admin_action",
-            locale="en",
-            action="quota change",
-            vault="Family",
-        )
-        self.assertEqual(subject, "Azione amministratore sul vault Family")
-        self.assertEqual(
-            body,
-            "An administrator performed quota change on vault Family.",
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

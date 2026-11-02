@@ -47,12 +47,8 @@ class VaultEncryptionServiceTests(unittest.TestCase):
 
         with SQLiteConnection(str(self.database_path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (1, 'alice', 'Alice', 'hash', 0)"
-            )
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (2, 'bob', 'Bob', 'hash', 0)"
+                "INSERT INTO users(id, username, display_name, password_hash) "
+                "VALUES (1, 'alice', 'Alice', 'hash')"
             )
 
         self.master_key = Fernet.generate_key().decode("ascii")
@@ -78,18 +74,16 @@ class VaultEncryptionServiceTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def _create_crypt(self, name: str = "Secret Archive", slug: str | None = None):
-        return vaults_service.create_vault_for_user(
-            1, name, slug=slug, encryption_mode="crypt"
-        )
+        return vaults_service.create_vault(name, slug=slug, encryption_mode="crypt")
 
     def test_create_accepts_immutable_encryption_mode(self) -> None:
-        signature = inspect.signature(vaults_service.create_vault_for_user)
+        signature = inspect.signature(vaults_service.create_vault)
         self.assertIn("encryption_mode", signature.parameters)
         self.assertNotIn("source_root", signature.parameters)
 
 
     def test_plain_vault_has_no_stored_crypt_material(self) -> None:
-        vault = vaults_service.create_vault_for_user(1, "Plain Docs")
+        vault = vaults_service.create_vault("Plain Docs")
         self.assertEqual(vault["encryption_mode"], "plain")
         self.assertIsNone(vault["crypt_password_ciphertext"])
         self.assertIsNone(vault["crypt_password2_ciphertext"])
@@ -126,15 +120,11 @@ class VaultEncryptionServiceTests(unittest.TestCase):
         bare = replace(self.settings, archive_master_key="", vault_rclone_base_remote="")
         with patch("app.services.vaults.settings", bare):
             with self.assertRaises(vaults_service.VaultProvisioningUnavailable):
-                vaults_service.create_vault_for_user(
-                    1, "Nope", encryption_mode="crypt"
-                )
+                vaults_service.create_vault("Nope", encryption_mode="crypt")
 
     def test_invalid_encryption_mode_is_rejected(self) -> None:
         with self.assertRaises(vaults_service.InvalidVaultName):
-            vaults_service.create_vault_for_user(
-                1, "Docs", encryption_mode="rot13"
-            )
+            vaults_service.create_vault("Docs", encryption_mode="rot13")
 
     def test_uploads_blocked_until_recovery_custody_confirmed(self) -> None:
         vault = self._create_crypt()
@@ -265,11 +255,11 @@ class VaultEncryptionServiceTests(unittest.TestCase):
         self.assertNotIn(".", encoded.split("/")[-1])
 
     def test_mode_change_is_not_an_in_place_update(self) -> None:
-        vault = vaults_service.create_vault_for_user(1, "Plain")
+        vault = vaults_service.create_vault("Plain")
         with SQLiteConnection(str(self.database_path)) as connection:
             # Application API: creating another vault is the migration path.
-            other = vaults_service.create_vault_for_user(
-                1, "Crypt", slug="crypt-copy", encryption_mode="crypt"
+            other = vaults_service.create_vault(
+                "Crypt", slug="crypt-copy", encryption_mode="crypt"
             )
             row = connection.execute(
                 "SELECT encryption_mode FROM vaults WHERE id=%s", (vault["id"],)

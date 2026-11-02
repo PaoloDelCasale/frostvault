@@ -1,8 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import {
-  applySession,
-  breakGlassLogin,
+  emergencyPasswordLogin,
   openAccountMenu,
   openMobileDrawer,
 } from "../helpers/auth";
@@ -53,7 +52,7 @@ test.describe("archive flows", () => {
   test("flow 2 — navigate directories, breadcrumbs, root, browser back", async ({
     page,
   }) => {
-    await breakGlassLogin(page);
+    await emergencyPasswordLogin(page);
     await openDirectory(page, "reports");
     await expect(page).toHaveURL(/directory=reports/);
     await expect(page.getByText("readme.txt").locator("visible=true").first()).toBeVisible();
@@ -70,7 +69,7 @@ test.describe("archive flows", () => {
   });
 
   test("flow 3 — search and state filter update the URL", async ({ page }) => {
-    await breakGlassLogin(page);
+    await emergencyPasswordLogin(page);
     await page.getByTestId("file-search").fill("readme");
     await expect(page).toHaveURL(/q=readme/, { timeout: 5_000 });
     await expect(page.getByText("readme.txt").locator("visible=true").first()).toBeVisible();
@@ -86,7 +85,7 @@ test.describe("archive flows", () => {
   test("flow 4 — open a Vault File and read Path History", async ({
     page,
   }, testInfo) => {
-    await breakGlassLogin(page);
+    await emergencyPasswordLogin(page);
     await openDirectory(page, "reports");
     await visibleFileButton(page, "readme.txt").click();
     const suffix = testInfo.project.name === "mobile-375" ? "" : "-inline";
@@ -99,7 +98,7 @@ test.describe("archive flows", () => {
   test("flow 5 — cancel a destructive confirmation without side effects", async ({
     page,
   }, testInfo) => {
-    await breakGlassLogin(page);
+    await emergencyPasswordLogin(page);
     if (testInfo.project.name === "mobile-375") {
       await page
         .locator('[data-testid="more-actions-note.txt"]')
@@ -121,7 +120,7 @@ test.describe("archive flows", () => {
   });
 
   test("flow 6 — switch vault from the drawer/nav", async ({ page }, testInfo) => {
-    await breakGlassLogin(page);
+    await emergencyPasswordLogin(page);
     if (testInfo.project.name === "mobile-375") {
       await openMobileDrawer(page);
     }
@@ -133,7 +132,7 @@ test.describe("archive flows", () => {
   });
 
   test("flow 7 — switch locale to Italian", async ({ page }) => {
-    await breakGlassLogin(page);
+    await emergencyPasswordLogin(page);
     const language = await languageSelect(page);
     await language.selectOption("it");
     await expect(page.getByTestId("file-search")).toHaveAttribute(
@@ -145,17 +144,17 @@ test.describe("archive flows", () => {
   test("flow 8 — owner reaches /vault/access and edits a quota", async ({
     page,
   }, testInfo) => {
-    await breakGlassLogin(page);
+    await emergencyPasswordLogin(page);
     if (testInfo.project.name === "mobile-375") {
       await openMobileDrawer(page);
       await page
         .getByRole("dialog")
-        .getByRole("button", { name: /manage access|gestisci accesso/i })
+        .getByRole("button", { name: /vault settings|impostazioni del vault/i })
         .click();
     } else {
       await page
         .getByRole("navigation", { name: /vault navigation/i })
-        .getByRole("button", { name: /manage access|gestisci accesso/i })
+        .getByRole("button", { name: /vault settings|impostazioni del vault/i })
         .click();
     }
     await expect(page).toHaveURL(/\/vault\/access/);
@@ -166,10 +165,10 @@ test.describe("archive flows", () => {
     await expect(page.getByText(/quotas updated|quote del vault aggiornate/i)).toBeVisible();
   });
 
-  test("flow 9 — admin opens /admin members dialog and closes it", async ({
+  test("flow 9 — owner opens Administration and its sections", async ({
     page,
-  }, testInfo) => {
-    await breakGlassLogin(page);
+  }) => {
+    await emergencyPasswordLogin(page);
     await openAccountMenu(page);
     await page
       .getByRole("dialog", { name: /^account$/i })
@@ -178,32 +177,12 @@ test.describe("archive flows", () => {
     await expect(page).toHaveURL(/\/admin/);
     await expect(page.getByText("Family Archive").first()).toBeVisible();
 
-    if (testInfo.project.name === "mobile-375") {
-      await page
-        .getByRole("listitem")
-        .filter({ hasText: "Family Archive" })
-        .getByRole("button", { name: /^actions$|^azioni$/i })
-        .click();
-      await page.getByRole("button", { name: /manage access|gestisci accesso/i }).click();
-    } else {
-      await page
-        .getByRole("button", { name: /manage access|gestisci accesso/i })
-        .locator("visible=true")
-        .first()
-        .click();
-    }
-    await expect(page.getByRole("dialog")).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(page.getByRole("dialog")).toBeHidden();
-
     const sections = page.getByRole("navigation", {
       name: /administration sections|sezioni di amministrazione/i,
     });
-    await sections
-      .getByRole("link", { name: /users and identities|utenti e identità/i })
-      .click();
-    await expect(page).toHaveURL(/\/admin\/users/);
-    await expect(page.getByRole("heading", { name: /invites|inviti/i })).toBeVisible();
+    await expect(
+      sections.getByRole("link", { name: /users and identities|utenti e identità/i }),
+    ).toHaveCount(0);
 
     await sections
       .getByRole("link", { name: /^defaults$|^valori predefiniti$/i })
@@ -218,17 +197,8 @@ test.describe("archive flows", () => {
     await expect(page.getByRole("heading", { name: /deployment configuration|configurazione del deployment/i })).toBeVisible();
   });
 
-  test("flow 10 — viewer has no operational actions", async ({ page, context }) => {
-    await applySession(context, "viewer");
-    await page.goto("/");
-    await expect(page.getByTestId("file-browser")).toBeVisible();
-    await expect(page.getByText("note.txt").locator("visible=true").first()).toBeVisible();
-    await expect(page.locator('[data-testid="more-actions-note.txt"]')).toHaveCount(0);
-    await expect(page.locator('[data-testid="desktop-actions-note.txt"]')).toHaveCount(0);
-  });
-
   test("flow 11 — sign out", async ({ page }) => {
-    await breakGlassLogin(page);
+    await emergencyPasswordLogin(page);
     await openAccountMenu(page);
     await page
       .getByRole("dialog", { name: /^account$/i })

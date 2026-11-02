@@ -38,8 +38,8 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('admin', 'Admin', %s, TRUE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('admin', 'Admin', %s)
                 """,
                 (hash_password("admin-password-1"),),
             )

@@ -47,7 +47,7 @@ export interface paths {
         };
         /**
          * Admin Audit Events
-         * @description List all audit events for global administrators.
+         * @description List all audit events for the Owner.
          */
         get: operations["admin_audit_events_api_admin_audit_events_get"];
         put?: never;
@@ -121,47 +121,6 @@ export interface paths {
         put?: never;
         /** Admin Activate Cost Price Book */
         post: operations["admin_activate_cost_price_book_api_admin_cost_price_books__price_book_id__activate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/invites": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Admin Invites
-         * @description List Invites that can still be redeemed, without any token material.
-         */
-        get: operations["admin_invites_api_admin_invites_get"];
-        put?: never;
-        /** Create Invite Endpoint */
-        post: operations["create_invite_endpoint_api_admin_invites_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/invites/{invite_id}/revoke": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Revoke Invite Endpoint
-         * @description Withdraw a pending Invite so its token can never be redeemed.
-         */
-        post: operations["revoke_invite_endpoint_api_admin_invites__invite_id__revoke_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -253,108 +212,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/admin/oidc-configuration": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Admin Oidc Configuration */
-        get: operations["admin_oidc_configuration_api_admin_oidc_configuration_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/oidc-configuration/activate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Activate Admin Oidc Configuration */
-        post: operations["activate_admin_oidc_configuration_api_admin_oidc_configuration_activate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/oidc-configuration/disable": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Disable Admin Oidc Configuration */
-        post: operations["disable_admin_oidc_configuration_api_admin_oidc_configuration_disable_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/oidc-configuration/draft": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Save Admin Oidc Draft */
-        put: operations["save_admin_oidc_draft_api_admin_oidc_configuration_draft_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/oidc-configuration/draft/validate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Validate Admin Oidc Draft */
-        post: operations["validate_admin_oidc_draft_api_admin_oidc_configuration_draft_validate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/oidc-configuration/rotate-secret": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Rotate Admin Oidc Secret */
-        post: operations["rotate_admin_oidc_secret_api_admin_oidc_configuration_rotate_secret_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/admin/settings": {
         parameters: {
             query?: never;
@@ -371,50 +228,6 @@ export interface paths {
         head?: never;
         /** Update Admin System Settings */
         patch: operations["update_admin_system_settings_api_admin_settings_patch"];
-        trace?: never;
-    };
-    "/api/admin/source-areas": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Admin List Source Areas
-         * @description List Source Areas, optionally filtered by User or Source Volume.
-         */
-        get: operations["admin_list_source_areas_api_admin_source_areas_get"];
-        put?: never;
-        /**
-         * Admin Assign Source Area
-         * @description Assign an exclusive Source Area to one User (issue #149).
-         */
-        post: operations["admin_assign_source_area_api_admin_source_areas_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/source-areas/{source_area_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * Admin Revoke Source Area
-         * @description Revoke one Source Area without altering existing Vaults (issue #149).
-         */
-        delete: operations["admin_revoke_source_area_api_admin_source_areas__source_area_id__delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
         trace?: never;
     };
     "/api/admin/source-volumes": {
@@ -437,107 +250,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/admin/source-volumes/{volume_alias}/browse": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Admin Browse Source Volume
-         * @description Admin lazy directory browser for Source Area assignment.
-         */
-        get: operations["admin_browse_source_volume_api_admin_source_volumes__volume_alias__browse_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/users": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Admin Users
-         * @description List every User with vault membership and authentication capabilities.
-         */
-        get: operations["admin_users_api_admin_users_get"];
-        put?: never;
-        /** Create User */
-        post: operations["create_user_api_admin_users_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/users/{user_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /**
-         * Update User
-         * @description Change a User's global role, activation, display name or password.
-         */
-        patch: operations["update_user_api_admin_users__user_id__patch"];
-        trace?: never;
-    };
-    "/api/admin/users/{user_id}/identities": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Admin User Identities
-         * @description List the external Identities linked to one User.
-         */
-        get: operations["admin_user_identities_api_admin_users__user_id__identities_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/users/{user_id}/identities/{identity_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * Admin Unlink Identity
-         * @description Unlink one external Identity after explicit confirmation.
-         */
-        delete: operations["admin_unlink_identity_api_admin_users__user_id__identities__identity_id__delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/admin/vaults": {
         parameters: {
             query?: never;
@@ -548,127 +260,8 @@ export interface paths {
         /** Admin Vaults */
         get: operations["admin_vaults_api_admin_vaults_get"];
         put?: never;
-        /** Create Vault */
-        post: operations["create_vault_api_admin_vaults_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/vaults/{vault_id}/decommission": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Start Admin Vault Decommission */
-        post: operations["start_admin_vault_decommission_api_admin_vaults__vault_id__decommission_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/vaults/{vault_id}/decommission/cloud-purge/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Cancel Admin Vault Decommission Cloud Purge */
-        post: operations["cancel_admin_vault_decommission_cloud_purge_api_admin_vaults__vault_id__decommission_cloud_purge_cancel_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/vaults/{vault_id}/decommission/preview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Preview Admin Vault Decommission */
-        post: operations["preview_admin_vault_decommission_api_admin_vaults__vault_id__decommission_preview_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/vaults/{vault_id}/decommission/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Admin Vault Decommission Status */
-        get: operations["admin_vault_decommission_status_api_admin_vaults__vault_id__decommission_status_get"];
-        put?: never;
         post?: never;
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/vaults/{vault_id}/members": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Vault Members */
-        get: operations["vault_members_api_admin_vaults__vault_id__members_get"];
-        put?: never;
-        /**
-         * Add Vault Member
-         * @description Global-admin override of a vault's sharing.
-         *
-         *     The primary owner role can never be handed out here -- only
-         *     :func:`transfer_vault_owner` can change it, preserving the one-owner
-         *     invariant -- so this only ever assigns ``operator``/``viewer``. Per
-         *     ADR-0005's reauth-then-audit precedent, this sensitive override
-         *     requires a ``reason``, is audited, and notifies the vault's owner.
-         */
-        post: operations["add_vault_member_api_admin_vaults__vault_id__members_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/vaults/{vault_id}/members/{user_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * Remove Vault Member
-         * @description Global-admin removal of a vault member (never the primary owner --
-         *     transfer ownership first). Requires ``reason``, is audited, and
-         *     notifies the vault's owner, per ADR-0005's precedent for sensitive
-         *     admin overrides.
-         */
-        delete: operations["remove_vault_member_api_admin_vaults__vault_id__members__user_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -692,23 +285,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/admin/vaults/{vault_id}/recovery/export": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Admin Export Vault Recovery Secret */
-        post: operations["admin_export_vault_recovery_secret_api_admin_vaults__vault_id__recovery_export_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/admin/vaults/{vault_id}/relocate": {
         parameters: {
             query?: never;
@@ -723,32 +299,6 @@ export interface paths {
          * @description Relocate, never rebind, a missing root on its verified Source Volume.
          */
         post: operations["admin_relocate_vault_root_api_admin_vaults__vault_id__relocate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/vaults/{vault_id}/transfer-owner": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Transfer Vault Owner
-         * @description Global-admin override to transfer primary ownership.
-         *
-         *     Atomically demotes the current owner to operator and promotes the
-         *     target (never moving the vault's namespace, local directory, or S3
-         *     objects). Requires ``reason``, is audited, and notifies both the
-         *     outgoing and incoming owner, per ADR-0005's precedent for sensitive
-         *     admin overrides.
-         */
-        post: operations["transfer_vault_owner_api_admin_vaults__vault_id__transfer_owner_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -781,7 +331,7 @@ export interface paths {
         };
         /**
          * Vault Audit Events
-         * @description List audit events visible to the current Vault membership role.
+         * @description List the audit events recorded for the selected Vault.
          */
         get: operations["vault_audit_events_api_audit_events_get"];
         put?: never;
@@ -1232,8 +782,8 @@ export interface paths {
          * Mark All Notifications Read
          * @description Mark every currently visible unread notification read (issue #225).
          *
-         *     Server-authoritative and idempotent; preserves the same membership and
-         *     in-app visibility checks as single-item mark-read.
+         *     Server-authoritative and idempotent; preserves the same Vault and in-app
+         *     visibility checks as single-item mark-read.
          */
         post: operations["mark_all_notifications_read_api_notifications_read_all_post"];
         delete?: never;
@@ -1293,12 +843,12 @@ export interface paths {
         put?: never;
         /**
          * Reauth
-         * @description Local-password Reauthentication with an isolated durable backoff.
+         * @description Emergency Password Reauthentication with an isolated durable backoff.
          *
-         *     OIDC users have no password hash and must step up through the provider
-         *     (see ``/auth/oidc/reauth``). Its account/IP counters deliberately use
-         *     namespaced keys so a Reauthentication success cannot reset Local Sign-in,
-         *     Invite, or OIDC-related throttling state.
+         *     Accepted only from loopback and the LAN CIDRs; elsewhere the Owner steps
+         *     up through the provider (see ``/auth/oidc/reauth``). Its account/IP
+         *     counters deliberately use namespaced keys so a Reauthentication success
+         *     cannot reset sign-in or OIDC-related throttling state.
          */
         post: operations["reauth_api_reauth_post"];
         delete?: never;
@@ -1392,26 +942,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/source-areas": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List My Source Areas
-         * @description Source Areas granted to the authenticated User.
-         */
-        get: operations["list_my_source_areas_api_source_areas_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/source-volumes/{volume_alias}/browse": {
         parameters: {
             query?: never;
@@ -1420,10 +950,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Browse My Source Volume
-         * @description User lazy directory browser scoped to their Source Areas.
+         * Browse Source Volume
+         * @description Lazy directory browser for choosing a Vault root on a Source Volume.
          */
-        get: operations["browse_my_source_volume_api_source_volumes__volume_alias__browse_get"];
+        get: operations["browse_source_volume_api_source_volumes__volume_alias__browse_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1658,50 +1188,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/members": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Own Vault Members
-         * @description Owner self-service: view the current vault's sharing.
-         */
-        get: operations["list_own_vault_members_api_vault_members_get"];
-        put?: never;
-        /**
-         * Add Own Vault Member
-         * @description Owner self-service: share the current vault as operator/viewer.
-         */
-        post: operations["add_own_vault_member_api_vault_members_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vault/members/{user_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * Remove Own Vault Member
-         * @description Owner self-service: revoke a member's access to the current vault.
-         */
-        delete: operations["remove_own_vault_member_api_vault_members__user_id__delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/vault/notification-preferences": {
         parameters: {
             query?: never;
@@ -1763,7 +1249,7 @@ export interface paths {
         };
         /**
          * Own Vault Quotas
-         * @description Primary-owner read seam; ordinary operators and viewers are denied.
+         * @description Quota limits and usage of the selected Vault.
          */
         get: operations["own_vault_quotas_api_vault_quotas_get"];
         put?: never;
@@ -1808,76 +1294,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/transfer-owner": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Transfer Own Vault Owner
-         * @description Owner self-service: hand primary ownership to another member.
-         *
-         *     Atomic role swap on ``vault_members`` alone -- the vault's generated
-         *     namespace, local directory, and S3 objects never move.
-         */
-        post: operations["transfer_own_vault_owner_api_vault_transfer_owner_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vault/user-lookup": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Lookup Vault User
-         * @description Look up one active user without exposing directory information.
-         *
-         *     A lookup is deliberately scoped to the selected vault and returns only the
-         *     fields needed to confirm a sharing change. It never returns identities,
-         *     administrator state, activity timestamps, or other memberships.
-         */
-        post: operations["lookup_vault_user_api_vault_user_lookup_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vault/user-suggest": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Suggest Vault Users
-         * @description Return a bounded username prefix match without listing the directory.
-         *
-         *     Suggestions require at least two characters, never include inactive users,
-         *     and are capped so a vault owner cannot paginate the full user table.
-         */
-        post: operations["suggest_vault_users_api_vault_user_suggest_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/vaults": {
         parameters: {
             query?: never;
@@ -1885,20 +1301,19 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** User Vaults */
-        get: operations["user_vaults_api_vaults_get"];
+        /** List Vaults */
+        get: operations["list_vaults_api_vaults_get"];
         put?: never;
         /**
-         * Create Own Vault
-         * @description Let an authenticated, already-existing user create their own vault.
+         * Create Owner Vault
+         * @description Create a Vault from the UI, the only way Vaults are created (#412).
          *
-         *     The server generates the storage identity; it never provisions a user
-         *     from identity claims (the caller must already be `current_user`).
-         *     Crypt vaults also receive a one-time recovery export so the owner can
-         *     confirm custody before uploads are admitted. Adoption binds an existing
-         *     Source Area directory in place and starts an asynchronous local scan.
+         *     The server generates the storage identity. Crypt vaults also receive a
+         *     one-time recovery export so the owner can confirm custody before uploads
+         *     are admitted. Adoption binds any free directory of a custom Source Volume
+         *     in place and starts an asynchronous local scan.
          */
-        post: operations["create_own_vault_api_vaults_post"];
+        post: operations["create_owner_vault_api_vaults_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2019,23 +1434,6 @@ export interface paths {
         };
         /** Oidc Callback */
         get: operations["oidc_callback_auth_oidc_callback_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/oidc/link": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Oidc Link */
-        get: operations["oidc_link_auth_oidc_link_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2216,119 +1614,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        AdminIdentitiesResponse: {
-            items: components["schemas"]["AdminIdentity"][];
-        } & {
-            [key: string]: unknown;
-        };
-        AdminIdentity: {
-            created_at: string;
-            id: number;
-            issuer: string;
-            subject: string;
-        } & {
-            [key: string]: unknown;
-        };
-        AdminInvite: {
-            created_at?: string;
-            created_by: number;
-            expires_at: string;
-            id: number;
-            target_user_id: number;
-            target_username: string;
-        } & {
-            [key: string]: unknown;
-        };
-        AdminInvitesResponse: {
-            items: components["schemas"]["AdminInvite"][];
-        } & {
-            [key: string]: unknown;
-        };
-        /** AdminMembershipCreate */
-        AdminMembershipCreate: {
-            /** Reason */
-            reason: string;
-            /**
-             * Role
-             * @default viewer
-             */
-            role: string;
-            /** User Id */
-            user_id: number;
-        };
-        AdminMembershipCreatePayload: {
-            reason: string;
-            /** @enum {string} */
-            role: "operator" | "viewer";
-            user_id: number;
-        } & {
-            [key: string]: unknown;
-        };
-        /** AdminOwnerTransfer */
-        AdminOwnerTransfer: {
-            /** New Owner User Id */
-            new_owner_user_id: number;
-            /** Reason */
-            reason: string;
-        };
-        AdminOwnerTransferPayload: {
-            new_owner_user_id: number;
-            reason: string;
-        } & {
-            [key: string]: unknown;
-        };
-        /**
-         * AdminSourceAreaAssign
-         * @description Admin assignment of an exclusive Source Area (issue #149).
-         */
-        AdminSourceAreaAssign: {
-            /** Reason */
-            reason: string;
-            /**
-             * Relative Path
-             * @default
-             */
-            relative_path: string;
-            /** User Id */
-            user_id: number;
-            /** Volume Alias */
-            volume_alias: string;
-        };
-        /** @description Global administration endpoints (issue #69). */
-        AdminUser: {
-            active: boolean;
-            created_at?: string;
-            display_name: string;
-            has_password: boolean;
-            id: number;
-            identity_count: number;
-            is_admin: boolean;
-            username: string;
-            vault_count: number;
-        } & {
-            [key: string]: unknown;
-        };
-        AdminUserCreatePayload: {
-            display_name: string;
-            is_admin: boolean;
-            password: string | null;
-            username: string;
-        } & {
-            [key: string]: unknown;
-        };
-        AdminUserUpdatePayload: {
-            active?: boolean;
-            display_name?: string;
-            is_admin?: boolean;
-            password?: string;
-        } & {
-            [key: string]: unknown;
-        };
-        AdminUsersResponse: {
-            items: components["schemas"]["AdminUser"][];
-        } & {
-            [key: string]: unknown;
-        };
         AdminVault: {
             cloud_history_policy?: components["schemas"]["CloudHistoryPolicy"];
             /** @enum {string} */
@@ -2337,7 +1622,6 @@ export interface components {
             enabled: boolean;
             encryption_mode?: string;
             id: number;
-            member_count: number;
             name: string;
             rclone_remote?: string;
             root_released_at?: string | null;
@@ -2346,35 +1630,6 @@ export interface components {
             slug: string;
             source_root: string;
             uuid?: string;
-        };
-        AdminVaultCreatePayload: {
-            cloud_history_policy: components["schemas"]["CloudHistoryPolicy"];
-            /** @enum {string} */
-            creation_mode?: "empty" | "adopt";
-            /** @enum {string} */
-            encryption_mode?: "plain" | "crypt";
-            name: string;
-            owner_user_id: number;
-            reason: string;
-            relative_path?: string;
-            slug: string;
-            volume_alias?: string;
-        } & {
-            [key: string]: unknown;
-        };
-        AdminVaultMember: {
-            active: boolean;
-            display_name: string;
-            id: number;
-            role: string;
-            username: string;
-        } & {
-            [key: string]: unknown;
-        };
-        AdminVaultMembersResponse: {
-            items: components["schemas"]["AdminVaultMember"][];
-        } & {
-            [key: string]: unknown;
         };
         AdminVaultRelocatePayload: {
             reason: string;
@@ -2775,11 +2030,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** InviteCreate */
-        InviteCreate: {
-            /** Target User Id */
-            target_user_id: number;
-        };
         /** JobCancelAction */
         JobCancelAction: {
             /** Action */
@@ -3006,13 +2256,11 @@ export interface components {
             [key: string]: unknown;
         };
         MeResponse: {
-            active: boolean;
             auth_method: components["schemas"]["AuthMethod"];
             csrf_token: string;
             decommission_vault?: components["schemas"]["MeDecommissionVault"] | null;
             display_name: string;
             id: number;
-            is_admin: boolean;
             locale: string;
             locales: string[];
             /** @description Opaque persisted Session cache authorization. It combines a monotonic per-Session generation with an unguessable nonce and rotates on Session replacement/revocation/expiry/OIDC token rotation and Vault selection. */
@@ -3024,27 +2272,14 @@ export interface components {
             [key: string]: unknown;
         };
         MeVault: {
-            can_operate: boolean;
             cloud_deletion_enabled: boolean;
             cloud_history_policy: components["schemas"]["CloudHistoryPolicy"];
             delete_enabled: boolean;
             id: number;
-            is_vault_owner: boolean;
             name: string;
-            role: components["schemas"]["VaultRole"];
             slug: string;
         } & {
             [key: string]: unknown;
-        };
-        /** MembershipCreate */
-        MembershipCreate: {
-            /**
-             * Role
-             * @default viewer
-             */
-            role: string;
-            /** User Id */
-            user_id: number;
         };
         /** MetadataBackupRunAction */
         MetadataBackupRunAction: {
@@ -3055,62 +2290,6 @@ export interface components {
         NotificationReadAction: {
             /** Notification Id */
             notification_id: number;
-        };
-        OidcConfigurationResponse: {
-            active: components["schemas"]["OidcConfigurationValues"];
-            configuration_status: string;
-            draft: components["schemas"]["OidcConfigurationValues"] | null;
-            last_validation: ({
-                error?: string;
-                status: string;
-                validated_at?: string;
-            } & {
-                [key: string]: unknown;
-            }) | null;
-        } & {
-            [key: string]: unknown;
-        };
-        /** @description Managed OIDC configuration (issues #134 and #136). */
-        OidcConfigurationValues: {
-            callback_url?: string;
-            client_id: string;
-            client_secret_configured: boolean;
-            enabled?: boolean;
-            issuer: string;
-            login_transaction_ttl_seconds: number;
-            scopes: string[];
-            source?: string;
-            validation_status?: string;
-            version?: number;
-        } & {
-            [key: string]: unknown;
-        };
-        /** OidcDraftAction */
-        OidcDraftAction: {
-            /** Client Id */
-            client_id: string;
-            /** Client Secret */
-            client_secret: string;
-            /** Issuer */
-            issuer: string;
-            /** Login Transaction Ttl Seconds */
-            login_transaction_ttl_seconds: number;
-            /** Scopes */
-            scopes: string[];
-        };
-        OidcDraftPayload: {
-            client_id: string;
-            client_secret: string;
-            issuer: string;
-            login_transaction_ttl_seconds: number;
-            scopes: string[];
-        } & {
-            [key: string]: unknown;
-        };
-        /** OidcSecretRotationAction */
-        OidcSecretRotationAction: {
-            /** Client Secret */
-            client_secret: string;
         };
         OperatingWindow: {
             end: string;
@@ -3167,11 +2346,6 @@ export interface components {
              * @default 300
              */
             stability_seconds: number;
-        };
-        /** OwnerTransfer */
-        OwnerTransfer: {
-            /** New Owner User Id */
-            new_owner_user_id: number;
         };
         PathHistoryEntry: {
             path: string;
@@ -3346,31 +2520,6 @@ export interface components {
              */
             username: string;
         };
-        SourceAreaAssignPayload: {
-            reason: string;
-            relative_path: string;
-            user_id: number;
-            volume_alias: string;
-        } & {
-            [key: string]: unknown;
-        };
-        SourceAreaGrant: {
-            /** @enum {string} */
-            availability: "available" | "unavailable";
-            created_at: string;
-            id: number;
-            relative_path: string;
-            usable: boolean;
-            user_id: number;
-            volume_alias: string;
-        } & {
-            [key: string]: unknown;
-        };
-        SourceAreaListResponse: {
-            items: components["schemas"]["SourceAreaGrant"][];
-        } & {
-            [key: string]: unknown;
-        };
         SourceDirectoryBrowseResponse: {
             items: components["schemas"]["SourceDirectoryEntry"][];
             relative_path: string;
@@ -3390,9 +2539,7 @@ export interface components {
         SourceDirectoryOccupation: {
             /** @constant */
             kind: "vault";
-            label?: string;
-            owner_display_name?: string;
-            vault_name?: string;
+            vault_name: string;
         } & {
             [key: string]: unknown;
         };
@@ -3403,7 +2550,6 @@ export interface components {
             diagnostic_code?: string | null;
             health: string;
             path: string;
-            source_area_count: number;
             vault_count: number;
         } & {
             [key: string]: unknown;
@@ -3570,49 +2716,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** UserCreate */
-        UserCreate: {
-            /** Display Name */
-            display_name: string;
-            /**
-             * Is Admin
-             * @default false
-             */
-            is_admin: boolean;
-            /** Password */
-            password?: string | null;
-            /** Username */
-            username: string;
-        };
-        /** UserLookup */
-        UserLookup: {
-            /** Username */
-            username: string;
-        };
-        UserLookupResult: {
-            current_vault_role: components["schemas"]["VaultRole"] | null;
-            display_name: string;
-            id: number;
-            username: string;
-        } & {
-            [key: string]: unknown;
-        };
-        UserSuggestResponse: {
-            items: components["schemas"]["UserLookupResult"][];
-        } & {
-            [key: string]: unknown;
-        };
-        /** UserUpdate */
-        UserUpdate: {
-            /** Active */
-            active?: boolean | null;
-            /** Display Name */
-            display_name?: string | null;
-            /** Is Admin */
-            is_admin?: boolean | null;
-            /** Password */
-            password?: string | null;
-        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -3625,33 +2728,6 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
-        };
-        /** VaultCreate */
-        VaultCreate: {
-            /** Cloud History Policy */
-            cloud_history_policy: string;
-            /**
-             * Creation Mode
-             * @default empty
-             */
-            creation_mode: string;
-            /**
-             * Encryption Mode
-             * @default plain
-             */
-            encryption_mode: string;
-            /** Name */
-            name: string;
-            /** Owner User Id */
-            owner_user_id: number;
-            /** Reason */
-            reason: string;
-            /** Relative Path */
-            relative_path?: string | null;
-            /** Slug */
-            slug: string;
-            /** Volume Alias */
-            volume_alias?: string | null;
         };
         VaultCreateRequest: {
             cloud_history_policy: components["schemas"]["CloudHistoryPolicy"];
@@ -3672,7 +2748,6 @@ export interface components {
             name: string;
             recovery_custody_confirmed: boolean;
             recovery_export?: string;
-            role: components["schemas"]["VaultRole"];
             slug: string;
             uuid: string;
         } & {
@@ -3695,7 +2770,6 @@ export interface components {
             jobs: number;
             local_bytes: number;
             local_files: number;
-            memberships: number;
             vault_files: number;
         } & {
             [key: string]: unknown;
@@ -3845,23 +2919,7 @@ export interface components {
             cloud_history_policy?: components["schemas"]["CloudHistoryPolicy"];
             id: number;
             name: string;
-            role: components["schemas"]["VaultRole"];
             slug: string;
-        } & {
-            [key: string]: unknown;
-        };
-        /** @description Vault access / governance types (issue #68). */
-        VaultMember: {
-            active?: boolean;
-            display_name: string;
-            id: number;
-            role: components["schemas"]["VaultRole"];
-            username: string;
-        } & {
-            [key: string]: unknown;
-        };
-        VaultMembersResponse: {
-            items: components["schemas"]["VaultMember"][];
         } & {
             [key: string]: unknown;
         };
@@ -3942,11 +3000,6 @@ export interface components {
             /** Volume Alias */
             volume_alias: string;
         };
-        /**
-         * @description Hand-written response types for foundation endpoints (issue #60).
-         * @enum {string}
-         */
-        VaultRole: "owner" | "operator" | "viewer";
         VaultSelectRequest: {
             vault_id: number;
         } & {
@@ -4220,90 +3273,6 @@ export interface operations {
             };
         };
     };
-    admin_invites_api_admin_invites_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AdminInvitesResponse"];
-                };
-            };
-        };
-    };
-    create_invite_endpoint_api_admin_invites_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["InviteCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    revoke_invite_endpoint_api_admin_invites__invite_id__revoke_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                invite_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     admin_list_metadata_backups_api_admin_metadata_backups_get: {
         parameters: {
             query?: never;
@@ -4454,152 +3423,6 @@ export interface operations {
             };
         };
     };
-    admin_oidc_configuration_api_admin_oidc_configuration_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OidcConfigurationResponse"];
-                };
-            };
-        };
-    };
-    activate_admin_oidc_configuration_api_admin_oidc_configuration_activate_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OidcConfigurationResponse"];
-                };
-            };
-        };
-    };
-    disable_admin_oidc_configuration_api_admin_oidc_configuration_disable_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OidcConfigurationResponse"];
-                };
-            };
-        };
-    };
-    save_admin_oidc_draft_api_admin_oidc_configuration_draft_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["OidcDraftAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OidcConfigurationResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    validate_admin_oidc_draft_api_admin_oidc_configuration_draft_validate_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OidcConfigurationResponse"];
-                };
-            };
-        };
-    };
-    rotate_admin_oidc_secret_api_admin_oidc_configuration_rotate_secret_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["OidcSecretRotationAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OidcConfigurationResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     admin_system_settings_api_admin_settings_get: {
         parameters: {
             query?: never;
@@ -4653,104 +3476,6 @@ export interface operations {
             };
         };
     };
-    admin_list_source_areas_api_admin_source_areas_get: {
-        parameters: {
-            query?: {
-                user_id?: number | null;
-                volume_alias?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SourceAreaListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    admin_assign_source_area_api_admin_source_areas_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AdminSourceAreaAssign"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SourceAreaGrant"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    admin_revoke_source_area_api_admin_source_areas__source_area_id__delete: {
-        parameters: {
-            query: {
-                reason: string;
-            };
-            header?: never;
-            path: {
-                source_area_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     admin_source_volumes_api_admin_source_volumes_get: {
         parameters: {
             query?: never;
@@ -4771,193 +3496,6 @@ export interface operations {
             };
         };
     };
-    admin_browse_source_volume_api_admin_source_volumes__volume_alias__browse_get: {
-        parameters: {
-            query?: {
-                path?: string;
-                purpose?: string;
-            };
-            header?: never;
-            path: {
-                volume_alias: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SourceDirectoryBrowseResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    admin_users_api_admin_users_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AdminUsersResponse"];
-                };
-            };
-        };
-    };
-    create_user_api_admin_users_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UserCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AdminUser"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_user_api_admin_users__user_id__patch: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                user_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UserUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    admin_user_identities_api_admin_users__user_id__identities_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                user_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AdminIdentitiesResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    admin_unlink_identity_api_admin_users__user_id__identities__identity_id__delete: {
-        parameters: {
-            query?: {
-                confirm?: boolean;
-            };
-            header?: never;
-            path: {
-                user_id: number;
-                identity_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     admin_vaults_api_admin_vaults_get: {
         parameters: {
             query?: never;
@@ -4974,271 +3512,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminVaultsResponse"];
-                };
-            };
-        };
-    };
-    create_vault_api_admin_vaults_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AdminVault"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    start_admin_vault_decommission_api_admin_vaults__vault_id__decommission_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultDecommissionStart"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultDecommissionStatus"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    cancel_admin_vault_decommission_cloud_purge_api_admin_vaults__vault_id__decommission_cloud_purge_cancel_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    preview_admin_vault_decommission_api_admin_vaults__vault_id__decommission_preview_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultDecommissionPreview-Input"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultDecommissionPreview-Output"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    admin_vault_decommission_status_api_admin_vaults__vault_id__decommission_status_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultDecommissionStatus"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    vault_members_api_admin_vaults__vault_id__members_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AdminVaultMembersResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    add_vault_member_api_admin_vaults__vault_id__members_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AdminMembershipCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    remove_vault_member_api_admin_vaults__vault_id__members__user_id__delete: {
-        parameters: {
-            query: {
-                reason: string;
-            };
-            header?: never;
-            path: {
-                vault_id: number;
-                user_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -5309,41 +3582,6 @@ export interface operations {
             };
         };
     };
-    admin_export_vault_recovery_secret_api_admin_vaults__vault_id__recovery_export_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RecoveryExportRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     admin_relocate_vault_root_api_admin_vaults__vault_id__relocate_post: {
         parameters: {
             query?: never;
@@ -5366,41 +3604,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminVaultRelocationResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    transfer_vault_owner_api_admin_vaults__vault_id__transfer_owner_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AdminOwnerTransfer"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
             /** @description Validation Error */
@@ -6479,27 +4682,7 @@ export interface operations {
             };
         };
     };
-    list_my_source_areas_api_source_areas_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SourceAreaListResponse"];
-                };
-            };
-        };
-    };
-    browse_my_source_volume_api_source_volumes__volume_alias__browse_get: {
+    browse_source_volume_api_source_volumes__volume_alias__browse_get: {
         parameters: {
             query?: {
                 path?: string;
@@ -6949,90 +5132,6 @@ export interface operations {
             };
         };
     };
-    list_own_vault_members_api_vault_members_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultMembersResponse"];
-                };
-            };
-        };
-    };
-    add_own_vault_member_api_vault_members_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MembershipCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    remove_own_vault_member_api_vault_members__user_id__delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                user_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     set_vault_notification_preference_api_vault_notification_preferences_post: {
         parameters: {
             query?: never;
@@ -7238,106 +5337,7 @@ export interface operations {
             };
         };
     };
-    transfer_own_vault_owner_api_vault_transfer_owner_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["OwnerTransfer"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    lookup_vault_user_api_vault_user_lookup_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UserLookup"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UserLookupResult"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    suggest_vault_users_api_vault_user_suggest_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UserLookup"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UserSuggestResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    user_vaults_api_vaults_get: {
+    list_vaults_api_vaults_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -7357,7 +5357,7 @@ export interface operations {
             };
         };
     };
-    create_own_vault_api_vaults_post: {
+    create_owner_vault_api_vaults_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -7618,31 +5618,10 @@ export interface operations {
             };
         };
     };
-    oidc_link_auth_oidc_link_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
     oidc_login_auth_oidc_login_get: {
         parameters: {
             query?: {
                 return_to?: string | null;
-                invite?: string | null;
             };
             header?: never;
             path?: never;

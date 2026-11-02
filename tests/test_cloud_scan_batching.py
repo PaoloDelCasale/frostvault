@@ -37,8 +37,8 @@ from tests.test_database import run_alembic
 def _seed_vault(connection: SQLiteConnection, *, source_root: str = "/source") -> None:
     connection.execute(
         """
-        INSERT INTO users(id, username, display_name, password_hash, is_admin)
-        VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+        INSERT INTO users(id, username, display_name, password_hash)
+        VALUES (1, 'owner', 'Owner', 'hash')
         """
     )
     connection.execute(

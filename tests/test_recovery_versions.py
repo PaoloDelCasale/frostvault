@@ -30,8 +30,8 @@ class VersionSelectionTests(unittest.TestCase):
         with SQLiteConnection(str(database_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(id, username, display_name, password_hash, is_admin)
-                VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+                INSERT INTO users(id, username, display_name, password_hash)
+                VALUES (1, 'owner', 'Owner', 'hash')
                 """
             )
             connection.execute(

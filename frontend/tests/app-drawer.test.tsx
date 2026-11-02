@@ -7,12 +7,9 @@ import type { ShellCapabilities } from "@/layout/types";
 
 const viewerCaps: ShellCapabilities = {
   vaultName: "Test Archive",
-  isVaultOwner: false,
-  canOperate: false,
-  isAdmin: false,
   locale: "en",
   locales: ["en", "it"],
-  vaults: [{ id: 1, slug: "test", name: "Test Archive", role: "viewer" }],
+  vaults: [{ id: 1, slug: "test", name: "Test Archive" }],
 };
 
 describe("App drawer", () => {

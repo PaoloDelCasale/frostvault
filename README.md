@@ -2,23 +2,28 @@
 
 FrostVault is a self-hosted web application for cataloging files, archiving
 versioned copies in Amazon S3 storage classes, verifying uploaded content, safely
-freeing local space, and recovering exact versions. It supports multiple users,
-isolated vaults, OIDC, encrypted Rclone remotes, and SQLite or PostgreSQL.
+freeing local space, and recovering exact versions. It is a personal
+archive with a single owner, isolated vaults, OIDC, encrypted Rclone remotes, and SQLite or PostgreSQL.
 
-The archive works like a file manager: it shows top-level folders, lets users
+The archive works like a file manager: it shows top-level folders, lets you
 open them, and provides breadcrumbs for navigating back to parent folders.
 Search remains global across every file in the selected vault.
 
-## Users and vaults
+## Owner and vaults
 
-- Users sign in with configured OIDC or the network-gated **Local Sign-in**
-  path when they have a local password. An administrator's use of Local Sign-in
-  to recover access while OIDC is unavailable is **Break-glass Login**.
+- FrostVault has exactly one **Owner**, who owns every vault. There are no other
+  users, roles, members, invites, or shared vaults.
+- The Owner signs in with OIDC (for example Pocket ID), configured only through
+  the `OIDC_*` environment variables. The first successful OIDC login binds the
+  provider subject to the Owner; any other subject is refused.
+- The **Emergency Password** from `BOOTSTRAP_ADMIN_*` is accepted only from
+  loopback and the LAN networks listed in `BREAK_GLASS_ALLOWED_CIDRS`; it is
+  refused from anywhere else. An empty value means loopback-only (`127.0.0.0/8`
+  and `::1`); there is no allow-all value.
+- Reauthentication is required only before downloading the Recovery Kit and
+  before deleting from the cloud.
 - Each vault has its own local folder, S3 prefix, and Rclone remote.
 - Every query and operation includes the vault identifier.
-- Users can see only vaults assigned to them.
-- The primary `owner` manages sharing and policy and may free local space;
-  `operator` can upload and recover files; `viewer` is read-only.
 - Queued or active uploads, recoveries, and local cleanup operations can be
   stopped with the **Stop** button shown next to their progress.
 - Operations run in parallel. `OPERATION_CONCURRENCY` controls the number of
@@ -26,58 +31,28 @@ Search remains global across every file in the selected vault.
   `UPLOAD_CONCURRENCY` variable remains supported as a fallback.
 - Local cleanup runs in the background and reports progress for each file or
   folder.
-- Authenticated users can create their own vaults; administrators retain global
-  access with reauthentication for sensitive actions. Creation requires an
+- Vaults are created from the UI. Creation requires an
   explicit **Cloud History Policy**: **Archive History** keeps every verified
   Archive Version recoverable; **Current Snapshot** keeps only the last verified
   upload and destroys previous cloud bytes after that verification. The choice
-  is immutable. Bootstrap Vaults remain Archive History. The shared S3 bucket
-  stays versioned either way.
+  is immutable. The shared S3 bucket stays versioned either way.
 - A file whose Local Copy is gone (freed or deleted via SMB) keeps its verified
   cloud copy as the only copy. If **different** content later appears at the
   same path, FrostVault does not upload it: the file shows a conflict with a
   file kept only in the cloud, and an immediate notification (in-app, plus
   email when SMTP is configured) explains it. Rename the new file to protect
   it at its new path, or confirm the replacement with
-  `POST /api/files/cloud-only-conflict/replace` (primary owner only): the new
+  `POST /api/files/cloud-only-conflict/replace`: the new
   content is uploaded and verified before the previous cloud copy is deleted.
   Identical content is never a conflict; it becomes the Local Copy again
   without an upload.
-- New vaults can use an empty managed root or adopt an existing directory from
-  an exclusive Source Area assigned to the user. Source Areas authorize vault
-  creation only; vault membership remains the sole data-access boundary.
-- The Administration hub manages users, external identities, one-time invites,
-  vaults, Source Areas, safe runtime defaults, deployment settings, and OIDC.
-  Administrators can promote or demote users, unlink an external identity, and
-  revoke a pending invite before it is redeemed. The application refuses any
-  change that would leave no active administrator, or leave a user with neither
-  a password nor a linked identity.
-- Every vault must retain exactly one primary owner.
-
-Administrators do not automatically enter other users' vaults. They must be
-explicitly assigned like any other user before they can browse files.
-
-### Local Sign-in and Break-glass Login
-
-Local Sign-in is available to any active User with a configured local password,
-not only to administrators. It is always network-gated: loopback is allowed and
-additional client networks must be listed in `BREAK_GLASS_ALLOWED_CIDRS`. An
-empty value means loopback-only (`127.0.0.0/8` and `::1`); there is no implicit
-allow-all value. A successful Local Sign-in creates a Session with only the
-User's existing global role and Vault assignments.
-
-Break-glass Login describes an administrator using that same Local Sign-in path
-for recovery when OIDC is unavailable. Keep at least one active administrator
-with a local password and a non-empty `BREAK_GLASS_ALLOWED_CIDRS` configuration
-before activating a managed OIDC configuration; activation refuses to proceed
-without that recovery path. The empty setting still permits loopback Local
-Sign-in, but is not enough to activate OIDC. Passwordless Users cannot use
-Local Sign-in, and administrator-only Reauthentication and authorization checks
-remain unchanged.
+- New vaults can use an empty managed root or adopt any existing directory
+  under a Source Volume that does not overlap another vault root.
+- The Administration hub manages safe runtime defaults and deployment settings.
 
 ## Archive lifecycle and cloud deletion
 
-- Owners and operators can run a one-shot storage-class change for a file,
+- The Owner can run a one-shot storage-class change for a file,
   directory, or whole vault. Moving data out of Glacier or Deep Archive performs
   the required restore before copying it to the selected class.
 - The storage-class picker shows storage and retrieval rates, expected restore
@@ -88,8 +63,8 @@ remain unchanged.
   classes; they never warm it.
 - **Hide in cloud** creates a reversible Delete Marker and retains noncurrent
   Archive Versions. **Purge from cloud permanently** deletes every selected
-  Archive Version and Delete Marker after an owner-confirmed, cancellable delay.
-  A recently reauthenticated owner can skip the remaining delay with
+  Archive Version and Delete Marker after a confirmed, cancellable delay.
+  A recently reauthenticated Owner can skip the remaining delay with
   **Delete now**.
 - Cloud actions work on files and folders. Permanent folder and vault purges
   batch S3 deletions while preserving per-item failures for safe retries.
@@ -99,7 +74,7 @@ remain unchanged.
 ## Local cleanup safety
 
 - The **Free local space** button appears only when the Local Copy fingerprint
-  matches an available, verified Archive Version, for owners, and when
+  matches an available, verified Archive Version and when
   `ALLOW_LOCAL_DELETE=true`.
 - Before deleting the server copy, the application checks the exact S3
   `VersionId`, atomically claims the local file, and rehashes it; object
@@ -108,7 +83,7 @@ remain unchanged.
 - Recovery downloads the exact archived S3 `VersionId`, verifies the plaintext
   SHA-256 digest, then atomically replaces the local file. Glacier/Deep Archive
   versions request a restore first (Bulk by default); high-impact restores are
-  held for one-hour primary-owner reauthentication before any `RestoreObject`
+  held for one hour awaiting the Owner's approval before any `RestoreObject`
   call. An accepted S3 restore request cannot be cancelled. Large plain recovers
   use parallel S3 range downloads (`S3_DOWNLOAD_*`); crypt recovers use rclone
   multi-thread streams (`RCLONE_MULTI_THREAD_*`).
@@ -229,24 +204,22 @@ instead of trying other credentials available on the computer.
    expected Compose mount. Bind, Docker Desktop, and NAS details and limitations
    are documented in [docs/filesystem-permissions.md](docs/filesystem-permissions.md).
 
-   Administrators assign exclusive **Source Areas** under those volumes.
-   When creating a Vault, Users can keep the default empty root
-   (`/sources/managed/<uuid>`) or adopt an existing directory under one of
-   their Source Areas in place. Adoption never moves or rewrites content;
+   When creating a Vault, the Owner can keep the default empty root
+   (`/sources/managed/<uuid>`) or adopt any existing directory under a Source
+   Volume in place, provided it does not overlap another Vault root. Adoption never moves or rewrites content;
    the server still mints the Vault UUID and `vaults/<uuid>/` S3 prefix, then
    starts an asynchronous local scan.
 
 3. Copy `.env.example` to `.env` and configure paths, bucket, credentials, and
-   the bootstrap administrator. Before the first Compose start, run the
+   the Owner's Emergency Password (`BOOTSTRAP_ADMIN_*`). Before the first Compose start, run the
    [fresh `./data` preflight](#compose-identity-and-fresh-host-data-directory)
    using the same `PUID`/`PGID` values. For a network deployment set `COOKIE_SECURE=true`
    and provide `ALLOWED_HOSTS` (the hostnames the panel answers to) and
    `TRUSTED_PROXIES` (CIDRs of your reverse proxies); the app refuses to start
    in production without them. Set `OIDC_ENABLED=true` and configure
-   `OIDC_ISSUER`/`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET` for the initial
-   environment-defined single sign-on configuration. Set a separate
-   `OIDC_SETTINGS_ENCRYPTION_KEY` before managing OIDC through the
-   Administration hub.
+   `OIDC_ISSUER`/`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET` for single sign-on; OIDC
+   is configured only through these variables. List your LAN in
+   `BREAK_GLASS_ALLOWED_CIDRS` to accept the Emergency Password from it.
 
 4. Create `config/rclone.conf` from `config/rclone.conf.example`.
 5. Generate a distinct encryption password for each vault:
@@ -256,8 +229,8 @@ instead of trying other credentials available on the computer.
    ```
 
 6. Put the result in the relevant remote's `password` field in `rclone.conf`.
-7. Ensure the bucket, prefix, region, and remote name match the vault settings
-   in the administration panel.
+7. Ensure the bucket, region, and remote names match `VAULT_S3_BUCKET`,
+   `VAULT_RCLONE_REMOTE`, and `VAULT_RCLONE_BASE_REMOTE`.
 
 Example database creation, run as a PostgreSQL administrator:
 
@@ -300,7 +273,7 @@ original name and does not add or remove `.bin`.
 
 To archive without client-side encryption, point a shared alias at the bucket.
 FrostVault appends each vault's `s3_prefix` (`vaults/<uuid>/`) to every plain
-object path, so one remote can serve many self-service vaults:
+object path, so one remote can serve many vaults:
 
 ```ini
 [frostvault-plain]
@@ -308,9 +281,8 @@ type = alias
 remote = frostvault-s3:example-bucket
 ```
 
-In the administration panel, **Rclone remote** must be `frostvault-crypt` for
-encrypted mode or `frostvault-plain` for unencrypted mode. Never use the same S3 prefix for both
-modes at the same time.
+Set `VAULT_RCLONE_REMOTE=frostvault-plain` for unencrypted vaults; encrypted
+vaults wrap `VAULT_RCLONE_BASE_REMOTE` with a per-vault crypt remote at runtime.
 
 ## Run
 
@@ -340,16 +312,14 @@ source and data directories for that identity before start; see
 [docs/filesystem-permissions.md](docs/filesystem-permissions.md) for the
 required `./data` preflight and valid-override behavior.
 
-On first startup, the application creates the administrator defined by
-`BOOTSTRAP_ADMIN_*` and, when configured, the first vault. Manage subsequent
-users, identities, invites, vault assignments, Source Areas, defaults, and OIDC
-from the **Administration** page. Bootstrap variables never overwrite existing
-users. After the first successful sign-in, remove
-`BOOTSTRAP_ADMIN_USERNAME` and `BOOTSTRAP_ADMIN_PASSWORD` from `.env`.
+On first startup, the application creates the Owner defined by
+`BOOTSTRAP_ADMIN_*`; create vaults from the UI. The variables are re-applied at
+every start, so they remain the Owner's Emergency Password: changing the
+password revokes existing sessions. Removing them keeps the stored credentials.
 
 ## Localization
 
-The UI defaults to English and includes a complete Italian translation. Users
+The UI defaults to English and includes a complete Italian translation. You
 can switch language from the archive header or the sign-in page; the preference
 is stored in the `frostvault_locale` cookie. Contributor guidance for catalogs and
 critical-key checks lives in `docs/translation-workflow.md`.
@@ -412,7 +382,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Area | Variables |
 | --- | --- |
 | Database | `DB_BACKEND`, `SQLITE_PATH`, `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
-| Authentication | `BOOTSTRAP_ADMIN_*`, `OIDC_*` (including the dedicated `OIDC_SETTINGS_ENCRYPTION_KEY`), `BREAK_GLASS_ALLOWED_CIDRS` (network gate for Local Sign-in and administrator Break-glass Login) |
+| Authentication | `BOOTSTRAP_ADMIN_*` (the Owner and its Emergency Password), `OIDC_*`, `BREAK_GLASS_ALLOWED_CIDRS` (LAN networks that accept the Emergency Password) |
 | Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES` |
 | Frontend | `FRONTEND_DIST_DIR` (Vite build output; required for HTML routes) |
 | Web Push | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (optional; see below) |
@@ -425,17 +395,13 @@ credentials, proxy/host/cookie trust, bootstrap values, automatic migration,
 and the frontend distribution path are deployment-only. They cannot be edited
 at runtime because they define process and deployment trust boundaries.
 The **Administration** page exposes a structurally redacted deployment inventory
-and allows recently reauthenticated administrators to apply or reset bounded
-runtime defaults. The equivalent API is `GET /api/admin/settings` plus
-revision-checked `PATCH /api/admin/settings`; stale writes are rejected. See
+and lets the Owner apply or reset bounded runtime defaults. The equivalent API
+is `GET /api/admin/settings` plus revision-checked `PATCH /api/admin/settings`; stale writes are rejected. See
 [ADR-0009](docs/adr/0009-effective-system-configuration.md) for the exhaustive
 classification and precedence model.
 
-Managed OIDC configuration uses a staged workflow: save a draft, validate the
-provider discovery document and JWKS, then activate the unchanged validated
-draft. Administrators can also rotate the write-only client secret or disable
-new OIDC sign-ins without deleting existing Sessions or Identity bindings. See
-[ADR-0010](docs/adr/0010-secure-oidc-configuration-lifecycle.md).
+OIDC is configured only through the `OIDC_*` variables and binds the Owner on
+the first login. See [ADR-0017](docs/adr/0017-single-owner.md).
 
 ### Progressive Web App and Web Push
 
@@ -475,8 +441,8 @@ without error but not stored as active push, and no delivery attempts run —
 the same degrade pattern as placeholder AWS credentials.
 
 Revoking a Session deletes that device’s push subscription. Deliveries also
-re-check live Session and Vault membership at send time so a removed member
-never receives Job notifications for that Vault.
+re-check the live Session and Vault at send time, so a revoked device or a
+decommissioned Vault never receives Job notifications.
 
 Do not commit `.env`, `config/rclone.conf`, recovery exports, database files, or
 cloud credentials.
@@ -484,8 +450,8 @@ cloud credentials.
 ## Security
 
 - Expose FrostVault only through HTTPS and configure trusted hosts and proxies.
-- Prefer OIDC and short-lived AWS credentials. Restrict Local Sign-in (including
-  administrator Break-glass Login) to loopback or explicitly trusted networks;
+- Prefer OIDC and short-lived AWS credentials. Accept the Emergency Password only
+  from loopback and your LAN;
   an empty `BREAK_GLASS_ALLOWED_CIDRS` value is loopback-only, never allow-all.
 - Grant only the documented S3 actions and prefixes. Do not grant account-root
   credentials or broad bucket deletion rights.

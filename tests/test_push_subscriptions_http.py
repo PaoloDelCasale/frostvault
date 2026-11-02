@@ -37,8 +37,8 @@ class PushSubscriptionHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             self.user_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('owner', 'Owner', %s, FALSE) RETURNING id
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('owner', 'Owner', %s) RETURNING id
                 """,
                 (hash_password(self.PASSWORD),),
             ).fetchone()["id"]
@@ -50,11 +50,6 @@ class PushSubscriptionHttpTests(unittest.TestCase):
                 RETURNING id
                 """
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, 'owner')",
-                (self.vault_id, self.user_id),
-            )
 
         self.test_settings = replace(
             settings,

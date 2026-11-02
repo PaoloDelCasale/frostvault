@@ -142,8 +142,6 @@ describe("JobProgress message visibility (seam 7)", () => {
       <JobProgress
         job={job}
         t={t}
-        canCancel={false}
-        canApprove={false}
         onCancel={() => {}}
         onApprove={() => {}}
       />,
@@ -173,9 +171,6 @@ describe("JobProgress message visibility (seam 7)", () => {
       <JobProgress
         job={job}
         t={t}
-        canCancel
-        canApprove={false}
-        canAcceleratePurge
         onCancel={() => {}}
         onApprove={() => {}}
         onAcceleratePurge={onAccelerate}

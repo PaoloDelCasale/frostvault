@@ -5,7 +5,6 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import {
   fetchVaultAuditEvents,
   type AuditEvent,
-  type VaultMember,
 } from "@/api";
 import { Badge, type BadgeState } from "@/components/Badge";
 import { DatePicker } from "@/components/DatePicker";
@@ -397,11 +396,11 @@ function errorMessage(reason: unknown, fallback: string): string {
 }
 
 export type VaultAuditEventsPanelProps = {
-  members: VaultMember[];
+  /** The single owner is the only User who can act on a Vault. */
+  ownerName: string;
 };
 
-/** Owner-only caller supplies the already-authorized current-Vault membership list. */
-export function VaultAuditEventsPanel({ members }: VaultAuditEventsPanelProps) {
+export function VaultAuditEventsPanel({ ownerName }: VaultAuditEventsPanelProps) {
   const { t } = useI18n();
   const translateRef = useRef(t);
   translateRef.current = t;
@@ -429,12 +428,7 @@ export function VaultAuditEventsPanel({ members }: VaultAuditEventsPanelProps) {
 
   function resolveActor(event: AuditEvent): string {
     if (event.actor_user_id === null) return t("audit.actor_system");
-    const member = members.find((candidate) => candidate.id === event.actor_user_id);
-    return (
-      member?.display_name
-      || member?.username
-      || t("audit.actor_fallback", { id: event.actor_user_id })
-    );
+    return ownerName;
   }
 
   return (

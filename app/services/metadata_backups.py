@@ -247,14 +247,6 @@ def _dump_sqlite_bytes(db_path: str | Path) -> bytes:
             dest = sqlite3.connect(str(temp_path))
             try:
                 source.backup(dest)
-                oidc_table = dest.execute(
-                    "SELECT 1 FROM sqlite_master "
-                    "WHERE type='table' AND name='oidc_configuration'"
-                ).fetchone()
-                if oidc_table:
-                    dest.execute("DELETE FROM oidc_configuration")
-                    dest.commit()
-                    dest.execute("VACUUM")
             finally:
                 dest.close()
             return temp_path.read_bytes()
@@ -271,7 +263,6 @@ def _dump_postgres_bytes() -> bytes:
         "--format=custom",
         "--no-owner",
         "--no-acl",
-        "--exclude-table-data=public.oidc_configuration",
     ]
     try:
         completed = subprocess.run(
@@ -771,25 +762,23 @@ def backup_status(connection: Any) -> dict[str, Any]:
     }
 
 
-def notify_admins_of_backup_failure(
+def notify_owner_of_backup_failure(
     connection: Any, *, reason: str, error_message: str
 ) -> None:
+    from ..owner import owner_user_id
     from .notifications import enqueue_notification
 
-    admins = connection.execute(
-        "SELECT id FROM users WHERE is_admin=TRUE AND active=TRUE"
-    ).fetchall()
-    title = "Metadata backup failed"
-    body = f"Reason={reason}. {error_message}"
-    for admin in admins:
-        enqueue_notification(
-            connection,
-            user_id=admin["id"],
-            event="metadata_backup_failed",
-            title=title,
-            body=body,
-            channels=("in_app",),
-        )
+    owner_id = owner_user_id(connection)
+    if owner_id is None:
+        return
+    enqueue_notification(
+        connection,
+        user_id=owner_id,
+        event="metadata_backup_failed",
+        title="Metadata backup failed",
+        body=f"Reason={reason}. {error_message}",
+        channels=("in_app",),
+    )
 
 
 def run_metadata_backup(
@@ -882,7 +871,7 @@ def run_metadata_backup(
                     status="failed",
                     error_message=message,
                 )
-                notify_admins_of_backup_failure(
+                notify_owner_of_backup_failure(
                     connection, reason=reason, error_message=message
                 )
             except Exception:

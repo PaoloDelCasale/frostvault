@@ -102,8 +102,6 @@ type AccountPreferencesMenuProps = {
   className?: string;
   locale?: string;
   locales?: string[];
-  /** Fail-closed: Administration is shown only when this flag is true. */
-  isAdmin?: boolean;
   /**
    * When provided, the menu becomes the shell secondary surface (New vault,
    * Administration, Language, Appearance, Sign out). Without handlers the
@@ -123,7 +121,6 @@ export function AccountPreferencesMenu({
   className,
   locale: localeProp,
   locales,
-  isAdmin = false,
   handlers,
   notificationPreferences,
   t: tProp,
@@ -262,16 +259,14 @@ export function AccountPreferencesMenu({
                 {newVaultLabel}
               </Button>
 
-              {isAdmin ? (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  className={actionClass}
-                  onClick={() => runAndClose(handlers?.onAdministration)}
-                >
-                  {administrationLabel}
-                </Button>
-              ) : null}
+              <Button
+                type="button"
+                variant="secondary"
+                className={actionClass}
+                onClick={() => runAndClose(handlers?.onAdministration)}
+              >
+                {administrationLabel}
+              </Button>
 
               <label className="flex min-h-11 flex-col justify-center gap-1 text-sm font-bold text-muted">
                 <span>{languageLabel}</span>

@@ -105,18 +105,8 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
         with SQLiteConnection(str(self.db_path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (1, 'owner', 'Owner', %s, 0)",
-                (hash_password("correct-horse-battery-staple"),),
-            )
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (2, 'viewer', 'Viewer', %s, 0)",
-                (hash_password("correct-horse-battery-staple"),),
-            )
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (3, 'outsider', 'Outsider', %s, 0)",
+                "INSERT INTO users(id, username, display_name, password_hash) "
+                "VALUES (1, 'owner', 'Owner', %s)",
                 (hash_password("correct-horse-battery-staple"),),
             )
             connection.execute(
@@ -128,10 +118,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
                 (2, 'beta', 'Beta', %s, 'bucket', 'beta', 'remote')
                 """,
                 (str(self.source), str(self.source)),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES "
-                "(1, 1, 'owner'), (1, 2, 'viewer'), (2, 1, 'owner')"
             )
 
         self.test_settings = replace(
@@ -172,8 +158,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
         self.addCleanup(self.client.close)
 
         self.owner_token = self._authenticate(1, vault_id=1)
-        self.viewer_token = self._authenticate(2, vault_id=1)
-        self.outsider_token = self._authenticate(3, vault_id=None)
         self.owner_session_id = self._session_id_for_user(1)
 
     def _authenticate(self, user_id: int, *, vault_id: int | None) -> str:
@@ -314,12 +298,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
         response = self.client.get("/api/catalog/events")
         self.assertIn(response.status_code, {401, 403})
 
-    def test_sse_rejects_user_without_vault_membership(self) -> None:
-        client = self._client_for(self.outsider_token)
-        response = client.get("/api/catalog/events")
-        self.assertEqual(response.status_code, 403)
-        client.close()
-
     def test_sse_hello_and_catchup_are_vault_scoped(self) -> None:
         with SQLiteConnection(str(self.db_path)) as connection:
             CatalogEventStore(connection).append_event(
@@ -359,17 +337,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
         self.assertEqual(snapshot.json()["vault_id"], 1)
         self.assertEqual(snapshot.json()["revision"], 1)
         self.assertTrue(snapshot.json()["changed"])
-
-    def test_sse_viewer_can_subscribe_without_operate_role(self) -> None:
-        client = self._client_for(self.viewer_token)
-        try:
-            response = client.get("/api/catalog/events?subscribe=false")
-            self.assertEqual(response.status_code, 200)
-            body = response.text
-        finally:
-            client.close()
-        events = self._parse_sse(body)
-        self.assertTrue(any(event.get("event") == "hello" for event in events))
 
     def test_reconnect_after_revision_does_not_replay_older_events(self) -> None:
         with SQLiteConnection(str(self.db_path)) as connection:
@@ -831,16 +798,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
         self.assertEqual(
             json.loads(errors[-1]["data"])["error"], "session_version_mismatch"
         )
-
-    def test_user_disabled_closes_live_stream(self) -> None:
-        def disable() -> None:
-            with SQLiteConnection(str(self.db_path)) as connection:
-                connection.execute("UPDATE users SET active=0 WHERE id=1")
-
-        events = asyncio.run(self._consume_until_error(disable))
-        errors = [event for event in events if event.get("event") == "error"]
-        self.assertTrue(errors, msg=events)
-        self.assertEqual(json.loads(errors[-1]["data"])["error"], "user_disabled")
 
     def test_asgi_http_disconnect_cleans_hub_subscriber(self) -> None:
         """Drive real ASGI receive ``http.disconnect`` through Request.is_disconnected.

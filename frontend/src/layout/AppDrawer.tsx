@@ -19,7 +19,7 @@ type AppDrawerProps = {
 
 /**
  * Mobile Vault navigation drawer. Mirrors the desktop primary Vault controls
- * (switcher + owner Manage access). Secondary destinations stay in the account
+ * (switcher + Vault settings). Secondary destinations stay in the account
  * menu so desktop and mobile share the same information architecture.
  */
 export function AppDrawer({

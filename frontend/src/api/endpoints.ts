@@ -6,17 +6,6 @@ import {
 } from "./client";
 import type { ApiDownload } from "./client";
 import type {
-  AdminIdentitiesResponse,
-  AdminInvitesResponse,
-  AdminMembershipCreatePayload,
-  AdminOwnerTransferPayload,
-  AdminUser,
-  AdminUserCreatePayload,
-  AdminUsersResponse,
-  AdminUserUpdatePayload,
-  AdminVault,
-  AdminVaultCreatePayload,
-  AdminVaultMembersResponse,
   AdminVaultRelocatePayload,
   AdminVaultRelocationResponse,
   AdminVaultsResponse,
@@ -27,9 +16,6 @@ import type {
   VaultDecommissionStartPayload,
   VaultDecommissionStatus,
   SourceVolumeInventoryResponse,
-  SourceAreaAssignPayload,
-  SourceAreaGrant,
-  SourceAreaListResponse,
   SourceDirectoryBrowseResponse,
   CloudDeletionPreview,
   CloudDeletionSettings,
@@ -50,8 +36,6 @@ import type {
   LocaleUpdateResponse,
   MetadataBackupRunAction,
   MeResponse,
-  OidcConfigurationResponse,
-  OidcDraftPayload,
   OperationPolicy,
   RecoverEstimateResponse,
   RecoveryConfirmRequest,
@@ -66,10 +50,8 @@ import type {
   StorageEstimateResponse,
   SystemSettingsResponse,
   SystemSettingsUpdatePayload,
-  UserLookupResult,
   VaultCreateRequest,
   VaultCreateResponse,
-  VaultMembersResponse,
   VaultQuotaUpdatePayload,
   VaultQuotasResponse,
   VaultSelectRequest,
@@ -419,51 +401,6 @@ export function updateLocale(locale: string): Promise<LocaleUpdateResponse> {
   });
 }
 
-export function lookupVaultUser(username: string): Promise<UserLookupResult> {
-  return apiRequest<UserLookupResult>("/api/vault/user-lookup", {
-    method: "POST",
-    body: JSON.stringify({ username }),
-  });
-}
-
-export function suggestVaultUsers(
-  username: string,
-): Promise<{ items: UserLookupResult[] }> {
-  return apiRequest<{ items: UserLookupResult[] }>("/api/vault/user-suggest", {
-    method: "POST",
-    body: JSON.stringify({ username }),
-  });
-}
-
-export function fetchVaultMembers(): Promise<VaultMembersResponse> {
-  return apiRequest<VaultMembersResponse>("/api/vault/members");
-}
-
-export function addVaultMember(
-  userId: number,
-  role: string,
-): Promise<{ message: string }> {
-  return apiRequest<{ message: string }>("/api/vault/members", {
-    method: "POST",
-    body: JSON.stringify({ user_id: userId, role }),
-  });
-}
-
-export function removeVaultMember(userId: number): Promise<{ message: string }> {
-  return apiRequest<{ message: string }>(`/api/vault/members/${userId}`, {
-    method: "DELETE",
-  });
-}
-
-export function transferVaultOwner(
-  newOwnerUserId: number,
-): Promise<{ message: string }> {
-  return apiRequest<{ message: string }>("/api/vault/transfer-owner", {
-    method: "POST",
-    body: JSON.stringify({ new_owner_user_id: newOwnerUserId }),
-  });
-}
-
 export function fetchVaultQuotas(): Promise<VaultQuotasResponse> {
   return apiRequest<VaultQuotasResponse>("/api/vault/quotas");
 }
@@ -551,36 +488,6 @@ export function updateCloudDeletion(
   return apiRequest<CloudDeletionSettings>("/api/vault/cloud-deletion", {
     method: "PUT",
     body: JSON.stringify({ enabled }),
-  });
-}
-
-export function fetchOidcConfiguration(): Promise<OidcConfigurationResponse> {
-  return apiRequest<OidcConfigurationResponse>("/api/admin/oidc-configuration");
-}
-
-export function saveOidcDraft(payload: OidcDraftPayload): Promise<OidcConfigurationResponse> {
-  return apiRequest<OidcConfigurationResponse>("/api/admin/oidc-configuration/draft", {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function validateOidcDraft(): Promise<OidcConfigurationResponse> {
-  return apiRequest<OidcConfigurationResponse>("/api/admin/oidc-configuration/draft/validate", { method: "POST" });
-}
-
-export function activateOidcConfiguration(): Promise<OidcConfigurationResponse> {
-  return apiRequest<OidcConfigurationResponse>("/api/admin/oidc-configuration/activate", { method: "POST" });
-}
-
-export function disableOidcConfiguration(): Promise<OidcConfigurationResponse> {
-  return apiRequest<OidcConfigurationResponse>("/api/admin/oidc-configuration/disable", { method: "POST" });
-}
-
-export function rotateOidcSecret(clientSecret: string): Promise<OidcConfigurationResponse> {
-  return apiRequest<OidcConfigurationResponse>("/api/admin/oidc-configuration/rotate-secret", {
-    method: "POST",
-    body: JSON.stringify({ client_secret: clientSecret }),
   });
 }
 
@@ -793,73 +700,8 @@ export function updateSystemSettings(
   });
 }
 
-export function fetchAdminUsers(): Promise<AdminUsersResponse> {
-  return apiRequest<AdminUsersResponse>("/api/admin/users");
-}
-
-export function createAdminUser(
-  payload: AdminUserCreatePayload,
-): Promise<AdminUser> {
-  return apiRequest<AdminUser>("/api/admin/users", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function updateAdminUser(
-  userId: number,
-  payload: AdminUserUpdatePayload,
-): Promise<AdminUser> {
-  return apiRequest<AdminUser>(`/api/admin/users/${userId}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function fetchAdminInvites(): Promise<AdminInvitesResponse> {
-  return apiRequest<AdminInvitesResponse>("/api/admin/invites");
-}
-
-export function createAdminInvite(targetUserId: number): Promise<{ token: string }> {
-  return apiRequest<{ token: string }>("/api/admin/invites", {
-    method: "POST",
-    body: JSON.stringify({ target_user_id: targetUserId }),
-  });
-}
-
-export function revokeAdminInvite(inviteId: number): Promise<unknown> {
-  return apiRequest(`/api/admin/invites/${inviteId}/revoke`, { method: "POST" });
-}
-
-export function fetchAdminIdentities(
-  userId: number,
-): Promise<AdminIdentitiesResponse> {
-  return apiRequest<AdminIdentitiesResponse>(
-    `/api/admin/users/${userId}/identities`,
-  );
-}
-
-export function unlinkAdminIdentity(
-  userId: number,
-  identityId: number,
-): Promise<AdminIdentitiesResponse> {
-  return apiRequest<AdminIdentitiesResponse>(
-    `/api/admin/users/${userId}/identities/${identityId}?confirm=true`,
-    { method: "DELETE" },
-  );
-}
-
 export function fetchAdminVaults(): Promise<AdminVaultsResponse> {
   return apiRequest<AdminVaultsResponse>("/api/admin/vaults");
-}
-
-export function createAdminVault(
-  payload: AdminVaultCreatePayload,
-): Promise<AdminVault> {
-  return apiRequest<AdminVault>("/api/admin/vaults", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
 }
 
 export function relocateAdminVault(
@@ -869,43 +711,6 @@ export function relocateAdminVault(
   return apiRequest<AdminVaultRelocationResponse>(
     `/api/admin/vaults/${vaultId}/relocate`,
     { method: "POST", body: JSON.stringify(payload) },
-  );
-}
-
-export function previewAdminVaultDecommission(
-  vaultId: number,
-  payload: VaultDecommissionSelection,
-): Promise<VaultDecommissionPreview> {
-  return apiRequest<VaultDecommissionPreview>(
-    `/api/admin/vaults/${vaultId}/decommission/preview`,
-    { method: "POST", body: JSON.stringify(payload) },
-  );
-}
-
-export function startAdminVaultDecommission(
-  vaultId: number,
-  payload: VaultDecommissionStartPayload,
-): Promise<VaultDecommissionStatus> {
-  return apiRequest<VaultDecommissionStatus>(
-    `/api/admin/vaults/${vaultId}/decommission`,
-    { method: "POST", body: JSON.stringify(payload) },
-  );
-}
-
-export function fetchAdminVaultDecommissionStatus(
-  vaultId: number,
-): Promise<VaultDecommissionStatus> {
-  return apiRequest<VaultDecommissionStatus>(
-    `/api/admin/vaults/${vaultId}/decommission/status`,
-  );
-}
-
-export function cancelAdminVaultDecommissionCloudPurge(
-  vaultId: number,
-): Promise<VaultDecommissionStatus> {
-  return apiRequest<VaultDecommissionStatus>(
-    `/api/admin/vaults/${vaultId}/decommission/cloud-purge/cancel`,
-    { method: "POST", body: "{}" },
   );
 }
 
@@ -946,64 +751,11 @@ export function cancelOwnVaultDecommissionCloudPurge(
   );
 }
 
-export function fetchAdminVaultMembers(
-  vaultId: number,
-): Promise<AdminVaultMembersResponse> {
-  return apiRequest<AdminVaultMembersResponse>(
-    `/api/admin/vaults/${vaultId}/members`,
-  );
-}
-
-export function addAdminVaultMember(
-  vaultId: number,
-  payload: AdminMembershipCreatePayload,
-): Promise<unknown> {
-  return apiRequest(`/api/admin/vaults/${vaultId}/members`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function removeAdminVaultMember(
-  vaultId: number,
-  userId: number,
-  reason: string,
-): Promise<unknown> {
-  const query = new URLSearchParams({ reason });
-  return apiRequest(
-    `/api/admin/vaults/${vaultId}/members/${userId}?${query}`,
-    { method: "DELETE" },
-  );
-}
-
 export function fetchAdminVaultQuotas(
   vaultId: number,
 ): Promise<VaultQuotasResponse> {
   return apiRequest<VaultQuotasResponse>(
     `/api/admin/vaults/${vaultId}/quotas`,
-  );
-}
-
-export function transferAdminVaultOwner(
-  vaultId: number,
-  payload: AdminOwnerTransferPayload,
-): Promise<unknown> {
-  return apiRequest(`/api/admin/vaults/${vaultId}/transfer-owner`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function exportAdminVaultRecovery(
-  vaultId: number,
-  reason: string,
-): Promise<RecoveryExportResponse> {
-  return apiRequest<RecoveryExportResponse>(
-    `/api/admin/vaults/${vaultId}/recovery/export`,
-    {
-      method: "POST",
-      body: JSON.stringify({ reason }),
-    },
   );
 }
 
@@ -1174,56 +926,7 @@ export function fetchAdminSourceVolumes(): Promise<SourceVolumeInventoryResponse
   return apiRequest<SourceVolumeInventoryResponse>("/api/admin/source-volumes");
 }
 
-export function fetchAdminSourceAreas(params?: {
-  userId?: number;
-  volumeAlias?: string;
-}): Promise<SourceAreaListResponse> {
-  const query = new URLSearchParams();
-  if (params?.userId != null) query.set("user_id", String(params.userId));
-  if (params?.volumeAlias) query.set("volume_alias", params.volumeAlias);
-  const suffix = query.toString() ? `?${query.toString()}` : "";
-  return apiRequest<SourceAreaListResponse>(`/api/admin/source-areas${suffix}`);
-}
-
-export function assignAdminSourceArea(
-  payload: SourceAreaAssignPayload,
-): Promise<SourceAreaGrant> {
-  return apiRequest<SourceAreaGrant>("/api/admin/source-areas", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function revokeAdminSourceArea(
-  sourceAreaId: number,
-  reason: string,
-): Promise<SourceAreaGrant> {
-  const query = new URLSearchParams({ reason });
-  return apiRequest<SourceAreaGrant>(
-    `/api/admin/source-areas/${sourceAreaId}?${query.toString()}`,
-    { method: "DELETE" },
-  );
-}
-
-export function browseAdminSourceVolume(
-  volumeAlias: string,
-  path = "",
-  purpose: "grant" | "adopt" = "grant",
-): Promise<SourceDirectoryBrowseResponse> {
-  const query = new URLSearchParams();
-  if (path) query.set("path", path);
-  if (purpose !== "grant") query.set("purpose", purpose);
-  const suffix = query.toString() ? `?${query.toString()}` : "";
-  return apiRequest<SourceDirectoryBrowseResponse>(
-    `/api/admin/source-volumes/${encodeURIComponent(volumeAlias)}/browse${suffix}`,
-  );
-}
-
-export function fetchMySourceAreas(): Promise<SourceAreaListResponse> {
-  return apiRequest<SourceAreaListResponse>("/api/source-areas");
-}
-
-export function browseMySourceVolume(
+export function browseSourceVolume(
   volumeAlias: string,
   path = "",
 ): Promise<SourceDirectoryBrowseResponse> {

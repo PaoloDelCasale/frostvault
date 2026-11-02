@@ -84,13 +84,11 @@ function candidateKey(candidate: RenameCandidate): string {
 
 export type RenameCandidatesPanelProps = {
   vaultId: number;
-  canOperate: boolean;
   t: Translate;
 };
 
 export function RenameCandidatesPanel({
   vaultId,
-  canOperate,
   t,
 }: RenameCandidatesPanelProps) {
   const queryClient = useQueryClient();
@@ -229,7 +227,7 @@ export function RenameCandidatesPanel({
                   <Button
                     type="button"
                     className="mt-3 w-full sm:w-auto"
-                    disabled={!canOperate || pendingKey !== null}
+                    disabled={pendingKey !== null}
                     aria-busy={pendingKey === key}
                     onClick={() => void runConfirmation(
                       key,
@@ -302,16 +300,11 @@ export function RenameCandidatesPanel({
                 <p className="mt-1 text-sm text-muted">
                   {t("ui.rename_reject_consequence")}
                 </p>
-                {!canOperate ? (
-                  <p className="mt-2 text-sm font-bold text-muted">
-                    {t("ui.rename_read_only")}
-                  </p>
-                ) : null}
                 <div className="mt-3 grid gap-2 sm:flex sm:flex-wrap">
                   <Button
                     type="button"
                     className="w-full sm:w-auto"
-                    disabled={!canOperate || pendingKey !== null}
+                    disabled={pendingKey !== null}
                     aria-busy={pendingKey === key}
                     onClick={() => void runConfirmation(
                       key,

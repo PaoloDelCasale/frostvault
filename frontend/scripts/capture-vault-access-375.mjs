@@ -48,7 +48,6 @@ const en = JSON.parse(
 await page.route("**/api/**", async (route) => {
   const req = route.request();
   const url = req.url();
-  const method = req.method();
   if (url.includes("/api/i18n/catalog")) {
     return route.fulfill({
       status: 200,
@@ -64,8 +63,6 @@ await page.route("**/api/**", async (route) => {
         id: 1,
         username: "owner",
         display_name: "Owner",
-        is_admin: true,
-        active: true,
         session_version: 1,
         csrf_token: "csrf",
         auth_method: "local",
@@ -75,11 +72,8 @@ await page.route("**/api/**", async (route) => {
           id: 1,
           slug: "test",
           name: "Test Archive",
-          role: "owner",
-          can_operate: true,
           delete_enabled: true,
           cloud_deletion_enabled: false,
-          is_vault_owner: true,
         },
       }),
     });
@@ -89,18 +83,6 @@ await page.route("**/api/**", async (route) => {
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ items: [] }),
-    });
-  }
-  if (url.includes("/api/vault/members") && method === "GET") {
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        items: [
-          { id: 1, username: "owner", display_name: "Owner One", role: "owner" },
-          { id: 2, username: "bob", display_name: "Bob Operator", role: "operator" },
-        ],
-      }),
     });
   }
   if (url.includes("/api/vault/quotas")) {
@@ -255,8 +237,6 @@ const overflow = await page.evaluate(() => document.documentElement.scrollWidth 
 if (overflow > 0) throw new Error(`375px layout overflows horizontally by ${overflow}px`);
 
 const panels = [
-  "add-member",
-  "members",
   "quotas",
   "retention",
   "operation-policy",
@@ -277,13 +257,6 @@ for (const panel of panels) {
 await page.screenshot({
   path: path.join(artifacts, "vault-access-375px.png"),
   fullPage: true,
-});
-
-// Transfer dialog
-await page.getByRole("button", { name: /transfer ownership/i }).click();
-await page.getByRole("dialog").waitFor();
-await page.screenshot({
-  path: path.join(artifacts, "vault-access-transfer-375px.png"),
 });
 
 await browser.close();

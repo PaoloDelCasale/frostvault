@@ -10,14 +10,14 @@ type ShellNavItemsProps = {
   onNavigate?: () => void;
   className?: string;
   /**
-   * `primary` keeps only Vault-scoped controls (switcher + owner Manage access).
+   * `primary` keeps only Vault-scoped controls (switcher + Vault settings).
    * Secondary destinations live in the account menu.
    */
   density?: "primary" | "stacked";
 };
 
 /**
- * Vault-primary navigation: current Vault switcher and owner-only Manage access.
+ * Vault-primary navigation: current Vault switcher and Vault settings.
  * Global secondary actions (New vault, Administration, Language, Sign out) are
  * intentionally not rendered here — they belong in AccountPreferencesMenu.
  */
@@ -29,13 +29,13 @@ export function ShellNavItems({
   className,
   density = "stacked",
 }: ShellNavItemsProps) {
-  const { isVaultOwner, vaults, currentVaultId } = capabilities;
+  const { vaults, currentVaultId } = capabilities;
   const selectedVaultId = currentVaultId ?? vaults[0]?.id ?? "";
   const compact = density === "primary";
   const actionClass =
     "min-h-11 rounded-[10px] border border-input bg-surface px-4 text-left font-bold text-ink transition-[background-color,border-color,box-shadow] duration-150 hover:border-[var(--interactive-border-hover)] hover:bg-green-soft focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none";
   const vaultLabel = shellLabel(t, "ui.vault", "Vault");
-  const manageAccessLabel = shellLabel(t, "ui.manage_access", "Manage access");
+  const manageAccessLabel = shellLabel(t, "ui.manage_access", "Vault settings");
 
   const switcher = (
     <MenuSelect
@@ -73,18 +73,16 @@ export function ShellNavItems({
         </div>
       )}
 
-      {isVaultOwner ? (
-        <button
-          type="button"
-          className={actionClass}
-          onClick={() => {
-            handlers?.onManageAccess?.();
-            onNavigate?.();
-          }}
-        >
-          {manageAccessLabel}
-        </button>
-      ) : null}
+      <button
+        type="button"
+        className={actionClass}
+        onClick={() => {
+          handlers?.onManageAccess?.();
+          onNavigate?.();
+        }}
+      >
+        {manageAccessLabel}
+      </button>
     </div>
   );
 }

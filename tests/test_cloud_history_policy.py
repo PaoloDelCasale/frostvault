@@ -99,8 +99,8 @@ class CloudHistoryPolicyCreationTests(unittest.TestCase):
         source_layout.override_sources_root(self.sources_root)
         with SQLiteConnection(str(self.database_path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (1, 'alice', 'Alice', 'hash', 0)"
+                "INSERT INTO users(id, username, display_name, password_hash) "
+                "VALUES (1, 'alice', 'Alice', 'hash')"
             )
         self.settings = replace(
             Settings(),
@@ -118,12 +118,11 @@ class CloudHistoryPolicyCreationTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             return connection.execute("SELECT * FROM vaults").fetchall()
     def test_omitted_policy_persists_archive_history(self) -> None:
-        vault = vaults_service.create_vault_for_user(1, "History Archive")
+        vault = vaults_service.create_vault("History Archive")
         self.assertEqual(vault["cloud_history_policy"], ARCHIVE_HISTORY)
 
     def test_current_snapshot_is_persisted(self) -> None:
-        vault = vaults_service.create_vault_for_user(
-            1,
+        vault = vaults_service.create_vault(
             "Snapshot Archive",
             cloud_history_policy=CURRENT_SNAPSHOT,
         )
@@ -133,8 +132,7 @@ class CloudHistoryPolicyCreationTests(unittest.TestCase):
 
     def test_interactive_requirement_rejects_omission(self) -> None:
         with self.assertRaises(vaults_service.InvalidVaultName):
-            vaults_service.create_vault_for_user(
-                1,
+            vaults_service.create_vault(
                 "Needs Choice",
                 require_cloud_history_policy=True,
             )
@@ -187,8 +185,8 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
         with SQLiteConnection(str(database_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(id, username, display_name, password_hash, is_admin)
-                VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+                INSERT INTO users(id, username, display_name, password_hash)
+                VALUES (1, 'owner', 'Owner', 'hash')
                 """
             )
             connection.execute(

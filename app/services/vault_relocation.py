@@ -15,9 +15,8 @@ import stat
 from pathlib import Path
 from typing import Any, Callable
 
-from . import source_areas, source_layout
+from . import source_directories, source_layout
 from .audit_events import record_audit_event
-from .notifications import enqueue_notification
 
 ROOT_IDENTITY_VERSION = "linux-stat-dir-v1"
 _TERMINAL_JOB_STATES = ("completed", "failed", "cancelled")
@@ -130,8 +129,8 @@ def _alias_for_root(root: str) -> str:
 
 def _candidate(volume: source_layout.SourceVolume, relative_path: str) -> tuple[str, Path]:
     try:
-        relative = source_areas.canonicalize_relative_path(relative_path)
-    except source_areas.SourceAreaError as exc:
+        relative = source_directories.canonicalize_relative_path(relative_path)
+    except source_directories.SourceDirectoryError as exc:
         raise VaultRelocationError("invalid_path", str(exc)) from exc
 
     # Normalize the untrusted relative path before performing any filesystem
@@ -240,7 +239,7 @@ def _relocate_vault_root(
     suspension state.
     """
     cleaned_reason = _clean_reason(reason)
-    source_areas._lock_source_area_mutations(connection)
+    source_directories.lock_vault_root_allocation(connection)
     vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
     if vault is None:
         raise VaultRelocationError("not_found", "Vault not found")
@@ -293,10 +292,6 @@ def _relocate_vault_root(
     )
     if after_update is not None:
         after_update()
-    owner = connection.execute(
-        "SELECT user_id FROM vault_members WHERE vault_id=%s AND role='owner' LIMIT 1",
-        (vault_id,),
-    ).fetchone()
     record_audit_event(
         connection,
         event="vault_root_relocated",
@@ -305,21 +300,10 @@ def _relocate_vault_root(
         outcome="success",
         visibility="owner",
         reason=cleaned_reason,
-        admin_override=True,
         previous_source_root=previous_root,
         source_root=str(destination),
         mandatory_full_scan=True,
     )
-    if owner:
-        enqueue_notification(
-            connection,
-            user_id=int(owner["user_id"]),
-            vault_id=vault_id,
-            event="vault_root_relocated",
-            title="Administrator action: Vault root relocated",
-            body=cleaned_reason,
-            channels=("in_app",),
-        )
     return connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
 
 

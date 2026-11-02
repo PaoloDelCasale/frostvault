@@ -8,20 +8,6 @@ from ..branding import PRODUCT_NAME
 SUBJECT_PREFIX = f"[{PRODUCT_NAME}]"
 
 TEMPLATES: dict[str, dict[str, str]] = {
-    "vault_membership_changed": {
-        "subject": f"{SUBJECT_PREFIX} Vault membership changed",
-        "body": (
-            "An administrator changed membership for vault {vault_id}.\n"
-            "Reason: {reason}\n"
-        ),
-    },
-    "vault_ownership_transferred": {
-        "subject": f"{SUBJECT_PREFIX} Vault ownership transferred",
-        "body": (
-            "Primary ownership for vault {vault_id} was transferred.\n"
-            "Reason: {reason}\n"
-        ),
-    },
     "vault_recovery_exported": {
         "subject": f"{SUBJECT_PREFIX} Vault recovery material exported",
         "body": (

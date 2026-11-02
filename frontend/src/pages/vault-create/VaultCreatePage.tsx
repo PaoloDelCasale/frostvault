@@ -1,16 +1,15 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 import {
   ApiError,
-  browseMySourceVolume,
+  browseSourceVolume,
   confirmRecoveryCustody,
   createVault,
-  fetchMySourceAreas,
+  fetchAdminSourceVolumes,
   selectVault,
 } from "@/api";
 import type {
   EncryptionMode,
-  SourceAreaGrant,
   VaultCreateResponse,
   VaultCreationMode,
 } from "@/api";
@@ -55,7 +54,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
     CloudHistoryPolicy | ""
   >("");
   const [creationMode, setCreationMode] = useState<VaultCreationMode>("empty");
-  const [sourceAreas, setSourceAreas] = useState<SourceAreaGrant[]>([]);
+  const [volumeOptions, setVolumeOptions] = useState<string[]>([]);
   const [volumeAlias, setVolumeAlias] = useState("");
   const [relativePath, setRelativePath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -68,31 +67,28 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
 
   useEffect(() => {
     let cancelled = false;
-    void fetchMySourceAreas()
+    // Any free directory of a healthy, writable Source Volume can be adopted.
+    void fetchAdminSourceVolumes()
       .then((response) => {
         if (cancelled) return;
-        const usable = response.items.filter(
-          (item) => item.usable && item.availability === "available",
-        );
-        setSourceAreas(usable);
+        const usable = response.items
+          .filter((item) => item.health === "ok" && item.access === "rw")
+          .map((item) => item.alias)
+          .sort();
+        setVolumeOptions(usable);
         if (usable.length > 0) {
-          setVolumeAlias(usable[0].volume_alias);
+          setVolumeAlias(usable[0]);
         }
       })
       .catch(() => {
-        if (!cancelled) setSourceAreas([]);
+        if (!cancelled) setVolumeOptions([]);
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const volumeOptions = useMemo(() => {
-    const aliases = new Set(sourceAreas.map((area) => area.volume_alias));
-    return Array.from(aliases).sort();
-  }, [sourceAreas]);
-
-  const adoptAvailable = sourceAreas.length > 0;
+  const adoptAvailable = volumeOptions.length > 0;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -315,10 +311,9 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
                   {volumeAlias ? (
                     <SourceDirectoryBrowser
                       volumeAlias={volumeAlias}
-                      browse={browseMySourceVolume}
+                      browse={browseSourceVolume}
                       selectedPath={relativePath}
                       onSelect={setRelativePath}
-                      viewerIsAdmin={false}
                     />
                   ) : null}
                 </div>

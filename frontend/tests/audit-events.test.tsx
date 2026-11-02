@@ -71,36 +71,15 @@ describe("audit event filters", () => {
 });
 
 describe("VaultAccessPage audit panel", () => {
-  it("does not mount or request audit events for a non-owner", async () => {
-    const { fetchMock } = renderVaultAccess({ isVaultOwner: false });
-
-    await screen.findByRole("heading", { name: "Test Archive", level: 1 });
-
-    expect(screen.queryByRole("heading", { name: "Audit trail", level: 2 })).toBeNull();
-    expect(
-      fetchMock.mock.calls.some((call) => String(call[0]) === "/api/audit-events"),
-    ).toBe(false);
-  });
-
-  it("renders loaded-event filters, expandable cards, and member-name fallbacks for an owner", async () => {
+  it("renders loaded-event filters, expandable cards, and owner and system actor names", async () => {
     const user = userEvent.setup();
     const fetchMock = createVaultAccessFetch({
-      "GET /api/vault/members": jsonResponse({
-        items: [
-          {
-            id: 5,
-            username: "ada",
-            display_name: "Ada Lovelace",
-            role: "owner",
-          },
-        ],
-      }),
       "GET /api/audit-events": jsonResponse({
         events: [
           auditEvent({ id: 3, event: "vault_file_renamed" }),
           auditEvent({
             id: 2,
-            actor_user_id: 99,
+            actor_user_id: null,
             event: "cloud_deletion.archive_requested",
             created_at: "2026-07-02T12:00:00+00:00",
           }),
@@ -113,13 +92,13 @@ describe("VaultAccessPage audit panel", () => {
       }),
     });
 
-    renderVaultAccess({ fetchImpl: fetchMock, isVaultOwner: true });
+    renderVaultAccess({ fetchImpl: fetchMock, ownerName: "Ada Lovelace" });
 
     expect(
       await screen.findByRole("heading", { name: "Audit trail", level: 2 }),
     ).toBeInTheDocument();
     expect((await screen.findAllByText("Ada Lovelace")).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("User #99").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("System").length).toBeGreaterThan(0);
     expect(
       screen.getByText(/Filters apply only to these loaded events.*complete audit history/i),
     ).toBeInTheDocument();
@@ -160,7 +139,7 @@ describe("VaultAccessPage audit panel", () => {
 });
 
 describe("AdminPage audit route", () => {
-  it("uses the dedicated route, resolves authorized names, and falls back to IDs", async () => {
+  it("uses the dedicated route, names the owner and keeps unknown Vault IDs", async () => {
     window.history.replaceState({}, "", "/admin/audit-events");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -170,10 +149,8 @@ describe("AdminPage audit route", () => {
       if (url === "/api/me") {
         return jsonResponse({
           id: 1,
-          username: "admin",
-          display_name: "Admin",
-          is_admin: true,
-          active: true,
+          username: "ada",
+          display_name: "Ada Lovelace",
           session_version: 1,
           csrf_token: "csrf",
           offline_cache_generation: "audit-session-vault-1",
@@ -186,7 +163,7 @@ describe("AdminPage audit route", () => {
       if (url === "/api/admin/audit-events") {
         return jsonResponse({
           events: [
-            auditEvent({ id: 10, visibility: "admin", event: "admin_user_created" }),
+            auditEvent({ id: 10, visibility: "admin", event: "system_settings.updated" }),
             auditEvent({
               id: 9,
               actor_user_id: 99,
@@ -194,22 +171,6 @@ describe("AdminPage audit route", () => {
               visibility: "admin",
               event: "system_settings.updated",
             }),
-          ],
-        });
-      }
-      if (url === "/api/admin/users") {
-        return jsonResponse({
-          items: [
-            {
-              id: 5,
-              username: "ada",
-              display_name: "Ada Lovelace",
-              active: true,
-              is_admin: true,
-              vault_count: 1,
-              has_password: true,
-              identity_count: 0,
-            },
           ],
         });
       }
@@ -223,7 +184,6 @@ describe("AdminPage audit route", () => {
               source_root: "/sources/research",
               s3_prefix: "vaults/research/",
               enabled: true,
-              member_count: 1,
             },
           ],
         });
@@ -245,7 +205,6 @@ describe("AdminPage audit route", () => {
     ).toBeInTheDocument();
     expect(screen.getAllByText("Ada Lovelace").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Research").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("User #99").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Vault #88").length).toBeGreaterThan(0);
 
     const navigation = screen.getByRole("navigation", {

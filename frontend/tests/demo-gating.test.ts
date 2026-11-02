@@ -179,7 +179,7 @@ describe("capture/demo seams", () => {
           detail: Record<string, unknown>;
         }>;
       };
-      expect(payload.events).toHaveLength(7);
+      expect(payload.events).toHaveLength(6);
       expect(payload.events.map((event) => event.event)).toEqual(
         expect.arrayContaining([
           "vault_file_renamed",

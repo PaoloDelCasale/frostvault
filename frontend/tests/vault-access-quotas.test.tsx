@@ -46,7 +46,7 @@ describe("VaultAccessPage — quotas (seams 3, 5)", () => {
       },
     });
 
-    renderVaultAccess({ fetchImpl: fetchMock, isAdmin: true });
+    renderVaultAccess({ fetchImpl: fetchMock });
     await screen.findByText(/quota status loaded/i);
 
     const softStorage = screen.getByLabelText(/storage \(soft\)/i);

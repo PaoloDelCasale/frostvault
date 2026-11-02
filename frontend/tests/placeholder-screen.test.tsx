@@ -32,7 +32,6 @@ describe("App shell screen", () => {
           id: 1,
           username: "owner",
           display_name: "Owner",
-          is_admin: true,
           active: true,
           session_version: 1,
           csrf_token: "csrf",
@@ -44,11 +43,8 @@ describe("App shell screen", () => {
             id: 1,
             slug: "test",
             name: "Test Archive",
-            role: "owner",
-            can_operate: true,
             delete_enabled: true,
             cloud_deletion_enabled: true,
-            is_vault_owner: true,
     cloud_history_policy: "archive_history" as const,
           },
         });
@@ -56,7 +52,7 @@ describe("App shell screen", () => {
       if (url.includes("/api/vaults")) {
         return jsonResponse({
           items: [
-            { id: 1, slug: "test", name: "Test Archive", role: "owner" },
+            { id: 1, slug: "test", name: "Test Archive" },
           ],
         });
       }

@@ -11,35 +11,18 @@ import {
 } from "@/pages/archive/actions";
 
 const ownerCaps: VaultCapabilities = {
-  role: "owner",
-  can_operate: true,
   delete_enabled: true,
   cloud_deletion_enabled: true,
-  is_vault_owner: true,
 };
 
-const operatorCaps: VaultCapabilities = {
-  role: "operator",
-  can_operate: true,
+const cloudDeletionOffCaps: VaultCapabilities = {
   delete_enabled: true,
   cloud_deletion_enabled: false,
-  is_vault_owner: false,
 };
 
-const viewerCaps: VaultCapabilities = {
-  role: "viewer",
-  can_operate: false,
+const deletionOffCaps: VaultCapabilities = {
   delete_enabled: false,
   cloud_deletion_enabled: false,
-  is_vault_owner: false,
-};
-
-const adminAsOwner: VaultCapabilities = {
-  role: "owner",
-  can_operate: true,
-  delete_enabled: true,
-  cloud_deletion_enabled: true,
-  is_vault_owner: true,
 };
 
 const eligibleFile: ArchiveListItem = {
@@ -123,8 +106,8 @@ describe("availableActions — capability gating (seam 2)", () => {
     expect(actions.find((a) => a.id === "cloud-purge")?.tone).toBe("danger");
   });
 
-  it("operator sees upload/recover/free-space/storage-class/pin but never cloud deletion", () => {
-    expect(availableActions(eligibleFile, operatorCaps).map((a) => a.id)).toEqual([
+  it("without cloud deletion offers upload/recover/free-space/storage-class/pin only", () => {
+    expect(availableActions(eligibleFile, cloudDeletionOffCaps).map((a) => a.id)).toEqual([
       "upload",
       "recover",
       "free-space",
@@ -133,20 +116,12 @@ describe("availableActions — capability gating (seam 2)", () => {
     ]);
   });
 
-  it("viewer sees no row actions including storage-class", () => {
-    expect(availableActions(eligibleFile, viewerCaps)).toEqual([]);
-    expect(availableActions(cloudOnlyFile, viewerCaps)).toEqual([]);
-  });
-
-  it("admin with owner vault role matches owner capabilities", () => {
-    expect(availableActions(eligibleFile, adminAsOwner).map((a) => a.id)).toEqual([
+  it("with every deletion disabled keeps only non-destructive actions", () => {
+    expect(availableActions(eligibleFile, deletionOffCaps).map((a) => a.id)).toEqual([
       "upload",
       "recover",
-      "free-space",
       "storage-class",
       "lifecycle-pin",
-      "cloud-archive",
-      "cloud-purge",
     ]);
   });
 
@@ -203,10 +178,10 @@ describe("availableActions — capability gating (seam 2)", () => {
 
   it("shows unpin when a path is already lifecycle-pinned", () => {
     const pinned: ArchiveListItem = { ...eligibleFile, lifecycle_pinned: true };
-    expect(availableActions(pinned, operatorCaps).map((a) => a.id)).toContain(
+    expect(availableActions(pinned, cloudDeletionOffCaps).map((a) => a.id)).toContain(
       "lifecycle-unpin",
     );
-    expect(availableActions(pinned, operatorCaps).map((a) => a.id)).not.toContain(
+    expect(availableActions(pinned, cloudDeletionOffCaps).map((a) => a.id)).not.toContain(
       "lifecycle-pin",
     );
   });

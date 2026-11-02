@@ -11,12 +11,12 @@ from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 
 from .config import settings
-from .security import hash_password
+from .security import hash_password, verify_password
 from .services.rclone_runtime import cleanup_runtime_configs
 
 
 INTEGRITY_ERRORS = (UniqueViolation, sqlite3.IntegrityError)
-HEAD_SCHEMA_REVISION = "0043_cloud_only_conflict"
+HEAD_SCHEMA_REVISION = "0044_single_owner"
 _logger = logging.getLogger(__name__)
 
 
@@ -206,58 +206,61 @@ def initialize_database() -> None:
                 f"(found {revision or 'unversioned'}, "
                 f"expected {HEAD_SCHEMA_REVISION})."
             )
-        _bootstrap_first_admin(connection)
+        _bootstrap_owner(connection)
 
 
-def _bootstrap_first_admin(connection: Any) -> None:
-    count = connection.execute("SELECT COUNT(*) AS total FROM users").fetchone()["total"]
-    if count:
-        return
-    if not settings.bootstrap_admin_username or not settings.bootstrap_admin_password:
-        raise RuntimeError(
-            "The database has no users: configure BOOTSTRAP_ADMIN_USERNAME and "
-            "BOOTSTRAP_ADMIN_PASSWORD for first startup"
+def _bootstrap_owner(connection: Any) -> None:
+    """Create the single owner, or apply its env credentials (#412).
+
+    ``BOOTSTRAP_ADMIN_*`` are the owner's local credentials: the emergency
+    password accepted only from loopback and the configured LAN CIDRs. They
+    are applied at every start, so a restored metadata backup still accepts
+    the current password. A changed password revokes existing Sessions.
+    """
+    owner = connection.execute(
+        "SELECT id, username, display_name, password_hash FROM users "
+        "ORDER BY id LIMIT 1"
+    ).fetchone()
+    username = settings.bootstrap_admin_username.strip().lower()
+    password = settings.bootstrap_admin_password
+    display_name = settings.bootstrap_admin_display_name.strip()
+    if owner is None:
+        if not username or not password:
+            raise RuntimeError(
+                "The database has no owner: configure BOOTSTRAP_ADMIN_USERNAME "
+                "and BOOTSTRAP_ADMIN_PASSWORD for first startup"
+            )
+        connection.execute(
+            """
+            INSERT INTO users(username, display_name, password_hash)
+            VALUES (%s, %s, %s)
+            """,
+            (username, display_name, hash_password(password)),
         )
-    admin = connection.execute(
-        """
-        INSERT INTO users(username, display_name, password_hash, is_admin)
-        VALUES (%s, %s, %s, TRUE)
-        RETURNING id
-        """,
-        (
-            settings.bootstrap_admin_username.strip().lower(),
-            settings.bootstrap_admin_display_name.strip(),
-            hash_password(settings.bootstrap_admin_password),
-        ),
-    ).fetchone()
-    if not settings.bootstrap_vault_slug:
         return
-    required: dict[str, Any] = {
-        "name": settings.bootstrap_vault_name,
-        "source_root": settings.bootstrap_vault_source_root,
-        "s3_bucket": settings.bootstrap_vault_s3_bucket,
-        "s3_prefix": settings.bootstrap_vault_s3_prefix,
-        "rclone_remote": settings.bootstrap_vault_rclone_remote,
-    }
-    missing = [name for name, value in required.items() if not value]
-    if missing:
-        raise RuntimeError("Incomplete bootstrap vault configuration: " + ", ".join(missing))
-    vault = connection.execute(
+    if not username or not password:
+        return
+    password_current = bool(owner["password_hash"]) and verify_password(
+        owner["password_hash"], password
+    )
+    if (
+        password_current
+        and owner["username"] == username
+        and owner["display_name"] == display_name
+    ):
+        return
+    connection.execute(
         """
-        INSERT INTO vaults(slug, name, source_root, s3_bucket, s3_prefix, rclone_remote)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        RETURNING id
+        UPDATE users
+        SET username=%s, display_name=%s, password_hash=%s,
+            session_version=session_version + %s
+        WHERE id=%s
         """,
         (
-            settings.bootstrap_vault_slug,
-            settings.bootstrap_vault_name,
-            settings.bootstrap_vault_source_root,
-            settings.bootstrap_vault_s3_bucket,
-            settings.bootstrap_vault_s3_prefix.strip("/"),
-            settings.bootstrap_vault_rclone_remote,
+            username,
+            display_name,
+            owner["password_hash"] if password_current else hash_password(password),
+            0 if password_current else 1,
+            owner["id"],
         ),
-    ).fetchone()
-    connection.execute(
-        "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'owner')",
-        (vault["id"], admin["id"]),
     )

@@ -1,234 +1,5 @@
 {
   "schemas": {
-    "AdminIdentitiesResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "items": {
-          "items": {
-            "$ref": "#/components/schemas/AdminIdentity"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "items"
-      ],
-      "type": "object"
-    },
-    "AdminIdentity": {
-      "additionalProperties": true,
-      "properties": {
-        "created_at": {
-          "type": "string"
-        },
-        "id": {
-          "type": "number"
-        },
-        "issuer": {
-          "type": "string"
-        },
-        "subject": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "issuer",
-        "subject",
-        "created_at"
-      ],
-      "type": "object"
-    },
-    "AdminInvite": {
-      "additionalProperties": true,
-      "properties": {
-        "created_at": {
-          "type": "string"
-        },
-        "created_by": {
-          "type": "number"
-        },
-        "expires_at": {
-          "type": "string"
-        },
-        "id": {
-          "type": "number"
-        },
-        "target_user_id": {
-          "type": "number"
-        },
-        "target_username": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "target_user_id",
-        "target_username",
-        "created_by",
-        "expires_at"
-      ],
-      "type": "object"
-    },
-    "AdminInvitesResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "items": {
-          "items": {
-            "$ref": "#/components/schemas/AdminInvite"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "items"
-      ],
-      "type": "object"
-    },
-    "AdminMembershipCreatePayload": {
-      "additionalProperties": true,
-      "properties": {
-        "reason": {
-          "type": "string"
-        },
-        "role": {
-          "enum": [
-            "operator",
-            "viewer"
-          ],
-          "type": "string"
-        },
-        "user_id": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "user_id",
-        "role",
-        "reason"
-      ],
-      "type": "object"
-    },
-    "AdminOwnerTransferPayload": {
-      "additionalProperties": true,
-      "properties": {
-        "new_owner_user_id": {
-          "type": "number"
-        },
-        "reason": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "new_owner_user_id",
-        "reason"
-      ],
-      "type": "object"
-    },
-    "AdminUser": {
-      "additionalProperties": true,
-      "description": "Global administration endpoints (issue #69).",
-      "properties": {
-        "active": {
-          "type": "boolean"
-        },
-        "created_at": {
-          "type": "string"
-        },
-        "display_name": {
-          "type": "string"
-        },
-        "has_password": {
-          "type": "boolean"
-        },
-        "id": {
-          "type": "number"
-        },
-        "identity_count": {
-          "type": "number"
-        },
-        "is_admin": {
-          "type": "boolean"
-        },
-        "username": {
-          "type": "string"
-        },
-        "vault_count": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "id",
-        "username",
-        "display_name",
-        "is_admin",
-        "active",
-        "vault_count",
-        "has_password",
-        "identity_count"
-      ],
-      "type": "object"
-    },
-    "AdminUserCreatePayload": {
-      "additionalProperties": true,
-      "properties": {
-        "display_name": {
-          "type": "string"
-        },
-        "is_admin": {
-          "type": "boolean"
-        },
-        "password": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "username": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "display_name",
-        "username",
-        "password",
-        "is_admin"
-      ],
-      "type": "object"
-    },
-    "AdminUserUpdatePayload": {
-      "additionalProperties": true,
-      "properties": {
-        "active": {
-          "type": "boolean"
-        },
-        "display_name": {
-          "type": "string"
-        },
-        "is_admin": {
-          "type": "boolean"
-        },
-        "password": {
-          "type": "string"
-        }
-      },
-      "type": "object"
-    },
-    "AdminUsersResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "items": {
-          "items": {
-            "$ref": "#/components/schemas/AdminUser"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "items"
-      ],
-      "type": "object"
-    },
     "AdminVault": {
       "additionalProperties": false,
       "properties": {
@@ -256,9 +27,6 @@
           "$ref": "#/components/schemas/CloudHistoryPolicy"
         },
         "id": {
-          "type": "number"
-        },
-        "member_count": {
           "type": "number"
         },
         "name": {
@@ -295,99 +63,7 @@
         "name",
         "source_root",
         "s3_prefix",
-        "enabled",
-        "member_count"
-      ],
-      "type": "object"
-    },
-    "AdminVaultCreatePayload": {
-      "additionalProperties": true,
-      "properties": {
-        "creation_mode": {
-          "enum": [
-            "empty",
-            "adopt"
-          ],
-          "type": "string"
-        },
-        "encryption_mode": {
-          "enum": [
-            "plain",
-            "crypt"
-          ],
-          "type": "string"
-        },
-        "cloud_history_policy": {
-          "$ref": "#/components/schemas/CloudHistoryPolicy"
-        },
-        "name": {
-          "type": "string"
-        },
-        "owner_user_id": {
-          "type": "number"
-        },
-        "reason": {
-          "type": "string"
-        },
-        "relative_path": {
-          "type": "string"
-        },
-        "slug": {
-          "type": "string"
-        },
-        "volume_alias": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "slug",
-        "owner_user_id",
-        "reason",
-        "cloud_history_policy"
-      ],
-      "type": "object"
-    },
-    "AdminVaultMember": {
-      "additionalProperties": true,
-      "properties": {
-        "active": {
-          "type": "boolean"
-        },
-        "display_name": {
-          "type": "string"
-        },
-        "id": {
-          "type": "number"
-        },
-        "role": {
-          "type": "string"
-        },
-        "username": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "username",
-        "display_name",
-        "active",
-        "role"
-      ],
-      "type": "object"
-    },
-    "AdminVaultMembersResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "items": {
-          "items": {
-            "$ref": "#/components/schemas/AdminVaultMember"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "items"
+        "enabled"
       ],
       "type": "object"
     },
@@ -1767,9 +1443,6 @@
     "MeResponse": {
       "additionalProperties": true,
       "properties": {
-        "active": {
-          "type": "boolean"
-        },
         "auth_method": {
           "$ref": "#/components/schemas/AuthMethod"
         },
@@ -1791,9 +1464,6 @@
         },
         "id": {
           "type": "number"
-        },
-        "is_admin": {
-          "type": "boolean"
         },
         "locale": {
           "type": "string"
@@ -1829,8 +1499,6 @@
         "id",
         "username",
         "display_name",
-        "is_admin",
-        "active",
         "session_version",
         "csrf_token",
         "offline_cache_generation",
@@ -1844,9 +1512,6 @@
     "MeVault": {
       "additionalProperties": true,
       "properties": {
-        "can_operate": {
-          "type": "boolean"
-        },
         "cloud_deletion_enabled": {
           "type": "boolean"
         },
@@ -1859,14 +1524,8 @@
         "id": {
           "type": "number"
         },
-        "is_vault_owner": {
-          "type": "boolean"
-        },
         "name": {
           "type": "string"
-        },
-        "role": {
-          "$ref": "#/components/schemas/VaultRole"
         },
         "slug": {
           "type": "string"
@@ -1876,143 +1535,9 @@
         "id",
         "slug",
         "name",
-        "role",
-        "can_operate",
         "delete_enabled",
         "cloud_deletion_enabled",
-        "is_vault_owner",
         "cloud_history_policy"
-      ],
-      "type": "object"
-    },
-    "OidcConfigurationResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "active": {
-          "$ref": "#/components/schemas/OidcConfigurationValues"
-        },
-        "configuration_status": {
-          "type": "string"
-        },
-        "draft": {
-          "anyOf": [
-            {
-              "$ref": "#/components/schemas/OidcConfigurationValues"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "last_validation": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "properties": {
-                "error": {
-                  "type": "string"
-                },
-                "status": {
-                  "type": "string"
-                },
-                "validated_at": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "status"
-              ],
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "required": [
-        "active",
-        "draft",
-        "configuration_status",
-        "last_validation"
-      ],
-      "type": "object"
-    },
-    "OidcConfigurationValues": {
-      "additionalProperties": true,
-      "description": "Managed OIDC configuration (issues #134 and #136).",
-      "properties": {
-        "callback_url": {
-          "type": "string"
-        },
-        "client_id": {
-          "type": "string"
-        },
-        "client_secret_configured": {
-          "type": "boolean"
-        },
-        "enabled": {
-          "type": "boolean"
-        },
-        "issuer": {
-          "type": "string"
-        },
-        "login_transaction_ttl_seconds": {
-          "type": "number"
-        },
-        "scopes": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "source": {
-          "type": "string"
-        },
-        "validation_status": {
-          "type": "string"
-        },
-        "version": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "issuer",
-        "client_id",
-        "client_secret_configured",
-        "scopes",
-        "login_transaction_ttl_seconds"
-      ],
-      "type": "object"
-    },
-    "OidcDraftPayload": {
-      "additionalProperties": true,
-      "properties": {
-        "client_id": {
-          "type": "string"
-        },
-        "client_secret": {
-          "type": "string"
-        },
-        "issuer": {
-          "type": "string"
-        },
-        "login_transaction_ttl_seconds": {
-          "type": "number"
-        },
-        "scopes": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "issuer",
-        "client_id",
-        "client_secret",
-        "scopes",
-        "login_transaction_ttl_seconds"
       ],
       "type": "object"
     },
@@ -2391,85 +1916,6 @@
       ],
       "type": "object"
     },
-    "SourceAreaAssignPayload": {
-      "additionalProperties": true,
-      "properties": {
-        "reason": {
-          "type": "string"
-        },
-        "relative_path": {
-          "type": "string"
-        },
-        "user_id": {
-          "type": "number"
-        },
-        "volume_alias": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "user_id",
-        "volume_alias",
-        "relative_path",
-        "reason"
-      ],
-      "type": "object"
-    },
-    "SourceAreaGrant": {
-      "additionalProperties": true,
-      "properties": {
-        "availability": {
-          "enum": [
-            "available",
-            "unavailable"
-          ],
-          "type": "string"
-        },
-        "created_at": {
-          "type": "string"
-        },
-        "id": {
-          "type": "number"
-        },
-        "relative_path": {
-          "type": "string"
-        },
-        "usable": {
-          "type": "boolean"
-        },
-        "user_id": {
-          "type": "number"
-        },
-        "volume_alias": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "user_id",
-        "volume_alias",
-        "relative_path",
-        "created_at",
-        "availability",
-        "usable"
-      ],
-      "type": "object"
-    },
-    "SourceAreaListResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "items": {
-          "items": {
-            "$ref": "#/components/schemas/SourceAreaGrant"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "items"
-      ],
-      "type": "object"
-    },
     "SourceDirectoryBrowseResponse": {
       "additionalProperties": true,
       "properties": {
@@ -2535,18 +1981,13 @@
           "const": "vault",
           "type": "string"
         },
-        "label": {
-          "type": "string"
-        },
-        "owner_display_name": {
-          "type": "string"
-        },
         "vault_name": {
           "type": "string"
         }
       },
       "required": [
-        "kind"
+        "kind",
+        "vault_name"
       ],
       "type": "object"
     },
@@ -2577,9 +2018,6 @@
         "path": {
           "type": "string"
         },
-        "source_area_count": {
-          "type": "number"
-        },
         "vault_count": {
           "type": "number"
         }
@@ -2590,7 +2028,6 @@
         "access",
         "health",
         "vault_count",
-        "source_area_count",
         "diagnostic"
       ],
       "type": "object"
@@ -2878,7 +2315,7 @@
       "type": "object"
     },
     "SystemSettingValue": {
-      "description": "Administration settings endpoints (issues #132\u2013#136).",
+      "description": "Administration settings endpoints (issues #132–#136).",
       "type": [
         "string",
         "number",
@@ -2931,52 +2368,6 @@
         "revision",
         "overrides",
         "removals"
-      ],
-      "type": "object"
-    },
-    "UserSuggestResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "items": {
-          "items": {
-            "$ref": "#/components/schemas/UserLookupResult"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "items"
-      ],
-      "type": "object"
-    },
-    "UserLookupResult": {
-      "additionalProperties": true,
-      "properties": {
-        "current_vault_role": {
-          "anyOf": [
-            {
-              "$ref": "#/components/schemas/VaultRole"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "display_name": {
-          "type": "string"
-        },
-        "id": {
-          "type": "number"
-        },
-        "username": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "username",
-        "display_name",
-        "current_vault_role"
       ],
       "type": "object"
     },
@@ -3036,9 +2427,6 @@
         "recovery_export": {
           "type": "string"
         },
-        "role": {
-          "$ref": "#/components/schemas/VaultRole"
-        },
         "slug": {
           "type": "string"
         },
@@ -3051,7 +2439,6 @@
         "uuid",
         "slug",
         "name",
-        "role",
         "encryption_mode",
         "cloud_history_policy",
         "recovery_custody_confirmed"
@@ -3108,9 +2495,6 @@
         "local_files": {
           "type": "number"
         },
-        "memberships": {
-          "type": "number"
-        },
         "vault_files": {
           "type": "number"
         }
@@ -3122,8 +2506,7 @@
         "archive_versions",
         "cloud_bytes",
         "delete_markers",
-        "jobs",
-        "memberships"
+        "jobs"
       ],
       "type": "object"
     },
@@ -3559,9 +2942,6 @@
         "name": {
           "type": "string"
         },
-        "role": {
-          "$ref": "#/components/schemas/VaultRole"
-        },
         "slug": {
           "type": "string"
         },
@@ -3572,51 +2952,7 @@
       "required": [
         "id",
         "slug",
-        "name",
-        "role"
-      ],
-      "type": "object"
-    },
-    "VaultMember": {
-      "additionalProperties": true,
-      "description": "Vault access / governance types (issue #68).",
-      "properties": {
-        "active": {
-          "type": "boolean"
-        },
-        "display_name": {
-          "type": "string"
-        },
-        "id": {
-          "type": "number"
-        },
-        "role": {
-          "$ref": "#/components/schemas/VaultRole"
-        },
-        "username": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "username",
-        "display_name",
-        "role"
-      ],
-      "type": "object"
-    },
-    "VaultMembersResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "items": {
-          "items": {
-            "$ref": "#/components/schemas/VaultMember"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "items"
+        "name"
       ],
       "type": "object"
     },
@@ -3741,15 +3077,6 @@
         "usage"
       ],
       "type": "object"
-    },
-    "VaultRole": {
-      "description": "Hand-written response types for foundation endpoints (issue #60).",
-      "enum": [
-        "owner",
-        "operator",
-        "viewer"
-      ],
-      "type": "string"
     },
     "VaultSelectRequest": {
       "additionalProperties": true,

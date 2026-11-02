@@ -70,7 +70,7 @@ test.describe("metadata backup download checksum", () => {
     page,
     context,
   }) => {
-    await applySession(context, "admin");
+    await applySession(context);
     await mockMetadataBackupApis(page, ARTIFACT_BODY);
 
     await page.goto("/admin/metadata-backups");
@@ -101,7 +101,7 @@ test.describe("metadata backup download checksum", () => {
     page,
     context,
   }) => {
-    await applySession(context, "admin");
+    await applySession(context);
     await mockMetadataBackupApis(page, "corrupted metadata backup");
 
     await page.goto("/admin/metadata-backups");

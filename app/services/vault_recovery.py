@@ -20,7 +20,6 @@ from .vault_crypto import (
     audit_without_secrets,
     decrypt_vault_secrets,
 )
-from .vault_governance import notify_owner_of_admin_action, primary_owner
 
 
 RECOVERY_REMOTE_NAME = RUNTIME_REMOTE_NAME
@@ -110,8 +109,6 @@ def export_recovery_secret(
     *,
     actor_id: int,
     reason: str,
-    notify_owner_user_id: int | None = None,
-    admin_override: bool = False,
     connection: Any | None = None,
 ) -> str:
     export = build_recovery_export(vault)
@@ -121,24 +118,12 @@ def export_recovery_secret(
         "actor_id": actor_id,
         "reason": reason,
     }
-    if notify_owner_user_id is not None:
-        fields["notify_user_id"] = notify_owner_user_id
-    if admin_override:
-        fields["admin_override"] = True
-        notify_owner_of_admin_action(
-            "vault_recovery_exported",
-            vault_id=vault["id"],
-            owner_user_id=notify_owner_user_id or 0,
-            actor_id=actor_id,
-            reason=reason,
-        )
-    else:
-        audit_without_secrets(
-            "vault_recovery_exported",
-            secrets,
-            connection=connection,
-            **fields,
-        )
+    audit_without_secrets(
+        "vault_recovery_exported",
+        secrets,
+        connection=connection,
+        **fields,
+    )
     return export
 
 

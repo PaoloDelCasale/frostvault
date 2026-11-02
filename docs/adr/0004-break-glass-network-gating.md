@@ -1,8 +1,10 @@
 # Gate Break-glass Login to trusted networks with shared-counter backoff
 
-> **Status: amended by Issue #159.** The original administrator-only
-> authentication boundary is retained below as historical context. The current
-> terminology and boundary are defined in the amendment that follows.
+> **Status: amended by Issue #159 and by ADR-0017 (Issue #412).** With a single
+> Owner, Local Sign-in is the Owner's **Emergency Password**: the network gate,
+> backoff and generic failures below still apply, while users, roles, Invites
+> and the OIDC activation invariant no longer exist. The earlier text is kept as
+> historical context.
 
 ## Amendment — network-gated Local Sign-in
 

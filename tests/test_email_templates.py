@@ -9,13 +9,15 @@ from app.services.email_templates import render_email
 class EmailTemplateTests(unittest.TestCase):
     def test_known_event_uses_ready_made_template(self) -> None:
         message = render_email(
-            "vault_membership_changed",
+            "vault_recovery_exported",
             vault_id=7,
-            reason="coverage while owner is away",
+            reason="store a printed copy offline",
         )
-        self.assertEqual(message["subject"], "[FrostVault] Vault membership changed")
+        self.assertEqual(
+            message["subject"], "[FrostVault] Vault recovery material exported"
+        )
         self.assertIn("vault 7", message["body"])
-        self.assertIn("coverage while owner is away", message["body"])
+        self.assertIn("store a printed copy offline", message["body"])
 
     def test_unknown_event_falls_back_to_default_template(self) -> None:
         message = render_email(

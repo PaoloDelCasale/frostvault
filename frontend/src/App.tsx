@@ -56,9 +56,6 @@ function capabilitiesFromMe(
   const vault = me.vault;
   return {
     vaultName: vault?.name ?? "FrostVault",
-    isVaultOwner: Boolean(vault?.is_vault_owner),
-    canOperate: Boolean(vault?.can_operate),
-    isAdmin: me.is_admin,
     locale: me.locale,
     locales: me.locales,
     vaults:
@@ -70,12 +67,10 @@ function capabilitiesFromMe(
                 id: vault.id,
                 slug: vault.slug,
                 name: vault.name,
-                role: vault.role,
               },
             ]
           : [],
     currentVaultId: vault?.id,
-    role: vault?.role,
   };
 }
 
@@ -387,10 +382,9 @@ export default function App() {
         decommissionState={
           me.decommission_vault?.decommission_state ?? "active"
         }
-        isAdmin={Boolean(me.is_admin)}
-        isVaultOwner={Boolean(me.vault?.is_vault_owner)}
+        ownerName={me.display_name || me.username}
         onBack={() => navigate("/")}
-        onTransferred={() => navigate("/")}
+        onDecommissioned={() => navigate("/")}
       />
     );
   }
@@ -497,12 +491,9 @@ export default function App() {
               offlineCacheLease={offlineCacheLease}
               vaultName={capabilities.vaultName}
               capabilities={{
-                role: capabilities.role ?? "viewer",
-                can_operate: capabilities.canOperate,
                 delete_enabled: me.vault?.delete_enabled ?? false,
                 cloud_deletion_enabled:
                   me.vault?.cloud_deletion_enabled ?? false,
-                is_vault_owner: capabilities.isVaultOwner,
               }}
             />
           }

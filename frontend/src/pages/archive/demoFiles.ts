@@ -5,8 +5,8 @@
  * in Vite development, or an explicit `VITE_ALLOW_DEMO=1` build.
  *
  * Edit the exported listings and the `seedDemoState()` fixtures below to change
- * the mock catalog, users, vaults, and notifications. Mutations (upload,
- * recover, free-space, storage-class, admin user create, …) update this
+ * the mock catalog, vaults, and notifications. Mutations (upload,
+ * recover, free-space, storage-class, …) update this
  * in-memory state so the SPA stays interactive without a backend.
  */
 import { DEMO_MODE_ENABLED, getDemoSearchParam } from "@/demoGate";
@@ -368,17 +368,6 @@ type DemoAuditEvent = {
   detail: Record<string, unknown>;
 };
 
-type DemoUser = {
-  id: number;
-  display_name: string;
-  username: string;
-  active: boolean;
-  is_admin: boolean;
-  vault_count: number;
-  has_password: boolean;
-  identity_count: number;
-};
-
 type DemoVault = {
   id: number;
   name: string;
@@ -386,15 +375,7 @@ type DemoVault = {
   source_root: string;
   s3_prefix: string;
   enabled: boolean;
-  member_count: number;
   encryption_mode: string;
-};
-
-type DemoMember = {
-  id: number;
-  username: string;
-  display_name: string;
-  role: string;
 };
 
 type DemoLifecycleProfile = {
@@ -436,9 +417,7 @@ type DemoState = {
   jobs: JobGroup[];
   jobSeq: number;
   notifications: DemoNotification[];
-  users: DemoUser[];
   vaults: DemoVault[];
-  members: DemoMember[];
   locale: string;
   policy: DemoPolicy;
   lifecycle: DemoLifecycle;
@@ -501,28 +480,6 @@ function seedDemoState(): DemoState {
         read_at: "2026-03-01T08:05:00Z",
       },
     ],
-    users: [
-      {
-        id: 1,
-        display_name: "Local Admin",
-        username: "admin",
-        active: true,
-        is_admin: true,
-        vault_count: 1,
-        has_password: true,
-        identity_count: 0,
-      },
-      {
-        id: 2,
-        display_name: "Alex Operator",
-        username: "alex",
-        active: true,
-        is_admin: false,
-        vault_count: 1,
-        has_password: true,
-        identity_count: 1,
-      },
-    ],
     vaults: [
       {
         id: 1,
@@ -531,22 +488,7 @@ function seedDemoState(): DemoState {
         source_root: "/sources/test",
         s3_prefix: "development/test",
         enabled: true,
-        member_count: 2,
         encryption_mode: "plain",
-      },
-    ],
-    members: [
-      {
-        id: 1,
-        username: "admin",
-        display_name: "Local Admin",
-        role: "owner",
-      },
-      {
-        id: 2,
-        username: "alex",
-        display_name: "Alex Operator",
-        role: "operator",
       },
     ],
     locale: "en",
@@ -695,18 +637,6 @@ function demoAuditEvents(): DemoAuditEvent[] {
         path: "photos/2024",
         target_storage_class: "DEEP_ARCHIVE",
       },
-    },
-    {
-      id: 103,
-      created_at: daysAgo(7, 11),
-      event: "vault_member_added",
-      outcome: "created",
-      actor_user_id: 1,
-      vault_id: 1,
-      job_id: null,
-      correlation_id: null,
-      visibility: "vault",
-      detail: { username: "alex", role: "operator" },
     },
     {
       id: 102,
@@ -953,8 +883,6 @@ function mePayload(state: DemoState) {
     id: 1,
     username: "admin",
     display_name: "Local Admin",
-    is_admin: true,
-    active: true,
     session_version: 1,
     csrf_token: "demo",
     offline_cache_generation: "demo-session-vault-1",
@@ -966,11 +894,8 @@ function mePayload(state: DemoState) {
           id: vault.id,
           slug: vault.slug,
           name: vault.name,
-          role: "owner",
-          can_operate: true,
           delete_enabled: true,
           cloud_deletion_enabled: true,
-          is_vault_owner: true,
           cloud_history_policy: "archive_history",
         }
       : null,
@@ -1258,7 +1183,6 @@ export function installDemoFilesFetch(): void {
           id: vault.id,
           slug: vault.slug,
           name: vault.name,
-          role: "owner",
         })),
       });
     }
@@ -1341,60 +1265,6 @@ export function installDemoFilesFetch(): void {
 
     if (path === "/api/push/config") {
       return json({ configured: false, vapid_public_key: null });
-    }
-
-    if (path === "/api/vault/members") {
-      if (method === "POST") {
-        const userId = Number(body.user_id);
-        const user = state.users.find((entry) => entry.id === userId);
-        const role = String(body.role ?? "viewer");
-        if (user && !state.members.some((member) => member.id === user.id)) {
-          state.members.push({
-            id: user.id,
-            username: user.username,
-            display_name: user.display_name,
-            role,
-          });
-        }
-        return json({ message: "ok" });
-      }
-      return json({ items: state.members });
-    }
-
-    if (path.startsWith("/api/vault/members/") && method === "DELETE") {
-      const userId = Number(path.split("/").pop());
-      state.members = state.members.filter((member) => member.id !== userId);
-      return json({ message: "ok" });
-    }
-
-    if (path === "/api/vault/user-suggest" && method === "POST") {
-      const prefix = String(body.username ?? "").toLowerCase();
-      const items = state.users
-        .filter((entry) => entry.active !== false && entry.username.startsWith(prefix))
-        .slice(0, 8)
-        .map((user) => {
-          const member = state.members.find((entry) => entry.id === user.id);
-          return {
-            id: user.id,
-            username: user.username,
-            display_name: user.display_name,
-            current_vault_role: member?.role ?? null,
-          };
-        });
-      return json({ items });
-    }
-
-    if (path === "/api/vault/user-lookup" && method === "POST") {
-      const username = String(body.username ?? "");
-      const user = state.users.find((entry) => entry.username === username);
-      if (!user) return json({ detail: "User not found" }, 404);
-      const member = state.members.find((entry) => entry.id === user.id);
-      return json({
-        id: user.id,
-        username: user.username,
-        display_name: user.display_name,
-        current_vault_role: member?.role ?? null,
-      });
     }
 
     if (path === "/api/vault/quotas") {
@@ -1513,59 +1383,8 @@ export function installDemoFilesFetch(): void {
       return json({ events: demoAuditEvents() });
     }
 
-    if (path === "/api/admin/users" && method === "GET") {
-      return json({ items: state.users });
-    }
-
-    if (path === "/api/admin/users" && method === "POST") {
-      const id = Math.max(0, ...state.users.map((user) => user.id)) + 1;
-      const user: DemoUser = {
-        id,
-        display_name: String(body.display_name ?? `User ${id}`),
-        username: String(body.username ?? `user-${id}`),
-        active: true,
-        is_admin: Boolean(body.is_admin),
-        vault_count: 0,
-        has_password: body.password != null && String(body.password).length > 0,
-        identity_count: 0,
-      };
-      state.users.push(user);
-      return json(user);
-    }
-
-    const adminUserMatch = path.match(/^\/api\/admin\/users\/(\d+)$/);
-    if (adminUserMatch && method === "PATCH") {
-      const user = state.users.find((entry) => entry.id === Number(adminUserMatch[1]));
-      if (!user) return json({ detail: "User not found" }, 404);
-      if (typeof body.display_name === "string") user.display_name = body.display_name;
-      if (typeof body.active === "boolean") user.active = body.active;
-      if (typeof body.is_admin === "boolean") user.is_admin = body.is_admin;
-      if (body.password) user.has_password = true;
-      return json(user);
-    }
-
-    if (path.endsWith("/identities") && path.includes("/api/admin/users/")) {
-      return json({ items: [] });
-    }
-
     if (path === "/api/admin/vaults" && method === "GET") {
       return json({ items: state.vaults });
-    }
-
-    if (path === "/api/admin/vaults" && method === "POST") {
-      const id = Math.max(0, ...state.vaults.map((vault) => vault.id)) + 1;
-      const vault: DemoVault = {
-        id,
-        name: String(body.name ?? `Vault ${id}`),
-        slug: String(body.slug ?? `vault-${id}`),
-        source_root: "/sources/managed/demo",
-        s3_prefix: `development/vault-${id}`,
-        enabled: true,
-        member_count: 1,
-        encryption_mode: String(body.encryption_mode ?? "plain"),
-      };
-      state.vaults.push(vault);
-      return json(vault);
     }
 
     if (path === "/api/admin/source-volumes") {
@@ -1577,7 +1396,6 @@ export function installDemoFilesFetch(): void {
             access: "rw",
             health: "ok",
             vault_count: 1,
-            source_area_count: 1,
             diagnostic: null,
           },
         ],
@@ -1598,13 +1416,6 @@ export function installDemoFilesFetch(): void {
           },
         ],
       });
-    }
-
-    if (path === "/api/admin/invites") {
-      if (method === "POST") {
-        return json({ token: "demo-invite-token" });
-      }
-      return json({ items: [] });
     }
 
     if (path === "/api/admin/settings") {
@@ -1631,32 +1442,6 @@ export function installDemoFilesFetch(): void {
       });
     }
 
-    if (path === "/api/admin/oidc-configuration") {
-      return json({
-        enabled: false,
-        issuer: "",
-        client_id: "",
-        client_secret_configured: false,
-        scopes: ["openid"],
-        login_transaction_ttl_seconds: 300,
-        callback_url: "http://127.0.0.1:5173/auth/oidc/callback",
-        source: "environment",
-        draft: null,
-        configuration_status: "disabled",
-        last_validation: null,
-        active: {
-          enabled: false,
-          issuer: "",
-          client_id: "",
-          client_secret_configured: false,
-          scopes: ["openid"],
-          login_transaction_ttl_seconds: 300,
-          callback_url: "http://127.0.0.1:5173/auth/oidc/callback",
-          source: "environment",
-        },
-      });
-    }
-
     if (path === "/api/admin/audit-events" || path === "/api/admin/worker-errors") {
       return json({ items: [] });
     }
@@ -1666,10 +1451,6 @@ export function installDemoFilesFetch(): void {
     }
 
     if (path === "/api/admin/cost-price-books") {
-      return json({ items: [] });
-    }
-
-    if (path === "/api/admin/source-areas" || path === "/api/source-areas") {
       return json({ items: [] });
     }
 

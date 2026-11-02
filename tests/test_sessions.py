@@ -31,11 +31,11 @@ def _insert_user(
 ) -> int:
     row = connection.execute(
         """
-        INSERT INTO users(username, display_name, password_hash, is_admin, active)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO users(username, display_name, password_hash)
+        VALUES (%s, %s, %s)
         RETURNING id
         """,
-        (username, username.title(), "hash", is_admin, active),
+        (username, username.title(), "hash"),
     ).fetchone()
     return row["id"]
 
@@ -153,13 +153,6 @@ class SessionStoreTests(unittest.TestCase):
                 csrf_token_for(connection, token),
                 "csrf_token_for must return None after session_version bump",
             )
-
-    def test_session_for_deactivated_user_does_not_resolve(self) -> None:
-        token = self._new_session()
-        with self._connect() as connection:
-            connection.execute("UPDATE users SET active=%s", (False,))
-        with self._connect() as connection:
-            self.assertIsNone(resolve_session(connection, token))
 
     def test_raw_token_is_never_stored(self) -> None:
         token = self._new_session()

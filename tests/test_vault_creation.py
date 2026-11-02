@@ -16,7 +16,7 @@ from tests.test_database import run_alembic
 
 
 class VaultCreationServiceTestCase(unittest.TestCase):
-    """Direct-import tests for app.services.vaults.create_vault_for_user."""
+    """Direct-import tests for app.services.vaults.create_vault."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -33,8 +33,8 @@ class VaultCreationServiceTestCase(unittest.TestCase):
 
         with SQLiteConnection(str(self.database_path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (1, 'alice', 'Alice', 'hash', 0)"
+                "INSERT INTO users(id, username, display_name, password_hash) "
+                "VALUES (1, 'alice', 'Alice', 'hash')"
             )
 
         self.settings = replace(
@@ -53,12 +53,8 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             return connection.execute("SELECT * FROM vaults").fetchall()
 
-    def _all_members(self) -> list[dict]:
-        with SQLiteConnection(str(self.database_path)) as connection:
-            return connection.execute("SELECT * FROM vault_members").fetchall()
-
-    def test_creates_vault_owner_membership_and_directory_atomically(self) -> None:
-        vault = vaults_service.create_vault_for_user(1, "My Archive")
+    def test_creates_vault_and_directory_atomically(self) -> None:
+        vault = vaults_service.create_vault("My Archive")
 
         self.assertEqual(vault["name"], "My Archive")
         self.assertEqual(vault["slug"], "my-archive")
@@ -75,15 +71,9 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         )
         self.assertTrue(Path(vault["source_root"]).is_dir())
 
-        members = self._all_members()
-        self.assertEqual(len(members), 1)
-        self.assertEqual(members[0]["vault_id"], vault["id"])
-        self.assertEqual(members[0]["user_id"], 1)
-        self.assertEqual(members[0]["role"], "owner")
-
     def test_renaming_the_label_never_changes_the_storage_identity(self) -> None:
-        first = vaults_service.create_vault_for_user(1, "Docs", slug="docs")
-        second = vaults_service.create_vault_for_user(1, "Docs", slug="docs-2")
+        first = vaults_service.create_vault("Docs", slug="docs")
+        second = vaults_service.create_vault("Docs", slug="docs-2")
 
         self.assertNotEqual(first["uuid"], second["uuid"])
         self.assertNotEqual(first["source_root"], second["source_root"])
@@ -93,11 +83,10 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         # Labels, encryption, and constrained adoption coordinates are allowed.
         # Absolute source_root, S3 identity, rclone remote, and crypt secrets
         # are absent from the signature (issue #150 seam 9).
-        signature = inspect.signature(vaults_service.create_vault_for_user)
+        signature = inspect.signature(vaults_service.create_vault)
         self.assertEqual(
             list(signature.parameters),
             [
-                "user_id",
                 "name",
                 "slug",
                 "encryption_mode",
@@ -105,7 +94,6 @@ class VaultCreationServiceTestCase(unittest.TestCase):
                 "creation_mode",
                 "volume_alias",
                 "relative_path",
-                "actor_is_admin",
                 "require_cloud_history_policy",
             ],
         )
@@ -121,10 +109,10 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         self.assertTrue(forbidden.isdisjoint(signature.parameters))
 
     def test_duplicate_slug_is_rejected_and_leaves_nothing_partial_behind(self) -> None:
-        vaults_service.create_vault_for_user(1, "Docs", slug="docs")
+        vaults_service.create_vault("Docs", slug="docs")
 
         with self.assertRaises(vaults_service.VaultSlugTaken):
-            vaults_service.create_vault_for_user(1, "Docs Again", slug="docs")
+            vaults_service.create_vault("Docs Again", slug="docs")
 
         self.assertEqual(len(self._vaults()), 1)
         created_dirs = [p for p in self.managed_root.iterdir() if p.is_dir()]
@@ -132,19 +120,19 @@ class VaultCreationServiceTestCase(unittest.TestCase):
 
     def test_blank_name_is_rejected(self) -> None:
         with self.assertRaises(vaults_service.InvalidVaultName):
-            vaults_service.create_vault_for_user(1, "   ")
+            vaults_service.create_vault("   ")
         self.assertEqual(self._vaults(), [])
 
     def test_a_name_with_no_alphanumeric_characters_is_rejected(self) -> None:
         with self.assertRaises(vaults_service.InvalidVaultName):
-            vaults_service.create_vault_for_user(1, "!!!")
+            vaults_service.create_vault("!!!")
         self.assertEqual(self._vaults(), [])
 
     def test_creation_is_unavailable_without_a_configured_bucket_and_remote(self) -> None:
         unconfigured = replace(self.settings, vault_s3_bucket="", vault_rclone_remote="")
         with patch("app.services.vaults.settings", unconfigured):
             with self.assertRaises(vaults_service.VaultProvisioningUnavailable):
-                vaults_service.create_vault_for_user(1, "Docs")
+                vaults_service.create_vault("Docs")
         self.assertEqual(self._vaults(), [])
 
     def test_directory_creation_failure_rolls_back_the_database_rows(self) -> None:
@@ -153,15 +141,14 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         # before the transaction commits: nothing must survive.
         with patch.object(vaults_service.os, "makedirs", side_effect=OSError("boom")):
             with self.assertRaises(OSError):
-                vaults_service.create_vault_for_user(1, "Docs")
+                vaults_service.create_vault("Docs")
 
         self.assertEqual(self._vaults(), [])
-        self.assertEqual(self._all_members(), [])
         self.assertEqual(list(self.managed_root.iterdir()), [])
 
     def test_concurrent_creation_never_collides_in_db_or_filesystem(self) -> None:
         def _create(index: int) -> dict:
-            return vaults_service.create_vault_for_user(1, f"Vault {index}")
+            return vaults_service.create_vault(f"Vault {index}")
 
         with ThreadPoolExecutor(max_workers=8) as pool:
             results = list(pool.map(_create, range(8)))
@@ -176,7 +163,6 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         created_dirs = {p.name for p in self.managed_root.iterdir() if p.is_dir()}
         self.assertEqual(created_dirs, uuids)
         self.assertEqual(len(self._vaults()), 8)
-        self.assertEqual(len(self._all_members()), 8)
 
 
 if __name__ == "__main__":

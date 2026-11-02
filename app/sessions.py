@@ -157,12 +157,12 @@ def resolve_session(connection: Any, raw_token: str | None) -> dict[str, Any] | 
         return None
     user = connection.execute(
         """
-        SELECT id, username, display_name, is_admin, active, session_version
+        SELECT id, username, display_name, session_version
         FROM users WHERE id=%s
         """,
         (row["user_id"],),
     ).fetchone()
-    if not user or not user["active"]:
+    if not user:
         return None
     if row["session_version"] != user["session_version"]:
         return None
@@ -213,15 +213,14 @@ def csrf_token_for(connection: Any, raw_token: str | None) -> str | None:
                s.idle_expires_at AS idle_expires_at,
                s.absolute_expires_at AS absolute_expires_at,
                s.session_version AS session_session_version,
-               u.session_version AS user_session_version,
-               u.active AS user_active
+               u.session_version AS user_session_version
         FROM sessions s
         JOIN users u ON u.id = s.user_id
         WHERE s.token_hash=%s
         """,
         (_hash_token(raw_token),),
     ).fetchone()
-    if not row or row["revoked_at"] or not row["user_active"]:
+    if not row or row["revoked_at"]:
         return None
     if row["session_session_version"] != row["user_session_version"]:
         return None
@@ -372,8 +371,7 @@ def current_offline_cache_generation(
                s.absolute_expires_at, s.offline_cache_generation,
                s.offline_cache_nonce,
                s.session_version AS session_session_version,
-               u.session_version AS user_session_version,
-               u.active AS user_active
+               u.session_version AS user_session_version
         FROM sessions s
         JOIN users u ON u.id=s.user_id
         WHERE s.id=%s
@@ -383,7 +381,6 @@ def current_offline_cache_generation(
     if (
         not row
         or row["revoked_at"]
-        or not row["user_active"]
         or row["session_session_version"] != row["user_session_version"]
     ):
         return None

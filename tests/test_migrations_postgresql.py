@@ -7,7 +7,6 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,15 +17,7 @@ from psycopg.rows import dict_row
 from app import backoff
 from app.catalog import ArchiveCatalog, VaultFileNotFound
 from app.config import settings
-from app.invites import (
-    InviteError,
-    create_invite,
-    list_pending_invites,
-    resolve_invite,
-    revoke_invite,
-)
 from app.services import notifications
-from app.services import user_administration
 from app.services.catalog_events import CatalogEventStore
 from app.system_settings import resolve_system_settings, set_system_setting
 
@@ -129,12 +120,6 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             column["name"]
             for column in sa.inspect(self.engine).get_columns("system_settings")
         }
-        oidc_configuration_columns = {
-            column["name"]
-            for column in sa.inspect(self.engine).get_columns(
-                "oidc_configuration"
-            )
-        }
         self.assertEqual(
             quota_columns,
             {
@@ -151,31 +136,6 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             system_setting_columns,
             {"key", "value", "updated_by", "updated_at"},
         )
-        self.assertEqual(
-            oidc_configuration_columns,
-            {
-                "id",
-                "active_enabled",
-                "active_version",
-                "active_issuer",
-                "active_client_id",
-                "active_secret_ciphertext",
-                "active_scopes",
-                "active_login_ttl_seconds",
-                "draft_version",
-                "draft_issuer",
-                "draft_client_id",
-                "draft_secret_ciphertext",
-                "draft_scopes",
-                "draft_login_ttl_seconds",
-                "validated_draft_version",
-                "validation_status",
-                "validation_error",
-                "validated_at",
-                "updated_by",
-                "updated_at",
-            },
-        )
         session_columns = {
             column["name"]
             for column in sa.inspect(self.engine).get_columns("sessions")
@@ -190,10 +150,22 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertLessEqual(
             {"claim_token", "claimed_at", "claim_expires_at"}, claim_columns
         )
-        invite_columns = {
-            column["name"] for column in sa.inspect(self.engine).get_columns("invites")
+        removed_tables = {
+            "invites",
+            "oidc_configuration",
+            "source_areas",
+            "vault_members",
+            "lookup_rate_limit_keys",
+            "lookup_rate_limit_attempts",
         }
-        self.assertLessEqual({"revoked_at", "revoked_by"}, invite_columns)
+        self.assertEqual(
+            removed_tables & set(sa.inspect(self.engine).get_table_names()), set()
+        )
+        user_columns = {
+            column["name"] for column in sa.inspect(self.engine).get_columns("users")
+        }
+        self.assertNotIn("is_admin", user_columns)
+        self.assertNotIn("active", user_columns)
         revision_columns = {
             column["name"]
             for column in sa.inspect(self.engine).get_columns(
@@ -219,8 +191,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         with psycopg.connect(connect_url, row_factory=dict_row) as connection:
             admin_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('settings-admin', 'Settings Admin', 'hash', TRUE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('settings-admin', 'Settings Admin', 'hash')
                 RETURNING id
                 """
             ).fetchone()["id"]
@@ -503,8 +475,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 sa.text(
                     """
                     INSERT INTO users(
-                        id, username, display_name, password_hash, is_admin
-                    ) VALUES (7, 'owner', 'Owner', 'hash', TRUE)
+                        id, username, display_name, password_hash
+                    ) VALUES (7, 'owner', 'Owner', 'hash')
                     """
                 )
             )
@@ -563,8 +535,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO users(
-                    id, username, display_name, password_hash, is_admin
-                ) VALUES (7, 'owner', 'Owner', 'hash', TRUE)
+                    id, username, display_name, password_hash
+                ) VALUES (7, 'owner', 'Owner', 'hash')
                 """
             )
             connection.execute(
@@ -655,8 +627,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         with psycopg.connect(connect_url, row_factory=dict_row) as connection:
             user_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('notification-owner', 'Notification Owner', 'hash', FALSE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('notification-owner', 'Notification Owner', 'hash')
                 RETURNING id
                 """
             ).fetchone()["id"]
@@ -669,13 +641,6 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 RETURNING id
                 """
             ).fetchone()["id"]
-            connection.execute(
-                """
-                INSERT INTO vault_members(vault_id, user_id, role)
-                VALUES (%s, %s, 'owner')
-                """,
-                (vault_id, user_id),
-            )
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(
                 vault_id=vault_id,
@@ -751,57 +716,46 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 0,
             )
 
-    def test_invite_revocation_and_last_administrator_hold_on_postgresql(self) -> None:
-        upgraded = run_alembic()
-        self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-
-        connect_url = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
-        with psycopg.connect(connect_url, row_factory=dict_row) as connection:
-            admin_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('only-admin', 'Only Admin', 'hash', TRUE)
-                RETURNING id
-                """
-            ).fetchone()["id"]
-            member_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('member', 'Member', 'hash', FALSE)
-                RETURNING id
-                """
-            ).fetchone()["id"]
-
-            raw_token = create_invite(
-                connection, target_user_id=member_id, created_by=admin_id
+    def test_single_owner_migration_keeps_only_the_administrator(self) -> None:
+        baseline = run_alembic("0043_cloud_only_conflict")
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        with self.engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "INSERT INTO users(id, username, display_name, password_hash, "
+                    "is_admin) VALUES (1, 'member', 'Member', 'hash', FALSE), "
+                    "(2, 'owner', 'Owner', 'hash', TRUE)"
+                )
             )
-            invite_id = list_pending_invites(connection)[0]["id"]
-            revoke_invite(connection, invite_id=invite_id, actor_user_id=admin_id)
+            connection.execute(
+                sa.text(
+                    "INSERT INTO user_identities(user_id, issuer, subject, created_at) "
+                    "VALUES (1, 'https://id.example', 'member', '2026-07-20'), "
+                    "(2, 'https://id.example', 'owner', '2026-07-20')"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO system_settings(key, value, updated_by, updated_at) "
+                    "VALUES ('restore_tier', '\"Standard\"', 1, '2026-07-20')"
+                )
+            )
 
-            self.assertEqual(list_pending_invites(connection), [])
-            with self.assertRaises(InviteError) as revoked:
-                resolve_invite(connection, raw_token=raw_token)
-            self.assertEqual(revoked.exception.reason, "revoked")
-
-            postgresql_settings = replace(settings, db_backend="postgresql")
-            with patch(
-                "app.services.user_administration.settings", postgresql_settings
-            ):
-                with self.assertRaises(
-                    user_administration.AdministrationError
-                ) as demoted:
-                    user_administration.update_user(
-                        connection,
-                        user_id=admin_id,
-                        actor_user_id=member_id,
-                        is_admin=False,
-                    )
-            self.assertEqual(demoted.exception.reason, "last_admin")
-
-            still_admin = connection.execute(
-                "SELECT is_admin FROM users WHERE id=%s", (admin_id,)
-            ).fetchone()
-            self.assertTrue(still_admin["is_admin"])
+        migrated = run_alembic()
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        with self.engine.connect() as connection:
+            users = connection.execute(
+                sa.text("SELECT id FROM users ORDER BY id")
+            ).scalars().all()
+            identities = connection.execute(
+                sa.text("SELECT user_id, subject FROM user_identities")
+            ).all()
+            updated_by = connection.execute(
+                sa.text("SELECT updated_by FROM system_settings")
+            ).scalar_one()
+        self.assertEqual(users, [2])
+        self.assertEqual([tuple(row) for row in identities], [(2, "owner")])
+        self.assertEqual(updated_by, 2)
 
     def test_issue_188_concurrent_confirms_consume_one_candidate_once(self) -> None:
         upgraded = run_alembic()

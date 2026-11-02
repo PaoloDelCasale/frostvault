@@ -13,23 +13,16 @@ type SourceDirectoryBrowserProps = {
   browse: BrowseFn;
   selectedPath: string | null;
   onSelect: (relativePath: string) => void;
-  viewerIsAdmin: boolean;
 };
 
 function occupationLabel(
   entry: SourceDirectoryEntry,
-  t: (key: string) => string,
-  viewerIsAdmin: boolean,
+  t: (key: string, params?: Record<string, string>) => string,
 ): string {
   if (!entry.occupation) return "";
-  if (!viewerIsAdmin) {
-    return entry.occupation.label || t("ui.source_area_occupied_generic");
-  }
-  const vault = entry.occupation.vault_name || "";
-  const owner = entry.occupation.owner_display_name || "";
-  return t("ui.source_area_occupied_admin")
-    .replace("{vault}", vault)
-    .replace("{owner}", owner);
+  return t("ui.source_directory_occupied", {
+    vault: entry.occupation.vault_name,
+  });
 }
 
 export function SourceDirectoryBrowser({
@@ -37,7 +30,6 @@ export function SourceDirectoryBrowser({
   browse,
   selectedPath,
   onSelect,
-  viewerIsAdmin,
 }: SourceDirectoryBrowserProps) {
   const { t } = useI18n();
   const [path, setPath] = useState("");
@@ -77,7 +69,7 @@ export function SourceDirectoryBrowser({
       data-testid="source-directory-browser"
       style={{ maxWidth: "100%" }}
     >
-      <nav aria-label={t("ui.source_area_browser_breadcrumb")} className="text-sm">
+      <nav aria-label={t("ui.source_directory_browser_breadcrumb")} className="text-sm">
         <ol className="flex flex-wrap items-center gap-1">
           <li>
             <button
@@ -112,17 +104,17 @@ export function SourceDirectoryBrowser({
         </p>
       ) : null}
       {loading ? (
-        <p className="text-sm text-muted">{t("ui.source_area_browser_loading")}</p>
+        <p className="text-sm text-muted">{t("ui.source_directory_browser_loading")}</p>
       ) : null}
 
       {!loading && listing ? (
         listing.items.length === 0 ? (
-          <p className="text-sm text-muted">{t("ui.source_area_browser_empty")}</p>
+          <p className="text-sm text-muted">{t("ui.source_directory_browser_empty")}</p>
         ) : (
           <ul className="grid gap-1" role="list">
             {listing.items.map((entry) => {
               const selected = selectedPath === entry.relative_path;
-              const occupiedText = occupationLabel(entry, t, viewerIsAdmin);
+              const occupiedText = occupationLabel(entry, t);
               const disabledSelect = !entry.selectable;
               return (
                 <li key={entry.relative_path}>
@@ -157,8 +149,8 @@ export function SourceDirectoryBrowser({
                       onClick={() => onSelect(entry.relative_path)}
                     >
                       {selected
-                        ? t("ui.source_area_browser_selected")
-                        : t("ui.source_area_browser_select")}
+                        ? t("ui.source_directory_browser_selected")
+                        : t("ui.source_directory_browser_select")}
                     </button>
                   </div>
                 </li>
@@ -177,8 +169,8 @@ export function SourceDirectoryBrowser({
             aria-pressed={selectedPath === ""}
           >
             {selectedPath === ""
-              ? t("ui.source_area_browser_volume_root_selected")
-              : t("ui.source_area_browser_select_volume_root")}
+              ? t("ui.source_directory_browser_volume_root_selected")
+              : t("ui.source_directory_browser_select_volume_root")}
           </button>
         </div>
       ) : null}

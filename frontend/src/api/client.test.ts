@@ -82,7 +82,7 @@ describe("apiRequest Reauthentication", () => {
     );
 
     await expect(
-      apiRequest("/api/admin/users", { method: "POST", body: "{}" }),
+      apiRequest("/api/admin/metadata-backups", { method: "POST", body: "{}" }),
     ).rejects.toBeInstanceOf(ReauthenticationRedirectError);
 
     expect(navigate).toHaveBeenCalledWith(
@@ -101,19 +101,19 @@ describe("apiRequest Reauthentication", () => {
       .mockResolvedValueOnce(jsonResponse({ message_key: "api.reauthenticated" }))
       .mockResolvedValueOnce(jsonResponse({ items: ["ok"] }));
 
-    const result = await apiRequest<{ items: string[] }>("/api/admin/users", {
+    const result = await apiRequest<{ items: string[] }>("/api/admin/metadata-backups", {
       method: "POST",
       body: JSON.stringify({ display_name: "Ada" }),
     });
 
     expect(result).toEqual({ items: ["ok"] });
     expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/admin/users");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/admin/metadata-backups");
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/reauth");
     expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(
       JSON.stringify({ password: "correct horse battery staple" }),
     );
-    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/admin/users");
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/admin/metadata-backups");
     expect(fetchMock.mock.calls[2]?.[1]?.body).toBe(
       JSON.stringify({ display_name: "Ada" }),
     );
@@ -401,14 +401,14 @@ describe("apiRequest Reauthentication", () => {
       .mockResolvedValueOnce(jsonResponse({ detail: "Invalid credentials" }, 401));
 
     await expect(
-      apiRequest("/api/admin/users", { method: "POST", body: "{}" }),
+      apiRequest("/api/admin/metadata-backups", { method: "POST", body: "{}" }),
     ).rejects.toMatchObject({
       message: "Reauthentication failed.",
       messageKey: "ui.reauth_failed",
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-      "/api/admin/users",
+      "/api/admin/metadata-backups",
       "/api/reauth",
     ]);
   });

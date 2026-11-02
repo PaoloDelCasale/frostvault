@@ -44,7 +44,6 @@ function meResponse(id = 42): Record<string, unknown> {
     id,
     username: `user-${id}`,
     display_name: `User ${id}`,
-    is_admin: true,
     active: true,
     session_version: 1,
     csrf_token: "csrf-token",

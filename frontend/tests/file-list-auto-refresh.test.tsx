@@ -94,11 +94,8 @@ const ownerCaps: MeVault = {
   id: 1,
   slug: "test",
   name: "Test Archive",
-  role: "owner",
-  can_operate: true,
   delete_enabled: true,
   cloud_deletion_enabled: true,
-  is_vault_owner: true,
     cloud_history_policy: "archive_history" as const,
 };
 

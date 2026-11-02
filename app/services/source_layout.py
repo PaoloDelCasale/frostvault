@@ -555,7 +555,7 @@ def vault_local_access(vault_source_root: str | Path) -> VaultLocalAccess:
 
 
 def source_volume_inventory() -> list[dict[str, object]]:
-    """Admin inventory including persisted aliases that are currently absent."""
+    """Inventory including persisted aliases that are currently absent."""
     from ..database import db
 
     if _identity_enforcement_ready:
@@ -569,14 +569,9 @@ def source_volume_inventory() -> list[dict[str, object]]:
         vault_rows = connection.execute(
             "SELECT source_root FROM vaults WHERE root_released_at IS NULL"
         ).fetchall()
-        area_rows = connection.execute(
-            "SELECT volume_alias, COUNT(*) AS total FROM source_areas "
-            "GROUP BY volume_alias"
-        ).fetchall()
 
-    aliases = set(live) | persisted | {row["volume_alias"] for row in area_rows}
+    aliases = set(live) | persisted
     counts = {alias: 0 for alias in aliases}
-    area_counts = {alias: 0 for alias in aliases}
     # Count roots from their stored namespace path only. Inventory must remain
     # usable for an absent/replaced volume and must not resolve or traverse a
     # Vault tree merely to produce an administrative count.
@@ -584,8 +579,6 @@ def source_volume_inventory() -> list[dict[str, object]]:
         location, alias = _lexical_source_alias(row["source_root"])
         if location == "custom" and alias in counts:
             counts[alias] += 1
-    for row in area_rows:
-        area_counts[row["volume_alias"]] = int(row["total"])
 
     items: list[dict[str, object]] = []
     for alias in sorted(aliases):
@@ -608,7 +601,6 @@ def source_volume_inventory() -> list[dict[str, object]]:
                 "access": volume.access if volume is not None else "none",
                 "health": health,
                 "vault_count": counts.get(alias, 0),
-                "source_area_count": area_counts.get(alias, 0),
                 "diagnostic": None,
                 "diagnostic_code": diagnostic_code,
             }

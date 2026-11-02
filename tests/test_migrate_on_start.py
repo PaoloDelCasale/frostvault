@@ -27,8 +27,8 @@ class MigrateOnStartTests(unittest.TestCase):
         with SQLiteConnection(str(path)) as connection:
             return connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('backup-admin', 'Backup Admin', 'hash', TRUE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('backup-admin', 'Backup Admin', 'hash')
                 RETURNING id
                 """
             ).fetchone()["id"]
@@ -114,7 +114,6 @@ class MigrateOnStartTests(unittest.TestCase):
                 bootstrap_admin_username="admin",
                 bootstrap_admin_password="a-secure-test-password",
                 bootstrap_admin_display_name="Administrator",
-                bootstrap_vault_slug="",
             )
 
             def fake_upgrade(revision: str = "head") -> None:

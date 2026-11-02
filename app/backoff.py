@@ -16,7 +16,7 @@ DECAY_SECONDS = 60 * 60
 
 # ``auth_backoff`` deliberately has only the stable ``ip`` and ``account``
 # dimensions. Reauthentication uses namespaced keys inside those dimensions so
-# its counters persist independently from Local Sign-in and Invite counters.
+# its counters persist independently from sign-in counters.
 _REAUTH_IP_KEY_PREFIX = "reauth:ip:"
 _REAUTH_ACCOUNT_KEY_PREFIX = "reauth:account:"
 

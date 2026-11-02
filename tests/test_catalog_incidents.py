@@ -38,8 +38,8 @@ class CatalogIncidentTests(unittest.TestCase):
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(id, username, display_name, password_hash, is_admin, active)
-                VALUES (1, 'owner', 'Owner', 'hash', TRUE, TRUE)
+                INSERT INTO users(id, username, display_name, password_hash)
+                VALUES (1, 'owner', 'Owner', 'hash')
                 """
             )
             connection.execute(
@@ -48,9 +48,6 @@ class CatalogIncidentTests(unittest.TestCase):
                     id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
                 ) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid', 'remote')
                 """
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (1, 1, 'owner')"
             )
             policy = create_policy(connection, vault_id=1, name="default")
             set_vault_default_policy(connection, 1, policy)

@@ -2,7 +2,7 @@
 
 Disabling a Vault is deliberately unrelated to this lifecycle.  A root remains
 occupied until ``vaults.root_released_at`` is written by the final transaction.
-The Vault row, memberships, Vault Files, Path History, Jobs, encrypted recovery
+The Vault row, Vault Files, Path History, Jobs, encrypted recovery
 material, audit events, and notifications remain as a tombstone/history.
 """
 from __future__ import annotations
@@ -18,8 +18,9 @@ from typing import Any
 
 from ..catalog import ArchiveCatalog
 from ..database import db
-from . import cloud_deletion, source_areas, source_layout, vault_relocation
+from . import cloud_deletion, source_directories, source_layout, vault_relocation
 from .audit_events import record_audit_event
+from ..owner import owner_user_id
 from .notifications import enqueue_notification
 
 LOCAL_DISPOSITIONS = frozenset({"retain", "remove"})
@@ -60,7 +61,6 @@ _BLOCKER_MESSAGES = {
     "cloud_deletion_disabled": "Permanent cloud deletion is disabled for this Vault",
     "cloud_identity_incomplete": "Cloud history contains an item without an exact provider version identity",
     "recovery_custody_unconfirmed": "Crypt recovery custody must be confirmed before retaining cloud history",
-    "owner_missing": "Vault has no primary owner",
 }
 
 
@@ -424,13 +424,6 @@ def build_preview(
             blockers, "pending_destructive_actions", count=pending_destructive
         )
 
-    owner = connection.execute(
-        "SELECT user_id FROM vault_members WHERE vault_id=%s AND role='owner'",
-        (vault_id,),
-    ).fetchone()
-    if owner is None:
-        _append_blocker(blockers, "owner_missing")
-
     filesystem = _filesystem_snapshot(vault)
     if filesystem["error"]:
         _append_blocker(blockers, str(filesystem["error"]))
@@ -511,13 +504,6 @@ def build_preview(
         ).fetchone()["total"]
         or 0
     )
-    membership_count = int(
-        connection.execute(
-            "SELECT COUNT(*) AS total FROM vault_members WHERE vault_id=%s",
-            (vault_id,),
-        ).fetchone()["total"]
-        or 0
-    )
     job_count = int(
         connection.execute(
             "SELECT COUNT(*) AS total FROM jobs WHERE vault_id=%s", (vault_id,)
@@ -533,7 +519,6 @@ def build_preview(
         "cloud_bytes": int(cloud["byte_count"]),
         "delete_markers": int(cloud["delete_marker_count"]),
         "jobs": job_count,
-        "memberships": membership_count,
     }
     public = {
         "vault_id": int(vault["id"]),
@@ -554,7 +539,6 @@ def build_preview(
         },
         "records": {
             "vault_tombstone": "retained",
-            "memberships": "retained_as_history",
             "jobs": "retained_as_history",
             "path_history": "retained",
             "audit_history": "retained",
@@ -613,7 +597,7 @@ def build_preview(
     return public
 
 
-def _notify_members(
+def _notify_owner(
     connection: Any,
     *,
     vault_id: int,
@@ -621,14 +605,11 @@ def _notify_members(
     title: str,
     body: str,
 ) -> None:
-    rows = connection.execute(
-        "SELECT user_id FROM vault_members WHERE vault_id=%s ORDER BY user_id",
-        (vault_id,),
-    ).fetchall()
-    for row in rows:
+    owner_id = owner_user_id(connection)
+    if owner_id is not None:
         enqueue_notification(
             connection,
-            user_id=int(row["user_id"]),
+            user_id=owner_id,
             vault_id=vault_id,
             event=event,
             title=title,
@@ -671,7 +652,6 @@ def start_decommission(
     *,
     vault_id: int,
     actor_user_id: int,
-    actor_is_admin: bool,
     local_disposition: str,
     cloud_disposition: str,
     confirmation: str,
@@ -690,27 +670,15 @@ def start_decommission(
     _runtime_suspended_vaults.add(int(vault_id))
     succeeded = False
     try:
-        source_areas._lock_source_area_mutations(connection)
+        source_directories.lock_vault_root_allocation(connection)
         # PostgreSQL row lock / SQLite write lock: operation admission and root
-        # release share the Source Area/adoption serialization boundary.
+        # release share the Vault-root allocation serialization boundary.
         connection.execute("UPDATE vaults SET name=name WHERE id=%s", (vault_id,))
         vault = connection.execute(
             "SELECT * FROM vaults WHERE id=%s", (vault_id,)
         ).fetchone()
         if vault is None:
             raise VaultDecommissionError("not_found", "Vault not found")
-        if not actor_is_admin:
-            owner = connection.execute(
-                """
-                SELECT 1 FROM vault_members
-                WHERE vault_id=%s AND user_id=%s AND role='owner'
-                """,
-                (vault_id, actor_user_id),
-            ).fetchone()
-            if owner is None:
-                raise VaultDecommissionError(
-                    "owner_required", "Only the primary owner can decommission this Vault"
-                )
         if confirmation != str(vault["name"]):
             raise VaultDecommissionError(
                 "confirmation_required", "Type the exact Vault name to confirm"
@@ -833,14 +801,13 @@ def start_decommission(
             outcome="requested",
             visibility="owner",
             reason=cleaned_reason,
-            admin_override=bool(actor_is_admin),
             local_disposition=local_value,
             cloud_disposition=cloud_value,
             preview_fingerprint=preview["fingerprint"],
             counts=preview["counts"],
             root_release_pending=True,
         )
-        _notify_members(
+        _notify_owner(
             connection,
             vault_id=vault_id,
             event="vault_decommission.requested",
@@ -963,7 +930,7 @@ def cancel_pending_cloud_purge(
     actor_user_id: int,
 ) -> dict[str, Any]:
     """Cancel only the pre-deletion delay; never claim deletion can be undone."""
-    source_areas._lock_source_area_mutations(connection)
+    source_directories.lock_vault_root_allocation(connection)
     operation = connection.execute(
         "SELECT * FROM vault_decommissions WHERE vault_id=%s", (vault_id,)
     ).fetchone()
@@ -1043,7 +1010,7 @@ def _mark_blocked(
             reason=operation.get("reason"),
             blocker=code,
         )
-        _notify_members(
+        _notify_owner(
             connection,
             vault_id=int(operation["vault_id"]),
             event="vault_decommission.blocked",
@@ -1115,7 +1082,7 @@ def reconcile_one(
 ) -> dict[str, Any]:
     """Advance one persisted operation by idempotent, compare-before-write steps."""
     del local_delete_enabled  # admission was fingerprinted; workers re-check policy
-    source_areas._lock_source_area_mutations(connection)
+    source_directories.lock_vault_root_allocation(connection)
     connection.execute("UPDATE vaults SET name=name WHERE id=%s", (vault_id,))
     operation = connection.execute(
         "SELECT * FROM vault_decommissions WHERE vault_id=%s", (vault_id,)
@@ -1426,7 +1393,7 @@ def reconcile_one(
                 root_released_at=stamp,
                 tombstone_retained=True,
             )
-            _notify_members(
+            _notify_owner(
                 connection,
                 vault_id=vault_id,
                 event="vault_decommission.completed",

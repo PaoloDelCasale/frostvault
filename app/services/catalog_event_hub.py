@@ -91,7 +91,7 @@ def coalesce_signals(*signals: Mapping[str, Any]) -> dict[str, Any] | None:
 
 @dataclass
 class _Subscriber:
-    """One live SSE consumer for a single Vault membership."""
+    """One live SSE consumer for a single Vault."""
 
     loop: asyncio.AbstractEventLoop
     queue: asyncio.Queue[dict[str, Any] | None] = field(default_factory=asyncio.Queue)

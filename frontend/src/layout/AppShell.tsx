@@ -126,7 +126,6 @@ export function AppShell({
               <AccountPreferencesMenu
                 locale={capabilities.locale}
                 locales={capabilities.locales}
-                isAdmin={capabilities.isAdmin}
                 handlers={accountHandlers}
                 t={t}
                 notificationPreferences={{

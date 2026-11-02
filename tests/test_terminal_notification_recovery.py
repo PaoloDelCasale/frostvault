@@ -32,15 +32,12 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin, active) "
-                "VALUES (1, 'owner', 'Owner', 'hash', TRUE, TRUE)"
+                "INSERT INTO users(id, username, display_name, password_hash) "
+                "VALUES (1, 'owner', 'Owner', 'hash')"
             )
             connection.execute(
                 "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
                 "VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')"
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (2, 1, 'owner')"
             )
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(

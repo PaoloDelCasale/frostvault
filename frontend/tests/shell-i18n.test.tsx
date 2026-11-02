@@ -23,12 +23,9 @@ function loadCatalog(locale: "en" | "it"): Catalog {
 
 const shellCapabilities: ShellCapabilities = {
   vaultName: "Test Archive",
-  isVaultOwner: true,
-  canOperate: true,
-  isAdmin: true,
   locale: "en",
   locales: ["en", "it"],
-  vaults: [{ id: 1, slug: "test", name: "Test Archive", role: "owner" }],
+  vaults: [{ id: 1, slug: "test", name: "Test Archive" }],
 };
 
 const shellHandlers: ShellNavHandlers = {

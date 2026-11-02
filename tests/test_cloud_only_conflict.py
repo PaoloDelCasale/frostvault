@@ -65,8 +65,8 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(id, username, display_name, password_hash, is_admin)
-                VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+                INSERT INTO users(id, username, display_name, password_hash)
+                VALUES (1, 'owner', 'Owner', 'hash')
                 """
             )
             connection.execute(
@@ -77,12 +77,6 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
                 ) VALUES (2, 'photos', 'Photos', %s, 'bucket', 'photos', 'remote', %s)
                 """,
                 (str(self.source), CURRENT_SNAPSHOT),
-            )
-            connection.execute(
-                """
-                INSERT INTO vault_members(vault_id, user_id, role)
-                VALUES (2, 1, 'owner')
-                """
             )
             set_policy(
                 connection,

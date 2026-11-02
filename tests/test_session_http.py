@@ -28,8 +28,8 @@ class SessionHttpTests(unittest.TestCase):
         with SQLiteConnection(str(database_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES (%s, 'Alice', %s, TRUE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES (%s, 'Alice', %s)
                 """,
                 (self.username, hash_password(self.password)),
             )

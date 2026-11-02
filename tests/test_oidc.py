@@ -9,7 +9,7 @@ from typing import Any
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
-from app import oidc, oidc_configuration
+from app import oidc, oidc_network
 from app.config import Settings
 from app.database import SQLiteConnection
 from tests.oidc_fake import FakeOidcProvider, at_hash_for
@@ -35,7 +35,7 @@ class PinnedNetworkBackendTests(unittest.TestCase):
             def sleep(self, seconds: float) -> None:
                 pass
 
-        backend = oidc_configuration._PinnedNetworkBackend(
+        backend = oidc_network._PinnedNetworkBackend(
             host_addresses=lambda _: ["93.184.216.34"],
             backend=RecordingBackend(),
         )
@@ -49,13 +49,13 @@ class PinnedNetworkBackendTests(unittest.TestCase):
             def connect_tcp(self, *args, **kwargs):
                 raise AssertionError("unsafe address was connected")
 
-        backend = oidc_configuration._PinnedNetworkBackend(
+        backend = oidc_network._PinnedNetworkBackend(
             host_addresses=lambda _: ["127.0.0.1"],
             backend=UnexpectedBackend(),
         )
 
         with self.assertRaisesRegex(
-            oidc_configuration.OidcValidationError,
+            oidc_network.OidcValidationError,
             "ssrf_blocked",
         ):
             backend.connect_tcp("identity.example", 443)

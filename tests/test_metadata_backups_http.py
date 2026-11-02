@@ -43,15 +43,8 @@ class MetadataBackupHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             self.admin_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('admin', 'Admin', %s, TRUE) RETURNING id
-                """,
-                (hash_password(self.PASSWORD),),
-            ).fetchone()["id"]
-            self.member_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('member', 'Member', %s, FALSE) RETURNING id
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('admin', 'Admin', %s) RETURNING id
                 """,
                 (hash_password(self.PASSWORD),),
             ).fetchone()["id"]
@@ -103,17 +96,11 @@ class MetadataBackupHttpTests(unittest.TestCase):
         self.client.cookies.set("frostvault_csrf", csrf_token)
         self.client.headers["X-CSRF-Token"] = csrf_token
 
-    def test_member_cannot_list_or_run_backups(self) -> None:
-        self._authenticate(self.member_id)
+    def test_backups_require_authentication(self) -> None:
         listed = self.client.get("/api/admin/metadata-backups")
-        self.assertEqual(listed.status_code, 403, listed.text)
-        ran = self.client.post(
-            "/api/admin/metadata-backups/run",
-            json={"reason": "operator requested backup"},
-        )
-        self.assertEqual(ran.status_code, 403, ran.text)
+        self.assertEqual(listed.status_code, 401, listed.text)
 
-    def test_admin_can_run_list_and_download_backup(self) -> None:
+    def test_owner_can_run_list_and_download_backup(self) -> None:
         self._authenticate(self.admin_id)
         ran = self.client.post(
             "/api/admin/metadata-backups/run",

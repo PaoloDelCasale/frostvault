@@ -65,8 +65,8 @@ class JobMessagePersistenceTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(id, username, display_name, password_hash, is_admin)
-                VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+                INSERT INTO users(id, username, display_name, password_hash)
+                VALUES (1, 'owner', 'Owner', 'hash')
                 """
             )
             connection.execute(
@@ -74,12 +74,6 @@ class JobMessagePersistenceTests(unittest.TestCase):
                 INSERT INTO vaults(
                     id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
                 ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
-                """
-            )
-            connection.execute(
-                """
-                INSERT INTO vault_members(vault_id, user_id, role)
-                VALUES (2, 1, 'owner')
                 """
             )
             ArchiveCatalog(connection).observe_local_copy(
@@ -190,8 +184,8 @@ class JobMessageHttpTests(unittest.TestCase):
             password_hash = hash_password(self.PASSWORD)
             user_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('owner', 'Owner', %s, TRUE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('owner', 'Owner', %s)
                 RETURNING id
                 """,
                 (password_hash,),
@@ -204,10 +198,6 @@ class JobMessageHttpTests(unittest.TestCase):
                 RETURNING id
                 """
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'owner')",
-                (vault_id, user_id),
-            )
             ArchiveCatalog(connection).observe_local_copy(
                 vault_id=vault_id,
                 path="a.txt",

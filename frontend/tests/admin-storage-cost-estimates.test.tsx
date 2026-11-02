@@ -71,7 +71,6 @@ const vaults = [
     source_root: "/sources/photos",
     s3_prefix: "vaults/photos/",
     enabled: true,
-    member_count: 1,
   },
   {
     id: 2,
@@ -80,7 +79,6 @@ const vaults = [
     source_root: "/sources/documents",
     s3_prefix: "vaults/documents/",
     enabled: true,
-    member_count: 1,
   },
 ];
 
@@ -210,7 +208,6 @@ it("routes the pathname-only admin navigation to storage estimates", async () =>
         id: 1,
         username: "admin",
         display_name: "Admin",
-        is_admin: true,
         active: true,
         session_version: 1,
         csrf_token: "csrf",

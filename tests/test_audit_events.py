@@ -29,8 +29,8 @@ class AuditEventPersistenceTests(unittest.TestCase):
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES (%s, 'Owner', %s, FALSE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES (%s, 'Owner', %s)
                 """,
                 ("owner", hash_password("owner-password-1")),
             )
@@ -50,19 +50,12 @@ class AuditEventPersistenceTests(unittest.TestCase):
             self.vault_id = connection.execute(
                 "SELECT id FROM vaults WHERE slug=%s", ("archive",)
             ).fetchone()["id"]
-            connection.execute(
-                """
-                INSERT INTO vault_members(vault_id, user_id, role)
-                VALUES (%s, %s, 'owner')
-                """,
-                (self.vault_id, self.owner_id),
-            )
 
     def test_recorded_audit_event_is_retrievable_for_the_vault(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
             recorded = audit_events.record_audit_event(
                 connection,
-                event="vault_membership_changed",
+                event="vault_root_relocated",
                 actor_user_id=self.owner_id,
                 vault_id=self.vault_id,
                 outcome="success",
@@ -74,7 +67,7 @@ class AuditEventPersistenceTests(unittest.TestCase):
                 connection, self.vault_id
             )
 
-        self.assertEqual(recorded["event"], "vault_membership_changed")
+        self.assertEqual(recorded["event"], "vault_root_relocated")
         self.assertEqual(recorded["outcome"], "success")
         self.assertEqual(recorded["correlation_id"], "corr-1")
         self.assertEqual(len(events), 1)

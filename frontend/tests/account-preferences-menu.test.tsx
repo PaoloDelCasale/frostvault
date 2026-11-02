@@ -8,9 +8,6 @@ import type { ShellCapabilities, ShellNavHandlers } from "@/layout/types";
 
 const shellCapabilities: ShellCapabilities = {
   vaultName: "Owner Admin Archive",
-  isVaultOwner: true,
-  canOperate: true,
-  isAdmin: true,
   locale: "en",
   locales: ["en", "it"],
   vaults: [
@@ -18,11 +15,9 @@ const shellCapabilities: ShellCapabilities = {
       id: 1,
       slug: "owner-admin",
       name: "Owner Admin Archive",
-      role: "owner",
     },
   ],
   currentVaultId: 1,
-  role: "owner",
 };
 
 const shellHandlers: ShellNavHandlers = {
@@ -45,7 +40,6 @@ describe("AccountPreferencesMenu focus restore (#224)", () => {
       <AccountPreferencesMenu
         locale="en"
         locales={["en", "it"]}
-        isAdmin
         handlers={{
           onNewVault: vi.fn(),
           onAdministration: vi.fn(),

@@ -10,7 +10,7 @@ Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.y
 | Job | What it proves | Credentials |
 | --- | --- | --- |
 | Unit and migration tests | Python `unittest` suite against SQLite, partitioned across twelve parallel shards by packing largest test modules first so slow files do not land together, then reported through one stable aggregate check. PostgreSQL-only cases skip here and run in the parallel job below. | None. Live AWS/MinIO env vars are intentionally unset so S3 integration cases skip. |
-| PostgreSQL migration and concurrency tests | PostgreSQL-specific migration and shared rate-limit concurrency cases against `postgres:16`. | Ephemeral Postgres service only. |
+| PostgreSQL migration and concurrency tests | PostgreSQL-specific migration and concurrency cases against `postgres:16`. | Ephemeral Postgres service only. |
 | Frontend generate and typecheck | Regenerates the committed OpenAPI TypeScript artifacts from `frontend/openapi.json`, fails on generated-artifact drift, then runs the strict browser/Node/Vitest/Playwright TypeScript projects. | None. |
 | Frontend lint and unit tests | ESLint (including `e2e/`) and Vitest on Node 22, in parallel with typecheck and the production build. | None. |
 | Frontend unit tests (Node 24) | The same Vitest suite on Node 24, which `frontend/package.json` engines already allow. Guards Blob/Response/WebCrypto download checks that can pass on Node 22 and fail on jsdom+Node 24. | None. |
@@ -151,7 +151,6 @@ these constraints.
 
 # PostgreSQL-only suite (requires TEST_POSTGRES_URL)
 .venv/bin/python -m unittest \
-  tests.test_lookup_rate_limit.PostgreSQLSharedLookupRateLimitTests \
   tests.test_migrations_postgresql.PostgreSQLMigrationTests -v
 
 # Export OpenAPI without a running server (from the repository root)
@@ -189,7 +188,7 @@ node scripts/capture-pwa-offline-screenshot.mjs
 node scripts/capture-storage-class-screenshots.mjs
 
 # Other 375px capture scripts use mocked/seeded API routes and need no demo flag:
-# capture-vault-access-375.mjs, screenshot-admin.mjs, screenshot-auth-pages.mjs
+# capture-vault-access-375.mjs, screenshot-auth-pages.mjs
 
 # S3-compatible integrity (the CI job still named "MinIO"): start a local
 # S3 server on :9000 and put rclone on PATH, then create the versioned bucket

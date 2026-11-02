@@ -38,10 +38,7 @@ class StorageClassChangeHttpTests(unittest.TestCase):
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with SQLiteConnection(str(self.path)) as connection:
-            self.admin_id = self._user(connection, "admin", True)
-            self.owner_id = self._user(connection, "owner", False)
-            self.operator_id = self._user(connection, "operator", False)
-            self.viewer_id = self._user(connection, "viewer", False)
+            self.owner_id = self._user(connection, "owner")
             self.vault_id = connection.execute(
                 """
                 INSERT INTO vaults(
@@ -50,18 +47,6 @@ class StorageClassChangeHttpTests(unittest.TestCase):
                 RETURNING id
                 """
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'owner')",
-                (self.vault_id, self.owner_id),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'operator')",
-                (self.vault_id, self.operator_id),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'viewer')",
-                (self.vault_id, self.viewer_id),
-            )
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(
                 vault_id=self.vault_id,
@@ -106,13 +91,13 @@ class StorageClassChangeHttpTests(unittest.TestCase):
         self.client = TestClient(main.app, client=("127.0.0.1", 50000))
 
     @staticmethod
-    def _user(connection, name: str, is_admin: bool) -> int:
+    def _user(connection, name: str) -> int:
         return connection.execute(
             """
-            INSERT INTO users(username, display_name, password_hash, is_admin)
-            VALUES (%s, %s, %s, %s) RETURNING id
+            INSERT INTO users(username, display_name, password_hash)
+            VALUES (%s, %s, %s) RETURNING id
             """,
-            (name, name.title(), hash_password("a secure test password"), is_admin),
+            (name, name.title(), hash_password("a secure test password")),
         ).fetchone()["id"]
 
     def _authenticate(self, user_id: int, *, reauth: bool = True) -> None:
@@ -139,7 +124,7 @@ class StorageClassChangeHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
 
     def test_operator_enqueues_single_file_storage_class_job(self) -> None:
-        self._authenticate(self.operator_id)
+        self._authenticate(self.owner_id)
         self._select_vault()
         response = self.client.post(
             "/api/storage-class",
@@ -169,7 +154,7 @@ class StorageClassChangeHttpTests(unittest.TestCase):
         self.assertEqual(job["status"], "queued")
 
     def test_storage_class_options_include_rates_and_retrieval_traits(self) -> None:
-        self._authenticate(self.operator_id)
+        self._authenticate(self.owner_id)
         self._select_vault()
         response = self.client.get("/api/storage-classes", headers=self._headers())
         self.assertEqual(response.status_code, 200, response.text)
@@ -207,7 +192,7 @@ class StorageClassChangeHttpTests(unittest.TestCase):
                 """,
                 (1024**3, self.version_id),  # 1 GiB
             )
-        self._authenticate(self.operator_id)
+        self._authenticate(self.owner_id)
         self._select_vault()
         response = self.client.post(
             "/api/storage-class",
@@ -241,7 +226,7 @@ class StorageClassChangeHttpTests(unittest.TestCase):
         self.assertEqual(float(job["estimated_hours"]), 48.0)
 
     def test_single_file_noop_target_class_is_rejected(self) -> None:
-        self._authenticate(self.operator_id)
+        self._authenticate(self.owner_id)
         self._select_vault()
         response = self.client.post(
             "/api/storage-class",
@@ -254,8 +239,9 @@ class StorageClassChangeHttpTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 409, response.text)
 
-    def test_vault_scope_requires_owner_operator_forbidden(self) -> None:
-        self._authenticate(self.operator_id)
+
+    def test_owner_can_change_the_whole_vault(self) -> None:
+        self._authenticate(self.owner_id)
         self._select_vault()
         response = self.client.post(
             "/api/storage-class",
@@ -266,8 +252,7 @@ class StorageClassChangeHttpTests(unittest.TestCase):
             },
             headers=self._headers(),
         )
-        self.assertEqual(response.status_code, 403, response.text)
-
+        self.assertEqual(response.status_code, 202, response.text)
 
 if __name__ == "__main__":
     unittest.main()

@@ -55,8 +55,8 @@ class CreateMetadataBackupTests(unittest.TestCase):
         with SQLiteConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('admin', 'Admin', 'hash', TRUE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('admin', 'Admin', 'hash')
                 """
             )
             connection.execute(
@@ -115,45 +115,6 @@ class CreateMetadataBackupTests(unittest.TestCase):
             vaults = connection.execute("SELECT slug FROM vaults").fetchall()
         self.assertEqual([row["username"] for row in users], ["admin"])
         self.assertEqual([row["slug"] for row in vaults], ["docs"])
-
-    def test_database_dump_excludes_managed_oidc_configuration(self) -> None:
-        with SQLiteConnection(str(self.db_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO oidc_configuration(
-                    id, active_enabled, active_version, active_issuer,
-                    active_client_id, active_secret_ciphertext, active_scopes,
-                    active_login_ttl_seconds, updated_by, updated_at
-                ) VALUES (
-                    1, TRUE, 1, 'https://issuer.example', 'client',
-                    'encrypted-but-still-secret-material', '["openid"]',
-                    300, 1, '2026-07-27T00:00:00+00:00'
-                )
-                """
-            )
-        with patch.object(metadata_backups, "settings", self.settings):
-            artifact = metadata_backups.create_metadata_backup(
-                reason="manual",
-                backup_dir=self.backup_dir,
-                master_key=self.master_key,
-                config_snapshot={},
-            )
-
-        plaintext = Fernet(self.master_key.encode("ascii")).decrypt(
-            artifact["path"].read_bytes()
-        )
-        payload = metadata_backups.unpack_backup_payload(plaintext)
-        restored_db = self.root / "oidc-redacted.db"
-        restored_db.write_bytes(payload["database"])
-        with SQLiteConnection(str(restored_db)) as connection:
-            count = connection.execute(
-                "SELECT COUNT(*) AS total FROM oidc_configuration"
-            ).fetchone()["total"]
-        self.assertEqual(count, 0)
-        self.assertNotIn(
-            b"encrypted-but-still-secret-material",
-            payload["database"],
-        )
 
 
 class LocalRetentionRotationTests(unittest.TestCase):
@@ -269,8 +230,8 @@ class IsolatedRestoreVerificationTests(unittest.TestCase):
         with SQLiteConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('admin', 'Admin', 'hash', TRUE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('admin', 'Admin', 'hash')
                 """
             )
         self.master_key = Fernet.generate_key().decode("ascii")
@@ -320,8 +281,8 @@ class MetadataVerifyRunBindingTests(unittest.TestCase):
         with SQLiteConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('admin', 'Admin', 'hash', TRUE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('admin', 'Admin', 'hash')
                 """
             )
         self.master_key = Fernet.generate_key().decode("ascii")
@@ -656,8 +617,8 @@ class BackupOrchestrationNotificationTests(unittest.TestCase):
         with SQLiteConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('admin', 'Admin', 'hash', TRUE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('admin', 'Admin', 'hash')
                 """
             )
             self.admin_id = connection.execute(

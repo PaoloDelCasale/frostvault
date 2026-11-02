@@ -29,10 +29,8 @@ class VaultDecommissionHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(id, username, display_name, password_hash, is_admin)
-                VALUES (1, 'owner', 'Owner', 'hash', FALSE),
-                       (2, 'operator', 'Operator', 'hash', FALSE),
-                       (3, 'admin', 'Admin', 'hash', TRUE)
+                INSERT INTO users(id, username, display_name, password_hash)
+                VALUES (1, 'owner', 'Owner', 'hash')
                 """
             )
             connection.execute(
@@ -44,10 +42,6 @@ class VaultDecommissionHttpTests(unittest.TestCase):
                           'vaults/archive/', 'remote')
                 """,
                 (str(self.root),),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (7, 1, 'owner'), (7, 2, 'operator')"
             )
             enroll_vault_root_identity(connection, 7, str(self.root))
         configured = replace(
@@ -62,7 +56,7 @@ class VaultDecommissionHttpTests(unittest.TestCase):
             "app.main.settings",
             "app.database.settings",
             "app.sessions.settings",
-            "app.services.source_areas.settings",
+            "app.services.source_directories.settings",
         ):
             patcher = patch(target, configured)
             patcher.start()
@@ -70,16 +64,15 @@ class VaultDecommissionHttpTests(unittest.TestCase):
         self.settings = configured
 
     def client_for(
-        self, user_id: int, *, stale_reauth: bool = False
+        self, *, stale_reauth: bool = False
     ) -> tuple[TestClient, dict[str, str]]:
-        client = TestClient(app, client=("127.0.0.1", 50000 + user_id))
+        client = TestClient(app, client=("127.0.0.1", 50001))
         with SQLiteConnection(str(self.db_path)) as connection:
-            token = create_session(connection, user_id=user_id, auth_method="oidc")
+            token = create_session(connection, user_id=1, auth_method="oidc")
             if stale_reauth:
                 connection.execute(
                     "UPDATE sessions SET reauth_at='2000-01-01T00:00:00+00:00' "
-                    "WHERE user_id=%s",
-                    (user_id,),
+                    "WHERE user_id=1"
                 )
         client.cookies.set(self.settings.session_cookie_name, token)
         csrf = client.get("/api/me").json()["csrf_token"]
@@ -89,8 +82,8 @@ class VaultDecommissionHttpTests(unittest.TestCase):
     def choices() -> dict[str, str]:
         return {"local_disposition": "retain", "cloud_disposition": "retain"}
 
-    def test_primary_owner_has_preview_and_start_seam(self) -> None:
-        client, headers = self.client_for(1)
+    def test_owner_has_preview_and_start_seam(self) -> None:
+        client, headers = self.client_for()
         preview = client.post(
             "/api/vaults/7/decommission/preview",
             json=self.choices(),
@@ -123,25 +116,10 @@ class VaultDecommissionHttpTests(unittest.TestCase):
         self.assertEqual(me["decommission_vault"]["id"], 7)
         self.assertTrue(me["decommission_vault"]["root_released"])
 
-    def test_operator_cannot_use_owner_or_admin_seam(self) -> None:
-        client, headers = self.client_for(2)
-        owner = client.post(
-            "/api/vaults/7/decommission/preview",
-            json=self.choices(),
-            headers=headers,
-        )
-        admin = client.post(
-            "/api/admin/vaults/7/decommission/preview",
-            json=self.choices(),
-            headers=headers,
-        )
-        self.assertEqual(owner.status_code, 403)
-        self.assertEqual(admin.status_code, 403)
-
-    def test_admin_requires_recent_reauth_exact_name_reason_and_fingerprint(self) -> None:
-        stale_client, stale_headers = self.client_for(3, stale_reauth=True)
+    def test_start_requires_recent_reauth_exact_name_reason_and_fingerprint(self) -> None:
+        stale_client, stale_headers = self.client_for(stale_reauth=True)
         rejected = stale_client.post(
-            "/api/admin/vaults/7/decommission",
+            "/api/vaults/7/decommission",
             json={
                 **self.choices(),
                 "confirmation": "Exact Archive",
@@ -153,14 +131,14 @@ class VaultDecommissionHttpTests(unittest.TestCase):
         self.assertEqual(rejected.status_code, 403)
         self.assertEqual(rejected.json(), {"error": "reauth_required"})
 
-        client, headers = self.client_for(3)
+        client, headers = self.client_for()
         preview = client.post(
-            "/api/admin/vaults/7/decommission/preview",
+            "/api/vaults/7/decommission/preview",
             json=self.choices(),
             headers=headers,
         ).json()
         wrong_name = client.post(
-            "/api/admin/vaults/7/decommission",
+            "/api/vaults/7/decommission",
             json={
                 **self.choices(),
                 "confirmation": "exact archive",
@@ -172,7 +150,7 @@ class VaultDecommissionHttpTests(unittest.TestCase):
         self.assertEqual(wrong_name.status_code, 422)
 
         stale = client.post(
-            "/api/admin/vaults/7/decommission",
+            "/api/vaults/7/decommission",
             json={
                 **self.choices(),
                 "confirmation": "Exact Archive",
@@ -191,18 +169,28 @@ class VaultDecommissionHttpTests(unittest.TestCase):
             )
 
     def test_extra_deletion_fields_and_missing_csrf_fail_closed(self) -> None:
-        client, headers = self.client_for(3)
+        client, headers = self.client_for()
         extra = client.post(
-            "/api/admin/vaults/7/decommission/preview",
+            "/api/vaults/7/decommission/preview",
             json={**self.choices(), "delete_local": True},
             headers=headers,
         )
         self.assertEqual(extra.status_code, 422)
         no_csrf = client.post(
-            "/api/admin/vaults/7/decommission/preview",
+            "/api/vaults/7/decommission/preview",
             json=self.choices(),
         )
         self.assertEqual(no_csrf.status_code, 403)
+
+    def test_removed_admin_decommission_routes_are_gone(self) -> None:
+        client, headers = self.client_for()
+        for path in (
+            "/api/admin/vaults/7/decommission/preview",
+            "/api/admin/vaults/7/decommission",
+        ):
+            with self.subTest(path=path):
+                response = client.post(path, json=self.choices(), headers=headers)
+                self.assertEqual(response.status_code, 404, response.text)
 
 
 if __name__ == "__main__":

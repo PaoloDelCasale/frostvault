@@ -40,15 +40,8 @@ class RecoveryHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             self.owner_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('owner', 'Owner', %s, FALSE) RETURNING id
-                """,
-                (hash_password(self.PASSWORD),),
-            ).fetchone()["id"]
-            self.operator_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('operator', 'Operator', %s, FALSE) RETURNING id
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('owner', 'Owner', %s) RETURNING id
                 """,
                 (hash_password(self.PASSWORD),),
             ).fetchone()["id"]
@@ -61,14 +54,6 @@ class RecoveryHttpTests(unittest.TestCase):
                 """,
                 (str(self.source),),
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'owner')",
-                (self.vault_id, self.owner_id),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'operator')",
-                (self.vault_id, self.operator_id),
-            )
             catalog = ArchiveCatalog(connection)
             payload = b"http-recover"
             catalog.observe_local_copy(
@@ -165,13 +150,13 @@ class RecoveryHttpTests(unittest.TestCase):
         self.assertIsNone(payload["estimate"]["price_book_id"])
         self.assertEqual(payload["estimate"]["price_book_name"], "builtin-defaults")
 
-    def test_operator_cannot_approve_high_impact_restore(self) -> None:
+    def test_owner_approves_high_impact_restore(self) -> None:
         with SQLiteConnection(str(self.database_path)) as connection:
             connection.execute(
                 "UPDATE archive_versions SET size=%s WHERE id=%s",
                 (100 * 1024**3, self.version_id),
             )
-        self._authenticate(self.operator_id)
+        self._authenticate(self.owner_id)
         queued = self.client.post(
             "/api/recover",
             headers=self._csrf(),
@@ -184,12 +169,13 @@ class RecoveryHttpTests(unittest.TestCase):
             patch("app.storage.s3_client"),
         ):
             process_jobs_once()
-        denied = self.client.post(
+        approved = self.client.post(
             "/api/recover/approve",
             headers=self._csrf(),
             json={"group_id": group_id},
         )
-        self.assertEqual(denied.status_code, 403, denied.text)
+        self.assertEqual(approved.status_code, 202, approved.text)
+        self.assertEqual(approved.json()["message"], "High-impact restore approved")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,10 @@
-"""Adopt an existing Source Area directory when creating a Vault (issue #150).
+"""Adopt an existing Source Volume directory when creating a Vault (issue #150).
 
 Seams under test (confirmed):
 1. Empty creation remains available and uses /sources/managed/<uuid>
 2. Authorized adoption stores the selected absolute root; UUID/S3 prefix server-minted
-3. Source Area root and empty existing directory are valid candidates
-4. Unauthorized / invalid filesystem candidates rejected with no partial Vault
+3. Volume subdirectories and empty existing directories are valid candidates
+4. Invalid filesystem candidates rejected with no partial Vault
 5. Exact / inside / contains Vault overlap rejected (incl. concurrent + disabled)
 6. Successful adoption triggers async scan; scan failure leaves retryable Vault
 7. Descendant unsupported/permission findings follow existing health behavior
@@ -23,15 +23,12 @@ from unittest.mock import patch
 
 from app.config import Settings
 from app.database import SQLiteConnection
-from app.services import source_areas, source_layout
+from app.services import source_layout
 from app.services import vaults as vaults_service
 from tests.test_database import run_alembic
 
-_ASSIGN = dict(actor_user_id=99, reason="delegate photos subtree for archive creation")
-
-
 class _AdoptionFixture(unittest.TestCase):
-    """Shared Source Volume + Source Area layout for adoption seams."""
+    """Shared Source Volume layout for adoption seams."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -51,16 +48,8 @@ class _AdoptionFixture(unittest.TestCase):
 
         with SQLiteConnection(str(self.database_path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (1, 'alice', 'Alice', 'hash', 0)"
-            )
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (2, 'bob', 'Bob', 'hash', 0)"
-            )
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (99, 'admin', 'Admin', 'hash', 1)"
+                "INSERT INTO users(id, username, display_name, password_hash) "
+                "VALUES (1, 'alice', 'Alice', 'hash')"
             )
 
         self.settings = replace(
@@ -73,7 +62,7 @@ class _AdoptionFixture(unittest.TestCase):
         for target in (
             "app.database.settings",
             "app.services.vaults.settings",
-            "app.services.source_areas.settings",
+            "app.services.source_directories.settings",
         ):
             patcher = patch(target, self.settings)
             patcher.start()
@@ -90,18 +79,6 @@ class _AdoptionFixture(unittest.TestCase):
         mount_patcher.start()
         self.addCleanup(mount_patcher.stop)
 
-    def _grant(self, *, user_id: int = 1, relative_path: str = "albums") -> dict:
-        with SQLiteConnection(str(self.database_path)) as connection:
-            grant = source_areas.assign_source_area(
-                connection,
-                user_id=user_id,
-                volume_alias="photos",
-                relative_path=relative_path,
-                **_ASSIGN,
-            )
-            connection.commit()
-        return grant
-
     def _vault_count(self) -> int:
         with SQLiteConnection(str(self.database_path)) as connection:
             row = connection.execute("SELECT COUNT(*) AS total FROM vaults").fetchone()
@@ -109,21 +86,17 @@ class _AdoptionFixture(unittest.TestCase):
 
     def _adopt(
         self,
-        user_id: int = 1,
         *,
         name: str = "Albums Archive",
         relative_path: str = "albums",
         volume_alias: str = "photos",
-        actor_is_admin: bool = False,
         **kwargs,
     ) -> dict:
-        return vaults_service.create_vault_for_user(
-            user_id,
+        return vaults_service.create_vault(
             name,
             creation_mode="adopt",
             volume_alias=volume_alias,
             relative_path=relative_path,
-            actor_is_admin=actor_is_admin,
             **kwargs,
         )
 
@@ -132,14 +105,13 @@ class VaultAdoptionHappyPathTests(_AdoptionFixture):
     """Seams 1–3: empty regression, authorized adoption, valid candidates."""
 
     def test_empty_creation_still_uses_managed_uuid_directory(self) -> None:
-        vault = vaults_service.create_vault_for_user(1, "Empty Archive")
+        vault = vaults_service.create_vault("Empty Archive")
         managed = source_layout.get_managed_root() / vault["uuid"]
         self.assertEqual(Path(vault["source_root"]), managed)
         self.assertTrue(managed.is_dir())
         self.assertEqual(vault["s3_prefix"], f"vaults/{vault['uuid']}/")
 
-    def test_authorized_user_adopts_existing_directory_in_place(self) -> None:
-        self._grant()
+    def test_owner_adopts_existing_directory_in_place(self) -> None:
         vault = self._adopt()
 
         self.assertEqual(vault["name"], "Albums Archive")
@@ -154,19 +126,9 @@ class VaultAdoptionHappyPathTests(_AdoptionFixture):
         managed = source_layout.get_managed_root() / vault["uuid"]
         self.assertFalse(managed.exists())
 
-        with SQLiteConnection(str(self.database_path)) as connection:
-            members = connection.execute(
-                "SELECT user_id, role FROM vault_members WHERE vault_id=%s",
-                (vault["id"],),
-            ).fetchall()
-        self.assertEqual(len(members), 1)
-        self.assertEqual(members[0]["user_id"], 1)
-        self.assertEqual(members[0]["role"], "owner")
-
-    def test_source_area_root_and_empty_directory_are_valid_candidates(self) -> None:
+    def test_volume_subdirectory_and_empty_directory_are_valid_candidates(self) -> None:
         empty = self.albums / "empty-bin"
         empty.mkdir()
-        self._grant(relative_path="albums")
 
         empty_vault = self._adopt(
             name="Empty Bin",
@@ -179,53 +141,23 @@ class VaultAdoptionHappyPathTests(_AdoptionFixture):
 
         raw = self.photos / "raw"
         raw.mkdir()
-        self._grant(relative_path="raw")
         area_root = self._adopt(name="Raw Root", relative_path="raw", slug="raw-root")
         self.assertEqual(Path(area_root["source_root"]), raw.resolve())
 
 
 class VaultAdoptionRejectionTests(_AdoptionFixture):
-    """Seam 4: unauthorized and invalid candidates leave no partial Vault."""
+    """Seam 4: invalid candidates leave no partial Vault."""
 
-    def test_user_outside_grant_is_rejected_with_no_partial_vault(self) -> None:
-        self._grant(relative_path="albums")
-        outside = self.photos / "raw"
-        outside.mkdir()
-
-        with self.assertRaises(vaults_service.VaultAdoptionError) as raised:
-            self._adopt(relative_path="raw")
-        self.assertEqual(raised.exception.reason, "forbidden")
-        self.assertEqual(self._vault_count(), 0)
-
-    def test_admin_cannot_adopt_another_users_grant(self) -> None:
-        self._grant(user_id=1, relative_path="albums")
-
-        with self.assertRaises(vaults_service.VaultAdoptionError) as raised:
-            self._adopt(
-                2,
-                name="Bob Archive",
-                relative_path="albums",
-                actor_is_admin=True,
-            )
-        self.assertEqual(raised.exception.reason, "forbidden")
-        self.assertEqual(self._vault_count(), 0)
-
-    def test_admin_may_adopt_unassigned_path_for_owner(self) -> None:
+    def test_owner_may_adopt_any_free_volume_directory(self) -> None:
         free = self.photos / "inbox"
         free.mkdir()
         (free / "note.txt").write_text("hello", encoding="utf-8")
 
-        vault = self._adopt(
-            1,
-            name="Inbox",
-            relative_path="inbox",
-            actor_is_admin=True,
-        )
+        vault = self._adopt(name="Inbox", relative_path="inbox")
         self.assertEqual(Path(vault["source_root"]), free.resolve())
         self.assertEqual((free / "note.txt").read_text(encoding="utf-8"), "hello")
 
     def test_managed_missing_symlink_and_nested_mount_are_rejected(self) -> None:
-        self._grant(relative_path="")
 
         with self.assertRaises(vaults_service.VaultAdoptionError) as managed:
             self._adopt(volume_alias="managed", relative_path="")
@@ -263,7 +195,6 @@ class VaultAdoptionRejectionTests(_AdoptionFixture):
         self.assertEqual(self._vault_count(), 0)
 
     def test_unavailable_volume_and_unwritable_root_are_rejected(self) -> None:
-        self._grant(relative_path="albums")
 
         with patch.object(
             source_layout,
@@ -312,14 +243,10 @@ class VaultAdoptionOverlapTests(_AdoptionFixture):
                 """,
                 (str(source_root), 1 if enabled else 0),
             )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (1, 1, 'owner')"
-            )
 
     def test_exact_inside_and_contains_overlap_are_rejected(self) -> None:
         child = self.albums / "2020"
         child.mkdir()
-        self._grant(relative_path="")
         self._insert_vault(child)
 
         with self.assertRaises(vaults_service.VaultAdoptionError) as exact:
@@ -345,7 +272,6 @@ class VaultAdoptionOverlapTests(_AdoptionFixture):
         self.assertEqual(self._vault_count(), 1)
 
     def test_concurrent_overlapping_adoptions_fail_closed(self) -> None:
-        self._grant(relative_path="")
 
         def _create(label: str) -> str:
             try:
@@ -381,7 +307,6 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         from app.catalog import ArchiveCatalog
         from app.storage import scan_vault
 
-        self._grant()
         vault = self._adopt()
 
         with patch("app.storage.scan_cloud", return_value=0), patch(
@@ -408,7 +333,6 @@ class VaultAdoptionScanTests(_AdoptionFixture):
     def test_scan_failure_leaves_retryable_vault(self) -> None:
         from app.storage import runtime_status, scan_vault
 
-        self._grant()
         vault = self._adopt()
         runtime_status.pop(int(vault["id"]), None)
 
@@ -454,7 +378,6 @@ class VaultAdoptionScanTests(_AdoptionFixture):
                 return False
             return real_is_file(self)
 
-        self._grant()
         vault = self._adopt()
         with patch.object(Path, "is_symlink", fake_is_symlink), patch.object(
             Path, "is_file", fake_is_file
@@ -471,7 +394,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
 
 
 class VaultAdoptionCryptTests(_AdoptionFixture):
-    """Seam 8: crypt adoption preserves sealed secrets and owner membership."""
+    """Seam 8: crypt adoption preserves sealed secrets."""
 
     def test_crypt_adoption_seals_secrets_without_moving_content(self) -> None:
         import base64
@@ -490,7 +413,6 @@ class VaultAdoptionCryptTests(_AdoptionFixture):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-        self._grant()
         vault = self._adopt(encryption_mode="crypt", slug="albums-crypt")
 
         self.assertEqual(vault["encryption_mode"], "crypt")

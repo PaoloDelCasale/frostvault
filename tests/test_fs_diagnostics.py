@@ -174,14 +174,12 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
                 )
             vault = {
                 "id": 11,
-                "role": "owner",
                 "source_root": str(source),
             }
             test_settings = SimpleNamespace(
                 db_backend="sqlite",
                 sqlite_path=str(database_path),
                 allow_local_delete=True,
-                bootstrap_vault_source_root="",
             )
             from app import main as main_module
 
@@ -197,7 +195,6 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
             with (
                 patch("app.main.settings", test_settings),
                 patch("app.database.settings", test_settings),
-                patch.object(main_module, "is_owner", lambda _role: True),
                 patch.object(
                     main_module,
                     "vault_local_access",
@@ -242,12 +239,11 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
                     """,
                     (str(source),),
                 )
-            vault = {"id": 12, "role": "owner", "source_root": str(source)}
+            vault = {"id": 12, "source_root": str(source)}
             test_settings = SimpleNamespace(
                 db_backend="sqlite",
                 sqlite_path=str(database_path),
                 allow_local_delete=True,
-                bootstrap_vault_source_root="",
             )
             from app import main as main_module
             from app.services import fs_preflight as fs_preflight_module
@@ -264,7 +260,6 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
                     with (
                         patch("app.main.settings", test_settings),
                         patch("app.database.settings", test_settings),
-                        patch.object(main_module, "is_owner", lambda _role: True),
                         patch.object(main_module, "vault_local_access", return_value=access),
                         patch.object(
                             fs_preflight_module,
@@ -316,12 +311,11 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
                     """,
                     (str(source),),
                 )
-            vault = {"id": 12, "role": "owner", "source_root": str(source)}
+            vault = {"id": 12, "source_root": str(source)}
             test_settings = SimpleNamespace(
                 db_backend="sqlite",
                 sqlite_path=str(database_path),
                 allow_local_delete=True,
-                bootstrap_vault_source_root="",
             )
             from app import main as main_module
             from app.services import fs_preflight as fs_preflight_module
@@ -362,7 +356,6 @@ class VaultFilesystemHealthStatsTests(unittest.TestCase):
                     with (
                         patch("app.main.settings", test_settings),
                         patch("app.database.settings", test_settings),
-                        patch.object(main_module, "is_owner", lambda _role: True),
                         patch.object(main_module, "vault_local_access", return_value=access),
                         patch.object(Path, "resolve", guarded_resolve),
                         patch("os.path.realpath", side_effect=guarded_realpath),

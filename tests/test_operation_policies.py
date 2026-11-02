@@ -313,16 +313,13 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (1, 'owner', 'Owner', 'hash', 0)"
+                "INSERT INTO users(id, username, display_name, password_hash) "
+                "VALUES (1, 'owner', 'Owner', 'hash')"
             )
             connection.execute(
                 "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
                 "VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote')",
                 (str(self.source),),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (2, 1, 'owner')"
             )
 
     def test_auto_upload_queues_only_stable_included_files(self) -> None:

@@ -66,8 +66,8 @@ def _prepare_vault_with_versions(
     with SQLiteConnection(str(database_path)) as connection:
         connection.execute(
             """
-            INSERT INTO users(id, username, display_name, password_hash, is_admin)
-            VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+            INSERT INTO users(id, username, display_name, password_hash)
+            VALUES (1, 'owner', 'Owner', 'hash')
             """
         )
         connection.execute(
@@ -144,8 +144,8 @@ class CloudDeletionSettingTests(_CloudDeletionTestCase):
             with SQLiteConnection(str(database_path)) as connection:
                 connection.execute(
                     """
-                    INSERT INTO users(id, username, display_name, password_hash, is_admin)
-                    VALUES (9, 'owner', 'Owner', 'hash', TRUE)
+                    INSERT INTO users(id, username, display_name, password_hash)
+                    VALUES (9, 'owner', 'Owner', 'hash')
                     """
                 )
                 connection.execute(
@@ -190,8 +190,8 @@ class DeletionPreviewTests(_CloudDeletionTestCase):
             with SQLiteConnection(str(database_path)) as connection:
                 connection.execute(
                     """
-                    INSERT INTO users(id, username, display_name, password_hash, is_admin)
-                    VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+                    INSERT INTO users(id, username, display_name, password_hash)
+                    VALUES (1, 'owner', 'Owner', 'hash')
                     """
                 )
                 connection.execute(
@@ -449,18 +449,20 @@ class PermanentPurgeGateTests(_CloudDeletionTestCase):
                     scan_id="scan-1",
                     origin="upload",
                 )
-                scheduled = cloud_deletion.schedule_cloud_purge(
-                    connection,
-                    vault_id=vault_id,
-                    paths=["report.txt", "appendix.txt"],
-                    is_directory=False,
-                    actor_user_id=1,
-                    requested_at=_iso(_now()),
-                    confirmation="Docs Archive",
-                    reason="obsolete duplicates",
-                    generated_phrase="purple-orchid-42",
-                    delay_seconds=86400,
-                )
+                # Revision 0026 predates the localized notification columns.
+                with patch.object(cloud_deletion, "_notify_owner"):
+                    scheduled = cloud_deletion.schedule_cloud_purge(
+                        connection,
+                        vault_id=vault_id,
+                        paths=["report.txt", "appendix.txt"],
+                        is_directory=False,
+                        actor_user_id=1,
+                        requested_at=_iso(_now()),
+                        confirmation="Docs Archive",
+                        reason="obsolete duplicates",
+                        generated_phrase="purple-orchid-42",
+                        delay_seconds=86400,
+                    )
                 connection.execute(
                     "UPDATE jobs SET total_bytes=%s WHERE group_id=%s",
                     (scheduled.preview.byte_count, scheduled.group_id),
@@ -781,13 +783,6 @@ class ReversibleArchiveExecutionTests(_CloudDeletionTestCase):
                 Path(directory), cloud_deletion_enabled=True, version_count=2
             )
             with SQLiteConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vault_members(vault_id, user_id, role)
-                    VALUES (%s, 1, 'owner')
-                    """,
-                    (vault_id,),
-                )
                 cloud_deletion.schedule_cloud_archive(
                     connection,
                     vault_id=vault_id,

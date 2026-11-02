@@ -43,7 +43,6 @@ function browseResponse(
         occupation: {
           kind: "vault",
           vault_name: "Vacation Archive",
-          owner_display_name: "Bob",
         },
       },
     ],
@@ -72,7 +71,7 @@ describe("SourceDirectoryBrowser", () => {
     cleanup();
   });
 
-  it("shows admin occupied metadata and stays usable at 375px", async () => {
+  it("names the occupying Vault and stays usable at 375px", async () => {
     const user = userEvent.setup();
     const messages = loadMessages();
     const browse = vi.fn().mockResolvedValue(browseResponse());
@@ -85,7 +84,6 @@ describe("SourceDirectoryBrowser", () => {
           browse={browse}
           selectedPath={null}
           onSelect={onSelect}
-          viewerIsAdmin
         />
       </div>,
       messages,
@@ -95,7 +93,7 @@ describe("SourceDirectoryBrowser", () => {
       expect(screen.getByText("family")).toBeInTheDocument();
     });
     expect(
-      screen.getByText("Occupied by Vacation Archive (owner: Bob)"),
+      screen.getByText("Occupied by Vacation Archive"),
     ).toBeInTheDocument();
 
     const browser = screen.getByTestId("source-directory-browser");
@@ -103,40 +101,5 @@ describe("SourceDirectoryBrowser", () => {
 
     await user.click(screen.getAllByRole("button", { name: "Select" })[0]);
     expect(onSelect).toHaveBeenCalledWith("family");
-  });
-
-  it("shows a generic occupied label for Users", async () => {
-    const messages = loadMessages();
-    const browse = vi.fn().mockResolvedValue(
-      browseResponse({
-        items: [
-          {
-            name: "vacation",
-            relative_path: "vacation",
-            navigable: false,
-            selectable: false,
-            occupation: { kind: "vault", label: "Occupied by a Vault" },
-          },
-        ],
-      }),
-    );
-
-    renderBrowser(
-      <div style={{ width: 375 }}>
-        <SourceDirectoryBrowser
-          volumeAlias="photos"
-          browse={browse}
-          selectedPath={null}
-          onSelect={vi.fn()}
-          viewerIsAdmin={false}
-        />
-      </div>,
-      messages,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Occupied by a Vault")).toBeInTheDocument();
-    });
-    expect(screen.queryByText(/Vacation Archive/)).not.toBeInTheDocument();
   });
 });

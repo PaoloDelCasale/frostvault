@@ -1,9 +1,9 @@
 """GET /api/me vault capability seams (issue #59).
 
 Exposes the archive capability flags that the SPA reads from /api/me
-(can_operate, delete_enabled, cloud_deletion_enabled, is_vault_owner)
-so the client can gate actions without calling the expensive ``/api/stats``
-endpoint.
+(delete_enabled, cloud_deletion_enabled) so the client can gate actions
+without calling the expensive ``/api/stats`` endpoint. The single owner
+(#412) has no Vault role: every Vault is theirs.
 """
 
 from __future__ import annotations
@@ -37,28 +37,13 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         self.dist_dir = write_spa_dist(Path(self._tmp.name))
 
         with SQLiteConnection(str(self.database_path)) as connection:
-            self.user_ids = {
-                username: self._create_user(connection, username)
-                for username in ("owner", "operator", "viewer", "orphan")
-            }
-            self.vault_id = connection.execute(
+            self.owner_id = connection.execute(
                 """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                ) VALUES ('docs', 'Docs Archive', '/source', 'bucket', 'docs', 'remote')
-                RETURNING id
-                """
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('owner', 'Owner', %s) RETURNING id
+                """,
+                (hash_password(self.PASSWORD),),
             ).fetchone()["id"]
-            for username, role in (
-                ("owner", "owner"),
-                ("operator", "operator"),
-                ("viewer", "viewer"),
-            ):
-                connection.execute(
-                    "INSERT INTO vault_members(vault_id, user_id, role) "
-                    "VALUES (%s, %s, %s)",
-                    (self.vault_id, self.user_ids[username], role),
-                )
 
         self.test_settings = replace(
             settings,
@@ -78,57 +63,38 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
         self.client = TestClient(app, client=("127.0.0.1", 50000))
 
-    def _create_user(self, connection: SQLiteConnection, username: str) -> int:
-        return connection.execute(
-            """
-            INSERT INTO users(username, display_name, password_hash, is_admin)
-            VALUES (%s, %s, %s, FALSE) RETURNING id
-            """,
-            (username, username.title(), hash_password(self.PASSWORD)),
-        ).fetchone()["id"]
+    def _create_vault(self) -> int:
+        with SQLiteConnection(str(self.database_path)) as connection:
+            return connection.execute(
+                """
+                INSERT INTO vaults(
+                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
+                ) VALUES ('docs', 'Docs Archive', '/source', 'bucket', 'docs', 'remote')
+                RETURNING id
+                """
+            ).fetchone()["id"]
 
-    def _authenticate(self, username: str) -> None:
+    def _me(self) -> dict:
         with SQLiteConnection(str(self.database_path)) as connection:
             raw_token = create_session(
-                connection, user_id=self.user_ids[username], auth_method="oidc"
+                connection, user_id=self.owner_id, auth_method="oidc"
             )
         self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
-
-    def _me(self, username: str) -> dict:
-        self._authenticate(username)
         response = self.client.get("/api/me")
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
-    def test_owner_me_reports_vault_owner_capabilities(self) -> None:
-        """Seam 1: owner → is_vault_owner true, can_operate true."""
-        payload = self._me("owner")
+    def test_owner_me_reports_the_selected_vault(self) -> None:
+        """Seam 1: the owner sees its Vault without any role field."""
+        vault_id = self._create_vault()
+        vault = self._me()["vault"]
 
-        vault = payload["vault"]
-        self.assertEqual(vault["id"], self.vault_id)
+        self.assertEqual(vault["id"], vault_id)
         self.assertEqual(vault["slug"], "docs")
         self.assertEqual(vault["name"], "Docs Archive")
-        self.assertEqual(vault["role"], "owner")
-        self.assertTrue(vault["is_vault_owner"])
-        self.assertTrue(vault["can_operate"])
-
-    def test_operator_me_can_operate_but_is_not_vault_owner(self) -> None:
-        """Seam 2: operator → can_operate true, is_vault_owner false."""
-        payload = self._me("operator")
-
-        vault = payload["vault"]
-        self.assertEqual(vault["role"], "operator")
-        self.assertTrue(vault["can_operate"])
-        self.assertFalse(vault["is_vault_owner"])
-
-    def test_viewer_me_cannot_operate_and_is_not_vault_owner(self) -> None:
-        """Seam 3: viewer → can_operate false, is_vault_owner false."""
-        payload = self._me("viewer")
-
-        vault = payload["vault"]
-        self.assertEqual(vault["role"], "viewer")
-        self.assertFalse(vault["can_operate"])
-        self.assertFalse(vault["is_vault_owner"])
+        self.assertTrue(vault["delete_enabled"])
+        for removed in ("role", "can_operate", "is_vault_owner"):
+            self.assertNotIn(removed, vault)
 
     def test_delete_enabled_false_for_owner_when_local_delete_disabled(self) -> None:
         """Seam 4: delete_enabled false when allow_local_delete is off, even for owner."""
@@ -136,98 +102,47 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
             "app.main.settings",
             replace(self.test_settings, allow_local_delete=False),
         ):
-            payload = self._me("owner")
+            self._create_vault()
+            payload = self._me()
 
         self.assertFalse(payload["vault"]["delete_enabled"])
 
-    def test_cloud_deletion_enabled_requires_vault_flag_and_owner_role(self) -> None:
-        """Seam 5: cloud_deletion_enabled reflects vault setting AND owner role."""
-        # Default vault flag is off → owner still sees false.
-        owner_off = self._me("owner")
-        self.assertFalse(owner_off["vault"]["cloud_deletion_enabled"])
+    def test_cloud_deletion_enabled_reflects_the_vault_flag(self) -> None:
+        """Seam 5: cloud_deletion_enabled reflects the Vault setting."""
+        vault_id = self._create_vault()
+        self.assertFalse(self._me()["vault"]["cloud_deletion_enabled"])
 
         with SQLiteConnection(str(self.database_path)) as connection:
             connection.execute(
                 "UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=%s",
-                (self.vault_id,),
+                (vault_id,),
             )
 
-        owner_on = self._me("owner")
-        self.assertTrue(owner_on["vault"]["cloud_deletion_enabled"])
+        self.assertTrue(self._me()["vault"]["cloud_deletion_enabled"])
 
-        # Non-owners never get the capability even when the vault flag is on.
-        operator = self._me("operator")
-        self.assertFalse(operator["vault"]["cloud_deletion_enabled"])
-        viewer = self._me("viewer")
-        self.assertFalse(viewer["vault"]["cloud_deletion_enabled"])
-
-    def test_user_without_vault_gets_null_vault_block(self) -> None:
-        """Seam 6: user with no vault → valid response with a null vault block."""
-        payload = self._me("orphan")
+    def test_owner_without_vault_gets_null_vault_block(self) -> None:
+        """Seam 6: before the first Vault exists → a null vault block."""
+        payload = self._me()
 
         self.assertIsNone(payload["vault"])
-        self.assertEqual(payload["username"], "orphan")
+        self.assertEqual(payload["username"], "owner")
 
-    def test_me_keeps_existing_fields_unchanged(self) -> None:
-        """Seam 7: every field returned today is still present and unchanged."""
-        payload = self._me("owner")
+    def test_me_reports_the_owner_identity(self) -> None:
+        """Seam 7: identity and session fields, without multi-user flags."""
+        self._create_vault()
+        payload = self._me()
 
-        self.assertEqual(payload["id"], self.user_ids["owner"])
+        self.assertEqual(payload["id"], self.owner_id)
         self.assertEqual(payload["username"], "owner")
         self.assertEqual(payload["display_name"], "Owner")
-        self.assertFalse(payload["is_admin"])
-        self.assertTrue(payload["active"])
+        self.assertNotIn("is_admin", payload)
+        self.assertNotIn("active", payload)
         self.assertEqual(payload["session_version"], 1)
         self.assertIsInstance(payload["csrf_token"], str)
         self.assertTrue(payload["csrf_token"])
         self.assertEqual(payload["auth_method"], "oidc")
         self.assertEqual(payload["locale"], "en")
         self.assertEqual(payload["locales"], ["en", "it"])
-
-    def test_me_capabilities_match_role_formulas(self) -> None:
-        """Seam 8: /api/me capability formulas match vault role gates."""
-        # Independent expected values (same formulas the SPA consumes).
-        expected = {
-            ("owner", True): {
-                "role": "owner",
-                "can_operate": True,
-                "delete_enabled": True,
-                "is_vault_owner": True,
-            },
-            ("operator", True): {
-                "role": "operator",
-                "can_operate": True,
-                "delete_enabled": False,
-                "is_vault_owner": False,
-            },
-            ("viewer", True): {
-                "role": "viewer",
-                "can_operate": False,
-                "delete_enabled": False,
-                "is_vault_owner": False,
-            },
-            ("owner", False): {
-                "role": "owner",
-                "can_operate": True,
-                "delete_enabled": False,
-                "is_vault_owner": True,
-            },
-        }
-        for (username, allow_local_delete), want in expected.items():
-            with self.subTest(username=username, allow_local_delete=allow_local_delete):
-                settings_override = replace(
-                    self.test_settings, allow_local_delete=allow_local_delete
-                )
-                with patch("app.main.settings", settings_override):
-                    self._authenticate(username)
-                    me = self.client.get("/api/me")
-                    self.assertEqual(me.status_code, 200, me.text)
-                    vault = me.json()["vault"]
-                self.assertEqual(vault["role"], want["role"])
-                self.assertEqual(vault["can_operate"], want["can_operate"])
-                self.assertEqual(vault["delete_enabled"], want["delete_enabled"])
-                self.assertEqual(vault["is_vault_owner"], want["is_vault_owner"])
-
 
 if __name__ == "__main__":
     unittest.main()

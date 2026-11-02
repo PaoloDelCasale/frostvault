@@ -141,7 +141,6 @@ describe("WorkerErrorsSection", () => {
               source_root: "/sources/photos",
               s3_prefix: "vaults/photos/",
               enabled: true,
-              member_count: 1,
             },
           ],
         });

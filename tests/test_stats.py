@@ -62,7 +62,6 @@ def _settings(database_path: Path) -> SimpleNamespace:
         db_backend="sqlite",
         sqlite_path=str(database_path),
         allow_local_delete=False,
-        bootstrap_vault_source_root="",
     )
 
 
@@ -120,7 +119,7 @@ class StatsTests(unittest.TestCase):
                 patch("app.database.settings", test_settings),
                 patch("app.main.settings", test_settings),
             ):
-                result = stats({"id": 2, "role": "viewer", "source_root": "/source"})
+                result = stats({"id": 2, "source_root": "/source"})
 
             self.assertEqual(result["states"], {"both": 1})
             self.assertEqual(result["storage"], {"local_bytes": 12, "cloud_bytes": 44})
@@ -333,7 +332,7 @@ class StatsTests(unittest.TestCase):
                 ),
             ):
                 payload = stats(
-                    {"id": 50, "role": "viewer", "source_root": str(source)}
+                    {"id": 50, "source_root": str(source)}
                 )
                 self.assertTrue(started.wait(timeout=2))
                 self.assertEqual(payload["states"], {"local_only": 1})
@@ -348,7 +347,7 @@ class StatsTests(unittest.TestCase):
                 final = payload
                 while time.time() < deadline:
                     final = stats(
-                        {"id": 50, "role": "viewer", "source_root": str(source)}
+                        {"id": 50, "source_root": str(source)}
                     )
                     if final["filesystem"]["health_status"] == "current":
                         break
@@ -2660,7 +2659,7 @@ class BoundedScanFindingsTests(unittest.TestCase):
                 ),
             ):
                 result = stats(
-                    {"id": vault_id, "role": "viewer", "source_root": str(source)}
+                    {"id": vault_id, "source_root": str(source)}
                 )
 
             runtime_fs = result["runtime"]["filesystem"]

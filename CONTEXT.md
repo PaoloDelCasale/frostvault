@@ -7,12 +7,12 @@ Current Snapshot.
 ## Language
 
 **Vault**:
-An isolated archive owned and shared as one policy and storage namespace.
+An isolated archive owned by the Owner as one policy and storage namespace.
 _Avoid_: Bucket, folder, account
 
 **Source Volume**:
-An operator-provided local filesystem whose directory tree may contain Source
-Areas and Vault roots. FrostVault persists a markerless opaque identity for each
+An operator-provided local filesystem whose directory tree contains Vault roots;
+the Owner may choose any directory under it as a new Vault root. FrostVault persists a markerless opaque identity for each
 custom Source Volume and keeps local work suspended when its expected mount is
 absent, inaccessible, ambiguous, unsupported, or replaced.
 _Avoid_: Compose Volume, Storage Root, Mount
@@ -22,12 +22,6 @@ The versioned opaque fingerprint derived from one exact Linux mountinfo target;
 it is stable across ordinary remounts and is never represented by a marker file
 or by persisted raw host paths.
 _Avoid_: Marker file, Host path, Mount ID
-
-**Source Area**:
-A reusable, non-overlapping local directory tree assigned exclusively to one
-User, including its root and descendants, from which that User may choose roots
-for new Vaults.
-_Avoid_: Visible Path, Volume Grant, Path Permission
 
 **Vault Root Relocation**:
 Reconnecting a Vault to the same local directory after that directory moves
@@ -109,40 +103,31 @@ A queued or running operation targeting one stable Vault File and, when known,
 one exact Archive Version.
 _Avoid_: Task, request
 
-**User**:
-The human principal that holds access, with one global role and per-Vault roles.
-_Avoid_: Account, Member
+**Owner**:
+The single person who operates a FrostVault deployment and owns every Vault.
+There are no other users, roles, members, or shared Vaults.
+_Avoid_: User, Administrator, Member, Account
 
 **Identity**:
-An immutable external login owned by exactly one User, identified by its issuing
-provider and that provider's stable subject.
+The external login bound to the Owner, identified by the issuer configured in
+the environment and that provider's stable subject. The first successful OIDC
+sign-in binds it; any other subject from that issuer is refused.
 _Avoid_: Email, Login, Account
 
-**Invite**:
-A single-use, expiring grant that binds the next external Identity to an existing
-User; it can be revoked before it is redeemed.
-_Avoid_: Registration, Signup, Token
-
 **Session**:
-An expiring, revocable credential that represents one authenticated User on one
+An expiring, revocable credential that represents the authenticated Owner on one
 device.
 _Avoid_: Cookie, Token, Login
 
-**Local Sign-in**:
-A network-gated sign-in using a local password, available to any active User
-with a configured local password, and limited to loopback or the explicitly
-allowed CIDRs.
-_Avoid_: Local login, Password login
-
-**Break-glass Login**:
-An administrator's use of Local Sign-in to recover access when external identity
-is unavailable. It remains an administrator recovery path, but Local Sign-in does
-not grant administrator privileges or require them.
-_Avoid_: Admin login
+**Emergency Password**:
+The Owner's local password, set from the environment, accepted only from
+loopback or the explicitly allowed LAN CIDRs. It is how the Owner signs in when
+the OIDC provider is unavailable.
+_Avoid_: Break-glass Login, Local Sign-in, Admin login
 
 **Reauthentication**:
-A fresh proof of the acting User's identity, required within a recent window
-before sensitive actions.
+A fresh proof of the Owner's identity, required within a recent window before
+downloading the Recovery Kit and before deleting from the cloud.
 _Avoid_: Login, Re-login
 
 **Trusted Proxy**:

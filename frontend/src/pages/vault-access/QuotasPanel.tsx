@@ -21,7 +21,6 @@ import {
 
 type QuotasPanelProps = {
   vaultId: number;
-  isAdmin: boolean;
   onNotice: (message: string, error?: boolean) => void;
 };
 
@@ -50,7 +49,7 @@ function limitsToForm(data: VaultQuotasResponse): QuotaFormValues {
   };
 }
 
-export function QuotasPanel({ vaultId, isAdmin, onNotice }: QuotasPanelProps) {
+export function QuotasPanel({ vaultId, onNotice }: QuotasPanelProps) {
   const { t, ready } = useI18n();
   const [loadState, setLoadState] = useState("");
   const [data, setData] = useState<VaultQuotasResponse | null>(null);
@@ -121,7 +120,6 @@ export function QuotasPanel({ vaultId, isAdmin, onNotice }: QuotasPanelProps) {
 
   const stateItems = data ? quotaStateItems(data.evaluation, t) : [];
   const usage = data?.usage ?? {};
-  const limits = data?.limits ?? {};
   const metrics = [
     {
       title: t("access.quotas_storage"),
@@ -134,16 +132,6 @@ export function QuotasPanel({ vaultId, isAdmin, onNotice }: QuotasPanelProps) {
       ),
       softName: "storage_soft_limit_bytes" as const,
       hardName: "storage_hard_limit_bytes" as const,
-      softValue: formatQuotaValue(
-        limits.storage_soft_limit_bytes,
-        t("access.quotas_bytes"),
-        t,
-      ),
-      hardValue: formatQuotaValue(
-        limits.storage_hard_limit_bytes,
-        t("access.quotas_bytes"),
-        t,
-      ),
     },
     {
       title: t("access.quotas_concurrency"),
@@ -151,16 +139,6 @@ export function QuotasPanel({ vaultId, isAdmin, onNotice }: QuotasPanelProps) {
       used: formatQuotaValue(usage.concurrency, t("access.quotas_jobs"), t),
       softName: "concurrency_soft_limit" as const,
       hardName: "concurrency_hard_limit" as const,
-      softValue: formatQuotaValue(
-        limits.concurrency_soft_limit,
-        t("access.quotas_jobs"),
-        t,
-      ),
-      hardValue: formatQuotaValue(
-        limits.concurrency_hard_limit,
-        t("access.quotas_jobs"),
-        t,
-      ),
     },
     {
       title: t("access.quotas_restore"),
@@ -173,16 +151,6 @@ export function QuotasPanel({ vaultId, isAdmin, onNotice }: QuotasPanelProps) {
       ),
       softName: "restore_30d_soft_limit_bytes" as const,
       hardName: "restore_30d_hard_limit_bytes" as const,
-      softValue: formatQuotaValue(
-        limits.restore_30d_soft_limit_bytes,
-        t("access.quotas_bytes"),
-        t,
-      ),
-      hardValue: formatQuotaValue(
-        limits.restore_30d_hard_limit_bytes,
-        t("access.quotas_bytes"),
-        t,
-      ),
     },
   ];
 
@@ -190,9 +158,7 @@ export function QuotasPanel({ vaultId, isAdmin, onNotice }: QuotasPanelProps) {
     <>
       <p className="mt-3 text-sm text-muted">{t("access.quotas_soft_help")}</p>
       <p className="text-sm text-muted">{t("access.quotas_hard_help")}</p>
-      {isAdmin ? (
-        <p className="mt-2 text-sm text-muted">{t("access.quotas_form_help")}</p>
-      ) : null}
+      <p className="mt-2 text-sm text-muted">{t("access.quotas_form_help")}</p>
 
       <div className="mt-4 grid gap-3">
         {metrics.map((metric) => (
@@ -207,7 +173,6 @@ export function QuotasPanel({ vaultId, isAdmin, onNotice }: QuotasPanelProps) {
                 <p className="font-bold text-muted">{t("access.quotas_usage")}</p>
                 <p className="font-bold text-ink">{metric.used}</p>
               </div>
-              {isAdmin ? (
                 <>
                   <FormField
                     label={t("access.quotas_soft_limit")}
@@ -238,22 +203,6 @@ export function QuotasPanel({ vaultId, isAdmin, onNotice }: QuotasPanelProps) {
                     />
                   </FormField>
                 </>
-              ) : (
-                <>
-                  <div className="flex flex-wrap justify-between gap-2">
-                    <p className="font-bold text-muted">
-                      {t("access.quotas_soft_limit")}
-                    </p>
-                    <p>{metric.softValue}</p>
-                  </div>
-                  <div className="flex flex-wrap justify-between gap-2">
-                    <p className="font-bold text-muted">
-                      {t("access.quotas_hard_limit")}
-                    </p>
-                    <p>{metric.hardValue}</p>
-                  </div>
-                </>
-              )}
             </div>
           </div>
         ))}
@@ -282,17 +231,15 @@ export function QuotasPanel({ vaultId, isAdmin, onNotice }: QuotasPanelProps) {
         </div>
       </div>
 
-      {isAdmin ? (
-        <div className="mt-5">
-          <Button
-            type="submit"
-            className="min-h-11 w-full sm:w-auto"
-            disabled={saving}
-          >
-            {t("access.quotas_save")}
-          </Button>
-        </div>
-      ) : null}
+      <div className="mt-5">
+        <Button
+          type="submit"
+          className="min-h-11 w-full sm:w-auto"
+          disabled={saving}
+        >
+          {t("access.quotas_save")}
+        </Button>
+      </div>
     </>
   );
 
@@ -304,13 +251,9 @@ export function QuotasPanel({ vaultId, isAdmin, onNotice }: QuotasPanelProps) {
         <p className="mt-2 text-sm text-muted" role="status">
           {loadState}
         </p>
-        {isAdmin ? (
-          <form className="mt-1" onSubmit={(event) => void onSave(event)}>
-            {body}
-          </form>
-        ) : (
-          body
-        )}
+        <form className="mt-1" onSubmit={(event) => void onSave(event)}>
+          {body}
+        </form>
       </Panel>
     </section>
   );

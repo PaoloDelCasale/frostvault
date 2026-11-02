@@ -2,9 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   fetchAdminAuditEvents,
-  fetchAdminUsers,
   fetchAdminVaults,
-  type AdminUser,
+  fetchMe,
   type AdminVault,
   type AuditEvent,
 } from "@/api";
@@ -20,16 +19,16 @@ function errorMessage(reason: unknown, fallback: string): string {
 }
 
 /**
- * Global administration already authorizes the users and Vault inventories.
- * The generic audit response only carries IDs, so failed or stale lookups
- * deliberately leave a deterministic ID label instead of expanding access.
+ * The generic audit response only carries IDs. Every actor is the single
+ * owner; failed or stale Vault lookups deliberately leave a deterministic ID
+ * label.
  */
 export function AdminAuditEventsSection() {
   const { t } = useI18n();
   const translateRef = useRef(t);
   translateRef.current = t;
   const [events, setEvents] = useState<AuditEvent[]>([]);
-  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [ownerName, setOwnerName] = useState<string | null>(null);
   const [vaults, setVaults] = useState<AdminVault[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -37,25 +36,24 @@ export function AdminAuditEventsSection() {
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
-    setUsers([]);
+    setOwnerName(null);
     setVaults([]);
     try {
       const response = await fetchAdminAuditEvents();
       const nextEvents = (response.events ?? []).slice(0, AUDIT_EVENT_WINDOW_LIMIT);
       setEvents(nextEvents);
 
-      // These are existing admin-authorized endpoints, not new lookup APIs.
-      // Name enrichment cannot make the audit view fail: deleted users/Vaults
-      // and unavailable inventories remain visible through the ID fallbacks.
-      const [nextUsers, nextVaults] = await Promise.all([
+      // Name enrichment cannot make the audit view fail: deleted Vaults and
+      // unavailable inventories remain visible through the ID fallbacks.
+      const [nextOwnerName, nextVaults] = await Promise.all([
         nextEvents.some((event) => event.actor_user_id !== null)
-          ? fetchAdminUsers().then((result) => result.items ?? []).catch(() => [])
-          : Promise.resolve([]),
+          ? fetchMe().then((me) => me.display_name || me.username).catch(() => null)
+          : Promise.resolve(null),
         nextEvents.some((event) => event.vault_id !== null)
           ? fetchAdminVaults().then((result) => result.items ?? []).catch(() => [])
           : Promise.resolve([]),
       ]);
-      setUsers(nextUsers);
+      setOwnerName(nextOwnerName);
       setVaults(nextVaults);
     } catch (reason) {
       setEvents([]);
@@ -71,12 +69,7 @@ export function AdminAuditEventsSection() {
 
   function resolveActor(event: AuditEvent): string {
     if (event.actor_user_id === null) return t("audit.actor_system");
-    const user = users.find((candidate) => candidate.id === event.actor_user_id);
-    return (
-      user?.display_name
-      || user?.username
-      || t("audit.actor_fallback", { id: event.actor_user_id })
-    );
+    return ownerName || t("audit.actor_fallback", { id: event.actor_user_id });
   }
 
   function resolveVault(event: AuditEvent): string {

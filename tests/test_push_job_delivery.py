@@ -51,15 +51,15 @@ class JobPushDeliveryTests(unittest.TestCase):
         with SQLiteConnection(str(self.path)) as connection:
             self.owner_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('owner', 'Owner', %s, FALSE) RETURNING id
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('owner', 'Owner', %s) RETURNING id
                 """,
                 (hash_password("owner-password-1"),),
             ).fetchone()["id"]
             self.outsider_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('outsider', 'Outsider', %s, FALSE) RETURNING id
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('outsider', 'Outsider', %s) RETURNING id
                 """,
                 (hash_password("outsider-password-1"),),
             ).fetchone()["id"]
@@ -71,11 +71,6 @@ class JobPushDeliveryTests(unittest.TestCase):
                 RETURNING id
                 """
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, 'owner')",
-                (self.vault_id, self.owner_id),
-            )
             vault_file = connection.execute(
                 """
                 INSERT INTO vault_files(id, vault_id, status, created_at)
@@ -222,32 +217,6 @@ class JobPushDeliveryTests(unittest.TestCase):
                 connection, push_client=push, max_attempts=1
             )
 
-        self.assertEqual(push.messages, [])
-
-    def test_removed_membership_stops_push_delivery(self) -> None:
-        push = _RecordingPush()
-        with SQLiteConnection(str(self.path)) as connection:
-            connection.execute(
-                "UPDATE jobs SET status='failed' WHERE id=%s",
-                (self.job_id,),
-            )
-            notifications.enqueue_notification(
-                connection,
-                user_id=self.owner_id,
-                vault_id=self.vault_id,
-                job_id=self.job_id,
-                event="job_failed",
-                title="Job failed",
-                body="recover: a.txt",
-                channels=("push",),
-            )
-            connection.execute(
-                "DELETE FROM vault_members WHERE vault_id=%s AND user_id=%s",
-                (self.vault_id, self.owner_id),
-            )
-            notifications.deliver_pending_notifications(
-                connection, push_client=push, max_attempts=1
-            )
         self.assertEqual(push.messages, [])
 
     def test_unconfigured_push_still_enqueues_default_in_app_notice(self) -> None:

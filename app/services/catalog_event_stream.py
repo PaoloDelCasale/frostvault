@@ -14,7 +14,7 @@ the wait; the tick still runs the same single-connection snapshot.
 
 **Per tick, one DB connection, three short statements (no long transaction):**
 
-1. Session + user + membership authorization (single JOIN).
+1. Session + Owner + Vault authorization (single JOIN).
 2. Vault catalog high-water / retention markers.
 3. At most ``MAX_CATCHUP_EVENTS + 1`` journal rows after ``last_seen``.
 
@@ -54,7 +54,6 @@ StreamErrorCode = Literal[
     "session_revoked",
     "session_expired",
     "session_version_mismatch",
-    "user_disabled",
     "vault_access_revoked",
     "vault_switched",
 ]
@@ -278,18 +277,11 @@ def stream_tick_snapshot(
                    s.absolute_expires_at AS absolute_expires_at,
                    s.session_version AS session_session_version,
                    u.session_version AS user_session_version,
-                   u.active AS user_active,
-                   CASE
-                     WHEN vm.user_id IS NOT NULL AND v.id IS NOT NULL THEN 1
-                     ELSE 0
-                   END AS has_membership
+                   CASE WHEN v.id IS NOT NULL THEN 1 ELSE 0 END AS vault_available
             FROM sessions s
             JOIN users u ON u.id = s.user_id
-            LEFT JOIN vault_members vm
-              ON vm.user_id = s.user_id
-             AND vm.vault_id = %s
             LEFT JOIN vaults v
-              ON v.id = vm.vault_id
+              ON v.id = %s
              AND v.enabled = TRUE
              AND v.decommission_state = 'active'
             WHERE s.id = %s AND s.user_id = %s
@@ -307,12 +299,6 @@ def stream_tick_snapshot(
             return StreamTickSnapshot(
                 ok=False,
                 error="session_revoked",
-                statement_count=statements[0],
-            )
-        if not row["user_active"]:
-            return StreamTickSnapshot(
-                ok=False,
-                error="user_disabled",
                 statement_count=statements[0],
             )
         if row["session_session_version"] != row["user_session_version"]:
@@ -344,8 +330,8 @@ def stream_tick_snapshot(
                 statement_count=statements[0],
             )
 
-        # Membership against the subscribed vault (fail closed).
-        if not int(row["has_membership"] or 0):
+        # The subscribed Vault must still be operational (fail closed).
+        if not int(row["vault_available"] or 0):
             return StreamTickSnapshot(
                 ok=False,
                 error="vault_access_revoked",
@@ -387,23 +373,6 @@ def coalesced_catchup_signal(
     return signal
 
 
-# Backward-compatible names used by older tests/callers.
-def user_can_access_vault(user_id: int, vault_id: int) -> bool:
-    with db() as connection:
-        row = connection.execute(
-            """
-            SELECT 1 AS ok
-            FROM vault_members vm
-            JOIN vaults v ON v.id=vm.vault_id
-            WHERE vm.user_id=%s AND vm.vault_id=%s
-              AND v.enabled=TRUE AND v.decommission_state='active'
-            LIMIT 1
-            """,
-            (user_id, vault_id),
-        ).fetchone()
-    return bool(row)
-
-
 def session_stream_state(session_id: str) -> dict[str, Any] | None:
     """Return live session vault scope, or None when invalid (compat helper)."""
     with db() as connection:
@@ -414,15 +383,14 @@ def session_stream_state(session_id: str) -> dict[str, Any] | None:
                    s.idle_expires_at AS idle_expires_at,
                    s.absolute_expires_at AS absolute_expires_at,
                    s.session_version AS session_session_version,
-                   u.session_version AS user_session_version,
-                   u.active AS user_active
+                   u.session_version AS user_session_version
             FROM sessions s
             JOIN users u ON u.id = s.user_id
             WHERE s.id=%s
             """,
             (session_id,),
         ).fetchone()
-    if row is None or row["revoked_at"] or not row["user_active"]:
+    if row is None or row["revoked_at"]:
         return None
     if row["session_session_version"] != row["user_session_version"]:
         return None

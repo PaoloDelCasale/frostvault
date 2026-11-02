@@ -123,15 +123,8 @@ class FrontendSpaHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             self.user_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('owner', 'Owner', %s, FALSE) RETURNING id
-                """,
-                (hash_password(self.PASSWORD),),
-            ).fetchone()["id"]
-            self.operator_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('operator', 'Operator', %s, FALSE) RETURNING id
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('owner', 'Owner', %s) RETURNING id
                 """,
                 (hash_password(self.PASSWORD),),
             ).fetchone()["id"]
@@ -143,16 +136,6 @@ class FrontendSpaHttpTests(unittest.TestCase):
                 RETURNING id
                 """
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, 'owner')",
-                (self.vault_id, self.user_id),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, 'operator')",
-                (self.vault_id, self.operator_id),
-            )
 
         self.test_settings = replace(
             settings,
@@ -199,13 +182,12 @@ class FrontendSpaHttpTests(unittest.TestCase):
             self.assertIn("spa-shell", response.text, path)
             self.assertIn('id="root"', response.text, path)
 
-    def test_role_gating_still_enforced_on_api(self) -> None:
-        """Seam 2: role gating still redirects/forbids correctly on the API."""
-        self._authenticate(self.operator_id)
+    def test_authentication_still_enforced_on_api(self) -> None:
+        """Seam 2: the API still requires a session; the SPA does not gate it."""
         denied = self.client.get("/api/vault/quotas")
-        self.assertEqual(denied.status_code, 403, denied.text)
+        self.assertEqual(denied.status_code, 401, denied.text)
 
-        self._authenticate(self.user_id)
+        self._authenticate()
         allowed = self.client.get("/api/vault/quotas")
         self.assertEqual(allowed.status_code, 200, allowed.text)
 
@@ -223,6 +205,18 @@ class FrontendSpaHttpTests(unittest.TestCase):
         response = self.client.get("/some/unknown/route")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn("spa-shell", response.text)
+
+    def test_unknown_api_route_is_not_found_for_every_method(self) -> None:
+        self._authenticate()
+        csrf = self.client.get("/api/me").json()["csrf_token"]
+        for method in ("get", "post", "put", "patch", "delete"):
+            with self.subTest(method=method):
+                response = self.client.request(
+                    method.upper(),
+                    "/api/no-such-route",
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(response.status_code, 404, response.text)
 
     def test_spa_cache_headers_for_assets_and_index(self) -> None:
         index = self.client.get("/")
