@@ -133,7 +133,6 @@ describe("AdminPage — single owner (#412)", () => {
       ["Vaults", "/admin/vaults"],
       ["Source Volumes", "/admin/sources"],
       ["Defaults", "/admin/defaults"],
-      ["Notifications", "/admin/notifications"],
       ["Deployment configuration", "/admin/deployment"],
       ["Storage cost estimates", "/admin/storage-cost-estimates"],
       ["Audit events", "/admin/audit-events"],

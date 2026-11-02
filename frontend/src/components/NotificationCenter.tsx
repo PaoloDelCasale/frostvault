@@ -30,8 +30,6 @@ export type NotificationTranslator = (
 type NotificationCenterProps = {
   locale?: string;
   t?: NotificationTranslator;
-  /** Optional navigation into the dedicated notification-preferences surface. */
-  onOpenPreferences?: () => void;
   /** The app passes its shared client; the fallback keeps shell stories isolated. */
   queryClient?: QueryClient;
 };
@@ -174,7 +172,6 @@ function NotificationRow({
 export function NotificationCenter({
   locale = "en",
   t,
-  onOpenPreferences,
   queryClient: providedQueryClient,
 }: NotificationCenterProps) {
   const contextQueryClient = useContext(QueryClientContext);
@@ -570,11 +567,6 @@ export function NotificationCenter({
     }
   }
 
-  function handleOpenPreferences(): void {
-    setOpen(false);
-    onOpenPreferences?.();
-  }
-
   return (
     <>
       <div className="relative">
@@ -669,21 +661,6 @@ export function NotificationCenter({
                     "Show read",
                   )}
             </Button>
-            {onOpenPreferences ? (
-              <Button
-                type="button"
-                variant="ghost"
-                className="min-h-11"
-                data-testid="notifications-open-preferences"
-                onClick={handleOpenPreferences}
-              >
-                {notificationLabel(
-                  t,
-                  "ui.notifications_preferences_heading",
-                  "Notification preferences",
-                )}
-              </Button>
-            ) : null}
           </div>
 
           {notificationsQuery.isPending && !notificationsQuery.data ? (

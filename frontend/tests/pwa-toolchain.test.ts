@@ -23,7 +23,7 @@ describe("PWA toolchain (seams 1–2)", () => {
     expect(sw).toMatch(/precacheAndRoute/);
     expect(sw).toMatch(/offlineFileServiceWorkerCacheName/);
     expect(sw).not.toMatch(/cacheName:\s*"frostvault-file-listing"/);
-    expect(sw).toMatch(/addEventListener\(\s*"push"/);
+    expect(sw).not.toMatch(/addEventListener\(\s*"push"/);
   });
 
   it("does not reload the document when a replacement Worker activates", () => {

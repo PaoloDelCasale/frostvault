@@ -50,4 +50,5 @@ Jinja entirely at cut-over (#71).
   names.
 - Legacy Node `vm`-sandbox UI tests are replaced by Vitest suites; Playwright
   covers mobile and desktop flows.
-- PWA installability and push (#72) become possible on top of the SPA shell.
+- PWA installability remains layered on the SPA shell until its removal in #415.
+  Notifications use the inbox and optional deployment-owned SMTP (#414).

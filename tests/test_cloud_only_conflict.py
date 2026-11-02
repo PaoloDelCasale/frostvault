@@ -13,6 +13,7 @@ import hashlib
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -28,6 +29,7 @@ for _flag, _value in (
 from fastapi import HTTPException
 
 from app.catalog import ArchiveCatalog
+from app.config import settings
 from app.database import SQLiteConnection
 from app.main import confirm_cloud_only_replacement, queue_jobs
 from app.services import notifications as notification_service
@@ -207,15 +209,15 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
     def test_conflict_is_emailed_immediately_when_smtp_is_configured(
         self,
     ) -> None:
-        with SQLiteConnection(str(self.database_path)) as connection:
-            notification_service.set_global_smtp_endpoint(
-                connection,
-                host="smtp.example.com",
-                from_address="frostvault@example.com",
-                to_address="owner@example.com",
-            )
-        self._write(NEW)
-        self._scan()
+        email_settings = replace(
+            settings,
+            smtp_host="smtp.example.com",
+            smtp_from_address="frostvault@example.com",
+            smtp_to_address="owner@example.com",
+        )
+        with patch.object(notification_service, "settings", email_settings):
+            self._write(NEW)
+            self._scan()
 
         with SQLiteConnection(str(self.database_path)) as connection:
             channels = connection.execute(

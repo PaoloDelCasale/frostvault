@@ -40,7 +40,6 @@ const catalog: Record<string, string> = {
   "ui.notifications_read_heading": "Read history",
   "ui.notifications_load_more": "Load more",
   "ui.notifications_loading_more": "Loading more…",
-  "ui.notifications_preferences_heading": "Notification preferences",
 };
 
 function translate(key: string, params: Record<string, unknown> = {}): string {
@@ -81,17 +80,13 @@ function notificationItem(
   };
 }
 
-function renderCenter(
-  fetchMock: ApiFetch,
-  options: { onOpenPreferences?: () => void } = {},
-) {
+function renderCenter(fetchMock: ApiFetch) {
   configureApiClient({ fetch: fetchMock, csrfToken: "notification-csrf" });
   return render(
     <NotificationCenter
       locale="en"
       t={translate}
       queryClient={createAppQueryClient()}
-      onOpenPreferences={options.onOpenPreferences}
     />,
   );
 }
@@ -757,33 +752,6 @@ describe("NotificationCenter", () => {
         (url) => url === "/api/vault/notification-preferences",
       ),
     ).toBe(false);
-  });
-
-  it("offers an optional link into the dedicated preferences surface", async () => {
-    const user = userEvent.setup();
-    const onOpenPreferences = vi.fn();
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.startsWith("/api/notifications")) {
-        return jsonResponse({ unread_count: 0, has_more: false, items: [] });
-      }
-      throw new Error(`unexpected ${url}`);
-    });
-
-    renderCenter(fetchMock, { onOpenPreferences });
-    await user.click(
-      await screen.findByRole("button", { name: "Open notifications" }),
-    );
-    const dialog = await screen.findByRole("dialog", { name: "Notifications" });
-    await user.click(
-      within(dialog).getByRole("button", {
-        name: "Notification preferences",
-      }),
-    );
-    expect(onOpenPreferences).toHaveBeenCalledTimes(1);
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog", { name: "Notifications" })).toBeNull();
-    });
   });
 
   it("has explicit loading and error states for inbox requests", async () => {

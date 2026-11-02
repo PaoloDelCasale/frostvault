@@ -674,7 +674,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
 
             with patch.object(
                 notifications,
-                "enqueue_job_terminal_push",
+                "enqueue_job_terminal_notification",
                 side_effect=fail_inside_savepoint,
             ):
                 enqueued = notifications.enqueue_job_terminal_notification_best_effort(

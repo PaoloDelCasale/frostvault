@@ -41,7 +41,6 @@ import type {
   RecoveryExportRequest,
   RecoveryExportResponse,
   ScanResponse,
-  SmtpEndpointAction,
   StatsResponse,
   StorageClassesResponse,
   StorageEstimateRequest,
@@ -53,7 +52,6 @@ import type {
   VaultSelectRequest,
   VaultSelectResponse,
   VaultsResponse,
-  WebhookEndpointAction,
 } from "./types";
 import { translate } from "@/i18n/translate";
 
@@ -118,27 +116,6 @@ export type FetchNotificationsParams = {
 export type MarkAllNotificationsReadResponse = {
   marked_count: number;
   unread_count: number;
-};
-
-export type NotificationPreferenceChannel = "in_app" | "push";
-
-export type VaultNotificationPreference = {
-  id: number;
-  user_id: number;
-  vault_id: number;
-  event: string;
-  channel: NotificationPreferenceChannel;
-  enabled: boolean;
-};
-
-export type VaultNotificationPreferencesResponse = {
-  items: VaultNotificationPreference[];
-};
-
-export type VaultNotificationPreferencePayload = {
-  event: string;
-  channel: NotificationPreferenceChannel;
-  enabled: boolean;
 };
 
 /** Persisted worker errors are currently exposed through a generic JSON response. */
@@ -460,37 +437,6 @@ export function fetchSystemSettings(): Promise<SystemSettingsResponse> {
   return apiRequest<SystemSettingsResponse>("/api/admin/settings");
 }
 
-export type NotificationEndpointResponse = {
-  id: number;
-  kind: "webhook" | "smtp";
-  enabled: boolean;
-  name?: string;
-};
-
-export function saveAdminWebhookEndpoint(
-  payload: WebhookEndpointAction,
-): Promise<NotificationEndpointResponse> {
-  return apiRequest<NotificationEndpointResponse>(
-    "/api/admin/notification-endpoints/webhook",
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-  );
-}
-
-export function saveAdminSmtpEndpoint(
-  payload: SmtpEndpointAction,
-): Promise<NotificationEndpointResponse> {
-  return apiRequest<NotificationEndpointResponse>(
-    "/api/admin/notification-endpoints/smtp",
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-  );
-}
-
 /** List the authenticated user's visible in-app notifications and unread count. */
 export function fetchNotifications(
   limitOrParams?: number | FetchNotificationsParams,
@@ -532,37 +478,6 @@ export function markAllNotificationsRead(): Promise<MarkAllNotificationsReadResp
     { method: "POST" },
   );
 }
-
-/**
- * List personal preferences for the server-selected active Vault.
- * Owned by the dedicated notification-preferences surface (#226), not the inbox.
- */
-export function fetchVaultNotificationPreferences(): Promise<VaultNotificationPreferencesResponse> {
-  return apiRequest<VaultNotificationPreferencesResponse>(
-    "/api/vault/notification-preferences",
-  );
-}
-
-/**
- * Save one personal preference for the server-selected active Vault.
- * Owned by the dedicated notification-preferences surface (#226), not the inbox.
- */
-export function setVaultNotificationPreference(
-  payload: VaultNotificationPreferencePayload,
-): Promise<VaultNotificationPreference> {
-  return apiRequest<VaultNotificationPreference>(
-    "/api/vault/notification-preferences",
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-  );
-}
-
-// Short aliases keep the helper names discoverable for callers that do not
-// need to repeat the Vault scope; both use the same authenticated routes.
-export const fetchNotificationPreferences = fetchVaultNotificationPreferences;
-export const setNotificationPreference = setVaultNotificationPreference;
 
 /** Fetch the newest bounded Vault-visible audit window; this endpoint has no filters. */
 export function fetchVaultAuditEvents(): Promise<VaultAuditEventsResponse> {

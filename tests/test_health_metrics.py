@@ -201,7 +201,7 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
     def test_metrics_expose_low_cardinality_prometheus_counters(self) -> None:
         metrics_service.inc("jobs_completed_total", action="upload")
         metrics_service.inc("verification_failures_total")
-        metrics_service.inc("notification_deliveries_total", channel="webhook", result="failed")
+        metrics_service.inc("notification_deliveries_total", channel="email", result="failed")
         metrics_service.set_gauge("worker_up", 1)
 
         response = self.client.get("/metrics")
@@ -210,7 +210,7 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
         self.assertIn("# TYPE jobs_completed_total counter", text)
         self.assertIn('jobs_completed_total{action="upload"}', text)
         self.assertIn("verification_failures_total", text)
-        self.assertIn('notification_deliveries_total{channel="webhook",result="failed"}', text)
+        self.assertIn('notification_deliveries_total{channel="email",result="failed"}', text)
         self.assertIn("worker_up", text)
         # High-cardinality / sensitive labels must never appear.
         self.assertNotIn("path=", text)

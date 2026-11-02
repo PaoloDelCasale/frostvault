@@ -41,7 +41,6 @@ import type {
 import { BottomSheet } from "@/components/BottomSheet";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Toast } from "@/components/Toast";
-import { ensurePushSubscription } from "@/pwa";
 
 import {
   actionHint,
@@ -234,17 +233,6 @@ export function FileOperationsHost({
       isDir: boolean,
       extra?: Record<string, unknown>,
     ) => {
-      // Long-running Jobs: request push at this moment, never on first load.
-      if (
-        action === "upload" ||
-        action === "recover" ||
-        action === "free-space" ||
-        action === "storage-class" ||
-        action === "cloud-archive" ||
-        action === "cloud-purge"
-      ) {
-        void ensurePushSubscription();
-      }
       let result: { message?: string };
       switch (action) {
         case "upload":

@@ -185,9 +185,13 @@ SETTING_DEFINITIONS = (
     _setting("metadata_backup_s3_prefix", "METADATA_BACKUP_S3_PREFIX", "operations", str, "system/backups/", _M, minimum_length=1, maximum_length=512),
     _setting("metadata_backup_verify_interval_seconds", "METADATA_BACKUP_VERIFY_INTERVAL_SECONDS", "operations", int, 604800, _M, minimum=0, maximum=7776000),
     _setting("frontend_dist_dir", "FRONTEND_DIST_DIR", "operations", str, "", _D, restart=True),
-    _setting("vapid_public_key", "VAPID_PUBLIC_KEY", "operations", str, "", _D, restart=True),
-    _setting("vapid_private_key", "VAPID_PRIVATE_KEY", "operations", str, "", _D, restart=True, secret=True),
-    _setting("vapid_subject", "VAPID_SUBJECT", "operations", str, "mailto:admin@localhost", _D, restart=True),
+    _setting("smtp_host", "SMTP_HOST", "operations", str, "", _D, restart=True),
+    _setting("smtp_port", "SMTP_PORT", "operations", int, 587, _D, restart=True, minimum=1, maximum=65535),
+    _setting("smtp_username", "SMTP_USERNAME", "operations", str, "", _D, restart=True),
+    _setting("smtp_password", "SMTP_PASSWORD", "operations", str, "", _D, restart=True, secret=True),
+    _setting("smtp_from_address", "SMTP_FROM_ADDRESS", "operations", str, "", _D, restart=True),
+    _setting("smtp_to_address", "SMTP_TO_ADDRESS", "operations", str, "", _D, restart=True),
+    _setting("smtp_use_tls", "SMTP_USE_TLS", "operations", bool, True, _D, restart=True),
 )
 
 SETTINGS_BY_KEY = {item.key: item for item in SETTING_DEFINITIONS}

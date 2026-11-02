@@ -1,15 +1,10 @@
-"""In-app notifications and outbound delivery (issue #16).
+"""Owner notifications with fixed routing and optional deployment-owned SMTP.
 
-The Owner chooses per-Vault in-app/push events and manages
-shared SMTP/webhook endpoints. Delivery retries are bounded and never mutate
-the Job that triggered the notification.
-
-Web Push (issue #72) reuses the same delivery table with channel ``push`` and
-subscription rows bound to a Session/device.
+Delivery retries are bounded and never mutate the Job that triggered the
+notification. Event content and routing are otherwise unchanged by #414.
 """
 from __future__ import annotations
 
-import json
 import logging
 import smtplib
 import ssl
@@ -18,17 +13,11 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from typing import Any, Protocol
 
-import httpx
-
-from ..config import push_configured, settings
+from ..config import settings
 from ..i18n import catalog as locale_catalog
 from ..i18n import format_message_params, parse_message_params, translate
 
 
-SUPPORTED_NOTIFICATION_EVENTS = frozenset(
-    {"job_completed", "job_failed", "archive_version_missing"}
-)
-SUPPORTED_PERSONAL_NOTIFICATION_CHANNELS = frozenset({"in_app", "push"})
 DELIVERY_TIMEOUT_SECONDS = 10.0
 DELIVERY_RETRY_CAP_SECONDS = 300
 _logger = logging.getLogger(__name__)
@@ -38,21 +27,8 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-class WebhookClient(Protocol):
-    def send(self, payload: dict[str, Any]) -> None: ...
-
-
 class SmtpClient(Protocol):
     def send(self, message: dict[str, Any]) -> None: ...
-
-
-class PushClient(Protocol):
-    def send(
-        self,
-        *,
-        subscription: dict[str, Any],
-        payload: dict[str, Any],
-    ) -> None: ...
 
 
 def _message_params(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -115,181 +91,6 @@ def _row_notification(
     }
 
 
-def set_global_webhook_endpoint(
-    connection: Any,
-    *,
-    url: str,
-    enabled: bool = True,
-    name: str = "default",
-) -> dict[str, Any]:
-    """Create or update the global webhook endpoint (admin-managed)."""
-    stamp = now_iso()
-    config_json = json.dumps({"url": url}, sort_keys=True)
-    existing = connection.execute(
-        """
-        SELECT id FROM notification_endpoints
-        WHERE kind='webhook' AND name=%s
-        """,
-        (name,),
-    ).fetchone()
-    if existing:
-        connection.execute(
-            """
-            UPDATE notification_endpoints
-            SET config_json=%s, enabled=%s, updated_at=%s
-            WHERE id=%s
-            """,
-            (config_json, enabled, stamp, existing["id"]),
-        )
-        endpoint_id = existing["id"]
-    else:
-        endpoint_id = connection.execute(
-            """
-            INSERT INTO notification_endpoints(
-                kind, name, config_json, enabled, created_at, updated_at
-            ) VALUES ('webhook', %s, %s, %s, %s, %s)
-            RETURNING id
-            """,
-            (name, config_json, enabled, stamp, stamp),
-        ).fetchone()["id"]
-    return {
-        "id": endpoint_id,
-        "kind": "webhook",
-        "name": name,
-        "url": url,
-        "enabled": enabled,
-    }
-
-
-def set_global_smtp_endpoint(
-    connection: Any,
-    *,
-    host: str,
-    port: int = 587,
-    username: str = "",
-    password: str = "",
-    from_address: str = "",
-    to_address: str = "",
-    use_tls: bool = True,
-    enabled: bool = True,
-    name: str = "default",
-) -> dict[str, Any]:
-    """Create or update the global SMTP endpoint (admin-managed)."""
-    stamp = now_iso()
-    config = {
-        "host": host,
-        "port": port,
-        "username": username,
-        "password": password,
-        "from_address": from_address,
-        "to_address": to_address,
-        "use_tls": use_tls,
-    }
-    config_json = json.dumps(config, sort_keys=True)
-    existing = connection.execute(
-        """
-        SELECT id FROM notification_endpoints
-        WHERE kind='smtp' AND name=%s
-        """,
-        (name,),
-    ).fetchone()
-    if existing:
-        connection.execute(
-            """
-            UPDATE notification_endpoints
-            SET config_json=%s, enabled=%s, updated_at=%s
-            WHERE id=%s
-            """,
-            (config_json, enabled, stamp, existing["id"]),
-        )
-        endpoint_id = existing["id"]
-    else:
-        endpoint_id = connection.execute(
-            """
-            INSERT INTO notification_endpoints(
-                kind, name, config_json, enabled, created_at, updated_at
-            ) VALUES ('smtp', %s, %s, %s, %s, %s)
-            RETURNING id
-            """,
-            (name, config_json, enabled, stamp, stamp),
-        ).fetchone()["id"]
-    return {"id": endpoint_id, "kind": "smtp", "name": name, "enabled": enabled}
-
-
-def _normalize_recipient_user_ids(values: Any) -> list[int]:
-    """Read legacy recipient lists without trusting malformed JSON or types."""
-    if isinstance(values, str):
-        try:
-            values = json.loads(values or "[]")
-        except json.JSONDecodeError:
-            values = []
-    if not isinstance(values, (list, tuple, set)):
-        return []
-    recipients: list[int] = []
-    for value in values:
-        try:
-            candidate = int(value)
-        except (TypeError, ValueError):
-            continue
-        if candidate > 0 and candidate not in recipients:
-            recipients.append(candidate)
-    return recipients
-
-
-def set_vault_notification_preference(
-    connection: Any,
-    *,
-    vault_id: int,
-    event: str,
-    channel: str,
-    enabled: bool = True,
-    recipient_user_ids: list[int] | None = None,
-    user_id: int | None = None,
-) -> dict[str, Any]:
-    """Keep the legacy vault-wide endpoint preference API intact.
-
-    Issue #75 stores personal inbox choices in a separate table.  This helper
-    remains for the existing webhook/email administration seam; notably, a
-    malformed or missing legacy recipient list is treated as empty rather than
-    leaking into the personal preference table.
-    """
-    if user_id is not None:
-        return set_user_vault_notification_preference(
-            connection,
-            user_id=user_id,
-            vault_id=vault_id,
-            event=event,
-            channel=channel,
-            enabled=enabled,
-        )
-    if channel not in {"in_app", "webhook", "email"}:
-        raise ValueError(f"invalid notification channel: {channel}")
-    recipients = _normalize_recipient_user_ids(recipient_user_ids)
-    recipients_json = json.dumps(recipients)
-    row = connection.execute(
-        """
-        INSERT INTO vault_notification_preferences(
-            vault_id, event, channel, enabled, recipient_user_ids_json
-        ) VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT(vault_id, event, channel) DO UPDATE SET
-            enabled=excluded.enabled,
-            recipient_user_ids_json=excluded.recipient_user_ids_json
-        RETURNING *
-        """,
-        (vault_id, event, channel, enabled, recipients_json),
-    ).fetchone()
-    return {
-        "id": row["id"],
-        "vault_id": row["vault_id"],
-        "event": row["event"],
-        "channel": row["channel"],
-        "enabled": bool(row["enabled"]),
-        "recipient_user_ids": _normalize_recipient_user_ids(
-            row.get("recipient_user_ids_json")
-        ),
-    }
-
-
 def _owner_recipients(connection: Any) -> list[dict[str, Any]]:
     """The single owner is the only notification recipient (#412)."""
     from ..owner import owner_user_id
@@ -298,149 +99,12 @@ def _owner_recipients(connection: Any) -> list[dict[str, Any]]:
     return [] if owner_id is None else [{"user_id": owner_id}]
 
 
-def _operational_vault(connection: Any, *, vault_id: int) -> bool:
-    row = connection.execute(
-        """
-        SELECT 1 FROM vaults
-        WHERE id=%s AND enabled=TRUE AND decommission_state='active'
-        """,
-        (vault_id,),
-    ).fetchone()
-    return row is not None
-
-
-def set_user_vault_notification_preference(
-    connection: Any,
-    *,
-    user_id: int,
-    vault_id: int,
-    event: str,
-    channel: str,
-    enabled: bool = True,
-) -> dict[str, Any]:
-    """Set one personal preference, never a preference for another User."""
-    if event not in SUPPORTED_NOTIFICATION_EVENTS:
-        raise ValueError(f"invalid personal notification event: {event}")
-    if channel not in SUPPORTED_PERSONAL_NOTIFICATION_CHANNELS:
-        raise ValueError(f"invalid personal notification channel: {channel}")
-    if not _operational_vault(connection, vault_id=vault_id):
-        raise ValueError("The vault is not operational")
-    row = connection.execute(
-        """
-        INSERT INTO user_vault_notification_preferences(
-            user_id, vault_id, event, channel, enabled
-        ) VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT(user_id, vault_id, event, channel) DO UPDATE SET
-            enabled=excluded.enabled
-        RETURNING *
-        """,
-        (user_id, vault_id, event, channel, enabled),
-    ).fetchone()
-    return {
-        "id": row["id"],
-        "user_id": row["user_id"],
-        "vault_id": row["vault_id"],
-        "event": row["event"],
-        "channel": row["channel"],
-        "enabled": bool(row["enabled"]),
-    }
-
-
-def list_user_vault_notification_preferences(
-    connection: Any, *, user_id: int, vault_id: int
-) -> list[dict[str, Any]]:
-    """List only the acting User's preferences for one active Vault."""
-    if not _operational_vault(connection, vault_id=vault_id):
-        return []
-    rows = connection.execute(
-        """
-        SELECT id, user_id, vault_id, event, channel, enabled
-        FROM user_vault_notification_preferences
-        WHERE user_id=%s AND vault_id=%s
-        ORDER BY event, channel
-        """,
-        (user_id, vault_id),
-    ).fetchall()
-    return [
-        {
-            "id": row["id"],
-            "user_id": row["user_id"],
-            "vault_id": row["vault_id"],
-            "event": row["event"],
-            "channel": row["channel"],
-            "enabled": bool(row["enabled"]),
-        }
-        for row in rows
-    ]
-
-
-def _user_vault_preference_map(
-    connection: Any, *, user_id: int, vault_id: int, event: str
-) -> dict[str, bool]:
-    rows = connection.execute(
-        """
-        SELECT channel, enabled
-        FROM user_vault_notification_preferences
-        WHERE user_id=%s AND vault_id=%s AND event=%s
-        """,
-        (user_id, vault_id, event),
-    ).fetchall()
-    return {str(row["channel"]): bool(row["enabled"]) for row in rows}
-
-
-def _legacy_channel_allowed(
-    connection: Any,
-    *,
-    user_id: int,
-    vault_id: int,
-    event: str,
-    channel: str,
-) -> bool:
-    """Honor Vault-level webhook/email preferences when they exist."""
-    row = connection.execute(
-        """
-        SELECT enabled, recipient_user_ids_json
-        FROM vault_notification_preferences
-        WHERE vault_id=%s AND event=%s AND channel=%s
-        """,
-        (vault_id, event, channel),
-    ).fetchone()
-    if row is None:
-        return True
-    if not row["enabled"]:
-        return False
-    recipients = _normalize_recipient_user_ids(row.get("recipient_user_ids_json"))
-    if recipients and user_id not in recipients:
-        return False
-    return True
-
-
-def _legacy_in_app_preference(
-    connection: Any, *, user_id: int, vault_id: int, event: str
-) -> bool | None:
-    """Translate one legacy vault preference without widening its recipients."""
-    row = connection.execute(
-        """
-        SELECT enabled, recipient_user_ids_json
-        FROM vault_notification_preferences
-        WHERE vault_id=%s AND event=%s AND channel='in_app'
-        """,
-        (vault_id, event),
-    ).fetchone()
-    if row is None:
-        return None
-    recipients = _normalize_recipient_user_ids(row.get("recipient_user_ids_json"))
-    if recipients and user_id not in recipients:
-        return False
-    return bool(row["enabled"])
-
-
 def _ensure_delivery(
     connection: Any, *, notification_id: int, channel: str, stamp: str
 ) -> None:
     if channel == "in_app":
         return
-    if channel not in {"webhook", "email", "push"}:
+    if channel != "email":
         raise ValueError(f"invalid delivery channel: {channel}")
     existing = connection.execute(
         """
@@ -482,13 +146,12 @@ def enqueue_notification(
 ) -> dict[str, Any]:
     """Persist one notification and attach any requested outbound channels.
 
-    ``in_app_enabled`` is persisted on the canonical row, so a push-only row
-    can share the same delivery model without becoming visible in the inbox.
+    ``in_app_enabled`` preserves visibility for historical email-only rows.
     ``dedupe_key`` is optional for legacy callers and unique per User when set.
     """
     requested_channels = tuple(dict.fromkeys(channels))
     for channel in requested_channels:
-        if channel not in {"in_app", "webhook", "email", "push"}:
+        if channel not in {"in_app", "email"}:
             raise ValueError(f"invalid delivery channel: {channel}")
     params = dict(message_params or {})
     if title_key and not title:
@@ -591,95 +254,8 @@ def enqueue_notification(
     return notification
 
 
-def upsert_push_subscription(
-    connection: Any,
-    *,
-    user_id: int,
-    session_id: str,
-    endpoint: str,
-    p256dh: str,
-    auth: str,
-) -> dict[str, Any]:
-    """Persist a Web Push subscription against the current User and Session."""
-    stamp = now_iso()
-    existing = connection.execute(
-        "SELECT id FROM push_subscriptions WHERE endpoint=%s",
-        (endpoint,),
-    ).fetchone()
-    if existing:
-        connection.execute(
-            """
-            UPDATE push_subscriptions
-            SET user_id=%s, session_id=%s, p256dh=%s, auth=%s, updated_at=%s
-            WHERE id=%s
-            """,
-            (user_id, session_id, p256dh, auth, stamp, existing["id"]),
-        )
-        subscription_id = existing["id"]
-    else:
-        subscription_id = connection.execute(
-            """
-            INSERT INTO push_subscriptions(
-                user_id, session_id, endpoint, p256dh, auth, created_at, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-            RETURNING id
-            """,
-            (user_id, session_id, endpoint, p256dh, auth, stamp, stamp),
-        ).fetchone()["id"]
-    return {
-        "id": subscription_id,
-        "user_id": user_id,
-        "session_id": session_id,
-        "endpoint": endpoint,
-    }
-
-
-def delete_push_subscriptions_for_session(connection: Any, session_id: str) -> int:
-    result = connection.execute(
-        "DELETE FROM push_subscriptions WHERE session_id=%s",
-        (session_id,),
-    )
-    return int(getattr(result, "rowcount", 0) or 0)
-
-
-def list_deliverable_push_subscriptions(
-    connection: Any,
-    *,
-    user_id: int,
-) -> list[dict[str, Any]]:
-    """Subscriptions whose Session is still live."""
-    stamp = now_iso()
-    rows = connection.execute(
-        """
-        SELECT ps.endpoint, ps.p256dh, ps.auth
-        FROM push_subscriptions ps
-        JOIN sessions s ON s.id = ps.session_id
-        WHERE ps.user_id=%s
-          AND s.revoked_at IS NULL
-          AND s.absolute_expires_at > %s
-          AND s.idle_expires_at > %s
-        """,
-        (user_id, stamp, stamp),
-    ).fetchall()
-    return [
-        {
-            "endpoint": row["endpoint"],
-            "keys": {"p256dh": row["p256dh"], "auth": row["auth"]},
-        }
-        for row in rows
-    ]
-
-
-def enqueue_job_terminal_push(connection: Any, *, job_id: int) -> int:
-    """Persist one canonical completion/failure notification for the Owner.
-
-    The old function name is retained for the worker call sites.  A canonical
-    row is written whenever in-app is enabled, even with no VAPID
-    configuration.  Push remains asynchronous and is attached to that same
-    row only when VAPID, the preference, and a live subscription all permit it.
-    With no personal preference yet, both in-app and configured push keep their
-    enabled defaults for the terminal events.
-    """
+def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
+    """Notify the Owner of terminal Jobs; failures also use optional SMTP."""
     job = connection.execute(
         """
         SELECT id, vault_id, path, action, status
@@ -695,62 +271,14 @@ def enqueue_job_terminal_push(connection: Any, *, job_id: int) -> int:
     body_key = f"notification.{event}.body"
     params = {"action": str(job["action"]), "path": str(job["path"])}
     recipients = _owner_recipients(connection)
-    webhook_enabled = _endpoint_config(connection, "webhook") is not None
-    smtp_enabled = _endpoint_config(connection, "smtp") is not None
+    smtp_enabled = _smtp_config() is not None
 
     enqueued = 0
     for recipient in recipients:
         user_id = int(recipient["user_id"])
-        preferences = _user_vault_preference_map(
-            connection, user_id=user_id, vault_id=vault_id, event=event
-        )
-        # In-app defaults to enabled so the inbox works before a user has
-        # visited the preferences UI. A matching legacy Vault preference
-        # remains usable, but its recipient list can only narrow delivery to
-        # the Owner.
-        if "in_app" in preferences:
-            in_app_enabled = preferences["in_app"]
-        else:
-            legacy_in_app = _legacy_in_app_preference(
-                connection, user_id=user_id, vault_id=vault_id, event=event
-            )
-            in_app_enabled = (
-                legacy_in_app if legacy_in_app is not None else True
-            )
-        # Push defaults to the previous issue #72 behaviour until a personal
-        # push preference is saved, but an explicit false always wins.
-        push_enabled = preferences.get("push", True)
-        subscriptions: list[dict[str, Any]] = []
-        if push_enabled and push_configured():
-            subscriptions = list_deliverable_push_subscriptions(
-                connection, user_id=user_id
-            )
-        channels: list[str] = []
-        if in_app_enabled:
-            channels.append("in_app")
-        if subscriptions:
-            channels.append("push")
-        # Global admin endpoints carry Job-failed alerts unless a Vault-level
-        # preference explicitly disables that channel for the Owner.
-        if event == "job_failed":
-            if webhook_enabled and _legacy_channel_allowed(
-                connection,
-                user_id=user_id,
-                vault_id=vault_id,
-                event=event,
-                channel="webhook",
-            ):
-                channels.append("webhook")
-            if smtp_enabled and _legacy_channel_allowed(
-                connection,
-                user_id=user_id,
-                vault_id=vault_id,
-                event=event,
-                channel="email",
-            ):
-                channels.append("email")
-        if not channels:
-            continue
+        channels = ["in_app"]
+        if event == "job_failed" and smtp_enabled:
+            channels.append("email")
         dedupe_key = f"job:{int(job['id'])}:{event}"
         existing = connection.execute(
             """
@@ -770,18 +298,12 @@ def enqueue_job_terminal_push(connection: Any, *, job_id: int) -> int:
             title_key=title_key,
             body_key=body_key,
             message_params=params,
-            in_app_enabled=in_app_enabled,
             dedupe_key=dedupe_key,
             channels=tuple(channels),
         )
         if existing is None:
             enqueued += 1
     return enqueued
-
-
-def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
-    """Descriptive alias for the canonical terminal notification enqueue."""
-    return enqueue_job_terminal_push(connection, job_id=job_id)
 
 
 def enqueue_archive_version_missing(
@@ -829,36 +351,13 @@ def _enqueue_incident_notification(
     title_key = f"notification.{event}.title"
     body_key = f"notification.{event}.body"
     recipients = _owner_recipients(connection)
-    webhook_enabled = _endpoint_config(connection, "webhook") is not None
-    smtp_enabled = _endpoint_config(connection, "smtp") is not None
+    smtp_enabled = _smtp_config() is not None
     enqueued = 0
     for recipient in recipients:
         user_id = int(recipient["user_id"])
-        preferences = _user_vault_preference_map(
-            connection, user_id=user_id, vault_id=vault_id, event=event
-        )
-        in_app_enabled = preferences.get("in_app", True)
-        channels: list[str] = []
-        if in_app_enabled:
-            channels.append("in_app")
-        if webhook_enabled and _legacy_channel_allowed(
-            connection,
-            user_id=user_id,
-            vault_id=vault_id,
-            event=event,
-            channel="webhook",
-        ):
-            channels.append("webhook")
-        if smtp_enabled and _legacy_channel_allowed(
-            connection,
-            user_id=user_id,
-            vault_id=vault_id,
-            event=event,
-            channel="email",
-        ):
+        channels = ["in_app"]
+        if smtp_enabled:
             channels.append("email")
-        if not channels:
-            continue
         dedupe_key = f"incident:{int(incident['id'])}"
         existing = connection.execute(
             """
@@ -877,7 +376,6 @@ def _enqueue_incident_notification(
             title_key=title_key,
             body_key=body_key,
             message_params=params,
-            in_app_enabled=in_app_enabled,
             dedupe_key=dedupe_key,
             channels=tuple(channels),
         )
@@ -908,7 +406,7 @@ def enqueue_job_terminal_notification_best_effort(
         return None
 
     try:
-        enqueued = enqueue_job_terminal_push(connection, job_id=job_id)
+        enqueued = enqueue_job_terminal_notification(connection, job_id=job_id)
     except Exception:
         try:
             connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
@@ -1115,31 +613,35 @@ def mark_all_notifications_read(
     }
 
 
-def _endpoint_config(connection: Any, kind: str) -> dict[str, Any] | None:
-    row = connection.execute(
-        """
-        SELECT config_json, enabled FROM notification_endpoints
-        WHERE kind=%s AND name='default'
-        """,
-        (kind,),
-    ).fetchone()
-    if not row or not row["enabled"]:
+def _smtp_config() -> dict[str, Any] | None:
+    """Resolve the optional recipient and transport only from the environment."""
+    if not all(
+        value.strip()
+        for value in (
+            settings.smtp_host,
+            settings.smtp_from_address,
+            settings.smtp_to_address,
+        )
+    ):
         return None
-    try:
-        return json.loads(row["config_json"] or "{}")
-    except json.JSONDecodeError:
-        return None
+    return {
+        "host": settings.smtp_host.strip(),
+        "port": settings.smtp_port,
+        "username": settings.smtp_username,
+        "password": settings.smtp_password,
+        "from_address": settings.smtp_from_address.strip(),
+        "to_address": settings.smtp_to_address.strip(),
+        "use_tls": settings.smtp_use_tls,
+    }
 
 
 def deliver_pending_notifications(
     connection: Any,
     *,
-    webhook_client: WebhookClient | None = None,
     smtp_client: SmtpClient | None = None,
-    push_client: PushClient | None = None,
     max_attempts: int = 3,
 ) -> dict[str, int]:
-    """Attempt pending webhook/email/push deliveries without touching Job rows."""
+    """Attempt pending email deliveries without touching Job rows or the inbox."""
     stamp = now_iso()
     pending = connection.execute(
         """
@@ -1155,29 +657,14 @@ def deliver_pending_notifications(
     ).fetchall()
 
     stats = {"attempted": 0, "delivered": 0, "failed": 0, "requeued": 0}
-    webhook_config = _endpoint_config(connection, "webhook")
-    smtp_config = _endpoint_config(connection, "smtp")
+    smtp_config = _smtp_config()
 
     for row in pending:
         stats["attempted"] += 1
         attempt = int(row["attempt_count"]) + 1
         error: str | None = None
         try:
-            if row["channel"] == "webhook":
-                if webhook_client is None or webhook_config is None:
-                    raise RuntimeError("webhook endpoint unavailable")
-                webhook_client.send(
-                    {
-                        "event": row["n_event"],
-                        "title": row["n_title"],
-                        "body": row["n_body"],
-                        "user_id": row["n_user_id"],
-                        "vault_id": row["n_vault_id"],
-                        "job_id": row["n_job_id"],
-                        "url": webhook_config.get("url"),
-                    }
-                )
-            elif row["channel"] == "email":
+            if row["channel"] == "email":
                 if smtp_client is None or smtp_config is None:
                     raise RuntimeError("smtp endpoint unavailable")
                 from .email_templates import render_email
@@ -1188,13 +675,7 @@ def deliver_pending_notifications(
                     body=row["n_body"],
                     vault_id=row["n_vault_id"],
                 )
-                to_address = _smtp_recipient(
-                    connection,
-                    user_id=int(row["n_user_id"]),
-                    smtp_config=smtp_config,
-                )
-                if not to_address:
-                    raise RuntimeError("smtp recipient unavailable")
+                to_address = smtp_config["to_address"]
                 smtp_client.send(
                     {
                         "template": row["n_event"],
@@ -1210,49 +691,6 @@ def deliver_pending_notifications(
                         "use_tls": smtp_config.get("use_tls", True),
                     }
                 )
-            elif row["channel"] == "push":
-                if not push_configured() or push_client is None:
-                    raise RuntimeError("push endpoint unavailable")
-                if row["n_vault_id"] is not None:
-                    preferences = _user_vault_preference_map(
-                        connection,
-                        user_id=int(row["n_user_id"]),
-                        vault_id=int(row["n_vault_id"]),
-                        event=str(row["n_event"]),
-                    )
-                    if not preferences.get("push", True):
-                        # A later opt-out applies before the asynchronous
-                        # delivery pass and does not expose a stale push.
-                        subscriptions = []
-                    else:
-                        subscriptions = list_deliverable_push_subscriptions(
-                            connection,
-                            user_id=int(row["n_user_id"]),
-                        )
-                else:
-                    subscriptions = list_deliverable_push_subscriptions(
-                        connection,
-                        user_id=int(row["n_user_id"]),
-                    )
-                if not subscriptions:
-                    # Security: revoked or expired Session → no delivery.
-                    pass
-                else:
-                    payload = {
-                        "title": row["n_title"],
-                        "body": row["n_body"],
-                        "data": {
-                            "event": row["n_event"],
-                            "job_id": row["n_job_id"],
-                            "vault_id": row["n_vault_id"],
-                            "url": "/",
-                        },
-                    }
-                    for subscription in subscriptions:
-                        push_client.send(
-                            subscription=subscription,
-                            payload=payload,
-                        )
             else:
                 raise RuntimeError(f"unsupported channel: {row['channel']}")
         except Exception as exc:  # system boundary failure
@@ -1312,55 +750,13 @@ def _delivery_retry_at(attempt: int, *, now: str | None = None) -> str:
     return (current + timedelta(seconds=delay)).replace(microsecond=0).isoformat()
 
 
-def _smtp_recipient(
-    connection: Any, *, user_id: int, smtp_config: Mapping[str, Any]
-) -> str | None:
-    user = connection.execute(
-        "SELECT username FROM users WHERE id=%s", (user_id,)
-    ).fetchone()
-    username = str((user or {}).get("username") or "").strip()
-    if "@" in username and " " not in username:
-        return username
-    configured = str(smtp_config.get("to_address") or "").strip()
-    return configured or None
-
-
-def production_delivery_clients(
-    connection: Any,
-) -> tuple[WebhookClient | None, SmtpClient | None]:
-    """Build concrete adapters when the matching admin endpoint is enabled."""
-    webhook_client = HttpWebhookClient() if _endpoint_config(connection, "webhook") else None
-    smtp_client = (
-        SmtpNotificationClient() if _endpoint_config(connection, "smtp") else None
-    )
-    return webhook_client, smtp_client
-
-
-class HttpWebhookClient:
-    """POST JSON to the configured webhook URL with a hard timeout."""
-
-    timeout = DELIVERY_TIMEOUT_SECONDS
-
-    def send(self, payload: dict[str, Any]) -> None:
-        url = str(payload.get("url") or "").strip()
-        if not url:
-            raise RuntimeError("webhook endpoint unavailable")
-        body = {key: value for key, value in payload.items() if key != "url"}
-        try:
-            with httpx.Client(
-                timeout=self.timeout,
-                follow_redirects=False,
-                trust_env=False,
-            ) as client:
-                response = client.post(url, json=body)
-                response.raise_for_status()
-        except Exception as exc:
-            _logger.warning("webhook delivery failed: %s", exc.__class__.__name__)
-            raise RuntimeError("webhook delivery failed") from exc
+def production_smtp_client() -> SmtpClient | None:
+    """Build the SMTP adapter only when deployment email is configured."""
+    return SmtpNotificationClient() if _smtp_config() else None
 
 
 class SmtpNotificationClient:
-    """Send one notification through the admin-configured SMTP endpoint."""
+    """Send one notification through the deployment-owned SMTP endpoint."""
 
     timeout = int(DELIVERY_TIMEOUT_SECONDS)
 
@@ -1400,22 +796,3 @@ class SmtpNotificationClient:
         except Exception as exc:
             _logger.warning("smtp delivery failed: %s", exc.__class__.__name__)
             raise RuntimeError("smtp delivery failed") from exc
-
-
-class PyWebPushClient:
-    """Production PushClient backed by pywebpush when the package is installed."""
-
-    def send(
-        self,
-        *,
-        subscription: dict[str, Any],
-        payload: dict[str, Any],
-    ) -> None:
-        from pywebpush import webpush
-
-        webpush(
-            subscription_info=subscription,
-            data=json.dumps(payload),
-            vapid_private_key=settings.vapid_private_key.strip(),
-            vapid_claims={"sub": settings.vapid_subject.strip() or "mailto:admin@localhost"},
-        )

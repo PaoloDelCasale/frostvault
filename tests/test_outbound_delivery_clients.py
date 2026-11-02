@@ -1,65 +1,20 @@
-"""Production SMTP/webhook adapters and Job-failed routing (issue #301)."""
-
+"""Deployment-owned SMTP adapters and unchanged event routing (#414)."""
 from __future__ import annotations
 
-import json
-import os
 import socket
 import tempfile
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
-
-for _flag, _value in (
-    ("O_DIRECTORY", 0x10000),
-    ("O_NOFOLLOW", 0x20000),
-    ("O_CLOEXEC", 0x80000),
-):
-    if not hasattr(os, _flag):
-        setattr(os, _flag, _value)
+from unittest.mock import MagicMock, patch
 
 from app.catalog import ArchiveCatalog
+from app.config import settings
 from app.database import SQLiteConnection
 from app.services import notifications
 from app.storage import _deliver_notifications_once, set_job
 from tests.test_database import run_alembic
-
-
-class _WebhookRecorder(ThreadingHTTPServer):
-    def __init__(self) -> None:
-        super().__init__(("127.0.0.1", 0), _WebhookHandler)
-        self.payloads: list[dict] = []
-        self._thread = threading.Thread(target=self.serve_forever, daemon=True)
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def stop(self) -> None:
-        self.shutdown()
-        self.server_close()
-        self._thread.join(timeout=2)
-
-    @property
-    def url(self) -> str:
-        host, port = self.server_address[:2]
-        return f"http://{host}:{port}/hook"
-
-
-class _WebhookHandler(BaseHTTPRequestHandler):
-    def do_POST(self) -> None:  # noqa: N802
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b"{}"
-        server = self.server
-        assert isinstance(server, _WebhookRecorder)
-        server.payloads.append(json.loads(raw.decode("utf-8")))
-        self.send_response(204)
-        self.end_headers()
-
-    def log_message(self, format: str, *args: object) -> None:  # noqa: A003
-        return
 
 
 class _SmtpRecorder(threading.Thread):
@@ -122,10 +77,7 @@ class _SmtpRecorder(threading.Thread):
 
     def stop(self) -> None:
         self._halt.set()
-        try:
-            self.sock.close()
-        except OSError:
-            pass
+        self.sock.close()
         self.join(timeout=2)
 
 
@@ -136,12 +88,23 @@ class OutboundDeliveryClientTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / "notify.db"
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        self.email_settings = replace(
+            settings,
+            smtp_host="127.0.0.1",
+            smtp_port=9,
+            smtp_from_address="frostvault@example.com",
+            smtp_to_address="ops@example.com",
+            smtp_use_tls=False,
+            smtp_username="",
+            smtp_password="",
+        )
+        patcher = patch.object(notifications, "settings", self.email_settings)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
-                """
-                INSERT INTO users(id, username, display_name, password_hash)
-                VALUES (1, 'owner@example.com', 'Owner', 'hash')
-                """
+                "INSERT INTO users(id, username, display_name, password_hash) "
+                "VALUES (1, 'owner@example.com', 'Owner', 'hash')"
             )
             connection.execute(
                 """
@@ -150,196 +113,147 @@ class OutboundDeliveryClientTests(unittest.TestCase):
                 ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
                 """
             )
-            catalog = ArchiveCatalog(connection)
-            catalog.observe_local_copy(
-                vault_id=2,
-                path="a.txt",
-                file_type="regular",
-                size=1,
-                mtime_ns=1,
-                observed_at="2026-07-21T10:00:00+00:00",
+            ArchiveCatalog(connection).observe_local_copy(
+                vault_id=2, path="a.txt", file_type="regular", size=1,
+                mtime_ns=1, observed_at="2026-07-21T10:00:00+00:00",
             )
-            self.job_id = int(
-                connection.execute(
-                    """
-                    INSERT INTO jobs(
-                        vault_id, vault_file_id, path, action, status,
-                        requested_by, requested_at, updated_at
-                    )
-                    SELECT 2, id, 'a.txt', 'upload', 'uploading', 1,
-                           '2026-07-21T10:00:00+00:00', '2026-07-21T10:00:00+00:00'
-                    FROM vault_files WHERE vault_id=2 LIMIT 1
-                    RETURNING id
-                    """
-                ).fetchone()["id"]
-            )
+            self.job_id = int(connection.execute(
+                """
+                INSERT INTO jobs(
+                    vault_id, vault_file_id, path, action, status,
+                    requested_by, requested_at, updated_at
+                )
+                SELECT 2, id, 'a.txt', 'upload', 'uploading', 1,
+                       '2026-07-21T10:00:00+00:00', '2026-07-21T10:00:00+00:00'
+                FROM vault_files WHERE vault_id=2 LIMIT 1
+                RETURNING id
+                """
+            ).fetchone()["id"])
 
-    def test_http_and_smtp_adapters_deliver_from_admin_config(self) -> None:
-        webhook = _WebhookRecorder()
+    def test_smtp_adapter_delivers_to_env_recipient_not_login_address(self) -> None:
         smtp = _SmtpRecorder()
-        webhook.start()
         smtp.start()
-        self.addCleanup(webhook.stop)
         self.addCleanup(smtp.stop)
-
-        with SQLiteConnection(str(self.path)) as connection:
-            notifications.set_global_webhook_endpoint(
-                connection, url=webhook.url, enabled=True
-            )
-            notifications.set_global_smtp_endpoint(
-                connection,
-                host="127.0.0.1",
-                port=smtp.port,
-                from_address="frostvault@example.com",
-                to_address="ops@example.com",
-                use_tls=False,
-                enabled=True,
-            )
+        with patch.object(
+            notifications, "settings", replace(self.email_settings, smtp_port=smtp.port)
+        ), SQLiteConnection(str(self.path)) as connection:
             notifications.enqueue_notification(
-                connection,
-                user_id=1,
-                vault_id=2,
-                event="job_failed",
-                title="Upload failed",
-                body="AccessDenied",
-                job_id=self.job_id,
-                channels=("in_app", "email", "webhook"),
-            )
-            webhook_client, smtp_client = notifications.production_delivery_clients(
-                connection
+                connection, user_id=1, vault_id=2, event="job_failed",
+                title="Upload failed", body="AccessDenied", job_id=self.job_id,
+                channels=("in_app", "email"),
             )
             stats = notifications.deliver_pending_notifications(
-                connection,
-                webhook_client=webhook_client,
-                smtp_client=smtp_client,
+                connection, smtp_client=notifications.production_smtp_client()
             )
-            job = connection.execute(
+            self.assertEqual(stats["delivered"], 1)
+            self.assertEqual(connection.execute(
                 "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
-            ).fetchone()
-            deliveries = connection.execute(
-                "SELECT channel, status FROM notification_deliveries ORDER BY channel"
-            ).fetchall()
-
-        self.assertEqual(stats["delivered"], 2)
-        self.assertEqual(job["status"], "uploading")
-        self.assertEqual(
-            [(row["channel"], row["status"]) for row in deliveries],
-            [("email", "delivered"), ("webhook", "delivered")],
-        )
-        self.assertEqual(len(webhook.payloads), 1)
-        self.assertEqual(webhook.payloads[0]["event"], "job_failed")
+            ).fetchone()["status"], "uploading")
+            self.assertEqual(len(notifications.list_in_app_notifications(connection, user_id=1)), 1)
         self.assertEqual(len(smtp.messages), 1)
         self.assertIn("Job failed", smtp.messages[0])
+        self.assertIn("To: ops@example.com", smtp.messages[0])
+        self.assertNotIn("To: owner@example.com", smtp.messages[0])
 
-    def test_job_failed_routes_to_configured_email_and_webhook(self) -> None:
-        with patch(
-            "app.storage.db",
-            side_effect=lambda: SQLiteConnection(str(self.path)),
-        ), SQLiteConnection(str(self.path)) as connection:
-            notifications.set_global_webhook_endpoint(
-                connection, url="http://127.0.0.1:9/hook", enabled=True
-            )
-            notifications.set_global_smtp_endpoint(
-                connection,
-                host="127.0.0.1",
-                port=9,
-                from_address="frostvault@example.com",
-                use_tls=False,
-                enabled=True,
-            )
-        with patch(
-            "app.storage.db",
-            side_effect=lambda: SQLiteConnection(str(self.path)),
-        ):
-            self.assertTrue(set_job(self.job_id, "failed", "AccessDenied"))
+    def test_terminal_jobs_keep_existing_email_routing(self) -> None:
+        for status in ("completed", "failed"):
+            with self.subTest(status=status), patch(
+                "app.storage.db", side_effect=lambda: SQLiteConnection(str(self.path))
+            ):
+                self.assertTrue(set_job(self.job_id, status, "result"))
         with SQLiteConnection(str(self.path)) as connection:
-            channels = [
-                row["channel"]
-                for row in connection.execute(
-                    """
-                    SELECT channel FROM notification_deliveries
-                    ORDER BY channel
-                    """
-                ).fetchall()
-            ]
-            job = connection.execute(
-                "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
-            ).fetchone()
-        self.assertEqual(job["status"], "failed")
-        self.assertEqual(channels, ["email", "webhook"])
+            rows = connection.execute(
+                "SELECT n.event, d.channel FROM notification_deliveries d "
+                "JOIN notifications n ON n.id=d.notification_id"
+            ).fetchall()
+            self.assertEqual([(row["event"], row["channel"]) for row in rows], [("job_failed", "email")])
+            self.assertEqual(len(notifications.list_in_app_notifications(connection, user_id=1)), 2)
 
-    def test_worker_uses_production_clients_and_backoff(self) -> None:
-        webhook = _WebhookRecorder()
-        webhook.start()
-        self.addCleanup(webhook.stop)
+    def test_existing_incidents_reach_both_channels_once(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
-            notifications.set_global_webhook_endpoint(
-                connection, url=webhook.url, enabled=True
-            )
+            for incident_id, enqueue in enumerate((
+                notifications.enqueue_archive_version_missing,
+                notifications.enqueue_cloud_only_conflict,
+            ), start=1):
+                incident = {"id": incident_id, "vault_id": 2, "path": "a.txt"}
+                self.assertEqual(enqueue(connection, incident=incident), 1)
+                self.assertEqual(enqueue(connection, incident=incident), 0)
+            self.assertEqual(len(notifications.list_in_app_notifications(connection, user_id=1)), 2)
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) AS total FROM notification_deliveries WHERE channel='email'"
+            ).fetchone()["total"], 2)
+
+    def test_missing_or_partial_email_configuration_leaves_inbox_working(self) -> None:
+        for field in ("smtp_host", "smtp_from_address", "smtp_to_address"):
+            with self.subTest(field=field), patch.object(
+                notifications, "settings", replace(self.email_settings, **{field: " "})
+            ), SQLiteConnection(str(self.path)) as connection:
+                self.assertIsNone(notifications.production_smtp_client())
+                notifications.enqueue_cloud_only_conflict(
+                    connection, incident={"id": len(field), "vault_id": 2, "path": "a.txt"}
+                )
+                self.assertEqual(connection.execute(
+                    "SELECT COUNT(*) AS total FROM notification_deliveries"
+                ).fetchone()["total"], 0)
+                self.assertGreater(notifications.count_unread_notifications(connection, user_id=1), 0)
+
+    def test_worker_uses_production_smtp_client(self) -> None:
+        smtp = _SmtpRecorder()
+        smtp.start()
+        self.addCleanup(smtp.stop)
+        with SQLiteConnection(str(self.path)) as connection:
             notifications.enqueue_notification(
-                connection,
-                user_id=1,
-                vault_id=2,
-                event="job_failed",
-                title="failed",
-                job_id=self.job_id,
-                channels=("webhook",),
+                connection, user_id=1, event="job_failed", title="failed",
+                channels=("in_app", "email"),
             )
-        with patch(
-            "app.storage.db",
-            side_effect=lambda: SQLiteConnection(str(self.path)),
-        ), patch(
-            "app.storage.notification_service.reconcile_pending_terminal_notifications"
-        ):
+        with patch.object(
+            notifications, "settings", replace(self.email_settings, smtp_port=smtp.port)
+        ), patch("app.storage.db", side_effect=lambda: SQLiteConnection(str(self.path))):
             _deliver_notifications_once()
         with SQLiteConnection(str(self.path)) as connection:
             delivery = connection.execute(
-                """
-                SELECT status, attempt_count, next_attempt_at
-                FROM notification_deliveries WHERE channel='webhook'
-                """
+                "SELECT status, attempt_count FROM notification_deliveries"
             ).fetchone()
         self.assertEqual(delivery["status"], "delivered")
         self.assertEqual(delivery["attempt_count"], 1)
-        self.assertEqual(len(webhook.payloads), 1)
+        self.assertEqual(len(smtp.messages), 1)
 
-    def test_retry_backoff_is_in_the_future(self) -> None:
+    def test_retry_backoff_is_in_the_future_and_errors_are_redacted(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
-            notifications.set_global_webhook_endpoint(
-                connection, url="http://127.0.0.1:1/missing", enabled=True
-            )
             notifications.enqueue_notification(
-                connection,
-                user_id=1,
-                vault_id=2,
-                event="job_failed",
-                title="failed",
-                job_id=self.job_id,
-                channels=("webhook",),
+                connection, user_id=1, event="job_failed", title="failed",
+                channels=("in_app", "email"),
             )
-            client = notifications.HttpWebhookClient()
-            client.timeout = 0.2
-            stats = notifications.deliver_pending_notifications(
-                connection,
-                webhook_client=client,
-                max_attempts=3,
-            )
-            delivery = connection.execute(
-                """
-                SELECT status, attempt_count, next_attempt_at, last_error
-                FROM notification_deliveries
-                """
-            ).fetchone()
-            job = connection.execute(
-                "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
-            ).fetchone()
-        self.assertEqual(stats["requeued"], 1)
-        self.assertEqual(delivery["status"], "pending")
-        self.assertEqual(delivery["attempt_count"], 1)
-        self.assertIsNotNone(delivery["next_attempt_at"])
-        self.assertNotEqual(delivery["next_attempt_at"], "")
-        self.assertEqual(delivery["last_error"], "webhook delivery failed")
-        self.assertEqual(job["status"], "uploading")
+            with patch("app.services.notifications.smtplib.SMTP", side_effect=RuntimeError("transport detail")):
+                stats = notifications.deliver_pending_notifications(
+                    connection, smtp_client=notifications.production_smtp_client()
+                )
+            delivery = connection.execute("SELECT * FROM notification_deliveries").fetchone()
+            self.assertEqual(stats["requeued"], 1)
+            self.assertEqual(delivery["status"], "pending")
+            self.assertGreater(delivery["next_attempt_at"], delivery["updated_at"])
+            self.assertEqual(delivery["last_error"], "smtp delivery failed")
+            self.assertEqual(notifications.count_unread_notifications(connection, user_id=1), 1)
+
+    def test_smtp_tls_modes_and_login(self) -> None:
+        for port in (587, 465):
+            with self.subTest(port=port), patch("app.services.notifications.smtplib.SMTP") as plain, patch("app.services.notifications.smtplib.SMTP_SSL") as secure:
+                factory = secure if port == 465 else plain
+                smtp = MagicMock()
+                factory.return_value = smtp
+                notifications.SmtpNotificationClient().send({
+                    "host": "smtp.example.test", "port": port,
+                    "from_address": "alerts@example.test", "to_address": "owner@example.test",
+                    "username": "alerts", "password": "test-only-password", "use_tls": True,
+                })
+                factory.assert_called_once()
+                (plain if port == 465 else secure).assert_not_called()
+                smtp.login.assert_called_once_with("alerts", "test-only-password")
+                smtp.send_message.assert_called_once()
+                if port == 465:
+                    smtp.starttls.assert_not_called()
+                else:
+                    smtp.starttls.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -387,7 +387,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Authentication | `BOOTSTRAP_ADMIN_*` (the Owner and its Emergency Password), `OIDC_*`, `BREAK_GLASS_ALLOWED_CIDRS` (LAN networks that accept the Emergency Password) |
 | Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES` |
 | Frontend | `FRONTEND_DIST_DIR` (Vite build output; required for HTML routes) |
-| Web Push | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (optional; see below) |
+| Email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS`, `SMTP_USE_TLS` (optional; see below) |
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `VAULT_RCLONE_*`, `RCLONE_CONFIG` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
 | Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RCLONE_MULTI_THREAD_*`, `RESTORE_*`, `CLOUD_PURGE_DELAY_SECONDS`, `ALLOW_LOCAL_DELETE` |
@@ -405,46 +405,36 @@ classification and precedence model.
 OIDC is configured only through the `OIDC_*` variables and binds the Owner on
 the first login. See [ADR-0017](docs/adr/0017-single-owner.md).
 
-### Progressive Web App and Web Push
+### Notifications and optional email
 
-The SPA is an installable PWA (`vite-plugin-pwa`): offline shell, cached last file
-listing, and optional push notifications when a Job completes or fails.
+The notification center receives the existing events without per-event,
+per-channel or per-Vault preferences. Failed Jobs, missing Archive Versions and
+Cloud-only Conflicts also receive email when SMTP is configured. Completed Jobs
+currently remain inbox-only; the new alert and recovery rules belong to #425.
 
-**HTTPS precondition.** Web Push and installability require a secure origin.
-Behind Traefik that is already true (see [docs/traefik.md](docs/traefik.md)).
-Plain HTTP on a LAN will not deliver push; `localhost` / `127.0.0.1` remain
-exempt for development. Document this as an operator precondition, not a bug.
+Email is optional and configured only in the deployment environment:
 
-**VAPID keys.** Generate a key pair once and set the public/private values:
+- `SMTP_HOST`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS` — all three must be
+  non-empty to enable delivery. The recipient is explicitly configured, not
+  inferred from the Owner's login address.
+- `SMTP_PORT` — defaults to `587`; valid range `1–65535`.
+- `SMTP_USERNAME`, `SMTP_PASSWORD` — optional authentication. The password is
+  never exposed by the settings API or stored in the database.
+- `SMTP_USE_TLS` — defaults to `true`: STARTTLS on port 587 (and other ports),
+  implicit TLS on port 465. Disable only for a trusted local relay.
 
-```bash
-.venv/bin/python - <<'PY'
-from py_vapid import Vapid
-from cryptography.hazmat.primitives import serialization
-import base64
-v = Vapid()
-v.generate_keys()
-raw = v.public_key.public_bytes(
-    encoding=serialization.Encoding.X962,
-    format=serialization.PublicFormat.UncompressedPoint,
-)
-print(base64.urlsafe_b64encode(raw).decode().rstrip("="))
-print(v.private_pem().decode())
-PY
-```
+Missing or partial configuration disables email, not the inbox. Email delivery
+has bounded retries and does not change Job results or remove notifications.
+Environment changes require an application restart. Existing database SMTP
+configuration is discarded by migration `0046_simplify_notifications`; set the
+SMTP environment variables before upgrading if you want email to continue.
+The migration preserves inbox history, email delivery rows, and all file data.
 
-- `VAPID_PUBLIC_KEY` — URL-safe base64 application server key
-- `VAPID_PRIVATE_KEY` — matching private key
-- `VAPID_SUBJECT` — contact URI, e.g. `mailto:ops@example.com`
+### Progressive Web App
 
-When these are unset or still placeholders, the app works normally: the push
-config endpoint reports `configured: false`, subscription POSTs are accepted
-without error but not stored as active push, and no delivery attempts run —
-the same degrade pattern as placeholder AWS credentials.
-
-Revoking a Session deletes that device’s push subscription. Deliveries also
-re-check the live Session and Vault at send time, so a revoked device or a
-decommissioned Vault never receives Job notifications.
+The SPA remains an installable PWA (`vite-plugin-pwa`) with an offline shell
+and a cached last file listing. Installability requires HTTPS (localhost is
+exempt). Removal of this offline functionality belongs to #415.
 
 Do not commit `.env`, `config/rclone.conf`, recovery exports, database files, or
 cloud credentials.

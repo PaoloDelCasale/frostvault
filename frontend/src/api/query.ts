@@ -13,7 +13,6 @@ import {
   fetchI18nCatalog,
   fetchJobs,
   fetchMe,
-  fetchNotificationPreferences,
   fetchNotifications,
   fetchRenameCandidates,
   fetchStats,
@@ -51,8 +50,6 @@ export const apiQueryKeys = {
   notifications: ["notifications"] as const,
   notificationsByStatus: (status: NotificationListStatus) =>
     ["notifications", status] as const,
-  notificationPreferences: (vaultId: number) =>
-    ["notification-preferences", vaultId] as const,
 };
 
 export function createAppQueryClient(
@@ -150,20 +147,6 @@ export function notificationsQueryOptions(
   return {
     queryKey: apiQueryKeys.notificationsByStatus(status),
     queryFn: () => fetchNotifications({ status, limit }),
-  };
-}
-
-/**
- * Preference query ownership lives with the dedicated preferences surface
- * (#226). Inbox consumers must not enable this key when the bell opens.
- * The key is vault-scoped even though the HTTP route uses the server-selected
- * active Vault, so cache entries cannot cross Vault switches silently.
- */
-export function notificationPreferencesQueryOptions(vaultId: number) {
-  return {
-    queryKey: apiQueryKeys.notificationPreferences(vaultId),
-    queryFn: fetchNotificationPreferences,
-    enabled: Number.isSafeInteger(vaultId) && vaultId > 0,
   };
 }
 

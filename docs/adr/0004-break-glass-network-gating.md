@@ -71,7 +71,7 @@ desired posture for a small closed deployment. Invite redemption only counts a
 *completely unknown* token as a guess, so a legitimate holder of an expired or
 already-redeemed Invite is never punished. Throttle trips and denied break-glass
 attempts are emitted through the structured `app/audit.py` helper now; turning
-those audit records into real operator notifications (email/webhook) is deferred
+those audit records into real operator notifications (email) is deferred
 to issue #16, on which this alerting depends. Misconfiguring
 `BREAK_GLASS_ALLOWED_CIDRS` with an unparseable entry fails startup closed rather
 than silently widening or narrowing access.
