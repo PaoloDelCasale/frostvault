@@ -198,7 +198,13 @@ class ArchiveCatalog:
         mtime_ns: int | None,
         observed_at: str,
         seen_at: str | None = None,
+        recovered_at: str | None = None,
     ) -> str:
+        """Record the observed Local Copy at ``path``.
+
+        ``recovered_at`` is set only by a completed recovery; it restarts the
+        automatic cleanup retention window. Other observations keep it.
+        """
         file_id = self._get_or_create_file(vault_id, path, observed_at)
         presence = "present" if file_type == "regular" else "unsupported"
         last_seen_at = seen_at or observed_at
@@ -259,6 +265,11 @@ class ArchiveCatalog:
                 observed_at,
             ),
         )
+        if recovered_at is not None:
+            self.connection.execute(
+                "UPDATE local_copies SET recovered_at=%s WHERE vault_file_id=%s",
+                (recovered_at, file_id),
+            )
         self._mark_path_aggregates_dirty(vault_id, path)
         return file_id
 

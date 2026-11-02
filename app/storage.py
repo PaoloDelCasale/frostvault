@@ -2978,6 +2978,7 @@ def _reconcile_recover_job(
         mtime_ns=recovered_stat.st_mtime_ns,
         observed_at=timestamp,
         seen_at=timestamp,
+        recovered_at=timestamp,
     )
     catalog.set_local_fingerprint(
         vault_id=int(job["vault_id"]),
@@ -3620,13 +3621,15 @@ def download_with_rclone(job: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
     stat = target.stat()
     with db() as connection:
+        recovered_at = now_iso()
         ArchiveCatalog(connection).observe_local_copy(
             vault_id=job["vault_id"],
             path=job["path"],
             file_type="regular",
             size=stat.st_size,
             mtime_ns=stat.st_mtime_ns,
-            observed_at=now_iso(),
+            observed_at=recovered_at,
+            recovered_at=recovered_at,
         )
     set_job_progress(job["id"], int(job.get("total_bytes") or stat.st_size))
     set_job(
@@ -5202,13 +5205,15 @@ def process_recover(job: dict[str, Any]) -> None:
             "Recovery claim was lost",
         )
         catalog = ArchiveCatalog(connection)
+        recovered_at = now_iso()
         catalog.observe_local_copy(
             vault_id=job["vault_id"],
             path=job["path"],
             file_type="regular",
             size=recovered_stat.st_size,
             mtime_ns=recovered_stat.st_mtime_ns,
-            observed_at=now_iso(),
+            observed_at=recovered_at,
+            recovered_at=recovered_at,
         )
         catalog.set_local_fingerprint(
             vault_id=job["vault_id"],

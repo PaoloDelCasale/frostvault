@@ -283,31 +283,37 @@ def file_is_stable(
     return age >= stability_seconds
 
 
+def _aware(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
 def local_cleanup_is_due(
     *,
     verified_at: str,
     retention_days: int,
     now: datetime,
     local_mtime_ns: int | None = None,
+    recovered_at: str | None = None,
 ) -> bool:
     """Return True once the Local Copy has been both protected and untouched.
 
-    The retention window counts from the later of the Archive Version's
-    verification and the Local Copy's own modification time.  A recovered
-    file therefore starts a fresh window from the moment it was written back,
-    instead of being removed again on the next scan because its cloud copy was
-    verified long ago.
+    The retention window counts from the latest of the Archive Version's
+    verification, the Local Copy's own modification time and its recovery.
+    A recovered file therefore starts a fresh window from the moment it was
+    written back, instead of being removed again on the next scan because its
+    cloud copy was verified long ago.  The recovery time is explicit because a
+    recovered file may keep its original (old) modification time.
     """
-    verified = datetime.fromisoformat(verified_at)
-    if verified.tzinfo is None:
-        verified = verified.replace(tzinfo=timezone.utc)
-    reference = verified
+    reference = _aware(datetime.fromisoformat(verified_at))
+    if recovered_at is not None:
+        recovered = _aware(datetime.fromisoformat(recovered_at))
+        if recovered > reference:
+            reference = recovered
     if local_mtime_ns is not None:
         modified = datetime.fromtimestamp(int(local_mtime_ns) / 1e9, tz=timezone.utc)
         if modified > reference:
             reference = modified
-    current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
-    return current >= reference + timedelta(days=retention_days)
+    return _aware(now) >= reference + timedelta(days=retention_days)
 
 
 def effective_bandwidth_kibps(
@@ -463,7 +469,8 @@ def queue_auto_local_cleanups(
     rows = connection.execute(
         """
         SELECT fp.path, av.id AS archive_version_id, av.verified_at,
-               lc.mtime_ns AS local_mtime_ns
+               lc.mtime_ns AS local_mtime_ns,
+               lc.recovered_at AS local_recovered_at
         FROM vault_files vf
         JOIN file_paths fp
           ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
@@ -493,6 +500,7 @@ def queue_auto_local_cleanups(
             retention_days=policy.local_retention_days,
             now=current,
             local_mtime_ns=row["local_mtime_ns"],
+            recovered_at=row["local_recovered_at"],
         ):
             continue
         try:
