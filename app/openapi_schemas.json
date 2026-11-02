@@ -556,7 +556,6 @@
         "preview": {
           "$ref": "#/components/schemas/CloudDeletionPreview"
         },
-        "quota": {},
         "restore_days": {
           "type": [
             "number",
@@ -1541,26 +1540,6 @@
       ],
       "type": "object"
     },
-    "OperatingWindow": {
-      "additionalProperties": true,
-      "properties": {
-        "end": {
-          "type": "string"
-        },
-        "start": {
-          "type": "string"
-        },
-        "weekday": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "weekday",
-        "start",
-        "end"
-      ],
-      "type": "object"
-    },
     "OperationPolicy": {
       "additionalProperties": true,
       "properties": {
@@ -1569,12 +1548,6 @@
         },
         "auto_upload": {
           "type": "boolean"
-        },
-        "bandwidth_limit_kibps": {
-          "type": [
-            "number",
-            "null"
-          ]
         },
         "exclude_globs": {
           "items": {
@@ -1594,12 +1567,6 @@
             "null"
           ]
         },
-        "operating_windows": {
-          "items": {
-            "$ref": "#/components/schemas/OperatingWindow"
-          },
-          "type": "array"
-        },
         "stability_seconds": {
           "type": "number"
         }
@@ -1610,9 +1577,7 @@
         "local_retention_days",
         "stability_seconds",
         "include_globs",
-        "exclude_globs",
-        "bandwidth_limit_kibps",
-        "operating_windows"
+        "exclude_globs"
       ],
       "type": "object"
     },
@@ -1638,114 +1603,6 @@
       "required": [
         "path"
       ],
-      "type": "object"
-    },
-    "QuotaDecision": {
-      "additionalProperties": true,
-      "properties": {
-        "code": {
-          "type": "string"
-        },
-        "limit": {
-          "type": "number"
-        },
-        "projected": {
-          "type": "number"
-        },
-        "severity": {
-          "type": "string"
-        }
-      },
-      "type": "object"
-    },
-    "QuotaEvaluation": {
-      "additionalProperties": true,
-      "properties": {
-        "allowed": {
-          "type": "boolean"
-        },
-        "decisions": {
-          "items": {
-            "$ref": "#/components/schemas/QuotaDecision"
-          },
-          "type": "array"
-        },
-        "state": {
-          "type": "string"
-        }
-      },
-      "type": "object"
-    },
-    "QuotaLimits": {
-      "additionalProperties": true,
-      "properties": {
-        "concurrency_hard_limit": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "concurrency_soft_limit": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "restore_30d_hard_limit_bytes": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "restore_30d_soft_limit_bytes": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "storage_hard_limit_bytes": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "storage_soft_limit_bytes": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "QuotaUsage": {
-      "additionalProperties": true,
-      "properties": {
-        "concurrency": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "restore_30d_bytes": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "restore_request_unknown": {
-          "type": "boolean"
-        },
-        "storage_bytes": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "storage_unknown": {
-          "type": "boolean"
-        }
-      },
       "type": "object"
     },
     "RecoverEstimateResponse": {
@@ -1865,15 +1722,6 @@
         "estimated_hours": {
           "type": "number"
         },
-        "price_book_id": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "price_book_name": {
-          "type": "string"
-        },
         "pricing_effective_at": {
           "type": [
             "string",
@@ -1881,6 +1729,9 @@
           ]
         },
         "pricing_note": {
+          "type": "string"
+        },
+        "region": {
           "type": "string"
         },
         "restore_object_irreversible": {
@@ -1895,8 +1746,7 @@
         "days",
         "estimated_cost_eur",
         "estimated_hours",
-        "price_book_id",
-        "price_book_name"
+        "region"
       ],
       "type": "object"
     },
@@ -2222,16 +2072,10 @@
           "const": "storage_month",
           "type": "string"
         },
-        "price_book_id": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "price_book_name": {
+        "pricing_effective_at": {
           "type": "string"
         },
-        "pricing_effective_at": {
+        "region": {
           "type": "string"
         },
         "size_bytes": {
@@ -2255,8 +2099,7 @@
         "estimated_cost_eur",
         "estimated_hours",
         "currency",
-        "price_book_id",
-        "price_book_name",
+        "region",
         "pricing_effective_at",
         "assumptions"
       ],
@@ -2953,128 +2796,6 @@
         "id",
         "slug",
         "name"
-      ],
-      "type": "object"
-    },
-    "VaultQuotaUpdatePayload": {
-      "additionalProperties": true,
-      "properties": {
-        "concurrency_hard_limit": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "concurrency_soft_limit": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "reason": {
-          "type": "string"
-        },
-        "restore_30d_hard_limit_bytes": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "restore_30d_soft_limit_bytes": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "storage_hard_limit_bytes": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "storage_soft_limit_bytes": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "storage_soft_limit_bytes",
-        "storage_hard_limit_bytes",
-        "concurrency_soft_limit",
-        "concurrency_hard_limit",
-        "restore_30d_soft_limit_bytes",
-        "restore_30d_hard_limit_bytes",
-        "reason"
-      ],
-      "type": "object"
-    },
-    "VaultQuotasResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "evaluation": {
-          "$ref": "#/components/schemas/QuotaEvaluation"
-        },
-        "limits": {
-          "anyOf": [
-            {
-              "$ref": "#/components/schemas/QuotaLimits"
-            },
-            {
-              "additionalProperties": true,
-              "properties": {
-                "concurrency_hard_limit": {
-                  "type": [
-                    "number",
-                    "null"
-                  ]
-                },
-                "concurrency_soft_limit": {
-                  "type": [
-                    "number",
-                    "null"
-                  ]
-                },
-                "restore_30d_hard_limit_bytes": {
-                  "type": [
-                    "number",
-                    "null"
-                  ]
-                },
-                "restore_30d_soft_limit_bytes": {
-                  "type": [
-                    "number",
-                    "null"
-                  ]
-                },
-                "storage_hard_limit_bytes": {
-                  "type": [
-                    "number",
-                    "null"
-                  ]
-                },
-                "storage_soft_limit_bytes": {
-                  "type": [
-                    "number",
-                    "null"
-                  ]
-                }
-              },
-              "type": "object"
-            }
-          ]
-        },
-        "usage": {
-          "$ref": "#/components/schemas/QuotaUsage"
-        },
-        "vault_id": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "limits",
-        "usage"
       ],
       "type": "object"
     },

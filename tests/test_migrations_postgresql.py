@@ -112,25 +112,17 @@ class PostgreSQLMigrationTests(unittest.TestCase):
     def test_fresh_database_upgrades_and_rolls_back_losslessly(self) -> None:
         upgraded = run_alembic()
         self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-        quota_columns = {
+        policy_columns = {
             column["name"]
-            for column in sa.inspect(self.engine).get_columns("vault_quotas")
+            for column in sa.inspect(self.engine).get_columns("vault_operation_policies")
         }
         system_setting_columns = {
             column["name"]
             for column in sa.inspect(self.engine).get_columns("system_settings")
         }
         self.assertEqual(
-            quota_columns,
-            {
-                "vault_id",
-                "storage_soft_limit_bytes",
-                "storage_hard_limit_bytes",
-                "concurrency_soft_limit",
-                "concurrency_hard_limit",
-                "restore_30d_soft_limit_bytes",
-                "restore_30d_hard_limit_bytes",
-            },
+            policy_columns & {"bandwidth_limit_kibps", "operating_windows_json"},
+            set(),
         )
         self.assertEqual(
             system_setting_columns,
@@ -157,6 +149,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             "vault_members",
             "lookup_rate_limit_keys",
             "lookup_rate_limit_attempts",
+            "vault_quotas",
+            "cost_price_books",
         }
         self.assertEqual(
             removed_tables & set(sa.inspect(self.engine).get_table_names()), set()

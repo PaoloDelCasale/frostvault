@@ -103,6 +103,16 @@ A queued or running operation targeting one stable Vault File and, when known,
 one exact Archive Version.
 _Avoid_: Task, request
 
+**Cost Estimate**:
+An approximate storage or restore cost computed from the AWS list prices bundled
+for the configured region. Prices are not editable and are never an AWS bill.
+_Avoid_: Price book, Quote, Bill
+
+**Upload Bandwidth Limit**:
+The one optional, installation-wide cap on upload transfer speed. There are no
+per-Vault quotas, limits, or operating windows; recoveries are never throttled.
+_Avoid_: Quota, Operating window, Vault bandwidth
+
 **Owner**:
 The single person who operates a FrostVault deployment and owns every Vault.
 There are no other users, roles, members, or shared Vaults.

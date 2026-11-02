@@ -4,14 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
-from .audit import audit_log
-from .services.vault_quotas import (
-    TERMINAL_JOB_STATUSES,
-    QuotaBlocked,
-    QuotaEvaluation,
-    admit_quota,
-    lock_vault,
-)
+from .services.job_admission import TERMINAL_JOB_STATUSES, lock_vault
 from .services.vault_recovery import require_upload_custody
 from .services.lifecycle_pins import is_path_pinned
 from .services.directory_aggregates import (
@@ -87,7 +80,6 @@ class ArchiveCatalog:
 
     def __init__(self, connection: Any):
         self.connection = connection
-        self.last_quota_evaluation = QuotaEvaluation(allowed=True)
         self.last_skipped_same_class = 0
         self.last_listing_rows_materialized = 0
         self._storage_class_source_supported: bool | None = None
@@ -3510,7 +3502,7 @@ class ArchiveCatalog:
         whole_vault: bool = False,
     ) -> tuple[list[int], int, int]:
         # This write is deliberately first: PostgreSQL takes a row lock and
-        # SQLite takes its write lock before the usage snapshot and inserts.
+        # SQLite takes its write lock before the candidate read and inserts.
         # Every manual upload/recovery/free-space admission therefore observes
         # one serialized Vault state.
         lock_vault(
@@ -3696,56 +3688,6 @@ class ArchiveCatalog:
             if allowed:
                 eligible.append(row)
         self.last_skipped_same_class = skipped_same
-
-        storage_unknown = action == "upload" and any(
-            row["local_size"] is None for row in eligible
-        )
-        storage_growth = sum(
-            int(row["local_size"] or 0) for row in eligible
-        ) if action == "upload" else 0
-        restore_unknown = action == "recover" and any(
-            row["cloud_size"] is None for row in eligible
-        )
-        restore_growth = sum(
-            int(row["cloud_size"] or 0) for row in eligible
-        ) if action == "recover" else 0
-        try:
-            self.last_quota_evaluation = admit_quota(
-                self.connection,
-                vault_id,
-                action=action,
-                candidate_count=len(eligible),
-                storage_growth_bytes=storage_growth,
-                storage_size_unknown=storage_unknown,
-                restore_growth_bytes=restore_growth,
-                restore_request_unknown=restore_unknown,
-                lock=False,
-            )
-        except QuotaBlocked as blocked:
-            audit_log(
-                "quota_hard_block",
-                connection=self.connection,
-                vault_id=vault_id,
-                actor_user_id=requested_by,
-                outcome="blocked",
-                visibility="vault",
-                action=action,
-                decisions=[item.as_dict() for item in blocked.evaluation.decisions],
-            )
-            raise
-        if self.last_quota_evaluation.warnings:
-            audit_log(
-                "quota_soft_warning",
-                connection=self.connection,
-                vault_id=vault_id,
-                actor_user_id=requested_by,
-                outcome="warned",
-                visibility="vault",
-                action=action,
-                decisions=[
-                    item.as_dict() for item in self.last_quota_evaluation.warnings
-                ],
-            )
 
         job_ids: list[int] = []
         total_bytes = 0

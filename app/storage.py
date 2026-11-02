@@ -141,18 +141,17 @@ from .services import notifications as notification_service
 from .services import cloud_deletion as cloud_deletion_service
 from .services import vault_decommission as vault_decommission_service
 from .services import audit_events as audit_event_store
+from .services.cost_estimates import list_prices
 from .services.restore_estimates import (
     estimate_restore,
     is_high_impact_restore,
 )
 from .services.job_scheduler import select_fair_jobs
 from .services.operation_policies import (
-    effective_bandwidth_kibps,
     get_policy,
-    policy_allows_transfer_now,
     queue_auto_local_cleanups,
     queue_auto_uploads,
-    rclone_bwlimit_arg,
+    upload_bwlimit_arg,
 )
 
 
@@ -430,28 +429,11 @@ def now_iso() -> str:
 
 
 def job_bwlimit(job: dict[str, Any] | None) -> str | None:
-    """Return the rclone --bwlimit value attached during fair scheduling."""
+    """Return the rclone --bwlimit attached to upload Jobs at scheduling."""
     if not job:
         return None
     value = job.get("bwlimit")
     return str(value) if value else None
-
-
-def job_bandwidth_bytes_per_sec(job: dict[str, Any] | None) -> int | None:
-    """Parse the job bwlimit (rclone ``Nk`` form) into bytes/sec for boto3."""
-    raw = job_bwlimit(job)
-    if not raw:
-        return None
-    text = raw.strip().lower()
-    if text.endswith("k"):
-        text = text[:-1]
-    try:
-        kibps = int(text)
-    except ValueError:
-        return None
-    if kibps <= 0:
-        return None
-    return kibps * 1024
 
 
 def rclone_download_perf_args() -> list[str]:
@@ -465,7 +447,7 @@ def rclone_download_perf_args() -> list[str]:
     ]
 
 
-def s3_download_transfer_config(job: dict[str, Any] | None = None) -> TransferConfig:
+def s3_download_transfer_config() -> TransferConfig:
     """TransferManager config for plain-vault Archive Version downloads."""
     runtime = _runtime_settings()
     threshold_mib = int(runtime.s3_download_multipart_threshold_mib or 8)
@@ -475,7 +457,6 @@ def s3_download_transfer_config(job: dict[str, Any] | None = None) -> TransferCo
         multipart_threshold=max(5, threshold_mib) * 1024 * 1024,
         multipart_chunksize=max(5, chunk_mib) * 1024 * 1024,
         max_concurrency=max(1, min(32, concurrency)),
-        max_bandwidth=job_bandwidth_bytes_per_sec(job),
         use_threads=True,
     )
 
@@ -3591,7 +3572,6 @@ def download_with_rclone(job: dict[str, Any]) -> None:
                     job_progress_callback(job),
                     job_id=job["id"],
                     config_path=str(runtime.path),
-                    bwlimit=job_bwlimit(job),
                 )
         else:
             run_rclone(
@@ -3601,7 +3581,6 @@ def download_with_rclone(job: dict[str, Any]) -> None:
                 *rclone_download_perf_args(),
                 job_progress_callback(job),
                 job_id=job["id"],
-                bwlimit=job_bwlimit(job),
             )
         ensure_job_active(job["id"], "Recovery stopped")
         if not temporary.is_file():
@@ -4420,7 +4399,6 @@ def process_rename(job: dict[str, Any]) -> None:
                         job_progress_callback(job),
                         job_id=job["id"],
                         config_path=str(runtime.path),
-                        bwlimit=job_bwlimit(job),
                     )
                     ensure_job_active(job["id"], "Rename stopped")
             else:
@@ -4430,7 +4408,6 @@ def process_rename(job: dict[str, Any]) -> None:
                     configured_rclone_destination(job, job["path"]),
                     job_progress_callback(job),
                     job_id=job["id"],
-                    bwlimit=job_bwlimit(job),
                 )
                 ensure_job_active(job["id"], "Rename stopped")
             head = client.head_object(Bucket=job["s3_bucket"], Key=new_key)
@@ -4958,7 +4935,6 @@ def download_exact_version_plaintext(
                     job_progress_callback(job),
                     job_id=job["id"],
                     config_path=str(runtime.path),
-                    bwlimit=job_bwlimit(job),
                 )
         else:
             logical_path = object_key_to_path(
@@ -4974,7 +4950,6 @@ def download_exact_version_plaintext(
                 *rclone_download_perf_args(),
                 job_progress_callback(job),
                 job_id=job["id"],
-                bwlimit=job_bwlimit(job),
             )
         ensure_job_active(job["id"], "Recovery stopped")
         if not temporary.is_file():
@@ -4997,7 +4972,7 @@ def download_exact_version_plaintext(
             Filename=str(temporary),
             ExtraArgs={"VersionId": provider_version_id},
             Callback=on_bytes,
-            Config=s3_download_transfer_config(job),
+            Config=s3_download_transfer_config(),
         )
         reporter.flush()
     except Exception:
@@ -5040,10 +5015,7 @@ def process_recover(job: dict[str, Any]) -> None:
         and job.get("approved_at") is None
     ):
         with db() as connection:
-            from .services.cost_estimates import get_active_price_book
-
             runtime = _runtime_settings(connection)
-            book = get_active_price_book(connection)
         tier = job.get("restore_tier") or runtime.restore_tier or "Bulk"
         days = int(job.get("restore_days") or runtime.restore_days or 3)
         estimate = estimate_restore(
@@ -5051,7 +5023,7 @@ def process_recover(job: dict[str, Any]) -> None:
             storage_class=str(storage_class),
             tier=str(tier),
             days=days,
-            pricing=book.restore_rates,
+            pricing=list_prices(runtime.aws_region).restore_rates,
         )
         if is_high_impact_restore(
             size_bytes=size_bytes,
@@ -5767,7 +5739,7 @@ def process_jobs_once(*, wait: bool = True) -> int:
             restore_due_before=restore_due_before,
             limit=batch_size,
         )
-        policy_cache: dict[int, Any] = {}
+        upload_bwlimit = upload_bwlimit_arg(runtime.bandwidth_limit_kibps)
         eligible_candidates: list[dict[str, Any]] = []
         seen_purge_groups: set[tuple[int, str]] = set()
         for row in candidates:
@@ -5780,16 +5752,9 @@ def process_jobs_once(*, wait: bool = True) -> int:
                 and vault_decommission_service.local_work_suspended(job)
             ):
                 continue
-            if vault_id not in policy_cache:
-                policy_cache[vault_id] = get_policy(connection, vault_id)
-            policy = policy_cache[vault_id]
-            if not policy_allows_transfer_now(policy, now=current):
-                continue
-            limit = effective_bandwidth_kibps(
-                global_limit=runtime.bandwidth_limit_kibps,
-                vault_limit=policy.bandwidth_limit_kibps,
-            )
-            job["bwlimit"] = rclone_bwlimit_arg(limit)
+            # One optional global limit, for uploads only (#413).
+            if job["action"] == "upload":
+                job["bwlimit"] = upload_bwlimit
             if job["action"] == "cloud-purge":
                 if not job.get("group_id"):
                     continue

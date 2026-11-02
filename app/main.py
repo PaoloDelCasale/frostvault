@@ -72,14 +72,6 @@ from .oidc import (
 from .oidc_network import oidc_host_addresses
 from .proxy import parse_networks, resolve_client_ip
 from .security import DUMMY_PASSWORD_HASH, verify_password
-from .services.vault_quotas import (
-    QuotaBlocked,
-    QuotaLimits,
-    evaluate_current_quota,
-    get_limits,
-    set_limits,
-    usage_snapshot,
-)
 from .services.vault_recovery import (
     RecoveryCustodyRequired,
     RecoveryError,
@@ -119,12 +111,9 @@ from .services.operation_policies import (
     set_policy,
 )
 from .services.cost_estimates import (
-    PriceBook,
-    activate_price_book,
+    estimate_restore_cost,
     estimate_storage_month,
-    get_active_price_book,
-    list_price_books,
-    upsert_price_book,
+    list_prices,
 )
 from .services.lifecycle_policies import (
     clear_folder_override,
@@ -659,17 +648,6 @@ async def _stale_system_settings_handler(
     )
 
 
-@app.exception_handler(QuotaBlocked)
-async def _quota_blocked_handler(_: Request, error: QuotaBlocked) -> JSONResponse:
-    # Hard quota decisions are a distinct machine-readable contract. The
-    # transaction that raised this exception is rolled back, so no job can be
-    # partially admitted.
-    return JSONResponse(
-        {"error": "quota_blocked", "quota": error.evaluation.as_dict()},
-        status_code=409,
-    )
-
-
 @app.exception_handler(RecoveryCustodyRequired)
 async def _recovery_custody_handler(
     _: Request, error: RecoveryCustodyRequired
@@ -960,36 +938,6 @@ class VaultDecommissionStart(VaultDecommissionPreview):
     preview_fingerprint: str = Field(min_length=64, max_length=64)
 
 
-class VaultQuotaUpdate(BaseModel):
-    """Global-admin quota replacement; omitted limits mean unlimited."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    storage_soft_limit_bytes: int | None = Field(default=None, ge=0)
-    storage_hard_limit_bytes: int | None = Field(default=None, ge=0)
-    concurrency_soft_limit: int | None = Field(default=None, ge=0)
-    concurrency_hard_limit: int | None = Field(default=None, ge=0)
-    restore_30d_soft_limit_bytes: int | None = Field(default=None, ge=0)
-    restore_30d_hard_limit_bytes: int | None = Field(default=None, ge=0)
-    reason: str = Field(min_length=3, max_length=500)
-
-    @model_validator(mode="after")
-    def validate_order(self) -> "VaultQuotaUpdate":
-        for soft, hard in (
-            (self.storage_soft_limit_bytes, self.storage_hard_limit_bytes),
-            (self.concurrency_soft_limit, self.concurrency_hard_limit),
-            (
-                self.restore_30d_soft_limit_bytes,
-                self.restore_30d_hard_limit_bytes,
-            ),
-        ):
-            if soft is not None and hard is not None and soft > hard:
-                raise ValueError(
-                    "soft quota limits must be less than or equal to hard limits"
-                )
-        return self
-
-
 class SystemSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1064,14 +1012,6 @@ class LifecycleFolderOverrideDelete(BaseModel):
     folder_path: str = Field(min_length=1, max_length=500)
 
 
-class OperatingWindowModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    weekday: int = Field(ge=0, le=6)
-    start: str = Field(min_length=4, max_length=5)
-    end: str = Field(min_length=4, max_length=5)
-
-
 class OperationPolicyUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1081,8 +1021,6 @@ class OperationPolicyUpdate(BaseModel):
     stability_seconds: int = Field(default=300, ge=0)
     include_globs: list[str] = Field(default_factory=list)
     exclude_globs: list[str] = Field(default_factory=list)
-    bandwidth_limit_kibps: int | None = Field(default=None, ge=0)
-    operating_windows: list[OperatingWindowModel] = Field(default_factory=list)
 
 
 class GlobPreviewRequest(BaseModel):
@@ -1093,29 +1031,20 @@ class GlobPreviewRequest(BaseModel):
     exclude_globs: list[str] = Field(default_factory=list)
 
 
-class CostPriceBookCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=1, max_length=120)
-    currency: str = Field(default="EUR", min_length=3, max_length=8)
-    effective_at: str = Field(min_length=10, max_length=64)
-    assumptions: dict[str, Any] = Field(default_factory=dict)
-    storage_rates: dict[str, float] = Field(default_factory=dict)
-    restore_rates: dict[str, dict[str, float]] = Field(default_factory=dict)
-    reason: str = Field(min_length=3, max_length=500)
-
-
-class CostPriceBookActivate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    reason: str = Field(min_length=3, max_length=500)
-
-
 class StorageEstimateRequest(BaseModel):
+    """Monthly storage estimate for an explicit size or a Vault's cloud data."""
+
     model_config = ConfigDict(extra="forbid")
 
-    size_bytes: int = Field(ge=0)
+    size_bytes: int | None = Field(default=None, ge=0)
+    vault_id: int | None = Field(default=None, ge=1)
     storage_class: str = Field(default="STANDARD", min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "StorageEstimateRequest":
+        if (self.size_bytes is None) == (self.vault_id is None):
+            raise ValueError("Provide exactly one of size_bytes or vault_id")
+        return self
 
 
 def normalize_directory(value: str, *, api: bool = False) -> str:
@@ -3129,6 +3058,7 @@ def queue_jobs(
                     storage_class=str(selected.get("storage_class") or ""),
                     tier=resolved_tier,
                     days=resolved_days,
+                    pricing=list_prices(settings.aws_region).restore_rates,
                 )
                 estimated_cost_eur = estimate.estimated_cost_eur
                 estimated_hours = estimate.estimated_hours
@@ -3156,7 +3086,6 @@ def queue_jobs(
                     "All selected Archive Versions are already in the requested storage class",
                 )
             raise HTTPException(409, "No files are eligible for this operation")
-        quota = catalog.last_quota_evaluation.as_dict()
     if not job_ids:
         raise HTTPException(409, "An operation is already running on the selected files")
     result = {
@@ -3164,7 +3093,6 @@ def queue_jobs(
         "job_ids": job_ids,
         "item_count": len(job_ids),
         "total_bytes": total_bytes,
-        "quota": quota,
         "archive_version_id": archive_version_id,
         "restore_tier": resolved_tier,
         "restore_days": resolved_days,
@@ -3247,12 +3175,8 @@ def recover_estimate(
     estimate_payload = None
     high_impact = False
     if requires_restore:
-        with db() as connection:
-            book = get_active_price_book(connection)
-        from .services.cost_estimates import estimate_restore_cost
-
         priced = estimate_restore_cost(
-            book,
+            list_prices(settings.aws_region),
             size_bytes=int(selected.get("size") or 0),
             storage_class=str(selected.get("storage_class") or ""),
             tier=tier,
@@ -3272,11 +3196,10 @@ def recover_estimate(
             "pricing_note": str(
                 priced.assumptions.get(
                     "disclaimer",
-                    "Internal estimate from configured price data; not an AWS Billing quote.",
+                    "Estimate from AWS list prices; not an AWS Billing quote.",
                 )
             ),
-            "price_book_id": priced.price_book_id,
-            "price_book_name": priced.price_book_name,
+            "region": priced.region,
             "pricing_effective_at": priced.pricing_effective_at,
             "assumptions": priced.assumptions,
             "restore_object_irreversible": True,
@@ -3577,9 +3500,7 @@ def get_storage_classes(
     _: dict[str, Any] = Depends(current_user),
     __: dict[str, Any] = Depends(current_vault),
 ):
-    with db() as connection:
-        book = get_active_price_book(connection)
-    return list_storage_class_options(book)
+    return list_storage_class_options(list_prices(settings.aws_region))
 
 
 @app.post(
@@ -3948,62 +3869,6 @@ def admin_relocate_vault_root(
     }
 
 
-def _quota_payload(connection: Any, vault_id: int) -> dict[str, Any]:
-    vault = connection.execute(
-        "SELECT id FROM vaults WHERE id=%s", (vault_id,)
-    ).fetchone()
-    if not vault:
-        raise HTTPException(404, "Vault not found")
-    evaluation = evaluate_current_quota(connection, vault_id).as_dict()
-    return {
-        "vault_id": vault_id,
-        "limits": get_limits(connection, vault_id).as_dict(),
-        "usage": usage_snapshot(connection, vault_id),
-        "evaluation": {"state": "evaluated", **evaluation},
-    }
-
-
-@app.get("/api/admin/vaults/{vault_id}/quotas", response_model=response_model("VaultQuotasResponse"))
-def admin_vault_quotas(
-    vault_id: int, _: dict[str, Any] = Depends(current_user)
-):
-    with db() as connection:
-        return _quota_payload(connection, vault_id)
-
-
-@app.put("/api/admin/vaults/{vault_id}/quotas", response_model=response_model("VaultQuotasResponse"))
-def update_admin_vault_quotas(
-    vault_id: int,
-    action: VaultQuotaUpdate,
-    admin: dict[str, Any] = Depends(current_user),
-):
-    limits = QuotaLimits(
-        **action.model_dump(exclude={"reason"})
-    )
-    with db() as connection:
-        try:
-            set_limits(connection, vault_id, limits)
-        except LookupError as exc:
-            raise HTTPException(404, "Vault not found") from exc
-        payload = _quota_payload(connection, vault_id)
-        audit_log(
-            "vault_quotas_changed",
-            connection=connection,
-            vault_id=vault_id,
-            actor_id=admin["id"],
-            reason=action.reason,
-            limits=limits.as_dict(),
-        )
-    return payload
-
-
-@app.get("/api/vault/quotas", response_model=response_model("VaultQuotasResponse"))
-def own_vault_quotas(vault: dict[str, Any] = Depends(current_vault)):
-    """Quota limits and usage of the selected Vault."""
-    with db() as connection:
-        return _quota_payload(connection, vault["id"])
-
-
 @app.get("/api/vault/operation-policy", response_model=response_model("OperationPolicy"))
 def own_vault_operation_policy(vault: dict[str, Any] = Depends(current_vault)):
     with db() as connection:
@@ -4023,8 +3888,6 @@ def update_vault_operation_policy(
         stability_seconds=action.stability_seconds,
         include_globs=tuple(action.include_globs),
         exclude_globs=tuple(action.exclude_globs),
-        bandwidth_limit_kibps=action.bandwidth_limit_kibps,
-        operating_windows=tuple(item.model_dump() for item in action.operating_windows),
     )
     with db() as connection:
         try:
@@ -4063,72 +3926,6 @@ def preview_vault_operation_globs(
         raise HTTPException(422, str(exc)) from exc
 
 
-@app.get("/api/admin/cost-price-books/active", response_model=JsonObjectResponse)
-def admin_active_cost_price_book(_: dict[str, Any] = Depends(current_user)):
-    with db() as connection:
-        return get_active_price_book(connection).as_dict()
-
-
-@app.get("/api/admin/cost-price-books", response_model=JsonObjectResponse)
-def admin_list_cost_price_books(_: dict[str, Any] = Depends(current_user)):
-    with db() as connection:
-        return {"items": [book.as_dict() for book in list_price_books(connection)]}
-
-
-@app.post("/api/admin/cost-price-books", status_code=201, response_model=JsonObjectResponse)
-def admin_create_cost_price_book(
-    action: CostPriceBookCreate,
-    admin: dict[str, Any] = Depends(current_user),
-):
-    with db() as connection:
-        created = upsert_price_book(
-            connection,
-            PriceBook(
-                name=action.name,
-                currency=action.currency,
-                effective_at=action.effective_at,
-                assumptions=action.assumptions,
-                storage_rates=action.storage_rates,
-                restore_rates=action.restore_rates,
-            ),
-        )
-        audit_log(
-            "cost_price_book_created",
-            connection=connection,
-            actor_user_id=admin["id"],
-            outcome="created",
-            visibility="admin",
-            reason=action.reason,
-            price_book_id=created.id,
-            effective_at=created.effective_at,
-        )
-    return created.as_dict()
-
-
-@app.post("/api/admin/cost-price-books/{price_book_id}/activate", response_model=JsonObjectResponse)
-def admin_activate_cost_price_book(
-    price_book_id: int,
-    action: CostPriceBookActivate,
-    admin: dict[str, Any] = Depends(current_user),
-):
-    with db() as connection:
-        try:
-            active = activate_price_book(connection, price_book_id)
-        except LookupError as exc:
-            raise HTTPException(404, "Price book not found") from exc
-        audit_log(
-            "cost_price_book_activated",
-            connection=connection,
-            actor_user_id=admin["id"],
-            outcome="activated",
-            visibility="admin",
-            reason=action.reason,
-            price_book_id=active.id,
-            effective_at=active.effective_at,
-        )
-    return active.as_dict()
-
-
 @app.post(
     "/api/admin/cost-estimates/storage",
     response_model=response_model("StorageEstimateResponse"),
@@ -4137,11 +3934,28 @@ def admin_storage_cost_estimate(
     action: StorageEstimateRequest,
     _: dict[str, Any] = Depends(current_user),
 ):
-    with db() as connection:
-        book = get_active_price_book(connection)
+    size_bytes = action.size_bytes
+    if action.vault_id is not None:
+        with db() as connection:
+            if not connection.execute(
+                "SELECT id FROM vaults WHERE id=%s", (action.vault_id,)
+            ).fetchone():
+                raise HTTPException(404, "Vault not found")
+            usage = connection.execute(
+                """
+                SELECT COALESCE(SUM(size), 0) AS total,
+                       SUM(CASE WHEN size IS NULL THEN 1 ELSE 0 END) AS unknown
+                FROM archive_versions
+                WHERE vault_id=%s AND availability='available'
+                """,
+                (action.vault_id,),
+            ).fetchone()
+        if usage["unknown"]:
+            raise HTTPException(409, "The Vault's cloud storage size is unknown")
+        size_bytes = int(usage["total"] or 0)
     return estimate_storage_month(
-        book,
-        size_bytes=action.size_bytes,
+        list_prices(settings.aws_region),
+        size_bytes=int(size_bytes or 0),
         storage_class=action.storage_class,
     ).as_dict()
 

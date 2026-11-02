@@ -30,8 +30,7 @@ The Vault S3 prefix is application-owned. Manual edits in the bucket are
 unsupported. Extra VersionIds (crash before purge, external drift) are not
 recoverable; they raise an incident and the worker retries purge.
 
-Quota admission still charges the full size of the incoming Local Copy, not the
-net after purge. Bootstrap Vaults (`BOOTSTRAP_*`) are Archive History so
+Bootstrap Vaults (`BOOTSTRAP_*`) are Archive History so
 existing deploys keep their promise; only the interactive form forces an
 explicit choice.
 

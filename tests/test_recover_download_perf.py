@@ -17,7 +17,6 @@ from unittest.mock import Mock, patch
 
 from app.storage import (
     download_exact_version_plaintext,
-    job_bandwidth_bytes_per_sec,
     rclone_download_perf_args,
     s3_download_transfer_config,
 )
@@ -36,19 +35,18 @@ class RecoverDownloadPerfTests(unittest.TestCase):
             ["--multi-thread-streams=12", "--multi-thread-cutoff=32M"],
         )
 
-    def test_s3_transfer_config_honours_job_bwlimit(self) -> None:
+    def test_s3_transfer_config_uses_settings_and_is_never_throttled(self) -> None:
         settings = SimpleNamespace(
             s3_download_max_concurrency=6,
             s3_download_multipart_threshold_mib=16,
             s3_download_multipart_chunksize_mib=8,
         )
         with patch("app.storage.settings", settings):
-            config = s3_download_transfer_config({"bwlimit": "256k"})
+            config = s3_download_transfer_config()
         self.assertEqual(config.max_concurrency, 6)
         self.assertEqual(config.multipart_threshold, 16 * 1024 * 1024)
-        self.assertEqual(config.max_bandwidth, 256 * 1024)
-        self.assertEqual(job_bandwidth_bytes_per_sec({"bwlimit": "256k"}), 256 * 1024)
-        self.assertIsNone(job_bandwidth_bytes_per_sec({}))
+        # Only uploads are throttled (#413); recoveries run at full speed.
+        self.assertIsNone(config.max_bandwidth)
 
     def test_plain_download_uses_transfer_manager_with_version_id(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -81,7 +79,6 @@ class RecoverDownloadPerfTests(unittest.TestCase):
                 "s3_prefix": "docs",
                 "rclone_remote": "plain-remote",
                 "encryption_mode": "plain",
-                "bwlimit": None,
             }
             settings = SimpleNamespace(
                 s3_download_max_concurrency=10,
@@ -120,7 +117,7 @@ class RecoverDownloadPerfTests(unittest.TestCase):
                 "s3_prefix": "docs",
                 "rclone_remote": "crypt-remote",
                 "encryption_mode": None,
-                "bwlimit": "128k",
+                "bwlimit": "128k",  # never forwarded to a recovery download
             }
             settings = SimpleNamespace(
                 rclone_multi_thread_streams=8,
@@ -144,7 +141,7 @@ class RecoverDownloadPerfTests(unittest.TestCase):
             self.assertIn("--s3-version-id=crypt-v", args)
             self.assertIn("--multi-thread-streams=8", args)
             self.assertIn("--multi-thread-cutoff=64M", args)
-            self.assertEqual(kwargs.get("bwlimit"), "128k")
+            self.assertIsNone(kwargs.get("bwlimit"))
 
 
 if __name__ == "__main__":

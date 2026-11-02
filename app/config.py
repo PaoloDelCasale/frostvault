@@ -87,8 +87,8 @@ class Settings:
         60, int(os.getenv("CLOUD_PURGE_DELAY_SECONDS", str(24 * 60 * 60)))
     )
     allow_local_delete: bool = as_bool("ALLOW_LOCAL_DELETE", False)
-    # Global rclone bandwidth cap in KiB/s. None/0 means unlimited; per-vault
-    # operation policies may override with a tighter or explicit limit.
+    # Optional global upload bandwidth cap in KiB/s (#413). None/0 means
+    # unlimited; recoveries and other transfers are never throttled.
     bandwidth_limit_kibps: int | None = (
         None
         if not os.getenv("BANDWIDTH_LIMIT_KIBPS", "").strip()
