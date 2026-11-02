@@ -125,7 +125,6 @@ class DatabaseMigrationTests(unittest.TestCase):
                 bootstrap_admin_username="admin",
                 bootstrap_admin_password="a-secure-test-password",
                 bootstrap_admin_display_name="Administrator",
-                bootstrap_vault_slug="",
             )
             with patch("app.database.settings", test_settings):
                 initialize_database()
@@ -140,10 +139,10 @@ class DatabaseMigrationTests(unittest.TestCase):
                         "PRAGMA table_info(system_settings)"
                     ).fetchall()
                 }
-                oidc_configuration_columns = {
+                table_names = {
                     row["name"]
                     for row in connection.execute(
-                        "PRAGMA table_info(oidc_configuration)"
+                        "SELECT name FROM sqlite_master WHERE type='table'"
                     ).fetchall()
                 }
                 job_columns = {
@@ -166,30 +165,18 @@ class DatabaseMigrationTests(unittest.TestCase):
                 system_setting_columns,
                 {"key", "value", "updated_by", "updated_at"},
             )
+            # Single owner (#412): no multi-user or UI-managed OIDC tables.
             self.assertEqual(
-                oidc_configuration_columns,
-                {
-                    "id",
-                    "active_enabled",
-                    "active_version",
-                    "active_issuer",
-                    "active_client_id",
-                    "active_secret_ciphertext",
-                    "active_scopes",
-                    "active_login_ttl_seconds",
-                    "draft_version",
-                    "draft_issuer",
-                    "draft_client_id",
-                    "draft_secret_ciphertext",
-                    "draft_scopes",
-                    "draft_login_ttl_seconds",
-                    "validated_draft_version",
-                    "validation_status",
-                    "validation_error",
-                    "validated_at",
-                    "updated_by",
-                    "updated_at",
+                table_names
+                & {
+                    "invites",
+                    "oidc_configuration",
+                    "source_areas",
+                    "vault_members",
+                    "lookup_rate_limit_keys",
+                    "lookup_rate_limit_attempts",
                 },
+                set(),
             )
             self.assertLessEqual(
                 {"claim_token", "claimed_at", "claim_expires_at"}, job_columns
@@ -590,9 +577,9 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertNotEqual(downgraded.returncode, 0)
             self.assertIn("would lose versioned archive data", downgraded.stderr)
 
-    def test_head_creates_invites_and_makes_password_nullable(self) -> None:
+    def test_head_is_single_owner_and_keeps_password_nullable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "invites.db"
+            path = Path(directory) / "single-owner.db"
             upgraded = run_alembic(path)
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
 
@@ -603,41 +590,29 @@ class DatabaseMigrationTests(unittest.TestCase):
                         "SELECT name FROM sqlite_master WHERE type='table'"
                     ).fetchall()
                 }
-                self.assertIn("invites", names)
-                columns = {
-                    row["name"]: row
-                    for row in connection.execute(
-                        "PRAGMA table_info(invites)"
-                    ).fetchall()
-                }
-                self.assertEqual(
-                    set(columns),
-                    {
-                        "id",
-                        "token_hash",
-                        "target_user_id",
-                        "created_by",
-                        "created_at",
-                        "expires_at",
-                        "redeemed_at",
-                        "redeemed_issuer",
-                        "redeemed_subject",
-                        "revoked_at",
-                        "revoked_by",
-                    },
-                )
-                password = {
+                self.assertNotIn("invites", names)
+                self.assertNotIn("vault_members", names)
+                users = {
                     row["name"]: row
                     for row in connection.execute(
                         "PRAGMA table_info(users)"
                     ).fetchall()
-                }["password_hash"]
-                self.assertEqual(password["notnull"], 0)
+                }
+                self.assertNotIn("is_admin", users)
+                self.assertNotIn("active", users)
+                self.assertEqual(users["password_hash"]["notnull"], 0)
+                login_columns = {
+                    row["name"]
+                    for row in connection.execute(
+                        "PRAGMA table_info(oidc_login)"
+                    ).fetchall()
+                }
+                self.assertNotIn("invite_id", login_columns)
                 # The case-insensitive username guard survives the users recreate.
                 connection.execute(
                     """
-                    INSERT INTO users(username, display_name, password_hash, is_admin)
-                    VALUES ('dana', 'Dana', 'hash', FALSE)
+                    INSERT INTO users(username, display_name, password_hash)
+                    VALUES ('dana', 'Dana', NULL)
                     """
                 )
                 with self.assertRaises(Exception):
@@ -647,21 +622,28 @@ class DatabaseMigrationTests(unittest.TestCase):
                         VALUES ('DANA', 'Dupe', 'hash')
                         """
                     )
-            with SQLiteConnection(str(path)) as connection:
-                # A shell user with no password can be inserted after this migration.
+                # The owner keeps at most one Identity per issuer.
                 connection.execute(
                     """
-                    INSERT INTO users(username, display_name, password_hash, is_admin)
-                    VALUES ('shell', 'Shell', NULL, FALSE)
+                    INSERT INTO user_identities(user_id, issuer, subject, created_at)
+                    VALUES (1, 'https://id.example', 'one', '2026-08-01')
                     """
                 )
-                # Passwordless Users block a downgrade that restores NOT NULL, so
-                # drop it before exercising the schema rollback below.
-                connection.execute("DELETE FROM users WHERE username='shell'")
+                with self.assertRaises(Exception):
+                    connection.execute(
+                        """
+                        INSERT INTO user_identities(user_id, issuer, subject, created_at)
+                        VALUES (1, 'https://id.example', 'two', '2026-08-01')
+                        """
+                    )
+            with SQLiteConnection(str(path)) as connection:
+                connection.execute("DELETE FROM user_identities")
+                # Passwordless Users block the downgrade that restores NOT NULL.
+                connection.execute("DELETE FROM users")
 
             downgraded = run_alembic(
                 path,
-                "0004_oidc_login",
+                "0043_cloud_only_conflict",
                 command="downgrade",
             )
             self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
@@ -672,7 +654,88 @@ class DatabaseMigrationTests(unittest.TestCase):
                         "SELECT name FROM sqlite_master WHERE type='table'"
                     ).fetchall()
                 }
-            self.assertNotIn("invites", names)
+                users = {
+                    row["name"]
+                    for row in connection.execute(
+                        "PRAGMA table_info(users)"
+                    ).fetchall()
+                }
+            self.assertLessEqual(
+                {"invites", "vault_members", "source_areas", "oidc_configuration"},
+                names,
+            )
+            self.assertLessEqual({"is_admin", "active"}, users)
+
+            downgraded = run_alembic(path, "0004_oidc_login", command="downgrade")
+            self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
+            reupgraded = run_alembic(path)
+            self.assertEqual(reupgraded.returncode, 0, reupgraded.stderr)
+
+    def test_single_owner_migration_keeps_the_first_administrator(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "owner.db"
+            baseline = run_alembic(path, "0043_cloud_only_conflict")
+            self.assertEqual(baseline.returncode, 0, baseline.stderr)
+            with SQLiteConnection(str(path)) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO users(id, username, display_name, password_hash, is_admin)
+                    VALUES (1, 'member', 'Member', 'hash', FALSE),
+                           (2, 'owner', 'Owner', 'hash', TRUE),
+                           (3, 'other-admin', 'Other', 'hash', TRUE)
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO user_identities(user_id, issuer, subject, created_at)
+                    VALUES (1, 'https://id.example', 'member', '2026-08-01'),
+                           (2, 'https://id.example', 'owner', '2026-08-01'),
+                           (2, 'https://other.example', 'owner', '2026-08-01')
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO vaults(
+                        id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
+                    ) VALUES (5, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                    """
+                )
+                connection.execute(
+                    "INSERT INTO vault_members(vault_id, user_id, role) "
+                    "VALUES (5, 1, 'owner'), (5, 2, 'viewer')"
+                )
+                connection.execute(
+                    """
+                    INSERT INTO system_settings(key, value, updated_by, updated_at)
+                    VALUES ('scan_interval', '1800', 3, '2026-08-01'),
+                           ('invite_ttl_seconds', '3600', 2, '2026-08-01')
+                    """
+                )
+
+            migrated = run_alembic(path)
+            self.assertEqual(migrated.returncode, 0, migrated.stderr)
+            with SQLiteConnection(str(path)) as connection:
+                users = connection.execute(
+                    "SELECT id, username FROM users ORDER BY id"
+                ).fetchall()
+                identities = connection.execute(
+                    "SELECT user_id, issuer FROM user_identities ORDER BY issuer"
+                ).fetchall()
+                vaults = connection.execute("SELECT id FROM vaults").fetchall()
+                settings_rows = connection.execute(
+                    "SELECT key, updated_by FROM system_settings"
+                ).fetchall()
+            # Every Vault now belongs to the single owner; nothing is lost.
+            self.assertEqual(users, [{"id": 2, "username": "owner"}])
+            self.assertEqual(
+                identities,
+                [
+                    {"user_id": 2, "issuer": "https://id.example"},
+                    {"user_id": 2, "issuer": "https://other.example"},
+                ],
+            )
+            self.assertEqual(vaults, [{"id": 5}])
+            self.assertEqual(settings_rows, [{"key": "scan_interval", "updated_by": 2}])
 
     def test_invites_migration_preserves_existing_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -67,8 +67,6 @@ CRITICAL_KEYS: frozenset[str] = frozenset(
         "api.recovery_started",
         "api.free_space_started",
         "api.locale_updated",
-        "email.subject.admin_action",
-        "email.body.admin_action",
     }
 )
 
@@ -149,11 +147,6 @@ def translate(key: str, locale: str | None = None, **params: Any) -> str:
         return message.format(**params)
     except (KeyError, ValueError):
         return message
-
-
-def render_email(template_key: str, locale: str | None = None, **params: Any) -> str:
-    """Render a notification/email body from a stable message key."""
-    return translate(template_key, locale=locale, **params)
 
 
 def catalog_keys(locale: str | None = None) -> frozenset[str]:

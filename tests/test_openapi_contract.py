@@ -44,7 +44,7 @@ class OpenApiResponseContractTests(unittest.TestCase):
             success = operation["responses"][str(route.status_code or 200)]
             response_schema = success["content"]["application/json"]["schema"]
             self.assertTrue(response_schema, route.path)
-        self.assertGreater(checked, 100)
+        self.assertGreater(checked, 70)
 
     def test_response_serialization_preserves_all_existing_fields(self) -> None:
         probe = FastAPI()

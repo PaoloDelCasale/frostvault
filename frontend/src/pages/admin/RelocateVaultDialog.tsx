@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 
 import type { AdminVault } from "@/api";
-import { browseAdminSourceVolume, relocateAdminVault } from "@/api";
+import { browseSourceVolume, relocateAdminVault } from "@/api";
 import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput } from "@/components/FormField";
 import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
@@ -81,12 +81,9 @@ export function RelocateVaultDialog({
           </p>
           <SourceDirectoryBrowser
             volumeAlias={alias}
-            browse={(volumeAlias, path) =>
-              browseAdminSourceVolume(volumeAlias, path, "adopt")
-            }
+            browse={browseSourceVolume}
             selectedPath={selectedPath}
             onSelect={setSelectedPath}
-            viewerIsAdmin
           />
           <FormField label={t("admin.relocation_reason")} htmlFor="relocation-reason">
             <FormInput

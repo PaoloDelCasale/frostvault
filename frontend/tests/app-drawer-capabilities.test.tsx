@@ -48,20 +48,16 @@ async function openAccountMenu(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("App drawer capability filtering", () => {
-  it("shows Manage access for an owner in vault nav, not Administration or Refresh list", async () => {
+  it("shows Vault settings in vault nav and Administration in the account menu", async () => {
     const user = await renderShell({
       vaultName: "Owner Vault",
-      isVaultOwner: true,
-      canOperate: false,
-      isAdmin: false,
       locale: "en",
       locales: ["en"],
-      vaults: [{ id: 1, slug: "owner", name: "Owner Vault", role: "owner" }],
-      role: "owner",
+      vaults: [{ id: 1, slug: "owner", name: "Owner Vault" }],
     });
 
     const drawer = await openDrawer(user);
-    expect(drawer).toHaveTextContent("Manage access");
+    expect(drawer).toHaveTextContent("Vault settings");
     expect(drawer).not.toHaveTextContent("Administration");
     expect(drawer).not.toHaveTextContent("Refresh list");
     expect(drawer).not.toHaveTextContent("New vault");
@@ -70,95 +66,16 @@ describe("App drawer capability filtering", () => {
 
     const account = await openAccountMenu(user);
     expect(account).toHaveTextContent("New vault");
-    expect(account).toHaveTextContent("Sign out");
-    expect(account).toHaveTextContent("Language");
-    expect(account).not.toHaveTextContent("Administration");
-    expect(account).not.toHaveTextContent("Manage access");
-    expect(account).not.toHaveTextContent("Refresh list");
-  });
-
-  it("hides Manage access, Administration and Refresh list for an operator", async () => {
-    const user = await renderShell({
-      vaultName: "Ops Vault",
-      isVaultOwner: false,
-      canOperate: true,
-      isAdmin: false,
-      locale: "en",
-      locales: ["en"],
-      vaults: [{ id: 2, slug: "ops", name: "Ops Vault", role: "operator" }],
-      role: "operator",
-    });
-
-    const drawer = await openDrawer(user);
-    expect(drawer).not.toHaveTextContent("Refresh list");
-    expect(drawer).not.toHaveTextContent("Aggiorna elenco");
-    expect(drawer).not.toHaveTextContent("Manage access");
-    expect(drawer).not.toHaveTextContent("Administration");
-    expect(drawer).not.toHaveTextContent("New vault");
-    expect(drawer).not.toHaveTextContent("Sign out");
-
-    const account = await openAccountMenu(user);
-    expect(account).toHaveTextContent("New vault");
-    expect(account).toHaveTextContent("Sign out");
-    expect(account).not.toHaveTextContent("Manage access");
-    expect(account).not.toHaveTextContent("Administration");
-    expect(account).not.toHaveTextContent("Refresh list");
-  });
-
-  it("hides Manage access, Administration and Refresh list for a viewer", async () => {
-    const user = await renderShell({
-      vaultName: "View Vault",
-      isVaultOwner: false,
-      canOperate: false,
-      isAdmin: false,
-      locale: "en",
-      locales: ["en"],
-      vaults: [{ id: 3, slug: "view", name: "View Vault", role: "viewer" }],
-      role: "viewer",
-    });
-
-    const drawer = await openDrawer(user);
-    expect(drawer).not.toHaveTextContent("Manage access");
-    expect(drawer).not.toHaveTextContent("Administration");
-    expect(drawer).not.toHaveTextContent("Refresh list");
-
-    const account = await openAccountMenu(user);
-    expect(account).toHaveTextContent("New vault");
-    expect(account).toHaveTextContent("Language");
-    expect(account).toHaveTextContent("Sign out");
-    expect(account).not.toHaveTextContent("Manage access");
-    expect(account).not.toHaveTextContent("Administration");
-  });
-
-  it("shows Administration for an admin only in the account menu", async () => {
-    const user = await renderShell({
-      vaultName: "Admin Vault",
-      isVaultOwner: false,
-      canOperate: false,
-      isAdmin: true,
-      locale: "en",
-      locales: ["en"],
-      vaults: [{ id: 4, slug: "admin", name: "Admin Vault", role: "viewer" }],
-      role: "viewer",
-    });
-
-    const drawer = await openDrawer(user);
-    expect(drawer).not.toHaveTextContent("Administration");
-    expect(drawer).not.toHaveTextContent("Manage access");
-    expect(drawer).not.toHaveTextContent("Refresh list");
-
-    const account = await openAccountMenu(user);
     expect(account).toHaveTextContent("Administration");
-    expect(account).not.toHaveTextContent("Manage access");
+    expect(account).toHaveTextContent("Sign out");
+    expect(account).toHaveTextContent("Language");
+    expect(account).not.toHaveTextContent("Vault settings");
     expect(account).not.toHaveTextContent("Refresh list");
   });
 
   it("keeps desktop primary header free of secondary destinations", async () => {
     const user = await renderShell({
       vaultName: "Very Long Owner Archive Name For Header",
-      isVaultOwner: true,
-      canOperate: true,
-      isAdmin: true,
       locale: "en",
       locales: ["en", "it"],
       vaults: [
@@ -166,10 +83,8 @@ describe("App drawer capability filtering", () => {
           id: 1,
           slug: "long",
           name: "Very Long Owner Archive Name For Header",
-          role: "owner",
         },
       ],
-      role: "owner",
       currentVaultId: 1,
     });
 
@@ -224,16 +139,12 @@ describe("App drawer capability filtering", () => {
       "Very Long Owner Archive Name For Desktop Header Overflow Regression";
     const user = await renderShell({
       vaultName: longName,
-      isVaultOwner: true,
-      canOperate: true,
-      isAdmin: false,
       locale: "en",
       locales: ["en"],
       vaults: [
-        { id: 1, slug: "long", name: longName, role: "owner" },
-        { id: 2, slug: "docs", name: "Docs", role: "owner" },
+        { id: 1, slug: "long", name: longName },
+        { id: 2, slug: "docs", name: "Docs" },
       ],
-      role: "owner",
       currentVaultId: 1,
     });
 

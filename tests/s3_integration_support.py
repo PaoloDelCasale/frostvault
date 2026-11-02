@@ -196,8 +196,8 @@ def prepare_plain_vault(
         connection.execute(
             """
             INSERT INTO users(
-                id, username, display_name, password_hash, is_admin
-            ) VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+                id, username, display_name, password_hash
+            ) VALUES (1, 'owner', 'Owner', 'hash')
             """
         )
         connection.execute(
@@ -244,8 +244,8 @@ def prepare_crypt_vault(
         connection.execute(
             """
             INSERT INTO users(
-                id, username, display_name, password_hash, is_admin
-            ) VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+                id, username, display_name, password_hash
+            ) VALUES (1, 'owner', 'Owner', 'hash')
             """
         )
         connection.execute(

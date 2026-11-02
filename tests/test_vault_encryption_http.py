@@ -15,7 +15,6 @@ from app.config import settings
 from app.database import SQLiteConnection
 from app.main import app
 from app.services import source_layout
-from app.services import vaults as vaults_service
 from app.sessions import create_session
 from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
@@ -43,20 +42,8 @@ class VaultEncryptionHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             self.owner_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('alice', 'Alice', '', FALSE) RETURNING id
-                """
-            ).fetchone()["id"]
-            self.admin_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('admin', 'Admin', '', TRUE) RETURNING id
-                """
-            ).fetchone()["id"]
-            self.operator_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('oper', 'Oper', '', FALSE) RETURNING id
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('alice', 'Alice', '') RETURNING id
                 """
             ).fetchone()["id"]
 
@@ -121,7 +108,7 @@ class VaultEncryptionHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
 
-    def test_admin_vault_responses_use_only_the_public_projection(self) -> None:
+    def test_vault_inventory_uses_only_the_public_projection(self) -> None:
         """Issue #189: key-set assertions never render encrypted values."""
         expected_keys = {
             "id",
@@ -138,25 +125,8 @@ class VaultEncryptionHttpTests(unittest.TestCase):
             "decommission_state",
             "decommissioned_at",
             "root_released_at",
-            "member_count",
         }
-        self._authenticate(self.admin_id, reauth=True)
-        created_response = self.client.post(
-            "/api/admin/vaults",
-            json={
-                "name": "Admin Crypt",
-                "slug": "admin-crypt",
-                "owner_user_id": self.owner_id,
-                "encryption_mode": "crypt",
-                "cloud_history_policy": "archive_history",
-                "reason": "provision encrypted archive",
-            },
-            headers={"X-CSRF-Token": self._csrf()},
-        )
-        self.assertEqual(created_response.status_code, 201)
-        created = created_response.json()
-        self.assertEqual(set(created), expected_keys)
-        self.assertEqual(created["member_count"], 1)
+        created = self._create_crypt()
 
         # An unreviewed future persistence-only column must not cross the
         # administrative HTTP boundary either.
@@ -174,46 +144,6 @@ class VaultEncryptionHttpTests(unittest.TestCase):
         listed = listed_response.json()["items"]
         self.assertEqual(len(listed), 1)
         self.assertEqual(set(listed[0]), expected_keys)
-
-    def test_admin_creation_service_boundary_never_receives_ciphertexts(self) -> None:
-        """Issue #189: the admin HTTP layer only receives a public result."""
-        secret_keys = {
-            "crypt_password_ciphertext",
-            "crypt_password2_ciphertext",
-        }
-        observed_keys: list[set[str]] = []
-        real_create = vaults_service.create_admin_vault
-
-        def spy_admin_creation(*args, **kwargs):
-            public_vault = real_create(*args, **kwargs)
-            observed_keys.append(set(public_vault))
-            self.assertTrue(secret_keys.isdisjoint(public_vault))
-            return public_vault
-
-        self._authenticate(self.admin_id, reauth=True)
-        with (
-            patch(
-                "app.main.create_vault_for_user",
-                side_effect=AssertionError("admin route must not use self-service creation"),
-            ),
-            patch("app.main.create_admin_vault", side_effect=spy_admin_creation),
-        ):
-            response = self.client.post(
-                "/api/admin/vaults",
-                json={
-                    "name": "Boundary Crypt",
-                    "slug": "boundary-crypt",
-                    "owner_user_id": self.owner_id,
-                    "encryption_mode": "crypt",
-                    "cloud_history_policy": "archive_history",
-                    "reason": "verify public creation boundary",
-                },
-                headers={"X-CSRF-Token": self._csrf()},
-            )
-
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(len(observed_keys), 1)
-        self.assertTrue(secret_keys.isdisjoint(observed_keys[0]))
 
     def test_create_page_serves_spa_and_api_accepts_encryption_mode(self) -> None:
         self._authenticate(self.owner_id)
@@ -342,47 +272,6 @@ class VaultEncryptionHttpTests(unittest.TestCase):
         joined = "\n".join(captured.output)
         self.assertIn("vault_recovery_exported", joined)
         self.assertIn("lost my copy", joined)
-
-    def test_admin_reexport_notifies_owner(self) -> None:
-        body = self._create_crypt()
-        with SQLiteConnection(str(self.database_path)) as connection:
-            connection.execute(
-                "UPDATE vaults SET recovery_custody_confirmed_at=%s WHERE id=%s",
-                (datetime.now(timezone.utc).isoformat(), body["id"]),
-            )
-
-        self._authenticate(self.admin_id, reauth=True)
-        with self.assertLogs("app.audit", level="WARNING") as captured:
-            response = self.client.post(
-                f"/api/admin/vaults/{body['id']}/recovery/export",
-                json={"reason": "support restore drill"},
-                headers={"X-CSRF-Token": self._csrf()},
-            )
-        self.assertEqual(response.status_code, 200, response.text)
-        joined = "\n".join(captured.output)
-        self.assertIn("vault_recovery_exported", joined)
-        self.assertIn(f'"notify_user_id": {self.owner_id}', joined)
-        self.assertIn("support restore drill", joined)
-
-    def test_operator_cannot_export_recovery_secret(self) -> None:
-        body = self._create_crypt()
-        with SQLiteConnection(str(self.database_path)) as connection:
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'operator')",
-                (body["id"], self.operator_id),
-            )
-            connection.execute(
-                "UPDATE vaults SET recovery_custody_confirmed_at=%s WHERE id=%s",
-                (datetime.now(timezone.utc).isoformat(), body["id"]),
-            )
-        self._authenticate(self.operator_id, reauth=True)
-        self._select(body["id"])
-        response = self.client.post(
-            "/api/vault/recovery/export",
-            json={"reason": "curious"},
-            headers={"X-CSRF-Token": self._csrf()},
-        )
-        self.assertEqual(response.status_code, 403, response.text)
 
 
 if __name__ == "__main__":

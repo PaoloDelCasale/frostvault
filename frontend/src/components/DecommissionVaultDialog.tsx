@@ -337,7 +337,6 @@ export function DecommissionVaultDialog({
               <span>{t("decommission.count_versions", { count: counts.archive_versions, bytes: formatBytes(counts.cloud_bytes) })}</span>
               <span>{t("decommission.count_markers", { count: counts.delete_markers })}</span>
               <span>{t("decommission.count_jobs", { count: counts.jobs })}</span>
-              <span>{t("decommission.count_members", { count: counts.memberships })}</span>
             </div>
           ) : (
             <p className="text-sm text-muted" role="status">

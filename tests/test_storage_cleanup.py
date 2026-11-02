@@ -447,8 +447,8 @@ class StorageCleanupTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO users(
-                        id, username, display_name, password_hash, is_admin
-                    ) VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+                        id, username, display_name, password_hash
+                    ) VALUES (1, 'owner', 'Owner', 'hash')
                     """
                 )
                 connection.execute(
@@ -492,8 +492,8 @@ class StorageCleanupTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO users(
-                        id, username, display_name, password_hash, is_admin
-                    ) VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+                        id, username, display_name, password_hash
+                    ) VALUES (1, 'owner', 'Owner', 'hash')
                     """
                 )
                 connection.execute(
@@ -1064,9 +1064,7 @@ class StorageCleanupTests(unittest.TestCase):
                     patch("app.main.db", return_value=connection),
                     patch("app.main.cancel_jobs") as cancel_jobs_mock,
                 ):
-                    result = cancel_job_group(
-                        "group-123", action, {"id": 2, "role": "owner"}
-                    )
+                    result = cancel_job_group("group-123", action, {"id": 2}, 7)
 
                 cancel_jobs_mock.assert_called_once_with([10, 11])
                 self.assertEqual(result["message"], expected_message)
@@ -1097,11 +1095,7 @@ class StorageCleanupTests(unittest.TestCase):
                 "app.main.notification_service.enqueue_notification"
             ) as enqueue_notification,
         ):
-            cancel_job_group(
-                "group-123",
-                "free-space",
-                {"id": 2, "role": "owner", "member_user_id": 7},
-            )
+            cancel_job_group("group-123", "free-space", {"id": 2}, 7)
 
         record_audit_event.assert_called_once_with(
             connection,
@@ -1132,7 +1126,7 @@ class StorageCleanupTests(unittest.TestCase):
             "s3_bucket": "bucket",
         }
         connection = MagicMock()
-        connection.execute.return_value.fetchone.return_value = {"user_id": 42}
+        connection.execute.return_value.fetchone.return_value = {"id": 42}
         database = MagicMock()
         database.__enter__.return_value = connection
         with (
@@ -1181,8 +1175,8 @@ class StorageCleanupTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO users(
-                    id, username, display_name, password_hash, is_admin
-                ) VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+                    id, username, display_name, password_hash
+                ) VALUES (1, 'owner', 'Owner', 'hash')
                 """
             )
             connection.execute(
@@ -1362,6 +1356,7 @@ class StorageCleanupTests(unittest.TestCase):
                 notifications,
                 [
                     {"event": "local_cleanup.auto_queued"},
+                    {"event": "job_completed"},
                     {"event": "local_cleanup.completed"},
                 ],
             )

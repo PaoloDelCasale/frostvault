@@ -25,25 +25,11 @@ class VaultLifecycleHttpTests(unittest.TestCase):
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with SQLiteConnection(str(self.path)) as connection:
-            self.owner_id = self._user(connection, "owner", False)
-            self.operator_id = self._user(connection, "operator", False)
-            self.viewer_id = self._user(connection, "viewer", False)
+            self.owner_id = self._user(connection, "owner")
             self.vault_id = connection.execute(
                 "INSERT INTO vaults(slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
                 "VALUES ('docs', 'Docs', '/source', 'bucket', 'docs', 'remote') RETURNING id"
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'owner')",
-                (self.vault_id, self.owner_id),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'operator')",
-                (self.vault_id, self.operator_id),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'viewer')",
-                (self.vault_id, self.viewer_id),
-            )
         test_settings = replace(
             settings,
             db_backend="sqlite",
@@ -61,11 +47,11 @@ class VaultLifecycleHttpTests(unittest.TestCase):
         self.client = TestClient(main.app, client=("127.0.0.1", 50000))
 
     @staticmethod
-    def _user(connection, name: str, is_admin: bool) -> int:
+    def _user(connection, name: str) -> int:
         return connection.execute(
-            "INSERT INTO users(username, display_name, password_hash, is_admin) "
-            "VALUES (%s, %s, %s, %s) RETURNING id",
-            (name, name.title(), hash_password("a secure test password"), is_admin),
+            "INSERT INTO users(username, display_name, password_hash) "
+            "VALUES (%s, %s, %s) RETURNING id",
+            (name, name.title(), hash_password("a secure test password")),
         ).fetchone()["id"]
 
     def _authenticate(self, user_id: int, *, reauth: bool = False) -> None:
@@ -91,29 +77,13 @@ class VaultLifecycleHttpTests(unittest.TestCase):
         self.assertIn("ia_after_30", body["guided_profiles"])
         self.assertEqual(body["policies"], [])
 
-    def test_nonowners_cannot_read_lifecycle(self) -> None:
-        for user_id in (self.operator_id, self.viewer_id):
-            with self.subTest(user_id=user_id):
-                self._authenticate(user_id)
-                response = self.client.get("/api/vault/lifecycle")
-                self.assertEqual(response.status_code, 403)
-
-    def test_owner_update_requires_reauth_and_applies_guided_profile(self) -> None:
+    def test_owner_update_applies_guided_profile_without_reauth(self) -> None:
         self._authenticate(self.owner_id)
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
                 "UPDATE sessions SET reauth_at=%s WHERE user_id=%s",
                 ("2000-01-01T00:00:00+00:00", self.owner_id),
             )
-        denied = self.client.put(
-            "/api/vault/lifecycle/default",
-            headers=self._headers(),
-            json={"guided_profile": "ia_after_30"},
-        )
-        self.assertEqual(denied.status_code, 403)
-        self.assertEqual(denied.json()["error"], "reauth_required")
-
-        self._authenticate(self.owner_id, reauth=True)
         with patch("app.main.s3_client", side_effect=RuntimeError("offline")):
             response = self.client.put(
                 "/api/vault/lifecycle/default",

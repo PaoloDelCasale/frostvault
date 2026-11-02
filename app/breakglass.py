@@ -9,7 +9,7 @@ from .config import settings
 IpNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 # The application always trusts the machine it runs on, regardless of how the
-# administrator configures BREAK_GLASS_ALLOWED_CIDRS.
+# operator configures BREAK_GLASS_ALLOWED_CIDRS.
 _LOOPBACK_NETWORKS: tuple[IpNetwork, ...] = (
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("::1/128"),
@@ -28,7 +28,7 @@ def parse_cidrs(raw: str) -> List[IpNetwork]:
 
 
 def is_break_glass_allowed(client_ip: str | None) -> bool:
-    """Whether Break-glass Login may proceed from ``client_ip``.
+    """Whether the Emergency Password is accepted from ``client_ip``.
 
     Allowed = loopback ∪ BREAK_GLASS_ALLOWED_CIDRS. An empty list therefore means
     loopback only, and an unknown or unparseable address is denied (fail-closed).

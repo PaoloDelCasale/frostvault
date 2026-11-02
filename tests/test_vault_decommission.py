@@ -11,7 +11,7 @@ from unittest.mock import patch
 from app.catalog import ArchiveCatalog
 from app.config import Settings
 from app.database import SQLiteConnection
-from app.services import source_areas, source_layout, vault_decommission
+from app.services import source_directories, source_layout, vault_decommission
 from app.services.vault_relocation import enroll_vault_root_identity
 from app import storage
 from tests.test_database import run_alembic
@@ -38,7 +38,7 @@ class VaultDecommissionTests(unittest.TestCase):
         )
         for target in (
             "app.database.settings",
-            "app.services.source_areas.settings",
+            "app.services.source_directories.settings",
         ):
             patcher = patch(target, self.settings)
             patcher.start()
@@ -46,10 +46,8 @@ class VaultDecommissionTests(unittest.TestCase):
         with SQLiteConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(id, username, display_name, password_hash, is_admin)
-                VALUES (1, 'owner', 'Owner', 'hash', FALSE),
-                       (2, 'admin', 'Admin', 'hash', TRUE),
-                       (3, 'member', 'Member', 'hash', FALSE)
+                INSERT INTO users(id, username, display_name, password_hash)
+                VALUES (1, 'owner', 'Owner', 'hash')
                 """
             )
             connection.execute(
@@ -61,10 +59,6 @@ class VaultDecommissionTests(unittest.TestCase):
                           'vaults/archive/', 'remote')
                 """,
                 (str(self.root),),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (7, 1, 'owner'), (7, 3, 'viewer')"
             )
             enroll_vault_root_identity(connection, 7, str(self.root))
 
@@ -78,13 +72,12 @@ class VaultDecommissionTests(unittest.TestCase):
                 local_delete_enabled=True,
             )
 
-    def start(self, preview: dict, *, actor: int = 1) -> dict:
+    def start(self, preview: dict) -> dict:
         with SQLiteConnection(str(self.db_path)) as connection:
             vault_decommission.start_decommission(
                 connection,
                 vault_id=7,
-                actor_user_id=actor,
-                actor_is_admin=actor == 2,
+                actor_user_id=1,
                 local_disposition=preview["local_disposition"],
                 cloud_disposition=preview["cloud_disposition"],
                 confirmation="Archive",
@@ -178,7 +171,6 @@ class VaultDecommissionTests(unittest.TestCase):
                     connection,
                     vault_id=7,
                     actor_user_id=1,
-                    actor_is_admin=False,
                     local_disposition="retain",
                     cloud_disposition="retain",
                     confirmation="Archive",
@@ -201,7 +193,6 @@ class VaultDecommissionTests(unittest.TestCase):
                     connection,
                     vault_id=7,
                     actor_user_id=1,
-                    actor_is_admin=False,
                     local_disposition="retain",
                     cloud_disposition="retain",
                     confirmation="archive",
@@ -217,7 +208,7 @@ class VaultDecommissionTests(unittest.TestCase):
         with SQLiteConnection(str(self.db_path)) as connection:
             connection.execute("UPDATE vaults SET enabled=FALSE WHERE id=7")
         preview = self.preview()
-        status = self.start(preview, actor=2)
+        status = self.start(preview)
         self.assertEqual(status["state"], "completed")
         self.assertTrue(status["root_released"])
         self.assertTrue((self.root / "report.txt").is_file())
@@ -227,12 +218,6 @@ class VaultDecommissionTests(unittest.TestCase):
             self.assertFalse(vault["enabled"])
             self.assertEqual(vault["decommission_state"], "decommissioned")
             self.assertIsNotNone(vault["root_released_at"])
-            self.assertEqual(
-                connection.execute(
-                    "SELECT COUNT(*) AS total FROM vault_members WHERE vault_id=7"
-                ).fetchone()["total"],
-                2,
-            )
             events = {
                 row["event"]
                 for row in connection.execute(
@@ -246,7 +231,7 @@ class VaultDecommissionTests(unittest.TestCase):
         self.assertIn("vault_decommission.completed", events)
         self.assertEqual(
             {row["user_id"] for row in notifications if row["event"] == "vault_decommission.completed"},
-            {1, 3},
+            {1},
         )
 
     def test_terminal_root_release_rolls_back_atomically_if_audit_notification_fails(self) -> None:
@@ -256,7 +241,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 connection,
                 vault_id=7,
                 actor_user_id=1,
-                actor_is_admin=False,
                 local_disposition="retain",
                 cloud_disposition="retain",
                 confirmation="Archive",
@@ -266,7 +250,7 @@ class VaultDecommissionTests(unittest.TestCase):
                 purge_delay_seconds=3600,
             )
         with patch(
-            "app.services.vault_decommission._notify_members",
+            "app.services.vault_decommission._notify_owner",
             side_effect=RuntimeError("notification store unavailable"),
         ):
             with self.assertRaises(RuntimeError):
@@ -295,7 +279,6 @@ class VaultDecommissionTests(unittest.TestCase):
         request = {
             "vault_id": 7,
             "actor_user_id": 1,
-            "actor_is_admin": False,
             "local_disposition": "remove",
             "cloud_disposition": "retain",
             "confirmation": "Archive",
@@ -327,7 +310,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 connection,
                 vault_id=7,
                 actor_user_id=1,
-                actor_is_admin=False,
                 local_disposition="retain",
                 cloud_disposition="retain",
                 confirmation="Archive",
@@ -342,7 +324,6 @@ class VaultDecommissionTests(unittest.TestCase):
                     connection,
                     vault_id=7,
                     actor_user_id=1,
-                    actor_is_admin=False,
                     local_disposition="retain",
                     cloud_disposition="retain",
                     confirmation="Archive",
@@ -361,7 +342,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 connection,
                 vault_id=7,
                 actor_user_id=1,
-                actor_is_admin=False,
                 local_disposition="remove",
                 cloud_disposition="retain",
                 confirmation="Archive",
@@ -391,7 +371,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 connection,
                 vault_id=7,
                 actor_user_id=1,
-                actor_is_admin=False,
                 local_disposition="remove",
                 cloud_disposition="retain",
                 confirmation="Archive",
@@ -430,7 +409,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 connection,
                 vault_id=7,
                 actor_user_id=1,
-                actor_is_admin=False,
                 local_disposition="remove",
                 cloud_disposition="retain",
                 confirmation="Archive",
@@ -481,7 +459,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 connection,
                 vault_id=7,
                 actor_user_id=1,
-                actor_is_admin=False,
                 local_disposition="retain",
                 cloud_disposition="purge",
                 confirmation="Archive",
@@ -553,7 +530,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 connection,
                 vault_id=7,
                 actor_user_id=1,
-                actor_is_admin=False,
                 local_disposition="retain",
                 cloud_disposition="purge",
                 confirmation="Archive",
@@ -619,7 +595,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 connection,
                 vault_id=7,
                 actor_user_id=1,
-                actor_is_admin=False,
                 local_disposition="retain",
                 cloud_disposition="retain",
                 confirmation="Archive",
@@ -663,7 +638,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 connection,
                 vault_id=7,
                 actor_user_id=1,
-                actor_is_admin=False,
                 local_disposition="retain",
                 cloud_disposition="retain",
                 confirmation="Archive",
@@ -710,7 +684,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 connection,
                 vault_id=7,
                 actor_user_id=1,
-                actor_is_admin=False,
                 local_disposition="retain",
                 cloud_disposition="purge",
                 confirmation="Archive",
@@ -780,7 +753,7 @@ class VaultDecommissionTests(unittest.TestCase):
             alias="photos", path=str(photos), access="rw", health="ok"
         )
         with SQLiteConnection(str(self.db_path)) as connection:
-            roots = source_areas._occupied_vault_roots(connection, volume)
+            roots = source_directories._occupied_vault_roots(connection, volume)
             self.assertEqual([item["relative_path"] for item in roots], ["archive"])
             stamp = "2026-08-01T12:00:00+00:00"
             connection.execute(
@@ -791,7 +764,7 @@ class VaultDecommissionTests(unittest.TestCase):
                 (stamp, stamp),
             )
         with SQLiteConnection(str(self.db_path)) as connection:
-            self.assertEqual(source_areas._occupied_vault_roots(connection, volume), [])
+            self.assertEqual(source_directories._occupied_vault_roots(connection, volume), [])
 
 
 class VaultDecommissionMigrationTests(unittest.TestCase):
@@ -802,8 +775,8 @@ class VaultDecommissionMigrationTests(unittest.TestCase):
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
             with SQLiteConnection(str(path)) as connection:
                 connection.execute(
-                    "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                    "VALUES (1, 'owner', 'Owner', 'hash', FALSE)"
+                    "INSERT INTO users(id, username, display_name, password_hash) "
+                    "VALUES (1, 'owner', 'Owner', 'hash')"
                 )
                 connection.execute(
                     """
@@ -813,10 +786,6 @@ class VaultDecommissionMigrationTests(unittest.TestCase):
                     ) VALUES (7, 'archive', 'Archive', '/source', 'bucket',
                               'vaults/archive/', 'remote', FALSE)
                     """
-                )
-                connection.execute(
-                    "INSERT INTO vault_members(vault_id, user_id, role) "
-                    "VALUES (7, 1, 'owner')"
                 )
             upgraded = run_alembic(path)
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)

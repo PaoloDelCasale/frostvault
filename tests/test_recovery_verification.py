@@ -117,8 +117,8 @@ def _prepare_cloud_only_version(
         connection.execute(
             """
             INSERT INTO users(
-                id, username, display_name, password_hash, is_admin
-            ) VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+                id, username, display_name, password_hash
+            ) VALUES (1, 'owner', 'Owner', 'hash')
             """
         )
         connection.execute(
@@ -883,7 +883,8 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
                 result = cancel_job_group(
                     queued["group_id"],
                     "recover",
-                    {"id": 2, "role": "owner", "member_user_id": 1},
+                    {"id": 2},
+                    1,
                 )
 
             self.assertEqual(result["cancelled_count"], 1)

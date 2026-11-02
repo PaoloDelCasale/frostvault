@@ -57,7 +57,7 @@ async function assertNoPriorAuthenticatedShell(
 
   for (const name of [
     /new vault/i,
-    /manage access/i,
+    /vault settings/i,
     /administration/i,
     /refresh list/i,
     /aggiorna elenco/i,
@@ -76,7 +76,7 @@ test.describe("auth reconciliation shell safety", () => {
     page,
     context,
   }, testInfo) => {
-    await applySession(context, "admin");
+    await applySession(context);
     await page.goto("/");
     // The app registers its own Service Worker at bootstrap. On a fresh
     // context that Worker claims this page and emits one controllerchange,

@@ -1,315 +1,6 @@
 {
   "components": {
     "schemas": {
-      "AdminIdentitiesResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/AdminIdentity"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "type": "object"
-      },
-      "AdminIdentity": {
-        "additionalProperties": true,
-        "properties": {
-          "created_at": {
-            "type": "string"
-          },
-          "id": {
-            "type": "number"
-          },
-          "issuer": {
-            "type": "string"
-          },
-          "subject": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "issuer",
-          "subject",
-          "created_at"
-        ],
-        "type": "object"
-      },
-      "AdminInvite": {
-        "additionalProperties": true,
-        "properties": {
-          "created_at": {
-            "type": "string"
-          },
-          "created_by": {
-            "type": "number"
-          },
-          "expires_at": {
-            "type": "string"
-          },
-          "id": {
-            "type": "number"
-          },
-          "target_user_id": {
-            "type": "number"
-          },
-          "target_username": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "target_user_id",
-          "target_username",
-          "created_by",
-          "expires_at"
-        ],
-        "type": "object"
-      },
-      "AdminInvitesResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/AdminInvite"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "type": "object"
-      },
-      "AdminMembershipCreate": {
-        "properties": {
-          "reason": {
-            "maxLength": 500,
-            "minLength": 3,
-            "title": "Reason",
-            "type": "string"
-          },
-          "role": {
-            "default": "viewer",
-            "title": "Role",
-            "type": "string"
-          },
-          "user_id": {
-            "title": "User Id",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "user_id",
-          "reason"
-        ],
-        "title": "AdminMembershipCreate",
-        "type": "object"
-      },
-      "AdminMembershipCreatePayload": {
-        "additionalProperties": true,
-        "properties": {
-          "reason": {
-            "type": "string"
-          },
-          "role": {
-            "enum": [
-              "operator",
-              "viewer"
-            ],
-            "type": "string"
-          },
-          "user_id": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "user_id",
-          "role",
-          "reason"
-        ],
-        "type": "object"
-      },
-      "AdminOwnerTransfer": {
-        "properties": {
-          "new_owner_user_id": {
-            "title": "New Owner User Id",
-            "type": "integer"
-          },
-          "reason": {
-            "maxLength": 500,
-            "minLength": 3,
-            "title": "Reason",
-            "type": "string"
-          }
-        },
-        "required": [
-          "new_owner_user_id",
-          "reason"
-        ],
-        "title": "AdminOwnerTransfer",
-        "type": "object"
-      },
-      "AdminOwnerTransferPayload": {
-        "additionalProperties": true,
-        "properties": {
-          "new_owner_user_id": {
-            "type": "number"
-          },
-          "reason": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "new_owner_user_id",
-          "reason"
-        ],
-        "type": "object"
-      },
-      "AdminSourceAreaAssign": {
-        "additionalProperties": false,
-        "description": "Admin assignment of an exclusive Source Area (issue #149).",
-        "properties": {
-          "reason": {
-            "maxLength": 500,
-            "minLength": 3,
-            "title": "Reason",
-            "type": "string"
-          },
-          "relative_path": {
-            "default": "",
-            "maxLength": 1024,
-            "title": "Relative Path",
-            "type": "string"
-          },
-          "user_id": {
-            "title": "User Id",
-            "type": "integer"
-          },
-          "volume_alias": {
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Volume Alias",
-            "type": "string"
-          }
-        },
-        "required": [
-          "user_id",
-          "volume_alias",
-          "reason"
-        ],
-        "title": "AdminSourceAreaAssign",
-        "type": "object"
-      },
-      "AdminUser": {
-        "additionalProperties": true,
-        "description": "Global administration endpoints (issue #69).",
-        "properties": {
-          "active": {
-            "type": "boolean"
-          },
-          "created_at": {
-            "type": "string"
-          },
-          "display_name": {
-            "type": "string"
-          },
-          "has_password": {
-            "type": "boolean"
-          },
-          "id": {
-            "type": "number"
-          },
-          "identity_count": {
-            "type": "number"
-          },
-          "is_admin": {
-            "type": "boolean"
-          },
-          "username": {
-            "type": "string"
-          },
-          "vault_count": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "id",
-          "username",
-          "display_name",
-          "is_admin",
-          "active",
-          "vault_count",
-          "has_password",
-          "identity_count"
-        ],
-        "type": "object"
-      },
-      "AdminUserCreatePayload": {
-        "additionalProperties": true,
-        "properties": {
-          "display_name": {
-            "type": "string"
-          },
-          "is_admin": {
-            "type": "boolean"
-          },
-          "password": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "username": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "display_name",
-          "username",
-          "password",
-          "is_admin"
-        ],
-        "type": "object"
-      },
-      "AdminUserUpdatePayload": {
-        "additionalProperties": true,
-        "properties": {
-          "active": {
-            "type": "boolean"
-          },
-          "display_name": {
-            "type": "string"
-          },
-          "is_admin": {
-            "type": "boolean"
-          },
-          "password": {
-            "type": "string"
-          }
-        },
-        "type": "object"
-      },
-      "AdminUsersResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/AdminUser"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "type": "object"
-      },
       "AdminVault": {
         "additionalProperties": false,
         "properties": {
@@ -337,9 +28,6 @@
             "type": "string"
           },
           "id": {
-            "type": "number"
-          },
-          "member_count": {
             "type": "number"
           },
           "name": {
@@ -376,99 +64,7 @@
           "name",
           "source_root",
           "s3_prefix",
-          "enabled",
-          "member_count"
-        ],
-        "type": "object"
-      },
-      "AdminVaultCreatePayload": {
-        "additionalProperties": true,
-        "properties": {
-          "cloud_history_policy": {
-            "$ref": "#/components/schemas/CloudHistoryPolicy"
-          },
-          "creation_mode": {
-            "enum": [
-              "empty",
-              "adopt"
-            ],
-            "type": "string"
-          },
-          "encryption_mode": {
-            "enum": [
-              "plain",
-              "crypt"
-            ],
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "owner_user_id": {
-            "type": "number"
-          },
-          "reason": {
-            "type": "string"
-          },
-          "relative_path": {
-            "type": "string"
-          },
-          "slug": {
-            "type": "string"
-          },
-          "volume_alias": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "slug",
-          "owner_user_id",
-          "reason",
-          "cloud_history_policy"
-        ],
-        "type": "object"
-      },
-      "AdminVaultMember": {
-        "additionalProperties": true,
-        "properties": {
-          "active": {
-            "type": "boolean"
-          },
-          "display_name": {
-            "type": "string"
-          },
-          "id": {
-            "type": "number"
-          },
-          "role": {
-            "type": "string"
-          },
-          "username": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "username",
-          "display_name",
-          "active",
-          "role"
-        ],
-        "type": "object"
-      },
-      "AdminVaultMembersResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/AdminVaultMember"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
+          "enabled"
         ],
         "type": "object"
       },
@@ -1696,19 +1292,6 @@
         ],
         "type": "object"
       },
-      "InviteCreate": {
-        "properties": {
-          "target_user_id": {
-            "title": "Target User Id",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "target_user_id"
-        ],
-        "title": "InviteCreate",
-        "type": "object"
-      },
       "JobCancelAction": {
         "properties": {
           "action": {
@@ -2498,9 +2081,6 @@
       "MeResponse": {
         "additionalProperties": true,
         "properties": {
-          "active": {
-            "type": "boolean"
-          },
           "auth_method": {
             "$ref": "#/components/schemas/AuthMethod"
           },
@@ -2522,9 +2102,6 @@
           },
           "id": {
             "type": "number"
-          },
-          "is_admin": {
-            "type": "boolean"
           },
           "locale": {
             "type": "string"
@@ -2560,8 +2137,6 @@
           "id",
           "username",
           "display_name",
-          "is_admin",
-          "active",
           "session_version",
           "csrf_token",
           "offline_cache_generation",
@@ -2575,9 +2150,6 @@
       "MeVault": {
         "additionalProperties": true,
         "properties": {
-          "can_operate": {
-            "type": "boolean"
-          },
           "cloud_deletion_enabled": {
             "type": "boolean"
           },
@@ -2590,14 +2162,8 @@
           "id": {
             "type": "number"
           },
-          "is_vault_owner": {
-            "type": "boolean"
-          },
           "name": {
             "type": "string"
-          },
-          "role": {
-            "$ref": "#/components/schemas/VaultRole"
           },
           "slug": {
             "type": "string"
@@ -2607,31 +2173,10 @@
           "id",
           "slug",
           "name",
-          "role",
-          "can_operate",
           "delete_enabled",
           "cloud_deletion_enabled",
-          "is_vault_owner",
           "cloud_history_policy"
         ],
-        "type": "object"
-      },
-      "MembershipCreate": {
-        "properties": {
-          "role": {
-            "default": "viewer",
-            "title": "Role",
-            "type": "string"
-          },
-          "user_id": {
-            "title": "User Id",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "user_id"
-        ],
-        "title": "MembershipCreate",
         "type": "object"
       },
       "MetadataBackupRunAction": {
@@ -2660,200 +2205,6 @@
           "notification_id"
         ],
         "title": "NotificationReadAction",
-        "type": "object"
-      },
-      "OidcConfigurationResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "active": {
-            "$ref": "#/components/schemas/OidcConfigurationValues"
-          },
-          "configuration_status": {
-            "type": "string"
-          },
-          "draft": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/OidcConfigurationValues"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "last_validation": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "properties": {
-                  "error": {
-                    "type": "string"
-                  },
-                  "status": {
-                    "type": "string"
-                  },
-                  "validated_at": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "status"
-                ],
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "active",
-          "draft",
-          "configuration_status",
-          "last_validation"
-        ],
-        "type": "object"
-      },
-      "OidcConfigurationValues": {
-        "additionalProperties": true,
-        "description": "Managed OIDC configuration (issues #134 and #136).",
-        "properties": {
-          "callback_url": {
-            "type": "string"
-          },
-          "client_id": {
-            "type": "string"
-          },
-          "client_secret_configured": {
-            "type": "boolean"
-          },
-          "enabled": {
-            "type": "boolean"
-          },
-          "issuer": {
-            "type": "string"
-          },
-          "login_transaction_ttl_seconds": {
-            "type": "number"
-          },
-          "scopes": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "source": {
-            "type": "string"
-          },
-          "validation_status": {
-            "type": "string"
-          },
-          "version": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "issuer",
-          "client_id",
-          "client_secret_configured",
-          "scopes",
-          "login_transaction_ttl_seconds"
-        ],
-        "type": "object"
-      },
-      "OidcDraftAction": {
-        "additionalProperties": false,
-        "properties": {
-          "client_id": {
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Client Id",
-            "type": "string"
-          },
-          "client_secret": {
-            "maxLength": 8192,
-            "minLength": 1,
-            "title": "Client Secret",
-            "type": "string"
-          },
-          "issuer": {
-            "maxLength": 2048,
-            "minLength": 1,
-            "title": "Issuer",
-            "type": "string"
-          },
-          "login_transaction_ttl_seconds": {
-            "maximum": 3600.0,
-            "minimum": 60.0,
-            "title": "Login Transaction Ttl Seconds",
-            "type": "integer"
-          },
-          "scopes": {
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 32,
-            "minItems": 1,
-            "title": "Scopes",
-            "type": "array"
-          }
-        },
-        "required": [
-          "issuer",
-          "client_id",
-          "client_secret",
-          "scopes",
-          "login_transaction_ttl_seconds"
-        ],
-        "title": "OidcDraftAction",
-        "type": "object"
-      },
-      "OidcDraftPayload": {
-        "additionalProperties": true,
-        "properties": {
-          "client_id": {
-            "type": "string"
-          },
-          "client_secret": {
-            "type": "string"
-          },
-          "issuer": {
-            "type": "string"
-          },
-          "login_transaction_ttl_seconds": {
-            "type": "number"
-          },
-          "scopes": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "issuer",
-          "client_id",
-          "client_secret",
-          "scopes",
-          "login_transaction_ttl_seconds"
-        ],
-        "type": "object"
-      },
-      "OidcSecretRotationAction": {
-        "additionalProperties": false,
-        "properties": {
-          "client_secret": {
-            "maxLength": 8192,
-            "minLength": 1,
-            "title": "Client Secret",
-            "type": "string"
-          }
-        },
-        "required": [
-          "client_secret"
-        ],
-        "title": "OidcSecretRotationAction",
         "type": "object"
       },
       "OperatingWindow": {
@@ -3027,19 +2378,6 @@
           }
         },
         "title": "OperationPolicyUpdate",
-        "type": "object"
-      },
-      "OwnerTransfer": {
-        "properties": {
-          "new_owner_user_id": {
-            "title": "New Owner User Id",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "new_owner_user_id"
-        ],
-        "title": "OwnerTransfer",
         "type": "object"
       },
       "PathHistoryEntry": {
@@ -3519,85 +2857,6 @@
         "title": "SmtpEndpointAction",
         "type": "object"
       },
-      "SourceAreaAssignPayload": {
-        "additionalProperties": true,
-        "properties": {
-          "reason": {
-            "type": "string"
-          },
-          "relative_path": {
-            "type": "string"
-          },
-          "user_id": {
-            "type": "number"
-          },
-          "volume_alias": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "user_id",
-          "volume_alias",
-          "relative_path",
-          "reason"
-        ],
-        "type": "object"
-      },
-      "SourceAreaGrant": {
-        "additionalProperties": true,
-        "properties": {
-          "availability": {
-            "enum": [
-              "available",
-              "unavailable"
-            ],
-            "type": "string"
-          },
-          "created_at": {
-            "type": "string"
-          },
-          "id": {
-            "type": "number"
-          },
-          "relative_path": {
-            "type": "string"
-          },
-          "usable": {
-            "type": "boolean"
-          },
-          "user_id": {
-            "type": "number"
-          },
-          "volume_alias": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "user_id",
-          "volume_alias",
-          "relative_path",
-          "created_at",
-          "availability",
-          "usable"
-        ],
-        "type": "object"
-      },
-      "SourceAreaListResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/SourceAreaGrant"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "type": "object"
-      },
       "SourceDirectoryBrowseResponse": {
         "additionalProperties": true,
         "properties": {
@@ -3663,18 +2922,13 @@
             "const": "vault",
             "type": "string"
           },
-          "label": {
-            "type": "string"
-          },
-          "owner_display_name": {
-            "type": "string"
-          },
           "vault_name": {
             "type": "string"
           }
         },
         "required": [
-          "kind"
+          "kind",
+          "vault_name"
         ],
         "type": "object"
       },
@@ -3705,9 +2959,6 @@
           "path": {
             "type": "string"
           },
-          "source_area_count": {
-            "type": "number"
-          },
           "vault_count": {
             "type": "number"
           }
@@ -3718,7 +2969,6 @@
           "access",
           "health",
           "vault_count",
-          "source_area_count",
           "diagnostic"
         ],
         "type": "object"
@@ -4183,161 +3433,6 @@
         ],
         "type": "object"
       },
-      "UserCreate": {
-        "properties": {
-          "display_name": {
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Display Name",
-            "type": "string"
-          },
-          "is_admin": {
-            "default": false,
-            "title": "Is Admin",
-            "type": "boolean"
-          },
-          "password": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "minLength": 12,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Password"
-          },
-          "username": {
-            "maxLength": 80,
-            "minLength": 2,
-            "title": "Username",
-            "type": "string"
-          }
-        },
-        "required": [
-          "username",
-          "display_name"
-        ],
-        "title": "UserCreate",
-        "type": "object"
-      },
-      "UserLookup": {
-        "properties": {
-          "username": {
-            "maxLength": 80,
-            "minLength": 2,
-            "title": "Username",
-            "type": "string"
-          }
-        },
-        "required": [
-          "username"
-        ],
-        "title": "UserLookup",
-        "type": "object"
-      },
-      "UserLookupResult": {
-        "additionalProperties": true,
-        "properties": {
-          "current_vault_role": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/VaultRole"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "display_name": {
-            "type": "string"
-          },
-          "id": {
-            "type": "number"
-          },
-          "username": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "username",
-          "display_name",
-          "current_vault_role"
-        ],
-        "type": "object"
-      },
-      "UserSuggestResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/UserLookupResult"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "type": "object"
-      },
-      "UserUpdate": {
-        "properties": {
-          "active": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Active"
-          },
-          "display_name": {
-            "anyOf": [
-              {
-                "maxLength": 120,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Display Name"
-          },
-          "is_admin": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Is Admin"
-          },
-          "password": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "minLength": 12,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Password"
-          }
-        },
-        "title": "UserUpdate",
-        "type": "object"
-      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -4376,84 +3471,6 @@
           "type"
         ],
         "title": "ValidationError",
-        "type": "object"
-      },
-      "VaultCreate": {
-        "additionalProperties": false,
-        "properties": {
-          "cloud_history_policy": {
-            "pattern": "^(archive_history|current_snapshot)$",
-            "title": "Cloud History Policy",
-            "type": "string"
-          },
-          "creation_mode": {
-            "default": "empty",
-            "pattern": "^(empty|adopt)$",
-            "title": "Creation Mode",
-            "type": "string"
-          },
-          "encryption_mode": {
-            "default": "plain",
-            "pattern": "^(plain|crypt)$",
-            "title": "Encryption Mode",
-            "type": "string"
-          },
-          "name": {
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "owner_user_id": {
-            "title": "Owner User Id",
-            "type": "integer"
-          },
-          "reason": {
-            "maxLength": 500,
-            "minLength": 3,
-            "title": "Reason",
-            "type": "string"
-          },
-          "relative_path": {
-            "anyOf": [
-              {
-                "maxLength": 1024,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Relative Path"
-          },
-          "slug": {
-            "maxLength": 60,
-            "minLength": 2,
-            "title": "Slug",
-            "type": "string"
-          },
-          "volume_alias": {
-            "anyOf": [
-              {
-                "maxLength": 120,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Volume Alias"
-          }
-        },
-        "required": [
-          "name",
-          "slug",
-          "owner_user_id",
-          "reason",
-          "cloud_history_policy"
-        ],
-        "title": "VaultCreate",
         "type": "object"
       },
       "VaultCreateRequest": {
@@ -4512,9 +3529,6 @@
           "recovery_export": {
             "type": "string"
           },
-          "role": {
-            "$ref": "#/components/schemas/VaultRole"
-          },
           "slug": {
             "type": "string"
           },
@@ -4527,7 +3541,6 @@
           "uuid",
           "slug",
           "name",
-          "role",
           "encryption_mode",
           "cloud_history_policy",
           "recovery_custody_confirmed"
@@ -4584,9 +3597,6 @@
           "local_files": {
             "type": "number"
           },
-          "memberships": {
-            "type": "number"
-          },
           "vault_files": {
             "type": "number"
           }
@@ -4598,8 +3608,7 @@
           "archive_versions",
           "cloud_bytes",
           "delete_markers",
-          "jobs",
-          "memberships"
+          "jobs"
         ],
         "type": "object"
       },
@@ -5106,9 +4115,6 @@
           "name": {
             "type": "string"
           },
-          "role": {
-            "$ref": "#/components/schemas/VaultRole"
-          },
           "slug": {
             "type": "string"
           }
@@ -5116,51 +4122,7 @@
         "required": [
           "id",
           "slug",
-          "name",
-          "role"
-        ],
-        "type": "object"
-      },
-      "VaultMember": {
-        "additionalProperties": true,
-        "description": "Vault access / governance types (issue #68).",
-        "properties": {
-          "active": {
-            "type": "boolean"
-          },
-          "display_name": {
-            "type": "string"
-          },
-          "id": {
-            "type": "number"
-          },
-          "role": {
-            "$ref": "#/components/schemas/VaultRole"
-          },
-          "username": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "username",
-          "display_name",
-          "role"
-        ],
-        "type": "object"
-      },
-      "VaultMembersResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/VaultMember"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
+          "name"
         ],
         "type": "object"
       },
@@ -5439,15 +4401,6 @@
         "title": "VaultRelocate",
         "type": "object"
       },
-      "VaultRole": {
-        "description": "Hand-written response types for foundation endpoints (issue #60).",
-        "enum": [
-          "owner",
-          "operator",
-          "viewer"
-        ],
-        "type": "string"
-      },
       "VaultSelectRequest": {
         "additionalProperties": true,
         "properties": {
@@ -5642,7 +4595,7 @@
     },
     "/api/admin/audit-events": {
       "get": {
-        "description": "List all audit events for global administrators.",
+        "description": "List all audit events for the Owner.",
         "operationId": "admin_audit_events_api_admin_audit_events_get",
         "responses": {
           "200": {
@@ -5818,101 +4771,6 @@
         "summary": "Admin Activate Cost Price Book"
       }
     },
-    "/api/admin/invites": {
-      "get": {
-        "description": "List Invites that can still be redeemed, without any token material.",
-        "operationId": "admin_invites_api_admin_invites_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminInvitesResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Admin Invites"
-      },
-      "post": {
-        "operationId": "create_invite_endpoint_api_admin_invites_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/InviteCreate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Invite Endpoint"
-      }
-    },
-    "/api/admin/invites/{invite_id}/revoke": {
-      "post": {
-        "description": "Withdraw a pending Invite so its token can never be redeemed.",
-        "operationId": "revoke_invite_endpoint_api_admin_invites__invite_id__revoke_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "invite_id",
-            "required": true,
-            "schema": {
-              "title": "Invite Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Revoke Invite Endpoint"
-      }
-    },
     "/api/admin/metadata-backups": {
       "get": {
         "operationId": "admin_list_metadata_backups_api_admin_metadata_backups_get",
@@ -6085,154 +4943,6 @@
         "summary": "Admin Set Webhook Endpoint"
       }
     },
-    "/api/admin/oidc-configuration": {
-      "get": {
-        "operationId": "admin_oidc_configuration_api_admin_oidc_configuration_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OidcConfigurationResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Admin Oidc Configuration"
-      }
-    },
-    "/api/admin/oidc-configuration/activate": {
-      "post": {
-        "operationId": "activate_admin_oidc_configuration_api_admin_oidc_configuration_activate_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OidcConfigurationResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Activate Admin Oidc Configuration"
-      }
-    },
-    "/api/admin/oidc-configuration/disable": {
-      "post": {
-        "operationId": "disable_admin_oidc_configuration_api_admin_oidc_configuration_disable_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OidcConfigurationResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Disable Admin Oidc Configuration"
-      }
-    },
-    "/api/admin/oidc-configuration/draft": {
-      "put": {
-        "operationId": "save_admin_oidc_draft_api_admin_oidc_configuration_draft_put",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OidcDraftAction"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OidcConfigurationResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Save Admin Oidc Draft"
-      }
-    },
-    "/api/admin/oidc-configuration/draft/validate": {
-      "post": {
-        "operationId": "validate_admin_oidc_draft_api_admin_oidc_configuration_draft_validate_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OidcConfigurationResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Validate Admin Oidc Draft"
-      }
-    },
-    "/api/admin/oidc-configuration/rotate-secret": {
-      "post": {
-        "operationId": "rotate_admin_oidc_secret_api_admin_oidc_configuration_rotate_secret_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OidcSecretRotationAction"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OidcConfigurationResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Rotate Admin Oidc Secret"
-      }
-    },
     "/api/admin/settings": {
       "get": {
         "operationId": "admin_system_settings_api_admin_settings_get",
@@ -6287,157 +4997,6 @@
         "summary": "Update Admin System Settings"
       }
     },
-    "/api/admin/source-areas": {
-      "get": {
-        "description": "List Source Areas, optionally filtered by User or Source Volume.",
-        "operationId": "admin_list_source_areas_api_admin_source_areas_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "user_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "User Id"
-            }
-          },
-          {
-            "in": "query",
-            "name": "volume_alias",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Volume Alias"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SourceAreaListResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin List Source Areas"
-      },
-      "post": {
-        "description": "Assign an exclusive Source Area to one User (issue #149).",
-        "operationId": "admin_assign_source_area_api_admin_source_areas_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminSourceAreaAssign"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SourceAreaGrant"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Assign Source Area"
-      }
-    },
-    "/api/admin/source-areas/{source_area_id}": {
-      "delete": {
-        "description": "Revoke one Source Area without altering existing Vaults (issue #149).",
-        "operationId": "admin_revoke_source_area_api_admin_source_areas__source_area_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "source_area_id",
-            "required": true,
-            "schema": {
-              "title": "Source Area Id",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "reason",
-            "required": true,
-            "schema": {
-              "maxLength": 500,
-              "minLength": 3,
-              "title": "Reason",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Revoke Source Area"
-      }
-    },
     "/api/admin/source-volumes": {
       "get": {
         "description": "Operator inventory of discovered Source Volumes (issue #148).",
@@ -6457,271 +5016,6 @@
         "summary": "Admin Source Volumes"
       }
     },
-    "/api/admin/source-volumes/{volume_alias}/browse": {
-      "get": {
-        "description": "Admin lazy directory browser for Source Area assignment.",
-        "operationId": "admin_browse_source_volume_api_admin_source_volumes__volume_alias__browse_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "volume_alias",
-            "required": true,
-            "schema": {
-              "title": "Volume Alias",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "path",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Path",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "purpose",
-            "required": false,
-            "schema": {
-              "default": "grant",
-              "pattern": "^(grant|adopt)$",
-              "title": "Purpose",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SourceDirectoryBrowseResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Browse Source Volume"
-      }
-    },
-    "/api/admin/users": {
-      "get": {
-        "description": "List every User with vault membership and authentication capabilities.",
-        "operationId": "admin_users_api_admin_users_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminUsersResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Admin Users"
-      },
-      "post": {
-        "operationId": "create_user_api_admin_users_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UserCreate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminUser"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create User"
-      }
-    },
-    "/api/admin/users/{user_id}": {
-      "patch": {
-        "description": "Change a User's global role, activation, display name or password.",
-        "operationId": "update_user_api_admin_users__user_id__patch",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "user_id",
-            "required": true,
-            "schema": {
-              "title": "User Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UserUpdate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Update User"
-      }
-    },
-    "/api/admin/users/{user_id}/identities": {
-      "get": {
-        "description": "List the external Identities linked to one User.",
-        "operationId": "admin_user_identities_api_admin_users__user_id__identities_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "user_id",
-            "required": true,
-            "schema": {
-              "title": "User Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminIdentitiesResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin User Identities"
-      }
-    },
-    "/api/admin/users/{user_id}/identities/{identity_id}": {
-      "delete": {
-        "description": "Unlink one external Identity after explicit confirmation.",
-        "operationId": "admin_unlink_identity_api_admin_users__user_id__identities__identity_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "user_id",
-            "required": true,
-            "schema": {
-              "title": "User Id",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "path",
-            "name": "identity_id",
-            "required": true,
-            "schema": {
-              "title": "Identity Id",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "confirm",
-            "required": false,
-            "schema": {
-              "default": false,
-              "title": "Confirm",
-              "type": "boolean"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Unlink Identity"
-      }
-    },
     "/api/admin/vaults": {
       "get": {
         "operationId": "admin_vaults_api_admin_vaults_get",
@@ -6738,365 +5032,6 @@
           }
         },
         "summary": "Admin Vaults"
-      },
-      "post": {
-        "operationId": "create_vault_api_admin_vaults_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VaultCreate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminVault"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Vault"
-      }
-    },
-    "/api/admin/vaults/{vault_id}/decommission": {
-      "post": {
-        "operationId": "start_admin_vault_decommission_api_admin_vaults__vault_id__decommission_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vault_id",
-            "required": true,
-            "schema": {
-              "title": "Vault Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VaultDecommissionStart"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VaultDecommissionStatus"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Start Admin Vault Decommission"
-      }
-    },
-    "/api/admin/vaults/{vault_id}/decommission/cloud-purge/cancel": {
-      "post": {
-        "operationId": "cancel_admin_vault_decommission_cloud_purge_api_admin_vaults__vault_id__decommission_cloud_purge_cancel_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vault_id",
-            "required": true,
-            "schema": {
-              "title": "Vault Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Cancel Admin Vault Decommission Cloud Purge"
-      }
-    },
-    "/api/admin/vaults/{vault_id}/decommission/preview": {
-      "post": {
-        "operationId": "preview_admin_vault_decommission_api_admin_vaults__vault_id__decommission_preview_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vault_id",
-            "required": true,
-            "schema": {
-              "title": "Vault Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VaultDecommissionPreview-Input"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VaultDecommissionPreview-Output"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Preview Admin Vault Decommission"
-      }
-    },
-    "/api/admin/vaults/{vault_id}/decommission/status": {
-      "get": {
-        "operationId": "admin_vault_decommission_status_api_admin_vaults__vault_id__decommission_status_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vault_id",
-            "required": true,
-            "schema": {
-              "title": "Vault Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VaultDecommissionStatus"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Vault Decommission Status"
-      }
-    },
-    "/api/admin/vaults/{vault_id}/members": {
-      "get": {
-        "operationId": "vault_members_api_admin_vaults__vault_id__members_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vault_id",
-            "required": true,
-            "schema": {
-              "title": "Vault Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminVaultMembersResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Vault Members"
-      },
-      "post": {
-        "description": "Global-admin override of a vault's sharing.\n\nThe primary owner role can never be handed out here -- only\n:func:`transfer_vault_owner` can change it, preserving the one-owner\ninvariant -- so this only ever assigns ``operator``/``viewer``. Per\nADR-0005's reauth-then-audit precedent, this sensitive override\nrequires a ``reason``, is audited, and notifies the vault's owner.",
-        "operationId": "add_vault_member_api_admin_vaults__vault_id__members_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vault_id",
-            "required": true,
-            "schema": {
-              "title": "Vault Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminMembershipCreate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Add Vault Member"
-      }
-    },
-    "/api/admin/vaults/{vault_id}/members/{user_id}": {
-      "delete": {
-        "description": "Global-admin removal of a vault member (never the primary owner --\ntransfer ownership first). Requires ``reason``, is audited, and\nnotifies the vault's owner, per ADR-0005's precedent for sensitive\nadmin overrides.",
-        "operationId": "remove_vault_member_api_admin_vaults__vault_id__members__user_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vault_id",
-            "required": true,
-            "schema": {
-              "title": "Vault Id",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "path",
-            "name": "user_id",
-            "required": true,
-            "schema": {
-              "title": "User Id",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "reason",
-            "required": true,
-            "schema": {
-              "maxLength": 500,
-              "minLength": 3,
-              "title": "Reason",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Remove Vault Member"
       }
     },
     "/api/admin/vaults/{vault_id}/quotas": {
@@ -7185,55 +5120,6 @@
         "summary": "Update Admin Vault Quotas"
       }
     },
-    "/api/admin/vaults/{vault_id}/recovery/export": {
-      "post": {
-        "operationId": "admin_export_vault_recovery_secret_api_admin_vaults__vault_id__recovery_export_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vault_id",
-            "required": true,
-            "schema": {
-              "title": "Vault Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RecoveryExportRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Export Vault Recovery Secret"
-      }
-    },
     "/api/admin/vaults/{vault_id}/relocate": {
       "post": {
         "description": "Relocate, never rebind, a missing root on its verified Source Volume.",
@@ -7284,56 +5170,6 @@
         "summary": "Admin Relocate Vault Root"
       }
     },
-    "/api/admin/vaults/{vault_id}/transfer-owner": {
-      "post": {
-        "description": "Global-admin override to transfer primary ownership.\n\nAtomically demotes the current owner to operator and promotes the\ntarget (never moving the vault's namespace, local directory, or S3\nobjects). Requires ``reason``, is audited, and notifies both the\noutgoing and incoming owner, per ADR-0005's precedent for sensitive\nadmin overrides.",
-        "operationId": "transfer_vault_owner_api_admin_vaults__vault_id__transfer_owner_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vault_id",
-            "required": true,
-            "schema": {
-              "title": "Vault Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminOwnerTransfer"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Transfer Vault Owner"
-      }
-    },
     "/api/admin/worker-errors": {
       "get": {
         "operationId": "admin_worker_errors_api_admin_worker_errors_get",
@@ -7354,7 +5190,7 @@
     },
     "/api/audit-events": {
       "get": {
-        "description": "List audit events visible to the current Vault membership role.",
+        "description": "List the audit events recorded for the selected Vault.",
         "operationId": "vault_audit_events_api_audit_events_get",
         "responses": {
           "200": {
@@ -8438,7 +6274,7 @@
     },
     "/api/notifications/read-all": {
       "post": {
-        "description": "Mark every currently visible unread notification read (issue #225).\n\nServer-authoritative and idempotent; preserves the same membership and\nin-app visibility checks as single-item mark-read.",
+        "description": "Mark every currently visible unread notification read (issue #225).\n\nServer-authoritative and idempotent; preserves the same Vault and in-app\nvisibility checks as single-item mark-read.",
         "operationId": "mark_all_notifications_read_api_notifications_read_all_post",
         "responses": {
           "200": {
@@ -8515,7 +6351,7 @@
     },
     "/api/reauth": {
       "post": {
-        "description": "Local-password Reauthentication with an isolated durable backoff.\n\nOIDC users have no password hash and must step up through the provider\n(see ``/auth/oidc/reauth``). Its account/IP counters deliberately use\nnamespaced keys so a Reauthentication success cannot reset Local Sign-in,\nInvite, or OIDC-related throttling state.",
+        "description": "Emergency Password Reauthentication with an isolated durable backoff.\n\nAccepted only from loopback and the LAN CIDRs; elsewhere the Owner steps\nup through the provider (see ``/auth/oidc/reauth``). Its account/IP\ncounters deliberately use namespaced keys so a Reauthentication success\ncannot reset sign-in or OIDC-related throttling state.",
         "operationId": "reauth_api_reauth_post",
         "requestBody": {
           "content": {
@@ -8721,29 +6557,10 @@
         "summary": "Start Scan"
       }
     },
-    "/api/source-areas": {
-      "get": {
-        "description": "Source Areas granted to the authenticated User.",
-        "operationId": "list_my_source_areas_api_source_areas_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SourceAreaListResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List My Source Areas"
-      }
-    },
     "/api/source-volumes/{volume_alias}/browse": {
       "get": {
-        "description": "User lazy directory browser scoped to their Source Areas.",
-        "operationId": "browse_my_source_volume_api_source_volumes__volume_alias__browse_get",
+        "description": "Lazy directory browser for choosing a Vault root on a Source Volume.",
+        "operationId": "browse_source_volume_api_source_volumes__volume_alias__browse_get",
         "parameters": [
           {
             "in": "path",
@@ -8787,7 +6604,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Browse My Source Volume"
+        "summary": "Browse Source Volume"
       }
     },
     "/api/stats": {
@@ -9237,102 +7054,6 @@
         "summary": "Upsert Vault Lifecycle Folder Override"
       }
     },
-    "/api/vault/members": {
-      "get": {
-        "description": "Owner self-service: view the current vault's sharing.",
-        "operationId": "list_own_vault_members_api_vault_members_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VaultMembersResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List Own Vault Members"
-      },
-      "post": {
-        "description": "Owner self-service: share the current vault as operator/viewer.",
-        "operationId": "add_own_vault_member_api_vault_members_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MembershipCreate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Add Own Vault Member"
-      }
-    },
-    "/api/vault/members/{user_id}": {
-      "delete": {
-        "description": "Owner self-service: revoke a member's access to the current vault.",
-        "operationId": "remove_own_vault_member_api_vault_members__user_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "user_id",
-            "required": true,
-            "schema": {
-              "title": "User Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Remove Own Vault Member"
-      }
-    },
     "/api/vault/notification-preferences": {
       "post": {
         "operationId": "set_vault_notification_preference_api_vault_notification_preferences_post",
@@ -9465,7 +7186,7 @@
     },
     "/api/vault/quotas": {
       "get": {
-        "description": "Primary-owner read seam; ordinary operators and viewers are denied.",
+        "description": "Quota limits and usage of the selected Vault.",
         "operationId": "own_vault_quotas_api_vault_quotas_get",
         "responses": {
           "200": {
@@ -9558,126 +7279,9 @@
         "summary": "Reexport Vault Recovery Secret"
       }
     },
-    "/api/vault/transfer-owner": {
-      "post": {
-        "description": "Owner self-service: hand primary ownership to another member.\n\nAtomic role swap on ``vault_members`` alone -- the vault's generated\nnamespace, local directory, and S3 objects never move.",
-        "operationId": "transfer_own_vault_owner_api_vault_transfer_owner_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OwnerTransfer"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Transfer Own Vault Owner"
-      }
-    },
-    "/api/vault/user-lookup": {
-      "post": {
-        "description": "Look up one active user without exposing directory information.\n\nA lookup is deliberately scoped to the selected vault and returns only the\nfields needed to confirm a sharing change. It never returns identities,\nadministrator state, activity timestamps, or other memberships.",
-        "operationId": "lookup_vault_user_api_vault_user_lookup_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UserLookup"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UserLookupResult"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Lookup Vault User"
-      }
-    },
-    "/api/vault/user-suggest": {
-      "post": {
-        "description": "Return a bounded username prefix match without listing the directory.\n\nSuggestions require at least two characters, never include inactive users,\nand are capped so a vault owner cannot paginate the full user table.",
-        "operationId": "suggest_vault_users_api_vault_user_suggest_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UserLookup"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UserSuggestResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Suggest Vault Users"
-      }
-    },
     "/api/vaults": {
       "get": {
-        "operationId": "user_vaults_api_vaults_get",
+        "operationId": "list_vaults_api_vaults_get",
         "responses": {
           "200": {
             "content": {
@@ -9690,11 +7294,11 @@
             "description": "Successful Response"
           }
         },
-        "summary": "User Vaults"
+        "summary": "List Vaults"
       },
       "post": {
-        "description": "Let an authenticated, already-existing user create their own vault.\n\nThe server generates the storage identity; it never provisions a user\nfrom identity claims (the caller must already be `current_user`).\nCrypt vaults also receive a one-time recovery export so the owner can\nconfirm custody before uploads are admitted. Adoption binds an existing\nSource Area directory in place and starts an asynchronous local scan.",
-        "operationId": "create_own_vault_api_vaults_post",
+        "description": "Create a Vault from the UI, the only way Vaults are created (#412).\n\nThe server generates the storage identity. Crypt vaults also receive a\none-time recovery export so the owner can confirm custody before uploads\nare admitted. Adoption binds any free directory of a custom Source Volume\nin place and starts an asynchronous local scan.",
+        "operationId": "create_owner_vault_api_vaults_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -9727,7 +7331,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Create Own Vault"
+        "summary": "Create Owner Vault"
       }
     },
     "/api/vaults/select": {
@@ -10028,22 +7632,6 @@
         "summary": "Oidc Callback"
       }
     },
-    "/auth/oidc/link": {
-      "get": {
-        "operationId": "oidc_link_auth_oidc_link_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Oidc Link"
-      }
-    },
     "/auth/oidc/login": {
       "get": {
         "operationId": "oidc_login_auth_oidc_login_get",
@@ -10062,22 +7650,6 @@
                 }
               ],
               "title": "Return To"
-            }
-          },
-          {
-            "in": "query",
-            "name": "invite",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Invite"
             }
           }
         ],

@@ -61,8 +61,8 @@ class LifecyclePinTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (1, 'owner', 'Owner', 'x', FALSE)"
+                "INSERT INTO users(id, username, display_name, password_hash) "
+                "VALUES (1, 'owner', 'Owner', 'x')"
             )
             connection.execute(
                 "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "

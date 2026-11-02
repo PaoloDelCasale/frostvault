@@ -16,7 +16,7 @@ from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
 
 
-class VaultRelocationAuthorizationTests(unittest.TestCase):
+class VaultRelocationHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -25,8 +25,8 @@ class VaultRelocationAuthorizationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         with SQLiteConnection(str(self.db_path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (1, 'member', 'Member', 'hash', 0), (2, 'admin', 'Admin', 'hash', 1)"
+                "INSERT INTO users(id, username, display_name, password_hash) "
+                "VALUES (1, 'owner', 'Owner', 'hash')"
             )
         configured = replace(
             settings,
@@ -41,40 +41,31 @@ class VaultRelocationAuthorizationTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
         self.settings = configured
 
-    def client_for(self, user_id: int, *, stale: bool = False) -> tuple[TestClient, dict[str, str]]:
+    def client_for(self, *, stale: bool = False) -> tuple[TestClient, dict[str, str]]:
         client = TestClient(app, client=("127.0.0.1", 50000))
         with SQLiteConnection(str(self.db_path)) as connection:
-            token = create_session(connection, user_id=user_id, auth_method="oidc")
+            token = create_session(connection, user_id=1, auth_method="oidc")
             if stale:
                 connection.execute(
-                    "UPDATE sessions SET reauth_at='2000-01-01T00:00:00+00:00' WHERE user_id=%s",
-                    (user_id,),
+                    "UPDATE sessions SET reauth_at='2000-01-01T00:00:00+00:00' WHERE user_id=1"
                 )
         client.cookies.set(self.settings.session_cookie_name, token)
         csrf = client.get("/api/me").json()["csrf_token"]
         return client, {"X-CSRF-Token": csrf}
 
-    def test_owner_operator_or_viewer_cannot_invoke_global_admin_route(self) -> None:
-        client, headers = self.client_for(1)
+    def test_relocation_does_not_require_recent_reauthentication(self) -> None:
+        # Only the Recovery Kit download and cloud deletion re-authenticate
+        # (#412); an unknown Vault reaches the handler and is Not Found.
+        client, headers = self.client_for(stale=True)
         response = client.post(
             "/api/admin/vaults/7/relocate",
             json={"volume_alias": "photos", "relative_path": "new", "reason": "move"},
             headers=headers,
         )
-        self.assertEqual(response.status_code, 403)
-
-    def test_global_admin_requires_recent_reauthentication(self) -> None:
-        client, headers = self.client_for(2, stale=True)
-        response = client.post(
-            "/api/admin/vaults/7/relocate",
-            json={"volume_alias": "photos", "relative_path": "new", "reason": "move"},
-            headers=headers,
-        )
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json(), {"error": "reauth_required"})
+        self.assertEqual(response.status_code, 404, response.text)
 
     def test_csrf_is_not_weakened(self) -> None:
-        client, _ = self.client_for(2)
+        client, _ = self.client_for()
         response = client.post(
             "/api/admin/vaults/7/relocate",
             json={"volume_alias": "photos", "relative_path": "new", "reason": "move"},

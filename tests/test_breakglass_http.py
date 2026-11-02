@@ -19,6 +19,7 @@ from tests.test_database import run_alembic
 ADMIN_PASSWORD = "correct-horse-battery"
 LOOPBACK = ("127.0.0.1", 40000)
 OUTSIDE = ("203.0.113.7", 40000)
+LAN = ("192.168.1.20", 40000)
 
 
 class BreakGlassHttpTests(unittest.TestCase):
@@ -29,32 +30,12 @@ class BreakGlassHttpTests(unittest.TestCase):
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
+        # FrostVault has a single User: the owner (#412).
         with SQLiteConnection(str(self.database_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('admin', 'Admin', %s, TRUE)
-                """,
-                (hash_password(ADMIN_PASSWORD),),
-            )
-            connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('member', 'Member', %s, FALSE)
-                """,
-                (hash_password(ADMIN_PASSWORD),),
-            )
-            connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('shell', 'Shell', NULL, TRUE)
-                """
-            )
-            connection.execute(
-                """
-                INSERT INTO users(
-                    username, display_name, password_hash, is_admin, active
-                ) VALUES ('inactive', 'Inactive', %s, FALSE, FALSE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('admin', 'Admin', %s)
                 """,
                 (hash_password(ADMIN_PASSWORD),),
             )
@@ -76,7 +57,6 @@ class BreakGlassHttpTests(unittest.TestCase):
             "app.database.settings",
             "app.sessions.settings",
             "app.oidc.settings",
-            "app.invites.settings",
             "app.breakglass.settings",
         ):
             patcher = patch(target, self.test_settings)
@@ -128,39 +108,68 @@ class BreakGlassHttpTests(unittest.TestCase):
 
     # --- local authentication --------------------------------------------
 
-    def test_active_non_admin_can_sign_in_without_privilege_escalation(self) -> None:
+    def test_owner_signs_in_with_the_emergency_password(self) -> None:
         client = self._client(LOOPBACK)
         response = client.post(
-            "/api/login", json={"username": "member", "password": ADMIN_PASSWORD}
+            "/api/login", json={"username": "admin", "password": ADMIN_PASSWORD}
         )
         self.assertEqual(response.status_code, 200, response.text)
 
         me = client.get("/api/me")
         self.assertEqual(me.status_code, 200, me.text)
-        self.assertFalse(me.json()["is_admin"])
+        self.assertEqual(me.json()["username"], "admin")
         self.assertEqual(me.json()["auth_method"], "local")
-        self.assertEqual(client.get("/api/admin/users").status_code, 403)
+        self.assertNotIn("is_admin", me.json())
 
-    def test_active_non_admin_can_sign_in_from_an_allowed_cidr(self) -> None:
+    def test_emergency_password_is_accepted_from_a_configured_lan_cidr(self) -> None:
         allowed_settings = replace(
-            self.test_settings, break_glass_allowed_cidrs="203.0.113.0/24"
+            self.test_settings, break_glass_allowed_cidrs="192.168.1.0/24"
         )
-        client = self._client(OUTSIDE)
+        client = self._client(LAN)
         with patch("app.breakglass.settings", allowed_settings):
             response = client.post(
                 "/api/login",
-                json={"username": "member", "password": ADMIN_PASSWORD},
+                json={"username": "admin", "password": ADMIN_PASSWORD},
             )
         self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(client.cookies.get(self.cookie_name))
 
-    def test_inactive_passwordless_unknown_and_wrong_password_are_indistinguishable(
+    def test_emergency_password_is_refused_outside_the_configured_lan(self) -> None:
+        allowed_settings = replace(
+            self.test_settings, break_glass_allowed_cidrs="192.168.1.0/24"
+        )
+        for peer in (OUTSIDE, ("192.168.2.20", 40000)):
+            with self.subTest(peer=peer[0]):
+                client = self._client(peer)
+                with patch("app.breakglass.settings", allowed_settings):
+                    response = client.post(
+                        "/api/login",
+                        json={"username": "admin", "password": ADMIN_PASSWORD},
+                    )
+                self.assertEqual(response.status_code, 403, response.text)
+                self.assertIsNone(client.cookies.get(self.cookie_name))
+        with SQLiteConnection(str(self.database_path)) as connection:
+            denied = connection.execute(
+                "SELECT COUNT(*) AS total FROM audit_events "
+                "WHERE event='break_glass_denied'"
+            ).fetchone()["total"]
+        self.assertEqual(denied, 2)
+
+    def test_untrusted_forwarded_for_cannot_claim_a_lan_address(self) -> None:
+        client = self._client(OUTSIDE)
+        response = client.post(
+            "/api/login",
+            headers={"X-Forwarded-For": "127.0.0.1"},
+            json={"username": "admin", "password": ADMIN_PASSWORD},
+        )
+        self.assertEqual(response.status_code, 403, response.text)
+
+    def test_unknown_username_and_wrong_password_are_indistinguishable(
         self,
     ) -> None:
         attempts = (
-            ("inactive", ADMIN_PASSWORD),
-            ("shell", ""),
             ("unknown", ADMIN_PASSWORD),
-            ("member", "wrong-password"),
+            ("admin", "wrong-password"),
         )
         responses = [
             self._client(LOOPBACK).post(
@@ -181,28 +190,27 @@ class BreakGlassHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             password_hash = connection.execute(
                 "SELECT password_hash FROM users WHERE username=%s",
-                ("member",),
+                ("admin",),
             ).fetchone()["password_hash"]
 
         client = self._client(LOOPBACK)
         with patch("app.main.verify_password", return_value=False) as verify:
             response = client.post(
                 "/api/login",
-                json={"username": "member", "password": "wrong-password"},
+                json={"username": "admin", "password": "wrong-password"},
             )
 
         self.assertEqual(response.status_code, 401, response.text)
         verify.assert_called_once_with(password_hash, "wrong-password")
 
-    def test_ineligible_users_verify_once_against_the_dummy_hash_and_cannot_sign_in(
+    def test_ineligible_logins_verify_once_against_the_dummy_hash_and_fail(
         self,
     ) -> None:
-        attempts = (
-            ("unknown", ADMIN_PASSWORD),
-            ("inactive", ADMIN_PASSWORD),
-            ("shell", ADMIN_PASSWORD),
-        )
-        for username, password in attempts:
+        with SQLiteConnection(str(self.database_path)) as connection:
+            connection.execute(
+                "UPDATE users SET password_hash=NULL WHERE username='admin'"
+            )
+        for username in ("unknown", "admin"):
             with self.subTest(username=username):
                 client = self._client(LOOPBACK)
                 # Returning True here proves that the dummy verification result
@@ -210,11 +218,11 @@ class BreakGlassHttpTests(unittest.TestCase):
                 with patch("app.main.verify_password", return_value=True) as verify:
                     response = client.post(
                         "/api/login",
-                        json={"username": username, "password": password},
+                        json={"username": username, "password": ADMIN_PASSWORD},
                     )
 
                 self.assertEqual(response.status_code, 401, response.text)
-                verify.assert_called_once_with(DUMMY_PASSWORD_HASH, password)
+                verify.assert_called_once_with(DUMMY_PASSWORD_HASH, ADMIN_PASSWORD)
 
     # --- throttling -------------------------------------------------------
 
@@ -243,14 +251,6 @@ class BreakGlassHttpTests(unittest.TestCase):
         )
         self.assertEqual(ok.status_code, 200, ok.text)
         self.assertEqual(self._backoff_rows(), 0)
-
-    def test_invite_guessing_is_throttled_by_ip(self) -> None:
-        client = self._client(OUTSIDE)
-        for _ in range(5):
-            miss = client.get("/auth/oidc/login", params={"invite": "no-such-token"})
-            self.assertEqual(miss.status_code, 400, miss.text)
-        blocked = client.get("/auth/oidc/login", params={"invite": "another-guess"})
-        self.assertEqual(blocked.status_code, 429, blocked.text)
 
 
 if __name__ == "__main__":

@@ -10,9 +10,6 @@ type Translate = (key: string, params?: Record<string, string | number>) => stri
 export type JobProgressProps = {
   job: JobGroup;
   t: Translate;
-  canCancel: boolean;
-  canApprove: boolean;
-  canAcceleratePurge?: boolean;
   onCancel: (job: JobGroup) => void;
   onApprove: (job: JobGroup) => void;
   onAcceleratePurge?: (job: JobGroup) => void;
@@ -24,9 +21,6 @@ export type JobProgressProps = {
 export function JobProgress({
   job,
   t,
-  canCancel,
-  canApprove,
-  canAcceleratePurge = false,
   onCancel,
   onApprove,
   onAcceleratePurge,
@@ -58,7 +52,7 @@ export function JobProgress({
   }
 
   const showAccelerate =
-    canAcceleratePurge &&
+    onAcceleratePurge !== undefined &&
     job.action === "cloud-purge" &&
     job.status === "pending_delay";
 
@@ -88,7 +82,7 @@ export function JobProgress({
         <p className="mt-1 text-[10px] text-muted">{estimateBits.join(" · ")}</p>
       ) : null}
       <div className="mt-2 flex flex-wrap gap-2">
-        {canApprove && job.status === "pending_approval" ? (
+        {job.status === "pending_approval" ? (
           <Button
             type="button"
             variant="primary"
@@ -112,18 +106,16 @@ export function JobProgress({
             {accelerateBusy ? t("ui.purging_now") : t("ui.purge_now")}
           </Button>
         ) : null}
-        {canCancel ? (
-          <Button
-            type="button"
-            variant="secondary"
-            className="min-h-11 min-w-11"
-            disabled={cancelBusy}
-            data-testid="cancel-job"
-            onClick={() => onCancel(job)}
-          >
-            {cancelBusy ? t("ui.stopping") : t("ui.stop")}
-          </Button>
-        ) : null}
+        <Button
+          type="button"
+          variant="secondary"
+          className="min-h-11 min-w-11"
+          disabled={cancelBusy}
+          data-testid="cancel-job"
+          onClick={() => onCancel(job)}
+        >
+          {cancelBusy ? t("ui.stopping") : t("ui.stop")}
+        </Button>
       </div>
     </div>
   );

@@ -116,39 +116,29 @@ class Settings:
         50, int(os.getenv("JOB_PROGRESS_MIN_INTERVAL_MS", "500"))
     )
 
+    # LAN networks from which the owner's emergency password is accepted, in
+    # addition to loopback (#412). Empty means loopback only.
     break_glass_allowed_cidrs: str = os.getenv("BREAK_GLASS_ALLOWED_CIDRS", "")
 
     oidc_enabled: bool = as_bool("OIDC_ENABLED", False)
     oidc_issuer: str = os.getenv("OIDC_ISSUER", "")
     oidc_client_id: str = os.getenv("OIDC_CLIENT_ID", "")
     oidc_client_secret: str = os.getenv("OIDC_CLIENT_SECRET", "")
-    oidc_settings_encryption_key: str = os.getenv(
-        "OIDC_SETTINGS_ENCRYPTION_KEY",
-        "",
-    )
     oidc_scopes: str = os.getenv("OIDC_SCOPES", "openid email profile")
     oidc_login_ttl_seconds: int = max(
         60, int(os.getenv("OIDC_LOGIN_TTL_SECONDS", "600"))
     )
-    invite_ttl_seconds: int = max(
-        300, int(os.getenv("INVITE_TTL_SECONDS", str(7 * 24 * 60 * 60)))
-    )
 
+    # The owner's local credentials: the emergency password accepted only
+    # from loopback and BREAK_GLASS_ALLOWED_CIDRS. Applied at every start.
     bootstrap_admin_username: str = os.getenv("BOOTSTRAP_ADMIN_USERNAME", "")
     bootstrap_admin_password: str = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
     bootstrap_admin_display_name: str = os.getenv("BOOTSTRAP_ADMIN_DISPLAY_NAME", "Administrator")
-    bootstrap_vault_name: str = os.getenv("BOOTSTRAP_VAULT_NAME", "")
-    bootstrap_vault_slug: str = os.getenv("BOOTSTRAP_VAULT_SLUG", "")
-    bootstrap_vault_source_root: str = os.getenv("BOOTSTRAP_VAULT_SOURCE_ROOT", "")
-    bootstrap_vault_s3_bucket: str = os.getenv("S3_BUCKET", "")
-    bootstrap_vault_s3_prefix: str = os.getenv("BOOTSTRAP_VAULT_S3_PREFIX", "")
-    bootstrap_vault_rclone_remote: str = os.getenv("BOOTSTRAP_VAULT_RCLONE_REMOTE", "")
-
-    # Self-service vault creation (issue #7): the server -- never the caller
-    # -- derives every vault's storage namespace from a generated UUID.
+    # Vault creation (issue #7): the server -- never the caller -- derives
+    # every vault's storage namespace from a generated UUID.
     # Local empty-Vault roots use the fixed /sources/managed/<uuid> contract
     # (issue #148); vault_s3_bucket/vault_rclone_remote are the shared
-    # bucket/remote assigned to self-service plain vaults.
+    # bucket/remote assigned to plain vaults.
     vault_s3_bucket: str = os.getenv("VAULT_S3_BUCKET", os.getenv("S3_BUCKET", ""))
     vault_rclone_remote: str = os.getenv("VAULT_RCLONE_REMOTE", "")
     # Underlying S3 (or compatible) remote that per-vault crypt remotes wrap
@@ -257,7 +247,7 @@ def validate_settings() -> None:
                 f"{candidate}"
             )
     if not settings.bootstrap_admin_username and not settings.bootstrap_admin_password:
-        # This is valid after first startup, when an administrator already exists.
+        # Valid after first startup: the owner keeps its stored credentials.
         return
     if (
         not settings.bootstrap_admin_username

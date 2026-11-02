@@ -734,30 +734,19 @@ function RowJobOrActions({
   if (jobs.length) {
     return (
       <div className="progress-stack flex min-w-[190px] flex-col gap-2">
-        {jobs.map((job) => {
-          const cloudDeletionJob =
-            job.action === "cloud-purge" || job.action === "cloud-archive";
-          return (
-            <JobProgress
-              key={job.id}
-              job={job}
-              t={t}
-              canCancel={
-                cloudDeletionJob
-                  ? capabilities.is_vault_owner
-                  : capabilities.can_operate
-              }
-              canApprove={capabilities.is_vault_owner}
-              canAcceleratePurge={capabilities.is_vault_owner}
-              onCancel={(j) => onCancelJob?.(j)}
-              onApprove={(j) => onApproveJob?.(j)}
-              onAcceleratePurge={(j) => onAcceleratePurge?.(j)}
-              cancelBusy={cancelBusyId === job.id}
-              approveBusy={approveBusyId === job.id}
-              accelerateBusy={accelerateBusyId === job.id}
-            />
-          );
-        })}
+        {jobs.map((job) => (
+          <JobProgress
+            key={job.id}
+            job={job}
+            t={t}
+            onCancel={(j) => onCancelJob?.(j)}
+            onApprove={(j) => onApproveJob?.(j)}
+            onAcceleratePurge={(j) => onAcceleratePurge?.(j)}
+            cancelBusy={cancelBusyId === job.id}
+            approveBusy={approveBusyId === job.id}
+            accelerateBusy={accelerateBusyId === job.id}
+          />
+        ))}
       </div>
     );
   }

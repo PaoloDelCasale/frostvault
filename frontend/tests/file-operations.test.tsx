@@ -166,11 +166,8 @@ const ownerCaps: MeVault = {
   id: 1,
   slug: "test",
   name: "Test Archive",
-  role: "owner",
-  can_operate: true,
   delete_enabled: true,
   cloud_deletion_enabled: true,
-  is_vault_owner: true,
     cloud_history_policy: "archive_history" as const,
 };
 
@@ -418,9 +415,6 @@ describe("File operations — seams 1–10", () => {
     mockRoutes({});
     const operator = {
       ...ownerCaps,
-      role: "operator" as const,
-      can_operate: true,
-      is_vault_owner: false,
     cloud_history_policy: "archive_history" as const,
       cloud_deletion_enabled: false,
     };
@@ -445,13 +439,10 @@ describe("File operations — seams 1–10", () => {
     // Pure gating cases covered in file-operations-actions.test.ts for all six variants.
     expect(
       availableActions(browsePayload.items[1]!, {
-        role: "viewer",
-        can_operate: false,
         delete_enabled: false,
         cloud_deletion_enabled: false,
-        is_vault_owner: false,
-      }),
-    ).toEqual([]);
+      }).map((action) => action.id),
+    ).toEqual(["upload", "storage-class", "lifecycle-pin"]);
   });
 
   it("seam 3: version selection shows date/storage and recover sends the selected version id, never an index", async () => {

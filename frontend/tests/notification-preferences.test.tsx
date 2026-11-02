@@ -60,14 +60,11 @@ function requestMethod(init?: RequestInit): string {
 
 const shellCapabilities: ShellCapabilities = {
   vaultName: "Test Archive",
-  isVaultOwner: true,
-  canOperate: true,
-  isAdmin: true,
   locale: "en",
   locales: ["en", "it"],
   vaults: [
-    { id: 9, slug: "test", name: "Test Archive", role: "owner" },
-    { id: 12, slug: "other", name: "Other Vault", role: "operator" },
+    { id: 9, slug: "test", name: "Test Archive" },
+    { id: 12, slug: "other", name: "Other Vault" },
   ],
   currentVaultId: 9,
 };
@@ -140,7 +137,7 @@ function renderPreferencesPanel(
         vaultName={overrides.vaultName ?? "Test Archive"}
         vaults={
           overrides.vaults ?? [
-            { id: 9, slug: "test", name: "Test Archive", role: "owner" },
+            { id: 9, slug: "test", name: "Test Archive" },
           ]
         }
         onVaultChange={overrides.onVaultChange}
@@ -537,7 +534,6 @@ describe("notification preferences surface (#226)", () => {
         <AccountPreferencesMenu
           locale="en"
           locales={["en", "it"]}
-          isAdmin={false}
           handlers={{
             onNewVault: vi.fn(),
             onSignOut: vi.fn(),
@@ -616,8 +612,8 @@ describe("notification preferences surface (#226)", () => {
     const pendingSave = deferred<Response>();
     const onVaultChange = vi.fn();
     const multiVaults = [
-      { id: 9, slug: "test", name: "Test Archive", role: "owner" as const },
-      { id: 12, slug: "other", name: "Other Vault", role: "operator" as const },
+      { id: 9, slug: "test", name: "Test Archive" },
+      { id: 12, slug: "other", name: "Other Vault" },
     ];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -701,8 +697,8 @@ describe("notification preferences surface (#226)", () => {
     const pendingSave = deferred<Response>();
     const onVaultChange = vi.fn();
     const multiVaults = [
-      { id: 9, slug: "test", name: "Test Archive", role: "owner" as const },
-      { id: 12, slug: "other", name: "Other Vault", role: "operator" as const },
+      { id: 9, slug: "test", name: "Test Archive" },
+      { id: 12, slug: "other", name: "Other Vault" },
     ];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

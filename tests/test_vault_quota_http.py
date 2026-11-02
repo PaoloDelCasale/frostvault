@@ -26,26 +26,11 @@ class VaultQuotaHttpTests(unittest.TestCase):
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with SQLiteConnection(str(self.path)) as connection:
-            self.admin_id = self._user(connection, "admin", True)
-            self.owner_id = self._user(connection, "owner", False)
-            self.operator_id = self._user(connection, "operator", False)
-            self.viewer_id = self._user(connection, "viewer", False)
+            self.owner_id = self._user(connection, "owner")
             self.vault_id = connection.execute(
                 "INSERT INTO vaults(slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
                 "VALUES ('docs', 'Docs', '/source', 'bucket', 'docs', 'remote') RETURNING id"
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'owner')",
-                (self.vault_id, self.owner_id),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'operator')",
-                (self.vault_id, self.operator_id),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'viewer')",
-                (self.vault_id, self.viewer_id),
-            )
         test_settings = replace(settings, db_backend="sqlite", sqlite_path=str(self.path), cookie_secure=False)
         self.patchers = [
             patch("app.main.settings", test_settings),
@@ -58,10 +43,10 @@ class VaultQuotaHttpTests(unittest.TestCase):
         self.client = TestClient(main.app, client=("127.0.0.1", 50000))
 
     @staticmethod
-    def _user(connection, name: str, is_admin: bool) -> int:
+    def _user(connection, name: str) -> int:
         return connection.execute(
-            "INSERT INTO users(username, display_name, password_hash, is_admin) VALUES (%s, %s, %s, %s) RETURNING id",
-            (name, name.title(), hash_password("a secure test password"), is_admin),
+            "INSERT INTO users(username, display_name, password_hash) VALUES (%s, %s, %s) RETURNING id",
+            (name, name.title(), hash_password("a secure test password")),
         ).fetchone()["id"]
 
     def _authenticate(self, user_id: int) -> None:
@@ -112,23 +97,17 @@ class VaultQuotaHttpTests(unittest.TestCase):
             }],
         })
 
-    def test_owner_read_is_separate_from_admin_and_denies_other_roles(self) -> None:
+    def test_owner_reads_selected_vault_and_vault_by_id(self) -> None:
         self._authenticate(self.owner_id)
         owner = self.client.get("/api/vault/quotas")
         self.assertEqual(owner.status_code, 200, owner.text)
         self.assertEqual(owner.json()["limits"]["storage_hard_limit_bytes"], None)
 
-        self._authenticate(self.operator_id)
-        self.assertEqual(self.client.get("/api/vault/quotas").status_code, 403)
-        self._authenticate(self.viewer_id)
-        self.assertEqual(self.client.get("/api/vault/quotas").status_code, 403)
-
-        self._authenticate(self.admin_id)
         admin_read = self.client.get(f"/api/admin/vaults/{self.vault_id}/quotas")
         self.assertEqual(admin_read.status_code, 200, admin_read.text)
 
-    def test_admin_update_requires_reauth_reason_and_notifies_owner(self) -> None:
-        self._authenticate(self.admin_id)
+    def test_update_requires_reason_and_is_audited(self) -> None:
+        self._authenticate(self.owner_id)
         missing_reason = self.client.put(
             f"/api/admin/vaults/{self.vault_id}/quotas",
             json={"concurrency_hard_limit": 1}, headers=self._headers(),
@@ -144,7 +123,7 @@ class VaultQuotaHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["limits"]["concurrency_hard_limit"], 0)
         self.assertIn('"event": "vault_quotas_changed"', logs.records[-1].getMessage())
-        self.assertIn(str(self.owner_id), logs.records[-1].getMessage())
+        self.assertIn("protect service capacity", logs.records[-1].getMessage())
 
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
@@ -158,14 +137,13 @@ class VaultQuotaHttpTests(unittest.TestCase):
             connection.execute(
                 "INSERT INTO local_copies(vault_file_id, presence, file_type, size, mtime_ns, observed_at) VALUES ('file-1', 'present', 'regular', 1, 1, '2026-01-01')"
             )
-        self._authenticate(self.operator_id)
         blocked = self.client.post("/api/upload", json={"path": "upload.txt"}, headers=self._headers())
         self.assertEqual(blocked.status_code, 409, blocked.text)
         self.assertEqual(blocked.json()["error"], "quota_blocked")
         self.assertEqual(blocked.json()["quota"]["decisions"][0]["code"], "quota.concurrency.hard_exceeded")
 
     def test_invalid_quota_order_is_rejected(self) -> None:
-        self._authenticate(self.admin_id)
+        self._authenticate(self.owner_id)
         response = self.client.put(
             f"/api/admin/vaults/{self.vault_id}/quotas",
             json={"storage_soft_limit_bytes": 5, "storage_hard_limit_bytes": 4, "reason": "invalid test"},

@@ -40,8 +40,8 @@ class ManagedEmptyVaultRootTests(unittest.TestCase):
 
         with SQLiteConnection(str(self.database_path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (1, 'alice', 'Alice', 'hash', 0)"
+                "INSERT INTO users(id, username, display_name, password_hash) "
+                "VALUES (1, 'alice', 'Alice', 'hash')"
             )
 
         self.settings = replace(
@@ -64,7 +64,7 @@ class ManagedEmptyVaultRootTests(unittest.TestCase):
         self.assertEqual(managed, self.sources_root / "managed")
         self.assertTrue(managed.is_dir())
 
-        vault = vaults_service.create_vault_for_user(1, "My Archive")
+        vault = vaults_service.create_vault("My Archive")
 
         expected = self.sources_root / "managed" / vault["uuid"]
         self.assertEqual(Path(vault["source_root"]), expected)
@@ -384,7 +384,7 @@ class SourceVolumeInventoryTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_inventory_includes_vault_counts_and_zero_source_areas(self) -> None:
+    def test_inventory_includes_vault_counts(self) -> None:
         vault_root = self.photos / "family"
         vault_root.mkdir()
         with SQLiteConnection(str(self.database_path)) as connection:
@@ -411,7 +411,6 @@ class SourceVolumeInventoryTests(unittest.TestCase):
         self.assertEqual(item["access"], "rw")
         self.assertEqual(item["health"], "ok")
         self.assertEqual(item["vault_count"], 1)
-        self.assertEqual(item["source_area_count"], 0)
 
 
 class MountVerificationTests(unittest.TestCase):
@@ -473,8 +472,8 @@ class LocalOpsGateTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with SQLiteConnection(str(self.database_path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (1, 'alice', 'Alice', 'hash', 0)"
+                "INSERT INTO users(id, username, display_name, password_hash) "
+                "VALUES (1, 'alice', 'Alice', 'hash')"
             )
             self.vault_id = connection.execute(
                 """
@@ -575,8 +574,8 @@ class AdminSourceVolumeInventoryHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             self.admin_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('admin', 'Admin', %s, TRUE) RETURNING id
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('admin', 'Admin', %s) RETURNING id
                 """,
                 (hash_password("admin-password-1"),),
             ).fetchone()["id"]
@@ -620,7 +619,6 @@ class AdminSourceVolumeInventoryHttpTests(unittest.TestCase):
         self.assertEqual(items[0]["access"], "rw")
         self.assertEqual(items[0]["health"], "ok")
         self.assertEqual(items[0]["vault_count"], 0)
-        self.assertEqual(items[0]["source_area_count"], 0)
 
 
 

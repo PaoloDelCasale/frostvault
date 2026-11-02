@@ -77,11 +77,10 @@ export const defaultQuotas = {
 };
 
 type HarnessOptions = {
-  isAdmin?: boolean;
-  isVaultOwner?: boolean;
   vaultId?: number;
   vaultName?: string;
-  onTransferred?: () => void;
+  ownerName?: string;
+  onDecommissioned?: () => void;
   fetchImpl?: ApiFetch;
 };
 
@@ -111,11 +110,8 @@ export function createVaultAccessFetch(
       return typeof byUrl === "function" ? byUrl(init) : byUrl;
     }
 
-    if (url === "/api/vault/user-suggest" && method === "POST") {
-      return jsonResponse({ items: [] });
-    }
-    if (url === "/api/vault/members" && method === "GET") {
-      return jsonResponse({ items: [] });
+    if (url === "/api/audit-events") {
+      return jsonResponse({ events: [] });
     }
     if (url === "/api/vault/quotas") {
       return jsonResponse(defaultQuotas);
@@ -150,9 +146,8 @@ export function renderVaultAccess(
         <VaultAccessPage
           vaultId={options.vaultId ?? 1}
           vaultName={options.vaultName ?? "Test Archive"}
-          isAdmin={options.isAdmin ?? true}
-          isVaultOwner={options.isVaultOwner ?? false}
-          onTransferred={options.onTransferred}
+          ownerName={options.ownerName ?? "Owner"}
+          onDecommissioned={options.onDecommissioned}
         />
       </I18nProvider>
     </ApiQueryProvider>,

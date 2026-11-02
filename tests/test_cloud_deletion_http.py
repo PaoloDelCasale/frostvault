@@ -39,10 +39,7 @@ class CloudDeletionHttpTests(unittest.TestCase):
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with SQLiteConnection(str(self.path)) as connection:
-            self.admin_id = self._user(connection, "admin", True)
-            self.owner_id = self._user(connection, "owner", False)
-            self.operator_id = self._user(connection, "operator", False)
-            self.viewer_id = self._user(connection, "viewer", False)
+            self.owner_id = self._user(connection, "owner")
             self.vault_id = connection.execute(
                 """
                 INSERT INTO vaults(
@@ -51,18 +48,6 @@ class CloudDeletionHttpTests(unittest.TestCase):
                 RETURNING id
                 """
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'owner')",
-                (self.vault_id, self.owner_id),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'operator')",
-                (self.vault_id, self.operator_id),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'viewer')",
-                (self.vault_id, self.viewer_id),
-            )
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(
                 vault_id=self.vault_id,
@@ -112,13 +97,13 @@ class CloudDeletionHttpTests(unittest.TestCase):
         self.client = TestClient(main.app, client=("127.0.0.1", 50000))
 
     @staticmethod
-    def _user(connection, name: str, is_admin: bool) -> int:
+    def _user(connection, name: str) -> int:
         return connection.execute(
             """
-            INSERT INTO users(username, display_name, password_hash, is_admin)
-            VALUES (%s, %s, %s, %s) RETURNING id
+            INSERT INTO users(username, display_name, password_hash)
+            VALUES (%s, %s, %s) RETURNING id
             """,
-            (name, name.title(), hash_password("a secure test password"), is_admin),
+            (name, name.title(), hash_password("a secure test password")),
         ).fetchone()["id"]
 
     def _authenticate(self, user_id: int, *, reauth: bool = True) -> None:
@@ -144,7 +129,7 @@ class CloudDeletionHttpTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
 
-    def test_setting_defaults_off_and_owner_can_enable_with_reauth(self) -> None:
+    def test_setting_defaults_off_and_owner_can_enable_it(self) -> None:
         self._authenticate(self.owner_id)
         self._select_vault()
         response = self.client.get("/api/vault/cloud-deletion")
@@ -152,24 +137,6 @@ class CloudDeletionHttpTests(unittest.TestCase):
         self.assertFalse(response.json()["enabled"])
         self.assertIn("Delete Marker", response.json()["delete_marker_explanation"])
 
-        denied = self.client.put(
-            "/api/vault/cloud-deletion",
-            json={"enabled": True},
-            headers=self._headers(),
-        )
-        # Fresh session without reauth window? We set reauth_at above.
-        # Operator cannot enable:
-        self._authenticate(self.operator_id)
-        self._select_vault()
-        forbidden = self.client.put(
-            "/api/vault/cloud-deletion",
-            json={"enabled": True},
-            headers=self._headers(),
-        )
-        self.assertEqual(forbidden.status_code, 403, forbidden.text)
-
-        self._authenticate(self.owner_id)
-        self._select_vault()
         enabled = self.client.put(
             "/api/vault/cloud-deletion",
             json={"enabled": True},
@@ -178,33 +145,42 @@ class CloudDeletionHttpTests(unittest.TestCase):
         self.assertEqual(enabled.status_code, 200, enabled.text)
         self.assertTrue(enabled.json()["enabled"])
 
-    def test_operators_and_viewers_cannot_purge_or_archive(self) -> None:
+    def test_stale_reauth_blocks_cloud_deletion_without_side_effects(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
                 "UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=%s",
                 (self.vault_id,),
             )
-        for user_id in (self.operator_id, self.viewer_id):
-            self._authenticate(user_id)
-            self._select_vault()
-            archive = self.client.post(
-                "/api/cloud-archive",
-                json={"path": "report.txt", "is_directory": False},
-                headers=self._headers(),
+        self._authenticate(self.owner_id, reauth=False)
+        self._select_vault()
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute(
+                "UPDATE sessions SET reauth_at=%s WHERE user_id=%s",
+                ("2000-01-01T00:00:00+00:00", self.owner_id),
             )
-            self.assertEqual(archive.status_code, 403, archive.text)
-            purge = self.client.post(
-                "/api/cloud-purge",
-                json={
-                    "path": "report.txt",
-                    "is_directory": False,
-                    "confirmation": "Docs Archive",
-                    "reason": "cleanup",
-                    "generated_phrase": "amber-birch-10",
-                },
-                headers=self._headers(),
-            )
-            self.assertEqual(purge.status_code, 403, purge.text)
+        archive = self.client.post(
+            "/api/cloud-archive",
+            json={"path": "report.txt", "is_directory": False},
+            headers=self._headers(),
+        )
+        purge = self.client.post(
+            "/api/cloud-purge",
+            json={
+                "path": "report.txt",
+                "is_directory": False,
+                "confirmation": "Docs Archive",
+                "reason": "cleanup",
+                "generated_phrase": "amber-birch-10",
+            },
+            headers=self._headers(),
+        )
+        for response in (archive, purge):
+            self.assertEqual(response.status_code, 403, response.text)
+            self.assertEqual(response.json(), {"error": "reauth_required"})
+        with SQLiteConnection(str(self.path)) as connection:
+            jobs = connection.execute("SELECT COUNT(*) AS total FROM jobs").fetchone()
+        # The only cloud copy is untouched: nothing was even scheduled.
+        self.assertEqual(jobs["total"], 0)
 
     def test_owner_purge_requires_confirmation_and_schedules_delay(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
@@ -280,15 +256,6 @@ class CloudDeletionHttpTests(unittest.TestCase):
         )
         self.assertEqual(scheduled.status_code, 202, scheduled.text)
         group_id = scheduled.json()["group_id"]
-
-        self._authenticate(self.operator_id)
-        self._select_vault()
-        forbidden = self.client.post(
-            "/api/cloud-purge/accelerate",
-            json={"group_id": group_id},
-            headers=self._headers(),
-        )
-        self.assertEqual(forbidden.status_code, 403, forbidden.text)
 
         self._authenticate(self.owner_id)
         self._select_vault()

@@ -1,15 +1,13 @@
-"""Self-service vault creation (issues #7, #6, and #150).
+"""Vault creation from the UI (issues #7, #6, #150, and #412).
 
-Authenticated *existing* users can create a vault for themselves; nothing
-here provisions a user from identity claims -- the caller must already have
-a row in ``users`` (enforced by the ``current_user`` dependency in
-``app.main``).
+The single owner creates every Vault from the UI; there is no environment
+bootstrap Vault and no per-Vault membership.
 
 The server is the sole authority over storage identity. Every vault gets an
 immutable, randomly generated UUID, and the S3 namespace
 (``vaults/<uuid>/``) is derived from that UUID alone. Empty Vaults also
-receive ``/sources/managed/<uuid>``; adoption mode stores an authorized
-existing directory under a custom Source Volume instead. Callers can never
+receive ``/sources/managed/<uuid>``; adoption mode stores any free existing
+directory under a custom Source Volume instead. Callers can never
 choose S3 bucket/prefix/remote or crypt secrets: ``name``/``slug`` stay
 human-readable labels, and adoption accepts only a volume alias plus
 volume-relative path — never an arbitrary filesystem path.
@@ -21,10 +19,10 @@ reinterpretation of existing object keys.
 
 ``cloud_history_policy`` (``archive_history`` or ``current_snapshot``) is the
 same kind of creation-time immutable choice. Interactive callers must supply
-it; omitted values persist Archive History so bootstrap and existing tests keep
-that promise.
+it; omitted values persist Archive History so existing tests keep that
+promise.
 
-Vault row, owner membership, and the local root are provisioned as one
+Vault row and local root are provisioned as one
 unit. Empty mode creates the managed directory inside the transaction;
 adoption binds an existing directory in place and never moves, copies,
 chowns, or rewrites adopted content. Because the identity is a freshly
@@ -37,12 +35,11 @@ import os
 import re
 import shutil
 import uuid
-from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from ..config import settings
 from ..database import INTEGRITY_ERRORS, db
-from . import source_areas
+from . import source_directories
 from .source_layout import ensure_managed_directory, managed_vault_path
 from .cloud_history import (
     InvalidCloudHistoryPolicy,
@@ -69,7 +66,7 @@ class VaultProvisioningUnavailable(VaultCreationError):
 
 
 class VaultAdoptionError(VaultCreationError):
-    """Adoption preflight failed; no Vault row or membership was committed."""
+    """Adoption preflight failed; no Vault row was committed."""
 
     def __init__(self, reason: str, message: str | None = None) -> None:
         super().__init__(message or reason)
@@ -80,10 +77,10 @@ _SLUG_PATTERN = re.compile(r"[a-z0-9-]+")
 _ENCRYPTION_MODES = frozenset({"plain", "crypt"})
 _CREATION_MODES = frozenset({"empty", "adopt"})
 
-# This is deliberately an allowlist rather than a denylist. Admin Vault
+# This is deliberately an allowlist rather than a denylist. Vault inventory
 # responses must remain safe when new persistence-only columns are added, in
 # particular credential material for a storage backend.
-_ADMIN_VAULT_PUBLIC_FIELDS = (
+_VAULT_INVENTORY_FIELDS = (
     "id",
     "uuid",
     "slug",
@@ -101,53 +98,21 @@ _ADMIN_VAULT_PUBLIC_FIELDS = (
 )
 
 
-def project_admin_vault(
-    vault: Mapping[str, Any], *, member_count: int | None = None
-) -> dict[str, Any]:
-    """Return the stable, non-secret administrative Vault representation.
-
-    The projection intentionally fails closed: any column not named in
-    ``_ADMIN_VAULT_PUBLIC_FIELDS`` is absent from the HTTP representation.
-    """
-    if member_count is None:
-        member_count = int(vault["member_count"])
-    return {
-        **{field: vault[field] for field in _ADMIN_VAULT_PUBLIC_FIELDS},
-        "member_count": member_count,
-    }
-
-
-def list_admin_vaults(connection: Any) -> list[dict[str, Any]]:
-    """List Vaults through the same explicit public allowlist as creation."""
+def list_vault_inventory(connection: Any) -> list[dict[str, Any]]:
+    """List every Vault, tombstones included, through an explicit allowlist."""
     rows = connection.execute(
-        """
-        SELECT v.id, v.uuid, v.slug, v.name, v.source_root, v.s3_bucket,
-               v.s3_prefix, v.rclone_remote, v.enabled, v.encryption_mode,
-               v.cloud_history_policy,
-               v.decommission_state, v.decommissioned_at, v.root_released_at,
-               COUNT(vm.user_id) AS member_count
-        FROM vaults v LEFT JOIN vault_members vm ON vm.vault_id=v.id
-        GROUP BY v.id ORDER BY lower(v.name)
-        """
+        "SELECT * FROM vaults ORDER BY lower(name)"
     ).fetchall()
-    return [project_admin_vault(row) for row in rows]
-
-
-@dataclass(frozen=True)
-class _SecretVaultCreation:
-    """Internal creation result; only self-service receives its ciphertexts."""
-
-    vault: dict[str, Any]
-    password_ciphertext: str | None
-    password2_ciphertext: str | None
+    return [
+        {field: row[field] for field in _VAULT_INVENTORY_FIELDS} for row in rows
+    ]
 
 
 def _slugify(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
 
 
-def _create_vault(
-    user_id: int,
+def create_vault(
     name: str,
     slug: str | None = None,
     encryption_mode: str = "plain",
@@ -156,16 +121,14 @@ def _create_vault(
     creation_mode: str = "empty",
     volume_alias: str | None = None,
     relative_path: str | None = None,
-    actor_is_admin: bool = False,
-    return_ciphertexts: bool = False,
     require_cloud_history_policy: bool = False,
-) -> dict[str, Any] | _SecretVaultCreation:
-    """Create a Vault while retaining sealed material inside this service.
+) -> dict[str, Any]:
+    """Create a Vault and return it with its sealed recovery ciphertexts.
 
     ``creation_mode`` is ``empty`` (default) or ``adopt``. Adoption requires
-    ``volume_alias`` and ``relative_path`` under an authorized Source Area
-    (or an unassigned path when ``actor_is_admin``). Callers never supply
-    S3 identity, crypt secrets, or absolute filesystem paths.
+    ``volume_alias`` and ``relative_path`` naming a free directory inside a
+    custom Source Volume. Callers never supply S3 identity, crypt secrets,
+    or absolute filesystem paths.
     """
     mode = (encryption_mode or "plain").strip().lower()
     if mode not in _ENCRYPTION_MODES:
@@ -198,7 +161,7 @@ def _create_vault(
         default_remote = settings.vault_rclone_remote.strip()
         if not default_bucket or not default_remote:
             raise VaultProvisioningUnavailable(
-                "Self-service vault creation is not configured on this server"
+                "Vault creation is not configured on this server"
             )
 
     clean_name = name.strip()
@@ -231,7 +194,7 @@ def _create_vault(
         ensure_managed_directory()
         source_root = str(managed_vault_path(vault_uuid))
     else:
-        source_root = ""  # resolved under the shared Source Area lock below
+        source_root = ""  # resolved under the shared Vault-root lock below
 
     password_ciphertext = None
     password2_ciphertext = None
@@ -245,14 +208,12 @@ def _create_vault(
         with db() as connection:
             if adopting:
                 try:
-                    adopted = source_areas.resolve_adoption_candidate(
+                    adopted = source_directories.resolve_adoption_candidate(
                         connection,
-                        owner_user_id=user_id,
                         volume_alias=str(volume_alias),
                         relative_path=str(relative_path),
-                        actor_is_admin=actor_is_admin,
                     )
-                except source_areas.SourceAreaError as exc:
+                except source_directories.SourceDirectoryError as exc:
                     raise VaultAdoptionError(exc.reason, str(exc)) from exc
                 source_root = str(adopted)
 
@@ -285,10 +246,6 @@ def _create_vault(
                     password2_ciphertext,
                 ),
             ).fetchone()
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'owner')",
-                (vault["id"], user_id),
-            )
             if not adopting:
                 # Create the directory before the transaction commits: if this
                 # raises, the `with` block below rolls the inserts back, so no
@@ -317,77 +274,8 @@ def _create_vault(
         if directory_created:
             shutil.rmtree(source_root, ignore_errors=True)
         raise
-    if return_ciphertexts:
-        return _SecretVaultCreation(
-            vault=vault,
-            password_ciphertext=password_ciphertext,
-            password2_ciphertext=password2_ciphertext,
-        )
-    return vault
-
-
-def create_vault_for_user(
-    user_id: int,
-    name: str,
-    slug: str | None = None,
-    encryption_mode: str = "plain",
-    cloud_history_policy: str | None = None,
-    *,
-    creation_mode: str = "empty",
-    volume_alias: str | None = None,
-    relative_path: str | None = None,
-    actor_is_admin: bool = False,
-    require_cloud_history_policy: bool = False,
-) -> dict[str, Any]:
-    """Create a self-service Vault with its recovery ciphertexts in-process."""
-    created = _create_vault(
-        user_id,
-        name,
-        slug,
-        encryption_mode,
-        cloud_history_policy,
-        creation_mode=creation_mode,
-        volume_alias=volume_alias,
-        relative_path=relative_path,
-        actor_is_admin=actor_is_admin,
-        return_ciphertexts=True,
-        require_cloud_history_policy=require_cloud_history_policy,
-    )
-    if not isinstance(created, _SecretVaultCreation):  # pragma: no cover - invariant
-        raise RuntimeError("Self-service Vault creation lost its recovery material")
     return {
-        **created.vault,
-        "crypt_password_ciphertext": created.password_ciphertext,
-        "crypt_password2_ciphertext": created.password2_ciphertext,
+        **vault,
+        "crypt_password_ciphertext": password_ciphertext,
+        "crypt_password2_ciphertext": password2_ciphertext,
     }
-
-
-def create_admin_vault(
-    owner_user_id: int,
-    name: str,
-    slug: str | None = None,
-    encryption_mode: str = "plain",
-    cloud_history_policy: str | None = None,
-    *,
-    creation_mode: str = "empty",
-    volume_alias: str | None = None,
-    relative_path: str | None = None,
-    require_cloud_history_policy: bool = False,
-) -> dict[str, Any]:
-    """Create an administrator-requested Vault without exporting ciphertexts."""
-    created = _create_vault(
-        owner_user_id,
-        name,
-        slug,
-        encryption_mode,
-        cloud_history_policy,
-        creation_mode=creation_mode,
-        volume_alias=volume_alias,
-        relative_path=relative_path,
-        actor_is_admin=True,
-        return_ciphertexts=False,
-        require_cloud_history_policy=require_cloud_history_policy,
-    )
-    if not isinstance(created, dict):  # pragma: no cover - invariant
-        raise RuntimeError("Admin Vault creation received recovery material")
-    return project_admin_vault(created, member_count=1)

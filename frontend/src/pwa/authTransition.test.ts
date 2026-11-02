@@ -33,7 +33,6 @@ const authority: MeResponse = {
   id: 11,
   username: "owner",
   display_name: "Owner",
-  is_admin: false,
   active: true,
   session_version: 1,
   csrf_token: "csrf",
@@ -45,12 +44,9 @@ const authority: MeResponse = {
     id: 101,
     slug: "vault-a",
     name: "Vault A",
-    role: "owner",
-    can_operate: true,
     cloud_history_policy: "archive_history",
     delete_enabled: false,
     cloud_deletion_enabled: false,
-    is_vault_owner: true,
   },
 };
 

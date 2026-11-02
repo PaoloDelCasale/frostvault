@@ -22,7 +22,7 @@ from .notifications import (
     enqueue_job_terminal_notification_best_effort,
     enqueue_notification,
 )
-from .vault_governance import primary_owner
+from ..owner import owner_user_id
 
 
 class CloudDeletionError(Exception):
@@ -179,7 +179,7 @@ def set_cloud_deletion_enabled(
         enabled=bool(enabled),
         at=stamp,
     )
-    _notify_vault_owners(
+    _notify_owner(
         connection,
         vault_id=vault_id,
         event="cloud_deletion.setting_changed",
@@ -407,7 +407,7 @@ def _vault_name(connection: Any, vault_id: int) -> str:
     return str(row["name"])
 
 
-def _notify_vault_owners(
+def _notify_owner(
     connection: Any,
     *,
     vault_id: int,
@@ -417,23 +417,11 @@ def _notify_vault_owners(
     actor_user_id: int | None,
     job_id: int | None = None,
 ) -> None:
-    owner = primary_owner(connection, vault_id)
-    recipients: set[int] = set()
-    if owner is not None:
-        recipients.add(int(owner["user_id"]))
-    members = connection.execute(
-        """
-        SELECT user_id FROM vault_members
-        WHERE vault_id=%s AND role='owner'
-        """,
-        (vault_id,),
-    ).fetchall()
-    for member in members:
-        recipients.add(int(member["user_id"]))
-    for user_id in recipients:
+    owner_id = owner_user_id(connection)
+    if owner_id is not None:
         enqueue_notification(
             connection,
-            user_id=user_id,
+            user_id=owner_id,
             event=event,
             title=title,
             body=body,
@@ -530,7 +518,7 @@ def schedule_cloud_archive(
         )
     if not job_ids:
         raise ValueError("No eligible Vault Files for reversible archival")
-    _notify_vault_owners(
+    _notify_owner(
         connection,
         vault_id=vault_id,
         event="cloud_deletion.archive_requested",
@@ -683,7 +671,7 @@ def schedule_cloud_purge(
     if not job_ids:
         raise ValueError("No eligible Vault Files for permanent purge")
 
-    _notify_vault_owners(
+    _notify_owner(
         connection,
         vault_id=vault_id,
         event="cloud_deletion.purge_requested",
@@ -841,7 +829,7 @@ def accelerate_cloud_purge(
             previous_status=row["status"],
             group_id=group_id,
         )
-    _notify_vault_owners(
+    _notify_owner(
         connection,
         vault_id=vault_id,
         event="cloud_deletion.purge_accelerated",
@@ -915,7 +903,7 @@ def cancel_cloud_deletion(
             previous_status=row["status"],
             group_id=group_id,
         )
-    _notify_vault_owners(
+    _notify_owner(
         connection,
         vault_id=vault_id,
         event="cloud_deletion.cancelled",
@@ -1207,7 +1195,7 @@ def finalize_purge_job(
             deleted=deleted,
         )
         if vault_id is not None:
-            _notify_vault_owners(
+            _notify_owner(
                 connection,
                 vault_id=vault_id,
                 event="cloud_deletion.purge_completed",
@@ -1243,7 +1231,7 @@ def finalize_purge_job(
         pending=pending,
     )
     if vault_id is not None:
-        _notify_vault_owners(
+        _notify_owner(
             connection,
             vault_id=vault_id,
             event="cloud_deletion.purge_partial_failure",
@@ -1279,7 +1267,7 @@ def record_archive_completed(
     # failure must not roll back the Delete Marker catalog row or fail the job
     # into a retry that issues another delete_object.
     try:
-        _notify_vault_owners(
+        _notify_owner(
             connection,
             vault_id=vault_id,
             event="cloud_deletion.archive_completed",

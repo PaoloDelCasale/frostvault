@@ -36,8 +36,8 @@ class ReauthBackoffHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             self.user_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('alice', 'Alice', %s, TRUE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('alice', 'Alice', %s)
                 RETURNING id
                 """,
                 (hash_password(self.PASSWORD),),

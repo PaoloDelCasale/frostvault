@@ -1,8 +1,8 @@
 """HTTP authorization boundaries for audit event visibility (issue #16).
 
-Seams under test:
-- ``GET /api/audit-events`` (current vault members)
-- ``GET /api/admin/audit-events`` (global administrators)
+Seams under test (single owner, #412):
+- ``GET /api/audit-events`` (events of the selected Vault)
+- ``GET /api/admin/audit-events`` (every event)
 """
 from __future__ import annotations
 
@@ -34,11 +34,7 @@ class AuditVisibilityHttpTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
         with SQLiteConnection(str(self.database_path)) as connection:
-            self.admin_id = self._create_user(connection, "admin", is_admin=True)
             self.owner_id = self._create_user(connection, "owner")
-            self.operator_id = self._create_user(connection, "operator")
-            self.viewer_id = self._create_user(connection, "viewer")
-            self.outsider_id = self._create_user(connection, "outsider")
             self.vault_id = connection.execute(
                 """
                 INSERT INTO vaults(
@@ -47,34 +43,18 @@ class AuditVisibilityHttpTests(unittest.TestCase):
                 RETURNING id
                 """
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, 'owner')",
-                (self.vault_id, self.owner_id),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, 'operator')",
-                (self.vault_id, self.operator_id),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, 'viewer')",
-                (self.vault_id, self.viewer_id),
-            )
             audit_events.record_audit_event(
                 connection,
-                event="vault_membership_changed",
+                event="lifecycle_policy_changed",
                 actor_user_id=self.owner_id,
                 vault_id=self.vault_id,
                 outcome="success",
                 visibility="vault",
-                role="viewer",
             )
             audit_events.record_audit_event(
                 connection,
                 event="vault_root_relocated",
-                actor_user_id=self.admin_id,
+                actor_user_id=self.owner_id,
                 vault_id=self.vault_id,
                 outcome="success",
                 visibility="owner",
@@ -107,13 +87,13 @@ class AuditVisibilityHttpTests(unittest.TestCase):
             app=main.app, client=("127.0.0.1", 50000), follow_redirects=False
         )
 
-    def _create_user(self, connection, username: str, *, is_admin: bool = False) -> int:
+    def _create_user(self, connection, username: str) -> int:
         return connection.execute(
             """
-            INSERT INTO users(username, display_name, password_hash, is_admin)
-            VALUES (%s, %s, %s, %s) RETURNING id
+            INSERT INTO users(username, display_name, password_hash)
+            VALUES (%s, %s, %s) RETURNING id
             """,
-            (username, username.title(), hash_password(self.PASSWORD), is_admin),
+            (username, username.title(), hash_password(self.PASSWORD)),
         ).fetchone()["id"]
 
     def _authenticate(self, user_id: int) -> None:
@@ -123,51 +103,28 @@ class AuditVisibilityHttpTests(unittest.TestCase):
         self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
         self.client.cookies.set("frostvault_csrf", csrf_token)
 
-    def test_viewer_sees_vault_events_but_not_owner_or_admin_events(self) -> None:
-        self._authenticate(self.viewer_id)
-        response = self.client.get("/api/audit-events")
-        self.assertEqual(response.status_code, 200, response.text)
-        names = {item["event"] for item in response.json()["events"]}
-        self.assertIn("vault_membership_changed", names)
-        self.assertNotIn("vault_root_relocated", names)
-        self.assertNotIn("break_glass_failed", names)
-
-    def test_operator_sees_vault_events_but_not_owner_events(self) -> None:
-        self._authenticate(self.operator_id)
-        response = self.client.get("/api/audit-events")
-        self.assertEqual(response.status_code, 200, response.text)
-        names = {item["event"] for item in response.json()["events"]}
-        self.assertIn("vault_membership_changed", names)
-        self.assertNotIn("vault_root_relocated", names)
-
-    def test_primary_owner_sees_vault_and_owner_events(self) -> None:
+    def test_owner_sees_vault_and_owner_events_of_the_selected_vault(self) -> None:
         self._authenticate(self.owner_id)
         response = self.client.get("/api/audit-events")
         self.assertEqual(response.status_code, 200, response.text)
         names = {item["event"] for item in response.json()["events"]}
-        self.assertIn("vault_membership_changed", names)
+        self.assertIn("lifecycle_policy_changed", names)
         self.assertIn("vault_root_relocated", names)
+        self.assertNotIn("break_glass_failed", names)
 
-    def test_outsider_cannot_read_vault_audit_events(self) -> None:
-        self._authenticate(self.outsider_id)
-        response = self.client.get("/api/audit-events")
-        # Outsiders have no vault membership; current_vault should 403/404.
-        self.assertIn(response.status_code, {403, 404}, response.text)
-
-    def test_admin_can_list_all_audit_events(self) -> None:
-        self._authenticate(self.admin_id)
+    def test_owner_lists_every_audit_event(self) -> None:
+        self._authenticate(self.owner_id)
         response = self.client.get("/api/admin/audit-events")
         self.assertEqual(response.status_code, 200, response.text)
         names = {item["event"] for item in response.json()["events"]}
-        self.assertIn("vault_membership_changed", names)
+        self.assertIn("lifecycle_policy_changed", names)
         self.assertIn("vault_root_relocated", names)
         self.assertIn("break_glass_failed", names)
 
-    def test_owner_cannot_use_admin_audit_endpoint(self) -> None:
-        self._authenticate(self.owner_id)
-        response = self.client.get("/api/admin/audit-events")
-        self.assertEqual(response.status_code, 403, response.text)
-
+    def test_audit_events_require_authentication(self) -> None:
+        for path in ("/api/audit-events", "/api/admin/audit-events"):
+            with self.subTest(path=path):
+                self.assertEqual(self.client.get(path).status_code, 401)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import mimetypes
-import os
-import re
 import secrets
 import time
 import uuid
@@ -52,7 +49,7 @@ from .backoff import (
 )
 from .breakglass import is_break_glass_allowed
 from .catalog import ArchiveCatalog, VaultFileNotFound
-from .database import INTEGRITY_ERRORS, db, initialize_database
+from .database import db, initialize_database
 from .migrate_on_start import ensure_schema_current
 from .services.source_layout import (
     get_sources_root,
@@ -62,40 +59,19 @@ from .services.source_layout import (
     validate_nested_mounts_after_identity,
     vault_local_access,
 )
-from .services import source_areas as source_areas_service
+from .services import source_directories as source_directories_service
 from .services import vault_relocation as vault_relocation_service
 from .services import vault_decommission as vault_decommission_service
-from .oidc import OidcError, begin_login, complete_login
-from .oidc_configuration import (
-    OidcConfigurationConflict,
-    OidcConfigurationError,
-    activate_oidc_draft,
-    disable_oidc,
-    oidc_host_addresses,
-    oidc_configuration_response,
-    rotate_oidc_secret,
-    save_oidc_draft,
-    validate_oidc_draft,
+from .oidc import (
+    IdentityRejected,
+    OidcError,
+    begin_login,
+    bind_owner_identity,
+    complete_login,
 )
+from .oidc_network import oidc_host_addresses
 from .proxy import parse_networks, resolve_client_ip
-from .invites import (
-    InviteError,
-    create_invite,
-    list_pending_invites,
-    redeem_invite,
-    resolve_invite,
-    revoke_invite,
-)
-from .lookup_rate_limit import check_lookup_rate_limit
-from .security import DUMMY_PASSWORD_HASH, hash_password, verify_password
-from .services.vault_governance import (
-    GovernanceError,
-    assign_member_role,
-    notify_owner_of_admin_action,
-    primary_owner,
-    remove_member,
-    transfer_primary_ownership,
-)
+from .security import DUMMY_PASSWORD_HASH, verify_password
 from .services.vault_quotas import (
     QuotaBlocked,
     QuotaLimits,
@@ -111,14 +87,12 @@ from .services.vault_recovery import (
     confirm_recovery_custody,
     export_recovery_secret,
 )
-from .services.vault_roles import can_operate, is_owner
 from .services import audit_events as audit_event_store
 from .services import catalog_incidents as catalog_incident_service
 from .services import health as health_service
 from .services import metadata_backups as metadata_backup_service
 from .services import metrics as metrics_service
 from .services import notifications as notification_service
-from .services import user_administration as user_admin_service
 from .services import worker_errors as worker_error_store
 from .services.catalog_event_stream import (
     coalesced_catchup_signal,
@@ -176,9 +150,8 @@ from .services.vaults import (
     VaultCreationError,
     VaultProvisioningUnavailable,
     VaultSlugTaken,
-    create_admin_vault,
-    create_vault_for_user,
-    list_admin_vaults,
+    create_vault,
+    list_vault_inventory,
 )
 from .sessions import (
     SessionTransitionError,
@@ -631,12 +604,6 @@ def _set_offline_file_cache_generation(response: Response, generation: str) -> N
     response.headers["Vary"] = ", ".join(vary)
 
 
-def admin_user(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    if not user["is_admin"]:
-        raise HTTPException(403, "Administrator access required")
-    return user
-
-
 def _runtime_settings():
     if not isinstance(settings, Settings):
         return effective_settings(None, settings_obj=settings)
@@ -732,100 +699,37 @@ def require_recent_reauth(
     return user
 
 
-_GOVERNANCE_ERROR_STATUS: dict[str, tuple[int, str]] = {
-    "invalid_role": (422, "Invalid role"),
-    "vault_not_found": (404, "Vault not found"),
-    "user_not_found": (404, "User not found"),
-    "member_not_found": (404, "Vault member not found"),
-    "owner_required": (400, "The vault must retain a primary owner; transfer ownership first"),
-    "no_current_owner": (409, "Vault has no primary owner to transfer from"),
-    "already_owner": (400, "That user is already the primary owner"),
-    "ownership_changed": (409, "Vault ownership changed; refresh and try again"),
-    "vault_quiesced": (409, "Vault is quiesced for decommission"),
-}
-
-
-def _governance_http_error(exc: GovernanceError) -> HTTPException:
-    status_code, message = _GOVERNANCE_ERROR_STATUS.get(
-        exc.reason, (400, "Request could not be completed")
-    )
-    return HTTPException(status_code, message)
-
-
-_ADMINISTRATION_ERROR_STATUS: dict[str, tuple[int, str]] = {
-    "self_deactivation": (400, "You cannot deactivate your own account"),
-    "self_demotion": (400, "You cannot remove your own administrator role"),
-    "last_admin": (400, "At least one administrator must remain active"),
-    "no_changes": (400, "No changes requested"),
-    "not_found": (404, "User not found"),
-    "identity_not_found": (404, "Linked identity not found"),
-    "confirmation_required": (
-        400,
-        "Confirm the unlink explicitly before removing a linked identity",
-    ),
-    "would_lock_out": (
-        409,
-        "Removing this identity would leave the user without any way to sign in",
-    ),
-}
-
-
-def _administration_http_error(
-    exc: user_admin_service.AdministrationError,
-) -> HTTPException:
-    status_code, message = _ADMINISTRATION_ERROR_STATUS.get(
-        exc.reason, (400, "Request could not be completed")
-    )
-    return HTTPException(status_code, message)
-
-
-_INVITE_REVOCATION_ERROR_STATUS: dict[str, tuple[int, str]] = {
-    "unknown": (404, "Invite not found"),
-    "already_redeemed": (409, "Invite has already been redeemed"),
-    "already_revoked": (409, "Invite has already been revoked"),
-}
-
-
-def _invite_revocation_http_error(exc: InviteError) -> HTTPException:
-    status_code, message = _INVITE_REVOCATION_ERROR_STATUS.get(
-        exc.reason, (400, "Invite could not be revoked")
-    )
-    return HTTPException(status_code, message)
+_OPERATIONAL_VAULT = "v.enabled=TRUE AND v.decommission_state='active'"
 
 
 def current_vault(
     request: Request, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
+    """Resolve the Session's selected operational Vault.
+
+    Every Vault belongs to the single owner (#412); the selection only picks
+    which one the UI is looking at.
+    """
+    del user  # authentication gate only
     session = request.state.session
     requested_id = session.get("vault_id")
     with db() as connection:
         vault = None
         if requested_id:
             vault = connection.execute(
-                """
-                SELECT v.*, vm.role, vm.user_id AS member_user_id
-                FROM vaults v
-                JOIN vault_members vm ON vm.vault_id=v.id
-                WHERE v.id=%s AND vm.user_id=%s AND v.enabled=TRUE
-                  AND v.decommission_state='active'
-                """,
-                (requested_id, user["id"]),
+                f"SELECT v.* FROM vaults v WHERE v.id=%s AND {_OPERATIONAL_VAULT}",
+                (requested_id,),
             ).fetchone()
         if not vault:
             vault = connection.execute(
-                """
-                SELECT v.*, vm.role, vm.user_id AS member_user_id
-                FROM vaults v
-                JOIN vault_members vm ON vm.vault_id=v.id
-                WHERE vm.user_id=%s AND v.enabled=TRUE
-                  AND v.decommission_state='active'
+                f"""
+                SELECT v.* FROM vaults v WHERE {_OPERATIONAL_VAULT}
                 ORDER BY v.name
                 LIMIT 1
-                """,
-                (user["id"],),
+                """
             ).fetchone()
         if not vault:
-            raise HTTPException(403, "No vault is assigned to this user")
+            raise HTTPException(403, "No vault exists yet")
         if session.get("vault_id") != vault["id"]:
             updated = set_session_vault(
                 connection,
@@ -843,71 +747,44 @@ def current_vault(
     return vault
 
 
-def owner_vault(vault: dict[str, Any] = Depends(current_vault)) -> dict[str, Any]:
-    """Resolve the selected vault only for its primary owner.
-
-    This is the owner self-service seam: operators and viewers cannot discover
-    or mutate sharing through the owner routes, even when they are global
-    administrators. Administrator overrides remain under ``/api/admin``.
-    """
-    if not is_owner(vault["role"]):
-        raise HTTPException(403, "Only the vault owner can manage sharing")
-    return vault
-
-
-def _owned_vault_for_decommission(vault_id: int, user_id: int) -> dict[str, Any]:
+def _vault_for_decommission(vault_id: int) -> dict[str, Any]:
     with db() as connection:
         vault = connection.execute(
-            """
-            SELECT v.*, vm.role, vm.user_id AS member_user_id
-            FROM vaults v
-            JOIN vault_members vm ON vm.vault_id=v.id
-            WHERE v.id=%s AND vm.user_id=%s AND vm.role='owner'
-            """,
-            (vault_id, user_id),
+            "SELECT * FROM vaults WHERE id=%s", (vault_id,)
         ).fetchone()
     if vault is None:
-        raise HTTPException(403, "Only the primary owner can decommission this Vault")
+        raise HTTPException(404, "Vault not found")
     return vault
 
 
-def decommission_owner_vault(
+def decommission_vault(
     request: Request, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
-    """Resolve an owned Vault even after it is quiesced or disabled.
+    """Resolve the selected Vault even after it is quiesced or disabled.
 
     Normal ``current_vault`` deliberately hides non-operational Vaults.  This
-    narrow seam keeps decommission progress visible to the primary owner while
-    membership/history remains preserved in the tombstone.
+    narrow seam keeps decommission progress visible while history remains
+    preserved in the tombstone.
     """
+    del user  # authentication gate only
     requested_id = request.state.session.get("vault_id")
     with db() as connection:
         vault = None
         if requested_id:
             vault = connection.execute(
-                """
-                SELECT v.*, vm.role, vm.user_id AS member_user_id
-                FROM vaults v
-                JOIN vault_members vm ON vm.vault_id=v.id
-                WHERE v.id=%s AND vm.user_id=%s AND vm.role='owner'
-                """,
-                (requested_id, user["id"]),
+                "SELECT * FROM vaults WHERE id=%s", (requested_id,)
             ).fetchone()
         if vault is None:
             vault = connection.execute(
                 """
-                SELECT v.*, vm.role, vm.user_id AS member_user_id
-                FROM vaults v
-                JOIN vault_members vm ON vm.vault_id=v.id
-                WHERE vm.user_id=%s AND vm.role='owner'
-                ORDER BY CASE WHEN v.decommission_state='decommissioning' THEN 0 ELSE 1 END,
-                         lower(v.name)
+                SELECT * FROM vaults
+                ORDER BY CASE WHEN decommission_state='decommissioning' THEN 0 ELSE 1 END,
+                         lower(name)
                 LIMIT 1
-                """,
-                (user["id"],),
+                """
             ).fetchone()
     if vault is None:
-        raise HTTPException(403, "Only the primary owner can decommission this Vault")
+        raise HTTPException(404, "Vault not found")
     return vault
 
 
@@ -922,43 +799,6 @@ class LocaleUpdate(BaseModel):
 
 class ReauthRequest(BaseModel):
     password: str
-
-
-class OidcDraftAction(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    issuer: str = Field(min_length=1, max_length=2048)
-    client_id: str = Field(min_length=1, max_length=512)
-    client_secret: str = Field(min_length=1, max_length=8192)
-    scopes: list[str] = Field(min_length=1, max_length=32)
-    login_transaction_ttl_seconds: int = Field(ge=60, le=3600)
-
-    @model_validator(mode="after")
-    def validate_oidc_values(self) -> "OidcDraftAction":
-        self.issuer = self.issuer.strip()
-        self.client_id = self.client_id.strip()
-        normalized_scopes = list(
-            dict.fromkeys(scope.strip() for scope in self.scopes)
-        )
-        if not self.issuer or not self.client_id:
-            raise ValueError("issuer and client_id must not be blank")
-        if any(
-            not scope
-            or len(scope) > 128
-            or any(character.isspace() for character in scope)
-            for scope in normalized_scopes
-        ):
-            raise ValueError("scopes must contain valid OAuth scope tokens")
-        if "openid" not in normalized_scopes:
-            raise ValueError("scopes must include openid")
-        self.scopes = normalized_scopes
-        return self
-
-
-class OidcSecretRotationAction(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    client_secret: str = Field(min_length=1, max_length=8192)
 
 
 class VaultSelection(BaseModel):
@@ -1097,40 +937,6 @@ class LifecyclePinRequest(BaseModel):
     pinned: bool
 
 
-class UserCreate(BaseModel):
-    username: str = Field(min_length=2, max_length=80)
-    display_name: str = Field(min_length=1, max_length=120)
-    password: str | None = Field(default=None, min_length=12, max_length=200)
-    is_admin: bool = False
-
-
-class InviteCreate(BaseModel):
-    target_user_id: int
-
-
-class UserUpdate(BaseModel):
-    active: bool | None = None
-    is_admin: bool | None = None
-    display_name: str | None = Field(default=None, min_length=1, max_length=120)
-    password: str | None = Field(default=None, min_length=12, max_length=200)
-
-
-class VaultCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=1, max_length=120)
-    slug: str = Field(min_length=2, max_length=60)
-    owner_user_id: int
-    reason: str = Field(min_length=3, max_length=500)
-    encryption_mode: str = Field(default="plain", pattern="^(plain|crypt)$")
-    cloud_history_policy: str = Field(
-        pattern="^(archive_history|current_snapshot)$"
-    )
-    creation_mode: str = Field(default="empty", pattern="^(empty|adopt)$")
-    volume_alias: str | None = Field(default=None, min_length=1, max_length=120)
-    relative_path: str | None = Field(default=None, max_length=1024)
-
-
 class VaultRelocate(BaseModel):
     """Constrained destination within the Vault's existing Source Volume."""
 
@@ -1152,40 +958,6 @@ class VaultDecommissionStart(VaultDecommissionPreview):
     confirmation: str = Field(min_length=1, max_length=120)
     reason: str = Field(min_length=3, max_length=500)
     preview_fingerprint: str = Field(min_length=64, max_length=64)
-
-
-class MembershipCreate(BaseModel):
-    user_id: int
-    role: str = "viewer"
-
-
-class UserLookup(BaseModel):
-    username: str = Field(min_length=2, max_length=80)
-
-
-class AdminMembershipCreate(MembershipCreate):
-    # Required for every global-admin override of a vault's sharing, per
-    # ADR-0005's reauth-then-audit precedent for sensitive actions.
-    reason: str = Field(min_length=3, max_length=500)
-
-
-class AdminSourceAreaAssign(BaseModel):
-    """Admin assignment of an exclusive Source Area (issue #149)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    user_id: int
-    volume_alias: str = Field(min_length=1, max_length=120)
-    relative_path: str = Field(default="", max_length=1024)
-    reason: str = Field(min_length=3, max_length=500)
-
-
-class OwnerTransfer(BaseModel):
-    new_owner_user_id: int
-
-
-class AdminOwnerTransfer(OwnerTransfer):
-    reason: str = Field(min_length=3, max_length=500)
 
 
 class VaultQuotaUpdate(BaseModel):
@@ -1477,7 +1249,7 @@ def login(action: LoginRequest, request: Request, response: Response):
                 ip=client_ip,
                 username=username,
             )
-        raise HTTPException(403, "Break-glass login is not allowed from this network")
+        raise HTTPException(403, "The emergency password is not accepted from this network")
     # Persist throttle counters by letting the transaction commit first, then map
     # the outcome to a response: raising inside the `with` block would roll the
     # recorded failure back.
@@ -1495,7 +1267,7 @@ def login(action: LoginRequest, request: Request, response: Response):
                 "SELECT * FROM users WHERE lower(username)=lower(%s)",
                 (username,),
             ).fetchone()
-            eligible = bool(user and user["active"] and user["password_hash"])
+            eligible = bool(user and user["password_hash"])
             password_hash = (
                 user["password_hash"] if eligible else DUMMY_PASSWORD_HASH
             )
@@ -1563,12 +1335,12 @@ def reauth(
     request: Request,
     user: dict[str, Any] = Depends(current_user),
 ):
-    """Local-password Reauthentication with an isolated durable backoff.
+    """Emergency Password Reauthentication with an isolated durable backoff.
 
-    OIDC users have no password hash and must step up through the provider
-    (see ``/auth/oidc/reauth``). Its account/IP counters deliberately use
-    namespaced keys so a Reauthentication success cannot reset Local Sign-in,
-    Invite, or OIDC-related throttling state.
+    Accepted only from loopback and the LAN CIDRs; elsewhere the Owner steps
+    up through the provider (see ``/auth/oidc/reauth``). Its account/IP
+    counters deliberately use namespaced keys so a Reauthentication success
+    cannot reset sign-in or OIDC-related throttling state.
     """
     client_ip = _client_ip(request)
     if not is_break_glass_allowed(client_ip):
@@ -1711,105 +1483,20 @@ def _safe_return_to(candidate: str | None) -> str:
 def oidc_login(
     request: Request,
     return_to: str | None = Query(default=None),
-    invite: str | None = Query(default=None),
-):
-    redirect_uri = str(request.url_for("oidc_callback"))
-    client_ip = _client_ip(request)
-    # Throttle counters must survive the request, so record them and let the
-    # transaction commit before turning any failure into a response.
-    retry_after: int | None = None
-    invite_error: str | None = None
-    authorization_url: str | None = None
-    with db() as connection:
-        if invite is not None and client_ip:
-            try:
-                backoff_guard(connection, scope="ip", key=client_ip)
-            except BackoffError as blocked:
-                retry_after = blocked.retry_after
-        if retry_after is None:
-            invite_id: int | None = None
-            if invite is not None:
-                try:
-                    invite_id = resolve_invite(connection, invite)["id"]
-                except InviteError as error:
-                    invite_error = error.reason
-                    # Only a completely unknown token looks like a guess; a
-                    # real-but-stale token must not throttle its legitimate holder.
-                    if error.reason == "unknown" and client_ip:
-                        record_failure(connection, scope="ip", key=client_ip)
-                        audit_log(
-                            "invite_guess",
-                            connection=connection,
-                            ip=client_ip,
-                        )
-                else:
-                    if client_ip:
-                        record_success(connection, scope="ip", key=client_ip)
-            if invite_error is None:
-                try:
-                    authorization_url = begin_login(
-                        connection,
-                        redirect_uri=redirect_uri,
-                        return_to=_safe_return_to(return_to),
-                        invite_id=invite_id,
-                        http_client=_oidc_client(),
-                        host_addresses=_oidc_host_addresses,
-                    )
-                except OidcError as error:
-                    _raise_oidc_start_error(error)
-    if retry_after is not None:
-        with db() as connection:
-            audit_log(
-                "auth_backoff_blocked",
-                connection=connection,
-                flow="invite_redemption",
-                ip=client_ip,
-                retry_after=retry_after,
-            )
-        raise HTTPException(
-            429,
-            "Too many attempts; try again later",
-            headers={"Retry-After": str(retry_after)},
-        )
-    if invite_error is not None:
-        raise HTTPException(400, f"Invite cannot be used: {invite_error}")
-    return RedirectResponse(authorization_url, status_code=303)
-
-
-@app.get("/auth/oidc/link")
-def oidc_link(
-    request: Request,
-    user: dict[str, Any] = Depends(current_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
     redirect_uri = str(request.url_for("oidc_callback"))
     with db() as connection:
-        token = create_invite(
-            connection, target_user_id=user["id"], created_by=user["id"]
-        )
-        invite_id = _resolve_invite_id(connection, token)
         try:
             authorization_url = begin_login(
                 connection,
                 redirect_uri=redirect_uri,
-                return_to="/",
-                invite_id=invite_id,
-                prompt="login",
+                return_to=_safe_return_to(return_to),
                 http_client=_oidc_client(),
                 host_addresses=_oidc_host_addresses,
             )
         except OidcError as error:
             _raise_oidc_start_error(error)
     return RedirectResponse(authorization_url, status_code=303)
-
-
-def _resolve_invite_id(connection: Any, token: str | None) -> int | None:
-    if not token:
-        return None
-    try:
-        return resolve_invite(connection, token)["id"]
-    except InviteError as error:
-        raise HTTPException(400, f"Invite cannot be used: {error.reason}")
 
 
 @app.get("/auth/oidc/callback")
@@ -1820,6 +1507,7 @@ def oidc_callback(
     code: str = Query(...),
 ):
     redirect_uri = str(request.url_for("oidc_callback"))
+    rejected = False
     with db() as connection:
         try:
             claims = complete_login(
@@ -1832,40 +1520,45 @@ def oidc_callback(
             )
         except OidcError as error:
             raise HTTPException(400, f"OIDC login failed: {error.reason}")
-        user_id = _resolve_or_bind_identity(connection, claims)
-        existing = resolve_session(connection, _read_session_cookie(request))
-        if existing and existing["user"]["id"] == user_id:
-            # Step-up reauthentication: the user proved their identity again for
-            # the same account, so refresh the reauth window and rotate the token
-            # instead of minting a brand-new Session.
-            try:
-                raw_token = rotate_session(
+        try:
+            user_id = bind_owner_identity(connection, claims)
+        except IdentityRejected:
+            rejected = True
+        if not rejected:
+            existing = resolve_session(connection, _read_session_cookie(request))
+            if existing and existing["user"]["id"] == user_id:
+                # Step-up reauthentication: the owner proved their identity
+                # again, so refresh the reauth window and rotate the token
+                # instead of minting a brand-new Session.
+                try:
+                    raw_token = rotate_session(
+                        connection,
+                        existing["id"],
+                        reauthenticated=True,
+                    )
+                except SessionTransitionError as error:
+                    # A concurrent logout or expiry wins over an OIDC callback;
+                    # never issue a freshly rotated cookie for a dead Session.
+                    raise HTTPException(401, "Invalid session") from error
+                csrf_token = existing["csrf_token"]
+            else:
+                raw_token = create_session(
                     connection,
-                    existing["id"],
-                    reauthenticated=True,
+                    user_id=user_id,
+                    auth_method="oidc",
+                    ip=_client_ip(request),
+                    user_agent=request.headers.get("user-agent"),
                 )
-            except SessionTransitionError as error:
-                # A concurrent logout or expiry wins over an OIDC callback;
-                # never issue a freshly rotated cookie for a dead Session.
-                raise HTTPException(401, "Invalid session") from error
-            csrf_token = existing["csrf_token"]
-        elif existing and existing["user"]["id"] != user_id:
-            # Do not silently switch the browser into another User when the
-            # resolved Identity differs from the active Session (self-link /
-            # invite misuse of an already-bound Identity).
-            raise HTTPException(
-                403,
-                "This identity belongs to a different user; sign out first",
-            )
+                csrf_token = csrf_token_for(connection, raw_token)
         else:
-            raw_token = create_session(
-                connection,
-                user_id=user_id,
-                auth_method="oidc",
+            audit_log(
+                "oidc_identity_rejected",
+                connection=connection,
                 ip=_client_ip(request),
-                user_agent=request.headers.get("user-agent"),
+                issuer=claims.issuer,
             )
-            csrf_token = csrf_token_for(connection, raw_token)
+    if rejected:
+        raise HTTPException(403, "This identity is not the owner's identity")
     redirect = RedirectResponse(
         _safe_return_to(claims.return_to), status_code=303
     )
@@ -1873,26 +1566,6 @@ def oidc_callback(
     if csrf_token:
         _set_csrf_cookie(redirect, csrf_token)
     return redirect
-
-
-def _resolve_or_bind_identity(connection: Any, claims: Any) -> int:
-    identity = connection.execute(
-        "SELECT user_id FROM user_identities WHERE issuer=%s AND subject=%s",
-        (claims.issuer, claims.subject),
-    ).fetchone()
-    if identity:
-        return identity["user_id"]
-    if claims.invite_id is None:
-        raise HTTPException(403, "This identity is not linked to a user")
-    try:
-        return redeem_invite(
-            connection,
-            invite_id=claims.invite_id,
-            issuer=claims.issuer,
-            subject=claims.subject,
-        )
-    except InviteError as error:
-        raise HTTPException(403, f"Invite cannot be used: {error.reason}")
 
 
 @app.get("/vaults/new")
@@ -1928,61 +1601,44 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
     vault_block = None
     decommission_vault_block = None
     if vault is not None:
-        role = vault["role"]
         vault_block = {
             "id": vault["id"],
             "slug": vault["slug"],
             "name": vault["name"],
-            "role": role,
-            "can_operate": can_operate(role),
-            "delete_enabled": _runtime_settings().allow_local_delete and is_owner(role),
-            "cloud_deletion_enabled": bool(vault.get("cloud_deletion_enabled"))
-            and is_owner(role),
-            "is_vault_owner": is_owner(role),
+            "delete_enabled": _runtime_settings().allow_local_delete,
+            "cloud_deletion_enabled": bool(vault.get("cloud_deletion_enabled")),
             "cloud_history_policy": vault.get("cloud_history_policy")
             or "archive_history",
         }
     else:
         selected_id = request.state.session.get("vault_id")
-        if selected_id:
-            with db() as connection:
+        with db() as connection:
+            decommission_vault = None
+            if selected_id:
                 decommission_vault = connection.execute(
                     """
-                    SELECT v.id, v.slug, v.name, v.decommission_state,
-                           v.root_released_at
-                    FROM vaults v
-                    JOIN vault_members vm ON vm.vault_id=v.id
-                    WHERE v.id=%s AND vm.user_id=%s AND vm.role='owner'
-                      AND v.decommission_state<>'active'
+                    SELECT id, slug, name, decommission_state, root_released_at
+                    FROM vaults
+                    WHERE id=%s AND decommission_state<>'active'
                     """,
-                    (selected_id, user["id"]),
+                    (selected_id,),
                 ).fetchone()
-            if decommission_vault:
-                decommission_vault_block = {
-                    **decommission_vault,
-                    "root_released": bool(decommission_vault["root_released_at"]),
-                }
-        if decommission_vault_block is None:
-            with db() as connection:
+            if decommission_vault is None:
                 decommission_vault = connection.execute(
                     """
-                    SELECT v.id, v.slug, v.name, v.decommission_state,
-                           v.root_released_at
-                    FROM vaults v
-                    JOIN vault_members vm ON vm.vault_id=v.id
-                    WHERE vm.user_id=%s AND vm.role='owner'
-                      AND v.decommission_state<>'active'
-                    ORDER BY CASE WHEN v.decommission_state='decommissioning' THEN 0 ELSE 1 END,
-                             v.decommissioned_at DESC, lower(v.name)
+                    SELECT id, slug, name, decommission_state, root_released_at
+                    FROM vaults
+                    WHERE decommission_state<>'active'
+                    ORDER BY CASE WHEN decommission_state='decommissioning' THEN 0 ELSE 1 END,
+                             decommissioned_at DESC, lower(name)
                     LIMIT 1
-                    """,
-                    (user["id"],),
+                    """
                 ).fetchone()
-            if decommission_vault:
-                decommission_vault_block = {
-                    **decommission_vault,
-                    "root_released": bool(decommission_vault["root_released_at"]),
-                }
+        if decommission_vault:
+            decommission_vault_block = {
+                **decommission_vault,
+                "root_released": bool(decommission_vault["root_released_at"]),
+            }
     return {
         **user,
         "csrf_token": csrf_token,
@@ -2033,39 +1689,34 @@ def update_locale(
 
 
 @app.get("/api/vaults", response_model=response_model("VaultsResponse"))
-def user_vaults(user: dict[str, Any] = Depends(current_user)):
+def list_vaults(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         rows = connection.execute(
-            """
-            SELECT v.id, v.slug, v.name, vm.role, v.cloud_history_policy
+            f"""
+            SELECT v.id, v.slug, v.name, v.cloud_history_policy
             FROM vaults v
-            JOIN vault_members vm ON vm.vault_id=v.id
-            WHERE vm.user_id=%s AND v.enabled=TRUE
-              AND v.decommission_state='active'
+            WHERE {_OPERATIONAL_VAULT}
             ORDER BY v.name
-            """,
-            (user["id"],),
+            """
         ).fetchall()
     return {"items": rows}
 
 
 @app.post("/api/vaults", status_code=201, response_model=response_model("VaultCreateResponse"))
-def create_own_vault(
+def create_owner_vault(
     action: VaultSelfServiceCreate,
     background_tasks: BackgroundTasks,
-    user: dict[str, Any] = Depends(current_user),
+    _: dict[str, Any] = Depends(current_user),
 ):
-    """Let an authenticated, already-existing user create their own vault.
+    """Create a Vault from the UI, the only way Vaults are created (#412).
 
-    The server generates the storage identity; it never provisions a user
-    from identity claims (the caller must already be `current_user`).
-    Crypt vaults also receive a one-time recovery export so the owner can
-    confirm custody before uploads are admitted. Adoption binds an existing
-    Source Area directory in place and starts an asynchronous local scan.
+    The server generates the storage identity. Crypt vaults also receive a
+    one-time recovery export so the owner can confirm custody before uploads
+    are admitted. Adoption binds any free directory of a custom Source Volume
+    in place and starts an asynchronous local scan.
     """
     try:
-        vault = create_vault_for_user(
-            user["id"],
+        vault = create_vault(
             action.name,
             action.slug,
             encryption_mode=action.encryption_mode,
@@ -2073,7 +1724,6 @@ def create_own_vault(
             creation_mode=action.creation_mode,
             volume_alias=action.volume_alias,
             relative_path=action.relative_path,
-            actor_is_admin=False,
             require_cloud_history_policy=True,
         )
     except VaultSlugTaken as exc:
@@ -2095,7 +1745,6 @@ def create_own_vault(
         "uuid": vault["uuid"],
         "slug": vault["slug"],
         "name": vault["name"],
-        "role": "owner",
         "encryption_mode": vault["encryption_mode"],
         "cloud_history_policy": vault["cloud_history_policy"],
         "recovery_custody_confirmed": bool(
@@ -2158,7 +1807,6 @@ def _start_vault_decommission(
     vault_id: int,
     action: VaultDecommissionStart,
     actor: dict[str, Any],
-    actor_is_admin: bool,
 ) -> dict[str, Any]:
     runtime = _runtime_settings()
     operation_lock = scan_lock_for_vault(vault_id)
@@ -2175,7 +1823,6 @@ def _start_vault_decommission(
                     connection,
                     vault_id=vault_id,
                     actor_user_id=int(actor["id"]),
-                    actor_is_admin=actor_is_admin,
                     local_disposition=action.local_disposition,
                     cloud_disposition=action.cloud_disposition,
                     confirmation=action.confirmation,
@@ -2209,14 +1856,14 @@ def _start_vault_decommission(
 @app.post("/api/vault/decommission/preview", response_model=response_model("VaultDecommissionPreview"))
 def preview_own_vault_decommission(
     action: VaultDecommissionPreview,
-    vault: dict[str, Any] = Depends(decommission_owner_vault),
+    vault: dict[str, Any] = Depends(decommission_vault),
 ):
     return _preview_vault_decommission(int(vault["id"]), action)
 
 
 @app.get("/api/vault/decommission/status", response_model=response_model("VaultDecommissionStatus"))
 def own_vault_decommission_status(
-    vault: dict[str, Any] = Depends(decommission_owner_vault),
+    vault: dict[str, Any] = Depends(decommission_vault),
 ):
     try:
         with db() as connection:
@@ -2231,22 +1878,20 @@ def own_vault_decommission_status(
 def start_own_vault_decommission(
     action: VaultDecommissionStart,
     user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(decommission_owner_vault),
+    vault: dict[str, Any] = Depends(decommission_vault),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
     return _start_vault_decommission(
         vault_id=int(vault["id"]),
         action=action,
         actor=user,
-        actor_is_admin=False,
     )
 
 
 @app.post("/api/vault/decommission/cloud-purge/cancel", response_model=JsonObjectResponse)
 def cancel_own_vault_decommission_cloud_purge(
     user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(decommission_owner_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+    vault: dict[str, Any] = Depends(decommission_vault),
 ):
     try:
         with db() as connection:
@@ -2265,7 +1910,7 @@ def preview_owned_vault_decommission_by_id(
     action: VaultDecommissionPreview,
     user: dict[str, Any] = Depends(current_user),
 ):
-    _owned_vault_for_decommission(vault_id, int(user["id"]))
+    _vault_for_decommission(vault_id)
     return _preview_vault_decommission(vault_id, action)
 
 
@@ -2274,7 +1919,7 @@ def owned_vault_decommission_status_by_id(
     vault_id: int,
     user: dict[str, Any] = Depends(current_user),
 ):
-    _owned_vault_for_decommission(vault_id, int(user["id"]))
+    _vault_for_decommission(vault_id)
     try:
         with db() as connection:
             return vault_decommission_service.operation_status(
@@ -2291,12 +1936,11 @@ def start_owned_vault_decommission_by_id(
     user: dict[str, Any] = Depends(current_user),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
-    _owned_vault_for_decommission(vault_id, int(user["id"]))
+    _vault_for_decommission(vault_id)
     return _start_vault_decommission(
         vault_id=vault_id,
         action=action,
         actor=user,
-        actor_is_admin=False,
     )
 
 
@@ -2304,9 +1948,8 @@ def start_owned_vault_decommission_by_id(
 def cancel_owned_vault_decommission_cloud_purge_by_id(
     vault_id: int,
     user: dict[str, Any] = Depends(current_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
-    _owned_vault_for_decommission(vault_id, int(user["id"]))
+    _vault_for_decommission(vault_id)
     try:
         with db() as connection:
             return vault_decommission_service.cancel_pending_cloud_purge(
@@ -2322,7 +1965,7 @@ def cancel_owned_vault_decommission_cloud_purge_by_id(
 def confirm_vault_recovery_custody(
     action: RecoveryConfirm,
     user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(owner_vault),
+    vault: dict[str, Any] = Depends(current_vault),
 ):
     if not action.acknowledged:
         raise HTTPException(422, "Recovery custody must be acknowledged")
@@ -2342,7 +1985,7 @@ def confirm_vault_recovery_custody(
 def reexport_vault_recovery_secret(
     action: RecoveryExportRequest,
     user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(owner_vault),
+    vault: dict[str, Any] = Depends(current_vault),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
     with db() as connection:
@@ -2380,12 +2023,10 @@ def select_vault(
     with db() as connection:
         allowed = connection.execute(
             """
-            SELECT 1 FROM vault_members vm
-            JOIN vaults v ON v.id=vm.vault_id
-            WHERE vm.vault_id=%s AND vm.user_id=%s AND v.enabled=TRUE
-              AND v.decommission_state='active'
+            SELECT 1 FROM vaults v
+            WHERE v.id=%s AND v.enabled=TRUE AND v.decommission_state='active'
             """,
-            (action.vault_id, user["id"]),
+            (action.vault_id,),
         ).fetchone()
         if not allowed:
             raise HTTPException(403, "Vault access denied")
@@ -2533,8 +2174,6 @@ def confirm_rename(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    if not can_operate(vault["role"]):
-        raise HTTPException(403, "Vault is read-only")
     if vault_relocation_service.local_work_suspended(vault):
         raise HTTPException(409, "Local work is suspended pending relocation scan")
     new_path = safe_relative_path(action.new_path).as_posix()
@@ -2589,8 +2228,6 @@ def confirm_folder_rename(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    if not can_operate(vault["role"]):
-        raise HTTPException(403, "Vault is read-only")
     if vault_relocation_service.local_work_suspended(vault):
         raise HTTPException(409, "Local work is suspended pending relocation scan")
     old_prefix = safe_relative_path(action.old_prefix).as_posix()
@@ -2654,9 +2291,6 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
             load_vault_health(connection, int(vault["id"]))
         )
     allowed_bases = [str(get_sources_root())]
-    bootstrap_root = (settings.bootstrap_vault_source_root or "").strip()
-    if bootstrap_root:
-        allowed_bases.append(bootstrap_root)
     # Identity-unsafe / missing volumes fail closed: no resolve, no walk.
     preflight_allowed = access.volume_health in {"ok", "read_only", "scan_required"}
     # Consistent bounded snapshot under the producer lock, then release before
@@ -2711,32 +2345,28 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
         **summary,
         "runtime": runtime,
         "filesystem": filesystem_payload,
-        "delete_enabled": _runtime_settings().allow_local_delete and is_owner(vault["role"]),
+        "delete_enabled": _runtime_settings().allow_local_delete,
     }
 
 
 @app.get("/api/audit-events", response_model=JsonObjectResponse)
 def vault_audit_events(vault: dict[str, Any] = Depends(current_vault)):
-    """List audit events visible to the current Vault membership role."""
+    """List the audit events recorded for the selected Vault."""
     with db() as connection:
-        events = audit_event_store.list_vault_audit_events(
-            connection,
-            vault["id"],
-            include_owner=is_owner(vault["role"]),
-        )
+        events = audit_event_store.list_vault_audit_events(connection, vault["id"])
     return {"events": events}
 
 
 @app.get("/api/admin/audit-events", response_model=JsonObjectResponse)
-def admin_audit_events(_: dict[str, Any] = Depends(admin_user)):
-    """List all audit events for global administrators."""
+def admin_audit_events(_: dict[str, Any] = Depends(current_user)):
+    """List all audit events for the Owner."""
     with db() as connection:
         events = audit_event_store.list_admin_audit_events(connection)
     return {"events": events}
 
 
 @app.get("/api/admin/settings", response_model=response_model("SystemSettingsResponse"))
-def admin_system_settings(_: dict[str, Any] = Depends(admin_user)):
+def admin_system_settings(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         return system_settings_response(connection, settings_obj=settings)
 
@@ -2744,8 +2374,7 @@ def admin_system_settings(_: dict[str, Any] = Depends(admin_user)):
 @app.patch("/api/admin/settings", response_model=response_model("SystemSettingsResponse"))
 def update_admin_system_settings(
     action: SystemSettingsUpdate,
-    user: dict[str, Any] = Depends(admin_user),
-    _: dict[str, Any] = Depends(require_recent_reauth),
+    user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     with db() as connection:
         return apply_system_settings(
@@ -2755,191 +2384,6 @@ def update_admin_system_settings(
             removals=action.removals,
             updated_by=user["id"],
             settings_obj=settings,
-        )
-
-
-@app.get("/api/admin/oidc-configuration", response_model=response_model("OidcConfigurationResponse"))
-def admin_oidc_configuration(
-    request: Request,
-    _: dict[str, Any] = Depends(admin_user),
-):
-    with db() as connection:
-        return oidc_configuration_response(
-            connection,
-            settings_obj=settings,
-            callback_url=str(request.url_for("oidc_callback")),
-        )
-
-
-@app.put("/api/admin/oidc-configuration/draft", response_model=response_model("OidcConfigurationResponse"))
-def save_admin_oidc_draft(
-    request: Request,
-    action: OidcDraftAction,
-    user: dict[str, Any] = Depends(admin_user),
-    _: dict[str, Any] = Depends(require_recent_reauth),
-):
-    with db() as connection:
-        try:
-            save_oidc_draft(
-                connection,
-                issuer=action.issuer,
-                client_id=action.client_id,
-                client_secret=action.client_secret,
-                scopes=action.scopes,
-                login_transaction_ttl_seconds=(
-                    action.login_transaction_ttl_seconds
-                ),
-                updated_by=user["id"],
-                settings_obj=settings,
-            )
-        except OidcConfigurationError as error:
-            raise HTTPException(503, str(error)) from error
-        audit_event_store.record_audit_event(
-            connection,
-            event="oidc_configuration_draft_saved",
-            actor_user_id=user["id"],
-            outcome="success",
-            visibility="admin",
-            issuer=action.issuer,
-            client_id=action.client_id,
-            scopes=action.scopes,
-            login_transaction_ttl_seconds=(
-                action.login_transaction_ttl_seconds
-            ),
-            client_secret_replaced=True,
-        )
-        return oidc_configuration_response(
-            connection,
-            settings_obj=settings,
-            callback_url=str(request.url_for("oidc_callback")),
-        )
-
-
-@app.post("/api/admin/oidc-configuration/draft/validate", response_model=response_model("OidcConfigurationResponse"))
-def validate_admin_oidc_draft(
-    request: Request,
-    user: dict[str, Any] = Depends(admin_user),
-    _: dict[str, Any] = Depends(require_recent_reauth),
-):
-    with db() as connection:
-        try:
-            status = validate_oidc_draft(
-                connection,
-                http_client=_oidc_client(),
-                host_addresses=_oidc_host_addresses,
-            )
-        except OidcConfigurationError as error:
-            raise HTTPException(409, str(error)) from error
-        audit_event_store.record_audit_event(
-            connection,
-            event="oidc_configuration_draft_validated",
-            actor_user_id=user["id"],
-            outcome="success" if status == "valid" else "failure",
-            visibility="admin",
-            validation_status=status,
-        )
-        response = oidc_configuration_response(
-            connection,
-            settings_obj=settings,
-            callback_url=str(request.url_for("oidc_callback")),
-        )
-        if status == "invalid":
-            return JSONResponse(response, status_code=422)
-        return response
-
-
-@app.post("/api/admin/oidc-configuration/activate", response_model=response_model("OidcConfigurationResponse"))
-def activate_admin_oidc_configuration(
-    request: Request,
-    user: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    with db() as connection:
-        try:
-            version = activate_oidc_draft(
-                connection,
-                updated_by=user["id"],
-                settings_obj=settings,
-            )
-        except OidcConfigurationError as error:
-            raise HTTPException(409, str(error)) from error
-        audit_event_store.record_audit_event(
-            connection,
-            event="oidc_configuration_activated",
-            actor_user_id=user["id"],
-            outcome="success",
-            visibility="admin",
-            version=version,
-        )
-        return oidc_configuration_response(
-            connection,
-            settings_obj=settings,
-            callback_url=str(request.url_for("oidc_callback")),
-        )
-
-
-@app.post("/api/admin/oidc-configuration/disable", response_model=response_model("OidcConfigurationResponse"))
-def disable_admin_oidc_configuration(
-    request: Request,
-    user: dict[str, Any] = Depends(admin_user),
-    _: dict[str, Any] = Depends(require_recent_reauth),
-):
-    with db() as connection:
-        try:
-            version = disable_oidc(
-                connection,
-                updated_by=user["id"],
-                settings_obj=settings,
-            )
-        except OidcConfigurationError as error:
-            raise HTTPException(503, str(error)) from error
-        audit_event_store.record_audit_event(
-            connection,
-            event="oidc_configuration_disabled",
-            actor_user_id=user["id"],
-            outcome="success",
-            visibility="admin",
-            version=version,
-        )
-        return oidc_configuration_response(
-            connection,
-            settings_obj=settings,
-            callback_url=str(request.url_for("oidc_callback")),
-        )
-
-
-@app.post("/api/admin/oidc-configuration/rotate-secret", response_model=response_model("OidcConfigurationResponse"))
-def rotate_admin_oidc_secret(
-    request: Request,
-    action: OidcSecretRotationAction,
-    user: dict[str, Any] = Depends(admin_user),
-    _: dict[str, Any] = Depends(require_recent_reauth),
-):
-    with db() as connection:
-        try:
-            version = rotate_oidc_secret(
-                connection,
-                client_secret=action.client_secret,
-                updated_by=user["id"],
-                settings_obj=settings,
-            )
-        except OidcConfigurationConflict as error:
-            raise HTTPException(409, str(error)) from error
-        except OidcConfigurationError as error:
-            raise HTTPException(503, str(error)) from error
-        audit_event_store.record_audit_event(
-            connection,
-            event="oidc_client_secret_rotated",
-            actor_user_id=user["id"],
-            outcome="success",
-            visibility="admin",
-            version=version,
-            client_secret_replaced=True,
-        )
-        return oidc_configuration_response(
-            connection,
-            settings_obj=settings,
-            callback_url=str(request.url_for("oidc_callback")),
         )
 
 
@@ -3005,8 +2449,8 @@ def mark_all_notifications_read(
 ):
     """Mark every currently visible unread notification read (issue #225).
 
-    Server-authoritative and idempotent; preserves the same membership and
-    in-app visibility checks as single-item mark-read.
+    Server-authoritative and idempotent; preserves the same Vault and in-app
+    visibility checks as single-item mark-read.
     """
     with db() as connection:
         return notification_service.mark_all_notifications_read(
@@ -3089,8 +2533,7 @@ class VaultNotificationPreferenceAction(BaseModel):
 @app.post("/api/admin/notification-endpoints/webhook", response_model=JsonObjectResponse)
 def admin_set_webhook_endpoint(
     action: WebhookEndpointAction,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+    admin: dict[str, Any] = Depends(current_user),
 ):
     with db() as connection:
         endpoint = notification_service.set_global_webhook_endpoint(
@@ -3112,8 +2555,7 @@ def admin_set_webhook_endpoint(
 @app.post("/api/admin/notification-endpoints/smtp", response_model=JsonObjectResponse)
 def admin_set_smtp_endpoint(
     action: SmtpEndpointAction,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+    admin: dict[str, Any] = Depends(current_user),
 ):
     with db() as connection:
         endpoint = notification_service.set_global_smtp_endpoint(
@@ -3189,7 +2631,7 @@ def set_vault_notification_preference(
 
 
 @app.get("/api/admin/worker-errors", response_model=JsonObjectResponse)
-def admin_worker_errors(_: dict[str, Any] = Depends(admin_user)):
+def admin_worker_errors(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         items = worker_error_store.list_worker_errors(connection)
     return {"items": items}
@@ -3200,7 +2642,7 @@ class MetadataBackupRunAction(BaseModel):
 
 
 @app.get("/api/admin/metadata-backups", response_model=JsonObjectResponse)
-def admin_list_metadata_backups(_: dict[str, Any] = Depends(admin_user)):
+def admin_list_metadata_backups(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         status = metadata_backup_service.backup_status(connection)
         runs = metadata_backup_service.list_backup_artifacts(connection)
@@ -3210,8 +2652,7 @@ def admin_list_metadata_backups(_: dict[str, Any] = Depends(admin_user)):
 @app.post("/api/admin/metadata-backups/run", response_model=JsonObjectResponse)
 def admin_run_metadata_backup(
     action: MetadataBackupRunAction,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+    admin: dict[str, Any] = Depends(current_user),
 ):
     with db() as connection:
         try:
@@ -3259,7 +2700,7 @@ def admin_run_metadata_backup(
 )
 def admin_download_metadata_backup(
     run_id: int,
-    admin: dict[str, Any] = Depends(admin_user),
+    admin: dict[str, Any] = Depends(current_user),
 ):
     with db() as connection:
         try:
@@ -3445,8 +2886,6 @@ async def start_scan(
     request: Request,
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    if not can_operate(vault["role"]):
-        raise HTTPException(403, "Vault is read-only")
     status = runtime_status.get(vault["id"], {})
     if status.get("scanning"):
         return {**_api_message(request, "api.scan_in_progress")}
@@ -3865,8 +3304,6 @@ def upload(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    if not can_operate(vault["role"]):
-        raise HTTPException(403, "Vault is read-only")
     queued = queue_jobs(action.path, "upload", vault["id"], user["id"], action.is_directory)
     return {**queued, **_api_message(request, "api.upload_started")}
 
@@ -3908,17 +3345,16 @@ def replace_cloud_only_copy(
     vault: dict[str, Any] = Depends(current_vault),
 ):
     """Confirm that new content replaces the only cloud copy at its path."""
-    if not is_owner(vault["role"]):
-        raise HTTPException(
-            403, "Only the primary owner can replace a cloud-only copy"
-        )
     queued = confirm_cloud_only_replacement(action.path, vault["id"], user["id"])
     return {**queued, **_api_message(request, "api.upload_started")}
 
 
-def cancel_job_group(group_id: str, job_action: str, vault: dict[str, Any]):
-    if not can_operate(vault["role"]):
-        raise HTTPException(403, "Vault is read-only")
+def cancel_job_group(
+    group_id: str,
+    job_action: str,
+    vault: dict[str, Any],
+    actor_user_id: int,
+):
     message_keys = {
         "upload": "job.upload_stopped",
         "recover": "job.recovery_stopped",
@@ -3934,17 +3370,12 @@ def cancel_job_group(group_id: str, job_action: str, vault: dict[str, Any]):
     message = translate(message_key, locale=DEFAULT_LOCALE)
     with db() as connection:
         if job_action in {"cloud-archive", "cloud-purge"}:
-            if not is_owner(vault["role"]):
-                raise HTTPException(
-                    403,
-                    "Only the primary owner can cancel cloud deletion",
-                )
             try:
                 cancelled = cloud_deletion_service.cancel_cloud_deletion(
                     connection,
                     vault_id=vault["id"],
                     group_id=group_id,
-                    actor_user_id=vault["member_user_id"],
+                    actor_user_id=actor_user_id,
                     cancelled_at=now_iso(),
                 )
             except ValueError as exc:
@@ -4010,7 +3441,7 @@ def cancel_job_group(group_id: str, job_action: str, vault: dict[str, Any]):
             audit_event_store.record_audit_event(
                 connection,
                 event="local_cleanup.cancelled",
-                actor_user_id=vault.get("member_user_id"),
+                actor_user_id=actor_user_id,
                 vault_id=vault["id"],
                 job_id=int(row["id"]),
                 outcome="cancelled",
@@ -4038,7 +3469,7 @@ def cancel_job(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    return cancel_job_group(action.group_id, action.action, vault)
+    return cancel_job_group(action.group_id, action.action, vault, user["id"])
 
 
 @app.post("/api/upload/cancel", response_model=response_model("JobCancelResponse"))
@@ -4048,7 +3479,7 @@ def cancel_upload(
     vault: dict[str, Any] = Depends(current_vault),
 ):
     """Backward-compatible endpoint for clients using the old upload route."""
-    return cancel_job_group(action.group_id, "upload", vault)
+    return cancel_job_group(action.group_id, "upload", vault, user["id"])
 
 
 @app.post(
@@ -4063,8 +3494,6 @@ def recover(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    if not can_operate(vault["role"]):
-        raise HTTPException(403, "Vault is read-only")
     queued = queue_jobs(
         action.path,
         "recover",
@@ -4083,10 +3512,7 @@ def approve_recover(
     action: RecoverApproveAction,
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
-    if not is_owner(vault["role"]):
-        raise HTTPException(403, "Only the primary owner can approve high-impact restores")
     timestamp = now_iso()
     with db() as connection:
         rows = connection.execute(
@@ -4137,10 +3563,7 @@ def free_space(
     request: Request,
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
-    if not is_owner(vault["role"]):
-        raise HTTPException(403, "Vault is read-only")
     if not _runtime_settings().allow_local_delete:
         raise HTTPException(403, "Freeing local space is disabled")
     queued = queue_jobs(
@@ -4170,15 +3593,7 @@ def change_storage_class(
     request: Request,
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
-    if action.whole_vault:
-        if not is_owner(vault["role"]):
-            raise HTTPException(
-                403, "Only the Vault owner can change storage class for the whole Vault"
-            )
-    elif not can_operate(vault["role"]):
-        raise HTTPException(403, "Vault is read-only")
     queued = queue_jobs(
         action.path,
         "storage-class",
@@ -4225,10 +3640,7 @@ def update_lifecycle_pin(
     request: Request,
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
-    if not can_operate(vault["role"]):
-        raise HTTPException(403, "Vault is read-only")
     logical_path = safe_relative_path(action.path).as_posix()
     from .services.lifecycle_pins import clear_lifecycle_pin, set_lifecycle_pin
     from .services.lifecycle_policies import refresh_desired_policies
@@ -4287,10 +3699,7 @@ def update_cloud_deletion_setting(
     action: CloudDeletionSettingUpdate,
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
-    if not is_owner(vault["role"]):
-        raise HTTPException(403, "Only the primary owner can change cloud deletion")
     try:
         with db() as connection:
             enabled = cloud_deletion_service.set_cloud_deletion_enabled(
@@ -4309,8 +3718,6 @@ def preview_cloud_deletion(
     action: CloudDeletionPreviewRequest,
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    if not is_owner(vault["role"]):
-        raise HTTPException(403, "Only the primary owner can preview cloud deletion")
     with db() as connection:
         preview = cloud_deletion_service.preview_selection(
             connection,
@@ -4332,8 +3739,6 @@ def cloud_archive(
     vault: dict[str, Any] = Depends(current_vault),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
-    if not is_owner(vault["role"]):
-        raise HTTPException(403, "Only the primary owner can archive in the cloud")
     try:
         with db() as connection:
             scheduled = cloud_deletion_service.schedule_cloud_archive(
@@ -4365,11 +3770,6 @@ def cloud_purge(
     vault: dict[str, Any] = Depends(current_vault),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
-    if not is_owner(vault["role"]):
-        raise HTTPException(
-            403,
-            "Only the primary owner can approve or execute permanent purge",
-        )
     try:
         with db() as connection:
             scheduled = cloud_deletion_service.schedule_cloud_purge(
@@ -4411,11 +3811,6 @@ def accelerate_cloud_purge(
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
     """Skip the cancellable delay and queue permanent purge immediately."""
-    if not is_owner(vault["role"]):
-        raise HTTPException(
-            403,
-            "Only the primary owner can accelerate permanent purge",
-        )
     try:
         with db() as connection:
             accelerated = cloud_deletion_service.accelerate_cloud_purge(
@@ -4435,412 +3830,53 @@ def accelerate_cloud_purge(
     }
 
 
-@app.get("/api/admin/users", response_model=response_model("AdminUsersResponse"))
-def admin_users(_: dict[str, Any] = Depends(admin_user)):
-    """List every User with vault membership and authentication capabilities."""
-    with db() as connection:
-        return {"items": user_admin_service.list_users(connection)}
-
-
-@app.post("/api/admin/users", status_code=201, response_model=response_model("AdminUser"))
-def create_user(
-    action: UserCreate,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    username = action.username.strip().lower()
-    if not re.fullmatch(r"[a-z0-9._-]+", username):
-        raise HTTPException(422, "The username can contain letters, numbers, periods, hyphens, and underscores")
-    try:
-        with db() as connection:
-            return user_admin_service.create_user(
-                connection,
-                username=username,
-                display_name=action.display_name.strip(),
-                password_hash=(
-                    None if action.password is None else hash_password(action.password)
-                ),
-                is_admin=action.is_admin,
-                actor_user_id=admin["id"],
-            )
-    except INTEGRITY_ERRORS:
-        raise HTTPException(409, "Username is already in use")
-
-
-@app.get("/api/admin/invites", response_model=response_model("AdminInvitesResponse"))
-def admin_invites(_: dict[str, Any] = Depends(admin_user)):
-    """List Invites that can still be redeemed, without any token material."""
-    with db() as connection:
-        return {"items": list_pending_invites(connection)}
-
-
-@app.post("/api/admin/invites", status_code=201, response_model=JsonObjectResponse)
-def create_invite_endpoint(
-    action: InviteCreate,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    try:
-        with db() as connection:
-            token = create_invite(
-                connection,
-                target_user_id=action.target_user_id,
-                created_by=admin["id"],
-            )
-    except ValueError:
-        raise HTTPException(404, "Target user not found")
-    return {"token": token}
-
-
-@app.post("/api/admin/invites/{invite_id}/revoke", response_model=JsonObjectResponse)
-def revoke_invite_endpoint(
-    invite_id: int,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    """Withdraw a pending Invite so its token can never be redeemed."""
-    try:
-        with db() as connection:
-            revoked = revoke_invite(
-                connection, invite_id=invite_id, actor_user_id=admin["id"]
-            )
-            audit_event_store.record_audit_event(
-                connection,
-                event="admin_invite_revoked",
-                actor_user_id=admin["id"],
-                outcome="success",
-                visibility="admin",
-                invite_id=revoked["id"],
-                target_user_id=revoked["target_user_id"],
-            )
-    except InviteError as exc:
-        raise _invite_revocation_http_error(exc) from exc
-    return revoked
-
-
-@app.patch("/api/admin/users/{user_id}", response_model=JsonObjectResponse)
-def update_user(
-    user_id: int,
-    action: UserUpdate,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    """Change a User's global role, activation, display name or password."""
-    try:
-        with db() as connection:
-            return user_admin_service.update_user(
-                connection,
-                user_id=user_id,
-                actor_user_id=admin["id"],
-                active=action.active,
-                is_admin=action.is_admin,
-                display_name=(
-                    None
-                    if action.display_name is None
-                    else action.display_name.strip()
-                ),
-                password_hash=(
-                    None if action.password is None else hash_password(action.password)
-                ),
-            )
-    except user_admin_service.AdministrationError as exc:
-        raise _administration_http_error(exc) from exc
-
-
-@app.get("/api/admin/users/{user_id}/identities", response_model=response_model("AdminIdentitiesResponse"))
-def admin_user_identities(user_id: int, _: dict[str, Any] = Depends(admin_user)):
-    """List the external Identities linked to one User."""
-    try:
-        with db() as connection:
-            return {
-                "items": user_admin_service.list_identities(
-                    connection, user_id=user_id
-                )
-            }
-    except user_admin_service.AdministrationError as exc:
-        raise _administration_http_error(exc) from exc
-
-
-@app.delete("/api/admin/users/{user_id}/identities/{identity_id}", response_model=JsonObjectResponse)
-def admin_unlink_identity(
-    user_id: int,
-    identity_id: int,
-    confirm: bool = False,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    """Unlink one external Identity after explicit confirmation."""
-    try:
-        with db() as connection:
-            return {
-                "items": user_admin_service.unlink_identity(
-                    connection,
-                    user_id=user_id,
-                    identity_id=identity_id,
-                    actor_user_id=admin["id"],
-                    confirmed=confirm,
-                )
-            }
-    except user_admin_service.AdministrationError as exc:
-        raise _administration_http_error(exc) from exc
-
-
-
 @app.get("/api/admin/source-volumes", response_model=response_model("SourceVolumeInventoryResponse"))
-def admin_source_volumes(user: dict[str, Any] = Depends(admin_user)):
+def admin_source_volumes(user: dict[str, Any] = Depends(current_user)):
     """Operator inventory of discovered Source Volumes (issue #148)."""
     return {"items": source_volume_inventory()}
 
 
-_SOURCE_AREA_ERROR_STATUS: dict[str, tuple[int, str]] = {
-    "reason_required": (422, "A reason between 3 and 500 characters is required"),
-    "user_not_found": (404, "User not found"),
-    "not_found": (404, "Source Area not found"),
+_SOURCE_DIRECTORY_ERROR_STATUS: dict[str, tuple[int, str]] = {
     "volume_not_found": (404, "Source Volume not found"),
-    "volume_unavailable": (409, "Source Volume is not available for assignment"),
-    "invalid_volume": (422, "Source Volume is not assignable"),
-    "invalid_path": (422, "Source Area path is invalid"),
-    "path_missing": (404, "Source Area directory does not exist"),
-    "overlap": (409, "Source Area overlaps an existing grant"),
+    "volume_unavailable": (409, "Source Volume is not available"),
+    "invalid_volume": (422, "Source Volume is not usable for Vault roots"),
+    "invalid_path": (422, "Source directory path is invalid"),
+    "path_missing": (404, "Source directory does not exist"),
     "occupied": (409, "Occupied Vault roots cannot be browsed"),
-    "forbidden": (403, "Path is outside the viewer's Source Areas"),
 }
 
 
-def _source_area_http_error(exc: source_areas_service.SourceAreaError) -> HTTPException:
-    status_code, message = _SOURCE_AREA_ERROR_STATUS.get(
+def _source_directory_http_error(
+    exc: source_directories_service.SourceDirectoryError,
+) -> HTTPException:
+    status_code, message = _SOURCE_DIRECTORY_ERROR_STATUS.get(
         exc.reason, (400, "Request could not be completed")
     )
     return HTTPException(status_code, message)
 
 
-@app.post("/api/admin/source-areas", status_code=201, response_model=response_model("SourceAreaGrant"))
-def admin_assign_source_area(
-    action: AdminSourceAreaAssign,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    """Assign an exclusive Source Area to one User (issue #149)."""
-    try:
-        with db() as connection:
-            return source_areas_service.assign_source_area(
-                connection,
-                user_id=action.user_id,
-                volume_alias=action.volume_alias,
-                relative_path=action.relative_path,
-                actor_user_id=admin["id"],
-                reason=action.reason,
-            )
-    except source_areas_service.SourceAreaError as exc:
-        raise _source_area_http_error(exc) from exc
-
-
-@app.delete("/api/admin/source-areas/{source_area_id}", response_model=JsonObjectResponse)
-def admin_revoke_source_area(
-    source_area_id: int,
-    reason: str = Query(min_length=3, max_length=500),
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    """Revoke one Source Area without altering existing Vaults (issue #149)."""
-    try:
-        with db() as connection:
-            return source_areas_service.revoke_source_area(
-                connection,
-                source_area_id=source_area_id,
-                actor_user_id=admin["id"],
-                reason=reason,
-            )
-    except source_areas_service.SourceAreaError as exc:
-        raise _source_area_http_error(exc) from exc
-
-
-@app.get("/api/admin/source-areas", response_model=response_model("SourceAreaListResponse"))
-def admin_list_source_areas(
-    user_id: int | None = None,
-    volume_alias: str | None = None,
-    _: dict[str, Any] = Depends(admin_user),
-):
-    """List Source Areas, optionally filtered by User or Source Volume."""
-    with db() as connection:
-        if user_id is not None:
-            items = source_areas_service.list_source_areas_for_user(
-                connection, user_id=user_id
-            )
-        elif volume_alias is not None:
-            items = source_areas_service.list_source_areas_for_volume(
-                connection, volume_alias=volume_alias
-            )
-        else:
-            items = source_areas_service.list_all_source_areas(connection)
-    return {"items": items}
-
-
-@app.get("/api/admin/source-volumes/{volume_alias}/browse", response_model=response_model("SourceDirectoryBrowseResponse"))
-def admin_browse_source_volume(
-    volume_alias: str,
-    path: str = Query(default=""),
-    purpose: str = Query(default="grant", pattern="^(grant|adopt)$"),
-    admin: dict[str, Any] = Depends(admin_user),
-):
-    """Admin lazy directory browser for Source Area assignment."""
-    try:
-        with db() as connection:
-            return source_areas_service.browse_source_directories(
-                connection,
-                volume_alias=volume_alias,
-                relative_path=path,
-                viewer_user_id=admin["id"],
-                viewer_is_admin=True,
-                purpose=purpose,
-            )
-    except source_areas_service.SourceAreaError as exc:
-        raise _source_area_http_error(exc) from exc
-
-
-@app.get("/api/source-areas", response_model=response_model("SourceAreaListResponse"))
-def list_my_source_areas(user: dict[str, Any] = Depends(current_user)):
-    """Source Areas granted to the authenticated User."""
-    with db() as connection:
-        return {
-            "items": source_areas_service.list_source_areas_for_user(
-                connection, user_id=user["id"]
-            )
-        }
-
-
 @app.get("/api/source-volumes/{volume_alias}/browse", response_model=response_model("SourceDirectoryBrowseResponse"))
-def browse_my_source_volume(
+def browse_source_volume(
     volume_alias: str,
     path: str = Query(default=""),
-    user: dict[str, Any] = Depends(current_user),
+    _: dict[str, Any] = Depends(current_user),
 ):
-    """User lazy directory browser scoped to their Source Areas."""
+    """Lazy directory browser for choosing a Vault root on a Source Volume."""
     try:
         with db() as connection:
-            return source_areas_service.browse_source_directories(
+            return source_directories_service.browse_source_directories(
                 connection,
                 volume_alias=volume_alias,
                 relative_path=path,
-                viewer_user_id=user["id"],
-                viewer_is_admin=False,
             )
-    except source_areas_service.SourceAreaError as exc:
-        raise _source_area_http_error(exc) from exc
+    except source_directories_service.SourceDirectoryError as exc:
+        raise _source_directory_http_error(exc) from exc
 
 
 @app.get("/api/admin/vaults", response_model=response_model("AdminVaultsResponse"))
-def admin_vaults(_: dict[str, Any] = Depends(admin_user)):
+def admin_vaults(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
-        return {"items": list_admin_vaults(connection)}
-
-
-@app.post("/api/admin/vaults/{vault_id}/decommission/preview", response_model=response_model("VaultDecommissionPreview"))
-def preview_admin_vault_decommission(
-    vault_id: int,
-    action: VaultDecommissionPreview,
-    _: dict[str, Any] = Depends(admin_user),
-):
-    return _preview_vault_decommission(vault_id, action)
-
-
-@app.get("/api/admin/vaults/{vault_id}/decommission/status", response_model=response_model("VaultDecommissionStatus"))
-def admin_vault_decommission_status(
-    vault_id: int,
-    _: dict[str, Any] = Depends(admin_user),
-):
-    try:
-        with db() as connection:
-            return vault_decommission_service.operation_status(
-                connection, vault_id=vault_id
-            )
-    except vault_decommission_service.VaultDecommissionError as exc:
-        raise _vault_decommission_http_error(exc) from exc
-
-
-@app.post("/api/admin/vaults/{vault_id}/decommission", status_code=202, response_model=response_model("VaultDecommissionStatus"))
-def start_admin_vault_decommission(
-    vault_id: int,
-    action: VaultDecommissionStart,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    return _start_vault_decommission(
-        vault_id=vault_id,
-        action=action,
-        actor=admin,
-        actor_is_admin=True,
-    )
-
-
-@app.post("/api/admin/vaults/{vault_id}/decommission/cloud-purge/cancel", response_model=JsonObjectResponse)
-def cancel_admin_vault_decommission_cloud_purge(
-    vault_id: int,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    try:
-        with db() as connection:
-            return vault_decommission_service.cancel_pending_cloud_purge(
-                connection,
-                vault_id=vault_id,
-                actor_user_id=int(admin["id"]),
-            )
-    except vault_decommission_service.VaultDecommissionError as exc:
-        raise _vault_decommission_http_error(exc) from exc
-
-
-@app.post("/api/admin/vaults", status_code=201, response_model=response_model("AdminVault"))
-def create_vault(
-    action: VaultCreate,
-    background_tasks: BackgroundTasks,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    with db() as connection:
-        owner = connection.execute(
-            "SELECT 1 FROM users WHERE id=%s AND active=TRUE",
-            (action.owner_user_id,),
-        ).fetchone()
-    if not owner:
-        raise HTTPException(404, "Owner not found")
-
-    try:
-        vault = create_admin_vault(
-            action.owner_user_id,
-            action.name,
-            action.slug,
-            encryption_mode=action.encryption_mode,
-            cloud_history_policy=action.cloud_history_policy,
-            creation_mode=action.creation_mode,
-            volume_alias=action.volume_alias,
-            relative_path=action.relative_path,
-            require_cloud_history_policy=True,
-        )
-    except VaultSlugTaken as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except VaultProvisioningUnavailable as exc:
-        raise HTTPException(503, str(exc)) from exc
-    except InvalidVaultName as exc:
-        raise HTTPException(422, str(exc)) from exc
-    except VaultAdoptionError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    except VaultCreationError as exc:
-        raise HTTPException(409, str(exc)) from exc
-
-    if action.creation_mode == "adopt":
-        # The admin service result is a public projection; scan_vault needs
-        # only this opaque identifier and reloads the persisted Vault itself.
-        background_tasks.add_task(scan_vault, {"id": vault["id"]})
-
-    notify_owner_of_admin_action(
-        "vault_created",
-        vault_id=vault["id"],
-        owner_user_id=action.owner_user_id,
-        actor_id=admin["id"],
-        reason=action.reason,
-    )
-    return vault
+        return {"items": list_vault_inventory(connection)}
 
 
 _VAULT_RELOCATION_ERROR_STATUS: dict[str, tuple[int, str]] = {
@@ -4869,8 +3905,7 @@ def admin_relocate_vault_root(
     vault_id: int,
     action: VaultRelocate,
     background_tasks: BackgroundTasks,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+    admin: dict[str, Any] = Depends(current_user),
 ):
     """Relocate, never rebind, a missing root on its verified Source Volume."""
     # Serialize the runtime snapshot, relocation transaction, and scan start.
@@ -4913,35 +3948,6 @@ def admin_relocate_vault_root(
     }
 
 
-@app.post("/api/admin/vaults/{vault_id}/recovery/export", response_model=JsonObjectResponse)
-def admin_export_vault_recovery_secret(
-    vault_id: int,
-    action: RecoveryExportRequest,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    with db() as connection:
-        row = connection.execute(
-            "SELECT * FROM vaults WHERE id=%s", (vault_id,)
-        ).fetchone()
-        owner = primary_owner(connection, vault_id) if row else None
-    if not row or row["encryption_mode"] != "crypt":
-        raise HTTPException(404, "Crypt vault not found")
-    if not owner:
-        raise HTTPException(409, "Vault has no primary owner")
-    try:
-        export = export_recovery_secret(
-            row,
-            actor_id=admin["id"],
-            reason=action.reason,
-            notify_owner_user_id=int(owner["user_id"]),
-            admin_override=True,
-        )
-    except RecoveryError as exc:
-        raise HTTPException(503, str(exc)) from exc
-    return {"recovery_export": export}
-
-
 def _quota_payload(connection: Any, vault_id: int) -> dict[str, Any]:
     vault = connection.execute(
         "SELECT id FROM vaults WHERE id=%s", (vault_id,)
@@ -4959,7 +3965,7 @@ def _quota_payload(connection: Any, vault_id: int) -> dict[str, Any]:
 
 @app.get("/api/admin/vaults/{vault_id}/quotas", response_model=response_model("VaultQuotasResponse"))
 def admin_vault_quotas(
-    vault_id: int, _: dict[str, Any] = Depends(admin_user)
+    vault_id: int, _: dict[str, Any] = Depends(current_user)
 ):
     with db() as connection:
         return _quota_payload(connection, vault_id)
@@ -4969,8 +3975,7 @@ def admin_vault_quotas(
 def update_admin_vault_quotas(
     vault_id: int,
     action: VaultQuotaUpdate,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+    admin: dict[str, Any] = Depends(current_user),
 ):
     limits = QuotaLimits(
         **action.model_dump(exclude={"reason"})
@@ -4980,13 +3985,11 @@ def update_admin_vault_quotas(
             set_limits(connection, vault_id, limits)
         except LookupError as exc:
             raise HTTPException(404, "Vault not found") from exc
-        owner = primary_owner(connection, vault_id)
         payload = _quota_payload(connection, vault_id)
-    if owner:
-        notify_owner_of_admin_action(
+        audit_log(
             "vault_quotas_changed",
+            connection=connection,
             vault_id=vault_id,
-            owner_user_id=owner["user_id"],
             actor_id=admin["id"],
             reason=action.reason,
             limits=limits.as_dict(),
@@ -4995,14 +3998,14 @@ def update_admin_vault_quotas(
 
 
 @app.get("/api/vault/quotas", response_model=response_model("VaultQuotasResponse"))
-def own_vault_quotas(vault: dict[str, Any] = Depends(owner_vault)):
-    """Primary-owner read seam; ordinary operators and viewers are denied."""
+def own_vault_quotas(vault: dict[str, Any] = Depends(current_vault)):
+    """Quota limits and usage of the selected Vault."""
     with db() as connection:
         return _quota_payload(connection, vault["id"])
 
 
 @app.get("/api/vault/operation-policy", response_model=response_model("OperationPolicy"))
-def own_vault_operation_policy(vault: dict[str, Any] = Depends(owner_vault)):
+def own_vault_operation_policy(vault: dict[str, Any] = Depends(current_vault)):
     with db() as connection:
         return get_policy(connection, vault["id"]).as_dict()
 
@@ -5010,9 +4013,8 @@ def own_vault_operation_policy(vault: dict[str, Any] = Depends(owner_vault)):
 @app.put("/api/vault/operation-policy", response_model=response_model("OperationPolicy"))
 def update_vault_operation_policy(
     action: OperationPolicyUpdate,
-    vault: dict[str, Any] = Depends(owner_vault),
+    vault: dict[str, Any] = Depends(current_vault),
     user: dict[str, Any] = Depends(current_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
     policy = OperationPolicy(
         auto_upload=action.auto_upload,
@@ -5049,7 +4051,7 @@ def update_vault_operation_policy(
 @app.post("/api/vault/operation-policy/preview-globs", response_model=response_model("GlobPreviewResponse"))
 def preview_vault_operation_globs(
     action: GlobPreviewRequest,
-    vault: dict[str, Any] = Depends(owner_vault),
+    vault: dict[str, Any] = Depends(current_vault),
 ):
     try:
         return preview_glob_rules(
@@ -5062,13 +4064,13 @@ def preview_vault_operation_globs(
 
 
 @app.get("/api/admin/cost-price-books/active", response_model=JsonObjectResponse)
-def admin_active_cost_price_book(_: dict[str, Any] = Depends(admin_user)):
+def admin_active_cost_price_book(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         return get_active_price_book(connection).as_dict()
 
 
 @app.get("/api/admin/cost-price-books", response_model=JsonObjectResponse)
-def admin_list_cost_price_books(_: dict[str, Any] = Depends(admin_user)):
+def admin_list_cost_price_books(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         return {"items": [book.as_dict() for book in list_price_books(connection)]}
 
@@ -5076,8 +4078,7 @@ def admin_list_cost_price_books(_: dict[str, Any] = Depends(admin_user)):
 @app.post("/api/admin/cost-price-books", status_code=201, response_model=JsonObjectResponse)
 def admin_create_cost_price_book(
     action: CostPriceBookCreate,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+    admin: dict[str, Any] = Depends(current_user),
 ):
     with db() as connection:
         created = upsert_price_book(
@@ -5108,8 +4109,7 @@ def admin_create_cost_price_book(
 def admin_activate_cost_price_book(
     price_book_id: int,
     action: CostPriceBookActivate,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+    admin: dict[str, Any] = Depends(current_user),
 ):
     with db() as connection:
         try:
@@ -5135,7 +4135,7 @@ def admin_activate_cost_price_book(
 )
 def admin_storage_cost_estimate(
     action: StorageEstimateRequest,
-    _: dict[str, Any] = Depends(admin_user),
+    _: dict[str, Any] = Depends(current_user),
 ):
     with db() as connection:
         book = get_active_price_book(connection)
@@ -5197,7 +4197,7 @@ def _lifecycle_payload(connection: Any, vault: dict[str, Any]) -> dict[str, Any]
 
 
 @app.get("/api/vault/lifecycle", response_model=response_model("LifecycleResponse"))
-def own_vault_lifecycle(vault: dict[str, Any] = Depends(owner_vault)):
+def own_vault_lifecycle(vault: dict[str, Any] = Depends(current_vault)):
     with db() as connection:
         return _lifecycle_payload(connection, vault)
 
@@ -5205,9 +4205,8 @@ def own_vault_lifecycle(vault: dict[str, Any] = Depends(owner_vault)):
 @app.put("/api/vault/lifecycle/default", response_model=response_model("LifecycleResponse"))
 def update_vault_lifecycle_default(
     action: LifecycleDefaultUpdate,
-    vault: dict[str, Any] = Depends(owner_vault),
+    vault: dict[str, Any] = Depends(current_vault),
     user: dict[str, Any] = Depends(current_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
     profile, guided_name = _selected_lifecycle_profile(action)
     validation = validate_lifecycle_profile(profile)
@@ -5250,9 +4249,8 @@ def update_vault_lifecycle_default(
 @app.put("/api/vault/lifecycle/folder-overrides", response_model=response_model("LifecycleResponse"))
 def upsert_vault_lifecycle_folder_override(
     action: LifecycleFolderOverrideUpdate,
-    vault: dict[str, Any] = Depends(owner_vault),
+    vault: dict[str, Any] = Depends(current_vault),
     user: dict[str, Any] = Depends(current_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
     profile, guided_name = _selected_lifecycle_profile(action)
     validation = validate_lifecycle_profile(profile)
@@ -5308,9 +4306,8 @@ def upsert_vault_lifecycle_folder_override(
 @app.delete("/api/vault/lifecycle/folder-overrides", response_model=response_model("LifecycleResponse"))
 def delete_vault_lifecycle_folder_override(
     action: LifecycleFolderOverrideDelete,
-    vault: dict[str, Any] = Depends(owner_vault),
+    vault: dict[str, Any] = Depends(current_vault),
     user: dict[str, Any] = Depends(current_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
     with db() as connection:
         clear_folder_override(
@@ -5327,352 +4324,6 @@ def delete_vault_lifecycle_folder_override(
             folder_path=action.folder_path,
         )
     return {"message": "Folder lifecycle override removed", **payload}
-
-
-@app.get("/api/admin/vaults/{vault_id}/members", response_model=response_model("AdminVaultMembersResponse"))
-def vault_members(vault_id: int, _: dict[str, Any] = Depends(admin_user)):
-    with db() as connection:
-        rows = connection.execute(
-            """
-            SELECT u.id, u.username, u.display_name, u.active, vm.role
-            FROM vault_members vm JOIN users u ON u.id=vm.user_id
-            WHERE vm.vault_id=%s ORDER BY lower(u.username)
-            """,
-            (vault_id,),
-        ).fetchall()
-    return {"items": rows}
-
-
-@app.post("/api/admin/vaults/{vault_id}/members", status_code=201, response_model=JsonObjectResponse)
-def add_vault_member(
-    vault_id: int,
-    action: AdminMembershipCreate,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    """Global-admin override of a vault's sharing.
-
-    The primary owner role can never be handed out here -- only
-    :func:`transfer_vault_owner` can change it, preserving the one-owner
-    invariant -- so this only ever assigns ``operator``/``viewer``. Per
-    ADR-0005's reauth-then-audit precedent, this sensitive override
-    requires a ``reason``, is audited, and notifies the vault's owner.
-    """
-    with db() as connection:
-        try:
-            assign_member_role(
-                connection,
-                vault_id=vault_id,
-                user_id=action.user_id,
-                role=action.role,
-                expected_owner_user_id=None,
-            )
-        except GovernanceError as exc:
-            raise _governance_http_error(exc)
-        owner = primary_owner(connection, vault_id)
-    if owner:
-        notify_owner_of_admin_action(
-            "vault_membership_changed",
-            vault_id=vault_id,
-            owner_user_id=owner["user_id"],
-            actor_id=admin["id"],
-            reason=action.reason,
-            member_user_id=action.user_id,
-            role=action.role,
-        )
-    return {"message": "Assignment updated"}
-
-
-@app.delete("/api/admin/vaults/{vault_id}/members/{user_id}", response_model=JsonObjectResponse)
-def remove_vault_member(
-    vault_id: int,
-    user_id: int,
-    reason: str = Query(min_length=3, max_length=500),
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    """Global-admin removal of a vault member (never the primary owner --
-    transfer ownership first). Requires ``reason``, is audited, and
-    notifies the vault's owner, per ADR-0005's precedent for sensitive
-    admin overrides."""
-    with db() as connection:
-        try:
-            remove_member(
-                connection,
-                vault_id=vault_id,
-                user_id=user_id,
-                expected_owner_user_id=None,
-            )
-        except GovernanceError as exc:
-            raise _governance_http_error(exc)
-        owner = primary_owner(connection, vault_id)
-    if owner:
-        notify_owner_of_admin_action(
-            "vault_membership_changed",
-            vault_id=vault_id,
-            owner_user_id=owner["user_id"],
-            actor_id=admin["id"],
-            reason=reason,
-            member_user_id=user_id,
-            role=None,
-        )
-    return {"message": "Access removed"}
-
-
-@app.post("/api/admin/vaults/{vault_id}/transfer-owner", response_model=JsonObjectResponse)
-def transfer_vault_owner(
-    vault_id: int,
-    action: AdminOwnerTransfer,
-    admin: dict[str, Any] = Depends(admin_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    """Global-admin override to transfer primary ownership.
-
-    Atomically demotes the current owner to operator and promotes the
-    target (never moving the vault's namespace, local directory, or S3
-    objects). Requires ``reason``, is audited, and notifies both the
-    outgoing and incoming owner, per ADR-0005's precedent for sensitive
-    admin overrides.
-    """
-    with db() as connection:
-        try:
-            result = transfer_primary_ownership(
-                connection,
-                vault_id=vault_id,
-                new_owner_user_id=action.new_owner_user_id,
-                expected_current_owner_user_id=None,
-            )
-        except GovernanceError as exc:
-            raise _governance_http_error(exc)
-    for owner_user_id in {result["previous_owner_id"], result["new_owner_id"]}:
-        notify_owner_of_admin_action(
-            "vault_ownership_transferred",
-            vault_id=vault_id,
-            owner_user_id=owner_user_id,
-            actor_id=admin["id"],
-            reason=action.reason,
-            previous_owner_id=result["previous_owner_id"],
-            new_owner_id=result["new_owner_id"],
-        )
-    return {"message": "Ownership transferred", **result}
-
-
-@app.get("/api/vault/members", response_model=response_model("VaultMembersResponse"))
-def list_own_vault_members(vault: dict[str, Any] = Depends(owner_vault)):
-    """Owner self-service: view the current vault's sharing."""
-    with db() as connection:
-        rows = connection.execute(
-            """
-            SELECT u.id, u.username, u.display_name, vm.role
-            FROM vault_members vm JOIN users u ON u.id=vm.user_id
-            WHERE vm.vault_id=%s ORDER BY lower(u.username)
-            """,
-            (vault["id"],),
-        ).fetchall()
-    return {"items": rows}
-
-
-@app.post("/api/vault/user-lookup", response_model=response_model("UserLookupResult"))
-def lookup_vault_user(
-    action: UserLookup,
-    request: Request,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(owner_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    """Look up one active user without exposing directory information.
-
-    A lookup is deliberately scoped to the selected vault and returns only the
-    fields needed to confirm a sharing change. It never returns identities,
-    administrator state, activity timestamps, or other memberships.
-    """
-    username = action.username.strip().lower()
-    if not 2 <= len(username) <= 80 or not re.fullmatch(
-        r"[A-Za-z0-9._-]+", username
-    ):
-        raise HTTPException(422, "Enter a valid username")
-    with db() as connection:
-        retry_after = check_lookup_rate_limit(
-            connection,
-            backend=settings.db_backend,
-            user_id=user["id"],
-            client_ip=_client_ip(request) or "unknown",
-        )
-        if retry_after is not None:
-            raise HTTPException(
-                429,
-                "Too many lookup attempts; try again later",
-                headers={"Retry-After": str(retry_after)},
-            )
-        target = connection.execute(
-            """
-            SELECT u.id, u.username, u.display_name,
-                   vm.role AS current_vault_role
-            FROM users u
-            LEFT JOIN vault_members vm
-              ON vm.vault_id=%s AND vm.user_id=u.id
-            WHERE lower(u.username)=lower(%s) AND u.active=TRUE
-            """,
-            (vault["id"], username),
-        ).fetchone()
-    if not target:
-        # Unknown and inactive users intentionally share the same response.
-        raise HTTPException(404, "User not found")
-    return {
-        "id": target["id"],
-        "username": target["username"],
-        "display_name": target["display_name"],
-        "current_vault_role": target["current_vault_role"],
-    }
-
-
-@app.post("/api/vault/user-suggest", response_model=response_model("UserSuggestResponse"))
-def suggest_vault_users(
-    action: UserLookup,
-    request: Request,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(owner_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    """Return a bounded username prefix match without listing the directory.
-
-    Suggestions require at least two characters, never include inactive users,
-    and are capped so a vault owner cannot paginate the full user table.
-    """
-    prefix = action.username.strip().lower()
-    if not 2 <= len(prefix) <= 80 or not re.fullmatch(
-        r"[A-Za-z0-9._-]+", prefix
-    ):
-        raise HTTPException(422, "Enter a valid username")
-    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    with db() as connection:
-        retry_after = check_lookup_rate_limit(
-            connection,
-            backend=settings.db_backend,
-            user_id=user["id"],
-            client_ip=_client_ip(request) or "unknown",
-            namespace="suggest",
-            max_attempts=40,
-        )
-        if retry_after is not None:
-            raise HTTPException(
-                429,
-                "Too many lookup attempts; try again later",
-                headers={"Retry-After": str(retry_after)},
-            )
-        rows = connection.execute(
-            """
-            SELECT u.id, u.username, u.display_name,
-                   vm.role AS current_vault_role
-            FROM users u
-            LEFT JOIN vault_members vm
-              ON vm.vault_id=%s AND vm.user_id=u.id
-            WHERE u.active=TRUE
-              AND lower(u.username) LIKE lower(%s) ESCAPE '\\'
-            ORDER BY lower(u.username)
-            LIMIT 8
-            """,
-            (vault["id"], f"{escaped}%"),
-        ).fetchall()
-    return {
-        "items": [
-            {
-                "id": row["id"],
-                "username": row["username"],
-                "display_name": row["display_name"],
-                "current_vault_role": row["current_vault_role"],
-            }
-            for row in rows
-        ]
-    }
-
-
-@app.post("/api/vault/members", status_code=201, response_model=JsonObjectResponse)
-def add_own_vault_member(
-    action: MembershipCreate,
-    vault: dict[str, Any] = Depends(owner_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    """Owner self-service: share the current vault as operator/viewer."""
-    with db() as connection:
-        try:
-            assign_member_role(
-                connection,
-                vault_id=vault["id"],
-                user_id=action.user_id,
-                role=action.role,
-                expected_owner_user_id=vault["member_user_id"],
-            )
-        except GovernanceError as exc:
-            raise _governance_http_error(exc)
-        audit_log(
-            "vault_membership_changed",
-            connection=connection,
-            vault_id=vault["id"],
-            member_user_id=action.user_id,
-            role=action.role,
-            admin_override=False,
-        )
-    return {"message": "Assignment updated"}
-
-
-@app.delete("/api/vault/members/{user_id}", response_model=JsonObjectResponse)
-def remove_own_vault_member(
-    user_id: int,
-    vault: dict[str, Any] = Depends(owner_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    """Owner self-service: revoke a member's access to the current vault."""
-    with db() as connection:
-        try:
-            remove_member(
-                connection,
-                vault_id=vault["id"],
-                user_id=user_id,
-                expected_owner_user_id=vault["member_user_id"],
-            )
-        except GovernanceError as exc:
-            raise _governance_http_error(exc)
-        audit_log(
-            "vault_membership_changed",
-            connection=connection,
-            vault_id=vault["id"],
-            member_user_id=user_id,
-            role=None,
-            admin_override=False,
-        )
-    return {"message": "Access removed"}
-
-
-@app.post("/api/vault/transfer-owner", response_model=JsonObjectResponse)
-def transfer_own_vault_owner(
-    action: OwnerTransfer,
-    vault: dict[str, Any] = Depends(owner_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    """Owner self-service: hand primary ownership to another member.
-
-    Atomic role swap on ``vault_members`` alone -- the vault's generated
-    namespace, local directory, and S3 objects never move.
-    """
-    with db() as connection:
-        try:
-            result = transfer_primary_ownership(
-                connection,
-                vault_id=vault["id"],
-                new_owner_user_id=action.new_owner_user_id,
-                expected_current_owner_user_id=vault["member_user_id"],
-            )
-        except GovernanceError as exc:
-            raise _governance_http_error(exc)
-        audit_log(
-            "vault_ownership_transferred",
-            connection=connection,
-            vault_id=vault["id"],
-            admin_override=False,
-            **result,
-        )
-    return {"message": "Ownership transferred", **result}
 
 
 @app.get("/health", response_model=JsonObjectResponse)
@@ -5763,3 +4414,18 @@ def spa_fallback(full_path: str):
     if built is not None:
         return built
     return _spa_index_response()
+
+
+@app.api_route(
+    "/{full_path:path}",
+    methods=["POST", "PUT", "PATCH", "DELETE"],
+    include_in_schema=False,
+)
+def unknown_route(full_path: str):
+    """Unknown or removed routes are Not Found for every method.
+
+    Without this the GET-only SPA fallback answers 405 to a mutation on a
+    removed endpoint, which hides that the endpoint no longer exists.
+    """
+    del full_path
+    raise HTTPException(status_code=404, detail="Not Found")

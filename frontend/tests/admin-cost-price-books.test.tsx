@@ -167,7 +167,7 @@ it("requires an audit reason before activating an inactive persisted book", asyn
   await screen.findByTestId("active-price-book");
   await user.click(screen.getByRole("button", { name: "Activate price book July rates" }));
 
-  expect(screen.getByText(/changes the storage and recovery estimates displayed to users/i)).toBeInTheDocument();
+  expect(screen.getByText(/changes the storage and recovery estimates\. Confirm/i)).toBeInTheDocument();
   const confirm = screen.getByRole("button", { name: "Confirm activation" });
   expect(confirm).toBeDisabled();
   await user.type(screen.getByLabelText(/^Activation audit reason/), "activate July rates");

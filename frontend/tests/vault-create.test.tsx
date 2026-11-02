@@ -68,17 +68,17 @@ describe("VaultCreatePage", () => {
     return jsonResponse({ locale, locales: ["en", "it"], messages });
   }
 
-  function mockEmptySourceAreas() {
+  function mockEmptySourceVolumes() {
     return jsonResponse({ items: [] });
   }
 
-  function withSourceAreas(
+  function withSourceVolumes(
     impl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
   ) {
     return (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/api/source-areas") {
-        return Promise.resolve(mockEmptySourceAreas());
+      if (url === "/api/admin/source-volumes") {
+        return Promise.resolve(mockEmptySourceVolumes());
       }
       return impl(input, init);
     };
@@ -88,7 +88,7 @@ describe("VaultCreatePage", () => {
     const user = userEvent.setup();
     const staleOfflineKey = "frostvault.files.cache.v2:stale-listing";
     fetchMock.mockImplementation(
-      withSourceAreas((input: RequestInfo | URL, init?: RequestInit) => {
+      withSourceVolumes((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/api/i18n/catalog")) {
         return Promise.resolve(mockCatalog(en));
@@ -101,7 +101,6 @@ describe("VaultCreatePage", () => {
               uuid: "vault-uuid",
               slug: "family-photos",
               name: "Family Photos",
-              role: "owner",
               encryption_mode: "plain",
               recovery_custody_confirmed: true,
               creation_mode: "empty",
@@ -177,8 +176,8 @@ describe("VaultCreatePage", () => {
     const it = loadCatalog("it");
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/api/source-areas") {
-        return Promise.resolve(mockEmptySourceAreas());
+      if (url === "/api/admin/source-volumes") {
+        return Promise.resolve(mockEmptySourceVolumes());
       }
       if (url.startsWith("/api/i18n/catalog")) {
         return Promise.resolve(mockCatalog(it, "it"));
@@ -240,8 +239,8 @@ describe("VaultCreatePage", () => {
 
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/api/source-areas") {
-        return Promise.resolve(mockEmptySourceAreas());
+      if (url === "/api/admin/source-volumes") {
+        return Promise.resolve(mockEmptySourceVolumes());
       }
       if (url.startsWith("/api/i18n/catalog")) {
         return Promise.resolve(mockCatalog(en));
@@ -254,7 +253,6 @@ describe("VaultCreatePage", () => {
               uuid: "crypt-uuid",
               slug: "secret",
               name: "Secret",
-              role: "owner",
               encryption_mode: "crypt",
               recovery_custody_confirmed: false,
               recovery_export: recoveryExport,
@@ -306,8 +304,8 @@ describe("VaultCreatePage", () => {
 
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/api/source-areas") {
-        return Promise.resolve(mockEmptySourceAreas());
+      if (url === "/api/admin/source-volumes") {
+        return Promise.resolve(mockEmptySourceVolumes());
       }
       if (url.startsWith("/api/i18n/catalog")) {
         return Promise.resolve(mockCatalog(en));
@@ -320,7 +318,6 @@ describe("VaultCreatePage", () => {
               uuid: "crypt-uuid",
               slug: "secret",
               name: "Secret",
-              role: "owner",
               encryption_mode: "crypt",
               recovery_custody_confirmed: false,
               recovery_export: recoveryExport,
@@ -413,8 +410,8 @@ describe("VaultCreatePage", () => {
 
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/api/source-areas") {
-        return Promise.resolve(mockEmptySourceAreas());
+      if (url === "/api/admin/source-volumes") {
+        return Promise.resolve(mockEmptySourceVolumes());
       }
       if (url.startsWith("/api/i18n/catalog")) {
         return Promise.resolve(mockCatalog(en));
@@ -427,7 +424,6 @@ describe("VaultCreatePage", () => {
               uuid: "crypt-uuid",
               slug: "secret",
               name: "Secret",
-              role: "owner",
               encryption_mode: "crypt",
               recovery_custody_confirmed: false,
               recovery_export: recoveryExport,
@@ -478,8 +474,8 @@ describe("VaultCreatePage", () => {
     const recoveryExport = "keep-offline";
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/api/source-areas") {
-        return Promise.resolve(mockEmptySourceAreas());
+      if (url === "/api/admin/source-volumes") {
+        return Promise.resolve(mockEmptySourceVolumes());
       }
       if (url.startsWith("/api/i18n/catalog")) {
         return Promise.resolve(mockCatalog(en));
@@ -492,7 +488,6 @@ describe("VaultCreatePage", () => {
               uuid: "crypt-uuid",
               slug: "secret",
               name: "Secret",
-              role: "owner",
               encryption_mode: "crypt",
               recovery_custody_confirmed: false,
               recovery_export: recoveryExport,
@@ -577,8 +572,8 @@ describe("VaultCreatePage", () => {
     const user = userEvent.setup();
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/api/source-areas") {
-        return Promise.resolve(mockEmptySourceAreas());
+      if (url === "/api/admin/source-volumes") {
+        return Promise.resolve(mockEmptySourceVolumes());
       }
       if (url.startsWith("/api/i18n/catalog")) {
         return Promise.resolve(mockCatalog(en));
@@ -591,7 +586,6 @@ describe("VaultCreatePage", () => {
               uuid: "crypt-uuid",
               slug: "secret",
               name: "Secret",
-              role: "owner",
               encryption_mode: "crypt",
               recovery_custody_confirmed: false,
               recovery_export: "material",
@@ -657,25 +651,25 @@ describe("VaultCreatePage", () => {
     });
   });
 
-  it("adopts an existing Source Area directory and stays usable at 375px", async () => {
+  it("adopts an existing Source Volume directory and stays usable at 375px", async () => {
     const user = userEvent.setup();
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/api/i18n/catalog")) {
         return Promise.resolve(mockCatalog(en));
       }
-      if (url === "/api/source-areas") {
+      if (url === "/api/admin/source-volumes") {
         return Promise.resolve(
           jsonResponse({
             items: [
               {
-                id: 1,
-                user_id: 1,
-                volume_alias: "photos",
-                relative_path: "albums",
-                created_at: "2026-07-28T00:00:00Z",
-                availability: "available",
-                usable: true,
+                alias: "photos",
+                path: "/sources/photos",
+                health: "ok",
+                access: "rw",
+                diagnostic: null,
+                diagnostic_code: null,
+                vault_count: 0,
               },
             ],
           }),
@@ -706,7 +700,6 @@ describe("VaultCreatePage", () => {
               uuid: "adopt-uuid",
               slug: "albums-archive",
               name: "Albums Archive",
-              role: "owner",
               encryption_mode: "plain",
               recovery_custody_confirmed: true,
               creation_mode: "adopt",
@@ -747,7 +740,7 @@ describe("VaultCreatePage", () => {
     );
 
     const selectButtons = await screen.findAllByRole("button", {
-      name: en["ui.source_area_browser_select"],
+      name: en["ui.source_directory_browser_select"],
     });
     await user.click(selectButtons[0]!);
     await user.click(

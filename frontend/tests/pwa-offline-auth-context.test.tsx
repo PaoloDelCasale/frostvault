@@ -60,7 +60,6 @@ function meResponse(
     id: userId,
     username: `user-${userId}`,
     display_name: `User ${userId}`,
-    is_admin: false,
     active: true,
     session_version: 1,
     csrf_token: csrfToken,
@@ -72,11 +71,8 @@ function meResponse(
       id: vaultId,
       slug: `vault-${vaultId}`,
       name: vaultName,
-      role: "owner",
-      can_operate: true,
       delete_enabled: false,
       cloud_deletion_enabled: false,
-      is_vault_owner: true,
     cloud_history_policy: "archive_history" as const,
     },
   };
@@ -330,8 +326,8 @@ function installDefaultApi(
     if (url === "/api/vaults" && (!init?.method || init.method === "GET")) {
       return jsonResponse({
         items: [
-          { id: 101, slug: "vault-101", name: "Vault A", role: "owner" },
-          { id: 202, slug: "vault-202", name: "Vault B", role: "owner" },
+          { id: 101, slug: "vault-101", name: "Vault A" },
+          { id: 202, slug: "vault-202", name: "Vault B" },
         ],
       });
     }

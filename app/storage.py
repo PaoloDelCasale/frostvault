@@ -26,6 +26,7 @@ from boto3.s3.transfer import TransferConfig
 from watchfiles import Change, awatch
 
 from .config import Settings, is_placeholder, settings
+from .owner import owner_user_id
 from .catalog import ArchiveCatalog
 from .database import db
 from .services import source_layout
@@ -1765,26 +1766,19 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                         s3_client(),
                         bucket=vault["s3_bucket"],
                     )
-                    owner = connection.execute(
-                        """
-                        SELECT user_id FROM vault_members
-                        WHERE vault_id=%s AND role='owner'
-                        LIMIT 1
-                        """,
-                        (vault["id"],),
-                    ).fetchone()
+                    owner_id = owner_user_id(connection)
                     local_access = source_layout.vault_local_access(vault["source_root"])
-                    if owner and local_access.local_operations_allowed:
+                    if owner_id is not None and local_access.local_operations_allowed:
                         result["auto_uploads"] = queue_auto_uploads(
                             connection,
                             vault_id=int(vault["id"]),
                             source_root=str(vault["source_root"]),
-                            requested_by=int(owner["user_id"]),
+                            requested_by=owner_id,
                         )
                         result["auto_local_cleanups"] = queue_auto_local_cleanups(
                             connection,
                             vault_id=int(vault["id"]),
-                            requested_by=int(owner["user_id"]),
+                            requested_by=owner_id,
                             local_delete_enabled=_runtime_settings(
                                 connection
                             ).allow_local_delete,
@@ -1853,15 +1847,7 @@ def _apply_auto_renames(
     catalog = ArchiveCatalog(connection)
     from .services.catalog_incidents import settle_cloud_only_copies
     if requested_by is None:
-        owner = connection.execute(
-            """
-            SELECT user_id FROM vault_members
-            WHERE vault_id=%s AND role='owner'
-            LIMIT 1
-            """,
-            (vault["id"],),
-        ).fetchone()
-        requested_by = int(owner["user_id"]) if owner else None
+        requested_by = owner_user_id(connection)
     if hash_missing:
         present_rows = connection.execute(
             """
@@ -6226,7 +6212,7 @@ def _verify_latest_metadata_backup_once() -> None:
                     component="metadata_backup_verify",
                     exc=exc,
                 )
-                metadata_backup_service.notify_admins_of_backup_failure(
+                metadata_backup_service.notify_owner_of_backup_failure(
                     connection,
                     reason="verify",
                     error_message=str(exc),

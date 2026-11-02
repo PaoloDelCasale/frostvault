@@ -41,8 +41,8 @@ class OfflineCacheGenerationHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             self.user_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('owner', 'Owner', %s, FALSE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('owner', 'Owner', %s)
                 RETURNING id
                 """,
                 (hash_password("correct horse battery staple"),),
@@ -63,14 +63,6 @@ class OfflineCacheGenerationHttpTests(unittest.TestCase):
                 RETURNING id
                 """
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'owner')",
-                (self.vault_a, self.user_id),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, %s, 'owner')",
-                (self.vault_b, self.user_id),
-            )
             self.first_token = create_session(
                 connection,
                 user_id=self.user_id,

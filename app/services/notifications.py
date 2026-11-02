@@ -1,6 +1,6 @@
 """In-app notifications and outbound delivery (issue #16).
 
-Users choose per-Vault in-app/push events; global administrators manage
+The Owner chooses per-Vault in-app/push events and manages
 shared SMTP/webhook endpoints. Delivery retries are bounded and never mutate
 the Job that triggered the notification.
 
@@ -290,20 +290,21 @@ def set_vault_notification_preference(
     }
 
 
-def _active_vault_member(
-    connection: Any, *, user_id: int, vault_id: int
-) -> bool:
+def _owner_recipients(connection: Any) -> list[dict[str, Any]]:
+    """The single owner is the only notification recipient (#412)."""
+    from ..owner import owner_user_id
+
+    owner_id = owner_user_id(connection)
+    return [] if owner_id is None else [{"user_id": owner_id}]
+
+
+def _operational_vault(connection: Any, *, vault_id: int) -> bool:
     row = connection.execute(
         """
-        SELECT 1
-        FROM vault_members vm
-        JOIN users u ON u.id=vm.user_id
-        JOIN vaults v ON v.id=vm.vault_id
-        WHERE vm.user_id=%s AND vm.vault_id=%s
-          AND u.active=TRUE AND v.enabled=TRUE
-          AND v.decommission_state='active'
+        SELECT 1 FROM vaults
+        WHERE id=%s AND enabled=TRUE AND decommission_state='active'
         """,
-        (user_id, vault_id),
+        (vault_id,),
     ).fetchone()
     return row is not None
 
@@ -322,8 +323,8 @@ def set_user_vault_notification_preference(
         raise ValueError(f"invalid personal notification event: {event}")
     if channel not in SUPPORTED_PERSONAL_NOTIFICATION_CHANNELS:
         raise ValueError(f"invalid personal notification channel: {channel}")
-    if not _active_vault_member(connection, user_id=user_id, vault_id=vault_id):
-        raise ValueError("The acting user is not an active member of this vault")
+    if not _operational_vault(connection, vault_id=vault_id):
+        raise ValueError("The vault is not operational")
     row = connection.execute(
         """
         INSERT INTO user_vault_notification_preferences(
@@ -349,7 +350,7 @@ def list_user_vault_notification_preferences(
     connection: Any, *, user_id: int, vault_id: int
 ) -> list[dict[str, Any]]:
     """List only the acting User's preferences for one active Vault."""
-    if not _active_vault_member(connection, user_id=user_id, vault_id=vault_id):
+    if not _operational_vault(connection, vault_id=vault_id):
         return []
     rows = connection.execute(
         """
@@ -645,38 +646,21 @@ def list_deliverable_push_subscriptions(
     connection: Any,
     *,
     user_id: int,
-    vault_id: int | None,
 ) -> list[dict[str, Any]]:
-    """Subscriptions whose Session is live and User can still see the Vault."""
+    """Subscriptions whose Session is still live."""
     stamp = now_iso()
-    if vault_id is None:
-        rows = connection.execute(
-            """
-            SELECT ps.endpoint, ps.p256dh, ps.auth
-            FROM push_subscriptions ps
-            JOIN sessions s ON s.id = ps.session_id
-            WHERE ps.user_id=%s
-              AND s.revoked_at IS NULL
-              AND s.absolute_expires_at > %s
-              AND s.idle_expires_at > %s
-            """,
-            (user_id, stamp, stamp),
-        ).fetchall()
-    else:
-        rows = connection.execute(
-            """
-            SELECT ps.endpoint, ps.p256dh, ps.auth
-            FROM push_subscriptions ps
-            JOIN sessions s ON s.id = ps.session_id
-            JOIN vault_members vm
-              ON vm.user_id = ps.user_id AND vm.vault_id = %s
-            WHERE ps.user_id=%s
-              AND s.revoked_at IS NULL
-              AND s.absolute_expires_at > %s
-              AND s.idle_expires_at > %s
-            """,
-            (vault_id, user_id, stamp, stamp),
-        ).fetchall()
+    rows = connection.execute(
+        """
+        SELECT ps.endpoint, ps.p256dh, ps.auth
+        FROM push_subscriptions ps
+        JOIN sessions s ON s.id = ps.session_id
+        WHERE ps.user_id=%s
+          AND s.revoked_at IS NULL
+          AND s.absolute_expires_at > %s
+          AND s.idle_expires_at > %s
+        """,
+        (user_id, stamp, stamp),
+    ).fetchall()
     return [
         {
             "endpoint": row["endpoint"],
@@ -687,7 +671,7 @@ def list_deliverable_push_subscriptions(
 
 
 def enqueue_job_terminal_push(connection: Any, *, job_id: int) -> int:
-    """Persist one canonical completion/failure notification per member.
+    """Persist one canonical completion/failure notification for the Owner.
 
     The old function name is retained for the worker call sites.  A canonical
     row is written whenever in-app is enabled, even with no VAPID
@@ -710,29 +694,20 @@ def enqueue_job_terminal_push(connection: Any, *, job_id: int) -> int:
     title_key = f"notification.{event}.title"
     body_key = f"notification.{event}.body"
     params = {"action": str(job["action"]), "path": str(job["path"])}
-    members = connection.execute(
-        """
-        SELECT vm.user_id
-        FROM vault_members vm
-        JOIN users u ON u.id=vm.user_id
-        WHERE vm.vault_id=%s AND u.active=TRUE
-        ORDER BY vm.user_id
-        """,
-        (vault_id,),
-    ).fetchall()
+    recipients = _owner_recipients(connection)
     webhook_enabled = _endpoint_config(connection, "webhook") is not None
     smtp_enabled = _endpoint_config(connection, "smtp") is not None
 
     enqueued = 0
-    for member in members:
-        user_id = int(member["user_id"])
+    for recipient in recipients:
+        user_id = int(recipient["user_id"])
         preferences = _user_vault_preference_map(
             connection, user_id=user_id, vault_id=vault_id, event=event
         )
         # In-app defaults to enabled so the inbox works before a user has
         # visited the preferences UI. A matching legacy Vault preference
         # remains usable, but its recipient list can only narrow delivery to
-        # the current active member.
+        # the Owner.
         if "in_app" in preferences:
             in_app_enabled = preferences["in_app"]
         else:
@@ -748,7 +723,7 @@ def enqueue_job_terminal_push(connection: Any, *, job_id: int) -> int:
         subscriptions: list[dict[str, Any]] = []
         if push_enabled and push_configured():
             subscriptions = list_deliverable_push_subscriptions(
-                connection, user_id=user_id, vault_id=vault_id
+                connection, user_id=user_id
             )
         channels: list[str] = []
         if in_app_enabled:
@@ -756,7 +731,7 @@ def enqueue_job_terminal_push(connection: Any, *, job_id: int) -> int:
         if subscriptions:
             channels.append("push")
         # Global admin endpoints carry Job-failed alerts unless a Vault-level
-        # preference explicitly disables that channel for this member.
+        # preference explicitly disables that channel for the Owner.
         if event == "job_failed":
             if webhook_enabled and _legacy_channel_allowed(
                 connection,
@@ -812,7 +787,7 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
 def enqueue_archive_version_missing(
     connection: Any, *, incident: Mapping[str, Any]
 ) -> int:
-    """Notify the Vault owner and authorized admin members of unexpected loss."""
+    """Notify the Owner of unexpected loss."""
     return _enqueue_incident_notification(
         connection,
         incident=incident,
@@ -849,26 +824,16 @@ def _enqueue_incident_notification(
     event: str,
     params: Mapping[str, Any],
 ) -> int:
-    """Notify the Vault owner and admin members once per catalog incident."""
+    """Notify the owner once per catalog incident."""
     vault_id = int(incident["vault_id"])
     title_key = f"notification.{event}.title"
     body_key = f"notification.{event}.body"
-    members = connection.execute(
-        """
-        SELECT u.id AS user_id
-        FROM vault_members vm
-        JOIN users u ON u.id=vm.user_id
-        WHERE vm.vault_id=%s AND u.active=TRUE
-          AND (vm.role='owner' OR u.is_admin=TRUE)
-        ORDER BY u.id
-        """,
-        (vault_id,),
-    ).fetchall()
+    recipients = _owner_recipients(connection)
     webhook_enabled = _endpoint_config(connection, "webhook") is not None
     smtp_enabled = _endpoint_config(connection, "smtp") is not None
     enqueued = 0
-    for member in members:
-        user_id = int(member["user_id"])
+    for recipient in recipients:
+        user_id = int(recipient["user_id"])
         preferences = _user_vault_preference_map(
             connection, user_id=user_id, vault_id=vault_id, event=event
         )
@@ -1012,23 +977,13 @@ def _visible_notification_predicate(alias: str = "n") -> str:
     """Return the inbox visibility predicate for a SELECT or UPDATE.
 
     SELECT callers pass the explicit ``n`` alias.  UPDATE deliberately passes
-    an empty alias: SQLite and PostgreSQL both support the target table's
-    unaliased name in the correlated membership check, while UPDATE alias
-    syntax is not shared consistently by all supported forms.
+    an empty alias because UPDATE alias syntax is not shared consistently by
+    SQLite and PostgreSQL.
     """
     prefix = f"{alias}." if alias else ""
-    outer = prefix or "notifications."
     return f"""
         {prefix}user_id=%s
         AND COALESCE({prefix}in_app_enabled, TRUE)=TRUE
-        AND (
-            {prefix}vault_id IS NULL
-            OR EXISTS (
-                SELECT 1 FROM vault_members vm
-                WHERE vm.vault_id={outer}vault_id
-                  AND vm.user_id={outer}user_id
-            )
-        )
     """
 
 
@@ -1138,7 +1093,7 @@ def mark_all_notifications_read(
 ) -> dict[str, int]:
     """Mark every currently visible unread notification read (issue #225).
 
-    Idempotent: already-read rows and notifications outside the membership/
+    Idempotent: already-read rows and notifications outside the Vault/
     in-app visibility predicate are left untouched. Returns the number of
     rows newly stamped plus the authoritative remaining unread count.
     """
@@ -1273,16 +1228,14 @@ def deliver_pending_notifications(
                         subscriptions = list_deliverable_push_subscriptions(
                             connection,
                             user_id=int(row["n_user_id"]),
-                            vault_id=row["n_vault_id"],
                         )
                 else:
                     subscriptions = list_deliverable_push_subscriptions(
                         connection,
                         user_id=int(row["n_user_id"]),
-                        vault_id=row["n_vault_id"],
                     )
                 if not subscriptions:
-                    # Security: revoked Session / removed membership → no delivery.
+                    # Security: revoked or expired Session → no delivery.
                     pass
                 else:
                     payload = {

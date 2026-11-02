@@ -8,16 +8,12 @@ const messages: Record<string, string> = {
   "admin.sources_subtitle": "Volumes",
   "admin.sources_access": "Access",
   "admin.sources_vault_count": "Vaults",
-  "admin.sources_source_area_count": "Source Areas",
   "admin.sources_health_absent": "Absent",
   "admin.sources_health_inaccessible": "Inaccessible",
   "admin.sources_health_replaced": "Replaced",
   "admin.sources_diagnostic_absent": "The expected mount is absent.",
   "admin.sources_diagnostic_inaccessible": "The mount is present but inaccessible.",
   "admin.sources_diagnostic_replaced": "A different Source Volume is mounted.",
-  "admin.source_areas_heading": "Source Areas",
-  "admin.source_areas_empty": "No areas",
-  "admin.source_areas_assign_open": "Assign",
 };
 
 vi.mock("@/i18n/useI18n", () => ({
@@ -30,13 +26,11 @@ vi.mock("@/api", async () => {
     ...actual,
     fetchAdminSourceVolumes: vi.fn(async () => ({
       items: [
-        { alias: "absent", path: "/sources/absent", access: "none", health: "absent", vault_count: 1, source_area_count: 0, diagnostic: null },
-        { alias: "locked", path: "/sources/locked", access: "ro", health: "inaccessible", vault_count: 0, source_area_count: 0, diagnostic: null },
-        { alias: "replaced", path: "/sources/replaced", access: "rw", health: "replaced", vault_count: 1, source_area_count: 1, diagnostic: null },
+        { alias: "absent", path: "/sources/absent", access: "none", health: "absent", vault_count: 1, diagnostic: null },
+        { alias: "locked", path: "/sources/locked", access: "ro", health: "inaccessible", vault_count: 0, diagnostic: null },
+        { alias: "replaced", path: "/sources/replaced", access: "rw", health: "replaced", vault_count: 1, diagnostic: null },
       ],
     })),
-    fetchAdminSourceAreas: vi.fn(async () => ({ items: [] })),
-    fetchAdminUsers: vi.fn(async () => ({ items: [] })),
   };
 });
 

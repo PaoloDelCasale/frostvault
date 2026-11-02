@@ -33,8 +33,8 @@ class SystemSettingsResolverTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             self.admin_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('admin', 'Admin', 'hash', TRUE) RETURNING id
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('admin', 'Admin', 'hash') RETURNING id
                 """
             ).fetchone()["id"]
 
@@ -100,9 +100,7 @@ class SystemSettingsResolverTests(unittest.TestCase):
         configured = replace(
             settings,
             archive_master_key="archive-secret-that-must-not-leak",
-            oidc_settings_encryption_key=(
-                "oidc-settings-key-that-must-not-leak"
-            ),
+            oidc_client_secret="oidc-secret-that-must-not-leak",
         )
         with SQLiteConnection(str(self.database_path)) as connection:
             set_system_setting(
@@ -119,11 +117,8 @@ class SystemSettingsResolverTests(unittest.TestCase):
         self.assertEqual(snapshot["scan_interval"], 1800)
         self.assertNotIn("archive_master_key", snapshot)
         self.assertNotIn("archive-secret-that-must-not-leak", str(snapshot))
-        self.assertNotIn("oidc_settings_encryption_key", snapshot)
-        self.assertNotIn(
-            "oidc-settings-key-that-must-not-leak",
-            str(snapshot),
-        )
+        self.assertNotIn("oidc_client_secret", snapshot)
+        self.assertNotIn("oidc-secret-that-must-not-leak", str(snapshot))
 
 
 class SystemSettingsHttpTests(unittest.TestCase):
@@ -134,8 +129,7 @@ class SystemSettingsHttpTests(unittest.TestCase):
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with SQLiteConnection(str(self.database_path)) as connection:
-            self.admin_id = self._create_user(connection, "admin", is_admin=True)
-            self.member_id = self._create_user(connection, "member")
+            self.admin_id = self._create_user(connection, "admin")
 
         self.test_settings = replace(
             settings,
@@ -143,9 +137,6 @@ class SystemSettingsHttpTests(unittest.TestCase):
             sqlite_path=str(self.database_path),
             archive_master_key="archive-secret-that-must-not-leak",
             oidc_client_secret="oidc-secret-that-must-not-leak",
-            oidc_settings_encryption_key=(
-                "oidc-settings-key-that-must-not-leak"
-            ),
         )
         for target in (
             "app.main.settings",
@@ -158,13 +149,13 @@ class SystemSettingsHttpTests(unittest.TestCase):
         self.client = TestClient(main.app, client=("127.0.0.1", 50000))
 
     @staticmethod
-    def _create_user(connection, username: str, *, is_admin: bool = False) -> int:
+    def _create_user(connection, username: str) -> int:
         return connection.execute(
             """
-            INSERT INTO users(username, display_name, password_hash, is_admin)
-            VALUES (%s, %s, 'hash', %s) RETURNING id
+            INSERT INTO users(username, display_name, password_hash)
+            VALUES (%s, %s, 'hash') RETURNING id
             """,
-            (username, username.title(), is_admin),
+            (username, username.title()),
         ).fetchone()["id"]
 
     def _authenticate(self, user_id: int) -> str:
@@ -187,10 +178,6 @@ class SystemSettingsHttpTests(unittest.TestCase):
         )
         self.assertNotIn("archive-secret-that-must-not-leak", response.text)
         self.assertNotIn("oidc-secret-that-must-not-leak", response.text)
-        self.assertNotIn(
-            "oidc-settings-key-that-must-not-leak",
-            response.text,
-        )
         archive_key = next(
             item for item in groups["security"] if item["key"] == "archive_master_key"
         )
@@ -203,11 +190,6 @@ class SystemSettingsHttpTests(unittest.TestCase):
         self.assertIn("source", scan_interval)
         self.assertIn("mutability", scan_interval)
         self.assertIn("restart_required", scan_interval)
-
-    def test_non_admin_receives_forbidden(self) -> None:
-        self._authenticate(self.member_id)
-        response = self.client.get("/api/admin/settings")
-        self.assertEqual(response.status_code, 403, response.text)
 
     def test_reauthenticated_admin_applies_audited_runtime_override(self) -> None:
         csrf_token = self._authenticate(self.admin_id)
@@ -272,7 +254,7 @@ class SystemSettingsHttpTests(unittest.TestCase):
         self.assertIn("archive_master_key", response.json()["detail"])
         self.assertEqual(self.client.get("/api/admin/settings").json(), before)
 
-    def test_mutation_requires_recent_reauthentication(self) -> None:
+    def test_mutation_does_not_require_recent_reauthentication(self) -> None:
         csrf_token = self._authenticate(self.admin_id)
         before = self.client.get("/api/admin/settings").json()
         with SQLiteConnection(str(self.database_path)) as connection:
@@ -291,8 +273,9 @@ class SystemSettingsHttpTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 403, response.text)
-        self.assertEqual(response.json(), {"error": "reauth_required"})
+        # Only the Recovery Kit download and cloud deletion ask the owner to
+        # authenticate again (#412).
+        self.assertEqual(response.status_code, 200, response.text)
 
     def test_out_of_bounds_value_returns_actionable_422_without_changes(self) -> None:
         csrf_token = self._authenticate(self.admin_id)
@@ -322,13 +305,13 @@ class SystemSettingsHttpTests(unittest.TestCase):
             headers={"X-CSRF-Token": csrf_token},
             json={
                 "revision": before["revision"],
-                "overrides": {"invite_ttl_seconds": 299},
+                "overrides": {"reauth_window_seconds": 59},
                 "removals": [],
             },
         )
 
         self.assertEqual(response.status_code, 422, response.text)
-        self.assertIn("invite_ttl_seconds", response.json()["detail"])
+        self.assertIn("reauth_window_seconds", response.json()["detail"])
         self.assertEqual(self.client.get("/api/admin/settings").json(), before)
 
     def test_metadata_backup_prefix_rejects_path_traversal(self) -> None:
@@ -491,14 +474,19 @@ class SystemSettingsHttpTests(unittest.TestCase):
                 (stale_reauth, self.admin_id),
             )
 
-        response = self.client.patch(
-            "/api/admin/settings",
+        with SQLiteConnection(str(self.database_path)) as connection:
+            connection.execute(
+                """
+                INSERT INTO vaults(
+                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
+                ) VALUES ('docs', 'Docs', '/source', 'bucket', 'docs/', 'remote')
+                """
+            )
+
+        response = self.client.post(
+            "/api/cloud-archive",
             headers={"X-CSRF-Token": csrf_token},
-            json={
-                "revision": updated.json()["revision"],
-                "overrides": {"scan_interval": 1800},
-                "removals": [],
-            },
+            json={"path": "report.txt"},
         )
 
         self.assertEqual(response.status_code, 403, response.text)

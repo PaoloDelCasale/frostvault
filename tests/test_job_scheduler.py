@@ -107,18 +107,14 @@ class _SchedulerDbMixin:
         self.assertEqual(result.returncode, 0, result.stderr)
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash, is_admin) "
-                "VALUES (1, 'owner', 'Owner', 'hash', 0)"
+                "INSERT INTO users(id, username, display_name, password_hash) "
+                "VALUES (1, 'owner', 'Owner', 'hash')"
             )
             for vault_id, slug in ((10, "alpha"), (20, "beta")):
                 connection.execute(
                     "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
                     "VALUES (%s, %s, %s, %s, 'bucket', %s, 'remote')",
                     (vault_id, slug, slug, f"/source/{slug}", slug),
-                )
-                connection.execute(
-                    "INSERT INTO vault_members(vault_id, user_id, role) VALUES (%s, 1, 'owner')",
-                    (vault_id,),
                 )
                 catalog = ArchiveCatalog(connection)
                 for name in ("a.txt", "b.txt"):

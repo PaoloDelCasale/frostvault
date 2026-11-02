@@ -1,3 +1,10 @@
+"""OIDC Authorization Code + PKCE login against the provider set in env.
+
+The provider (e.g. Pocket ID) is configured only through ``OIDC_*``
+environment variables (#412). The first successful login binds the
+provider Identity to the single owner; later logins must present the
+same Identity.
+"""
 from __future__ import annotations
 
 import base64
@@ -20,12 +27,9 @@ warnings.filterwarnings(
 )
 from authlib.jose import JsonWebKey, jwt
 
-from .config import settings
-from .oidc_configuration import (
-    ActiveOidcConfiguration,
-    OidcConfigurationError,
+from .config import Settings, settings
+from .oidc_network import (
     OidcValidationError,
-    active_oidc_configuration,
     ensure_safe_oidc_url,
     oidc_http_client,
     oidc_host_addresses,
@@ -56,14 +60,19 @@ class OidcClaims:
         issuer: str,
         subject: str,
         return_to: str | None,
-        invite_id: int | None,
         raw: dict[str, Any],
     ) -> None:
         self.issuer = issuer
         self.subject = subject
         self.return_to = return_to
-        self.invite_id = invite_id
         self.raw = raw
+
+
+def _configuration(settings_obj: Settings | None = None) -> Settings:
+    configuration = settings_obj or settings
+    if not configuration.oidc_enabled:
+        raise OidcError("disabled")
+    return configuration
 
 
 def _now() -> datetime:
@@ -101,11 +110,11 @@ def _http(
 
 def _discover(
     client: httpx.Client,
-    configuration: ActiveOidcConfiguration,
+    configuration: Settings,
     host_addresses: Callable[[str], list[str]],
 ) -> dict[str, Any]:
     url = (
-        configuration.issuer.rstrip("/")
+        configuration.oidc_issuer.rstrip("/")
         + "/.well-known/openid-configuration"
     )
     try:
@@ -123,20 +132,11 @@ def begin_login(
     *,
     redirect_uri: str,
     return_to: str | None = None,
-    invite_id: int | None = None,
     prompt: str | None = None,
     http_client: httpx.Client | None = None,
     host_addresses: Callable[[str], list[str]] = oidc_host_addresses,
 ) -> str:
-    try:
-        configuration = active_oidc_configuration(
-            connection,
-            settings_obj=settings,
-        )
-    except OidcConfigurationError as error:
-        raise OidcError("configuration_unavailable") from error
-    if not configuration.enabled:
-        raise OidcError("disabled")
+    configuration = _configuration()
     with _http(http_client, host_addresses=host_addresses) as client:
         metadata = _discover(client, configuration, host_addresses)
     state = secrets.token_urlsafe(STATE_BYTES)
@@ -146,9 +146,9 @@ def begin_login(
     connection.execute(
         """
         INSERT INTO oidc_login(
-            id, state, nonce, code_verifier, return_to, invite_id,
+            id, state, nonce, code_verifier, return_to,
             created_at, expires_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
         (
             str(uuid.uuid4()),
@@ -156,12 +156,11 @@ def begin_login(
             nonce,
             code_verifier,
             return_to,
-            invite_id,
             now.isoformat(),
             (
                 now
                 + timedelta(
-                    seconds=configuration.login_transaction_ttl_seconds
+                    seconds=configuration.oidc_login_ttl_seconds
                 )
             ).isoformat(),
         ),
@@ -169,9 +168,9 @@ def begin_login(
     query = urlencode(
         {
             "response_type": "code",
-            "client_id": configuration.client_id,
+            "client_id": configuration.oidc_client_id,
             "redirect_uri": redirect_uri,
-            "scope": configuration.scopes,
+            "scope": configuration.oidc_scopes,
             "state": state,
             "nonce": nonce,
             "code_challenge": _s256_challenge(code_verifier),
@@ -189,7 +188,7 @@ def _exchange_code(
     code_verifier: str,
     redirect_uri: str,
     client: httpx.Client,
-    configuration: ActiveOidcConfiguration,
+    configuration: Settings,
     host_addresses: Callable[[str], list[str]],
 ) -> dict[str, Any]:
     try:
@@ -205,8 +204,8 @@ def _exchange_code(
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": redirect_uri,
-            "client_id": configuration.client_id,
-            "client_secret": configuration.client_secret,
+            "client_id": configuration.oidc_client_id,
+            "client_secret": configuration.oidc_client_secret,
             "code_verifier": code_verifier,
         },
     )
@@ -222,7 +221,7 @@ def _validate_id_token(
     nonce: str,
     access_token: str | None,
     client: httpx.Client,
-    configuration: ActiveOidcConfiguration,
+    configuration: Settings,
     host_addresses: Callable[[str], list[str]],
 ) -> dict[str, Any]:
     try:
@@ -242,11 +241,11 @@ def _validate_id_token(
             claims = jwt.decode(id_token, key_set)
         except Exception as error:  # noqa: BLE001 - normalize to a login error
             raise OidcError("bad_signature") from error
-    if claims.get("iss") != configuration.issuer:
+    if claims.get("iss") != configuration.oidc_issuer:
         raise OidcError("bad_issuer")
     audience = claims.get("aud")
     allowed = audience if isinstance(audience, list) else [audience]
-    if configuration.client_id not in allowed:
+    if configuration.oidc_client_id not in allowed:
         raise OidcError("bad_audience")
     expires = claims.get("exp")
     if expires is None or _now().timestamp() >= float(expires):
@@ -273,15 +272,7 @@ def complete_login(
     http_client: httpx.Client | None = None,
     host_addresses: Callable[[str], list[str]] = oidc_host_addresses,
 ) -> OidcClaims:
-    try:
-        configuration = active_oidc_configuration(
-            connection,
-            settings_obj=settings,
-        )
-    except OidcConfigurationError as error:
-        raise OidcError("configuration_unavailable") from error
-    if not configuration.enabled:
-        raise OidcError("disabled")
+    configuration = _configuration()
     row = connection.execute(
         "SELECT * FROM oidc_login WHERE state=%s",
         (state,),
@@ -319,7 +310,6 @@ def complete_login(
         issuer=claims["iss"],
         subject=claims["sub"],
         return_to=row["return_to"],
-        invite_id=row["invite_id"],
         raw=claims,
     )
 
@@ -332,3 +322,40 @@ def sweep_expired_logins(connection: Any) -> int:
     ).fetchone()["total"]
     connection.execute("DELETE FROM oidc_login WHERE expires_at <= %s", (now,))
     return int(expired)
+
+class IdentityRejected(Exception):
+    """The provider Identity is not the one bound to the owner."""
+
+
+def bind_owner_identity(connection: Any, claims: OidcClaims) -> int:
+    """Return the owner id for ``claims``, binding it on the first login.
+
+    The owner holds at most one Identity per issuer. The first successful
+    login from the configured issuer binds its subject; any other subject
+    from that issuer is rejected afterwards (#412, #366 Q1).
+    """
+    from .owner import owner_user_id
+
+    owner_id = owner_user_id(connection)
+    if owner_id is None:
+        raise IdentityRejected("no_owner")
+    if getattr(connection, "backend", None) != "sqlite":
+        # Serialize concurrent first logins: only one subject may be bound.
+        # SQLite already holds the write lock taken by the state deletion.
+        connection.execute("SELECT id FROM users WHERE id=%s FOR UPDATE", (owner_id,))
+    bound = connection.execute(
+        "SELECT user_id, subject FROM user_identities WHERE issuer=%s",
+        (claims.issuer,),
+    ).fetchone()
+    if bound is not None:
+        if bound["subject"] != claims.subject or int(bound["user_id"]) != owner_id:
+            raise IdentityRejected("identity_mismatch")
+        return owner_id
+    connection.execute(
+        """
+        INSERT INTO user_identities(user_id, issuer, subject, created_at)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (owner_id, claims.issuer, claims.subject, _now().isoformat()),
+    )
+    return owner_id

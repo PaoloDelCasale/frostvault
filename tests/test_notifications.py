@@ -52,8 +52,8 @@ class NotificationDeliveryTests(unittest.TestCase):
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('owner', 'Owner', %s, FALSE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('owner', 'Owner', %s)
                 """,
                 (hash_password("owner-password-1"),),
             )
@@ -62,8 +62,8 @@ class NotificationDeliveryTests(unittest.TestCase):
             ).fetchone()["id"]
             self.outsider_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('outsider', 'Outsider', %s, FALSE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('outsider', 'Outsider', %s)
                 RETURNING id
                 """,
                 (hash_password("outsider-password-1"),),
@@ -78,11 +78,6 @@ class NotificationDeliveryTests(unittest.TestCase):
             self.vault_id = connection.execute(
                 "SELECT id FROM vaults WHERE slug='docs'"
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, 'owner')",
-                (self.vault_id, self.user_id),
-            )
             vault_file = connection.execute(
                 """
                 INSERT INTO vault_files(id, vault_id, status, created_at)
@@ -114,7 +109,7 @@ class NotificationDeliveryTests(unittest.TestCase):
                 connection,
                 user_id=self.user_id,
                 vault_id=self.vault_id,
-                event="vault_membership_changed",
+                event="vault_root_relocated",
                 title="Membership changed",
                 body="A viewer was added",
                 job_id=self.job_id,
@@ -122,7 +117,7 @@ class NotificationDeliveryTests(unittest.TestCase):
             listed = notifications.list_in_app_notifications(
                 connection, user_id=self.user_id
             )
-        self.assertEqual(item["event"], "vault_membership_changed")
+        self.assertEqual(item["event"], "vault_root_relocated")
         self.assertEqual(len(listed), 1)
         self.assertEqual(listed[0]["title"], "Membership changed")
         self.assertFalse(listed[0]["read"])
@@ -159,11 +154,6 @@ class NotificationDeliveryTests(unittest.TestCase):
                 RETURNING id
                 """
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, 'owner')",
-                (other_vault_id, self.user_id),
-            )
             other_saved = notifications.set_user_vault_notification_preference(
                 connection,
                 user_id=self.user_id,
@@ -199,14 +189,6 @@ class NotificationDeliveryTests(unittest.TestCase):
                     vault_id=self.vault_id,
                     event="job_completed",
                     channel="webhook",
-                )
-            with self.assertRaises(ValueError):
-                notifications.set_user_vault_notification_preference(
-                    connection,
-                    user_id=self.outsider_id,
-                    vault_id=self.vault_id,
-                    event="job_failed",
-                    channel="in_app",
                 )
 
     def test_terminal_in_app_defaults_enabled_without_push_configuration(self) -> None:
@@ -399,32 +381,6 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertIsNone(marked)
         self.assertIsNone(stored["read_at"])
 
-    def test_mark_notification_read_rejects_removed_member_without_mutation(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
-            item = notifications.enqueue_notification(
-                connection,
-                user_id=self.user_id,
-                vault_id=self.vault_id,
-                event="upload_verified",
-                title="Upload verified",
-                body="ok",
-            )
-            connection.execute(
-                "DELETE FROM vault_members WHERE vault_id=%s AND user_id=%s",
-                (self.vault_id, self.user_id),
-            )
-            marked = notifications.mark_notification_read(
-                connection,
-                notification_id=item["id"],
-                user_id=self.user_id,
-            )
-            stored = connection.execute(
-                "SELECT read_at FROM notifications WHERE id=%s", (item["id"],)
-            ).fetchone()
-
-        self.assertIsNone(marked)
-        self.assertIsNone(stored["read_at"])
-
     def test_list_filters_unread_and_read_independently(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
             older_unread = notifications.enqueue_notification(
@@ -511,7 +467,7 @@ class NotificationDeliveryTests(unittest.TestCase):
 
         self.assertEqual(len(fetched), 201)
 
-    def test_mark_all_notifications_read_is_idempotent_and_membership_scoped(self) -> None:
+    def test_mark_all_notifications_read_is_idempotent_and_user_scoped(self) -> None:
         with SQLiteConnection(str(self.path)) as connection:
             first = notifications.enqueue_notification(
                 connection,
@@ -533,30 +489,6 @@ class NotificationDeliveryTests(unittest.TestCase):
                 vault_id=None,
                 event="upload_verified",
                 title="Outsider personal",
-            )
-            other_vault_id = connection.execute(
-                """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                ) VALUES ('hidden', 'Hidden', '/h', 'bucket', 'h', 'remote')
-                RETURNING id
-                """
-            ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, 'owner')",
-                (other_vault_id, self.user_id),
-            )
-            hidden = notifications.enqueue_notification(
-                connection,
-                user_id=self.user_id,
-                vault_id=other_vault_id,
-                event="upload_verified",
-                title="Hidden by membership",
-            )
-            connection.execute(
-                "DELETE FROM vault_members WHERE vault_id=%s AND user_id=%s",
-                (other_vault_id, self.user_id),
             )
 
             first_pass = notifications.mark_all_notifications_read(
@@ -582,7 +514,6 @@ class NotificationDeliveryTests(unittest.TestCase):
         by_id = {row["id"]: row["read_at"] for row in owner_rows}
         self.assertIsNotNone(by_id[first["id"]])
         self.assertIsNotNone(by_id[second["id"]])
-        self.assertIsNone(by_id[hidden["id"]])
         self.assertIsNone(outsider_row["read_at"])
 
     def test_terminal_notification_failure_does_not_rollback_job_transition(self) -> None:
@@ -692,16 +623,16 @@ class NotificationReadHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.path)) as connection:
             self.owner_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('owner', 'Owner', %s, FALSE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('owner', 'Owner', %s)
                 RETURNING id
                 """,
                 (hash_password(self.PASSWORD),),
             ).fetchone()["id"]
             self.outsider_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('outsider', 'Outsider', %s, FALSE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('outsider', 'Outsider', %s)
                 RETURNING id
                 """,
                 (hash_password("outsider-password-1"),),
@@ -714,11 +645,6 @@ class NotificationReadHttpTests(unittest.TestCase):
                 RETURNING id
                 """
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, 'owner')",
-                (self.vault_id, self.owner_id),
-            )
 
         self.test_settings = replace(
             settings,
@@ -790,17 +716,6 @@ class NotificationReadHttpTests(unittest.TestCase):
         self.assertEqual(listed.status_code, 200, listed.text)
         self.assertEqual(listed.json()["items"], [saved.json()])
 
-        self._authenticate(self.outsider_token, self.outsider_csrf)
-        outsider_post = self.client.post(
-            "/api/vault/notification-preferences",
-            headers={"X-CSRF-Token": self.outsider_csrf},
-            json={
-                "event": "job_completed",
-                "channel": "in_app",
-                "enabled": True,
-            },
-        )
-        self.assertEqual(outsider_post.status_code, 403, outsider_post.text)
         with SQLiteConnection(str(self.path)) as connection:
             rows = connection.execute(
                 "SELECT user_id, vault_id, event, channel, enabled "
@@ -881,29 +796,6 @@ class NotificationReadHttpTests(unittest.TestCase):
         response = self.client.post(
             "/api/notifications/read",
             headers={"X-CSRF-Token": self.outsider_csrf},
-            json={"notification_id": notification_id},
-        )
-
-        self.assertEqual(response.status_code, 404, response.text)
-        with SQLiteConnection(str(self.path)) as connection:
-            row = connection.execute(
-                "SELECT read_at FROM notifications WHERE id=%s",
-                (notification_id,),
-            ).fetchone()
-        self.assertIsNone(row["read_at"])
-
-    def test_removed_member_mark_read_returns_404_without_mutation(self) -> None:
-        notification_id = self._create_notification()
-        with SQLiteConnection(str(self.path)) as connection:
-            connection.execute(
-                "DELETE FROM vault_members WHERE vault_id=%s AND user_id=%s",
-                (self.vault_id, self.owner_id),
-            )
-        self._authenticate(self.owner_token, self.owner_csrf)
-
-        response = self.client.post(
-            "/api/notifications/read",
-            headers={"X-CSRF-Token": self.owner_csrf},
             json={"notification_id": notification_id},
         )
 

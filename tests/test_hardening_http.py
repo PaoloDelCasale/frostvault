@@ -14,12 +14,12 @@ from app.database import SQLiteConnection
 from app.main import app
 from app.main import _safe_return_to
 from app.security import hash_password
-from app.sessions import create_session, is_reauth_recent
+from app.sessions import is_reauth_recent
 from tests.test_database import run_alembic
 
 
 class HardeningHttpTestCase(unittest.TestCase):
-    """Shared harness: a migrated SQLite database with one admin user."""
+    """Shared harness: a migrated SQLite database with the single owner."""
 
     settings_overrides: dict[str, object] = {}
 
@@ -36,8 +36,8 @@ class HardeningHttpTestCase(unittest.TestCase):
         with SQLiteConnection(str(database_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES (%s, 'Alice', %s, TRUE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES (%s, 'Alice', %s)
                 """,
                 (self.username, hash_password(self.password)),
             )
@@ -163,25 +163,37 @@ class ReauthTests(HardeningHttpTestCase):
                 ("2000-01-01T00:00:00+00:00",),
             )
 
-    def _create_user(self, csrf: str, username: str = "bob"):
+    def _delete_from_cloud(self, csrf: str):
+        """«Elimina dal cloud» is one of the two re-authenticated actions."""
+        with SQLiteConnection(str(self.database_path)) as connection:
+            if not connection.execute("SELECT id FROM vaults").fetchone():
+                connection.execute(
+                    """
+                    INSERT INTO vaults(
+                        slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
+                    ) VALUES ('docs', 'Docs', '/source', 'bucket', 'docs/', 'remote')
+                    """
+                )
         return self.client.post(
-            "/api/admin/users",
+            "/api/cloud-archive",
             headers={"X-CSRF-Token": csrf},
-            json={"username": username, "display_name": "Bob"},
+            json={"path": "report.txt"},
         )
+
+    def _assert_not_reauth_required(self, response) -> None:
+        self.assertNotEqual(response.json(), {"error": "reauth_required"})
 
     def test_fresh_login_counts_as_recent_reauth(self) -> None:
         self._login()
         csrf = self._csrf()
-        response = self._create_user(csrf)
-        self.assertEqual(response.status_code, 201, response.text)
+        self._assert_not_reauth_required(self._delete_from_cloud(csrf))
 
     def test_stale_reauth_blocks_a_sensitive_action(self) -> None:
         self._login()
         csrf = self._csrf()
         self._expire_reauth()
 
-        response = self._create_user(csrf)
+        response = self._delete_from_cloud(csrf)
 
         self.assertEqual(response.status_code, 403, response.text)
         self.assertEqual(response.json(), {"error": "reauth_required"})
@@ -190,7 +202,7 @@ class ReauthTests(HardeningHttpTestCase):
         self._login()
         csrf = self._csrf()
         self._expire_reauth()
-        self.assertEqual(self._create_user(csrf).status_code, 403)
+        self.assertEqual(self._delete_from_cloud(csrf).status_code, 403)
 
         reauth = self.client.post(
             "/api/reauth",
@@ -199,7 +211,7 @@ class ReauthTests(HardeningHttpTestCase):
         )
         self.assertEqual(reauth.status_code, 200, reauth.text)
 
-        self.assertEqual(self._create_user(csrf).status_code, 201)
+        self._assert_not_reauth_required(self._delete_from_cloud(csrf))
 
     def test_break_glass_reauth_with_a_wrong_password_is_rejected(self) -> None:
         self._login()
@@ -228,109 +240,6 @@ class ReauthWindowTests(unittest.TestCase):
 
     def test_missing_reauth_is_not_recent(self) -> None:
         self.assertFalse(is_reauth_recent(None, now=self.now, window_seconds=600))
-
-
-class AdminUserActiveSessionTests(HardeningHttpTestCase):
-    """BUG-014: active transitions must invalidate existing Sessions (REQ-026)."""
-
-    def test_bug_014_active_change_bumps_session_version(self) -> None:
-        """[BUG-014][Req: REQ-026] deactivate/reactivate invalidates Sessions.
-
-        Seam: PATCH /api/admin/users/{id} (public admin update) with observation
-        via the target user's existing session cookie against GET /api/me.
-        Desired: any active update bumps session_version so old cookies fail.
-        Previously: only password changes bump the version; reactivation revives
-        pre-deactivation cookies.
-        """
-        # Non-admins cannot use Break-glass Login; seed the kind of server-side
-        # Session they would obtain through OIDC (same harness as invite_http).
-        with SQLiteConnection(str(self.database_path)) as connection:
-            member_id = connection.execute(
-                """
-                INSERT INTO users(
-                    username, display_name, password_hash, is_admin, active
-                ) VALUES ('member', 'Member', %s, FALSE, TRUE)
-                RETURNING id
-                """,
-                (hash_password("member-horse-battery"),),
-            ).fetchone()["id"]
-            stale_cookie = create_session(
-                connection, user_id=member_id, auth_method="oidc"
-            )
-
-        member = TestClient(app, client=("127.0.0.1", 50001))
-        member.cookies.set(self.cookie_name, stale_cookie)
-        self.assertEqual(member.get("/api/me").status_code, 200)
-
-        self._login()
-        csrf = self._csrf()
-        deactivate = self.client.patch(
-            f"/api/admin/users/{member_id}",
-            headers={"X-CSRF-Token": csrf},
-            json={"active": False},
-        )
-        self.assertEqual(deactivate.status_code, 200, deactivate.text)
-        self.assertFalse(deactivate.json()["active"])
-
-        reactivate = self.client.patch(
-            f"/api/admin/users/{member_id}",
-            headers={"X-CSRF-Token": csrf},
-            json={"active": True},
-        )
-        self.assertEqual(reactivate.status_code, 200, reactivate.text)
-        self.assertTrue(reactivate.json()["active"])
-
-        replayed = TestClient(app, client=("127.0.0.1", 50002))
-        replayed.cookies.set(self.cookie_name, stale_cookie)
-        response = replayed.get("/api/me")
-        self.assertEqual(
-            response.status_code,
-            401,
-            "pre-deactivation cookie must not authenticate after reactivate",
-        )
-
-
-class AdminUserLastAdminGuardTests(unittest.TestCase):
-    """BUG-020: last-admin deactivate must be race-safe (REQ-032)."""
-
-    def test_bug_020_last_admin_guard_is_atomic_with_update(self) -> None:
-        """[BUG-020][Req: REQ-032] last-admin invariant must not be check-then-act.
-
-        Seam: ``app.services.user_administration.update_user``, the single
-        place PATCH /api/admin/users/{id} now delegates to (the same public
-        admin-update boundary exercised by BUG-014 and by the audited Quality
-        Playbook regression). Asserts the last-admin guard is encoded
-        atomically with the mutating UPDATE (conditional predicate plus the
-        lock taken in the same transaction), not as a separate check-then-act
-        across two ``with db()`` blocks.
-        Desired: deactivating or demoting an administrator uses a single
-        transaction and a conditional UPDATE that refuses to leave zero active
-        admins.
-        Previously: COUNT in one ``with db()`` then UPDATE in another with no
-        last-admin predicate on UPDATE.
-        """
-        service = (
-            Path(__file__).resolve().parents[1]
-            / "app"
-            / "services"
-            / "user_administration.py"
-        ).read_text(encoding="utf-8")
-        start = service.index("def update_user")
-        body = service[start:]
-
-        self.assertIn("last_admin", body)
-        # The UPDATE that deactivates or demotes must itself encode the guard
-        # (subquery / EXISTS) while holding the lock taken in the same
-        # transaction.
-        update_idx = body.find("UPDATE users SET")
-        self.assertGreaterEqual(update_idx, 0)
-        guard = body[: update_idx + 400]
-        self.assertIn("_lock_active_administrators", guard)
-        self.assertTrue(
-            "EXISTS (" in guard or "COUNT(" in guard,
-            "UPDATE must be conditional on the surviving-administrator predicate",
-        )
-        self.assertIn("FOR UPDATE", service)
 
 
 if __name__ == "__main__":

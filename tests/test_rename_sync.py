@@ -49,8 +49,8 @@ def _seed_vault(connection, *, vault_id: int = 2, source_root: str = "/source") 
     connection.execute(
         """
         INSERT INTO users(
-            id, username, display_name, password_hash, is_admin
-        ) VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+            id, username, display_name, password_hash
+        ) VALUES (1, 'owner', 'Owner', 'hash')
         """
     )
     connection.execute(
@@ -1055,8 +1055,8 @@ class CryptRenameTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO users(
-                        id, username, display_name, password_hash, is_admin
-                    ) VALUES (1, 'owner', 'Owner', 'hash', TRUE)
+                        id, username, display_name, password_hash
+                    ) VALUES (1, 'owner', 'Owner', 'hash')
                     """
                 )
                 connection.execute(

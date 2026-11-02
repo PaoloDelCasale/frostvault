@@ -388,8 +388,8 @@ class RuntimeRcloneConfigStorageTests(unittest.TestCase):
         with SQLiteConnection(str(database_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES ('admin', 'Admin', 'hash', TRUE)
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES ('admin', 'Admin', 'hash')
                 """
             )
         return database_path
@@ -400,6 +400,9 @@ class RuntimeRcloneConfigStorageTests(unittest.TestCase):
         database_settings = SimpleNamespace(
             db_backend="sqlite",
             sqlite_path=str(database_path),
+            bootstrap_admin_username="",
+            bootstrap_admin_password="",
+            bootstrap_admin_display_name="",
         )
         with (
             patch("app.database.settings", database_settings),
@@ -424,6 +427,9 @@ class RuntimeRcloneConfigStorageTests(unittest.TestCase):
         database_settings = SimpleNamespace(
             db_backend="sqlite",
             sqlite_path=str(database_path),
+            bootstrap_admin_username="",
+            bootstrap_admin_password="",
+            bootstrap_admin_display_name="",
         )
 
         with patch("app.database.settings", database_settings):

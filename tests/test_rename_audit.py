@@ -57,8 +57,8 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             self.owner_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES (%s, %s, %s, FALSE) RETURNING id
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES (%s, %s, %s) RETURNING id
                 """,
                 ("owner", "Owner", hash_password(self.PASSWORD)),
             ).fetchone()["id"]
@@ -72,11 +72,6 @@ class RenameAuditPersistenceTests(unittest.TestCase):
                 """,
                 (str(self.source_root),),
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, 'owner')",
-                (self.vault_id, self.owner_id),
-            )
 
         self.test_settings = replace(
             settings,
@@ -210,8 +205,8 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             operator_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash, is_admin)
-                VALUES (%s, %s, %s, FALSE) RETURNING id
+                INSERT INTO users(username, display_name, password_hash)
+                VALUES (%s, %s, %s) RETURNING id
                 """,
                 ("operator", "Operator", hash_password(self.PASSWORD)),
             ).fetchone()["id"]
@@ -225,16 +220,6 @@ class RenameAuditPersistenceTests(unittest.TestCase):
                 """,
                 (str(second_root),),
             ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, 'operator')",
-                (self.vault_id, operator_id),
-            )
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, 'viewer')",
-                (second_vault_id, operator_id),
-            )
         return operator_id, second_vault_id
 
     def _rename_state(self) -> dict[str, list[dict[str, object]]]:

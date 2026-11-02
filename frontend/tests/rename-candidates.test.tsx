@@ -41,7 +41,6 @@ const messages: Record<string, string> = {
   "ui.rename_candidates_error": "Unable to load rename candidates for this Vault.",
   "ui.rename_confirmed": "Rename confirmed. Vault state has been refreshed.",
   "ui.rename_confirmation_uncertain": "The outcome is uncertain.",
-  "ui.rename_read_only": "This Vault is read-only; confirmation is unavailable.",
   "ui.folder_rename_evidence": "{count} matching file pairs suggest that this folder moved.",
   "ui.folder_rename_scope": "Confirming applies the folder endpoint.",
 };
@@ -100,10 +99,10 @@ describe("RenameCandidatesPanel", () => {
     configureApiClient({ fetch: fetchMock });
   });
 
-  function renderPanel(canOperate = true) {
+  function renderPanel() {
     return render(
       <ApiQueryProvider client={createAppQueryClient()}>
-        <RenameCandidatesPanel vaultId={7} canOperate={canOperate} t={t} />
+        <RenameCandidatesPanel vaultId={7} t={t} />
       </ApiQueryProvider>,
     );
   }
@@ -212,15 +211,11 @@ describe("RenameCandidatesPanel", () => {
     ).toHaveLength(2);
   });
 
-  it("dismisses only in memory, states the consequence, and preserves read-only access", async () => {
+  it("dismisses only in memory and states the consequence", async () => {
     const user = userEvent.setup();
-    renderPanel(false);
+    renderPanel();
 
     const panel = await screen.findByTestId("rename-candidates");
-    expect(
-      within(panel).getAllByRole("button", { name: "Confirm file rename" })[0],
-    ).toBeDisabled();
-    expect(within(panel).getAllByText(/read-only/)).toHaveLength(2);
 
     await user.click(within(panel).getAllByRole("button", { name: "Dismiss for now" })[0]!);
 

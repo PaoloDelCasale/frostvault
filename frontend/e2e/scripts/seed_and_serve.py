@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Seed a SQLite FrostVault and serve the SPA for Playwright e2e (issue #70).
 
-Creates users for the role matrix (admin/owner via Break-glass Login; operator
-and viewer via pre-minted Session cookies), two vaults, and a small catalog
-tree with Path History. Then runs uvicorn serving the built SPA.
+Creates the single Owner (Emergency Password sign-in plus a pre-minted Session
+cookie), two vaults, and a small catalog tree with Path History. Then runs uvicorn serving the built SPA.
 """
 
 from __future__ import annotations
@@ -19,9 +18,7 @@ RUNTIME = Path(__file__).resolve().parents[1] / ".runtime"
 CREDENTIALS_PATH = RUNTIME / "credentials.json"
 
 PASSWORD = "e2e-test-password-ok"
-ADMIN_USERNAME = "e2e-admin"
-OPERATOR_USERNAME = "e2e-operator"
-VIEWER_USERNAME = "e2e-viewer"
+OWNER_USERNAME = "e2e-owner"
 
 
 def _ensure_runtime() -> dict[str, Path]:
@@ -82,26 +79,12 @@ def _seed(paths: dict[str, Path]) -> dict:
 
     password_hash = hash_password(PASSWORD)
     with SQLiteConnection(str(paths["db"])) as connection:
-        admin_id = connection.execute(
+        owner_id = connection.execute(
             """
-            INSERT INTO users(username, display_name, password_hash, is_admin)
-            VALUES (%s, %s, %s, TRUE) RETURNING id
+            INSERT INTO users(username, display_name, password_hash)
+            VALUES (%s, %s, %s) RETURNING id
             """,
-            (ADMIN_USERNAME, "E2E Admin", password_hash),
-        ).fetchone()["id"]
-        operator_id = connection.execute(
-            """
-            INSERT INTO users(username, display_name, password_hash, is_admin)
-            VALUES (%s, %s, %s, FALSE) RETURNING id
-            """,
-            (OPERATOR_USERNAME, "E2E Operator", password_hash),
-        ).fetchone()["id"]
-        viewer_id = connection.execute(
-            """
-            INSERT INTO users(username, display_name, password_hash, is_admin)
-            VALUES (%s, %s, %s, FALSE) RETURNING id
-            """,
-            (VIEWER_USERNAME, "E2E Viewer", password_hash),
+            (OWNER_USERNAME, "E2E Owner", password_hash),
         ).fetchone()["id"]
 
         primary_id = connection.execute(
@@ -127,18 +110,6 @@ def _seed(paths: dict[str, Path]) -> dict:
             """,
             (str(paths["source_secondary"]),),
         ).fetchone()["id"]
-
-        for vault_id, user_id, role in (
-            (primary_id, admin_id, "owner"),
-            (primary_id, operator_id, "operator"),
-            (primary_id, viewer_id, "viewer"),
-            (secondary_id, admin_id, "owner"),
-        ):
-            connection.execute(
-                "INSERT INTO vault_members(vault_id, user_id, role) "
-                "VALUES (%s, %s, %s)",
-                (vault_id, user_id, role),
-            )
 
         catalog = ArchiveCatalog(connection)
         readme_id = catalog.observe_local_copy(
@@ -208,37 +179,21 @@ def _seed(paths: dict[str, Path]) -> dict:
             observed_at="2026-07-03T10:00:00+00:00",
         )
 
-        admin_token = create_session(
-            connection, user_id=admin_id, auth_method="local"
-        )
-        operator_token = create_session(
-            connection, user_id=operator_id, auth_method="oidc"
-        )
-        viewer_token = create_session(
-            connection, user_id=viewer_id, auth_method="oidc"
+        owner_token = create_session(
+            connection, user_id=owner_id, auth_method="local"
         )
         connection.execute(
-            "UPDATE sessions SET vault_id=%s WHERE user_id IN (%s, %s, %s)",
-            (primary_id, admin_id, operator_id, viewer_id),
+            "UPDATE sessions SET vault_id=%s WHERE user_id=%s",
+            (primary_id, owner_id),
         )
 
         credentials = {
             "password": PASSWORD,
-            "admin": {
-                "username": ADMIN_USERNAME,
+            "owner": {
+                "username": OWNER_USERNAME,
                 "password": PASSWORD,
-                "session": admin_token,
-                "csrf": csrf_token_for(connection, admin_token),
-            },
-            "operator": {
-                "username": OPERATOR_USERNAME,
-                "session": operator_token,
-                "csrf": csrf_token_for(connection, operator_token),
-            },
-            "viewer": {
-                "username": VIEWER_USERNAME,
-                "session": viewer_token,
-                "csrf": csrf_token_for(connection, viewer_token),
+                "session": owner_token,
+                "csrf": csrf_token_for(connection, owner_token),
             },
             "vaults": {
                 "primary": {"id": primary_id, "name": "Family Archive"},

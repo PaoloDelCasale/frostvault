@@ -2,7 +2,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import {
   applySession,
-  breakGlassLogin,
+  emergencyPasswordLogin,
   openAccountMenu,
   openMobileDrawer,
 } from "../helpers/auth";
@@ -29,7 +29,7 @@ test.describe("accessibility and touch", () => {
     page,
   }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile-375", "375px only");
-    await breakGlassLogin(page);
+    await emergencyPasswordLogin(page);
     await assertNoHorizontalOverflow(page);
 
     await page.goto("/vault/access");
@@ -45,13 +45,13 @@ test.describe("accessibility and touch", () => {
     page,
   }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile-375", "375px only");
-    await breakGlassLogin(page);
+    await emergencyPasswordLogin(page);
     await openMobileDrawer(page);
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByLabel(/^vault$/i)).toBeVisible();
     await expect(
-      dialog.getByRole("button", { name: /manage access|gestisci accesso/i }),
+      dialog.getByRole("button", { name: /vault settings|impostazioni del vault/i }),
     ).toBeVisible();
     const tooSmall = await dialog.evaluate((root) => {
       const nodes = Array.from(
@@ -81,7 +81,7 @@ test.describe("accessibility and touch", () => {
   test("account menu targets are at least 44×44 and Esc returns focus", async ({
     page,
   }) => {
-    await breakGlassLogin(page);
+    await emergencyPasswordLogin(page);
     const trigger = page.getByRole("button", {
       name: /open account menu|apri menu account/i,
     });
@@ -126,7 +126,7 @@ test.describe("accessibility and touch", () => {
     page,
   }, testInfo) => {
     test.skip(testInfo.project.name !== "desktop-1280", "desktop layout only");
-    await breakGlassLogin(page);
+    await emergencyPasswordLogin(page);
     await expect(page.getByTestId("file-browser")).toBeVisible();
 
     const metrics = await page.evaluate(() => {
@@ -177,7 +177,7 @@ test.describe("accessibility and touch", () => {
 
   test("drawer traps focus and Esc closes it", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile-375", "drawer is mobile-only");
-    await breakGlassLogin(page);
+    await emergencyPasswordLogin(page);
     await openMobileDrawer(page);
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
@@ -193,7 +193,7 @@ test.describe("accessibility and touch", () => {
   });
 
   test("skip link is the first focusable element", async ({ page }) => {
-    await applySession(page.context(), "admin");
+    await applySession(page.context());
     await page.goto("/");
     await expect(page.getByTestId("file-browser")).toBeVisible();
     const first = await firstFocusable(page);

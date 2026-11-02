@@ -175,7 +175,7 @@ def _persist_pre_upgrade_backup_failure(
 
     try:
         with db() as connection:
-            metadata_backups.notify_admins_of_backup_failure(
+            metadata_backups.notify_owner_of_backup_failure(
                 connection,
                 reason="pre_upgrade",
                 error_message=error_message,

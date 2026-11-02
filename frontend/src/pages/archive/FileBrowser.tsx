@@ -524,7 +524,6 @@ export function FileBrowser({
     <div className="min-w-0" data-testid="file-browser">
       <RenameCandidatesPanel
         vaultId={vaultId}
-        canOperate={capabilities.can_operate}
         t={t}
       />
       {showingStale ? (

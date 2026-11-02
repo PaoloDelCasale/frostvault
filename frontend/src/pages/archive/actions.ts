@@ -10,11 +10,7 @@ import { isDirectory, isVaultFile } from "./fileLabels";
 
 export type VaultCapabilities = Pick<
   MeVault,
-  | "can_operate"
-  | "delete_enabled"
-  | "cloud_deletion_enabled"
-  | "is_vault_owner"
-  | "role"
+  "delete_enabled" | "cloud_deletion_enabled"
 >;
 
 export type RowActionId =
@@ -170,74 +166,72 @@ export function availableActions(
 ): RowAction[] {
   const actions: RowAction[] = [];
 
-  if (caps.can_operate) {
-    if (isDirectory(item)) {
-      const available = item.available_actions || {};
-      if (available.upload) {
+  if (isDirectory(item)) {
+    const available = item.available_actions || {};
+    if (available.upload) {
+      actions.push({
+        id: "upload",
+        count: available.upload,
+        tone: "default",
+      });
+    }
+    if (available.recover) {
+      actions.push({
+        id: "recover",
+        count: available.recover,
+        tone: "default",
+      });
+    }
+    if (available["free-space"] && caps.delete_enabled) {
+      // Not danger: Local Copy only; cloud Archive Versions stay recoverable.
+      actions.push({
+        id: "free-space",
+        count: available["free-space"],
+        tone: "default",
+      });
+    }
+    const storageCount = directoryStorageClassCount(item);
+    if (storageCount > 0) {
+      actions.push({
+        id: "storage-class",
+        count: storageCount,
+        tone: "default",
+      });
+      if (item.lifecycle_pinned) {
         actions.push({
-          id: "upload",
-          count: available.upload,
-          tone: "default",
-        });
-      }
-      if (available.recover) {
-        actions.push({
-          id: "recover",
-          count: available.recover,
-          tone: "default",
-        });
-      }
-      if (available["free-space"] && caps.delete_enabled) {
-        // Not danger: Local Copy only; cloud Archive Versions stay recoverable.
-        actions.push({
-          id: "free-space",
-          count: available["free-space"],
-          tone: "default",
-        });
-      }
-      const storageCount = directoryStorageClassCount(item);
-      if (storageCount > 0) {
-        actions.push({
-          id: "storage-class",
+          id: "lifecycle-unpin",
           count: storageCount,
           tone: "default",
         });
-        if (item.lifecycle_pinned) {
-          actions.push({
-            id: "lifecycle-unpin",
-            count: storageCount,
-            tone: "default",
-          });
-        } else {
-          actions.push({
-            id: "lifecycle-pin",
-            count: storageCount,
-            tone: "default",
-          });
-        }
-      }
-    } else {
-      if (item.upload_eligible) {
-        actions.push({ id: "upload", count: 1, tone: "default" });
-      }
-      if (item.recover_eligible) {
-        actions.push({ id: "recover", count: 1, tone: "default" });
-      }
-      if (item.cleanup_eligible && caps.delete_enabled) {
-        actions.push({ id: "free-space", count: 1, tone: "default" });
-      }
-      if (fileHasCloudContent(item) && item.restore_state !== "restoring") {
-        actions.push({ id: "storage-class", count: 1, tone: "default" });
+      } else {
         actions.push({
-          id: item.lifecycle_pinned ? "lifecycle-unpin" : "lifecycle-pin",
-          count: 1,
+          id: "lifecycle-pin",
+          count: storageCount,
           tone: "default",
         });
       }
     }
+  } else {
+    if (item.upload_eligible) {
+      actions.push({ id: "upload", count: 1, tone: "default" });
+    }
+    if (item.recover_eligible) {
+      actions.push({ id: "recover", count: 1, tone: "default" });
+    }
+    if (item.cleanup_eligible && caps.delete_enabled) {
+      actions.push({ id: "free-space", count: 1, tone: "default" });
+    }
+    if (fileHasCloudContent(item) && item.restore_state !== "restoring") {
+      actions.push({ id: "storage-class", count: 1, tone: "default" });
+      actions.push({
+        id: item.lifecycle_pinned ? "lifecycle-unpin" : "lifecycle-pin",
+        count: 1,
+        tone: "default",
+      });
+    }
   }
 
-  if (caps.cloud_deletion_enabled && caps.is_vault_owner) {
+  if (caps.cloud_deletion_enabled) {
     if (isVaultFile(item) && fileHasCloudContent(item)) {
       actions.push({ id: "cloud-archive", count: 1, tone: "default" });
       actions.push({ id: "cloud-purge", count: 1, tone: "danger" });
