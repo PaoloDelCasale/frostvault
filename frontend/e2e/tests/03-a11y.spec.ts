@@ -33,7 +33,7 @@ test.describe("accessibility and touch", () => {
     await assertNoHorizontalOverflow(page);
 
     await page.goto("/vault/access");
-    await expect(page.locator('[data-panel="quotas"]')).toBeVisible();
+    await expect(page.locator('[data-panel="retention"]')).toBeVisible();
     await assertNoHorizontalOverflow(page);
 
     await page.goto("/admin");

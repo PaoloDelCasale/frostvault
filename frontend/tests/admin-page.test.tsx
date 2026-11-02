@@ -135,7 +135,6 @@ describe("AdminPage — single owner (#412)", () => {
       ["Defaults", "/admin/defaults"],
       ["Notifications", "/admin/notifications"],
       ["Deployment configuration", "/admin/deployment"],
-      ["Cost price books", "/admin/cost-price-books"],
       ["Storage cost estimates", "/admin/storage-cost-estimates"],
       ["Audit events", "/admin/audit-events"],
       ["Worker errors", "/admin/worker-errors"],

@@ -9,8 +9,6 @@ import type {
   AdminVaultRelocatePayload,
   AdminVaultRelocationResponse,
   AdminVaultsResponse,
-  CostPriceBookActivate,
-  CostPriceBookCreate,
   VaultDecommissionPreview,
   VaultDecommissionSelection,
   VaultDecommissionStartPayload,
@@ -52,8 +50,6 @@ import type {
   SystemSettingsUpdatePayload,
   VaultCreateRequest,
   VaultCreateResponse,
-  VaultQuotaUpdatePayload,
-  VaultQuotasResponse,
   VaultSelectRequest,
   VaultSelectResponse,
   VaultsResponse,
@@ -144,23 +140,6 @@ export type VaultNotificationPreferencePayload = {
   channel: NotificationPreferenceChannel;
   enabled: boolean;
 };
-
-/** Response shape emitted by the admin price-book endpoints. */
-export type CostPriceBook = {
-  id: number | null;
-  name: string;
-  currency: string;
-  effective_at: string;
-  updated_at: string | null;
-  assumptions: Record<string, unknown>;
-  storage_rates: Record<string, number>;
-  restore_rates: Record<string, Record<string, number>>;
-  is_active: boolean;
-};
-
-export type CostPriceBooksResponse = { items: CostPriceBook[] };
-export type CostPriceBookCreatePayload = CostPriceBookCreate;
-export type CostPriceBookActivatePayload = CostPriceBookActivate;
 
 /** Persisted worker errors are currently exposed through a generic JSON response. */
 export type AdminWorkerError = {
@@ -401,20 +380,6 @@ export function updateLocale(locale: string): Promise<LocaleUpdateResponse> {
   });
 }
 
-export function fetchVaultQuotas(): Promise<VaultQuotasResponse> {
-  return apiRequest<VaultQuotasResponse>("/api/vault/quotas");
-}
-
-export function updateAdminVaultQuotas(
-  vaultId: number,
-  payload: VaultQuotaUpdatePayload,
-): Promise<VaultQuotasResponse> {
-  return apiRequest<VaultQuotasResponse>(`/api/admin/vaults/${vaultId}/quotas`, {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  });
-}
-
 export function fetchOperationPolicy(): Promise<OperationPolicy> {
   return apiRequest<OperationPolicy>("/api/vault/operation-policy");
 }
@@ -652,10 +617,6 @@ export function downloadAdminMetadataBackup(
   );
 }
 
-export function fetchAdminCostPriceBooks(): Promise<CostPriceBooksResponse> {
-  return apiRequest<CostPriceBooksResponse>("/api/admin/cost-price-books");
-}
-
 export function estimateAdminStorageCost(
   payload: StorageEstimateRequest,
 ): Promise<StorageEstimateResponse> {
@@ -663,32 +624,6 @@ export function estimateAdminStorageCost(
     method: "POST",
     body: JSON.stringify(payload),
   });
-}
-
-export function fetchActiveAdminCostPriceBook(): Promise<CostPriceBook> {
-  return apiRequest<CostPriceBook>("/api/admin/cost-price-books/active");
-}
-
-export function createAdminCostPriceBook(
-  payload: CostPriceBookCreatePayload,
-): Promise<CostPriceBook> {
-  return apiRequest<CostPriceBook>("/api/admin/cost-price-books", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function activateAdminCostPriceBook(
-  priceBookId: number,
-  payload: CostPriceBookActivatePayload,
-): Promise<CostPriceBook> {
-  return apiRequest<CostPriceBook>(
-    `/api/admin/cost-price-books/${priceBookId}/activate`,
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-  );
 }
 
 export function updateSystemSettings(
@@ -748,14 +683,6 @@ export function cancelOwnVaultDecommissionCloudPurge(
   return apiRequest<VaultDecommissionStatus>(
     `/api/vaults/${vaultId}/decommission/cloud-purge/cancel`,
     { method: "POST", body: "{}" },
-  );
-}
-
-export function fetchAdminVaultQuotas(
-  vaultId: number,
-): Promise<VaultQuotasResponse> {
-  return apiRequest<VaultQuotasResponse>(
-    `/api/admin/vaults/${vaultId}/quotas`,
   );
 }
 
@@ -920,7 +847,6 @@ export function logout(): Promise<{ message: string; message_key: string }> {
     body: "{}",
   });
 }
-
 
 export function fetchAdminSourceVolumes(): Promise<SourceVolumeInventoryResponse> {
   return apiRequest<SourceVolumeInventoryResponse>("/api/admin/source-volumes");

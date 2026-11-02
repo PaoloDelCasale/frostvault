@@ -75,58 +75,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/admin/cost-price-books": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Admin List Cost Price Books */
-        get: operations["admin_list_cost_price_books_api_admin_cost_price_books_get"];
-        put?: never;
-        /** Admin Create Cost Price Book */
-        post: operations["admin_create_cost_price_book_api_admin_cost_price_books_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/cost-price-books/active": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Admin Active Cost Price Book */
-        get: operations["admin_active_cost_price_book_api_admin_cost_price_books_active_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/cost-price-books/{price_book_id}/activate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Admin Activate Cost Price Book */
-        post: operations["admin_activate_cost_price_book_api_admin_cost_price_books__price_book_id__activate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/admin/metadata-backups": {
         parameters: {
             query?: never;
@@ -260,24 +208,6 @@ export interface paths {
         /** Admin Vaults */
         get: operations["admin_vaults_api_admin_vaults_get"];
         put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/vaults/{vault_id}/quotas": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Admin Vault Quotas */
-        get: operations["admin_vault_quotas_api_admin_vaults__vault_id__quotas_get"];
-        /** Update Admin Vault Quotas */
-        put: operations["update_admin_vault_quotas_api_admin_vaults__vault_id__quotas_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1240,26 +1170,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/quotas": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Own Vault Quotas
-         * @description Quota limits and usage of the selected Vault.
-         */
-        get: operations["own_vault_quotas_api_vault_quotas_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/vault/recovery/confirm": {
         parameters: {
             query?: never;
@@ -1791,39 +1701,6 @@ export interface components {
             /** Vault File Id */
             vault_file_id: string;
         };
-        /** CostPriceBookActivate */
-        CostPriceBookActivate: {
-            /** Reason */
-            reason: string;
-        };
-        /** CostPriceBookCreate */
-        CostPriceBookCreate: {
-            /** Assumptions */
-            assumptions?: {
-                [key: string]: unknown;
-            };
-            /**
-             * Currency
-             * @default EUR
-             */
-            currency: string;
-            /** Effective At */
-            effective_at: string;
-            /** Name */
-            name: string;
-            /** Reason */
-            reason: string;
-            /** Restore Rates */
-            restore_rates?: {
-                [key: string]: {
-                    [key: string]: number;
-                };
-            };
-            /** Storage Rates */
-            storage_rates?: {
-                [key: string]: number;
-            };
-        };
         /** @description Directory aggregate as returned by /api/files browse mode. */
         DirectoryListItem: {
             available_actions?: {
@@ -1899,7 +1776,6 @@ export interface components {
             message?: string;
             message_key?: string;
             preview?: components["schemas"]["CloudDeletionPreview"];
-            quota?: unknown;
             restore_days?: number | null;
             restore_tier?: string | null;
             total_bytes?: number;
@@ -2291,30 +2167,12 @@ export interface components {
             /** Notification Id */
             notification_id: number;
         };
-        OperatingWindow: {
-            end: string;
-            start: string;
-            weekday: number;
-        } & {
-            [key: string]: unknown;
-        };
-        /** OperatingWindowModel */
-        OperatingWindowModel: {
-            /** End */
-            end: string;
-            /** Start */
-            start: string;
-            /** Weekday */
-            weekday: number;
-        };
         OperationPolicy: {
             auto_local_cleanup: boolean;
             auto_upload: boolean;
-            bandwidth_limit_kibps: number | null;
             exclude_globs: string[];
             include_globs: string[];
             local_retention_days: number | null;
-            operating_windows: components["schemas"]["OperatingWindow"][];
             stability_seconds: number;
         } & {
             [key: string]: unknown;
@@ -2331,16 +2189,12 @@ export interface components {
              * @default false
              */
             auto_upload: boolean;
-            /** Bandwidth Limit Kibps */
-            bandwidth_limit_kibps?: number | null;
             /** Exclude Globs */
             exclude_globs?: string[];
             /** Include Globs */
             include_globs?: string[];
             /** Local Retention Days */
             local_retention_days?: number | null;
-            /** Operating Windows */
-            operating_windows?: components["schemas"]["OperatingWindowModel"][];
             /**
              * Stability Seconds
              * @default 300
@@ -2362,40 +2216,6 @@ export interface components {
             keys: {
                 [key: string]: string;
             };
-        };
-        QuotaDecision: {
-            code?: string;
-            limit?: number;
-            projected?: number;
-            severity?: string;
-        } & {
-            [key: string]: unknown;
-        };
-        QuotaEvaluation: {
-            allowed?: boolean;
-            decisions?: components["schemas"]["QuotaDecision"][];
-            state?: string;
-        } & {
-            [key: string]: unknown;
-        };
-        QuotaLimits: {
-            concurrency_hard_limit?: number | null;
-            concurrency_soft_limit?: number | null;
-            restore_30d_hard_limit_bytes?: number | null;
-            restore_30d_soft_limit_bytes?: number | null;
-            storage_hard_limit_bytes?: number | null;
-            storage_soft_limit_bytes?: number | null;
-        } & {
-            [key: string]: unknown;
-        };
-        QuotaUsage: {
-            concurrency?: number | null;
-            restore_30d_bytes?: number | null;
-            restore_request_unknown?: boolean;
-            storage_bytes?: number | null;
-            storage_unknown?: boolean;
-        } & {
-            [key: string]: unknown;
         };
         /** ReauthRequest */
         ReauthRequest: {
@@ -2466,10 +2286,9 @@ export interface components {
             days: number;
             estimated_cost_eur: number;
             estimated_hours: number;
-            price_book_id: number | null;
-            price_book_name: string;
             pricing_effective_at?: string | null;
             pricing_note?: string;
+            region: string;
             restore_object_irreversible?: boolean;
             tier: string;
         } & {
@@ -2642,15 +2461,20 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** StorageEstimateRequest */
+        /**
+         * StorageEstimateRequest
+         * @description Monthly storage estimate for an explicit size or a Vault's cloud data.
+         */
         StorageEstimateRequest: {
             /** Size Bytes */
-            size_bytes: number;
+            size_bytes?: number | null;
             /**
              * Storage Class
              * @default STANDARD
              */
             storage_class: string;
+            /** Vault Id */
+            vault_id?: number | null;
         };
         StorageEstimateResponse: {
             assumptions: {
@@ -2661,9 +2485,8 @@ export interface components {
             estimated_hours: number | null;
             /** @constant */
             kind: "storage_month";
-            price_book_id: number | null;
-            price_book_name: string;
             pricing_effective_at: string;
+            region: string;
             size_bytes: number;
             storage_class: string;
             tier: string | null;
@@ -2938,54 +2761,6 @@ export interface components {
             recipient_user_ids?: number[];
         };
         /**
-         * VaultQuotaUpdate
-         * @description Global-admin quota replacement; omitted limits mean unlimited.
-         */
-        VaultQuotaUpdate: {
-            /** Concurrency Hard Limit */
-            concurrency_hard_limit?: number | null;
-            /** Concurrency Soft Limit */
-            concurrency_soft_limit?: number | null;
-            /** Reason */
-            reason: string;
-            /** Restore 30D Hard Limit Bytes */
-            restore_30d_hard_limit_bytes?: number | null;
-            /** Restore 30D Soft Limit Bytes */
-            restore_30d_soft_limit_bytes?: number | null;
-            /** Storage Hard Limit Bytes */
-            storage_hard_limit_bytes?: number | null;
-            /** Storage Soft Limit Bytes */
-            storage_soft_limit_bytes?: number | null;
-        };
-        VaultQuotaUpdatePayload: {
-            concurrency_hard_limit: number | null;
-            concurrency_soft_limit: number | null;
-            reason: string;
-            restore_30d_hard_limit_bytes: number | null;
-            restore_30d_soft_limit_bytes: number | null;
-            storage_hard_limit_bytes: number | null;
-            storage_soft_limit_bytes: number | null;
-        } & {
-            [key: string]: unknown;
-        };
-        VaultQuotasResponse: {
-            evaluation?: components["schemas"]["QuotaEvaluation"];
-            limits: components["schemas"]["QuotaLimits"] | ({
-                concurrency_hard_limit?: number | null;
-                concurrency_soft_limit?: number | null;
-                restore_30d_hard_limit_bytes?: number | null;
-                restore_30d_soft_limit_bytes?: number | null;
-                storage_hard_limit_bytes?: number | null;
-                storage_soft_limit_bytes?: number | null;
-            } & {
-                [key: string]: unknown;
-            });
-            usage: components["schemas"]["QuotaUsage"];
-            vault_id?: number;
-        } & {
-            [key: string]: unknown;
-        };
-        /**
          * VaultRelocate
          * @description Constrained destination within the Vault's existing Source Volume.
          */
@@ -3152,114 +2927,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StorageEstimateResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    admin_list_cost_price_books_api_admin_cost_price_books_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-        };
-    };
-    admin_create_cost_price_book_api_admin_cost_price_books_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CostPriceBookCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    admin_active_cost_price_book_api_admin_cost_price_books_active_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-        };
-    };
-    admin_activate_cost_price_book_api_admin_cost_price_books__price_book_id__activate_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                price_book_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CostPriceBookActivate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3512,72 +3179,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminVaultsResponse"];
-                };
-            };
-        };
-    };
-    admin_vault_quotas_api_admin_vaults__vault_id__quotas_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultQuotasResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_admin_vault_quotas_api_admin_vaults__vault_id__quotas_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultQuotaUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultQuotasResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -5247,26 +4848,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    own_vault_quotas_api_vault_quotas_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultQuotasResponse"];
                 };
             };
         };

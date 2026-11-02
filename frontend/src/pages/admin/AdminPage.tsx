@@ -21,7 +21,6 @@ import { NotificationsSection } from "./NotificationsSection";
 import { RelocateVaultDialog } from "./RelocateVaultDialog";
 import { SettingsSection } from "./SettingsSection";
 import { SourceVolumesSection } from "./SourceVolumesSection";
-import { CostPriceBooksSection } from "./CostPriceBooksSection";
 import { MetadataBackupsSection } from "./MetadataBackupsSection";
 import { StorageCostEstimatesSection } from "./StorageCostEstimatesSection";
 import { WorkerErrorsSection } from "./WorkerErrorsSection";
@@ -34,7 +33,6 @@ type NoticeState = {
 
 /** Sections with their own component; every other admin path lists Vaults. */
 const DEDICATED_SECTION_PATHS = new Set([
-  "/admin/cost-price-books",
   "/admin/storage-cost-estimates",
   "/admin/audit-events",
   "/admin/worker-errors",
@@ -135,7 +133,6 @@ export function AdminPage() {
               ["admin.section_defaults", "/admin/defaults"],
               ["admin.section_notifications", "/admin/notifications"],
               ["admin.section_deployment", "/admin/deployment"],
-              ["admin.section_price_books", "/admin/cost-price-books"],
               ["admin.section_storage_estimates", "/admin/storage-cost-estimates"],
               ["admin.section_audit_events", "/admin/audit-events"],
               ["admin.section_worker_errors", "/admin/worker-errors"],
@@ -154,9 +151,7 @@ export function AdminPage() {
           </ul>
         </nav>
 
-        {pathname === "/admin/cost-price-books" ? (
-          <CostPriceBooksSection />
-        ) : pathname === "/admin/storage-cost-estimates" ? (
+        {pathname === "/admin/storage-cost-estimates" ? (
           <StorageCostEstimatesSection />
         ) : pathname === "/admin/audit-events" ? (
           <AdminAuditEventsSection />

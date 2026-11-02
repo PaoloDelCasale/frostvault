@@ -468,8 +468,8 @@ describe("apiRequest session and errors", () => {
       fetch: fetchMock,
       navigate,
       translate: (key) =>
-        key === "api.quota_exceeded"
-          ? "Storage quota exceeded."
+        key === "api.operation_failed"
+          ? "Operation failed."
           : key === "ui.reauth_failed"
             ? "Reauthentication failed."
             : key,
@@ -491,7 +491,7 @@ describe("apiRequest session and errors", () => {
   it("turns an error response carrying message_key into the matching localized message", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(
-        { message_key: "api.quota_exceeded", message: "ignored fallback" },
+        { message_key: "api.operation_failed", message: "ignored fallback" },
         409,
       ),
     );
@@ -499,8 +499,8 @@ describe("apiRequest session and errors", () => {
     await expect(
       apiRequest("/api/upload", { method: "POST", body: "{}" }),
     ).rejects.toMatchObject({
-      message: "Storage quota exceeded.",
-      messageKey: "api.quota_exceeded",
+      message: "Operation failed.",
+      messageKey: "api.operation_failed",
       status: 409,
     });
   });

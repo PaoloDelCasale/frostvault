@@ -39,8 +39,6 @@ export const defaultPolicy = {
   stability_seconds: 300,
   include_globs: [] as string[],
   exclude_globs: [] as string[],
-  bandwidth_limit_kibps: null as number | null,
-  operating_windows: [] as { weekday: number; start: string; end: string }[],
 };
 
 export const defaultLifecycle = {
@@ -68,12 +66,6 @@ export const defaultCloudDeletion = {
     "A Delete Marker is a reversible cloud marker that hides the current key.",
   generated_phrase: "amber-birch-10",
   accepted_single_identity_risk: "Single IAM identity risk documented.",
-};
-
-export const defaultQuotas = {
-  limits: {},
-  usage: {},
-  evaluation: { state: "evaluated", allowed: true, decisions: [] as { code?: string; severity?: string }[] },
 };
 
 type HarnessOptions = {
@@ -112,9 +104,6 @@ export function createVaultAccessFetch(
 
     if (url === "/api/audit-events") {
       return jsonResponse({ events: [] });
-    }
-    if (url === "/api/vault/quotas") {
-      return jsonResponse(defaultQuotas);
     }
     if (url === "/api/vault/operation-policy") {
       return jsonResponse(defaultPolicy);

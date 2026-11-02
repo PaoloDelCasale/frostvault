@@ -141,7 +141,7 @@ test.describe("archive flows", () => {
     );
   });
 
-  test("flow 8 — owner reaches /vault/access and edits a quota", async ({
+  test("flow 8 — owner reaches /vault/access without Vault quotas", async ({
     page,
   }, testInfo) => {
     await emergencyPasswordLogin(page);
@@ -158,11 +158,8 @@ test.describe("archive flows", () => {
         .click();
     }
     await expect(page).toHaveURL(/\/vault\/access/);
-    await expect(page.locator('[data-panel="quotas"]')).toBeVisible();
-
-    await page.locator('input[name="storage_soft_limit_bytes"]').fill("1000");
-    await page.getByRole("button", { name: /save quotas|salva quote/i }).click();
-    await expect(page.getByText(/quotas updated|quote del vault aggiornate/i)).toBeVisible();
+    await expect(page.locator('[data-panel="retention"]')).toBeVisible();
+    await expect(page.locator('[data-panel="quotas"]')).toHaveCount(0);
   });
 
   test("flow 9 — owner opens Administration and its sections", async ({
