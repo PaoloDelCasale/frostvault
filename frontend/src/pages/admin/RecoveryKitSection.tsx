@@ -11,9 +11,15 @@ export function RecoveryKitSection() {
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    void fetchRecoveryKitStatus().then((data) => { if (!cancelled) setStatus(data); })
-      .catch(() => { if (!cancelled) setError("recovery_kit.error"); });
-    return () => { cancelled = true; };
+    const refresh = () => {
+      void fetchRecoveryKitStatus().then((data) => { if (!cancelled) setStatus(data); })
+        .catch(() => { if (!cancelled) setError("recovery_kit.error"); });
+    };
+    refresh();
+    // Cloud-first reconnect is asynchronous; keep the durable warning's count
+    // current without downloading secret material or per-file notifications.
+    const timer = window.setInterval(refresh, 30_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
 
   async function download() {

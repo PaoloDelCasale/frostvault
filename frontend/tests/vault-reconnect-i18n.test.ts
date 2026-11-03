@@ -10,7 +10,7 @@ const itMessages: Record<string, string> = JSON.parse(readFileSync(path.join(roo
 
 describe("Reconnect and installation kit English/Italian contract", () => {
   it("localizes prompts without retaining superseded relocation options", () => {
-    const keys = [...components.matchAll(/t\("(admin\.reconnect[^\"]*|recovery_kit\.[^\"]*)"/g)].map((match) => match[1]!);
+    const keys = [...components.matchAll(/t\("(admin\.reconnect[^"]*|recovery_kit\.[^"]*)"/g)].map((match) => match[1]!);
     expect(keys.length).toBeGreaterThan(15);
     for (const key of new Set(keys)) {
       expect(en[key], key).toBeTruthy();

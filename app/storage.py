@@ -5286,17 +5286,24 @@ def _enabled_vaults() -> list[dict[str, Any]]:
         ).fetchall()
 
 
+def _watch_root_signature(vault: dict[str, Any]) -> tuple[Any, ...]:
+    # Reconnect may accept a different inode/mount at the SAME pathname. A
+    # pathname-only signature would leave a watcher attached to the old tree.
+    return (vault["source_root"], vault.get("root_identity"),
+            vault.get("reconnect_volume_fingerprint"))
+
+
 async def filesystem_watch_loop() -> None:
     """Keep one recursive filesystem watcher aligned with each enabled vault."""
-    watchers: dict[int, tuple[str, asyncio.Task[None]]] = {}
+    watchers: dict[int, tuple[tuple[Any, ...], asyncio.Task[None]]] = {}
     try:
         while True:
             await asyncio.to_thread(source_layout.verify_mounts_once)
             vaults = await asyncio.to_thread(_enabled_vaults)
             desired = {int(vault["id"]): vault for vault in vaults}
-            for vault_id, (source_root, task) in list(watchers.items()):
+            for vault_id, (signature, task) in list(watchers.items()):
                 vault = desired.get(vault_id)
-                if vault is None or vault["source_root"] != source_root or task.done():
+                if vault is None or _watch_root_signature(vault) != signature or task.done():
                     task.cancel()
                     watchers.pop(vault_id)
             for vault_id, vault in desired.items():
@@ -5319,7 +5326,7 @@ async def filesystem_watch_loop() -> None:
                     continue
                 if vault_id not in watchers:
                     watchers[vault_id] = (
-                        vault["source_root"],
+                        _watch_root_signature(vault),
                         asyncio.create_task(_watch_vault_filesystem(vault)),
                     )
             await asyncio.sleep(10)

@@ -263,7 +263,12 @@ def _reconnect_vault_root(
     _, destination = _candidate(volume, relative_path)
     _reject_overlap(connection, vault_id=vault_id, destination=destination)
     identity = root_identity(destination)
-    if source_identity.fingerprint_for_mount(volume.path) != fingerprint:
+    try:
+        source_identity.validate_root_mount_boundary(volume.path, destination)
+        current_fingerprint = source_identity.fingerprint_for_mount(volume.path)
+    except source_identity.MountIdentityError as exc:
+        raise VaultRelocationError("identity_ambiguous", "Source Volume boundary is unavailable") from exc
+    if current_fingerprint != fingerprint:
         raise VaultRelocationError("identity_mismatch", "Source Volume changed during reconnect")
 
     previous_root = str(vault["source_root"])
@@ -312,17 +317,13 @@ def prepare_reconnect_local_scan(connection: Any, vault_id: int) -> None:
     """Discard every old local observation; identical stat tuples prove nothing.
 
     This is repeatable on retry. Remote reconciliation/verification must have
-    succeeded first. Every current cloud copy is held before re-observation.
+    succeeded first. The ordinary missing-to-present observation installs the
+    current cloud hold; files that remain absent must not acquire a conflict.
     """
     connection.execute(
         """
         UPDATE local_copies lc SET presence='missing', plaintext_sha256=NULL,
-            matched_archive_version_id=NULL, cloud_only_version_id=(
-                SELECT av.id FROM archive_versions av
-                WHERE av.vault_file_id=lc.vault_file_id AND av.availability='available'
-                  AND av.integrity='verified'
-                ORDER BY av.version_number DESC LIMIT 1
-            )
+            matched_archive_version_id=NULL, cloud_only_version_id=NULL
         WHERE lc.vault_file_id IN (SELECT id FROM vault_files WHERE vault_id=%s)
         """, (vault_id,),
     )

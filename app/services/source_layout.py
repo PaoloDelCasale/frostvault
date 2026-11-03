@@ -526,6 +526,7 @@ def vault_local_access(vault_source_root: str | Path) -> VaultLocalAccess:
             return _blocked_vault_access(alias=alias, health="absent" if volume is None else volume.health)
         try:
             observed = source_identity.fingerprint_for_mount(volume.path)
+            source_identity.validate_root_mount_boundary(volume.path, vault_source_root)
         except source_identity.MountIdentityError as exc:
             return _blocked_vault_access(alias=alias, health=_identity_error_health(exc))
         if observed != accepted:

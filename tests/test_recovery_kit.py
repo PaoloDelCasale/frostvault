@@ -48,6 +48,24 @@ class RecoveryKitTests(unittest.TestCase):
         result = redact_sensitive({"ARCHIVE_MASTER_KEY": self.config.archive_master_key, "nested": {"master_key": "value"}})
         self.assertEqual(result, {"ARCHIVE_MASTER_KEY": REDACTED, "nested": {"master_key": REDACTED}})
 
+    def test_reconnect_boundary_rejects_nested_same_device_binds_without_traversal(self):
+        from app.services.source_identity import validate_root_mount_boundary, MountIdentityError
+        base = "10 1 8:1 /data /sources/photos rw - ext4 /dev/test rw\n"
+        nested = base + "11 10 8:1 /other /sources/photos/root/child rw - ext4 /dev/test rw\n"
+        with self.assertRaises(MountIdentityError):
+            validate_root_mount_boundary("/sources/photos", "/sources/photos/root", text=nested)
+        with self.assertRaises(MountIdentityError):
+            validate_root_mount_boundary("/sources/photos", "/sources/photos/root/child/album", text=nested)
+        validate_root_mount_boundary("/sources/photos", "/sources/photos/sibling", text=nested)
+        with self.assertRaises(MountIdentityError):
+            validate_root_mount_boundary("/sources/photos", "/outside", text=base)
+
+    def test_watcher_identity_changes_even_when_reconnect_keeps_the_path(self):
+        from app.storage import _watch_root_signature
+        before = {"source_root": "/sources/photos/root", "root_identity": "inode-a", "reconnect_volume_fingerprint": "mount-a"}
+        self.assertNotEqual(_watch_root_signature(before), _watch_root_signature({**before, "root_identity": "inode-b"}))
+        self.assertNotEqual(_watch_root_signature(before), _watch_root_signature({**before, "reconnect_volume_fingerprint": "mount-b"}))
+
     def test_manual_restore_rejects_an_undated_manifest_before_mutating(self):
         connection = Mock()
         with self.assertRaises(ValueError): recovery_kit.record_metadata_restore(connection, "2026-11-02T10:00:00")
