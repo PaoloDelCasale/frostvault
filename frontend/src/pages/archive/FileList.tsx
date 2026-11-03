@@ -237,6 +237,15 @@ function OverflowMenu({
     };
   }, [open]);
 
+  // Five-state statistics can move the trigger near the viewport bottom.
+  // Measure the portalled menu after mounting and keep every action reachable.
+  useLayoutEffect(() => {
+    if (!open || !coords || !menuRef.current) return;
+    const height = menuRef.current.getBoundingClientRect().height;
+    const top = Math.max(8, Math.min(coords.top, window.innerHeight - height - 8));
+    if (top !== coords.top) setCoords({ ...coords, top });
+  }, [open, coords]);
+
   return (
     <div ref={rootRef} className="relative">
       <MoreActionsButton
@@ -255,7 +264,7 @@ function OverflowMenu({
               role="menu"
               aria-label={t("ui.more_actions")}
               className="fixed z-[80] min-w-[16rem] overflow-auto rounded-[10px] border border-line bg-surface p-1 text-ink shadow-lg"
-              style={{ top: coords.top, right: coords.right }}
+              style={{ top: coords.top, right: Math.max(8, coords.right), maxHeight: "calc(100vh - 16px)" }}
             >
               {groups.map((group) => (
                 <div key={group.category} className="py-1">

@@ -164,6 +164,31 @@ describe("FileBrowser — cards and table from /api/files", () => {
     );
   }
 
+  it("keeps the overflow menu actionable when protection statistics push a row to the viewport bottom", async () => {
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.dataset.testid === "more-actions-desktop-readme.txt") {
+        return { ...originalRect.call(this), top: window.innerHeight - 48, bottom: window.innerHeight - 4, right: 1200, height: 44 };
+      }
+      if (this.getAttribute("role") === "menu") {
+        return { ...originalRect.call(this), height: 160 };
+      }
+      return originalRect.call(this);
+    });
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => String(input).includes("/api/jobs")
+      ? jsonResponse({ items: [], groups: [] }) : jsonResponse(realisticBrowse));
+    try {
+      renderBrowser();
+      const { userEvent } = await import("@testing-library/user-event");
+      await userEvent.setup().click(await screen.findByTestId("more-actions-desktop-readme.txt"));
+      const menu = await screen.findByRole("menu");
+      expect(parseFloat(menu.style.top) + 160).toBeLessThanOrEqual(window.innerHeight - 8);
+      expect(within(menu).getByRole("menuitem", { name: "Free local space" })).toBeEnabled();
+    } finally {
+      rect.mockRestore();
+    }
+  });
+
   it("uses the network without persisting catalog listings or sending cache authorization", async () => {
     localStorage.clear();
     const storageWrite = vi.spyOn(Storage.prototype, "setItem");
