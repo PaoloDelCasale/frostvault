@@ -12,11 +12,10 @@ from psycopg.rows import dict_row
 
 from .config import settings
 from .security import hash_password, verify_password
-from .services.rclone_runtime import cleanup_runtime_configs
 
 
 INTEGRITY_ERRORS = (UniqueViolation, sqlite3.IntegrityError)
-HEAD_SCHEMA_REVISION = "0050_current_snapshot_only"
+HEAD_SCHEMA_REVISION = "0051_plaintext_vaults"
 _logger = logging.getLogger(__name__)
 
 
@@ -180,22 +179,6 @@ def read_schema_revision(connection: Any) -> str | None:
 
 
 def initialize_database() -> None:
-    # Runtime configs are anonymous memfds. Startup only reports retained legacy
-    # named residue; it never deletes a pathname after a crash.
-    cleanup = cleanup_runtime_configs()
-    if any(
-        (
-            cleanup.skipped_foreign,
-            cleanup.skipped_unsafe,
-            cleanup.skipped_raced,
-        )
-    ):
-        _logger.warning(
-            "Rclone legacy runtime residue retained: untrusted=%d unsafe=%d raced=%d",
-            cleanup.skipped_foreign,
-            cleanup.skipped_unsafe,
-            cleanup.skipped_raced,
-        )
     with db() as connection:
         revision = read_schema_revision(connection)
         if revision != HEAD_SCHEMA_REVISION:

@@ -8,13 +8,6 @@ from ..branding import PRODUCT_NAME
 SUBJECT_PREFIX = f"[{PRODUCT_NAME}]"
 
 TEMPLATES: dict[str, dict[str, str]] = {
-    "vault_recovery_exported": {
-        "subject": f"{SUBJECT_PREFIX} Vault recovery material exported",
-        "body": (
-            "Recovery material for vault {vault_id} was exported.\n"
-            "Reason: {reason}\n"
-        ),
-    },
     "upload_verified": {
         "subject": f"{SUBJECT_PREFIX} Upload verified",
         "body": "An upload for vault {vault_id} completed verification.\n",

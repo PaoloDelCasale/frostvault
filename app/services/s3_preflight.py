@@ -158,6 +158,32 @@ def check_bucket_readiness(
             )
         )
 
+    # Bucket-level BPA is mandatory, including on S3-compatible providers.
+    # Account-level policy, AccessDenied, unsupported APIs and absent state
+    # cannot prove these four controls. Do not echo provider error payloads.
+    flags = (
+        "BlockPublicAcls", "IgnorePublicAcls",
+        "BlockPublicPolicy", "RestrictPublicBuckets",
+    )
+    try:
+        response = client.get_public_access_block(Bucket=normalized)
+        configuration = response.get("PublicAccessBlockConfiguration")
+        enabled = isinstance(configuration, dict) and all(
+            configuration.get(flag) is True for flag in flags
+        )
+    except Exception:
+        enabled = False
+    checks.append(PreflightCheck(
+        code="bucket.public_access_block",
+        status="pass" if enabled else "fail",
+        message=("Bucket Block Public Access is enabled" if enabled else
+                 "Bucket Block Public Access could not be confirmed fully enabled"),
+        remediation=None if enabled else (
+            "Enable all four bucket Block Public Access settings and grant "
+            "s3:GetBucketPublicAccessBlock; the provider must support this API"
+        ),
+    ))
+
     ok = all(check.status != "fail" for check in checks)
     return PreflightResult(
         bucket=normalized,

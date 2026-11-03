@@ -1028,8 +1028,7 @@ class ClaimLeaseTakeoverTests(_CloudDeletionTestCase):
                 job = connection.execute(
                     """
                     SELECT j.*, v.source_root, v.s3_bucket, v.s3_prefix,
-                           v.rclone_remote, v.encryption_mode,
-                           v.crypt_password_ciphertext, v.crypt_password2_ciphertext,
+                           v.rclone_remote,
                            v.uuid AS vault_uuid, v.name AS vault_name,
                            v.cloud_deletion_enabled, v.decommission_state
                     FROM jobs j JOIN vaults v ON v.id=j.vault_id

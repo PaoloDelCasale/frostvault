@@ -108,6 +108,10 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             )
         return missing_id
 
+    def test_plaintext_vaults_populated_roundtrip_and_legacy_refusal(self) -> None:
+        from tests.plaintext_vaults_migration_contract import assert_plaintext_migration
+        assert_plaintext_migration(self, run_alembic, self._connection)
+
     def test_current_snapshot_preserves_every_copy_and_trust_on_upgrade_downgrade_reupgrade(self) -> None:
         from tests.current_snapshot_migration_contract import assert_current_snapshot_migration
         assert_current_snapshot_migration(self, run_alembic, self._connection)

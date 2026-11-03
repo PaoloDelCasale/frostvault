@@ -261,7 +261,6 @@ class UploadPolicyTagIntegrationTests(unittest.TestCase):
                     "s3_bucket": "bucket",
                     "s3_prefix": "vaults/uuid",
                     "rclone_remote": "remote",
-                    "encryption_mode": "plain",
                     "total_bytes": 5,
                 }
             )

@@ -2,8 +2,8 @@
 
 Disabling a Vault is deliberately unrelated to this lifecycle.  A root remains
 occupied until ``vaults.root_released_at`` is written by the final transaction.
-The Vault row, Vault Files, Path History, Jobs, encrypted recovery
-material, audit events, and notifications remain as a tombstone/history.
+The Vault row, Vault Files, Path History, Jobs, audit events, and notifications
+remain as a tombstone/history.
 """
 from __future__ import annotations
 
@@ -60,7 +60,6 @@ _BLOCKER_MESSAGES = {
     "local_copy_unprotected": "Every Local Copy must match a verified available Archive Version",
     "cloud_deletion_disabled": "Permanent cloud deletion is disabled for this Vault",
     "cloud_identity_incomplete": "Cloud history contains an item without an exact provider version identity",
-    "recovery_custody_unconfirmed": "Crypt recovery custody must be confirmed before retaining cloud history",
 }
 
 
@@ -491,11 +490,6 @@ def build_preview(
                 "cloud_identity_incomplete",
                 count=cloud["invalid_identity_count"],
             )
-    elif (
-        vault.get("encryption_mode") == "crypt"
-        and not vault.get("recovery_custody_confirmed_at")
-    ):
-        _append_blocker(blockers, "recovery_custody_unconfirmed")
 
     file_count = int(
         connection.execute(
@@ -532,11 +526,6 @@ def build_preview(
         "can_start": not blockers,
         "root_identity_version": vault.get("root_identity_version"),
         "root_identity_fingerprint": vault.get("root_identity"),
-        "recovery_material": {
-            "encryption_mode": vault.get("encryption_mode") or "plain",
-            "custody_confirmed": bool(vault.get("recovery_custody_confirmed_at")),
-            "disposition": "retained_encrypted_tombstone",
-        },
         "records": {
             "vault_tombstone": "retained",
             "jobs": "retained_as_history",
@@ -557,9 +546,6 @@ def build_preview(
             "root_released_at": vault.get("root_released_at"),
             "relocation_state": vault.get("relocation_state"),
             "root_identity": vault.get("root_identity"),
-            "recovery_custody_confirmed_at": vault.get(
-                "recovery_custody_confirmed_at"
-            ),
             "cloud_deletion_enabled": bool(vault.get("cloud_deletion_enabled")),
         },
         "dispositions": [local_value, cloud_value],

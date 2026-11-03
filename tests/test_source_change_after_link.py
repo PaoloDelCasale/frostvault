@@ -74,7 +74,6 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             patch("app.database.settings", database_settings),
             patch("app.storage.settings", worker_settings),
             patch("app.storage.validate_cloud_vault"),
-            patch("app.storage.rclone_remote_is_crypt", return_value=False),
             patch("app.storage.run_rclone", side_effect=run_rclone),
             patch("app.storage.run_rclone_stream", side_effect=run_rclone_stream),
             patch(

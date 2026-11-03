@@ -21,7 +21,6 @@ from unittest.mock import patch
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
 from app.main import queue_jobs
-from app.services.rclone_runtime import RuntimeRcloneConfig
 from app.storage import (
     RCLONE_STREAM_CHUNK_BYTES,
     OperationCancelled,
@@ -116,7 +115,6 @@ def _run_plain_upload(
         with (
             patch("app.storage.settings", worker_settings),
             patch("app.storage.validate_cloud_vault"),
-            patch("app.storage.rclone_remote_is_crypt", return_value=False),
             patch("app.storage.run_rclone", side_effect=fake_rclone),
             patch("app.storage.run_rclone_stream", side_effect=fake_rclone_stream),
             patch(
@@ -359,7 +357,6 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch("app.storage.run_rclone", side_effect=fake_upload),
                     patch("app.storage.run_rclone_stream", side_effect=flaky_stream),
                     patch("app.storage.s3_client", return_value=s3),
@@ -453,7 +450,6 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch("app.storage.run_rclone", side_effect=fake_upload),
                     patch("app.storage.run_rclone_stream", side_effect=flaky_stream),
                     patch("app.storage.s3_client", return_value=s3),
@@ -542,7 +538,6 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch("app.storage.run_rclone", side_effect=mutating_rclone),
                     patch("app.storage.run_rclone_stream", side_effect=fake_stream),
                     patch(
@@ -642,7 +637,6 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch("app.storage.run_rclone", side_effect=flaky_rclone),
                     patch(
                         "app.storage.s3_client",
@@ -714,7 +708,6 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch("app.storage.run_rclone", side_effect=cancelling_rclone),
                     patch("app.storage.run_rclone_stream", side_effect=cancelling_stream),
                     patch(
@@ -745,209 +738,6 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 self.assertNotEqual(
                     observed["latest_version"]["integrity"], "verified"
                 )
-
-
-class ContentCryptUploadVerificationTests(unittest.TestCase):
-    def test_content_encrypted_remote_stream_hashes_plaintext(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"legacy-content-crypt"
-            _source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=payload
-            )
-            calls: list[tuple[str, ...]] = []
-
-            def fake_upload(*args, **kwargs) -> None:
-                calls.append(tuple(str(arg) for arg in args if not callable(arg)))
-
-            def fake_stream(*args, **kwargs) -> int:
-                command = tuple(str(arg) for arg in args if not callable(arg))
-                calls.append(command)
-                self.assertEqual(command[:2], ("cat", "remote:report.txt"))
-                kwargs["on_chunk"](payload)
-                return len(payload)
-
-            database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
-            )
-            worker_settings = SimpleNamespace(
-                operation_concurrency=1,
-                restore_poll_interval=900,
-            )
-            with patch("app.database.settings", database_settings):
-                queue_jobs("report.txt", "upload", 2, 1)
-                with (
-                    patch("app.storage.settings", worker_settings),
-                    patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.rclone_remote_is_crypt", return_value=True),
-                    patch("app.storage.vault_encrypts_content", return_value=True),
-                    patch("app.storage.vault_encrypts_names", return_value=False),
-                    patch("app.storage.run_rclone", side_effect=fake_upload),
-                    patch("app.storage.run_rclone_stream", side_effect=fake_stream),
-                    patch(
-                        "app.storage.s3_client",
-                        return_value=VersionedS3Stub(
-                            head_object=lambda **_: {
-                                "VersionId": "content-crypt-v1",
-                                "ContentLength": len(payload),
-                                "StorageClass": "STANDARD",
-                                "ETag": '"etag"',
-                            }
-                        ),
-                    ),
-                ):
-                    process_jobs_once()
-
-            with SQLiteConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
-                job = connection.execute(
-                    "SELECT status FROM jobs WHERE path=%s", ("report.txt",)
-                ).fetchone()
-            self.assertEqual(observed["latest_version"]["object_key"], "docs/report.txt.bin")
-            self.assertEqual(observed["latest_version"]["integrity"], "verified")
-            self.assertEqual(job["status"], "completed")
-            self.assertEqual([call[0] for call in calls], ["copyto", "cat"])
-
-
-class CryptUploadVerificationTests(unittest.TestCase):
-    def test_crypt_upload_verifies_via_rclone_without_plaintext_bin_keys(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / "source"
-            source.mkdir()
-            payload = b"secret-bytes"
-            (source / "report.txt").write_bytes(payload)
-            expected_digest = _sha256_hex(payload)
-            encrypted_relative = "nq/encrypted-name"
-            database_path = root / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO users(
-                        id, username, display_name, password_hash
-                    ) VALUES (1, 'owner', 'Owner', 'hash')
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote, encryption_mode,
-                        crypt_password_ciphertext, crypt_password2_ciphertext,
-                        recovery_custody_confirmed_at
-                    ) VALUES (
-                        2, 'secret', 'Secret', %s, 'bucket', 'docs', 'base',
-                        'crypt', 'cipher-a', 'cipher-b',
-                        '2026-07-21T09:00:00+00:00'
-                    )
-                    """,
-                    (str(source),),
-                )
-                ArchiveCatalog(connection).observe_local_copy(
-                    vault_id=2,
-                    path="report.txt",
-                    file_type="regular",
-                    size=len(payload),
-                    mtime_ns=(source / "report.txt").stat().st_mtime_ns,
-                    observed_at="2026-07-21T10:00:00+00:00",
-                )
-
-            rclone_calls: list[tuple[str, ...]] = []
-            fake_config = RuntimeRcloneConfig(
-                path=root / "fake.rclone.conf",
-                remote_name="vault",
-                config_text="[vault]\ntype = crypt\n",
-                secrets=None,
-            )
-            fake_config.path.write_text(fake_config.config_text, encoding="utf-8")
-
-            @contextmanager
-            def fake_vault_rclone_config(_vault):
-                yield fake_config
-
-            def fake_rclone(*args, **kwargs) -> None:
-                command = tuple(str(arg) for arg in args if not callable(arg))
-                rclone_calls.append(command)
-                if command[:1] != ("copyto",):
-                    return
-                origin, destination = command[1], command[2]
-                self.assertTrue(
-                    origin.startswith("vault:") or destination.startswith("vault:"),
-                    msg=command,
-                )
-
-            def fake_rclone_stream(*args, **kwargs) -> int:
-                command = tuple(str(arg) for arg in args if not callable(arg))
-                rclone_calls.append(command)
-                self.assertEqual(command[0], "cat")
-                self.assertTrue(command[1].startswith("vault:"), msg=command)
-                kwargs["on_chunk"](payload)
-                return len(payload)
-
-            database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
-            )
-            worker_settings = SimpleNamespace(
-                operation_concurrency=1,
-                restore_poll_interval=900,
-            )
-            with patch("app.database.settings", database_settings):
-                queue_jobs("report.txt", "upload", 2, 1)
-                with (
-                    patch("app.storage.settings", worker_settings),
-                    patch("app.storage.validate_cloud_vault"),
-                    patch(
-                        "app.storage.vault_rclone_config",
-                        side_effect=fake_vault_rclone_config,
-                    ),
-                    patch(
-                        "app.services.vault_paths.encode_object_relative_path",
-                        return_value=encrypted_relative,
-                    ),
-                    patch(
-                        "app.storage.secrets_for_vault",
-                        return_value=SimpleNamespace(password="p", password2="p2"),
-                    ),
-                    patch("app.storage.run_rclone", side_effect=fake_rclone),
-                    patch("app.storage.run_rclone_stream", side_effect=fake_rclone_stream),
-                    patch(
-                        "app.storage.s3_client",
-                        return_value=VersionedS3Stub(
-                            head_object=lambda **kwargs: {
-                                "VersionId": "crypt-v1",
-                                "ContentLength": len(payload),
-                                "StorageClass": "STANDARD",
-                                "ETag": '"etag"',
-                            }
-                        ),
-                    ),
-                ):
-                    process_jobs_once()
-
-            with SQLiteConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(
-                    2, "report.txt"
-                )
-                job = connection.execute(
-                    "SELECT status FROM jobs WHERE path=%s",
-                    ("report.txt",),
-                ).fetchone()
-
-            object_key = observed["latest_version"]["object_key"]
-            self.assertEqual(object_key, f"docs/{encrypted_relative}")
-            self.assertNotIn("report.txt", object_key)
-            self.assertFalse(object_key.endswith(".bin"))
-            self.assertEqual(observed["latest_version"]["integrity"], "verified")
-            self.assertEqual(
-                observed["latest_version"]["plaintext_sha256"],
-                expected_digest,
-            )
-            self.assertEqual(job["status"], "completed")
-            self.assertGreaterEqual(len(rclone_calls), 2)
 
 
 if __name__ == "__main__":

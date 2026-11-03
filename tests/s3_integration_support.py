@@ -1,17 +1,13 @@
-"""Shared helpers for S3-compatible integrity integration tests (issue #13)."""
-
+"""Helpers for plaintext S3-compatible integrity proofs (CI-only buckets)."""
 from __future__ import annotations
 
 import os
 import textwrap
 from pathlib import Path
 
-from cryptography.fernet import Fernet
-
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
 from app.services.s3_prefix_cleanup import cleanup_prefix_versions
-from app.services.vault_crypto import encrypt_vault_secrets, generate_crypt_secrets
 from app.storage import s3_client
 from tests.test_database import run_alembic
 
@@ -24,12 +20,10 @@ def require_s3_env() -> dict[str, str]:
         "AWS_DEFAULT_REGION": os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
         "AWS_EC2_METADATA_DISABLED": "true",
     }
-    # Sentinel ``aws`` means public AWS (OIDC session); do not override endpoint.
     if endpoint.lower() != "aws":
         env["AWS_ENDPOINT_URL"] = endpoint
-    session_token = os.getenv("AWS_SESSION_TOKEN")
-    if session_token:
-        env["AWS_SESSION_TOKEN"] = session_token
+    if os.getenv("AWS_SESSION_TOKEN"):
+        env["AWS_SESSION_TOKEN"] = os.environ["AWS_SESSION_TOKEN"]
     return env
 
 
@@ -43,146 +37,56 @@ def prefix_root() -> str:
 
 def namespaced_prefix(leaf: str) -> str:
     root = prefix_root()
-    leaf = leaf.strip().strip("/")
-    return f"{root}/{leaf}" if root else leaf
+    return f"{root}/{leaf.strip('/')}" if root else leaf.strip("/")
 
 
 def ensure_versioned_bucket(bucket: str) -> None:
     client = s3_client()
-    try:
-        client.head_bucket(Bucket=bucket)
-    except Exception:
-        # Real AWS CI buckets are pre-provisioned; only auto-create for MinIO.
-        if s3_provider().lower() != "minio":
-            raise
-        client.create_bucket(Bucket=bucket)
+    # Never provision/change a real AWS bucket. The CI-compatible server is
+    # disposable, and must actually implement BPA; no preflight mocks/bypass.
     if s3_provider().lower() == "minio":
-        client.put_bucket_versioning(
-            Bucket=bucket,
-            VersioningConfiguration={"Status": "Enabled"},
-        )
-        return
-    status = client.get_bucket_versioning(Bucket=bucket).get("Status")
-    if status != "Enabled":
-        raise RuntimeError(
-            f"AWS CI bucket {bucket!r} must have versioning Enabled (found {status!r})"
-        )
-
-
-def write_s3_rclone_config(
-    path: Path,
-    *,
-    endpoint: str,
-    access_key: str,
-    secret_key: str,
-    bucket: str | None = None,
-    prefix: str | None = None,
-    remote_name: str = "ci-plain",
-    base_name: str = "ci-s3",
-    with_plain_alias: bool = True,
-    upload_cutoff: str | None = None,
-) -> tuple[str, str]:
-    """Write S3 base remote and optional plain alias.
-
-    Returns ``(plain_or_base_remote_name, base_remote_name)``.
-    ``prefix`` is unused for the plain alias (bucket-rooted; issue #9) and
-    remains only for call-site compatibility.
-    """
-    del prefix
-    provider = s3_provider()
-    cutoff_line = (
-        f"\nupload_cutoff = {upload_cutoff}" if upload_cutoff else ""
-    )
-    if provider.lower() == "aws" or endpoint.lower() == "aws":
-        base = textwrap.dedent(
-            f"""\
-            [{base_name}]
-            type = s3
-            provider = AWS
-            env_auth = true
-            region = {os.getenv("AWS_DEFAULT_REGION", "eu-south-1")}
-            location_constraint = {os.getenv("AWS_DEFAULT_REGION", "eu-south-1")}
-            acl = private
-            no_check_bucket = true{cutoff_line}
-            """
-        ).rstrip()
-    else:
-        host = endpoint.rstrip("/")
-        # access_key/secret_key stay on the signature for callers; MinIO remotes
-        # use env_auth so secrets are never written into the rclone config file.
-        base = textwrap.dedent(
-            f"""\
-            [{base_name}]
-            type = s3
-            provider = Minio
-            env_auth = true
-            endpoint = {host}
-            region = {os.getenv("AWS_DEFAULT_REGION", "us-east-1")}
-            acl = private
-            force_path_style = true{cutoff_line}
-            """
-        ).rstrip()
-    sections = [base]
-    active = base_name
-    if with_plain_alias:
-        if not bucket:
-            raise ValueError("plain alias requires bucket")
-        # Bucket-rooted shared remotes: FrostVault appends vault s3_prefix
-        # at the object path (issue #9). Do not embed the prefix in the alias.
-        sections.append(
-            textwrap.dedent(
-                f"""\
-                [{remote_name}]
-                type = alias
-                remote = {base_name}:{bucket}
-                """
-            ).rstrip()
-        )
-        active = remote_name
-    path.write_text("\n\n".join(sections) + "\n", encoding="utf-8")
-    return active, base_name
+        try:
+            client.head_bucket(Bucket=bucket)
+        except Exception:
+            client.create_bucket(Bucket=bucket)
+        client.put_bucket_versioning(Bucket=bucket, VersioningConfiguration={"Status": "Enabled"})
+        client.put_public_access_block(Bucket=bucket, PublicAccessBlockConfiguration={
+            "BlockPublicAcls": True, "IgnorePublicAcls": True,
+            "BlockPublicPolicy": True, "RestrictPublicBuckets": True,
+        })
+    from app.services.s3_preflight import check_bucket_readiness, preflight_failure_message
+    result = check_bucket_readiness(bucket, region=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), client=client)
+    if not result.ok:
+        raise RuntimeError(preflight_failure_message(result))
 
 
 def write_plain_rclone_config(
-    path: Path,
-    *,
-    endpoint: str,
-    bucket: str,
-    access_key: str,
-    secret_key: str,
-    remote_name: str = "ci-plain",
-    base_name: str = "ci-s3",
-    upload_cutoff: str | None = None,
-    prefix: str | None = None,
+    path: Path, *, endpoint: str, bucket: str, access_key: str, secret_key: str,
+    remote_name: str = "ci-plain", base_name: str = "ci-s3",
+    upload_cutoff: str | None = None, prefix: str | None = None,
 ) -> str:
-    """Write a bucket-rooted plain alias remote; return remote name.
-
-    ``prefix`` is accepted for call-site compatibility but is not embedded in
-    the alias: object paths include the vault ``s3_prefix`` separately.
-    """
-    del prefix  # kept only so older call sites keep working until updated
-    remote, _base = write_s3_rclone_config(
-        path,
-        endpoint=endpoint,
-        access_key=access_key,
-        secret_key=secret_key,
-        bucket=bucket,
-        remote_name=remote_name,
-        base_name=base_name,
-        with_plain_alias=True,
-        upload_cutoff=upload_cutoff,
-    )
-    return remote
+    """Bucket-rooted alias; credentials stay in the environment, never config."""
+    del access_key, secret_key, prefix
+    aws = s3_provider().lower() == "aws" or endpoint.lower() == "aws"
+    region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+    extra = f"location_constraint = {region}\nno_check_bucket = true" if aws else f"endpoint = {endpoint.rstrip('/')}\nforce_path_style = true"
+    base = textwrap.dedent(f"""\
+        [{base_name}]
+        type = s3
+        provider = {'AWS' if aws else 'Minio'}
+        env_auth = true
+        region = {region}
+        acl = private
+        """)
+    if upload_cutoff:
+        extra += f"\nupload_cutoff = {upload_cutoff}"
+    path.write_text(base + extra + f"\n\n[{remote_name}]\ntype = alias\nremote = {base_name}:{bucket}\n", encoding="utf-8")
+    return remote_name
 
 
 def prepare_plain_vault(
-    root: Path,
-    *,
-    relative_path: str,
-    payload: bytes,
-    bucket: str,
-    prefix: str,
-    rclone_remote: str,
+    root: Path, *, relative_path: str, payload: bytes, bucket: str,
+    prefix: str, rclone_remote: str,
 ) -> tuple[Path, Path]:
     source = root / "source"
     source.mkdir()
@@ -193,95 +97,16 @@ def prepare_plain_vault(
     migrated = run_alembic(database_path)
     assert migrated.returncode == 0, migrated.stderr
     with SQLiteConnection(str(database_path)) as connection:
-        connection.execute(
-            """
-            INSERT INTO users(
-                id, username, display_name, password_hash
-            ) VALUES (1, 'owner', 'Owner', 'hash')
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO vaults(
-                id, slug, name, source_root, s3_bucket, s3_prefix,
-                rclone_remote, encryption_mode
-            ) VALUES (2, 'ci', 'CI', %s, %s, %s, %s, 'plain')
-            """,
-            (str(source), bucket, prefix.strip("/"), rclone_remote),
-        )
+        connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
+        connection.execute("""
+            INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote)
+            VALUES (2, 'ci', 'CI', %s, %s, %s, %s)
+        """, (str(source), bucket, prefix.strip("/"), rclone_remote))
         ArchiveCatalog(connection).observe_local_copy(
-            vault_id=2,
-            path=relative_path,
-            file_type="regular",
-            size=len(payload),
-            mtime_ns=target.stat().st_mtime_ns,
-            observed_at="2026-07-22T12:00:00+00:00",
+            vault_id=2, path=relative_path, file_type="regular", size=len(payload),
+            mtime_ns=target.stat().st_mtime_ns, observed_at="2026-07-22T12:00:00+00:00",
         )
     return source, database_path
-
-
-def prepare_crypt_vault(
-    root: Path,
-    *,
-    relative_path: str,
-    payload: bytes,
-    bucket: str,
-    prefix: str,
-    base_remote: str,
-    master_key: str,
-) -> tuple[Path, Path]:
-    source = root / "source"
-    source.mkdir()
-    target = source / relative_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(payload)
-    database_path = root / "catalog.db"
-    migrated = run_alembic(database_path)
-    assert migrated.returncode == 0, migrated.stderr
-    secrets = generate_crypt_secrets()
-    stored = encrypt_vault_secrets(secrets, master_key)
-    with SQLiteConnection(str(database_path)) as connection:
-        connection.execute(
-            """
-            INSERT INTO users(
-                id, username, display_name, password_hash
-            ) VALUES (1, 'owner', 'Owner', 'hash')
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO vaults(
-                id, slug, name, source_root, s3_bucket, s3_prefix,
-                rclone_remote, encryption_mode,
-                crypt_password_ciphertext, crypt_password2_ciphertext,
-                recovery_custody_confirmed_at
-            ) VALUES (
-                2, 'ci-crypt', 'CI Crypt', %s, %s, %s, %s, 'crypt',
-                %s, %s, '2026-07-22T11:00:00+00:00'
-            )
-            """,
-            (
-                str(source),
-                bucket,
-                prefix.strip("/"),
-                base_remote,
-                stored.password_ciphertext,
-                stored.password2_ciphertext,
-            ),
-        )
-        ArchiveCatalog(connection).observe_local_copy(
-            vault_id=2,
-            path=relative_path,
-            file_type="regular",
-            size=len(payload),
-            mtime_ns=target.stat().st_mtime_ns,
-            observed_at="2026-07-22T12:00:00+00:00",
-        )
-    return source, database_path
-
-
-def new_master_key() -> str:
-    return Fernet.generate_key().decode("ascii")
 
 
 def force_cleanup(bucket: str, prefix: str) -> None:

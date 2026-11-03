@@ -128,7 +128,7 @@ class FileBrowserTests(unittest.TestCase):
                 "path": "folder/large.bin",
                 "action": "upload",
                 "status": "uploading",
-                "message": "Encrypted upload in progress",
+                "message": "Upload in progress",
                 "requested_at": "2026-07-20T12:00:00+00:00",
                 "updated_at": "2026-07-20T12:00:02+00:00",
                 "group_id": "folder-upload",

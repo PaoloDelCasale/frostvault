@@ -26,7 +26,8 @@
       "Action": [
         "s3:ListBucket",
         "s3:GetBucketLocation",
-        "s3:GetBucketVersioning"
+        "s3:GetBucketVersioning",
+        "s3:GetBucketPublicAccessBlock"
       ],
       "Resource": "arn:aws:s3:::${archive_ci_bucket_name}"
     },

@@ -142,9 +142,6 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
         with (
             patch("app.storage.settings", worker_settings),
             patch("app.storage.validate_cloud_vault"),
-            patch("app.storage.rclone_remote_is_crypt", return_value=False),
-            patch("app.storage.vault_encrypts_content", return_value=False),
-            patch("app.storage.vault_encrypts_names", return_value=False),
             patch("app.storage.run_rclone", return_value=None),
             patch("app.storage.run_rclone_stream", side_effect=fake_stream),
             patch("app.storage.s3_client", return_value=self.s3),

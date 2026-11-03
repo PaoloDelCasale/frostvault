@@ -2,13 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { configureApiClient, resetApiClientForTests } from "./client";
 import {
-  confirmRecoveryCustody,
   downloadAdminMetadataBackup,
   fetchAdminMetadataBackups,
   estimateAdminStorageCost,
   runAdminMetadataBackup,
   createVault,
-  exportRecoverySecret,
   fetchI18nCatalog,
   fetchMe,
   fetchNotifications,
@@ -337,51 +335,15 @@ describe("foundation endpoint helpers", () => {
     ).toBe("estimate-csrf");
   });
 
-  it("vault create and recovery helpers hit the agreed routes", async () => {
+  it("vault creation and selection have no encryption or custody contract", async () => {
     fetchMock
-      .mockResolvedValueOnce(
-        jsonResponse(
-          {
-            id: 3,
-            uuid: "u",
-            slug: "docs",
-            name: "Docs",
-            encryption_mode: "crypt",
-            recovery_custody_confirmed: false,
-            recovery_export: "export-body",
-          },
-          201,
-        ),
-      )
-      .mockResolvedValueOnce(jsonResponse({ vault_id: 3 }))
-      .mockResolvedValueOnce(
-        jsonResponse({
-          vault_id: 3,
-          recovery_custody_confirmed: true,
-          recovery_custody_confirmed_at: "2026-07-26T10:00:00Z",
-        }),
-      )
-      .mockResolvedValueOnce(jsonResponse({ recovery_export: "re-export" }));
-
-    await expect(
-      createVault({
-        name: "Docs",
-        encryption_mode: "crypt",
-      }),
-    ).resolves.toMatchObject({ recovery_export: "export-body" });
+      .mockResolvedValueOnce(jsonResponse({ id: 3, uuid: "u", slug: "docs", name: "Docs" }, 201))
+      .mockResolvedValueOnce(jsonResponse({ vault_id: 3 }));
+    await expect(createVault({ name: "Docs" })).resolves.toMatchObject({ id: 3 });
     await expect(selectVault({ vault_id: 3 })).resolves.toEqual({ vault_id: 3 });
-    await expect(confirmRecoveryCustody({ acknowledged: true })).resolves.toMatchObject({
-      recovery_custody_confirmed: true,
-    });
-    await expect(
-      exportRecoverySecret({ reason: "offline backup copy" }),
-    ).resolves.toEqual({ recovery_export: "re-export" });
-
     expect(fetchMock.mock.calls.map((call) => [call[0], (call[1] as RequestInit).method])).toEqual([
       ["/api/vaults", "POST"],
       ["/api/vaults/select", "POST"],
-      ["/api/vault/recovery/confirm", "POST"],
-      ["/api/vault/recovery/export", "POST"],
     ]);
   });
 });

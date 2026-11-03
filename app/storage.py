@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import configparser
 import contextvars
 import hashlib
 import json
@@ -34,12 +33,7 @@ from .services import vault_relocation
 from .services.catalog_event_hub import publish_committed_event
 from .services.catalog_events import record_catalog_revision
 from .i18n import DEFAULT_LOCALE, format_message_params, translate
-from .services.rclone_runtime import (
-    decode_object_relative_paths,
-    vault_rclone_config,
-)
-from .services.vault_crypto import safe_error_message
-from .services.vault_recovery import secrets_for_vault
+from .services.rclone_runtime import require_plain_vault_remote
 from .services.s3_preflight import check_bucket_readiness, preflight_failure_message
 from .services.catalog_audit import audit_vault_catalog
 from .services.directory_aggregates import (
@@ -82,7 +76,6 @@ from .services.vault_paths import (
     safe_local_path,
     safe_local_entry_path,
     _cloud_relative_key,
-    _UNSET_DECODED_PATH,
     object_key_to_path,
     expected_cloud_key,
     plain_rclone_destination,
@@ -496,6 +489,8 @@ def s3_client():
 
 
 def validate_cloud_vault(vault: dict[str, Any]) -> None:
+    if "rclone_remote" in vault:
+        require_plain_vault_remote(vault, settings.rclone_config)
     bucket = vault.get("s3_bucket")
     if not bucket or is_placeholder(
         bucket,
@@ -514,44 +509,8 @@ def validate_cloud_vault(vault: dict[str, Any]) -> None:
         )
 
 
-def rclone_remote_is_crypt(remote_name: str) -> bool:
-    """Return whether a configured Rclone remote encrypts file contents."""
-    config_path = Path(settings.rclone_config)
-    if not config_path.is_file():
-        raise RuntimeError(f"Rclone configuration not found: {config_path}")
-    parser = configparser.ConfigParser(interpolation=None)
-    try:
-        parser.read(config_path, encoding="utf-8")
-    except configparser.Error as exc:
-        raise RuntimeError(f"Invalid Rclone configuration: {exc}") from exc
-    section = remote_name.strip().rstrip(":")
-    if not section or not parser.has_section(section):
-        raise RuntimeError(f"Rclone remote is not configured: {remote_name}")
-    remote_type = parser.get(section, "type", fallback="").strip().lower()
-    if not remote_type:
-        raise RuntimeError(f"Rclone remote type is not configured: {remote_name}")
-    return remote_type == "crypt"
-
-
-def vault_encrypts_content(vault: dict[str, Any]) -> bool:
-    """Whether uploads for ``vault`` go through content encryption."""
-    mode = vault.get("encryption_mode")
-    if mode == "crypt":
-        return True
-    if mode == "plain":
-        return False
-    return rclone_remote_is_crypt(vault["rclone_remote"])
-
-
-def vault_encrypts_names(vault: dict[str, Any]) -> bool:
-    """Per-vault crypt remotes always encrypt file and directory names."""
-    return vault.get("encryption_mode") == "crypt"
-
-
 def configured_rclone_destination(job: dict[str, Any], logical_path: str) -> str:
-    """Object spec for a preconfigured Rclone remote (not a runtime crypt remote)."""
-    if vault_encrypts_content(job):
-        return f"{job['rclone_remote']}:{logical_path}"
+    """Object spec for the preflight-validated bucket-rooted plaintext alias."""
     return plain_rclone_destination(
         job["rclone_remote"], job["s3_prefix"], logical_path
     )
@@ -882,12 +841,10 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
     Provider listing and object-tag reads stay outside write transactions.
     Catalog merges commit in ``CLOUD_SCAN_WRITE_BATCH_SIZE`` chunks so other
     SQLite/PostgreSQL writers can renew leases and persist notifications.
-    Unseen versions are marked missing only after a complete listing with no
-    decoder failures, and only if this scan generation is still current.
+    Unseen versions are marked missing only after a complete, interpretable
+    listing, and only if this scan generation is still current.
     """
     validate_cloud_vault(vault)
-    encrypts_names = vault_encrypts_names(vault)
-    is_crypt = vault_encrypts_content(vault)
     client = s3_client()
     paginator = client.get_paginator("list_object_versions")
     prefix = vault["s3_prefix"].strip("/")
@@ -896,27 +853,19 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
         kwargs["Prefix"] = f"{prefix}/"
     versions: list[tuple[str, str, str, Any, str, str, str]] = []
     markers: list[tuple[str, str, str, str]] = []
-    decoded_paths: dict[str, str] = {}
-    decode_failures: set[str] = set()
+    invalid_keys = False
     listing_complete = False
-    runtime: Any | None = None
 
     def convert_page(items: list[dict[str, Any]], kind: str) -> None:
+        nonlocal invalid_keys
         for item in items:
             object_key = item["Key"]
-            relative = _cloud_relative_key(object_key, prefix)
-            decode = decoded_paths.get(relative) if relative is not None else None
-            logical_path = object_key_to_path(
-                object_key,
-                prefix,
-                is_crypt,
-                encrypted_names=encrypts_names,
-                runtime=runtime,
-                decoded_relative_path=(
-                    decode if encrypts_names else _UNSET_DECODED_PATH
-                ),
-            )
+            logical_path = object_key_to_path(object_key, prefix)
             if logical_path is None:
+                # Directory marker objects contain no file content. Any other
+                # unrecognised key prevents destructive reconciliation.
+                if not object_key.endswith("/"):
+                    invalid_keys = True
                 continue
             version_id = item["VersionId"]
             timestamp = _remote_listing_timestamp(item, scan_id)
@@ -937,33 +886,9 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
 
     try:
         page_iter = paginator.paginate(**kwargs)
-        if encrypts_names:
-            with vault_rclone_config(vault) as runtime_config:
-                runtime = runtime_config
-                for page in page_iter:
-                    page_items = [
-                        *page.get("Versions", []),
-                        *page.get("DeleteMarkers", []),
-                    ]
-                    encrypted_relatives = [
-                        relative
-                        for item in page_items
-                        for relative in [_cloud_relative_key(item["Key"], prefix)]
-                        if relative is not None and relative not in decoded_paths
-                    ]
-                    if encrypted_relatives:
-                        page_decoded, page_failures = decode_object_relative_paths(
-                            runtime_config,
-                            encrypted_relatives,
-                        )
-                        decoded_paths.update(page_decoded)
-                        decode_failures.update(page_failures)
-                    convert_page(page.get("Versions", []), "version")
-                    convert_page(page.get("DeleteMarkers", []), "marker")
-        else:
-            for page in page_iter:
-                convert_page(page.get("Versions", []), "version")
-                convert_page(page.get("DeleteMarkers", []), "marker")
+        for page in page_iter:
+            convert_page(page.get("Versions", []), "version")
+            convert_page(page.get("DeleteMarkers", []), "marker")
         listing_complete = True
     except Exception:
         listing_complete = False
@@ -1001,7 +926,7 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                 if (row["object_key"], row["provider_version_id"]) == (newest[2], newest[1])
             ), None)
             if (
-                not decode_failures and keeper and keeper["recoverable"]
+                not invalid_keys and keeper and keeper["recoverable"]
                 and sum(entry[6] == newest[6] for entry in entries) == 1
             ):
                 verified_keepers[path] = keeper
@@ -1076,7 +1001,7 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                     desired_policy_id=desired_policy_id,
                     applied_policy_id=applied_policy_id,
                 )
-                if logical_path in stale_keeper_paths and not decode_failures:
+                if logical_path in stale_keeper_paths and not invalid_keys:
                     catalog.mark_unlisted_snapshot_versions_superseded(
                         kept_archive_version_id=str(kept_archive_version_id),
                         scan_id=scan_id,
@@ -1101,11 +1026,11 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                     observed_at=now_iso(),
                 )
                 count += 1
-    # An unknown encrypted key or a truncated listing is not evidence that
+    # An unrecognised key or a truncated listing is not evidence that
     # prior catalog rows disappeared. Fail closed by retaining availability.
     if (
         listing_complete
-        and not decode_failures
+        and not invalid_keys
         and _cloud_scan_still_current(vault, scan_id)
     ):
         with db() as connection:
@@ -3505,36 +3430,16 @@ def download_with_rclone(job: dict[str, Any]) -> None:
     target = safe_local_entry_path(job["source_root"], job["path"])
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.restore-{uuid.uuid4().hex}.tmp")
-    is_crypt = vault_encrypts_content(job)
-    if is_crypt:
-        set_job(
-            job["id"],
-            "downloading",
-            message_key="job.downloading_decrypting",
-        )
-    else:
-        set_job(job["id"], "downloading", message_key="job.downloading")
+    set_job(job["id"], "downloading", message_key="job.downloading")
     try:
-        if vault_encrypts_names(job):
-            with vault_rclone_config(job) as runtime:
-                run_rclone(
-                    "copyto",
-                    f"{runtime.remote_name}:{job['path']}",
-                    str(temporary),
-                    *rclone_download_perf_args(),
-                    job_progress_callback(job),
-                    job_id=job["id"],
-                    config_path=str(runtime.path),
-                )
-        else:
-            run_rclone(
-                "copyto",
-                configured_rclone_destination(job, job["path"]),
-                str(temporary),
-                *rclone_download_perf_args(),
-                job_progress_callback(job),
-                job_id=job["id"],
-            )
+        run_rclone(
+            "copyto",
+            configured_rclone_destination(job, job["path"]),
+            str(temporary),
+            *rclone_download_perf_args(),
+            job_progress_callback(job),
+            job_id=job["id"],
+        )
         ensure_job_active(job["id"], "Recovery stopped")
         if not temporary.is_file():
             raise RuntimeError("Rclone did not create the recovered file")
@@ -3579,7 +3484,7 @@ def _stream_plaintext_for_verification(
     target: dict[str, Any],
     source_size: int,
 ) -> tuple[str, int]:
-    """Hash decrypted Rclone output incrementally without touching the Vault root."""
+    """Hash the exact uploaded VersionId without touching the Vault root."""
     digest = hashlib.sha256()
     bytes_read = 0
 
@@ -3594,33 +3499,22 @@ def _stream_plaintext_for_verification(
         job,
         minimum_bytes=max(int(job.get("total_bytes") or 0), int(source_size)),
     )
-    if vault_encrypts_names(job):
-        with vault_rclone_config(job) as runtime:
-            run_rclone_stream(
-                "cat",
-                f"{runtime.remote_name}:{job['path']}",
-                *rclone_download_perf_args(),
-                on_chunk=consume,
-                progress_callback=progress,
-                job_id=job["id"],
-                config_path=str(runtime.path),
-                bwlimit=job_bwlimit(job),
-            )
-    else:
-        logical_path = object_key_to_path(
-            str(target.get("object_key") or ""),
-            job.get("s3_prefix") or "",
-            is_crypt=vault_encrypts_content(job),
-        ) or job["path"]
-        run_rclone_stream(
-            "cat",
-            configured_rclone_destination(job, logical_path),
-            *rclone_download_perf_args(),
-            on_chunk=consume,
-            progress_callback=progress,
-            job_id=job["id"],
-            bwlimit=job_bwlimit(job),
-        )
+    version_id = target.get("provider_version_id")
+    logical_path = object_key_to_path(
+        str(target.get("object_key") or ""), job.get("s3_prefix") or "",
+    )
+    if not version_id or logical_path is None:
+        raise RuntimeError("An exact Archive Version is required for verification")
+    run_rclone_stream(
+        "cat",
+        configured_rclone_destination(job, logical_path),
+        f"--s3-version-id={version_id}",
+        *rclone_download_perf_args(),
+        on_chunk=consume,
+        progress_callback=progress,
+        job_id=job["id"],
+        bwlimit=job_bwlimit(job),
+    )
     ensure_job_active(job["id"], "Upload stopped")
     return digest.hexdigest(), bytes_read
 
@@ -3747,9 +3641,6 @@ def process_upload(job: dict[str, Any]) -> None:
     validate_cloud_vault(job)
     source = safe_local_path(job["source_root"], job["path"])
     local_present = source.is_file()
-    is_crypt = vault_encrypts_content(job)
-    encrypts_names = vault_encrypts_names(job)
-    secrets = secrets_for_vault(job) if encrypts_names else None
     with db() as connection:
         assignments = load_policy_assignments(connection, job["vault_id"])
         linked_target = ArchiveCatalog(connection).get_job_target(job["id"])
@@ -3891,38 +3782,17 @@ def process_upload(job: dict[str, Any]) -> None:
                 }
                 head = _verification_version_head(client, job, target)
             else:
-                upload_key = "job.encrypted_upload" if is_crypt else "job.plain_upload"
-                set_job(job["id"], "uploading", message_key=upload_key)
-                if encrypts_names:
-                    with vault_rclone_config(job) as runtime:
-                        run_rclone(
-                            "copyto",
-                            str(source),
-                            f"{runtime.remote_name}:{job['path']}",
-                            job_progress_callback(job),
-                            job_id=job["id"],
-                            config_path=str(runtime.path),
-                            bwlimit=job_bwlimit(job),
-                        )
-                        ensure_job_active(job["id"], "Upload stopped")
-                        key = expected_cloud_key(
-                            job["path"],
-                            job["s3_prefix"],
-                            is_crypt,
-                            encrypted_names=True,
-                            runtime=runtime,
-                        )
-                else:
-                    run_rclone(
-                        "copyto",
-                        str(source),
-                        configured_rclone_destination(job, job["path"]),
-                        job_progress_callback(job),
-                        job_id=job["id"],
-                        bwlimit=job_bwlimit(job),
-                    )
-                    ensure_job_active(job["id"], "Upload stopped")
-                    key = expected_cloud_key(job["path"], job["s3_prefix"], is_crypt)
+                set_job(job["id"], "uploading", message_key="job.plain_upload")
+                run_rclone(
+                    "copyto",
+                    str(source),
+                    configured_rclone_destination(job, job["path"]),
+                    job_progress_callback(job),
+                    job_id=job["id"],
+                    bwlimit=job_bwlimit(job),
+                )
+                ensure_job_active(job["id"], "Upload stopped")
+                key = expected_cloud_key(job["path"], job["s3_prefix"])
                 head = client.head_object(Bucket=job["s3_bucket"], Key=key)
                 provider_version_id = head.get("VersionId")
                 if not provider_version_id:
@@ -3992,18 +3862,7 @@ def process_upload(job: dict[str, Any]) -> None:
             source_size=source_size,
         )
         _verification_version_head(client, job, target)
-        # Crypt providers report ciphertext ContentLength, while the stream
-        # is decrypted plaintext. Only a plain object can use the catalogued
-        # provider length; encrypted modes must be compared with the upload
-        # snapshot size instead.
-        if is_crypt:
-            expected_stream_size = (
-                source_stat.st_size
-                if source_stat is not None
-                else job.get("total_bytes")
-            )
-        else:
-            expected_stream_size = target.get("cloud_size")
+        expected_stream_size = target.get("cloud_size")
         if expected_stream_size is not None and remote_size != int(expected_stream_size):
             verification_failure_reason = "truncated"
             raise RuntimeError(
@@ -4035,10 +3894,10 @@ def process_upload(job: dict[str, Any]) -> None:
         )
     except OperationCancelled:
         raise
-    except Exception as exc:
+    except Exception:
         if verification_started:
             _record_verification_failure(verification_failure_reason or "stream")
-        raise RuntimeError(safe_error_message(exc, secrets)) from exc
+        raise
 
 
 def ensure_scheduled_current_version(
@@ -4223,9 +4082,6 @@ def process_rename(job: dict[str, Any]) -> None:
     source = safe_local_path(job["source_root"], job["path"])
     if not source.is_file():
         raise RuntimeError("The file is no longer available in the source folder")
-    is_crypt = vault_encrypts_content(job)
-    encrypts_names = vault_encrypts_names(job)
-    secrets = secrets_for_vault(job) if encrypts_names else None
     with db() as connection:
         previous = connection.execute(
             """
@@ -4243,17 +4099,7 @@ def process_rename(job: dict[str, Any]) -> None:
     old_key = previous["object_key"]
     policy_id = resolve_effective_policy_id(job["path"], assignments)
     try:
-        if encrypts_names:
-            with vault_rclone_config(job) as runtime:
-                new_key = expected_cloud_key(
-                    job["path"],
-                    job["s3_prefix"],
-                    is_crypt,
-                    encrypted_names=True,
-                    runtime=runtime,
-                )
-        else:
-            new_key = expected_cloud_key(job["path"], job["s3_prefix"], is_crypt)
+        new_key = expected_cloud_key(job["path"], job["s3_prefix"])
         if new_key == old_key:
             set_job(job["id"], "completed", message_key="job.rename_key_matches")
             return
@@ -4318,26 +4164,14 @@ def process_rename(job: dict[str, Any]) -> None:
                 )
             set_job(job["id"], "uploading", message_key="job.rename_copying")
             ensure_job_active(job["id"], "Rename claim was lost")
-            if encrypts_names:
-                with vault_rclone_config(job) as runtime:
-                    run_rclone(
-                        "copyto",
-                        str(source),
-                        f"{runtime.remote_name}:{job['path']}",
-                        job_progress_callback(job),
-                        job_id=job["id"],
-                        config_path=str(runtime.path),
-                    )
-                    ensure_job_active(job["id"], "Rename stopped")
-            else:
-                run_rclone(
-                    "copyto",
-                    str(source),
-                    configured_rclone_destination(job, job["path"]),
-                    job_progress_callback(job),
-                    job_id=job["id"],
-                )
-                ensure_job_active(job["id"], "Rename stopped")
+            run_rclone(
+                "copyto",
+                str(source),
+                configured_rclone_destination(job, job["path"]),
+                job_progress_callback(job),
+                job_id=job["id"],
+            )
+            ensure_job_active(job["id"], "Rename stopped")
             head = client.head_object(Bucket=job["s3_bucket"], Key=new_key)
             provider_version_id = head.get("VersionId")
             if not provider_version_id:
@@ -4427,8 +4261,8 @@ def process_rename(job: dict[str, Any]) -> None:
         set_job(job["id"], "completed", message_key="job.rename_verified")
     except OperationCancelled:
         raise
-    except Exception as exc:
-        raise RuntimeError(safe_error_message(exc, secrets)) from exc
+    except Exception:
+        raise
 
 
 def record_automatic_cleanup_outcome(
@@ -4775,55 +4609,12 @@ def download_exact_version_plaintext(
     Always pins the S3 ``VersionId``. Path-only current-object downloads are
     forbidden because they can return a different object version.
 
-    Plain vaults use boto3 TransferManager (parallel range GETs for large
-    objects). Crypt vaults keep Rclone so content/name decryption stays on the
-    crypt remote, with multi-thread download flags for large objects.
+    Uses boto3 TransferManager (parallel range GETs for large objects).
     """
     if not provider_version_id:
         raise RuntimeError("Exact S3 VersionId is required for recovery")
     ensure_job_active(job["id"], "Recovery stopped")
     temporary.parent.mkdir(parents=True, exist_ok=True)
-    if vault_encrypts_names(job) or vault_encrypts_content(job):
-        version_flag = f"--s3-version-id={provider_version_id}"
-        if vault_encrypts_names(job):
-            with vault_rclone_config(job) as runtime:
-                logical_path = object_key_to_path(
-                    object_key,
-                    job.get("s3_prefix") or "",
-                    is_crypt=True,
-                    encrypted_names=True,
-                    runtime=runtime,
-                ) or job["path"]
-                run_rclone(
-                    "copyto",
-                    f"{runtime.remote_name}:{logical_path}",
-                    str(temporary),
-                    version_flag,
-                    *rclone_download_perf_args(),
-                    job_progress_callback(job),
-                    job_id=job["id"],
-                    config_path=str(runtime.path),
-                )
-        else:
-            logical_path = object_key_to_path(
-                object_key,
-                job.get("s3_prefix") or "",
-                is_crypt=vault_encrypts_content(job),
-            ) or job["path"]
-            run_rclone(
-                "copyto",
-                configured_rclone_destination(job, logical_path),
-                str(temporary),
-                version_flag,
-                *rclone_download_perf_args(),
-                job_progress_callback(job),
-                job_id=job["id"],
-            )
-        ensure_job_active(job["id"], "Recovery stopped")
-        if not temporary.is_file():
-            raise RuntimeError("Rclone did not create the recovered file")
-        return
-
     client = s3_client()
     reporter = _ThrottledByteProgress(job)
 
@@ -5009,8 +4800,7 @@ def process_recover(job: dict[str, Any]) -> None:
     temporary = destination.with_name(
         f".{destination.name}.restore-{uuid.uuid4().hex}.tmp"
     )
-    is_crypt = vault_encrypts_content(job)
-    message = "Downloading and decrypting" if is_crypt else "Downloading"
+    message = "Downloading"
     set_job(job["id"], "downloading", message)
     try:
         download_exact_version_plaintext(
@@ -5354,15 +5144,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
     except Exception as exc:
         if _claim_is_lost(int(job["id"])):
             return False
-        secrets = None
-        if job.get("encryption_mode") == "crypt" and job.get(
-            "crypt_password_ciphertext"
-        ):
-            try:
-                secrets = secrets_for_vault(job)
-            except Exception:
-                secrets = None
-        message = safe_error_message(exc, secrets)
+        message = str(exc)
         failure_kind = (
             classify_upload_failure(message) if job["action"] == "upload" else ""
         )

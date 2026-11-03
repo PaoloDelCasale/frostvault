@@ -20,9 +20,6 @@
         "enabled": {
           "type": "boolean"
         },
-        "encryption_mode": {
-          "type": "string"
-        },
         "id": {
           "type": "number"
         },
@@ -422,13 +419,6 @@
         "state"
       ],
       "type": "object"
-    },
-    "EncryptionMode": {
-      "enum": [
-        "plain",
-        "crypt"
-      ],
-      "type": "string"
     },
     "FileOperationAction": {
       "description": "Job / file-operation types (issue #67).",
@@ -1370,62 +1360,6 @@
       ],
       "type": "object"
     },
-    "RecoveryConfirmRequest": {
-      "additionalProperties": true,
-      "properties": {
-        "acknowledged": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "acknowledged"
-      ],
-      "type": "object"
-    },
-    "RecoveryConfirmResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "recovery_custody_confirmed": {
-          "type": "boolean"
-        },
-        "recovery_custody_confirmed_at": {
-          "type": "string"
-        },
-        "vault_id": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "vault_id",
-        "recovery_custody_confirmed",
-        "recovery_custody_confirmed_at"
-      ],
-      "type": "object"
-    },
-    "RecoveryExportRequest": {
-      "additionalProperties": true,
-      "properties": {
-        "reason": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "reason"
-      ],
-      "type": "object"
-    },
-    "RecoveryExportResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "recovery_export": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "recovery_export"
-      ],
-      "type": "object"
-    },
     "RestoreEstimate": {
       "additionalProperties": true,
       "properties": {
@@ -1827,13 +1761,10 @@
       "type": "object"
     },
     "VaultCreateRequest": {
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
         "creation_mode": {
           "$ref": "#/components/schemas/VaultCreationMode"
-        },
-        "encryption_mode": {
-          "$ref": "#/components/schemas/EncryptionMode"
         },
         "name": {
           "type": "string"
@@ -1849,30 +1780,20 @@
         }
       },
       "required": [
-        "name",
-        "encryption_mode"
+        "name"
       ],
       "type": "object"
     },
     "VaultCreateResponse": {
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
         "creation_mode": {
           "$ref": "#/components/schemas/VaultCreationMode"
-        },
-        "encryption_mode": {
-          "$ref": "#/components/schemas/EncryptionMode"
         },
         "id": {
           "type": "number"
         },
         "name": {
-          "type": "string"
-        },
-        "recovery_custody_confirmed": {
-          "type": "boolean"
-        },
-        "recovery_export": {
           "type": "string"
         },
         "slug": {
@@ -1886,9 +1807,7 @@
         "id",
         "uuid",
         "slug",
-        "name",
-        "encryption_mode",
-        "recovery_custody_confirmed"
+        "name"
       ],
       "type": "object"
     },
@@ -2035,26 +1954,6 @@
           "additionalProperties": {
             "type": "string"
           },
-          "type": "object"
-        },
-        "recovery_material": {
-          "additionalProperties": true,
-          "properties": {
-            "custody_confirmed": {
-              "type": "boolean"
-            },
-            "disposition": {
-              "type": "string"
-            },
-            "encryption_mode": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "encryption_mode",
-            "custody_confirmed",
-            "disposition"
-          ],
           "type": "object"
         },
         "root_identity_fingerprint": {

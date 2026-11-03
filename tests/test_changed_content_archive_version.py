@@ -431,7 +431,6 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
         *,
         payload: bytes,
         version_id: str,
-        crypt: bool = False,
     ) -> list[str]:
         commands: list[str] = []
 
@@ -459,9 +458,6 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             with (
                 patch("app.storage.settings", worker_settings),
                 patch("app.storage.validate_cloud_vault"),
-                patch("app.storage.rclone_remote_is_crypt", return_value=crypt),
-                patch("app.storage.vault_encrypts_content", return_value=crypt),
-                patch("app.storage.vault_encrypts_names", return_value=False),
                 patch("app.storage.run_rclone", side_effect=fake_rclone),
                 patch("app.storage.run_rclone_stream", side_effect=fake_stream),
                 patch(
@@ -654,45 +650,31 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             self.assertEqual(versions[1]["provider_version_id"], "s3-retry")
             self.assertEqual(versions[1]["integrity"], "verified")
 
-    def test_abc_plain_and_crypt_keep_only_latest_recoverable_snapshot(self) -> None:
-        for crypt in (False, True):
-            with self.subTest(crypt=crypt), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                payloads = (b"A", b"BB", b"CCC")
-                source, database_path = self._prepare(root, payloads[0])
-                local = source / "report.txt"
-                for index, payload in enumerate(payloads, start=1):
-                    if index > 1:
-                        local.write_bytes(payload)
-                        with SQLiteConnection(str(database_path)) as connection:
-                            ArchiveCatalog(connection).observe_local_copy(
-                                vault_id=2,
-                                path="report.txt",
-                                file_type="regular",
-                                size=len(payload),
-                                mtime_ns=local.stat().st_mtime_ns,
-                                observed_at=f"2026-07-21T1{index}:00:00+00:00",
-                            )
-                    self._run_upload(
-                        database_path,
-                        payload=payload,
-                        version_id=f"s3-{index}",
-                        crypt=crypt,
-                    )
-                with SQLiteConnection(str(database_path)) as connection:
-                    catalog = ArchiveCatalog(connection)
-                    versions = catalog.list_versions(2, "report.txt")
-                    file_id = catalog.get_file_by_path(2, "report.txt")["id"]
-                    ids = {
-                        row["vault_file_id"]
-                        for row in connection.execute(
-                            "SELECT vault_file_id FROM archive_versions"
-                        ).fetchall()
-                    }
-                self.assertEqual(len(versions), 3)
-                self.assertEqual([row["provider_version_id"] for row in versions if row["recoverable"]], ["s3-3"])
-                self.assertTrue(all(row["availability"] == "purged" for row in versions[1:]))
-                self.assertEqual(ids, {file_id})
+    def test_abc_keep_only_latest_recoverable_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payloads = (b"A", b"BB", b"CCC")
+            source, database_path = self._prepare(root, payloads[0])
+            local = source / "report.txt"
+            for index, payload in enumerate(payloads, start=1):
+                if index > 1:
+                    local.write_bytes(payload)
+                    with SQLiteConnection(str(database_path)) as connection:
+                        ArchiveCatalog(connection).observe_local_copy(
+                            vault_id=2, path="report.txt", file_type="regular", size=len(payload),
+                            mtime_ns=local.stat().st_mtime_ns,
+                            observed_at=f"2026-07-21T1{index}:00:00+00:00",
+                        )
+                self._run_upload(database_path, payload=payload, version_id=f"s3-{index}")
+            with SQLiteConnection(str(database_path)) as connection:
+                catalog = ArchiveCatalog(connection)
+                versions = catalog.list_versions(2, "report.txt")
+                file_id = catalog.get_file_by_path(2, "report.txt")["id"]
+                ids = {row["vault_file_id"] for row in connection.execute("SELECT vault_file_id FROM archive_versions").fetchall()}
+            self.assertEqual(len(versions), 3)
+            self.assertEqual([row["provider_version_id"] for row in versions if row["recoverable"]], ["s3-3"])
+            self.assertTrue(all(row["availability"] == "purged" for row in versions[1:]))
+            self.assertEqual(ids, {file_id})
 
 
 if __name__ == "__main__":

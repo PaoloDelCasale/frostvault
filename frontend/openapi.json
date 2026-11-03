@@ -21,9 +21,6 @@
           "enabled": {
             "type": "boolean"
           },
-          "encryption_mode": {
-            "type": "string"
-          },
           "id": {
             "type": "number"
           },
@@ -542,13 +539,6 @@
           "state"
         ],
         "type": "object"
-      },
-      "EncryptionMode": {
-        "enum": [
-          "plain",
-          "crypt"
-        ],
-        "type": "string"
       },
       "FileAction": {
         "properties": {
@@ -1983,78 +1973,6 @@
         ],
         "type": "object"
       },
-      "RecoveryConfirm": {
-        "additionalProperties": false,
-        "properties": {
-          "acknowledged": {
-            "default": true,
-            "title": "Acknowledged",
-            "type": "boolean"
-          }
-        },
-        "title": "RecoveryConfirm",
-        "type": "object"
-      },
-      "RecoveryConfirmRequest": {
-        "additionalProperties": true,
-        "properties": {
-          "acknowledged": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "acknowledged"
-        ],
-        "type": "object"
-      },
-      "RecoveryConfirmResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "recovery_custody_confirmed": {
-            "type": "boolean"
-          },
-          "recovery_custody_confirmed_at": {
-            "type": "string"
-          },
-          "vault_id": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "vault_id",
-          "recovery_custody_confirmed",
-          "recovery_custody_confirmed_at"
-        ],
-        "type": "object"
-      },
-      "RecoveryExportRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "reason": {
-            "maxLength": 500,
-            "minLength": 3,
-            "title": "Reason",
-            "type": "string"
-          }
-        },
-        "required": [
-          "reason"
-        ],
-        "title": "RecoveryExportRequest",
-        "type": "object"
-      },
-      "RecoveryExportResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "recovery_export": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "recovery_export"
-        ],
-        "type": "object"
-      },
       "RestoreEstimate": {
         "additionalProperties": true,
         "properties": {
@@ -2607,13 +2525,10 @@
         "type": "object"
       },
       "VaultCreateRequest": {
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
           "creation_mode": {
             "$ref": "#/components/schemas/VaultCreationMode"
-          },
-          "encryption_mode": {
-            "$ref": "#/components/schemas/EncryptionMode"
           },
           "name": {
             "type": "string"
@@ -2629,30 +2544,20 @@
           }
         },
         "required": [
-          "name",
-          "encryption_mode"
+          "name"
         ],
         "type": "object"
       },
       "VaultCreateResponse": {
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
           "creation_mode": {
             "$ref": "#/components/schemas/VaultCreationMode"
-          },
-          "encryption_mode": {
-            "$ref": "#/components/schemas/EncryptionMode"
           },
           "id": {
             "type": "number"
           },
           "name": {
-            "type": "string"
-          },
-          "recovery_custody_confirmed": {
-            "type": "boolean"
-          },
-          "recovery_export": {
             "type": "string"
           },
           "slug": {
@@ -2666,9 +2571,7 @@
           "id",
           "uuid",
           "slug",
-          "name",
-          "encryption_mode",
-          "recovery_custody_confirmed"
+          "name"
         ],
         "type": "object"
       },
@@ -2815,26 +2718,6 @@
             "additionalProperties": {
               "type": "string"
             },
-            "type": "object"
-          },
-          "recovery_material": {
-            "additionalProperties": true,
-            "properties": {
-              "custody_confirmed": {
-                "type": "boolean"
-              },
-              "disposition": {
-                "type": "string"
-              },
-              "encryption_mode": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "encryption_mode",
-              "custody_confirmed",
-              "disposition"
-            ],
             "type": "object"
           },
           "root_identity_fingerprint": {
@@ -3317,18 +3200,12 @@
       },
       "VaultSelfServiceCreate": {
         "additionalProperties": false,
-        "description": "Self-service vault creation payload (issues #7, #6, and #150).\n\nLabels and encryption_mode are accepted. Adoption adds a\nconstrained ``volume_alias`` + ``relative_path`` pair \u2014 never an absolute\nfilesystem path, S3 identity, rclone remote, or crypt secret.",
+        "description": "Self-service vault creation payload (issues #7, #6, and #150).\n\nLabels are accepted. Adoption adds a\nconstrained ``volume_alias`` + ``relative_path`` pair \u2014 never an absolute\nfilesystem path, S3 identity, or rclone remote.",
         "properties": {
           "creation_mode": {
             "default": "empty",
             "pattern": "^(empty|adopt)$",
             "title": "Creation Mode",
-            "type": "string"
-          },
-          "encryption_mode": {
-            "default": "plain",
-            "pattern": "^(plain|crypt)$",
-            "title": "Encryption Mode",
             "type": "string"
           },
           "name": {
@@ -5246,82 +5123,6 @@
         "summary": "Preview Vault Operation Globs"
       }
     },
-    "/api/vault/recovery/confirm": {
-      "post": {
-        "operationId": "confirm_vault_recovery_custody_api_vault_recovery_confirm_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RecoveryConfirm"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RecoveryConfirmResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Confirm Vault Recovery Custody"
-      }
-    },
-    "/api/vault/recovery/export": {
-      "post": {
-        "operationId": "reexport_vault_recovery_secret_api_vault_recovery_export_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RecoveryExportRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RecoveryExportResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Reexport Vault Recovery Secret"
-      }
-    },
     "/api/vaults": {
       "get": {
         "operationId": "list_vaults_api_vaults_get",
@@ -5340,7 +5141,7 @@
         "summary": "List Vaults"
       },
       "post": {
-        "description": "Create a Vault from the UI, the only way Vaults are created (#412).\n\nThe server generates the storage identity. Crypt vaults also receive a\none-time recovery export so the owner can confirm custody before uploads\nare admitted. Adoption binds any free directory of a custom Source Volume\nin place and starts an asynchronous local scan.",
+        "description": "Create a Vault from the UI, the only way Vaults are created (#412).\n\nThe server generates the plaintext storage identity.\nAdoption binds any free directory of a custom Source Volume\nin place and starts an asynchronous local scan.",
         "operationId": "create_owner_vault_api_vaults_post",
         "requestBody": {
           "content": {

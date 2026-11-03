@@ -8,14 +8,11 @@ immutable, randomly generated UUID, and the S3 namespace
 (``vaults/<uuid>/``) is derived from that UUID alone. Empty Vaults also
 receive ``/sources/managed/<uuid>``; adoption mode stores any free existing
 directory under a custom Source Volume instead. Callers can never
-choose S3 bucket/prefix/remote or crypt secrets: ``name``/``slug`` stay
+choose S3 bucket/prefix/remote: ``name``/``slug`` stay
 human-readable labels, and adoption accepts only a volume alias plus
 volume-relative path — never an arbitrary filesystem path.
 
-``encryption_mode`` (``plain`` or ``crypt``) is chosen at creation time and
-is immutable afterwards. Crypt vaults receive a unique sealed secret pair;
-mode changes are a guided migration to a *new* vault, never an in-place
-reinterpretation of existing object keys.
+Objects use readable keys under the immutable ``vaults/<uuid>/`` namespace.
 
 Vault row and local root are provisioned as one
 unit. Empty mode creates the managed directory inside the transaction;
@@ -36,7 +33,6 @@ from ..config import settings
 from ..database import INTEGRITY_ERRORS, db
 from . import source_directories
 from .source_layout import ensure_managed_directory, managed_vault_path
-from .vault_crypto import encrypt_vault_secrets, generate_crypt_secrets
 from .vault_relocation import enroll_vault_root_identity
 
 
@@ -65,7 +61,6 @@ class VaultAdoptionError(VaultCreationError):
 
 
 _SLUG_PATTERN = re.compile(r"[a-z0-9-]+")
-_ENCRYPTION_MODES = frozenset({"plain", "crypt"})
 _CREATION_MODES = frozenset({"empty", "adopt"})
 
 # This is deliberately an allowlist rather than a denylist. Vault inventory
@@ -81,7 +76,6 @@ _VAULT_INVENTORY_FIELDS = (
     "s3_prefix",
     "rclone_remote",
     "enabled",
-    "encryption_mode",
     "decommission_state",
     "decommissioned_at",
     "root_released_at",
@@ -105,44 +99,28 @@ def _slugify(value: str) -> str:
 def create_vault(
     name: str,
     slug: str | None = None,
-    encryption_mode: str = "plain",
     *,
     creation_mode: str = "empty",
     volume_alias: str | None = None,
     relative_path: str | None = None,
 ) -> dict[str, Any]:
-    """Create a Vault and return it with its sealed recovery ciphertexts.
+    """Create a Vault with an immutable plaintext cloud namespace.
 
     ``creation_mode`` is ``empty`` (default) or ``adopt``. Adoption requires
     ``volume_alias`` and ``relative_path`` naming a free directory inside a
-    custom Source Volume. Callers never supply S3 identity, crypt secrets,
-    or absolute filesystem paths.
+    custom Source Volume. Callers never supply S3 identity or absolute
+    filesystem paths.
     """
-    mode = (encryption_mode or "plain").strip().lower()
-    if mode not in _ENCRYPTION_MODES:
-        raise InvalidVaultName("encryption_mode must be 'plain' or 'crypt'")
     create_mode = (creation_mode or "empty").strip().lower()
     if create_mode not in _CREATION_MODES:
         raise InvalidVaultName("creation_mode must be 'empty' or 'adopt'")
 
     default_bucket = settings.vault_s3_bucket.strip()
-    if mode == "crypt":
-        default_remote = settings.vault_rclone_base_remote.strip()
-        if (
-            not default_bucket
-            or not default_remote
-            or not settings.archive_master_key.strip()
-        ):
-            raise VaultProvisioningUnavailable(
-                "Crypt vault creation requires VAULT_S3_BUCKET, "
-                "VAULT_RCLONE_BASE_REMOTE, and ARCHIVE_MASTER_KEY"
-            )
-    else:
-        default_remote = settings.vault_rclone_remote.strip()
-        if not default_bucket or not default_remote:
-            raise VaultProvisioningUnavailable(
-                "Vault creation is not configured on this server"
-            )
+    default_remote = settings.vault_rclone_remote.strip()
+    if not default_bucket or not default_remote:
+        raise VaultProvisioningUnavailable(
+            "Vault creation is not configured on this server"
+        )
 
     clean_name = name.strip()
     if not clean_name:
@@ -176,13 +154,6 @@ def create_vault(
     else:
         source_root = ""  # resolved under the shared Vault-root lock below
 
-    password_ciphertext = None
-    password2_ciphertext = None
-    if mode == "crypt":
-        sealed = encrypt_vault_secrets(generate_crypt_secrets())
-        password_ciphertext = sealed.password_ciphertext
-        password2_ciphertext = sealed.password2_ciphertext
-
     directory_created = False
     try:
         with db() as connection:
@@ -201,14 +172,12 @@ def create_vault(
                 """
                 INSERT INTO vaults(
                     uuid, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote, encryption_mode,
-                    crypt_password_ciphertext, crypt_password2_ciphertext
+                    rclone_remote
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING
                     id, uuid, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote, enabled, encryption_mode,
-                    recovery_custody_confirmed_at, decommission_state,
+                    rclone_remote, enabled, decommission_state,
                     decommissioned_at, root_released_at
                 """,
                 (
@@ -219,9 +188,6 @@ def create_vault(
                     default_bucket,
                     s3_prefix,
                     default_remote,
-                    mode,
-                    password_ciphertext,
-                    password2_ciphertext,
                 ),
             ).fetchone()
             if not adopting:
@@ -252,8 +218,4 @@ def create_vault(
         if directory_created:
             shutil.rmtree(source_root, ignore_errors=True)
         raise
-    return {
-        **vault,
-        "crypt_password_ciphertext": password_ciphertext,
-        "crypt_password2_ciphertext": password2_ciphertext,
-    }
+    return vault

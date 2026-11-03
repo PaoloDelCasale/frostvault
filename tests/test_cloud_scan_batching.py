@@ -92,7 +92,6 @@ def _run_scan(
     with (
         patch("app.database.settings", test_settings),
         patch("app.storage.validate_cloud_vault"),
-        patch("app.storage.rclone_remote_is_crypt", return_value=False),
         patch("app.storage.s3_client", return_value=client),
     ):
         return scan_cloud(
@@ -373,7 +372,6 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             with (
                 patch("app.database.settings", test_settings),
                 patch("app.storage.validate_cloud_vault"),
-                patch("app.storage.rclone_remote_is_crypt", return_value=False),
                 patch(
                     "app.storage.s3_client",
                     return_value=SimpleNamespace(

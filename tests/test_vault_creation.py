@@ -80,7 +80,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         self.assertNotEqual(first["s3_prefix"], second["s3_prefix"])
 
     def test_the_service_never_accepts_caller_chosen_storage_identity(self) -> None:
-        # Labels, encryption, and constrained adoption coordinates are allowed.
+        # Only labels and constrained adoption coordinates are allowed.
         # Absolute source_root, S3 identity, rclone remote, and crypt secrets
         # are absent from the signature (issue #150 seam 9).
         signature = inspect.signature(vaults_service.create_vault)
@@ -89,7 +89,6 @@ class VaultCreationServiceTestCase(unittest.TestCase):
             [
                 "name",
                 "slug",
-                "encryption_mode",
                 "creation_mode",
                 "volume_alias",
                 "relative_path",

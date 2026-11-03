@@ -24,7 +24,8 @@ Attach `infra/terraform/archive-bucket/iam/archive-operator-policy.json` to the
 archive operator identity. Replace `${archive_bucket_name}` with your bucket
 name. The policy grants:
 
-- bucket list, location, versioning, lifecycle, and tagging
+- bucket list, location, versioning, Block Public Access read, lifecycle, and tagging
+  (`s3:GetBucketPublicAccessBlock` is required at bucket scope)
 - object upload, version read, restore, and tagging
 - delete object/version for the accepted single-identity deletion model
 
@@ -56,11 +57,24 @@ include remediation hints, for example:
 
 - bucket name still a placeholder
 - versioning suspended or disabled
+- any of `BlockPublicAcls`, `IgnorePublicAcls`, `BlockPublicPolicy`, or
+  `RestrictPublicBuckets` is false, missing, or not an explicit boolean `true`
+- `GetPublicAccessBlock` is denied, unsupported, fails, or returns missing state
 - region mismatch with `AWS_DEFAULT_REGION`
-- missing `s3:GetBucketVersioning` or `s3:HeadBucket`
+- missing `s3:GetBucketVersioning`, `s3:GetBucketPublicAccessBlock`, or bucket-list permission for `HeadBucket`
 
-Fix the reported issue and retry the operation. Upload and cleanup remain
-blocked until versioning is enabled.
+Fix the reported issue and retry. Cloud scans, uploads, recovery, rename and
+local cleanup remain blocked until versioning and **all four bucket-level BPA
+flags** are confirmed enabled. Account-level BPA alone is not sufficient proof.
+S3-compatible endpoints must implement the same API; there is no CI/provider
+bypass. Grant read permission to the application, not permission to change BPA.
+
+Vault keys are readable `vaults/<uuid>/<relative-path>` and content is stored
+without client-side encryption. AWS SSE-S3 (`AES256`) and TLS remain in place;
+metadata backup ciphertext under `system/backups/` remains Fernet-encrypted.
+Anyone with authorized object-read credentials can read photos and names: use
+MFA and a bucket-scoped IAM policy. No real bucket configuration is changed by
+an application migration or preflight.
 
 ## Lifecycle policy tagging
 
@@ -96,7 +110,7 @@ profiles. There is only one recoverable copy per file.
 During each vault scan the application rebuilds only its own lifecycle rules
 (`psa-policy-<uuid>` IDs) and merges them with existing bucket rules such as the
 Terraform multipart-abort baseline. Rules filter objects by the `psa:policy-id`
-tag, so crypt vaults do not need readable key prefixes. The sync aborts before
+tag. The sync aborts before
 exceeding the S3 limit of 1,000 lifecycle rules per bucket.
 
 Built-in guided profiles:
@@ -121,8 +135,10 @@ Detected drift updates storage class, applied policy tags, and availability
 
 - **Terraform changes**: run `terraform plan` in a maintenance window; bucket
   settings are updated in place where AWS allows it.
-- **Versioning must stay enabled**: suspending versioning blocks destructive
-  local cleanup and new uploads that rely on immutable Archive Versions.
+- **Versioning and BPA must stay enabled**: suspending versioning or disabling
+  any BPA flag blocks operations. Existing application IAM identities need the
+  new `s3:GetBucketPublicAccessBlock` permission before deployment. Review/apply
+  bucket flags yourself; the application only reads them.
 - **Lifecycle rules**: the Terraform module only manages the multipart-abort
   baseline. Application-managed profiles enforce the 1,000-rule bucket limit.
   Migration `0050_current_snapshot_only` makes no S3 calls; existing
@@ -160,6 +176,7 @@ Detected drift updates storage class, applied policy tags, and availability
 | Symptom | Action |
 |--------|--------|
 | Preflight reports versioning disabled | Re-enable versioning in S3 console or re-apply Terraform |
+| BPA not fully enabled or not verifiable | Enable all four bucket flags; grant `s3:GetBucketPublicAccessBlock`; use an API-compatible provider |
 | Region mismatch | Set `AWS_DEFAULT_REGION` to the bucket region from `terraform output` |
 | Access denied on preflight | Attach or update IAM policy from `iam/archive-operator-policy.json` |
 | Upload fails without VersionId | Same as versioning disabled; fix bucket baseline first |

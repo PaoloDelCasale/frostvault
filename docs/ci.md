@@ -17,7 +17,7 @@ Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.y
 | Frontend production build | Vite production build only (`npm run build:ci`); TypeScript is already checked in the parallel typecheck job. | None. |
 | Playwright e2e (mobile-375 / desktop-1280) | Chromium Playwright against uvicorn + SQLite with seeded fixtures, split into two parallel projects: 375×667 and 1280×800. | None. Placeholder AWS env only; no live cloud calls. Browsers cached under `~/.cache/ms-playwright`. Uses `E2E_PYTHON=python` (setup-python on PATH; no repo `.venv` in CI). Failure screenshots upload as `playwright-e2e-failures-<project>`; successful 375px shots as `playwright-e2e-375px`. |
 | Production image PostgreSQL backup | Builds the production Docker image, checks `pg_dump`/`pg_restore`/`createdb`/`dropdb`/`psql`, then runs Alembic + `backup_upgrade --skip-upgrade` + isolated restore verification against `postgres:16` | Ephemeral Postgres service only. |
-| S3-compatible integrity (MinIO) | Real Rclone upload/recovery SHA-256 proofs against a versioned S3-compatible endpoint (plain, crypt, empty, Unicode, multipart cutoff) plus prefix cleanup | Ephemeral moto S3 server (`moto[server]` pinned, from PyPI) on `127.0.0.1:9000`. No AWS account. The job keeps its historical name because release gates require it; MinIO no longer publishes community images (Docker Hub `minio/minio` is gone and `quay.io/minio/minio` refuses anonymous pulls). |
+| S3-compatible integrity (MinIO) | Real Rclone upload/recovery SHA-256 proofs against a versioned S3-compatible endpoint (plaintext, empty, Unicode, multipart cutoff; all four bucket BPA flags required) plus prefix cleanup | Ephemeral moto S3 server (`moto[server]` pinned, from PyPI) on `127.0.0.1:9000`. No AWS account. The job keeps its historical name because release gates require it; MinIO no longer publishes community images (Docker Hub `minio/minio` is gone and `quay.io/minio/minio` refuses anonymous pulls). |
 
 Failed S3-compatible cleanup writes `artifacts/s3-cleanup-report.json` and uploads it as a
 workflow artifact. Rerun cleanup locally or in CI with:
@@ -27,7 +27,6 @@ export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_ENDPOINT_URL=http://1
 python -m app.services.s3_prefix_cleanup_cli \
   --bucket archive-ci \
   --prefix ci-runs \
-  --prefix ci-crypt \
   --report-path artifacts/s3-cleanup-report.json
 ```
 
