@@ -18,5 +18,13 @@ class StoragePlanMigrationTests(unittest.TestCase):
     def test_heterogeneous_folder_policies_stop_before_ddl(self):
         self.run_contract(assert_ambiguous_plan_refused)
 
+    def test_missing_default_and_redundant_pins_map_to_standard(self):
+        from tests.storage_plan_safety_contract import assert_standard_plan_mapping
+        self.run_contract(assert_standard_plan_mapping)
+
+    def test_unsafe_legacy_namespaces_stop_before_ddl(self):
+        from tests.storage_plan_safety_contract import assert_unsafe_namespaces_refused
+        self.run_contract(assert_unsafe_namespaces_refused)
+
     def test_pins_on_transitioning_vault_stop_before_ddl(self):
         self.run_contract(assert_ambiguous_plan_refused, pinned=True)
