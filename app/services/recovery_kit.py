@@ -13,7 +13,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet
 
-from ..config import settings
+from ..config import settings, is_placeholder
 
 
 def now_iso() -> str:
@@ -27,12 +27,13 @@ class RecoveryKitUnavailable(ValueError):
 def kit_fingerprint(config: Any = None) -> str:
     config = config or settings
     try:
-        raw = str(config.archive_master_key).encode("ascii")
+        raw = str(config.archive_master_key).strip().encode("ascii")
         Fernet(raw)
         key = base64.urlsafe_b64decode(raw)
     except (ValueError, TypeError, UnicodeError):
         raise RecoveryKitUnavailable("Recovery Kit requires a valid ARCHIVE_MASTER_KEY") from None
-    if not config.vault_s3_bucket or not config.aws_region:
+    if (not config.vault_s3_bucket or not config.aws_region
+            or is_placeholder(config.vault_s3_bucket, "BUCKET-NAME", "REPLACE-WITH-BUCKET-NAME")):
         raise RecoveryKitUnavailable("Recovery Kit requires bucket and region configuration")
     identity = json.dumps([config.vault_s3_bucket, config.aws_region], separators=(",", ":")).encode()
     return hashlib.sha256(b"frostvault-recovery-kit-v1\0" + key + identity).hexdigest()[:24]
@@ -75,7 +76,9 @@ PY
    createdb frostvault_restored
    pg_restore --exit-on-error --no-owner --no-acl -d frostvault_restored restore.dump
    Validate counts and schema revision with the matching release. Point PGDATABASE
-   at frostvault_restored and run python -m app.backup_upgrade if an upgrade is
+   at frostvault_restored and UNSET DATABASE_URL (or securely replace it with the
+   restored DSN): FrostVault's DATABASE_URL takes precedence over PG*. Verify the
+   target, then run python -m app.backup_upgrade if an upgrade is
    required. Never force-stamp an unknown/ahead revision. Preserve deployment
    settings independently; changes after the backup must be reapplied manually.
 5. BEFORE starting FrostVault, register the backup date in that restored database:
@@ -128,7 +131,7 @@ def build_recovery_kit(config: Any = None) -> bytes:
     return json.dumps({
         "format": "frostvault-recovery-kit-v1",
         "fingerprint": fingerprint,
-        "ARCHIVE_MASTER_KEY": config.archive_master_key,
+        "ARCHIVE_MASTER_KEY": config.archive_master_key.strip(),
         "bucket": config.vault_s3_bucket,
         "region": config.aws_region,
         "instructions": INSTRUCTIONS,

@@ -33,6 +33,13 @@ class RecoveryKitTests(unittest.TestCase):
         self.assertEqual(current, recovery_kit.kit_fingerprint(self.config))
         self.assertEqual(len(current), 24)
 
+    def test_key_normalization_matches_metadata_backup_key_handling(self):
+        padded = replace(self.config, archive_master_key=" \n" + self.config.archive_master_key + "\n ")
+        self.assertEqual(recovery_kit.kit_fingerprint(padded), recovery_kit.kit_fingerprint(self.config))
+        self.assertTrue(json.loads(recovery_kit.build_recovery_kit(padded))["ARCHIVE_MASTER_KEY"] == self.config.archive_master_key)
+        with self.assertRaises(recovery_kit.RecoveryKitUnavailable):
+            recovery_kit.build_recovery_kit(replace(self.config, vault_s3_bucket="BUCKET-NAME"))
+
     def test_invalid_key_fails_without_exposing_material(self):
         with self.assertRaises(recovery_kit.RecoveryKitUnavailable) as caught:
             recovery_kit.build_recovery_kit(replace(self.config, archive_master_key="invalid-test-material"))

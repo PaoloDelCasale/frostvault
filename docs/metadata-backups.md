@@ -124,7 +124,10 @@ the private scratch directory. The downloaded kit includes these steps offline.
    ```
 
 4. Validate metadata counts and revision against the matching release. Point
-   `PGDATABASE` at the restored database. For a supported older revision use
+   `PGDATABASE` at the restored database and **unset `DATABASE_URL`**, or securely
+   replace that DSN with the restored database's DSN: a configured `DATABASE_URL`
+   takes precedence over `PG*` for FrostVault commands. Verify the target before
+   any application command. For a supported older revision use
    `python -m app.backup_upgrade`; unknown/ahead revisions require the matching
    release, never forced stamps. Reapply non-secret deployment settings as needed.
 5. **Before starting the app**, register the actual backup date from the saved
