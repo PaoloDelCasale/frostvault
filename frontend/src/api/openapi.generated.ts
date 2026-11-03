@@ -1287,13 +1287,17 @@ export interface components {
             /** Reason */
             reason: string;
         };
-        /** @description Directory aggregate as returned by /api/files browse mode. */
+        /** @description Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed. */
         DirectoryListItem: {
             available_actions?: {
                 [key: string]: number;
             };
             cloud_size?: number;
             item_count: number;
+            last_known_at?: string | null;
+            last_known_states?: {
+                [key: string]: number;
+            };
             local_size?: number;
             name: string;
             path: string;
@@ -1385,6 +1389,7 @@ export interface components {
             items: components["schemas"]["ArchiveListItem"][];
             mode: string;
             page: number;
+            protection_suspended?: boolean;
             total: number;
         } & {
             [key: string]: unknown;
@@ -1739,6 +1744,11 @@ export interface components {
         StatsResponse: {
             active_jobs: number;
             delete_enabled: boolean;
+            last_known_states?: {
+                [key: string]: number;
+            };
+            protection_state?: string | null;
+            protection_suspended?: boolean;
             runtime: {
                 last_error?: string | null;
             } & {
@@ -1949,18 +1959,21 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** @description Vault File row as returned by /api/files (browse or search). */
+        /** @description Vault File protection observation: pending, protected, problem, unconfirmed or cloud_only. Restore progress is independent. */
         VaultFileListItem: {
             availability?: string | null;
             cleanup_eligible?: boolean;
             cloud_exists?: number | boolean;
             cloud_size?: number | null;
             integrity?: string | null;
+            last_known_at?: string | null;
+            last_known_state?: string;
             local_exists?: number | boolean;
             local_file_type?: string | null;
             local_size?: number | null;
             name: string;
             path: string;
+            previous_snapshot_protected?: boolean;
             recover_eligible?: boolean;
             recoverable_version_count?: number;
             restore_expiry?: string | null;

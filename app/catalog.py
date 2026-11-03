@@ -5,6 +5,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
 from .services.job_admission import TERMINAL_JOB_STATUSES, lock_vault
+from .services.protection_states import (
+    STATE_SQL, VISIBLE_SQL, LATEST_JOIN_SQL, aggregate_state, project_file,
+)
 from .services.directory_aggregates import (
     count_child_directories,
     ensure_directory_aggregates,
@@ -72,8 +75,9 @@ def _within_rename_window(left: Any, right: Any) -> bool:
 class ArchiveCatalog:
     """Keep versioned file invariants behind one persistence interface."""
 
-    def __init__(self, connection: Any):
+    def __init__(self, connection: Any, *, protection_unconfirmed: bool = False):
         self.connection = connection
+        self.protection_unconfirmed = protection_unconfirmed
         self.last_skipped_same_class = 0
         self.last_listing_rows_materialized = 0
         self._storage_class_source_supported: bool | None = None
@@ -2271,98 +2275,11 @@ class ArchiveCatalog:
             )
             clauses.append("fp.path LIKE %s ESCAPE '\\'")
             params.append(f"{escaped}/%")
+        clauses.append(VISIBLE_SQL)
         rows = self.connection.execute(
-            f"""
-            SELECT
-                fp.path,
-                lc.presence AS local_presence,
-                lc.file_type AS local_file_type,
-                lc.size AS local_size,
-                lc.plaintext_sha256 AS local_sha256,
-                lc.matched_archive_version_id,
-                lc.cloud_only_version_id,
-                av.id AS archive_version_id,
-                av.size AS cloud_size,
-                av.storage_class,
-                av.plaintext_sha256 AS version_sha256,
-                av.integrity,
-                av.availability,
-                av.restore_state,
-                av.restore_expiry,
-                (
-                    SELECT COUNT(*)
-                    FROM archive_versions recoverable
-                    WHERE recoverable.vault_file_id=vf.id
-                      AND recoverable.integrity='verified'
-                      AND recoverable.availability='available'
-                ) AS recoverable_version_count
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-            LEFT JOIN archive_versions av
-              ON av.id=(
-                  SELECT latest.id
-                  FROM archive_versions latest
-                  WHERE latest.vault_file_id=vf.id
-                    AND latest.availability NOT IN ('missing', 'purged')
-                  ORDER BY latest.version_number DESC
-                  LIMIT 1
-              )
-            WHERE {" AND ".join(clauses)}
-            ORDER BY lower(fp.path)
-            """,
-            params,
+            self._file_row_select_sql(clauses) + " ORDER BY lower(fp.path)", params,
         ).fetchall()
-        result = []
-        for row in rows:
-            local_exists = row["local_presence"] in {"present", "unsupported"}
-            cloud_exists = row["archive_version_id"] is not None
-            if not local_exists and not cloud_exists:
-                continue
-            state = (
-                "restoring"
-                if row["restore_state"] == "restoring"
-                else "both"
-                if local_exists and cloud_exists
-                else "local_only"
-                if local_exists
-                else "cloud_only"
-            )
-            upload_eligible = local_copy_is_upload_eligible(row)
-            recoverable_count = int(row["recoverable_version_count"] or 0)
-            recover_eligible = not local_exists and recoverable_count > 0
-            cleanup_eligible = (
-                row["local_presence"] == "present"
-                and row["local_file_type"] == "regular"
-                and cloud_exists
-                and row["integrity"] == "verified"
-                and row["availability"] == "available"
-                and row["matched_archive_version_id"] == row["archive_version_id"]
-                and row["local_sha256"] is not None
-                and row["local_sha256"] == row["version_sha256"]
-            )
-            result.append(
-                {
-                    "path": row["path"],
-                    "local_exists": int(local_exists),
-                    "local_size": row["local_size"],
-                    "local_file_type": row["local_file_type"],
-                    "cloud_exists": int(cloud_exists),
-                    "cloud_size": row["cloud_size"],
-                    "storage_class": row["storage_class"],
-                    "integrity": row["integrity"],
-                    "availability": row["availability"],
-                    "restore_state": row["restore_state"],
-                    "restore_expiry": row["restore_expiry"],
-                    "state": state,
-                    "upload_eligible": upload_eligible,
-                    "recover_eligible": recover_eligible,
-                    "recoverable_version_count": recoverable_count,
-                    "cleanup_eligible": cleanup_eligible,
-                }
-            )
-        return result
+        return self._materialize_file_items(vault_id, rows, name_from_path=True)
 
     def list_files_page(
         self,
@@ -2423,11 +2340,14 @@ class ArchiveCatalog:
         page_size: int,
     ) -> tuple[list[dict[str, Any]], int]:
         parent_path = directory or ""
+        folder_state = state
+        if self.protection_unconfirmed:
+            folder_state = "" if not state or state == "unconfirmed" else "__none__"
         folder_total = count_child_directories(
             self.connection,
             vault_id,
             parent_path=parent_path,
-            state_filter=state,
+            state_filter=folder_state,
         )
         file_total = self._count_direct_child_files(
             vault_id,
@@ -2442,9 +2362,10 @@ class ArchiveCatalog:
                 self.connection,
                 vault_id,
                 parent_path=parent_path,
-                state_filter=state,
+                state_filter=folder_state,
                 limit=page_size,
                 offset=offset,
+                unconfirmed=self.protection_unconfirmed,
             )
             items.extend(folders)
             remaining = page_size - len(items)
@@ -2498,39 +2419,21 @@ class ArchiveCatalog:
         else:
             clauses.append("fp.path NOT LIKE %s")
             params.append("%/%")
-        # Visibility and state classification mirror list_file_rows.
-        # Presence may be NULL when no local_copies row exists — avoid SQL
-        # three-valued NOT (NULL) filtering out legitimate cloud-only files.
-        local_exists = (
-            "coalesce(lc.presence, 'missing') IN ('present', 'unsupported')"
-        )
-        cloud_exists = "av.id IS NOT NULL"
-        clauses.append(f"(({local_exists}) OR ({cloud_exists}))")
+        clauses.append(VISIBLE_SQL)
         if state:
-            state_sql = {
-                "restoring": "av.restore_state = 'restoring'",
-                "both": (
-                    f"({local_exists}) AND ({cloud_exists}) "
-                    "AND coalesce(av.restore_state, '') <> 'restoring'"
-                ),
-                "local_only": (
-                    f"({local_exists}) AND NOT ({cloud_exists}) "
-                    "AND coalesce(av.restore_state, '') <> 'restoring'"
-                ),
-                "cloud_only": (
-                    f"NOT ({local_exists}) AND ({cloud_exists}) "
-                    "AND coalesce(av.restore_state, '') <> 'restoring'"
-                ),
-            }.get(state)
-            if state_sql is None:
-                clauses.append("1=0")
+            if self.protection_unconfirmed:
+                clauses.append("1=1" if state == "unconfirmed" else "1=0")
             else:
-                clauses.append(f"({state_sql})")
+                clauses.append(f"({STATE_SQL}) = %s")
+                params.append(state)
         return clauses, params
 
     def _file_row_select_sql(self, clauses: list[str]) -> str:
         return f"""
             SELECT
+                {STATE_SQL} AS protection_state,
+                greatest(lc.observed_at, av.verified_at, av.availability_checked_at)
+                    AS protection_observed_at,
                 fp.path,
                 lc.presence AS local_presence,
                 lc.file_type AS local_file_type,
@@ -2557,15 +2460,7 @@ class ArchiveCatalog:
             JOIN file_paths fp
               ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
             LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-            LEFT JOIN archive_versions av
-              ON av.id=(
-                  SELECT latest.id
-                  FROM archive_versions latest
-                  WHERE latest.vault_file_id=vf.id
-                    AND latest.availability NOT IN ('missing', 'purged')
-                  ORDER BY latest.version_number DESC
-                  LIMIT 1
-              )
+            {LATEST_JOIN_SQL}
             WHERE {" AND ".join(clauses)}
         """
 
@@ -2581,18 +2476,10 @@ class ArchiveCatalog:
         items: list[dict[str, Any]] = []
         for row in rows:
             local_exists = row["local_presence"] in {"present", "unsupported"}
-            cloud_exists = row["archive_version_id"] is not None
-            if not local_exists and not cloud_exists:
+            cloud_exists = row["archive_version_id"] is not None and row["availability"] not in {"missing", "purged"}
+            if not local_exists and row["archive_version_id"] is None:
                 continue
-            state = (
-                "restoring"
-                if row["restore_state"] == "restoring"
-                else "both"
-                if local_exists and cloud_exists
-                else "local_only"
-                if local_exists
-                else "cloud_only"
-            )
+            protection = project_file(row, unconfirmed=self.protection_unconfirmed)
             upload_eligible = local_copy_is_upload_eligible(row)
             recoverable_count = int(row["recoverable_version_count"] or 0)
             recover_eligible = not local_exists and recoverable_count > 0
@@ -2625,11 +2512,11 @@ class ArchiveCatalog:
                     "availability": row["availability"],
                     "restore_state": row["restore_state"],
                     "restore_expiry": row["restore_expiry"],
-                    "state": state,
-                    "upload_eligible": upload_eligible,
+                    **protection,
+                    "upload_eligible": upload_eligible and not self.protection_unconfirmed,
                     "recover_eligible": recover_eligible,
                     "recoverable_version_count": recoverable_count,
-                    "cleanup_eligible": cleanup_eligible,
+                    "cleanup_eligible": cleanup_eligible and protection["state"] == "protected",
                 }
             )
         return items
@@ -2651,15 +2538,7 @@ class ArchiveCatalog:
             JOIN file_paths fp
               ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
             LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-            LEFT JOIN archive_versions av
-              ON av.id=(
-                  SELECT latest.id
-                  FROM archive_versions latest
-                  WHERE latest.vault_file_id=vf.id
-                    AND latest.availability NOT IN ('missing', 'purged')
-                  ORDER BY latest.version_number DESC
-                  LIMIT 1
-              )
+            {LATEST_JOIN_SQL}
             WHERE {" AND ".join(clauses)}
             """,
             params,
@@ -2711,37 +2590,8 @@ class ArchiveCatalog:
             state=state,
             search=search,
         )
-        # Search ignores the root-only instr() clause added for browse.
-        # Rebuild clauses specifically for search.
-        clauses = ["vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'"]
-        params = [vault_id]
-        clauses.append("lower(fp.path) LIKE lower(%s)")
-        params.append(f"%{search}%")
-        local_exists = (
-            "coalesce(lc.presence, 'missing') IN ('present', 'unsupported')"
-        )
-        cloud_exists = "av.id IS NOT NULL"
-        clauses.append(f"(({local_exists}) OR ({cloud_exists}))")
-        if state:
-            state_sql = {
-                "restoring": "av.restore_state = 'restoring'",
-                "both": (
-                    f"({local_exists}) AND ({cloud_exists}) "
-                    "AND coalesce(av.restore_state, '') <> 'restoring'"
-                ),
-                "local_only": (
-                    f"({local_exists}) AND NOT ({cloud_exists}) "
-                    "AND coalesce(av.restore_state, '') <> 'restoring'"
-                ),
-                "cloud_only": (
-                    f"NOT ({local_exists}) AND ({cloud_exists}) "
-                    "AND coalesce(av.restore_state, '') <> 'restoring'"
-                ),
-            }.get(state)
-            if state_sql is None:
-                clauses.append("1=0")
-            else:
-                clauses.append(f"({state_sql})")
+        # The shared clauses already apply search, visibility and protection.
+
         total_row = self.connection.execute(
             f"""
             SELECT COUNT(*) AS total
@@ -2749,15 +2599,7 @@ class ArchiveCatalog:
             JOIN file_paths fp
               ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
             LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-            LEFT JOIN archive_versions av
-              ON av.id=(
-                  SELECT latest.id
-                  FROM archive_versions latest
-                  WHERE latest.vault_file_id=vf.id
-                    AND latest.availability NOT IN ('missing', 'purged')
-                  ORDER BY latest.version_number DESC
-                  LIMIT 1
-              )
+            {LATEST_JOIN_SQL}
             WHERE {" AND ".join(clauses)}
             """,
             params,
@@ -3236,72 +3078,25 @@ class ArchiveCatalog:
         return int(row["total"] or 0) if row is not None else 0
 
     def summary(self, vault_id: int) -> dict[str, Any]:
-        """Return archive state counts and byte totals via SQL aggregates.
-
-        Intentionally avoids ``list_file_rows`` and any Python-side walk of
-        Vault File rows so ``/api/stats`` stays bounded on large catalogs.
-        State classification mirrors ``list_file_rows`` (restoring / both /
-        local_only / cloud_only) and skips rows with neither a Local Copy nor a
-        non-missing/purged Archive Version.
-        """
+        """Bounded SQL rollup of the same observations used by file browsing."""
         rows = self.connection.execute(
-            """
-            WITH latest_versions AS (
-                SELECT
-                    av.vault_file_id AS vault_file_id,
-                    av.id AS archive_version_id,
-                    av.size AS cloud_size,
-                    av.restore_state AS restore_state,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY av.vault_file_id
-                        ORDER BY av.version_number DESC
-                    ) AS rn
-                FROM archive_versions av
-                WHERE av.vault_id=%s
-                  AND av.availability NOT IN ('missing', 'purged')
-            )
-            SELECT
-                classified.state AS state,
-                COUNT(*) AS total,
-                COALESCE(SUM(classified.local_bytes), 0) AS local_bytes,
-                COALESCE(SUM(classified.cloud_bytes), 0) AS cloud_bytes
+            f"""
+            SELECT classified.state, COUNT(*) AS total,
+                   coalesce(SUM(classified.local_bytes), 0) AS local_bytes,
+                   coalesce(SUM(classified.cloud_bytes), 0) AS cloud_bytes
             FROM (
-                SELECT
-                    CASE
-                        WHEN latest.restore_state = 'restoring' THEN 'restoring'
-                        WHEN (
-                            lc.presence IN ('present', 'unsupported')
-                            AND latest.archive_version_id IS NOT NULL
-                        ) THEN 'both'
-                        WHEN lc.presence IN ('present', 'unsupported') THEN 'local_only'
-                        WHEN latest.archive_version_id IS NOT NULL THEN 'cloud_only'
-                    END AS state,
-                    CASE
-                        WHEN lc.presence IN ('present', 'unsupported')
-                        THEN COALESCE(lc.size, 0)
-                        ELSE 0
-                    END AS local_bytes,
-                    CASE
-                        WHEN latest.archive_version_id IS NOT NULL
-                        THEN COALESCE(latest.cloud_size, 0)
-                        ELSE 0
-                    END AS cloud_bytes
+                SELECT {STATE_SQL} AS state,
+                    CASE WHEN lc.presence IN ('present', 'unsupported')
+                         THEN coalesce(lc.size, 0) ELSE 0 END AS local_bytes,
+                    CASE WHEN av.availability NOT IN ('missing', 'purged')
+                         THEN coalesce(av.size, 0) ELSE 0 END AS cloud_bytes
                 FROM vault_files vf
-                JOIN file_paths fp
-                  ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+                JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
                 LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-                LEFT JOIN latest_versions latest
-                  ON latest.vault_file_id=vf.id AND latest.rn=1
-                WHERE vf.vault_id=%s
-                  AND vf.status='active'
-                  AND (
-                        lc.presence IN ('present', 'unsupported')
-                     OR latest.archive_version_id IS NOT NULL
-                  )
-            ) AS classified
-            GROUP BY classified.state
-            """,
-            (vault_id, vault_id),
+                {LATEST_JOIN_SQL}
+                WHERE vf.vault_id=%s AND vf.status='active' AND {VISIBLE_SQL}
+            ) classified GROUP BY classified.state
+            """, (vault_id,),
         ).fetchall()
         states: dict[str, int] = {}
         local_bytes = 0
@@ -3321,8 +3116,13 @@ class ArchiveCatalog:
             """,
             (vault_id,),
         ).fetchone()["total"]
+        last_known_counts = dict(states)
+        if self.protection_unconfirmed and states:
+            states = {"unconfirmed": sum(states.values())}
         return {
             "states": states,
+            "protection_state": aggregate_state(states),
+            "last_known_states": last_known_counts,
             "storage": {
                 "local_bytes": local_bytes,
                 "cloud_bytes": cloud_bytes,
@@ -3598,5 +3398,7 @@ class ArchiveCatalog:
             if job is None:
                 continue
             job_ids.append(int(job["id"]))
+            if action == "upload":
+                self._mark_path_aggregates_dirty(vault_id, row["path"])
             total_bytes += size
         return job_ids, total_bytes, len(eligible)

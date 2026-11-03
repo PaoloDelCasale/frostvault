@@ -22,14 +22,16 @@ type StatCard = {
   value: string;
 };
 
-const STAT_CARD_COUNT = 6;
+const STAT_CARD_COUNT = 8;
 
 function buildCards(stats: StatsResponse): StatCard[] {
   const states = stats.states || {};
   const storage = stats.storage || { local_bytes: 0, cloud_bytes: 0 };
   return [
-    { labelKey: "state.both", value: formatCount(states.both || 0) },
-    { labelKey: "state.local_only", value: formatCount(states.local_only || 0) },
+    { labelKey: "state.protected", value: formatCount(states.protected || 0) },
+    { labelKey: "state.pending", value: formatCount(states.pending || 0) },
+    { labelKey: "state.problem", value: formatCount(states.problem || 0) },
+    { labelKey: "state.unconfirmed", value: formatCount(states.unconfirmed || 0) },
     { labelKey: "state.cloud_only", value: formatCount(states.cloud_only || 0) },
     { labelKey: "ui.local_space", value: formatBytes(storage.local_bytes || 0) },
     { labelKey: "ui.cloud_space", value: formatBytes(storage.cloud_bytes || 0) },
@@ -128,6 +130,7 @@ export function StatsSummary({
 
       {ready ? (
         <>
+          {stats.protection_suspended ? <p role="status" className="mb-2 text-sm font-bold">{t("state.protection_suspended")}</p> : null}
           {/* Compact form — below md */}
           <div
             data-testid="stats-compact"

@@ -472,7 +472,7 @@
       },
       "DirectoryListItem": {
         "additionalProperties": true,
-        "description": "Directory aggregate as returned by /api/files browse mode.",
+        "description": "Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed.",
         "properties": {
           "available_actions": {
             "additionalProperties": {
@@ -485,6 +485,18 @@
           },
           "item_count": {
             "type": "number"
+          },
+          "last_known_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_known_states": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
           },
           "local_size": {
             "type": "number"
@@ -775,6 +787,9 @@
           },
           "page": {
             "type": "number"
+          },
+          "protection_suspended": {
+            "type": "boolean"
           },
           "total": {
             "type": "number"
@@ -1965,6 +1980,21 @@
           "delete_enabled": {
             "type": "boolean"
           },
+          "last_known_states": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "protection_state": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "protection_suspended": {
+            "type": "boolean"
+          },
           "runtime": {
             "additionalProperties": {},
             "properties": {
@@ -2653,7 +2683,7 @@
       },
       "VaultFileListItem": {
         "additionalProperties": true,
-        "description": "Vault File row as returned by /api/files (browse or search).",
+        "description": "Vault File protection observation: pending, protected, problem, unconfirmed or cloud_only. Restore progress is independent.",
         "properties": {
           "availability": {
             "type": [
@@ -2682,6 +2712,15 @@
               "null"
             ]
           },
+          "last_known_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_known_state": {
+            "type": "string"
+          },
           "local_exists": {
             "type": [
               "number",
@@ -2705,6 +2744,9 @@
           },
           "path": {
             "type": "string"
+          },
+          "previous_snapshot_protected": {
+            "type": "boolean"
           },
           "recover_eligible": {
             "type": "boolean"

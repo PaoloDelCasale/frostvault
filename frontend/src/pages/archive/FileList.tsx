@@ -483,12 +483,7 @@ function ItemName({
 }
 
 const STATE_COUNT_ORDER: BadgeState[] = [
-  "both",
-  "local_only",
-  "cloud_only",
-  "restoring",
-  "missing",
-  "unsupported",
+  "protected", "pending", "problem", "unconfirmed", "cloud_only",
 ];
 
 type DirectoryStateBreakdownEntry = {
@@ -500,6 +495,10 @@ type DirectoryStateBreakdownEntry = {
 // Miniature two-tone versions of the primary state Badges: the fill uses
 // the Badge background and the inset outline uses its foreground colour.
 const STATE_DOT_CLASSES: Record<BadgeState, string> = {
+  protected: "bg-[var(--state-both-bg)] ring-1 ring-inset ring-[var(--state-both-fg)]/50",
+  pending: "bg-[var(--state-local-bg)] ring-1 ring-inset ring-[var(--state-local-fg)]/50",
+  problem: "bg-[var(--state-missing-bg)] ring-1 ring-inset ring-[var(--state-missing-fg)]/50",
+  unconfirmed: "bg-[var(--state-unsupported-bg)] ring-1 ring-inset ring-[var(--state-unsupported-fg)]/50",
   both:
     "bg-[var(--state-both-bg)] ring-1 ring-inset ring-[var(--state-both-fg)]/50",
   local_only:

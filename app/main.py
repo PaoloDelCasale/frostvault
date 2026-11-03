@@ -804,12 +804,12 @@ def build_directory_items(
             # any Vault File with a non-purged Archive Version under this prefix.
             has_cloud = bool(
                 row.get("cloud_exists")
-                or row["state"] in {"both", "cloud_only", "restoring"}
+                or row["state"] in {"protected", "cloud_only"}
             )
             action_flags = {
-                "upload": row.get("upload_eligible", row["state"] == "local_only"),
+                "upload": row.get("upload_eligible", row["state"] == "pending"),
                 "recover": row.get("recover_eligible", row["state"] == "cloud_only"),
-                "free-space": row.get("cleanup_eligible", row["state"] == "both"),
+                "free-space": row.get("cleanup_eligible", row["state"] == "protected"),
                 "cloud-purge": has_cloud,
             }
             for action, eligible in action_flags.items():
@@ -828,7 +828,8 @@ def build_directory_items(
         if not aggregate["matches_filter"]:
             continue
         states = aggregate["state_counts"]
-        state = next(iter(states)) if len(states) == 1 else "mixed"
+        from .services.protection_states import aggregate_state
+        state = aggregate_state(states)
         storage_classes = sorted(aggregate["storage_classes"])
         folder_items.append({
             "type": "directory",
@@ -1590,6 +1591,21 @@ def select_vault(
     return {**_api_message(request, "api.vault_selected")}
 
 
+def _protection_observation(connection: Any, vault: dict[str, Any], access: Any) -> tuple[bool, bool]:
+    from .services.component_health import load_vault_health
+    from .services.protection_states import observation_is_unconfirmed
+    from .services.operation_policies import get_policy
+
+    health = load_vault_health(connection, int(vault["id"]))
+    unconfirmed = (
+        not access.local_operations_allowed
+        or vault.get("relocation_state", "ready") != "ready"
+        or observation_is_unconfirmed(health)
+    )
+    suspended = not get_policy(connection, int(vault["id"])).auto_upload
+    return unconfirmed, suspended
+
+
 @app.get(
     "/api/files",
     response_model=response_model("FilesResponse"),
@@ -1605,8 +1621,10 @@ def list_files(
 ):
     """List Vault Files for the authenticated Owner's selected Vault."""
     directory = normalize_directory(directory, api=True)
+    access = vault_local_access(vault.get("source_root") or "")
     with db() as connection:
-        catalog = ArchiveCatalog(connection)
+        unconfirmed, suspended = _protection_observation(connection, vault, access)
+        catalog = ArchiveCatalog(connection, protection_unconfirmed=unconfirmed)
         listing = catalog.list_files_page(
             vault["id"],
             search=q,
@@ -1625,6 +1643,7 @@ def list_files(
         "directory": directory,
         "mode": listing["mode"],
         "aggregate_status": listing.get("aggregate_status", "ready"),
+        "protection_suspended": suspended,
     }
 
 
@@ -1637,7 +1656,8 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
     access = vault_local_access(source_root)
     with db() as connection:
         # Cheap SQL aggregates only — never materialize every Vault File row.
-        summary = ArchiveCatalog(connection).summary(vault["id"])
+        unconfirmed, suspended = _protection_observation(connection, vault, access)
+        summary = ArchiveCatalog(connection, protection_unconfirmed=unconfirmed).summary(vault["id"])
         from .services.component_health import (
             load_vault_health,
             runtime_fields_from_health,
@@ -1661,6 +1681,7 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
                 break
     return {
         **summary,
+        "protection_suspended": suspended,
         "runtime": runtime,
         "source_volume": {
             "alias": access.volume_alias,

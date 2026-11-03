@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
+from .protection_states import STATE_SQL, LATEST_JOIN_SQL, aggregate_state
+
 
 STATUS_READY = "ready"
 STATUS_REBUILD_REQUIRED = "rebuild_required"
@@ -57,10 +59,11 @@ _vault_maintenance_pending: set[int] = set()
 _maintenance_scheduling_enabled = True
 
 _STATE_COLUMNS = {
-    "local_only": "state_local_only",
+    "pending": "state_pending",
+    "protected": "state_protected",
+    "problem": "state_problem",
+    "unconfirmed": "state_unconfirmed",
     "cloud_only": "state_cloud_only",
-    "both": "state_both",
-    "restoring": "state_restoring",
 }
 
 _ACTION_COLUMNS = {
@@ -916,6 +919,7 @@ def _visible_file_select_sql(
         params.append(int(limit))
     sql = f"""
         SELECT
+            {STATE_SQL} AS protection_state,
             vf.id AS vault_file_id,
             fp.path,
             lc.presence AS local_presence,
@@ -942,15 +946,7 @@ def _visible_file_select_sql(
         JOIN file_paths fp
           ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
         LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-        LEFT JOIN archive_versions av
-          ON av.id=(
-              SELECT latest.id
-              FROM archive_versions latest
-              WHERE latest.vault_file_id=vf.id
-                AND latest.availability NOT IN ('missing', 'purged')
-              ORDER BY latest.version_number DESC
-              LIMIT 1
-          )
+        {LATEST_JOIN_SQL}
         WHERE {" AND ".join(clauses)}
         ORDER BY fp.path ASC
         {limit_sql}
@@ -1022,15 +1018,7 @@ def _contribution_from_row(row: Mapping[str, Any]) -> _FileContribution | None:
     cloud_exists = row["archive_version_id"] is not None
     if not local_exists and not cloud_exists:
         return None
-    state = (
-        "restoring"
-        if row["restore_state"] == "restoring"
-        else "both"
-        if local_exists and cloud_exists
-        else "local_only"
-        if local_exists
-        else "cloud_only"
-    )
+    state = str(row["protection_state"])
     local_size = int(row["local_size"] or 0) if row["local_size"] is not None else 0
     cloud_size = int(row["cloud_size"] or 0) if row["cloud_size"] is not None else 0
     total_size = (
@@ -1051,19 +1039,19 @@ def _contribution_from_row(row: Mapping[str, Any]) -> _FileContribution | None:
         and row["local_sha256"] is not None
         and row["local_sha256"] == row["version_sha256"]
     )
-    has_cloud = bool(cloud_exists or state in {"both", "cloud_only", "restoring"})
+    has_cloud = cloud_exists and row["availability"] not in {"missing", "purged"}
     path = str(row["path"])
     return _FileContribution(
         path=path,
         state=state,
         total_size=total_size,
         local_size=local_size if local_exists else 0,
-        cloud_size=cloud_size if cloud_exists else 0,
+        cloud_size=cloud_size if has_cloud else 0,
         upload_eligible=upload_eligible,
         recover_eligible=recover_eligible,
-        cleanup_eligible=cleanup_eligible,
+        cleanup_eligible=cleanup_eligible and state == "protected",
         has_cloud=has_cloud,
-        storage_class=row["storage_class"] if cloud_exists else None,
+        storage_class=row["storage_class"] if has_cloud else None,
     )
 
 
@@ -1073,133 +1061,39 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
     if not directory:
         return
     escaped = _escape_like(directory)
-    # Classification mirrors _contribution_from_row / list_file_rows exactly.
-    summary = connection.execute(
+    # Use the same SQL classification as files and statistics. The result is
+    # bounded to five states, regardless of descendant count.
+    select_sql, extra_params = _visible_file_select_sql(path_prefix=directory)
+    summaries = connection.execute(
         f"""
-        SELECT
-            COUNT(*) AS item_count,
-            COALESCE(SUM(classified.total_size), 0) AS total_size,
-            COALESCE(SUM(classified.local_size), 0) AS local_size,
-            COALESCE(SUM(classified.cloud_size), 0) AS cloud_size,
-            COALESCE(SUM(classified.state_local_only), 0) AS state_local_only,
-            COALESCE(SUM(classified.state_cloud_only), 0) AS state_cloud_only,
-            COALESCE(SUM(classified.state_both), 0) AS state_both,
-            COALESCE(SUM(classified.state_restoring), 0) AS state_restoring,
-            COALESCE(SUM(classified.upload_eligible), 0) AS action_upload,
-            COALESCE(SUM(classified.recover_eligible), 0) AS action_recover,
-            COALESCE(SUM(classified.cleanup_eligible), 0) AS action_free_space,
-            COALESCE(SUM(classified.has_cloud), 0) AS action_cloud_purge
-        FROM (
-            SELECT
-                CASE
-                    WHEN lc.size IS NOT NULL THEN lc.size
-                    ELSE COALESCE(av.size, 0)
-                END AS total_size,
-                CASE
-                    WHEN lc.presence IN ('present', 'unsupported')
-                    THEN COALESCE(lc.size, 0)
-                    ELSE 0
-                END AS local_size,
-                CASE
-                    WHEN av.id IS NOT NULL THEN COALESCE(av.size, 0)
-                    ELSE 0
-                END AS cloud_size,
-                CASE
-                    WHEN av.restore_state = 'restoring' THEN 0
-                    WHEN lc.presence IN ('present', 'unsupported')
-                     AND av.id IS NULL THEN 1
-                    ELSE 0
-                END AS state_local_only,
-                CASE
-                    WHEN av.restore_state = 'restoring' THEN 0
-                    WHEN (
-                        lc.presence IS NULL
-                        OR lc.presence NOT IN ('present', 'unsupported')
-                    ) AND av.id IS NOT NULL THEN 1
-                    ELSE 0
-                END AS state_cloud_only,
-                CASE
-                    WHEN av.restore_state = 'restoring' THEN 0
-                    WHEN lc.presence IN ('present', 'unsupported')
-                     AND av.id IS NOT NULL THEN 1
-                    ELSE 0
-                END AS state_both,
-                CASE
-                    WHEN av.restore_state = 'restoring' THEN 1
-                    ELSE 0
-                END AS state_restoring,
-                CASE
-                    WHEN lc.presence = 'present'
-                     AND lc.file_type = 'regular'
-                     AND (
-                        av.restore_state IS NULL
-                        OR av.restore_state <> 'restoring'
-                     )
-                     AND lc.cloud_only_version_id IS NULL
-                     AND NOT (
-                        av.id IS NOT NULL
-                        AND av.integrity = 'verified'
-                        AND av.availability = 'available'
-                        AND lc.matched_archive_version_id = av.id
-                        AND lc.plaintext_sha256 IS NOT NULL
-                        AND lc.plaintext_sha256 = av.plaintext_sha256
-                     ) THEN 1
-                    ELSE 0
-                END AS upload_eligible,
-                CASE
-                    WHEN (
-                        lc.presence IS NULL
-                        OR lc.presence NOT IN ('present', 'unsupported')
-                    )
-                     AND (
-                        SELECT COUNT(*)
-                        FROM archive_versions recoverable
-                        WHERE recoverable.vault_file_id = vf.id
-                          AND recoverable.integrity = 'verified'
-                          AND recoverable.availability = 'available'
-                     ) > 0 THEN 1
-                    ELSE 0
-                END AS recover_eligible,
-                CASE
-                    WHEN lc.presence = 'present'
-                     AND lc.file_type = 'regular'
-                     AND av.id IS NOT NULL
-                     AND av.integrity = 'verified'
-                     AND av.availability = 'available'
-                     AND lc.matched_archive_version_id = av.id
-                     AND lc.plaintext_sha256 IS NOT NULL
-                     AND lc.plaintext_sha256 = av.plaintext_sha256 THEN 1
-                    ELSE 0
-                END AS cleanup_eligible,
-                CASE
-                    WHEN av.id IS NOT NULL THEN 1
-                    ELSE 0
-                END AS has_cloud
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id = vf.id AND fp.valid_to IS NULL
-            LEFT JOIN local_copies lc ON lc.vault_file_id = vf.id
-            LEFT JOIN archive_versions av
-              ON av.id = (
-                  SELECT latest.id
-                  FROM archive_versions latest
-                  WHERE latest.vault_file_id = vf.id
-                    AND latest.availability NOT IN ('missing', 'purged')
-                  ORDER BY latest.version_number DESC
-                  LIMIT 1
-              )
-            WHERE vf.vault_id = %s
-              AND vf.status = 'active'
-              AND fp.path LIKE %s ESCAPE '\\'
-              AND (
-                    lc.presence IN ('present', 'unsupported')
-                 OR av.id IS NOT NULL
-              )
-        ) AS classified
-        """,
-        (int(vault_id), f"{escaped}/%"),
-    ).fetchone()
-    item_count = int(summary["item_count"] or 0) if summary else 0
+        SELECT protection_state, COUNT(*) AS item_count,
+            coalesce(SUM(coalesce(local_size, cloud_size, 0)), 0) AS total_size,
+            coalesce(SUM(CASE WHEN local_presence IN ('present', 'unsupported')
+                         THEN coalesce(local_size, 0) ELSE 0 END), 0) AS local_size,
+            coalesce(SUM(CASE WHEN availability NOT IN ('missing', 'purged')
+                         THEN coalesce(cloud_size, 0) ELSE 0 END), 0) AS cloud_size,
+            SUM(CASE WHEN local_presence='present' AND local_file_type='regular'
+                AND coalesce(restore_state, '') <> 'restoring'
+                AND cloud_only_version_id IS NULL
+                AND NOT coalesce(integrity='verified' AND availability='available'
+                    AND matched_archive_version_id=archive_version_id
+                    AND local_sha256 IS NOT NULL AND local_sha256=version_sha256, FALSE)
+                THEN 1 ELSE 0 END) AS action_upload,
+            SUM(CASE WHEN coalesce(local_presence, 'missing') NOT IN ('present', 'unsupported')
+                AND recoverable_version_count > 0 THEN 1 ELSE 0 END) AS action_recover,
+            SUM(CASE WHEN protection_state='protected' THEN 1 ELSE 0 END) AS action_free_space,
+            SUM(CASE WHEN availability NOT IN ('missing', 'purged')
+                THEN 1 ELSE 0 END) AS action_cloud_purge
+        FROM ({select_sql}) classified
+        WHERE local_presence IN ('present', 'unsupported') OR archive_version_id IS NOT NULL
+        GROUP BY protection_state
+        """, (int(vault_id), *extra_params),
+    ).fetchall()
+    summary = {key: sum(int(row[key] or 0) for row in summaries) for key in (
+        'item_count', 'total_size', 'local_size', 'cloud_size',
+        'action_upload', 'action_recover', 'action_free_space', 'action_cloud_purge',
+    )}
+    item_count = summary['item_count']
     if item_count <= 0:
         connection.execute(
             """
@@ -1248,12 +1142,7 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
         total_size=int(summary["total_size"] or 0),
         local_size=int(summary["local_size"] or 0),
         cloud_size=int(summary["cloud_size"] or 0),
-        state_counts={
-            "local_only": int(summary["state_local_only"] or 0),
-            "cloud_only": int(summary["state_cloud_only"] or 0),
-            "both": int(summary["state_both"] or 0),
-            "restoring": int(summary["state_restoring"] or 0),
-        },
+        state_counts={str(row['protection_state']): int(row['item_count']) for row in summaries},
         action_counts={
             "upload": int(summary["action_upload"] or 0),
             "recover": int(summary["action_recover"] or 0),
@@ -1283,13 +1172,13 @@ def _upsert_rollup(
         INSERT INTO directory_aggregates(
             vault_id, path, parent_path, name,
             item_count, total_size, local_size, cloud_size,
-            state_local_only, state_cloud_only, state_both, state_restoring,
+            state_pending, state_cloud_only, state_protected, state_problem, state_unconfirmed,
             action_upload, action_recover, action_free_space,
             action_cloud_purge, storage_class_counts, updated_at
         ) VALUES (
             %s, %s, %s, %s,
             %s, %s, %s, %s,
-            %s, %s, %s, %s,
+            %s, %s, %s, %s, %s,
             %s, %s, %s,
             %s, %s, %s
         )
@@ -1300,10 +1189,11 @@ def _upsert_rollup(
             total_size=excluded.total_size,
             local_size=excluded.local_size,
             cloud_size=excluded.cloud_size,
-            state_local_only=excluded.state_local_only,
+            state_pending=excluded.state_pending,
             state_cloud_only=excluded.state_cloud_only,
-            state_both=excluded.state_both,
-            state_restoring=excluded.state_restoring,
+            state_protected=excluded.state_protected,
+            state_problem=excluded.state_problem,
+            state_unconfirmed=excluded.state_unconfirmed,
             action_upload=excluded.action_upload,
             action_recover=excluded.action_recover,
             action_free_space=excluded.action_free_space,
@@ -1320,10 +1210,11 @@ def _upsert_rollup(
             rollup.total_size,
             rollup.local_size,
             rollup.cloud_size,
-            int(rollup.state_counts.get("local_only", 0)),
+            int(rollup.state_counts.get("pending", 0)),
             int(rollup.state_counts.get("cloud_only", 0)),
-            int(rollup.state_counts.get("both", 0)),
-            int(rollup.state_counts.get("restoring", 0)),
+            int(rollup.state_counts.get("protected", 0)),
+            int(rollup.state_counts.get("problem", 0)),
+            int(rollup.state_counts.get("unconfirmed", 0)),
             int(rollup.action_counts.get("upload", 0)),
             int(rollup.action_counts.get("recover", 0)),
             int(rollup.action_counts.get("free-space", 0)),
@@ -1334,15 +1225,17 @@ def _upsert_rollup(
     )
 
 
-def directory_row_to_item(row: Mapping[str, Any]) -> dict[str, Any]:
+def directory_row_to_item(row: Mapping[str, Any], *, unconfirmed: bool = False) -> dict[str, Any]:
     """Project a durable aggregate row into the public directory list item."""
     state_counts = {
         state: int(row[column] or 0)
         for state, column in _STATE_COLUMNS.items()
         if int(row[column] or 0) > 0
     }
-    states = list(state_counts)
-    state = states[0] if len(states) == 1 else "mixed"
+    last_known_counts = dict(state_counts)
+    if unconfirmed:
+        state_counts = {"unconfirmed": int(row["item_count"] or 0)}
+    state = aggregate_state(state_counts)
     try:
         storage_map = json.loads(row.get("storage_class_counts") or "{}")
     except (TypeError, json.JSONDecodeError):
@@ -1363,12 +1256,14 @@ def directory_row_to_item(row: Mapping[str, Any]) -> dict[str, Any]:
         "cloud_size": int(row["cloud_size"] or 0),
         "state": state,
         "state_counts": state_counts,
+        "last_known_states": last_known_counts,
+        "last_known_at": row.get("updated_at"),
         "storage_class": storage_classes[0] if len(storage_classes) == 1 else None,
         "storage_class_count": len(storage_classes),
         "available_actions": {
-            "upload": int(row["action_upload"] or 0),
+            "upload": 0 if unconfirmed else int(row["action_upload"] or 0),
             "recover": int(row["action_recover"] or 0),
-            "free-space": int(row["action_free_space"] or 0),
+            "free-space": 0 if unconfirmed else int(row["action_free_space"] or 0),
             "cloud-purge": int(row["action_cloud_purge"] or 0),
         },
     }
@@ -1382,6 +1277,7 @@ def list_child_directory_rows(
     state_filter: str = "",
     limit: int,
     offset: int,
+    unconfirmed: bool = False,
 ) -> list[dict[str, Any]]:
     clauses = ["vault_id=%s", "parent_path=%s"]
     params: list[Any] = [int(vault_id), parent_path or ""]
@@ -1404,7 +1300,7 @@ def list_child_directory_rows(
         """,
         [*params, int(limit), int(offset)],
     ).fetchall()
-    return [directory_row_to_item(row) for row in rows]
+    return [directory_row_to_item(row, unconfirmed=unconfirmed) for row in rows]
 
 
 def count_child_directories(
