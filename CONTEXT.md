@@ -35,7 +35,7 @@ _Avoid_: Relocation, Rename
 
 **Vault Decommission**:
 A deliberate, auditable lifecycle that quiesces one Vault, applies explicit
-Local Copy and cloud-history dispositions, and releases its root only after both
+Local Copy and cloud-copy dispositions, and releases its root only after both
 are terminal and verified. Disabling a Vault is never a decommission.
 _Avoid_: Disable, Delete Vault, Automatic release
 
@@ -59,7 +59,8 @@ content fingerprint even when it is no longer present.
 _Avoid_: Source file, local version
 
 **Archive Version**:
-One immutable, recoverable cloud representation of a Vault File's content.
+An immutable internal identity for one cloud representation of a Vault File's
+content, whether still recoverable or superseded.
 _Avoid_: Object, backup, revision
 
 **Current Snapshot**:

@@ -180,6 +180,25 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
         self.assertEqual(s3.deleted, [("docs/report.txt", "s3-b")])
         self.assertEqual(self._versions().get("s3-a"), "available")
 
+    def test_equal_timestamp_ambiguity_preserves_both_copies(self) -> None:
+        self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
+        self._verify("s3-a")
+        s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 12)])
+        self._scan(s3, _scan_id())
+        self.assertEqual(s3.deleted, [])
+        self.assertEqual(self._versions(), {"s3-a": "available", "s3-b": "available"})
+
+    def test_active_job_prevents_scan_cleanup(self) -> None:
+        self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
+        self._verify("s3-a")
+        with SQLiteConnection(str(self.database_path)) as connection:
+            file_id = connection.execute("SELECT vault_file_id FROM archive_versions").fetchone()["vault_file_id"]
+            connection.execute("INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_at, updated_at) VALUES (2, %s, 'report.txt', 'upload', 'queued', '2026-11-03', '2026-11-03')", (file_id,))
+        s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 10)])
+        self._scan(s3, _scan_id())
+        self.assertEqual(s3.deleted, [])
+        self.assertEqual(set(self._versions().values()), {"available"})
+
     def test_failed_or_changed_keeper_listing_never_deletes_extras(self) -> None:
         self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
         self._verify("s3-a")
@@ -188,6 +207,7 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
             with patch.object(s3, "list_object_versions", **({"side_effect": response} if isinstance(response, Exception) else {"return_value": response})):
                 self._scan(s3, _scan_id())
             self.assertEqual(s3.deleted, [])
+            self.assertEqual(self._versions().get("s3-b"), "available", "A failed cleanup is not evidence that a discovered extra is missing")
 
 
 if __name__ == "__main__":
