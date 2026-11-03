@@ -59,7 +59,7 @@
         ],
         "type": "object"
       },
-      "AdminVaultRelocatePayload": {
+      "AdminVaultReconnectPayload": {
         "additionalProperties": true,
         "properties": {
           "reason": {
@@ -79,13 +79,13 @@
         ],
         "type": "object"
       },
-      "AdminVaultRelocationResponse": {
+      "AdminVaultReconnectResponse": {
         "additionalProperties": true,
         "properties": {
           "full_scan_required": {
             "type": "boolean"
           },
-          "relocation_state": {
+          "reconnect_state": {
             "enum": [
               "scan_required",
               "ready"
@@ -102,7 +102,7 @@
         "required": [
           "vault_id",
           "source_root",
-          "relocation_state",
+          "reconnect_state",
           "full_scan_required"
         ],
         "type": "object"
@@ -1919,6 +1919,72 @@
         ],
         "type": "object"
       },
+      "RecoveryKitCustody": {
+        "additionalProperties": false,
+        "properties": {
+          "fingerprint": {
+            "maxLength": 24,
+            "minLength": 24,
+            "pattern": "^[0-9a-f]+$",
+            "title": "Fingerprint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fingerprint"
+        ],
+        "title": "RecoveryKitCustody",
+        "type": "object"
+      },
+      "RecoveryKitStatus": {
+        "additionalProperties": true,
+        "properties": {
+          "acknowledged_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "custody_acknowledged": {
+            "type": "boolean"
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "metadata_restore": {
+            "properties": {
+              "backup_created_at": {
+                "type": "string"
+              },
+              "updated_files": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "backup_created_at",
+              "updated_files"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "configured",
+          "fingerprint",
+          "custody_acknowledged",
+          "acknowledged_at",
+          "metadata_restore"
+        ],
+        "type": "object"
+      },
       "RestoreEstimate": {
         "additionalProperties": true,
         "properties": {
@@ -2950,9 +3016,9 @@
         ],
         "type": "object"
       },
-      "VaultRelocate": {
+      "VaultReconnect": {
         "additionalProperties": false,
-        "description": "Constrained destination within the Vault's existing Source Volume.",
+        "description": "Explicitly accept a Source Volume and directory for an existing Vault.",
         "properties": {
           "reason": {
             "maxLength": 500,
@@ -2977,7 +3043,7 @@
           "volume_alias",
           "reason"
         ],
-        "title": "VaultRelocate",
+        "title": "VaultReconnect",
         "type": "object"
       },
       "VaultSelectRequest": {
@@ -3304,10 +3370,10 @@
         "summary": "Admin Vaults"
       }
     },
-    "/api/admin/vaults/{vault_id}/relocate": {
+    "/api/admin/vaults/{vault_id}/reconnect": {
       "post": {
-        "description": "Relocate, never rebind, a missing root on its verified Source Volume.",
-        "operationId": "admin_relocate_vault_root_api_admin_vaults__vault_id__relocate_post",
+        "description": "Accept this folder/mount for this Vault only; mandatory cloud/local scan.",
+        "operationId": "admin_reconnect_vault_root_api_admin_vaults__vault_id__reconnect_post",
         "parameters": [
           {
             "in": "path",
@@ -3323,7 +3389,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/VaultRelocate"
+                "$ref": "#/components/schemas/VaultReconnect"
               }
             }
           },
@@ -3334,7 +3400,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AdminVaultRelocationResponse"
+                  "$ref": "#/components/schemas/AdminVaultReconnectResponse"
                 }
               }
             },
@@ -3351,7 +3417,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Admin Relocate Vault Root"
+        "summary": "Admin Reconnect Vault Root"
       }
     },
     "/api/catalog/events": {
@@ -4295,6 +4361,84 @@
           }
         },
         "summary": "Recover Estimate"
+      }
+    },
+    "/api/recovery-kit": {
+      "get": {
+        "operationId": "recovery_kit_status_api_recovery_kit_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryKitStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Recovery Kit Status"
+      }
+    },
+    "/api/recovery-kit/custody": {
+      "post": {
+        "operationId": "acknowledge_recovery_kit_api_recovery_kit_custody_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryKitCustody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryKitStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Acknowledge Recovery Kit"
+      }
+    },
+    "/api/recovery-kit/download": {
+      "get": {
+        "operationId": "download_recovery_kit_api_recovery_kit_download_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Secret-bearing installation Recovery Kit (never cache)"
+          }
+        },
+        "summary": "Download Recovery Kit"
       }
     },
     "/api/scan": {

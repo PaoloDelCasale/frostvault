@@ -13,7 +13,7 @@ from .security import hash_password, verify_password
 
 
 INTEGRITY_ERRORS = (UniqueViolation,)
-HEAD_SCHEMA_REVISION = "0057_vault_local_release"
+HEAD_SCHEMA_REVISION = "0058_reconnect_recovery_kit"
 
 
 class DatabaseSchemaError(RuntimeError):

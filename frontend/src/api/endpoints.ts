@@ -6,8 +6,9 @@ import {
 } from "./client";
 import type { ApiDownload } from "./client";
 import type {
-  AdminVaultRelocatePayload,
-  AdminVaultRelocationResponse,
+  AdminVaultReconnectPayload,
+  AdminVaultReconnectResponse,
+  RecoveryKitStatus,
   AdminVaultsResponse,
   VaultDecommissionPreview,
   VaultDecommissionSelection,
@@ -390,16 +391,30 @@ export function estimateAdminStorageCost(
   });
 }
 
+export function fetchRecoveryKitStatus(): Promise<RecoveryKitStatus> {
+  return apiRequest<RecoveryKitStatus>("/api/recovery-kit");
+}
+
+export function downloadRecoveryKit(): Promise<ApiDownload> {
+  return apiDownload("/api/recovery-kit/download", {}, "frostvault-recovery-kit.json");
+}
+
+export function acknowledgeRecoveryKit(fingerprint: string): Promise<RecoveryKitStatus> {
+  return apiRequest<RecoveryKitStatus>("/api/recovery-kit/custody", {
+    method: "POST", body: JSON.stringify({ fingerprint }),
+  });
+}
+
 export function fetchAdminVaults(): Promise<AdminVaultsResponse> {
   return apiRequest<AdminVaultsResponse>("/api/admin/vaults");
 }
 
-export function relocateAdminVault(
+export function reconnectAdminVault(
   vaultId: number,
-  payload: AdminVaultRelocatePayload,
-): Promise<AdminVaultRelocationResponse> {
-  return apiRequest<AdminVaultRelocationResponse>(
-    `/api/admin/vaults/${vaultId}/relocate`,
+  payload: AdminVaultReconnectPayload,
+): Promise<AdminVaultReconnectResponse> {
+  return apiRequest<AdminVaultReconnectResponse>(
+    `/api/admin/vaults/${vaultId}/reconnect`,
     { method: "POST", body: JSON.stringify(payload) },
   );
 }

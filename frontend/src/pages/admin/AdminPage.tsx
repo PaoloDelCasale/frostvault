@@ -17,7 +17,8 @@ import { Toast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 
-import { RelocateVaultDialog } from "./RelocateVaultDialog";
+import { ReconnectVaultDialog } from "./ReconnectVaultDialog";
+import { RecoveryKitSection } from "./RecoveryKitSection";
 import { SourceVolumesSection } from "./SourceVolumesSection";
 import { MetadataBackupsSection } from "./MetadataBackupsSection";
 import { StorageCostEstimatesSection } from "./StorageCostEstimatesSection";
@@ -55,7 +56,7 @@ export function AdminPage() {
     error: false,
   });
 
-  const [relocateVault, setRelocateVault] = useState<AdminVault | null>(null);
+  const [reconnectVault, setReconnectVault] = useState<AdminVault | null>(null);
   const [decommissionVault, setDecommissionVault] = useState<AdminVault | null>(null);
   const [vaultSheetOpen, setVaultSheetOpen] = useState(false);
   const [vaultSheetTarget, setVaultSheetTarget] = useState<AdminVault | null>(
@@ -141,6 +142,8 @@ export function AdminPage() {
           </ul>
         </nav>
 
+        <RecoveryKitSection />
+
         {emailConfigured === false ? (
           <p role="status" className="mb-6 rounded-panel border border-line bg-surface p-4" data-testid="email-not-configured">
             {t("ui.email_not_configured")}
@@ -208,9 +211,9 @@ export function AdminPage() {
                       variant="secondary"
                       className="max-md:hidden"
                       disabled={(vault.decommission_state ?? "active") !== "active"}
-                      onClick={() => setRelocateVault(vault)}
+                      onClick={() => setReconnectVault(vault)}
                     >
-                      {t("admin.relocate_vault")}
+                      {t("admin.reconnect_vault")}
                     </Button>
                     <Button
                       type="button"
@@ -253,12 +256,12 @@ export function AdminPage() {
         onCompleted={loadVaults}
       />
 
-      <RelocateVaultDialog
-        open={relocateVault !== null}
+      <ReconnectVaultDialog
+        open={reconnectVault !== null}
         onOpenChange={(open) => {
-          if (!open) setRelocateVault(null);
+          if (!open) setReconnectVault(null);
         }}
-        vault={relocateVault}
+        vault={reconnectVault}
         onNotice={showNotice}
         onCompleted={loadVaults}
       />
@@ -270,7 +273,7 @@ export function AdminPage() {
         actions={[
           ...((vaultSheetTarget?.decommission_state ?? "active") === "active"
             ? [
-                { id: "relocate", label: t("admin.relocate_vault") },
+                { id: "reconnect", label: t("admin.reconnect_vault") },
               ]
             : []),
           {
@@ -282,8 +285,8 @@ export function AdminPage() {
           },
         ]}
         onAction={(actionId) => {
-          if (actionId === "relocate" && vaultSheetTarget) {
-            setRelocateVault(vaultSheetTarget);
+          if (actionId === "reconnect" && vaultSheetTarget) {
+            setReconnectVault(vaultSheetTarget);
           }
           if (actionId === "decommission" && vaultSheetTarget) {
             setDecommissionVault(vaultSheetTarget);

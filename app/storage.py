@@ -803,7 +803,7 @@ def _remote_listing_timestamp(item: dict[str, Any], scan_id: str) -> str:
     return value.isoformat() if hasattr(value, "isoformat") else str(value or scan_id)
 
 
-def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
+def scan_cloud(vault: dict[str, Any], scan_id: str, *, reconnect: bool = False) -> int:
     """Merge one complete cloud listing into the catalog in bounded writes.
 
     Provider listings stay outside write transactions.
@@ -895,6 +895,11 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
             ):
                 verified_keepers[path] = keeper
 
+    if reconnect and (invalid_keys or any(
+        len(entries) > 1 and entries[-1][6] == entries[-2][6]
+        for entries in grouped.values()
+    )):
+        raise RuntimeError("Cloud listing is ambiguous; reconnect remains suspended")
     count = 0
     snapshot_extras: list[tuple[str, str, str, str]] = []
     for offset in range(0, len(versions), CLOUD_SCAN_WRITE_BATCH_SIZE):
@@ -913,7 +918,7 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                 timestamp,
             ) in batch:
                 keeper = verified_keepers.get(logical_path)
-                if keeper and (object_key, str(version_id)) != (
+                if not reconnect and keeper and (object_key, str(version_id)) != (
                     keeper["object_key"], keeper["provider_version_id"],
                 ):
                     snapshot_extras.append((
@@ -921,6 +926,11 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                     ))
                 # A failed cleanup still leaves every discovered copy catalogued
                 # as present, rather than producing a false missing-copy signal.
+                previously_known = connection.execute(
+                    "SELECT id FROM archive_versions WHERE vault_id=%s AND object_key=%s "
+                    "AND provider_version_id=%s",
+                    (vault["id"], object_key, version_id),
+                ).fetchone()
                 kept_archive_version_id = catalog.record_archive_version(
                     vault_id=vault["id"],
                     path=logical_path,
@@ -933,6 +943,13 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                     observed_at=now_iso(),
                     scan_id=scan_id,
                 )
+                if previously_known is None and (logical_path, version_id, object_key) == grouped[logical_path][-1][:3]:
+                    from .services.recovery_kit import remember_cloud_update
+                    file_row = connection.execute(
+                        "SELECT vault_file_id FROM archive_versions WHERE id=%s",
+                        (kept_archive_version_id,),
+                    ).fetchone()
+                    remember_cloud_update(connection, file_row["vault_file_id"])
                 if logical_path in stale_keeper_paths and not invalid_keys:
                     catalog.mark_unlisted_snapshot_versions_superseded(
                         kept_archive_version_id=str(kept_archive_version_id),
@@ -981,7 +998,62 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                 reason="cloud_scan_unseen",
                 observed_at=scan_id,
             )
+    if reconnect:
+        _verify_reconnected_cloud(vault, grouped, client, scan_id)
     return count
+
+
+def _verify_reconnected_cloud(
+    vault: dict[str, Any], grouped: dict[str, list[tuple]], client: Any, scan_id: str,
+) -> None:
+    """Recover content evidence for the newest exact S3 versions, never delete.
+
+    Known verified evidence is retained. Unknown current content is read fully
+    (including size/VersionId checks); cold unreadable objects leave the entire
+    reconnect suspended until an operator makes them readable. No stale digest
+    can authorize an upload or local release in that interval.
+    """
+    for entries in grouped.values():
+        path, provider_id, key, size, _storage_class, _etag, _timestamp = entries[-1]
+        with db() as connection:
+            row = connection.execute(
+                "SELECT * FROM archive_versions WHERE vault_id=%s AND object_key=%s "
+                "AND provider_version_id=%s", (vault["id"], key, provider_id),
+            ).fetchone()
+        if row["integrity"] == "mismatch":
+            raise RuntimeError("Cloud content mismatch; reconnect remains suspended")
+        digest = row.get("plaintext_sha256")
+        if row["integrity"] != "verified" or not digest:
+            response = client.get_object(Bucket=vault["s3_bucket"], Key=key, VersionId=provider_id)
+            body = response["Body"]
+            hasher, length = hashlib.sha256(), 0
+            try:
+                if str(response.get("VersionId")) != str(provider_id):
+                    raise RuntimeError("Cloud verification returned a different VersionId")
+                while chunk := body.read(1024 * 1024):
+                    hasher.update(chunk)
+                    length += len(chunk)
+            finally:
+                body.close()
+            if length != size:
+                raise RuntimeError("Cloud verification size mismatch")
+            digest = hasher.hexdigest()
+            if row.get("plaintext_sha256") and row["plaintext_sha256"] != digest:
+                raise RuntimeError("Cloud verification digest mismatch")
+        if not _cloud_scan_still_current(vault, scan_id):
+            raise RuntimeError("Reconnect scan superseded")
+        with db() as connection:
+            catalog = ArchiveCatalog(connection)
+            catalog.mark_version_verified(row["id"], plaintext_sha256=digest, verified_at=now_iso())
+            # Listing chronology, not catalog allocation order, chooses current.
+            connection.execute(
+                """UPDATE archive_versions SET version_number=(
+                    SELECT MAX(av.version_number)+1 FROM archive_versions av
+                    WHERE av.vault_file_id=%s)
+                WHERE id=%s AND version_number < (
+                    SELECT MAX(av.version_number) FROM archive_versions av WHERE av.vault_file_id=%s)
+                """, (row["vault_file_id"], row["id"], row["vault_file_id"]),
+            )
 
 
 def _current_scan_vault(vault: dict[str, Any]) -> dict[str, Any]:
@@ -1077,6 +1149,9 @@ def _current_verified_scan_row(connection: Any, vault: dict[str, Any]) -> dict[s
         raise _ScanRootMismatch("Vault was quiesced during local scan")
     try:
         _validate_enrolled_scan_root(current)
+        access = source_layout.vault_local_access(current["source_root"])
+        if not access.local_operations_allowed and access.volume_health != "scan_required":
+            raise RuntimeError("Source Volume identity/health changed during scan")
     except Exception as exc:
         raise _ScanRootMismatch(str(exc)) from exc
     return current
@@ -1530,6 +1605,19 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
         with status_lock:
             status.update(scanning=True, last_error=None, scan_id=scan_id)
         result: dict[str, int] = {}
+        reconnect = vault.get("relocation_state") == "scan_required"
+        if reconnect:
+            try:
+                # Cloud first, with NO cleanup: stale local metadata must not
+                # become upload/release authority before S3 has been recovered.
+                result["cloud"] = scan_cloud(vault, scan_id, reconnect=True)
+                with db() as connection:
+                    _current_verified_scan_row(connection, vault)
+                    vault_relocation.prepare_reconnect_local_scan(connection, vault_id)
+            except Exception:
+                status["last_error"] = "Cloud reconciliation failed; reconnect remains suspended"
+                _record_scan_component_health(vault_id, "cloud", ok=False, error=status["last_error"])
+                return {"cloud": -1, "reconnect_suspended": 1}
         local_scan_identity_valid = True
         access = source_layout.vault_local_access(vault["source_root"])
         if access.local_operations_allowed or access.volume_health == "scan_required":
@@ -1586,7 +1674,8 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
             )
         if local_scan_identity_valid:
             try:
-                result["cloud"] = scan_cloud(vault, scan_id)
+                if not reconnect:
+                    result["cloud"] = scan_cloud(vault, scan_id)
             except Exception as exc:
                 status["last_error"] = f"Cloud scan: {exc}"
                 result["cloud"] = -1

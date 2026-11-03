@@ -143,7 +143,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/admin/vaults/{vault_id}/relocate": {
+    "/api/admin/vaults/{vault_id}/reconnect": {
         parameters: {
             query?: never;
             header?: never;
@@ -153,10 +153,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Admin Relocate Vault Root
-         * @description Relocate, never rebind, a missing root on its verified Source Volume.
+         * Admin Reconnect Vault Root
+         * @description Accept this folder/mount for this Vault only; mandatory cloud/local scan.
          */
-        post: operations["admin_relocate_vault_root_api_admin_vaults__vault_id__relocate_post"];
+        post: operations["admin_reconnect_vault_root_api_admin_vaults__vault_id__reconnect_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -593,6 +593,57 @@ export interface paths {
         put?: never;
         /** Recover Estimate */
         post: operations["recover_estimate_api_recover_estimate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/recovery-kit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Recovery Kit Status */
+        get: operations["recovery_kit_status_api_recovery_kit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/recovery-kit/custody": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Acknowledge Recovery Kit */
+        post: operations["acknowledge_recovery_kit_api_recovery_kit_custody_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/recovery-kit/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Recovery Kit */
+        get: operations["download_recovery_kit_api_recovery_kit_download_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1162,17 +1213,17 @@ export interface components {
             source_root: string;
             uuid?: string;
         };
-        AdminVaultRelocatePayload: {
+        AdminVaultReconnectPayload: {
             reason: string;
             relative_path: string;
             volume_alias: string;
         } & {
             [key: string]: unknown;
         };
-        AdminVaultRelocationResponse: {
+        AdminVaultReconnectResponse: {
             full_scan_required: boolean;
             /** @enum {string} */
-            relocation_state: "scan_required" | "ready";
+            reconnect_state: "scan_required" | "ready";
             source_root: string;
             vault_id: number;
         } & {
@@ -1708,6 +1759,23 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** RecoveryKitCustody */
+        RecoveryKitCustody: {
+            /** Fingerprint */
+            fingerprint: string;
+        };
+        RecoveryKitStatus: {
+            acknowledged_at: string | null;
+            configured: boolean;
+            custody_acknowledged: boolean;
+            fingerprint: string | null;
+            metadata_restore: {
+                backup_created_at: string;
+                updated_files: number;
+            } | null;
+        } & {
+            [key: string]: unknown;
+        };
         RestoreEstimate: {
             assumptions?: {
                 [key: string]: unknown;
@@ -2021,10 +2089,10 @@ export interface components {
             [key: string]: unknown;
         };
         /**
-         * VaultRelocate
-         * @description Constrained destination within the Vault's existing Source Volume.
+         * VaultReconnect
+         * @description Explicitly accept a Source Volume and directory for an existing Vault.
          */
-        VaultRelocate: {
+        VaultReconnect: {
             /** Reason */
             reason: string;
             /**
@@ -2284,7 +2352,7 @@ export interface operations {
             };
         };
     };
-    admin_relocate_vault_root_api_admin_vaults__vault_id__relocate_post: {
+    admin_reconnect_vault_root_api_admin_vaults__vault_id__reconnect_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -2295,7 +2363,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["VaultRelocate"];
+                "application/json": components["schemas"]["VaultReconnect"];
             };
         };
         responses: {
@@ -2305,7 +2373,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AdminVaultRelocationResponse"];
+                    "application/json": components["schemas"]["AdminVaultReconnectResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3030,6 +3098,80 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    recovery_kit_status_api_recovery_kit_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryKitStatus"];
+                };
+            };
+        };
+    };
+    acknowledge_recovery_kit_api_recovery_kit_custody_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoveryKitCustody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryKitStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_recovery_kit_api_recovery_kit_download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Secret-bearing installation Recovery Kit (never cache) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/octet-stream": string;
                 };
             };
         };

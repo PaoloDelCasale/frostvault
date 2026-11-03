@@ -1,10 +1,8 @@
-"""Fail-closed Vault Root Relocation within one Source Volume (issue #152).
+"""Explicit Reconnect folder (#427), retaining the pinned-root scan machinery.
 
-A relocation is not a generic rebind.  FrostVault accepts a destination only
-when its opaque ``stat`` identity matches the identity enrolled while the old
-root was healthy.  On filesystems where directory inode identity is absent or
-unstable, relocation is intentionally unavailable rather than guessing from
-names or content samples.
+The historic relocation_state columns now represent the mandatory reconnect
+scan gate. An accepted mount fingerprint belongs only to the selected Vault;
+shared Source Volume enrollment is never silently replaced.
 """
 from __future__ import annotations
 
@@ -15,7 +13,9 @@ import stat
 from pathlib import Path
 from typing import Any, Callable
 
-from . import source_directories, source_layout
+from . import source_directories, source_layout, source_identity
+from .job_admission import lock_vault
+from .directory_aggregates import request_vault_rebuild
 from .audit_events import record_audit_event
 
 ROOT_IDENTITY_VERSION = "linux-stat-dir-v1"
@@ -120,13 +120,6 @@ def _clean_reason(reason: str) -> str:
     return value
 
 
-def _alias_for_root(root: str) -> str:
-    location, alias = source_layout.source_alias_for_root(root)
-    if location != "custom" or not alias:
-        raise VaultRelocationError("unsupported_root", "Only custom Source Volume roots can be relocated")
-    return alias
-
-
 def _candidate(volume: source_layout.SourceVolume, relative_path: str) -> tuple[str, Path]:
     try:
         relative = source_directories.canonicalize_relative_path(relative_path)
@@ -221,7 +214,7 @@ def _active_jobs(connection: Any, vault_id: int) -> bool:
     return row is not None
 
 
-def _relocate_vault_root(
+def _reconnect_vault_root(
     connection: Any,
     *,
     vault_id: int,
@@ -240,61 +233,55 @@ def _relocate_vault_root(
     """
     cleaned_reason = _clean_reason(reason)
     source_directories.lock_vault_root_allocation(connection)
+    try:
+        lock_vault(connection, vault_id)
+    except LookupError as exc:
+        reason = "not_found" if str(exc) == "vault_not_found" else "decommission_in_progress"
+        raise VaultRelocationError(reason) from exc
     vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
-    if vault is None:
-        raise VaultRelocationError("not_found", "Vault not found")
     if vault.get("decommission_state", "active") != "active" or vault.get("root_released_at"):
         raise VaultRelocationError(
             "decommission_in_progress",
             "A decommissioned or decommissioning Vault cannot be relocated",
         )
-    if vault.get("relocation_state") != "ready":
-        raise VaultRelocationError("relocation_in_progress", "Vault relocation already requires recovery")
-    expected_alias = _alias_for_root(str(vault["source_root"]))
-    if volume_alias != expected_alias:
-        raise VaultRelocationError("different_volume", "Destination must remain on the same Source Volume")
-    try:
-        Path(str(vault["source_root"])).lstat()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        raise VaultRelocationError(
-            "source_inaccessible",
-            "Original root cannot be proven missing; relocation is refused",
-        ) from exc
-    else:
-        raise VaultRelocationError("source_present", "Original root still exists; generic rebind is forbidden")
     if runtime_busy or _active_jobs(connection, vault_id):
         raise VaultRelocationError("active_jobs", "Vault has active Jobs or a scan")
-    if vault.get("root_identity_version") != ROOT_IDENTITY_VERSION or not vault.get("root_identity"):
-        raise VaultRelocationError("identity_ambiguous", "No verified identity was enrolled before the move")
-
-    access = source_layout.vault_local_access(source_layout.get_sources_root() / expected_alias)
-    if not access.local_operations_allowed:
-        raise VaultRelocationError("volume_unavailable", "Expected Source Volume is not healthy")
+    if (not volume_alias or volume_alias == source_layout.MANAGED_DIR_NAME
+            or Path(volume_alias).parts != (volume_alias,)
+            or not source_layout.sources_layout_is_ready()):
+        raise VaultRelocationError("volume_unavailable", "Destination Source Volume is unavailable")
     volumes = {item.alias: item for item in source_layout.discover_source_volumes()}
-    volume = volumes.get(expected_alias)
+    volume = volumes.get(volume_alias)
     if volume is None or volume.health != "ok" or volume.access != "rw":
-        raise VaultRelocationError("volume_unavailable", "Expected Source Volume is unavailable")
+        raise VaultRelocationError("volume_unavailable", "Destination Source Volume is unavailable")
+    # This is the ONLY explicit acceptance seam. Ambiguous/unsupported mount
+    # identity still fails closed, before traversing any candidate content.
+    try:
+        fingerprint = source_identity.fingerprint_for_mount(volume.path)
+    except source_identity.MountIdentityError as exc:
+        raise VaultRelocationError("identity_ambiguous", "Source Volume identity is unavailable") from exc
     _, destination = _candidate(volume, relative_path)
     _reject_overlap(connection, vault_id=vault_id, destination=destination)
-    if root_identity(destination) != vault["root_identity"]:
-        raise VaultRelocationError("identity_mismatch", "Destination is not the enrolled Vault directory")
+    identity = root_identity(destination)
+    if source_identity.fingerprint_for_mount(volume.path) != fingerprint:
+        raise VaultRelocationError("identity_mismatch", "Source Volume changed during reconnect")
 
     previous_root = str(vault["source_root"])
     connection.execute(
         """
         UPDATE vaults
-        SET source_root=%s, relocation_state='scan_required', relocation_previous_root=%s
-        WHERE id=%s AND source_root=%s AND relocation_state='ready'
+        SET source_root=%s, relocation_state='scan_required', relocation_previous_root=%s,
+            root_identity_version=%s, root_identity=%s, reconnect_volume_fingerprint=%s
+        WHERE id=%s AND source_root=%s
         """,
-        (str(destination), previous_root, vault_id, previous_root),
+        (str(destination), previous_root, ROOT_IDENTITY_VERSION, identity, fingerprint,
+         vault_id, previous_root),
     )
     if after_update is not None:
         after_update()
     record_audit_event(
         connection,
-        event="vault_root_relocated",
+        event="vault_folder_reconnected",
         actor_user_id=actor_user_id,
         vault_id=vault_id,
         outcome="success",
@@ -307,18 +294,39 @@ def _relocate_vault_root(
     return connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
 
 
-def relocate_vault_root(connection: Any, **kwargs: Any) -> dict[str, Any]:
+def reconnect_vault_root(connection: Any, **kwargs: Any) -> dict[str, Any]:
     """Suspend immediately, then validate; failures release the runtime gate."""
     vault_id = int(kwargs["vault_id"])
     _runtime_suspended_vaults.add(vault_id)
     succeeded = False
     try:
-        result = _relocate_vault_root(connection, **kwargs)
+        result = _reconnect_vault_root(connection, **kwargs)
         succeeded = True
         return result
     finally:
         if not succeeded:
             _runtime_suspended_vaults.discard(vault_id)
+
+
+def prepare_reconnect_local_scan(connection: Any, vault_id: int) -> None:
+    """Discard every old local observation; identical stat tuples prove nothing.
+
+    This is repeatable on retry. Remote reconciliation/verification must have
+    succeeded first. Every current cloud copy is held before re-observation.
+    """
+    connection.execute(
+        """
+        UPDATE local_copies lc SET presence='missing', plaintext_sha256=NULL,
+            matched_archive_version_id=NULL, cloud_only_version_id=(
+                SELECT av.id FROM archive_versions av
+                WHERE av.vault_file_id=lc.vault_file_id AND av.availability='available'
+                  AND av.integrity='verified'
+                ORDER BY av.version_number DESC LIMIT 1
+            )
+        WHERE lc.vault_file_id IN (SELECT id FROM vault_files WHERE vault_id=%s)
+        """, (vault_id,),
+    )
+    request_vault_rebuild(connection, vault_id)
 
 
 def complete_relocation_scan(

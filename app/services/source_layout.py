@@ -507,6 +507,32 @@ def vault_local_access(vault_source_root: str | Path) -> VaultLocalAccess:
         return VaultLocalAccess(True, True, MANAGED_DIR_NAME, "ok")
 
     assert alias is not None
+    # An explicit reconnect accepts this mount for ONE allocated Vault root.
+    # Shared enrollment remains immutable: siblings at the same alias stay
+    # replaced/blocked until each is explicitly reconnected by the Owner.
+    accepted = None
+    if _identity_enforcement_ready:
+        from ..database import db
+        with db() as connection:
+            row = connection.execute(
+                "SELECT reconnect_volume_fingerprint FROM vaults "
+                "WHERE source_root=%s AND root_released_at IS NULL",
+                (str(vault_source_root),),
+            ).fetchone()
+        accepted = row.get("reconnect_volume_fingerprint") if row else None
+    if accepted:
+        volume = next((v for v in discover_source_volumes() if v.alias == alias), None)
+        if volume is None or volume.health != "ok" or volume.access != "rw":
+            return _blocked_vault_access(alias=alias, health="absent" if volume is None else volume.health)
+        try:
+            observed = source_identity.fingerprint_for_mount(volume.path)
+        except source_identity.MountIdentityError as exc:
+            return _blocked_vault_access(alias=alias, health=_identity_error_health(exc))
+        if observed != accepted:
+            return _blocked_vault_access(alias=alias, health="replaced")
+        if not _canonical_root_stays_within(vault_source_root, volume.path):
+            return _blocked_vault_access(alias=alias)
+        return VaultLocalAccess(True, True, alias, "ok")
     state = _runtime_mount_state.get(alias, {})
     identity_health = state.get("identity_health")
     if identity_health in {
