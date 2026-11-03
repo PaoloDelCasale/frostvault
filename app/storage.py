@@ -3872,7 +3872,7 @@ def process_upload(job: dict[str, Any]) -> None:
         # alone is therefore never authority to verify (or purge after) the
         # linked version. Reuse the existing exact-version integrity reader;
         # keep Rclone transport until #420, including its retry/cancel behavior.
-        exact_matches = remote_digest == upload_digest and _sha256_s3_version(
+        exact_matches = _sha256_s3_version(
             client, bucket=job["s3_bucket"], object_key=target["object_key"],
             version_id=str(target["provider_version_id"]),
             check_active=lambda _: ensure_job_active(job["id"], "Upload stopped"),
@@ -3892,6 +3892,11 @@ def process_upload(job: dict[str, Any]) -> None:
                     checked_at=now_iso(),
                 )
             raise RuntimeError("Cloud copy digest does not match local file")
+        if remote_digest != upload_digest:
+            # A different current object is not a mismatch of the pinned
+            # version. Retain the previous copy and retry/reconcile, without
+            # assigning false Integrity or authorizing cleanup.
+            raise RuntimeError("Current cloud key changed during upload verification")
         _complete_verified_upload(
             job,
             source=source,

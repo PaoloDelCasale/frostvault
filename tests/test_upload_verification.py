@@ -220,6 +220,18 @@ class PlainUploadVerificationTests(unittest.TestCase):
             self.assertEqual(old["integrity"], "verified")
             self.assertEqual(old["availability"], "available")
 
+    def test_changed_current_key_does_not_assign_mismatch_to_good_exact_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _source, path = _prepare_plain_vault(root, relative_path="report.txt", payload=b"good")
+            _run_plain_upload(path, relative_path="report.txt", read_back_bytes=b"evil", exact_version_bytes=b"good")
+            with SQLiteConnection(str(path)) as connection:
+                observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
+                job = connection.execute("SELECT status FROM jobs").fetchone()
+            self.assertEqual(job["status"], "failed")
+            self.assertEqual(observed["latest_version"]["integrity"], "unverified")
+            self.assertEqual(observed["latest_version"]["availability"], "available")
+
     def test_plain_upload_reaches_verified_after_read_back_digest_match(self) -> None:
         """Successful rclone transfer + HeadObject is not enough; read-back must match."""
         with tempfile.TemporaryDirectory() as directory:
