@@ -3,7 +3,7 @@
 Seams under test:
 - ``app.services.operation_policies`` — get/set policy defaults, glob match +
   preview, stability window, auto-upload eligibility.
-- Defaults must keep upload manual and apply no implicit exclusions.
+- New Vaults auto-upload by default; fixed automatic noise exclusions cannot be overridden.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from app.catalog import ArchiveCatalog
 
 from app.services.operation_policies import (
     OperationPolicy,
+    auto_upload_path_is_included,
     file_is_stable,
     get_policy,
     path_is_included,
@@ -43,13 +44,13 @@ class OperationPolicyDefaultTests(unittest.TestCase):
                 "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs')"
             )
 
-    def test_missing_row_means_manual_upload_and_no_exclusions(self) -> None:
+    def test_missing_row_means_automatic_upload_and_no_custom_globs(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             policy = get_policy(connection, 1)
         self.assertEqual(
             policy,
             OperationPolicy(
-                auto_upload=False,
+                auto_upload=True,
                 stability_seconds=300,
                 include_globs=(),
                 exclude_globs=(),
@@ -60,6 +61,15 @@ class OperationPolicyDefaultTests(unittest.TestCase):
 
 
 class GlobRuleTests(unittest.TestCase):
+    def test_fixed_noise_exclusions_cannot_be_overridden_by_include_globs(self) -> None:
+        policy = OperationPolicy(include_globs=("**/*", "*"))
+        for path in (".DS_Store", "nested/Thumbs.db", "x/._photo.jpg", "db.lock", "a/db-wal", "db-journal"):
+            with self.subTest(path=path):
+                self.assertFalse(auto_upload_path_is_included(path, policy))
+                self.assertIn(path, preview_glob_rules(paths=[path], include_globs=["*"])["excluded"])
+        for path in ("photos/DS_Store.jpg", "thumbs.db", "photo.jpg", "catalog.lrcat"):
+            self.assertTrue(auto_upload_path_is_included(path, policy))
+
     def test_exclude_wins_over_include(self) -> None:
         policy = OperationPolicy(
             include_globs=("**/*.txt", "docs/**"),
@@ -86,6 +96,14 @@ class GlobRuleTests(unittest.TestCase):
 
 
 class StabilityWindowTests(unittest.TestCase):
+    def test_observation_restarts_window_even_for_preserved_old_mtime(self) -> None:
+        old = int(datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp() * 1e9)
+        for seconds, expected in ((299, False), (300, True)):
+            self.assertEqual(file_is_stable(
+                mtime_ns=old, now=datetime(2026, 7, 1, 12, 5, seconds - 299, tzinfo=timezone.utc),
+                stability_seconds=300, content_observed_at="2026-07-01T12:00:01+00:00",
+            ), expected)
+
     def test_file_is_stable_only_after_window(self) -> None:
         mtime_ns = int(datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc).timestamp() * 1e9)
         before = datetime(2026, 7, 1, 12, 4, 59, tzinfo=timezone.utc)
@@ -289,7 +307,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                     file_type="regular",
                     size=path.stat().st_size,
                     mtime_ns=path.stat().st_mtime_ns,
-                    observed_at=now_iso(),
+                    observed_at="2026-07-01T11:00:00+00:00",
                 )
             set_policy(
                 connection,
@@ -317,7 +335,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         self.assertEqual(queued, 1)
         self.assertEqual(paths, ["ready.txt"])
 
-    def test_manual_default_queues_nothing(self) -> None:
+    def test_explicit_pause_queues_nothing(self) -> None:
         from app.services.operation_policies import queue_auto_uploads
 
         target = self.source / "ready.txt"
@@ -336,6 +354,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 mtime_ns=target.stat().st_mtime_ns,
                 observed_at="2026-07-01T11:00:00+00:00",
             )
+            set_policy(connection, 2, OperationPolicy(auto_upload=False))
             queued = queue_auto_uploads(
                 connection,
                 vault_id=2,
@@ -370,7 +389,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 file_type="regular",
                 size=len(original),
                 mtime_ns=target.stat().st_mtime_ns,
-                observed_at=now_iso(),
+                observed_at="2026-07-01T11:00:00+00:00",
             )
             version_id = catalog.record_archive_version(
                 vault_id=2,
@@ -417,7 +436,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 file_type="regular",
                 size=len(changed),
                 mtime_ns=target.stat().st_mtime_ns,
-                observed_at=now_iso(),
+                observed_at="2026-07-01T11:30:00+00:00",
             )
             queued = queue_auto_uploads(
                 connection,

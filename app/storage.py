@@ -10,7 +10,7 @@ import time
 import uuid
 from collections.abc import Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
@@ -109,6 +109,8 @@ from .services.operation_policies import (
     get_policy,
     queue_auto_local_cleanups,
     queue_auto_uploads,
+    auto_upload_path_is_included,
+    file_is_stable,
 )
 
 
@@ -501,7 +503,7 @@ def _scan_tree(
                            vf.retired_at AS vault_file_retired_at,
                            lc.presence, lc.file_type, lc.size, lc.mtime_ns,
                            lc.plaintext_sha256, lc.matched_archive_version_id,
-                           lc.last_seen_at, lc.observed_at
+                           lc.last_seen_at, lc.observed_at, lc.content_observed_at
                     FROM vault_files vf
                     JOIN file_paths fp
                       ON fp.vault_file_id=vf.id
@@ -678,6 +680,7 @@ def _apply_filesystem_changes(
         raise RuntimeError(
             f"Source watcher blocked by Source Volume health: {access.volume_health}"
         )
+    _validate_enrolled_scan_root(vault)
     root = Path(vault["source_root"]).resolve()
     if not root.is_dir():
         raise RuntimeError(f"Folder is not available in the container: {root}")
@@ -707,14 +710,22 @@ def _apply_filesystem_changes(
                 continue
             if inspected is not None:
                 file_type, entry_stat = inspected
-                catalog.observe_local_copy(
+                file_id = catalog.observe_local_copy(
                     vault_id=vault["id"],
                     path=relative,
                     file_type=file_type,
                     size=entry_stat.st_size,
                     mtime_ns=entry_stat.st_mtime_ns,
                     seen_at=event_id,
-                    observed_at=now_iso(),
+                    observed_at=event_id,
+                )
+                # Even a same-size write with a restored mtime restarts the
+                # window. Persist the event, not an in-memory debounce timer.
+                connection.execute(
+                    """UPDATE local_copies SET content_observed_at=%s,
+                           plaintext_sha256=NULL, matched_archive_version_id=NULL
+                       WHERE vault_file_id=%s""",
+                    (event_id, file_id),
                 )
                 changed += 1
                 continue
@@ -733,6 +744,10 @@ def _apply_filesystem_changes(
                     observed_at=now_iso(),
                 )
             changed += 1
+        if "root_identity" in vault:
+            _current_verified_scan_row(connection, vault)
+        if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
+            raise _ScanRootMismatch("Source Volume changed during watcher observation")
         if changed:
             # One revision per watcher batch — never one event per path.
             published = record_catalog_revision(
@@ -1130,7 +1145,10 @@ def _apply_local_fingerprint_updates(
                 result = connection.execute(
                     """
                     UPDATE local_copies
-                    SET size=%s,
+                    SET content_observed_at=CASE
+                            WHEN (size, mtime_ns) IS DISTINCT FROM (%s::bigint, %s::bigint)
+                            THEN %s ELSE content_observed_at END,
+                        size=%s,
                         mtime_ns=%s,
                         plaintext_sha256=%s,
                         matched_archive_version_id=NULL,
@@ -1144,6 +1162,9 @@ def _apply_local_fingerprint_updates(
                       AND (mtime_ns=%s OR (mtime_ns IS NULL AND %s IS NULL))
                     """,
                     (
+                        update["size"],
+                        update["mtime_ns"],
+                        update["observed_at"],
                         update["size"],
                         update["mtime_ns"],
                         update["digest"],
@@ -1247,7 +1268,8 @@ def _rollback_local_scan_journal(
                         plaintext_sha256=%s,
                         matched_archive_version_id=%s,
                         last_seen_at=%s,
-                        observed_at=%s
+                        observed_at=%s,
+                        content_observed_at=%s
                     WHERE vault_file_id=%s AND last_seen_at=%s
                     """,
                     (
@@ -1259,6 +1281,7 @@ def _rollback_local_scan_journal(
                         snapshot["matched_archive_version_id"],
                         snapshot["last_seen_at"],
                         snapshot["observed_at"],
+                        snapshot["content_observed_at"],
                         file_id,
                         scan_id,
                     ),
@@ -1378,7 +1401,7 @@ def _verified_local_scan(
         return count, rename_summary, completed_alias, complete
 
 
-def _report_worker_error(component: str, exc: BaseException, vault_id: int) -> None:
+def _report_worker_error(component: str, exc: BaseException, vault_id: int | None = None) -> None:
     try:
         with db() as connection:
             worker_error_store.record_worker_error(
@@ -1553,12 +1576,6 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                     owner_id = owner_user_id(connection)
                     local_access = source_layout.vault_local_access(vault["source_root"])
                     if owner_id is not None and local_access.local_operations_allowed:
-                        result["auto_uploads"] = queue_auto_uploads(
-                            connection,
-                            vault_id=int(vault["id"]),
-                            source_root=str(vault["source_root"]),
-                            requested_by=owner_id,
-                        )
                         result["auto_local_cleanups"] = queue_auto_local_cleanups(
                             connection,
                             vault_id=int(vault["id"]),
@@ -1575,6 +1592,21 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 _record_scan_component_health(
                     vault_id, "policy", ok=True
                 )
+            # Admission is local-only. Failed cloud validation or lifecycle
+            # synchronization must not suppress the durable upload queue.
+            # process_upload still requires successful preflight before writes.
+            try:
+                with db() as connection:
+                    owner_id = owner_user_id(connection)
+                    local_access = source_layout.vault_local_access(vault["source_root"])
+                    if owner_id is not None and local_access.local_operations_allowed:
+                        result["auto_uploads"] = queue_auto_uploads(
+                            connection, vault_id=vault_id,
+                            source_root=str(vault["source_root"]), requested_by=owner_id,
+                        )
+            except Exception as exc:
+                status["last_error"] = status.get("last_error") or f"Automatic upload queue: {exc}"
+                _report_worker_error("auto_upload_queue", exc, vault_id)
         status["last_scan"] = now_iso()
         # Full scans are the low-frequency reconciliation net. Publish one
         # catalog revision so open browsers converge without idle polling.
@@ -3132,8 +3164,51 @@ def _complete_verified_upload(
     set_job(job["id"], "completed", message_key="job.upload_verified")
 
 
+def _automatic_upload_ready(job: dict[str, Any]) -> bool:
+    """Recheck suspension and stability when a queued automatic upload starts.
+
+    Queue time is not authority to upload later edits. Linked versions must
+    finish verification/reconciliation even if automation was subsequently paused.
+    """
+    with db() as connection:
+        target = ArchiveCatalog(connection).get_job_target(job["id"])
+        if target and target.get("archive_version_id"):
+            return True
+        policy = get_policy(connection, int(job["vault_id"]))
+        vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (job["vault_id"],)).fetchone()
+        if not vault or not vault["enabled"] or not policy.auto_upload:
+            return False
+        if vault["source_root"] != job["source_root"]:
+            return False
+        if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
+            return False
+        _validate_enrolled_scan_root(vault)
+        if not auto_upload_path_is_included(job["path"], policy) or not target:
+            return False
+        source = safe_local_path(job["source_root"], job["path"])
+        stat_result = source.stat()
+        if not stat.S_ISREG(stat_result.st_mode):
+            return False
+        if (stat_result.st_size, stat_result.st_mtime_ns) != (
+            target["local_size"], target["local_mtime_ns"]
+        ):
+            ArchiveCatalog(connection).observe_local_copy(
+                vault_id=int(job["vault_id"]), path=job["path"], file_type="regular",
+                size=stat_result.st_size, mtime_ns=stat_result.st_mtime_ns, observed_at=now_iso(),
+            )
+            return False
+        return file_is_stable(
+            mtime_ns=stat_result.st_mtime_ns, now=datetime.fromisoformat(now_iso()),
+            stability_seconds=policy.stability_seconds,
+            content_observed_at=target["content_observed_at"],
+        )
+
+
 def process_upload(job: dict[str, Any]) -> None:
     ensure_job_active(job["id"], "Upload stopped")
+    if job.get("origin") == "automatic" and not _automatic_upload_ready(job):
+        set_job(job["id"], "queued", "Automatic upload waits for enabled protection and stable content")
+        return
     validate_cloud_vault(job)
     source = safe_local_path(job["source_root"], job["path"])
     local_present = source.is_file()
@@ -3166,6 +3241,11 @@ def process_upload(job: dict[str, Any]) -> None:
             set_job(job["id"], "uploading", message_key="job.hashing_local_file")
             local_plaintext_sha256, source_stat = hash_stable_regular_file(source)
             ensure_job_active(job["id"], "Upload claim was lost")
+            # Preflight and hashing can take time. A watcher edit in between
+            # must earn a fresh stability window before the first cloud write.
+            if job.get("origin") == "automatic" and not _automatic_upload_ready(job):
+                set_job(job["id"], "queued", "Automatic upload waits for stable content")
+                return
 
         version_id: str
         target: dict[str, Any]
@@ -4883,6 +4963,71 @@ def scan_all_vaults() -> None:
         ).fetchall()
     for vault in vaults:
         scan_vault(vault)
+
+
+AUTO_UPLOAD_POLL_SECONDS = 10
+
+
+def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = None) -> int:
+    """Drain stable watcher observations without a cloud call or full scan.
+
+    The catalog is the durable pending set, including observations recovered by
+    full-scan reconciliation. No in-memory timer is lost on restart.
+    """
+    lock = scan_lock_for_vault(int(vault["id"]))
+    if not lock.acquire(blocking=False):
+        return 0
+    try:
+        vault = _current_scan_vault(vault)
+        if not vault.get("enabled", True) or vault_relocation.local_work_suspended(vault):
+            return 0
+        if vault_decommission_service.local_work_suspended(vault):
+            return 0
+        access = source_layout.vault_local_access(vault["source_root"])
+        if not access.local_operations_allowed:
+            return 0
+        # Open the enrolled root before using /proc/self/fd for candidate stats.
+        # Replacement/absence rolls back admission without changing the catalog.
+        pinned_root = (
+            _pinned_verified_scan_root(vault)
+            if "root_identity" in vault else nullcontext(Path(vault["source_root"]))
+        )
+        with pinned_root as root, db() as connection:
+            owner_id = owner_user_id(connection)
+            if owner_id is None:
+                return 0
+            queued = queue_auto_uploads(
+                connection, vault_id=int(vault["id"]), source_root=str(root),
+                requested_by=owner_id, now=now,
+            )
+            if "root_identity" in vault:
+                _current_verified_scan_row(connection, vault)
+            if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
+                raise _ScanRootMismatch("Source Volume changed during automatic upload admission")
+            return queued
+    finally:
+        lock.release()
+
+
+def queue_all_auto_uploads_once() -> int:
+    queued = 0
+    for vault in _enabled_vaults():
+        try:
+            queued += queue_vault_auto_uploads(vault)
+        except Exception as exc:
+            _report_worker_error("auto_upload_queue", exc, int(vault["id"]))
+    return queued
+
+
+async def auto_upload_loop() -> None:
+    # Separate from scanning and cloud maintenance, including when a long scan
+    # or lifecycle request occupies their worker. Catalog observations persist.
+    while True:
+        try:
+            await asyncio.to_thread(queue_all_auto_uploads_once)
+        except Exception as exc:
+            await asyncio.to_thread(_report_worker_error, "auto_upload_queue", exc)
+        await asyncio.sleep(AUTO_UPLOAD_POLL_SECONDS)
 
 
 def _filesystem_watch_filter(_: Change, path: str) -> bool:

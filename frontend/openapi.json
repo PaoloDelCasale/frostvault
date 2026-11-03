@@ -1604,7 +1604,7 @@
             "type": "boolean"
           },
           "auto_upload": {
-            "default": false,
+            "default": true,
             "title": "Auto Upload",
             "type": "boolean"
           },

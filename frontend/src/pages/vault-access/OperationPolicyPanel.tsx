@@ -234,6 +234,18 @@ export function OperationPolicyPanel({ onNotice }: OperationPolicyPanelProps) {
         </p>
 
         <form className="mt-4 grid gap-3" onSubmit={(event) => void onSave(event)}>
+          <label className="flex min-h-11 items-center gap-3 text-sm font-bold text-ink">
+            <input
+              id="auto-upload"
+              type="checkbox"
+              className="size-5"
+              checked={policy?.auto_upload ?? false}
+              disabled={!policy}
+              onChange={(event) => setPolicy((current) => current && ({ ...current, auto_upload: event.target.checked }))}
+            />
+            {t("access.policy_auto_upload")}
+          </label>
+          <p className="text-sm text-muted">{t("access.policy_fixed_exclusions")}</p>
           <RuleList
             id="include-globs"
             title={t("access.policy_include_globs")}

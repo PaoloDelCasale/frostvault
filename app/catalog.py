@@ -78,6 +78,7 @@ class ArchiveCatalog:
         self.last_listing_rows_materialized = 0
         self._storage_class_source_supported: bool | None = None
         self._cloud_only_hold_supported: bool | None = None
+        self._content_observation_supported: bool | None = None
 
     def _supports_storage_class_source(self) -> bool:
         """Keep migration-time catalog writes compatible with pre-0040 schemas."""
@@ -95,6 +96,20 @@ class ArchiveCatalog:
         ).fetchone()["present"])
         self._storage_class_source_supported = present
         return present
+
+    def _supports_content_observation(self) -> bool:
+        """Historical migration fixtures can still write pre-0054 catalogs."""
+        if self._content_observation_supported is None:
+            self._content_observation_supported = bool(self.connection.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema=current_schema() AND table_name='local_copies'
+                      AND column_name='content_observed_at'
+                ) AS present
+                """
+            ).fetchone()["present"])
+        return self._content_observation_supported
 
     def _supports_cloud_only_hold(self) -> bool:
         """Keep migration-time catalog writes compatible with pre-0043 schemas."""
@@ -244,16 +259,30 @@ class ArchiveCatalog:
             if hold
             else ""
         )
+        stability = self._supports_content_observation()
+        stability_column = ", content_observed_at" if stability else ""
+        stability_value = ", %s" if stability else ""
+        stability_update = """
+                content_observed_at=CASE
+                    WHEN (local_copies.presence, local_copies.file_type,
+                          local_copies.size, local_copies.mtime_ns)
+                         IS DISTINCT FROM
+                         (excluded.presence, excluded.file_type,
+                          excluded.size, excluded.mtime_ns)
+                    THEN excluded.observed_at
+                    ELSE COALESCE(local_copies.content_observed_at,
+                                  local_copies.observed_at, excluded.observed_at)
+                END,""" if stability else ""
         self.connection.execute(
             f"""
             INSERT INTO local_copies(
                 vault_file_id, presence, file_type, size, mtime_ns,
                 plaintext_sha256, matched_archive_version_id,
-                last_seen_at, observed_at{hold_column}
+                last_seen_at, observed_at{stability_column}{hold_column}
             ) VALUES (
-                %s, %s, %s, %s, %s, NULL, NULL, %s, %s{hold_value}
+                %s, %s, %s, %s, %s, NULL, NULL, %s, %s{stability_value}{hold_value}
             )
-            ON CONFLICT(vault_file_id) DO UPDATE SET{hold_update}
+            ON CONFLICT(vault_file_id) DO UPDATE SET{hold_update}{stability_update}
                 presence=excluded.presence,
                 file_type=excluded.file_type,
                 size=excluded.size,
@@ -301,6 +330,7 @@ class ArchiveCatalog:
                 mtime_ns,
                 last_seen_at,
                 observed_at,
+                *((observed_at,) if stability else ()),
                 *((presence,) if hold else ()),
                 *((file_id,) if hold and hold_from_recovery else ()),
             ),
@@ -487,6 +517,16 @@ class ArchiveCatalog:
             ) AS ({values})
             UPDATE local_copies
             SET
+                content_observed_at=CASE
+                    WHEN (local_copies.presence, local_copies.file_type,
+                          local_copies.size, local_copies.mtime_ns)
+                         IS DISTINCT FROM
+                         (SELECT ROW(s.presence, s.file_type, s.size, s.mtime_ns) FROM s
+                          WHERE s.vault_file_id=local_copies.vault_file_id)
+                    THEN (SELECT s.observed_at FROM s
+                          WHERE s.vault_file_id=local_copies.vault_file_id)
+                    ELSE COALESCE(local_copies.content_observed_at, local_copies.observed_at)
+                END,
                 cloud_only_version_id=CASE
                     WHEN local_copies.presence<>'present'
                      AND (
@@ -601,12 +641,12 @@ class ArchiveCatalog:
             INSERT INTO local_copies(
                 vault_file_id, presence, file_type, size, mtime_ns,
                 plaintext_sha256, matched_archive_version_id,
-                last_seen_at, observed_at, cloud_only_version_id
+                last_seen_at, observed_at, content_observed_at, cloud_only_version_id
             )
             SELECT
                 s.vault_file_id, s.presence, s.file_type, s.size, s.mtime_ns,
                 NULL, NULL,
-                s.last_seen_at, s.observed_at,
+                s.last_seen_at, s.observed_at, s.observed_at,
                 CASE
                     WHEN s.presence='present'
                     THEN {_only_cloud_copy_sql("s.vault_file_id")}
@@ -835,6 +875,7 @@ class ArchiveCatalog:
                 lc.file_type AS local_file_type,
                 lc.size AS local_size,
                 lc.mtime_ns AS local_mtime_ns,
+                COALESCE(lc.content_observed_at, lc.observed_at) AS content_observed_at,
                 lc.plaintext_sha256 AS local_sha256,
                 lc.matched_archive_version_id,
                 lc.cloud_only_version_id,
@@ -2802,8 +2843,19 @@ class ArchiveCatalog:
         action = f"{prefix}action"
         lease_token = f"{prefix}claim_token"
         lease_expiry = f"{prefix}claim_expires_at"
+        correlated_prefix = prefix or "jobs."
         predicate = f"""
             {runnable_sql}
+            AND (
+                    {prefix}action <> 'upload'
+                 OR {prefix}origin <> 'automatic'
+                 OR {prefix}archive_version_id IS NOT NULL
+                 OR COALESCE((
+                        SELECT upload_policy.auto_upload
+                        FROM vault_operation_policies upload_policy
+                        WHERE upload_policy.vault_id={correlated_prefix}vault_id
+                    ), TRUE)
+            )
             AND (
                     {lease_token} IS NULL
                  OR {lease_expiry} IS NULL

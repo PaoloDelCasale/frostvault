@@ -16,6 +16,30 @@ describe("VaultAccessPage — operation policy globs (seam 6)", () => {
     resetApiClientForTests();
   });
 
+  it("can suspend automatic uploads without changing the existing rules", async () => {
+    const user = userEvent.setup();
+    const updates: unknown[] = [];
+    const fetchMock = createVaultAccessFetch({
+      "GET /api/vault/operation-policy": () => jsonResponse({
+        ...defaultPolicy, auto_upload: true, exclude_globs: ["tmp/**"],
+      }),
+      "PUT /api/vault/operation-policy": (init) => {
+        const body: unknown = JSON.parse(String(init?.body ?? "{}"));
+        updates.push(body);
+        return jsonResponse(body);
+      },
+    });
+    renderVaultAccess({ fetchImpl: fetchMock });
+    const enabled = await screen.findByRole("checkbox", { name: /enable automatic upload for this vault/i });
+    await waitFor(() => expect(enabled).toBeChecked());
+    expect(screen.getByText(/always excluded from automatic upload/i)).toHaveTextContent("*-journal");
+    await user.click(enabled);
+    await user.click(screen.getByRole("button", { name: /save operation policy/i }));
+    await waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]).toMatchObject({ auto_upload: false, exclude_globs: ["tmp/**"] });
+    expect(enabled).not.toBeChecked();
+  });
+
   it("renders include and exclude rules as chips and previews one path", async () => {
     const user = userEvent.setup();
     const previews: unknown[] = [];
