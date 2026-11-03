@@ -38,7 +38,9 @@ custody; they do not re-encrypt old metadata artifacts. Keep old independently
 custodied keys while those artifacts remain needed.
 
 The manual metadata restore records the manifest's backup date in the restored
-database. Cloud discovery accumulates distinct updated Vault Files durably and
+database, invalidates active Vault local observations and cancels stale
+nonterminal Jobs without filesystem/cloud operations. Cloud discovery accumulates
+distinct updated Vault Files durably and
 the recovery panel keeps the date/count warning visible (also after reading
 notifications/restarting). Settings changed since that backup remain manual.
 There is no first-start restore wizard or in-app catalog reconstruction from S3;

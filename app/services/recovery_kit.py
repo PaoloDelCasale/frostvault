@@ -87,6 +87,9 @@ from app.services.recovery_kit import record_metadata_restore
 with db() as connection:
     record_metadata_restore(connection, json.loads(Path('restore-manifest.json').read_text())['created_at'])
 PY
+   Registration invalidates active Vault local/mount observations and cancels
+   stale nonterminal Jobs without touching local/S3 bytes. Request wanted work
+   again after reconnect; review retained quiesced decommissions deliberately.
 6. Configure AWS, OIDC_* and BOOTSTRAP_ADMIN_* securely. The Emergency Password
    is accepted only from loopback/allowed LAN. Start FrostVault, then explicitly
    Reconnect folder for EACH Vault, selecting the new Source Volume and directory.

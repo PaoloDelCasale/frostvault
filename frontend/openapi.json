@@ -4425,9 +4425,6 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
-                "schema": {}
-              },
               "application/octet-stream": {
                 "schema": {
                   "format": "binary",

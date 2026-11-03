@@ -4,7 +4,7 @@ There are two manual routes, with no first-start wizard or in-app catalog
 reconstruction:
 
 1. **Metadata backup + Recovery Kit:** restore the Owner, Vaults, catalog,
-   Cloud-only files, settings and pending workflows, then Reconnect Folder for
+   Cloud-only files, settings and Job history, then Reconnect Folder for
    every Vault. S3 supplies newer file content; settings changed since the backup
    must be reapplied manually.
 2. **No usable metadata backup:** recover original files directly with an S3
@@ -141,9 +141,12 @@ the private scratch directory. The downloaded kit includes these steps offline.
    PY
    ```
 
-   This also invalidates restored local/mount observations: every active Vault
-   remains suspended until explicitly reconnected, even if an old inode happens
-   to match. Do not start workers against the restored catalog before this step.
+   This also invalidates restored local/mount observations and cancels stale
+   nonterminal Jobs without filesystem/S3 operations: request wanted work again
+   after reconnect. Every active Vault stays suspended until explicitly
+   reconnected, even if an old inode happens to match. Retained decommission
+   state remains quiesced and must be reviewed deliberately. Do not start workers
+   against the restored catalog before this step.
 6. Configure AWS, OIDC environment and `BOOTSTRAP_ADMIN_*` securely. Start the
    app and sign in. The current Emergency Password is reapplied at startup and
    accepted only from loopback/allowed LAN; the restored OIDC Identity remains.

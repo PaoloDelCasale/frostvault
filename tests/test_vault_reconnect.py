@@ -231,6 +231,44 @@ class VaultReconnectTests(unittest.TestCase):
         self.assertEqual(result["root_identity_mismatch"], 1)
         self.assertEqual(self.row()["relocation_state"], "scan_required")
 
+    def test_root_symlink_swap_is_rejected_before_cloud_or_local_scan(self):
+        from app.storage import scan_vault
+        vault = self.reconnect()
+        original = self.volume / "original"
+        self.new.rename(original)
+        self.new.symlink_to(original, target_is_directory=True)
+        with patch("app.storage.scan_cloud") as cloud, patch("app.storage.scan_tree") as tree:
+            result = scan_vault(vault)
+        self.assertEqual(result["root_identity_mismatch"], 1)
+        cloud.assert_not_called(); tree.assert_not_called()
+        self.assertEqual(self.row()["relocation_state"], "scan_required")
+
+    def test_scan_mutations_roll_back_after_root_changes_during_walk(self):
+        self.reconnect()
+        def mutate_then_swap(connection, vault, scan_id, **kwargs):
+            ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="unrelated.txt", file_type="regular", size=9, mtime_ns=1, seen_at=scan_id, observed_at=scan_id)
+            self.new.rename(self.volume / "original"); self.new.mkdir()
+            return 1, None
+        with patch("app.storage._scan_tree", side_effect=mutate_then_swap): result = self.scan()
+        self.assertEqual(result["root_identity_mismatch"], 1)
+        with PostgresConnection(str(self.db_path)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM vault_files WHERE vault_id=7").fetchone()["n"], 0)
+        self.assertEqual(self.row()["relocation_state"], "scan_required")
+
+    def test_finalization_mutations_roll_back_after_late_root_change(self):
+        self.reconnect()
+        def mutate_then_swap(connection, vault, **kwargs):
+            file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="unrelated.txt", file_type="regular", size=9, mtime_ns=1, observed_at="scan-auto")
+            connection.execute("INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at) VALUES (7,%s,'unrelated.txt','upload','queued','scan-auto','scan-auto')", (file_id,))
+            self.new.rename(self.volume / "original"); self.new.mkdir()
+            return {"hashed": 1, "confirmed": 0, "queued": 1}
+        with patch("app.storage._apply_auto_renames", side_effect=mutate_then_swap): result = self.scan()
+        self.assertEqual(result["root_identity_mismatch"], 1)
+        with PostgresConnection(str(self.db_path)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM vault_files WHERE vault_id=7").fetchone()["n"], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM jobs WHERE vault_id=7").fetchone()["n"], 0)
+        self.assertEqual(self.row()["relocation_state"], "scan_required")
+
     def test_manual_restore_invalidates_local_authority_and_stale_jobs(self):
         from app.storage import scan_vault
         with PostgresConnection(str(self.db_path)) as connection:

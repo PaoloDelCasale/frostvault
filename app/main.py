@@ -1779,7 +1779,7 @@ def recovery_kit_status(_: dict[str, Any] = Depends(current_user)):
         return recovery_kit_service.kit_status(connection)
 
 
-@app.get("/api/recovery-kit/download", responses={200: {
+@app.get("/api/recovery-kit/download", response_class=Response, responses={200: {
     "description": "Secret-bearing installation Recovery Kit (never cache)",
     "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
 }})
@@ -2948,6 +2948,11 @@ def admin_reconnect_vault_root(
                 exc.reason, (400, "Vault reconnect could not be completed")
             )
             raise HTTPException(status_code, message) from exc
+        except Exception:
+            # A failed outer transaction/commit must not leave the in-process
+            # gate stuck when persistent acceptance rolled back.
+            vault_relocation_service.release_relocation_scan_runtime(vault_id)
+            raise
     finally:
         relocation_lock.release()
     # BackgroundTasks registration is non-I/O and cannot partially dispatch.
