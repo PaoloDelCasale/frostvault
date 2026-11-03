@@ -51,7 +51,6 @@ export function RetentionPanel({ onNotice }: RetentionPanelProps) {
     setSaving(true);
     try {
       acceptPolicy(await updateOperationPolicy({
-        ...policy,
         local_release_after_days: enabled ? days : null,
       }));
       onNotice(t(enabled ? "access.retention_enabled" : "access.retention_disabled"));

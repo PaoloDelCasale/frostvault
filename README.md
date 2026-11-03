@@ -164,6 +164,8 @@ and Cloud-only Conflicts remain held back.
   or verification evidence is changed. Downgrade also leaves automation off.
   Remove the retired `ALLOW_LOCAL_DELETE` environment variable; old API fields
   `auto_local_cleanup`, `local_retention_days` and `local_delete_enabled` are rejected.
+  Policy updates preserve omitted fields, so saving upload rules cannot silently
+  replay an old automatic-release choice from another settings panel.
 - Release outcomes and blockages are audited and included in the weekly summary,
   never sent as per-file notifications.
 - Before deleting the server copy, the application checks the exact S3

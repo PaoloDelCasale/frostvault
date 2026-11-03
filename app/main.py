@@ -713,6 +713,8 @@ class LifecycleProfileSelection(BaseModel):
 
 
 class OperationPolicyUpdate(BaseModel):
+    """Update supplied fields only; omitted settings retain their current values."""
+
     model_config = ConfigDict(extra="forbid")
 
     auto_upload: bool = True
@@ -1386,7 +1388,6 @@ def _preview_vault_decommission(
 ) -> dict[str, Any]:
     with status_lock:
         scan_active = bool(runtime_status.get(vault_id, {}).get("scanning"))
-    runtime = _runtime_settings()
     try:
         with db() as connection:
             return vault_decommission_service.build_preview(
@@ -2928,16 +2929,14 @@ def update_vault_operation_policy(
     vault: dict[str, Any] = Depends(current_vault),
     user: dict[str, Any] = Depends(current_user),
 ):
-    policy = OperationPolicy(
-        auto_upload=action.auto_upload,
-        local_release_after_days=action.local_release_after_days,
-        stability_seconds=action.stability_seconds,
-        include_globs=tuple(action.include_globs),
-        exclude_globs=tuple(action.exclude_globs),
-    )
     with db() as connection:
         try:
-            stored = set_policy(connection, vault["id"], policy)
+            # Independent panels must never replay a stale local-release value
+            # when saving upload rules. Serialize read/merge/write per Vault.
+            connection.execute("UPDATE vaults SET name=name WHERE id=%s", (vault["id"],))
+            values = get_policy(connection, vault["id"]).as_dict()
+            values.update(action.model_dump(exclude_unset=True))
+            stored = set_policy(connection, vault["id"], OperationPolicy(**values))
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         except LookupError as exc:

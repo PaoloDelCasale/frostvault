@@ -161,6 +161,20 @@ class LocalReleaseWorkerTests(unittest.TestCase):
                     storage.process_free_space(self.job)
                 self.assertTrue(self.path.exists())
 
+    def test_cloud_identity_change_after_head_restores_claim(self):
+        self.catalog.get_job_target.side_effect = [dict(self.target), dict(self.target, provider_version_id="new-placement")]
+        with self.assertRaisesRegex(RuntimeError, "protection changed"):
+            storage.process_free_space(self.job)
+        self.assertEqual(self.path.read_bytes(), b"photo")
+        self.assertEqual(self.path.stat().st_mtime_ns, self.mtime)
+
+    def test_disabling_rule_after_claim_restores_claim(self):
+        self.target["job_origin"] = "automatic"
+        with patch("app.storage.get_policy", side_effect=[OperationPolicy(local_release_after_days=90), OperationPolicy()]):
+            with self.assertRaises(storage.OperationCancelled):
+                storage.process_free_space(self.job)
+        self.assertEqual(self.path.read_bytes(), b"photo")
+
     def test_lost_confirmation_after_claim_restores_original_mtime_and_bytes(self):
         self.confirmed.side_effect = [True, False]
         with self.assertRaises(RuntimeError):

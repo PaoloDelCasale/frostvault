@@ -3921,8 +3921,8 @@ def _checked_local_release_target(job: dict[str, Any]) -> dict[str, Any]:
 
 def process_free_space(job: dict[str, Any]) -> None:
     ensure_job_active(job["id"], "Freeing local space stopped")
-    target = _checked_local_release_target(job)
     validate_cloud_vault(job, notify=False)
+    target = _checked_local_release_target(job)
     set_job(job["id"], "cleaning", message_key="job.verifying_cloud_copy")
     ensure_job_active(job["id"], "Freeing local space claim was lost")
     try:
@@ -3962,8 +3962,12 @@ def process_free_space(job: dict[str, Any]) -> None:
             raise RuntimeError("Local file changed since fingerprinting")
         ensure_job_active(job["id"], "Freeing local space stopped")
         fresh = _checked_local_release_target(job)
-        if (fresh["archive_version_id"], fresh["version_sha256"], fresh["local_size"], fresh["local_mtime_ns"]) != (
-            target["archive_version_id"], local_digest, claimed_stat.st_size, claimed_stat.st_mtime_ns
+        if (
+            fresh["archive_version_id"], fresh["object_key"], fresh["provider_version_id"],
+            fresh["cloud_size"], fresh["version_sha256"], fresh["local_size"], fresh["local_mtime_ns"],
+        ) != (
+            target["archive_version_id"], target["object_key"], target["provider_version_id"],
+            claimed_stat.st_size, local_digest, claimed_stat.st_size, claimed_stat.st_mtime_ns,
         ):
             raise RuntimeError("Cleanup blocked: protection changed while claiming the file")
         claimed_path.unlink()

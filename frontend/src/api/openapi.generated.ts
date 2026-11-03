@@ -1654,7 +1654,10 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** OperationPolicyUpdate */
+        /**
+         * OperationPolicyUpdate
+         * @description Update supplied fields only; omitted settings retain their current values.
+         */
         OperationPolicyUpdate: {
             /**
              * Auto Upload

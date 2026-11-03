@@ -21,7 +21,7 @@ describe("VaultAccessPage — operation policy globs (seam 6)", () => {
     const updates: unknown[] = [];
     const fetchMock = createVaultAccessFetch({
       "GET /api/vault/operation-policy": () => jsonResponse({
-        ...defaultPolicy, auto_upload: true, exclude_globs: ["tmp/**"],
+        ...defaultPolicy, auto_upload: true, local_release_after_days: 180, exclude_globs: ["tmp/**"],
       }),
       "PUT /api/vault/operation-policy": (init) => {
         const body: unknown = JSON.parse(String(init?.body ?? "{}"));
@@ -37,6 +37,7 @@ describe("VaultAccessPage — operation policy globs (seam 6)", () => {
     await user.click(screen.getByRole("button", { name: /save operation policy/i }));
     await waitFor(() => expect(updates).toHaveLength(1));
     expect(updates[0]).toMatchObject({ auto_upload: false, exclude_globs: ["tmp/**"] });
+    expect(updates[0]).not.toHaveProperty("local_release_after_days");
     expect(enabled).not.toBeChecked();
   });
 

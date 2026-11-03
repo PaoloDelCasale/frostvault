@@ -122,6 +122,20 @@ class OperationPolicyHttpTests(unittest.TestCase):
                                            json={"local_release_after_days": period})
                 self.assertEqual(response.status_code, 422, response.text)
 
+    def test_independent_upload_panel_cannot_reenable_or_disable_local_release(self) -> None:
+        self._authenticate(self.owner_id)
+        endpoint = "/api/vault/operation-policy"
+        for period in (180, None):
+            response = self.client.put(endpoint, headers=self._headers(), json={"local_release_after_days": period})
+            self.assertEqual(response.status_code, 200, response.text)
+            response = self.client.put(endpoint, headers=self._headers(), json={"auto_upload": False, "exclude_globs": ["keep/**"]})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["local_release_after_days"], period)
+        response = self.client.put(endpoint, headers=self._headers(), json={"local_release_after_days": 90})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["auto_upload"])
+        self.assertEqual(response.json()["exclude_globs"], ["keep/**"])
+
     def test_owner_can_request_storage_cost_estimates(self) -> None:
         self._authenticate(self.owner_id)
         response = self.client.post(

@@ -209,7 +209,8 @@ export function OperationPolicyPanel({ onNotice }: OperationPolicyPanelProps) {
     setBusy(true);
     try {
       const updated = await updateOperationPolicy({
-        ...policy,
+        auto_upload: policy.auto_upload,
+        stability_seconds: policy.stability_seconds,
         include_globs: includeRules,
         exclude_globs: excludeRules,
       });

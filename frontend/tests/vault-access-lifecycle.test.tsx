@@ -1,4 +1,4 @@
-import { cleanup, screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { resetApiClientForTests } from "@/api";
@@ -20,7 +20,7 @@ describe("Vault storage plan in Advanced", () => {
     renderVaultAccess({ fetchImpl });
     await user.click(await screen.findByText("Advanced", { exact: true }));
     await user.click(await screen.findByRole("combobox", { name: "Storage plan" }));
-    expect(screen.getAllByRole("option")).toHaveLength(5);
+    expect(within(screen.getByRole("listbox")).getAllByRole("option")).toHaveLength(5);
     await user.click(screen.getByRole("option", { name: /Economical instant access/ }));
     expect(screen.getByText(/Standard-IA at day 30, Glacier Instant Retrieval at day 90:/, { selector: "p" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Save plan" }));
