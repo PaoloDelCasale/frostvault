@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +11,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.main import (
     build_directory_items,
     build_job_groups,
@@ -227,7 +229,7 @@ class FileBrowserTests(unittest.TestCase):
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO vaults(
@@ -256,8 +258,7 @@ class FileBrowserTests(unittest.TestCase):
                     scan_id="2026-07-21T10:00:00+00:00",
                 )
             test_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", test_settings):
                 result = list_files(

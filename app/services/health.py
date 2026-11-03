@@ -45,10 +45,8 @@ def check_database() -> bool:
 def check_config() -> bool:
     """Return True when core settings look startable."""
     try:
-        if settings.db_backend not in {"sqlite", "postgresql"}:
-            return False
-        if settings.db_backend == "sqlite" and not str(settings.sqlite_path).strip():
-            return False
+        from psycopg.conninfo import conninfo_to_dict
+        conninfo_to_dict(settings.database_dsn)
         return True
     except Exception:
         return False

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -10,7 +12,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.main import app
 from app.main import _safe_return_to
 from app.security import hash_password
@@ -19,7 +21,7 @@ from tests.test_database import run_alembic
 
 
 class HardeningHttpTestCase(unittest.TestCase):
-    """Shared harness: a migrated SQLite database with the single owner."""
+    """Shared harness: a migrated PostgreSQL database with the single owner."""
 
     settings_overrides: dict[str, object] = {}
 
@@ -33,7 +35,7 @@ class HardeningHttpTestCase(unittest.TestCase):
 
         self.username = "alice"
         self.password = "correct horse battery"
-        with SQLiteConnection(str(database_path)) as connection:
+        with PostgresConnection(str(database_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -47,8 +49,7 @@ class HardeningHttpTestCase(unittest.TestCase):
 
         self.settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(database_path),
+            database_dsn=database_dsn(str(database_path)),
             cookie_secure=False,
             **self.settings_overrides,
         )
@@ -157,7 +158,7 @@ class OpenRedirectGuardTests(unittest.TestCase):
 
 class ReauthTests(HardeningHttpTestCase):
     def _expire_reauth(self) -> None:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 "UPDATE sessions SET reauth_at=%s",
                 ("2000-01-01T00:00:00+00:00",),
@@ -165,7 +166,7 @@ class ReauthTests(HardeningHttpTestCase):
 
     def _delete_from_cloud(self, csrf: str):
         """«Elimina dal cloud» is one of the two re-authenticated actions."""
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             if not connection.execute("SELECT id FROM vaults").fetchone():
                 connection.execute(
                     """

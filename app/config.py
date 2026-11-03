@@ -29,8 +29,9 @@ def is_placeholder(value: str, *current_values: str) -> bool:
 
 @dataclass(frozen=True)
 class Settings:
-    db_backend: str = os.getenv("DB_BACKEND", "postgresql").strip().lower()
-    sqlite_path: str = os.getenv("SQLITE_PATH", "/data/frostvault.db")
+    # Optional PostgreSQL libpq DSN/URI; empty uses the PG* environment.
+    # This can contain credentials and must never enter config snapshots/logs.
+    database_dsn: str = os.getenv("DATABASE_URL", "")
     session_cookie_name: str = os.getenv("SESSION_COOKIE_NAME", "frostvault_session")
     csrf_cookie_name: str = os.getenv("CSRF_COOKIE_NAME", "frostvault_csrf")
     session_idle_seconds: int = max(
@@ -195,8 +196,11 @@ def settings_snapshot(configured: Settings | Any) -> Settings:
 def validate_settings() -> None:
     if not 1 <= settings.smtp_port <= 65535:
         raise RuntimeError("SMTP_PORT must be between 1 and 65535")
-    if settings.db_backend not in {"sqlite", "postgresql"}:
-        raise RuntimeError("DB_BACKEND must be sqlite or postgresql")
+    from psycopg.conninfo import conninfo_to_dict
+    try:
+        conninfo_to_dict(settings.database_dsn)
+    except Exception:
+        raise RuntimeError("DATABASE_URL must be a PostgreSQL connection string") from None
     for entry in settings.trusted_proxies.split(","):
         candidate = entry.strip()
         if not candidate:

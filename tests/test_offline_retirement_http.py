@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -38,8 +40,7 @@ class OfflineRetirementHttpTests(unittest.TestCase):
 
         self._settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             frontend_dist_dir=str(self.dist_dir),
             cookie_secure=False,
             allowed_hosts="",

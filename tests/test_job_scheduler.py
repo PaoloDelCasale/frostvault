@@ -11,6 +11,8 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import os
 import tempfile
 import threading
@@ -32,7 +34,7 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.services.job_scheduler import select_fair_jobs
 from app import storage as storage_module
 from app.storage import (
@@ -80,7 +82,7 @@ class _SchedulerDbMixin:
         self.path = Path(self.tmp.name) / "scheduler.db"
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "INSERT INTO users(id, username, display_name, password_hash) "
                 "VALUES (1, 'owner', 'Owner', 'hash')"
@@ -108,7 +110,7 @@ class _SchedulerDbMixin:
         path: str,
         requested_at: str = "2026-07-01T00:00:00+00:00",
     ) -> int:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             return int(
                 connection.execute(
                     """
@@ -142,7 +144,7 @@ class _SchedulerDbMixin:
 
 class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
     def test_process_jobs_once_does_not_starve_second_vault(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             # Three older Jobs in vault 10, one newer Job in vault 20.
             connection.execute(
                 "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by, requested_at, updated_at) "
@@ -172,10 +174,10 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
             patch("app.storage.process_job", side_effect=fake_process),
         ):
             mock_settings.operation_concurrency = 2
-            mock_db.side_effect = lambda: SQLiteConnection(str(self.path))
+            mock_db.side_effect = lambda: PostgresConnection(str(self.path))
             process_jobs_once()
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             by_vault = {
                 row["id"]: row["vault_id"]
                 for row in connection.execute("SELECT id, vault_id FROM jobs").fetchall()
@@ -185,7 +187,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
         self.assertEqual(vaults_seen, {10, 20})
 
     def test_cancelled_queued_job_is_not_started(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by, requested_at, updated_at) "
                 "SELECT 10, id, 'a.txt', 'upload', 'queued', 1, '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00' "
@@ -194,7 +196,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
             job_id = connection.execute("SELECT id FROM jobs").fetchone()["id"]
 
         cancel_jobs([job_id])
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "UPDATE jobs SET status='cancelled', message=%s, updated_at=%s WHERE id=%s",
                 ("cancelled by test", "2026-07-01T00:10:00+00:00", job_id),
@@ -211,17 +213,17 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
             patch("app.storage.process_job", side_effect=fake_process),
         ):
             mock_settings.operation_concurrency = 4
-            mock_db.side_effect = lambda: SQLiteConnection(str(self.path))
+            mock_db.side_effect = lambda: PostgresConnection(str(self.path))
             process_jobs_once()
 
         self.assertEqual(processed_ids, [])
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             status = connection.execute(
                 "SELECT status FROM jobs WHERE id=%s", (job_id,)
             ).fetchone()["status"]
         self.assertEqual(status, "cancelled")
 
-    def test_two_sqlite_schedulers_claim_one_job_once(self) -> None:
+    def test_two_postgresql_schedulers_claim_one_job_once(self) -> None:
         job_id = self._insert_upload_job(vault_id=10, path="a.txt")
         start = threading.Barrier(2)
         seen: list[int] = []
@@ -245,7 +247,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
             patch("app.storage._runtime_settings", return_value=runtime),
             patch(
                 "app.storage.db",
-                side_effect=lambda: SQLiteConnection(str(self.path)),
+                side_effect=lambda: PostgresConnection(str(self.path)),
             ),
             patch("app.storage.process_job", side_effect=record),
         ):
@@ -254,7 +256,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
 
         self.assertEqual(sum(results), 1)
         self.assertEqual(seen, [job_id])
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT claim_token, claim_expires_at FROM jobs WHERE id=%s",
                 (job_id,),
@@ -264,7 +266,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
 
     def test_expired_queued_lease_is_reclaimed(self) -> None:
         job_id = self._insert_upload_job(vault_id=10, path="a.txt")
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 UPDATE jobs
@@ -285,7 +287,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
             patch("app.storage._runtime_settings", return_value=runtime),
             patch(
                 "app.storage.db",
-                side_effect=lambda: SQLiteConnection(str(self.path)),
+                side_effect=lambda: PostgresConnection(str(self.path)),
             ),
             patch(
                 "app.storage.process_job",
@@ -294,7 +296,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
         ):
             self.assertEqual(process_jobs_once(), 1)
         self.assertEqual(seen, [job_id])
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT claim_token FROM jobs WHERE id=%s", (job_id,)
             ).fetchone()
@@ -303,7 +305,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
     def test_claimed_job_cancellation_cannot_be_overwritten_by_worker(self) -> None:
         job_id = self._insert_upload_job(vault_id=10, path="a.txt")
         timestamp = storage_module.now_iso()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             claimed = ArchiveCatalog(connection).claim_job(
                 job_id=job_id,
                 claim_token="worker-claim",
@@ -327,7 +329,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
         runtime = SimpleNamespace(restore_poll_interval=0)
 
         def cancel_then_attempt_complete(active: dict) -> None:
-            with SQLiteConnection(str(self.path)) as connection:
+            with PostgresConnection(str(self.path)) as connection:
                 connection.execute(
                     "UPDATE jobs SET status='cancelled' WHERE id=%s", (job_id,)
                 )
@@ -337,7 +339,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
             patch("app.storage._runtime_settings", return_value=runtime),
             patch(
                 "app.storage.db",
-                side_effect=lambda: SQLiteConnection(str(self.path)),
+                side_effect=lambda: PostgresConnection(str(self.path)),
             ),
             patch(
                 "app.storage.source_layout.vault_local_access",
@@ -347,7 +349,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
         ):
             self.assertTrue(process_job(dict(job)))
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             status = connection.execute(
                 "SELECT status FROM jobs WHERE id=%s", (job_id,)
             ).fetchone()["status"]
@@ -356,7 +358,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
     def test_heartbeat_lease_loss_fences_the_worker_terminal_write(self) -> None:
         job_id = self._insert_upload_job(vault_id=10, path="a.txt")
         timestamp = storage_module.now_iso()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             claimed = ArchiveCatalog(connection).claim_job(
                 job_id=job_id,
                 claim_token="heartbeat-worker",
@@ -385,7 +387,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
             patch("app.storage._runtime_settings", return_value=runtime),
             patch(
                 "app.storage.db",
-                side_effect=lambda: SQLiteConnection(str(self.path)),
+                side_effect=lambda: PostgresConnection(str(self.path)),
             ),
             patch("app.storage.JOB_CLAIM_LEASE_SECONDS", 0.01),
             patch("app.storage._renew_claim_if_owned", return_value=None),
@@ -397,7 +399,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
         ):
             self.assertFalse(process_job(dict(job)))
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             status = connection.execute(
                 "SELECT status FROM jobs WHERE id=%s", (job_id,)
             ).fetchone()["status"]
@@ -407,7 +409,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
         first = self._insert_upload_job(vault_id=10, path="a.txt")
         self._insert_upload_job(vault_id=10, path="b.txt")
         self._insert_upload_job(vault_id=20, path="a.txt")
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 UPDATE jobs
@@ -441,7 +443,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
             patch("app.storage._runtime_settings", return_value=runtime),
             patch(
                 "app.storage.db",
-                side_effect=lambda: SQLiteConnection(str(self.path)),
+                side_effect=lambda: PostgresConnection(str(self.path)),
             ),
         ):
             self.assertEqual(claimable_queue_depth(), 3)
@@ -457,7 +459,7 @@ class ExpiredLeaseSweepTests(_SchedulerDbMixin, unittest.TestCase):
         expires_at: str,
         claimed_at: str = "2026-07-01T00:00:00+00:00",
     ) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 UPDATE jobs
@@ -481,7 +483,7 @@ class ExpiredLeaseSweepTests(_SchedulerDbMixin, unittest.TestCase):
             patch("app.storage._runtime_settings", return_value=runtime),
             patch(
                 "app.storage.db",
-                side_effect=lambda: SQLiteConnection(str(self.path)),
+                side_effect=lambda: PostgresConnection(str(self.path)),
             ),
         )
 
@@ -501,7 +503,7 @@ class ExpiredLeaseSweepTests(_SchedulerDbMixin, unittest.TestCase):
                 self.assertEqual(process_jobs_once(), 0)
             self.assertEqual(claimable_queue_depth(), 0)
             self.assertEqual(observe_stuck_lease_jobs()[0], 0)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status, claim_token FROM jobs WHERE id=%s",
                 (job_id,),
@@ -530,7 +532,7 @@ class ExpiredLeaseSweepTests(_SchedulerDbMixin, unittest.TestCase):
                 self.assertEqual(process_jobs_once(), 1)
             self.assertEqual(seen, [job_id])
             self.assertEqual(observe_stuck_lease_jobs()[0], 0)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status, claim_token FROM jobs WHERE id=%s",
                 (job_id,),
@@ -561,7 +563,7 @@ class ExpiredLeaseSweepTests(_SchedulerDbMixin, unittest.TestCase):
             ):
                 self.assertEqual(process_jobs_once(), 1)
         self.assertEqual(seen, [dead_id])
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             rows = connection.execute(
                 "SELECT id, status, claim_token FROM jobs WHERE id IN (%s, %s)",
                 (live_id, dead_id),
@@ -611,7 +613,7 @@ class ExpiredLeaseSweepTests(_SchedulerDbMixin, unittest.TestCase):
             ):
                 with self.assertRaisesRegex(RuntimeError, "database is locked"):
                     process_jobs_once()
-            with SQLiteConnection(str(self.path)) as connection:
+            with PostgresConnection(str(self.path)) as connection:
                 held = connection.execute(
                     "SELECT status, claim_token FROM jobs WHERE id=%s",
                     (job_id,),

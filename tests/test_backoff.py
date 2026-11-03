@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import subprocess
 import sys
 import tempfile
@@ -11,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app import backoff
-from app.database import SQLiteConnection
+
 from tests.test_database import run_alembic
 
 
@@ -21,7 +23,7 @@ REPOSITORY_ROOT = Path(__file__).parents[1]
 class _LegacyReadBarrierConnection:
     """Force the old read-then-write implementation into its lost-update race."""
 
-    def __init__(self, connection: SQLiteConnection, barrier: threading.Barrier):
+    def __init__(self, connection: PostgresConnection, barrier: threading.Barrier):
         self._connection = connection
         self._barrier = barrier
 
@@ -39,8 +41,8 @@ class BackoffTestBase(unittest.TestCase):
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-    def connect(self) -> SQLiteConnection:
-        return SQLiteConnection(str(self.database_path))
+    def connect(self) -> PostgresConnection:
+        return PostgresConnection(str(self.database_path))
 
     def _fail(self, times: int, *, scope: str = "ip", key: str = "k") -> None:
         with self.connect() as connection:
@@ -124,14 +126,14 @@ class BackoffTests(BackoffTestBase):
             ).fetchone()
         self.assertEqual(row["failure_count"], 1)
 
-    def test_concurrent_sqlite_failures_are_all_counted_atomically(self) -> None:
+    def test_concurrent_postgresql_failures_are_all_counted_atomically(self) -> None:
         """Each connection increments one shared counter without a lost update."""
         attempts = 8
         start = threading.Barrier(attempts, timeout=60)
         legacy_read = threading.Barrier(attempts, timeout=60)
         connections = [self.connect() for _ in range(attempts)]
 
-        def record(connection: SQLiteConnection) -> None:
+        def record(connection: PostgresConnection) -> None:
             with connection:
                 start.wait()
                 backoff.record_failure(
@@ -150,13 +152,13 @@ class BackoffTests(BackoffTestBase):
         self.assertEqual(row["failure_count"], attempts)
 
     def test_concurrent_threshold_failures_return_matching_deadlines(self) -> None:
-        """Every committed SQLite result pairs its count with its deadline."""
+        """Every committed PostgreSQL result pairs its count with its deadline."""
         attempts = backoff.THRESHOLD + 2
         now = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
         start = threading.Barrier(attempts, timeout=60)
         connections = [self.connect() for _ in range(attempts)]
 
-        def record(connection: SQLiteConnection) -> tuple[int, str | None]:
+        def record(connection: PostgresConnection) -> tuple[int, str | None]:
             with connection:
                 start.wait()
                 return backoff.record_failure(
@@ -200,9 +202,9 @@ class BackoffTests(BackoffTestBase):
         self._fail(backoff.THRESHOLD)
         check = """
 from app import backoff
-from app.database import SQLiteConnection
+from app.database import PostgresConnection
 import sys
-with SQLiteConnection(sys.argv[1]) as connection:
+with PostgresConnection(sys.argv[1]) as connection:
     try:
         backoff.guard(connection, scope='ip', key='k')
     except backoff.BackoffError:

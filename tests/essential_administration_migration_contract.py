@@ -1,4 +1,4 @@
-"""Shared SQLite/PostgreSQL preservation contract for #416."""
+"""Shared PostgreSQL preservation contract for #416."""
 from __future__ import annotations
 
 from tests.notification_migration_contract import seed_legacy_notifications

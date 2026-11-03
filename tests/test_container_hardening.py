@@ -418,48 +418,26 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
         return uid, gid, mode
 
     @classmethod
-    def _inspect_sqlite_database(cls, data_dir: Path) -> tuple[str, tuple[str, int]]:
-        """Query a temporary copy of the protected SQLite bind source.
-
-        SQLite uses a WAL sidecar while the application is running. The caller
-        stops Compose first; this helper then copies the database and any
-        sidecars from a read-only bind into tmpfs, so inspection cannot mutate
-        the asserted host directory or its metadata.
-        """
+    def _inspect_postgresql_database(cls, container_name: str) -> tuple[str, str]:
+        """Read the isolated Compose catalog through the app's runtime identity."""
         completed = cls._docker(
-            "run",
-            "--rm",
-            "--read-only",
-            "--tmpfs",
-            "/tmp:mode=1777",
-            "--user",
-            "0:0",
-            "-v",
-            f"{data_dir}:/data:ro",
-            "--entrypoint",
-            "python",
-            cls.image,
-            "-c",
+            "exec", container_name, "python", "-c",
             "\n".join(
                 (
-                    "import glob",
                     "import json",
-                    "import shutil",
-                    "import sqlite3",
-                    "for source in glob.glob('/data/frostvault.db*'):",
-                    "    shutil.copy2(source, '/tmp')",
-                    "with sqlite3.connect('file:/tmp/frostvault.db?mode=ro', uri=True) as connection:",
-                    "    revision = connection.execute('SELECT version_num FROM alembic_version').fetchone()[0]",
-                    "    admin = connection.execute('SELECT username, is_admin FROM users').fetchone()",
-                    "print(json.dumps({'revision': revision, 'admin': admin}))",
+                    "from app.database import db",
+                    "with db() as connection:",
+                    "    connection.execute('SET TRANSACTION READ ONLY')",
+                    "    revision = connection.execute('SELECT version_num FROM alembic_version').fetchone()['version_num']",
+                    "    owner = connection.execute('SELECT username FROM users').fetchone()['username']",
+                    "print(json.dumps({'revision': revision, 'owner': owner}))",
                 )
             ),
         )
         try:
             payload = json.loads(completed.stdout)
             revision = str(payload["revision"])
-            username, is_admin = payload["admin"]
-            return revision, (str(username), int(is_admin))
+            return revision, str(payload["owner"])
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise AssertionError(
                 f"unexpected database helper output: {completed.stdout!r}"
@@ -534,6 +512,20 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
                     f"    image: {self.image}",
                     f"    container_name: {container_name}",
                     '    restart: "no"',
+                    "    depends_on:",
+                    "      postgres:",
+                    "        condition: service_healthy",
+                    "  postgres:",
+                    "    image: postgres:16",
+                    "    environment:",
+                    "      POSTGRES_DB: archive_smoke",
+                    "      POSTGRES_USER: frostvault",
+                    "      POSTGRES_PASSWORD: smoke-test-only",
+                    "    healthcheck:",
+                    "      test: [CMD-SHELL, 'pg_isready -U frostvault -d archive_smoke']",
+                    "      interval: 1s",
+                    "      timeout: 5s",
+                    "      retries: 30",
                     "",
                 )
             ),
@@ -546,6 +538,10 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
             # Compose `up` does not conflict with an operator's port while the
             # smoke test probes the service with docker exec.
             "APP_PORT": "0",
+            "PGHOST": "postgres",
+            "PGDATABASE": "archive_smoke",
+            "PGUSER": "frostvault",
+            "PGPASSWORD": "smoke-test-only",
         }
         if extra_environment:
             environment.update(extra_environment)
@@ -662,8 +658,6 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
                 source_gid=gid,
                 source_mode=0o770,
                 extra_environment={
-                    "DB_BACKEND": "sqlite",
-                    "SQLITE_PATH": "/data/frostvault.db",
                     "AUTO_MIGRATE": "1",
                     "BOOTSTRAP_ADMIN_USERNAME": username,
                     "BOOTSTRAP_ADMIN_PASSWORD": "Smoke-only-password-196",
@@ -701,12 +695,10 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
 
             logs = self._docker("logs", container_name)
             combined_logs = logs.stdout + logs.stderr
-            # Stop before copying SQLite's WAL database. The read-only helper
-            # below uses only a tmpfs copy and never changes host metadata.
-            self._down(root, project_name)
-            revision, admin = self._inspect_sqlite_database(data_dir)
+            revision, owner = self._inspect_postgresql_database(container_name)
             self.assertEqual(revision, HEAD_SCHEMA_REVISION)
-            self.assertEqual(admin, (username, 1))
+            self.assertEqual(owner, username)
+            self._down(root, project_name)
 
             self.assertIn(
                 "AUTO_MIGRATE: ensuring database schema is current before uvicorn",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import inspect
 import tempfile
 import unittest
@@ -9,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.config import Settings
-from app.database import SQLiteConnection
+
 from app.services import source_layout
 from app.services import vaults as vaults_service
 from tests.test_database import run_alembic
@@ -31,7 +33,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         source_layout.override_sources_root(self.sources_root)
         self.managed_root = source_layout.ensure_managed_directory()
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 "INSERT INTO users(id, username, display_name, password_hash) "
                 "VALUES (1, 'alice', 'Alice', 'hash')"
@@ -39,8 +41,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
 
         self.settings = replace(
             Settings(),
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             vault_s3_bucket="test-bucket",
 
         )
@@ -50,7 +51,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def _vaults(self) -> list[dict]:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             return connection.execute("SELECT * FROM vaults").fetchall()
 
     def test_creates_vault_and_directory_atomically(self) -> None:

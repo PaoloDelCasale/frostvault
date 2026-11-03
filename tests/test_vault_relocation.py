@@ -1,6 +1,8 @@
 """Issue #152: verified same-Source-Volume Vault Root Relocation."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import json
 import tempfile
 import threading
@@ -10,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.config import Settings
-from app.database import SQLiteConnection
+
 from app.services import source_layout, vault_relocation
 from tests.test_database import run_alembic
 
@@ -31,7 +33,7 @@ class VaultRelocationTests(unittest.TestCase):
         self.old.mkdir()
         (self.old / "photo.jpg").write_bytes(b"same tree")
         self.settings = replace(
-            Settings(), db_backend="sqlite", sqlite_path=str(self.db_path)
+            Settings(), database_dsn=database_dsn(str(self.db_path))
         )
         for target in (
             "app.database.settings",
@@ -51,7 +53,7 @@ class VaultRelocationTests(unittest.TestCase):
         )
         mount.start()
         self.addCleanup(mount.stop)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 "INSERT INTO users(id, username, display_name, password_hash) "
                 "VALUES (1, 'owner', 'Owner', 'hash'), (9, 'admin', 'Admin', 'hash')"
@@ -78,13 +80,13 @@ class VaultRelocationTests(unittest.TestCase):
             reason="operator renamed the directory",
         )
         args.update(overrides)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             return vault_relocation.relocate_vault_root(connection, **args)
 
     def reason(self, **overrides) -> str:
         with self.assertRaises(vault_relocation.VaultRelocationError) as raised:
             self.relocate(**overrides)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             row = connection.execute("SELECT source_root FROM vaults WHERE id=7").fetchone()
         self.assertEqual(row["source_root"], str(self.old))
         return raised.exception.reason
@@ -96,7 +98,7 @@ class VaultRelocationTests(unittest.TestCase):
         self.assertEqual(relocated["relocation_state"], "scan_required")
         for field in ("id", "uuid", "s3_bucket", "s3_prefix"):
             self.assertEqual(relocated[field], before[field])
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             event = connection.execute(
                 "SELECT event, actor_user_id, detail_json "
                 "FROM audit_events WHERE vault_id=7 ORDER BY id DESC"
@@ -125,7 +127,7 @@ class VaultRelocationTests(unittest.TestCase):
         unrelated = self.volume / "unrelated"
         unrelated.mkdir()
         self.assertEqual(self.reason(relative_path="unrelated"), "identity_mismatch")
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute("UPDATE vaults SET root_identity=NULL WHERE id=7")
         self.assertEqual(self.reason(), "identity_ambiguous")
 
@@ -144,13 +146,13 @@ class VaultRelocationTests(unittest.TestCase):
     def test_overlap_symlink_and_source_present_are_rejected(self) -> None:
         overlap = self.new / "child"
         overlap.mkdir()
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (8, 'other', 'Other', %s, 'b', 'vaults/other/')",
                 (str(overlap),),
             )
         self.assertEqual(self.reason(), "overlap")
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute("DELETE FROM vaults WHERE id=8")
         linked = self.volume / "linked-name"
         linked.symlink_to(self.new, target_is_directory=True)
@@ -164,7 +166,7 @@ class VaultRelocationTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             self.relocate(after_update=fail_handoff)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             row = connection.execute(
                 "SELECT source_root, relocation_state, relocation_previous_root FROM vaults WHERE id=7"
             ).fetchone()
@@ -222,7 +224,7 @@ class VaultRelocationTests(unittest.TestCase):
         self.assertEqual(len(outcome), 1)
         self.assertIsInstance(outcome[0], dict)
         self.assertFalse(lock.locked())
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             row = connection.execute(
                 "SELECT source_root, relocation_state FROM vaults WHERE id=7"
             ).fetchone()
@@ -242,7 +244,7 @@ class VaultRelocationTests(unittest.TestCase):
         scan_tree.assert_not_called()
         self.assertEqual(result["local"], -1)
         self.assertEqual(result["root_identity_mismatch"], 1)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             row = connection.execute(
                 "SELECT relocation_state FROM vaults WHERE id=7"
             ).fetchone()
@@ -264,7 +266,7 @@ class VaultRelocationTests(unittest.TestCase):
         scan_tree.assert_not_called()
         self.assertEqual(result["local"], -1)
         self.assertEqual(result["root_identity_mismatch"], 1)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             row = connection.execute(
                 "SELECT relocation_state FROM vaults WHERE id=7"
             ).fetchone()
@@ -286,7 +288,7 @@ class VaultRelocationTests(unittest.TestCase):
 
         self.assertEqual(result["local"], -1)
         self.assertEqual(result["root_identity_mismatch"], 1)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             row = connection.execute(
                 "SELECT relocation_state FROM vaults WHERE id=7"
             ).fetchone()
@@ -306,7 +308,7 @@ class VaultRelocationTests(unittest.TestCase):
 
         scan_tree.assert_not_called()
         self.assertEqual(result["root_identity_mismatch"], 1)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             row = connection.execute(
                 "SELECT relocation_state FROM vaults WHERE id=7"
             ).fetchone()
@@ -336,7 +338,7 @@ class VaultRelocationTests(unittest.TestCase):
             result = scan_vault(dict(relocated))
 
         self.assertEqual(result["root_identity_mismatch"], 1)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             files = connection.execute(
                 "SELECT COUNT(*) AS count FROM vault_files WHERE vault_id=7"
             ).fetchone()
@@ -387,7 +389,7 @@ class VaultRelocationTests(unittest.TestCase):
             result = scan_vault(dict(relocated))
 
         self.assertEqual(result["root_identity_mismatch"], 1)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             files = connection.execute(
                 "SELECT COUNT(*) AS count FROM vault_files WHERE vault_id=7"
             ).fetchone()
@@ -412,7 +414,7 @@ class VaultRelocationTests(unittest.TestCase):
         ):
             result = scan_vault(dict(relocated))
         self.assertEqual(result["local"], 1)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             row = connection.execute(
                 "SELECT relocation_state, relocation_previous_root FROM vaults WHERE id=7"
             ).fetchone()

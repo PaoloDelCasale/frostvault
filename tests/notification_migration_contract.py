@@ -1,4 +1,4 @@
-"""Shared SQLite/PostgreSQL assertions for the #414 schema cut."""
+"""Shared PostgreSQL assertions for the #414 schema cut."""
 from __future__ import annotations
 
 from typing import Any

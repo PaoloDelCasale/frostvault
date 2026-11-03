@@ -1,6 +1,8 @@
 """Removed admin surfaces, deployment-only configuration and migration safety."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -11,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from app import main, storage
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.services.metadata_backups import build_config_snapshot
 from tests.essential_administration_migration_contract import assert_administration_migration
 from tests.test_database import run_alembic
@@ -50,8 +52,8 @@ class EssentialAdministrationTests(unittest.TestCase):
             path = Path(directory) / "admin.db"
             assert_administration_migration(
                 self, lambda target, command="upgrade": run_alembic(path, target, command=command),
-                lambda: SQLiteConnection(str(path)),
+                lambda: PostgresConnection(str(path)),
             )
-            with SQLiteConnection(str(path)) as connection:
-                tables = {r["name"] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            with PostgresConnection(str(path)) as connection:
+                tables = {r["name"] for r in connection.execute("SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()").fetchall()}
             self.assertTrue({"system_settings", "worker_errors"}.isdisjoint(tables))

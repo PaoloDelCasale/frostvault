@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 import uuid
@@ -13,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.security import hash_password
 from app.sessions import create_session, csrf_token_for
 from tests.test_database import run_alembic
@@ -26,15 +28,14 @@ class OperationPolicyHttpTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / "app.db"
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             self.owner_id = self._user(connection, "owner")
             self.vault_id = connection.execute(
                 "INSERT INTO vaults(slug, name, source_root, s3_bucket, s3_prefix) VALUES ('docs', 'Docs', '/source', 'bucket', 'docs') RETURNING id"
             ).fetchone()["id"]
         test_settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.path),
+            database_dsn=database_dsn(str(self.path)),
             cookie_secure=False,
         )
         self.patchers = [
@@ -56,7 +57,7 @@ class OperationPolicyHttpTests(unittest.TestCase):
         ).fetchone()["id"]
 
     def _authenticate(self, user_id: int) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             token = create_session(connection, user_id=user_id, auth_method="oidc")
             csrf = csrf_token_for(connection, token)
         self.client.cookies.set(settings.session_cookie_name, token)
@@ -154,7 +155,7 @@ class OperationPolicyHttpTests(unittest.TestCase):
         )
 
     def test_vault_estimate_uses_bundled_list_prices_and_cloud_size(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             self._archive_version(connection, "a.bin", 1024**3)
             self._archive_version(connection, "b.bin", 1024**3)
         self._authenticate(self.owner_id)
@@ -174,7 +175,7 @@ class OperationPolicyHttpTests(unittest.TestCase):
         self.assertIn("disclaimer", body["assumptions"])
 
     def test_vault_estimate_refuses_unknown_sizes_and_missing_vaults(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             self._archive_version(connection, "unknown.bin", None)
         self._authenticate(self.owner_id)
         unknown = self.client.post(

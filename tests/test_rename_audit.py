@@ -1,6 +1,8 @@
 """Rename safety/validation contracts; routine renames are no longer logged (#416)."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import hashlib
 import tempfile
 import threading
@@ -13,7 +15,7 @@ from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog, VaultFileNotFound
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.security import hash_password
 from app.storage import apply_auto_renames
 from tests.test_database import run_alembic
@@ -35,7 +37,7 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             self.owner_id = connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -54,8 +56,7 @@ class RenameAuditPersistenceTests(unittest.TestCase):
 
         self.test_settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
         )
         for target in ("app.database.settings", "app.storage.settings"):
@@ -78,7 +79,7 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         with_verified_version: bool = False,
     ) -> str:
         target_vault_id = self.vault_id if vault_id is None else vault_id
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             catalog = ArchiveCatalog(connection)
             old_id = catalog.observe_local_copy(
                 vault_id=target_vault_id,
@@ -149,7 +150,7 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         def confirm_once(_: int) -> tuple[int, dict[str, object]]:
             start.wait(timeout=10)
             try:
-                with SQLiteConnection(str(self.database_path)) as connection:
+                with PostgresConnection(str(self.database_path)) as connection:
                     catalog = ArchiveCatalog(connection)
                     catalog.confirm_file_rename(
                         vault_file_id=old_id,
@@ -178,7 +179,7 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             [{"detail": "Vault File not found"}],
         )
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             catalog = ArchiveCatalog(connection)
             current = catalog.get_file_by_path(self.vault_id, "concurrent/new.txt")
             history = catalog.list_path_history(old_id, vault_id=self.vault_id)
@@ -227,8 +228,8 @@ class RenameAuditPersistenceTests(unittest.TestCase):
 
         def scanner_state_change() -> None:
             try:
-                with SQLiteConnection(str(self.database_path)) as connection:
-                    connection.begin_immediate()
+                with PostgresConnection(str(self.database_path)) as connection:
+                    connection.execute("SELECT id FROM vaults WHERE id=%s FOR UPDATE", (self.vault_id,))
                     connection.execute(
                         """
                         UPDATE local_copies
@@ -262,7 +263,7 @@ class RenameAuditPersistenceTests(unittest.TestCase):
 
         def confirm_while_scanner_holds_write_lock() -> None:
             try:
-                with SQLiteConnection(str(self.database_path)) as connection:
+                with PostgresConnection(str(self.database_path)) as connection:
                     ArchiveCatalog(connection).confirm_file_rename(
                         vault_file_id=old_id,
                         new_path="scan-race/new.txt",
@@ -297,7 +298,7 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         self.assertEqual(scanner_errors, [])
         self.assertEqual(confirmation_outcome, ["not_found"])
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             source_copy = connection.execute(
                 """
                 SELECT presence, plaintext_sha256
@@ -334,7 +335,7 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         new_file.parent.mkdir(parents=True, exist_ok=True)
         new_file.write_bytes(payload)
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             catalog = ArchiveCatalog(connection)
             old_id = catalog.observe_local_copy(
                 vault_id=self.vault_id,
@@ -376,7 +377,7 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             summary = apply_auto_renames(vault, requested_by=self.owner_id)
         self.assertGreaterEqual(summary["confirmed"], 1)
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) AS n FROM audit_events WHERE event='vault_file_renamed'"
             ).fetchone()["n"], 0)

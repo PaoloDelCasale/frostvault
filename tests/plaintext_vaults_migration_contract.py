@@ -1,4 +1,4 @@
-"""Populated SQLite/PostgreSQL contract for the #419 schema cut."""
+"""Populated PostgreSQL contract for the #419 schema cut."""
 from tests.notification_migration_contract import preserved_state, seed_legacy_notifications
 
 REMOVED = ("encryption_mode", "crypt_password_ciphertext",
@@ -27,7 +27,7 @@ def assert_plaintext_migration(test, run, connect):
         connection.execute("""
             INSERT INTO metadata_backup_runs(created_at, reason, backend, status,
                 local_path, digest_sha256, database_sha256, s3_key, size_bytes)
-            VALUES ('2026-11-03', 'manual', 'sqlite', 'succeeded',
+            VALUES ('2026-11-03', 'manual', 'postgresql', 'succeeded',
                 '/backups/metadata.bak.enc', 'artifact-digest', 'database-digest',
                 'system/backups/metadata.bak.enc', 1234)
         """)

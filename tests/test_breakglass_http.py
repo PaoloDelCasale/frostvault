@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -10,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.security import DUMMY_PASSWORD_HASH, hash_password
 from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
@@ -31,7 +33,7 @@ class BreakGlassHttpTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
         # FrostVault has a single User: the owner (#412).
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -42,8 +44,7 @@ class BreakGlassHttpTests(unittest.TestCase):
 
         self.test_settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
             oidc_enabled=True,
             oidc_issuer="https://issuer.example",
@@ -69,7 +70,7 @@ class BreakGlassHttpTests(unittest.TestCase):
         return TestClient(app=main.app, client=peer, follow_redirects=False)
 
     def _backoff_rows(self) -> int:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             return connection.execute(
                 "SELECT COUNT(*) AS total FROM auth_backoff"
             ).fetchone()["total"]
@@ -148,7 +149,7 @@ class BreakGlassHttpTests(unittest.TestCase):
                     )
                 self.assertEqual(response.status_code, 403, response.text)
                 self.assertIsNone(client.cookies.get(self.cookie_name))
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             denied = connection.execute(
                 "SELECT COUNT(*) AS total FROM audit_events "
                 "WHERE event='break_glass_denied'"
@@ -187,7 +188,7 @@ class BreakGlassHttpTests(unittest.TestCase):
         )
 
     def test_wrong_password_verifies_once_against_the_real_hash(self) -> None:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             password_hash = connection.execute(
                 "SELECT password_hash FROM users WHERE username=%s",
                 ("admin",),
@@ -206,7 +207,7 @@ class BreakGlassHttpTests(unittest.TestCase):
     def test_ineligible_logins_verify_once_against_the_dummy_hash_and_fail(
         self,
     ) -> None:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 "UPDATE users SET password_hash=NULL WHERE username='admin'"
             )

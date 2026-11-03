@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import os
 import tempfile
 import unittest
@@ -17,7 +19,7 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.services.catalog_audit import audit_vault_catalog
 from app.services.component_health import (
     load_vault_health,
@@ -34,7 +36,7 @@ class CatalogIncidentTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / "incidents.db"
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(id, username, display_name, password_hash)
@@ -87,7 +89,7 @@ class CatalogIncidentTests(unittest.TestCase):
     def test_missing_archive_audit_opens_deduped_durable_alert(self) -> None:
         vault = {"id": 1, "s3_bucket": "bucket", "s3_prefix": "vaults/uuid"}
         client = self._empty_client()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             report = audit_vault_catalog(connection, vault, client)
             first = connection.execute(
                 "SELECT id, status, path FROM catalog_incidents"
@@ -105,7 +107,7 @@ class CatalogIncidentTests(unittest.TestCase):
         self.assertEqual(len(notes), 1)
         self.assertEqual(notes[0]["event"], "archive_version_missing")
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             report = audit_vault_catalog(connection, vault, client)
             incidents = connection.execute(
                 "SELECT id, status FROM catalog_incidents"
@@ -118,9 +120,9 @@ class CatalogIncidentTests(unittest.TestCase):
 
     def test_incident_survives_reopen_and_resolves_when_listed(self) -> None:
         vault = {"id": 1, "s3_bucket": "bucket", "s3_prefix": "vaults/uuid"}
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             audit_vault_catalog(connection, vault, self._empty_client())
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             row = connection.execute(
                 "SELECT status FROM catalog_incidents"
             ).fetchone()
@@ -149,7 +151,7 @@ class CatalogIncidentTests(unittest.TestCase):
         self.assertIsNotNone(incident["resolved_at"])
 
     def test_authorized_purge_does_not_open_incident(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "UPDATE archive_versions SET availability='purged' WHERE id=%s",
                 (self.version_id,),
@@ -166,7 +168,7 @@ class CatalogIncidentTests(unittest.TestCase):
         self.assertEqual(incidents, [])
 
     def test_concurrent_upload_does_not_mark_missing_or_alert(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 INSERT INTO jobs(
@@ -200,7 +202,7 @@ class CatalogIncidentTests(unittest.TestCase):
 
         client = Mock()
         client.get_paginator.return_value = BrokenPaginator()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             with self.assertRaisesRegex(RuntimeError, "listing truncated"):
                 audit_vault_catalog(
                     connection,
@@ -218,7 +220,7 @@ class CatalogIncidentTests(unittest.TestCase):
         self.assertEqual(incidents, [])
 
     def test_component_health_survives_reopen(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             record_component_health(
                 connection,
                 vault_id=1,
@@ -234,7 +236,7 @@ class CatalogIncidentTests(unittest.TestCase):
                 verified=True,
                 extra={"missing_in_cloud": 1, "healthy": 0, "command_ok": 1},
             )
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             health = load_vault_health(connection, 1)
             overlay = runtime_fields_from_health(health)
         self.assertEqual(health["cloud"]["last_error"], "Cloud scan: timeout")

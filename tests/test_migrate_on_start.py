@@ -1,6 +1,8 @@
 """Tests for automatic schema migration on application start."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -12,7 +14,7 @@ from alembic.script.revision import RangeNotAncestorError
 from cryptography.fernet import Fernet
 
 from app.config import settings as configured_settings
-from app.database import HEAD_SCHEMA_REVISION, SQLiteConnection, initialize_database
+from app.database import HEAD_SCHEMA_REVISION, initialize_database
 from app.migrate_on_start import (
     SchemaMigrationError,
     _upgrade_existing_with_backup,
@@ -24,7 +26,7 @@ from tests.test_database import run_alembic
 
 class MigrateOnStartTests(unittest.TestCase):
     def _seed_backup_admin(self, path: Path) -> int:
-        with SQLiteConnection(str(path)) as connection:
+        with PostgresConnection(str(path)) as connection:
             return connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -43,7 +45,7 @@ class MigrateOnStartTests(unittest.TestCase):
         expected_message = metadata_backups.pre_upgrade_backup_failure_message(
             block_reason
         )
-        with SQLiteConnection(str(path)) as connection:
+        with PostgresConnection(str(path)) as connection:
             run = connection.execute(
                 """
                 SELECT reason, status, error_message
@@ -80,8 +82,7 @@ class MigrateOnStartTests(unittest.TestCase):
             path = str(Path(directory) / "stale.db")
             test_settings = SimpleNamespace(
                 auto_migrate=False,
-                db_backend="sqlite",
-                sqlite_path=path,
+                database_dsn=database_dsn(path),
             )
             with patch("app.migrate_on_start.settings", test_settings):
                 self.assertEqual(ensure_schema_current(), "disabled")
@@ -93,8 +94,7 @@ class MigrateOnStartTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             test_settings = SimpleNamespace(
                 auto_migrate=True,
-                db_backend="sqlite",
-                sqlite_path=str(path),
+                database_dsn=database_dsn(str(path)),
             )
             with (
                 patch("app.migrate_on_start.settings", test_settings),
@@ -109,8 +109,7 @@ class MigrateOnStartTests(unittest.TestCase):
             path = str(Path(directory) / "fresh.db")
             test_settings = SimpleNamespace(
                 auto_migrate=True,
-                db_backend="sqlite",
-                sqlite_path=path,
+                database_dsn=database_dsn(path),
                 bootstrap_admin_username="admin",
                 bootstrap_admin_password="a-secure-test-password",
                 bootstrap_admin_display_name="Administrator",
@@ -129,14 +128,14 @@ class MigrateOnStartTests(unittest.TestCase):
                 self.assertEqual(ensure_schema_current(), "bootstrapped")
                 initialize_database()
 
-            with SQLiteConnection(path) as connection:
+            with PostgresConnection(path) as connection:
                 revision = connection.execute(
                     "SELECT version_num FROM alembic_version"
                 ).fetchone()["version_num"]
                 derived_tables = {
                     row["name"]
                     for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
+                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()
                 }
             self.assertEqual(revision, HEAD_SCHEMA_REVISION)
@@ -153,8 +152,7 @@ class MigrateOnStartTests(unittest.TestCase):
 
             test_settings = SimpleNamespace(
                 auto_migrate=True,
-                db_backend="sqlite",
-                sqlite_path=str(path),
+                database_dsn=database_dsn(str(path)),
                 metadata_backup_dir=str(Path(directory) / "backups"),
                 metadata_backup_retention=14,
             )
@@ -187,8 +185,7 @@ class MigrateOnStartTests(unittest.TestCase):
             test_settings = replace(
                 configured_settings,
                 auto_migrate=True,
-                db_backend="sqlite",
-                sqlite_path=str(path),
+                database_dsn=database_dsn(str(path)),
                 metadata_backup_dir=str(Path(directory) / "backups"),
                 metadata_backup_retention=14,
                 vault_s3_bucket="production-backups",
@@ -226,8 +223,7 @@ class MigrateOnStartTests(unittest.TestCase):
             test_settings = replace(
                 configured_settings,
                 auto_migrate=True,
-                db_backend="sqlite",
-                sqlite_path=str(path),
+                database_dsn=database_dsn(str(path)),
                 metadata_backup_dir=str(Path(directory) / "backups"),
                 metadata_backup_retention=14,
                 vault_s3_bucket="production-backups",
@@ -261,8 +257,7 @@ class MigrateOnStartTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             test_settings = SimpleNamespace(
                 auto_migrate=True,
-                db_backend="sqlite",
-                sqlite_path=str(path),
+                database_dsn=database_dsn(str(path)),
                 metadata_backup_dir=str(Path(directory) / "backups"),
                 metadata_backup_retention=14,
                 vault_s3_bucket="",
@@ -292,8 +287,7 @@ class MigrateOnStartTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             test_settings = SimpleNamespace(
                 auto_migrate=True,
-                db_backend="sqlite",
-                sqlite_path=str(path),
+                database_dsn=database_dsn(str(path)),
             )
 
             def iterate(upper: str, lower: str):
@@ -333,8 +327,7 @@ class MigrateOnStartTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             test_settings = SimpleNamespace(
                 auto_migrate=True,
-                db_backend="sqlite",
-                sqlite_path=str(path),
+                database_dsn=database_dsn(str(path)),
             )
             with (
                 patch("app.migrate_on_start.settings", test_settings),
@@ -350,7 +343,7 @@ class MigrateOnStartTests(unittest.TestCase):
                     ensure_schema_current()
             backup.assert_not_called()
             upgrade.assert_not_called()
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 records = connection.execute(
                     "SELECT COUNT(*) AS total FROM metadata_backup_runs"
                 ).fetchone()["total"]
@@ -363,8 +356,7 @@ class MigrateOnStartTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             test_settings = SimpleNamespace(
                 auto_migrate=True,
-                db_backend="sqlite",
-                sqlite_path=str(path),
+                database_dsn=database_dsn(str(path)),
             )
             scripts = SimpleNamespace(
                 get_heads=lambda: [HEAD_SCHEMA_REVISION, "other_branch_head"],
@@ -395,15 +387,14 @@ class MigrateOnStartTests(unittest.TestCase):
             path = Path(directory) / "multiple-heads.db"
             result = run_alembic(path)
             self.assertEqual(result.returncode, 0, result.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute(
                     "INSERT INTO alembic_version(version_num) VALUES (%s)",
                     ("other_branch_head",),
                 )
             test_settings = SimpleNamespace(
                 auto_migrate=True,
-                db_backend="sqlite",
-                sqlite_path=str(path),
+                database_dsn=database_dsn(str(path)),
             )
             with (
                 patch("app.migrate_on_start.settings", test_settings),

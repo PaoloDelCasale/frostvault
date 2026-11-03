@@ -15,9 +15,30 @@ concurrency:
 
 jobs:
   python-unit-tests:
-    name: Python unit tests (SQLite shard ${{ matrix.shard }}/11)
+    name: Python unit tests (PostgreSQL shard ${{ matrix.shard }}/11)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: archive_test
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d archive_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/archive_test
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGDATABASE: archive_test
+      PGUSER: postgres
+      PGPASSWORD: postgres
     strategy:
       fail-fast: false
       matrix:
@@ -31,7 +52,9 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install -r requirements.txt
-      - name: Run SQLite unit-test shard
+      - name: Use PostgreSQL 16 client tools
+        run: echo '/usr/lib/postgresql/16/bin' >> "$GITHUB_PATH"
+      - name: Run PostgreSQL unit-test shard
         env:
           SHARD_INDEX: ${{ matrix.shard }}
           SHARD_COUNT: "12"
@@ -45,7 +68,8 @@ jobs:
           shard_index = int(os.environ["SHARD_INDEX"])
           shard_count = int(os.environ["SHARD_COUNT"])
           paths = sorted(
-              Path("tests").glob("test_*.py"),
+              (path for path in Path("tests").glob("test_*.py")
+               if path.stem != "test_migrations_postgresql"),
               key=lambda path: (-path.stat().st_size, path.name),
           )
           loads = [0] * shard_count
@@ -64,17 +88,18 @@ jobs:
 
   # Keep this aggregate check name stable for branch protection. It fails when
   # any matrix shard fails, while allowing all twelve shards to run concurrently.
-  sqlite-and-postgresql:
+  unit-and-migration-tests:
     name: Unit and migration tests
-    needs: python-unit-tests
+    needs: [python-unit-tests, postgresql-tests]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Verify every SQLite unit-test shard passed
+      - name: Verify every PostgreSQL unit-test shard and migration suite passed
         env:
           SHARD_RESULT: ${{ needs.python-unit-tests.result }}
-        run: test "${SHARD_RESULT}" = "success"
+          MIGRATION_RESULT: ${{ needs.postgresql-tests.result }}
+        run: test "${SHARD_RESULT}" = "success" && test "${MIGRATION_RESULT}" = "success"
 
   postgresql-tests:
     name: PostgreSQL migration and concurrency tests
@@ -258,7 +283,6 @@ jobs:
           docker run --rm --entrypoint sh "$IMAGE" -c 'psql --version'
       - name: Exercise PostgreSQL metadata backup path
         env:
-          DB_BACKEND: postgresql
           PGHOST: localhost
           PGPORT: "5432"
           PGDATABASE: frostvault_backup_ci
@@ -279,7 +303,6 @@ jobs:
           )"
           run_app() {
             docker run --rm -i --network host \
-              -e DB_BACKEND \
               -e PGHOST \
               -e PGPORT \
               -e PGDATABASE \
@@ -314,7 +337,22 @@ jobs:
     name: S3-compatible integrity (MinIO)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: archive_test
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d archive_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
+      TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/archive_test
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
       AWS_DEFAULT_REGION: us-east-1
@@ -401,6 +439,26 @@ jobs:
     name: Playwright e2e (${{ matrix.project }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: archive_test
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d archive_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/archive_test
+      PGHOST: localhost
+      PGDATABASE: archive_test
+      PGUSER: postgres
+      PGPASSWORD: postgres
     strategy:
       fail-fast: false
       matrix:

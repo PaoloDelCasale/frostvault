@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from app.database import SQLiteConnection
+
 from app.sessions import (
     SessionTransitionError,
     create_session,
@@ -24,7 +26,7 @@ def _past_iso() -> str:
 
 
 def _insert_user(
-    connection: SQLiteConnection,
+    connection: PostgresConnection,
     *,
     username: str = "owner",
     is_admin: bool = True,
@@ -49,8 +51,8 @@ class SessionStoreTests(unittest.TestCase):
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-    def _connect(self) -> SQLiteConnection:
-        return SQLiteConnection(str(self.database_path))
+    def _connect(self) -> PostgresConnection:
+        return PostgresConnection(str(self.database_path))
 
     def test_created_session_resolves_to_the_same_user(self) -> None:
         with self._connect() as connection:

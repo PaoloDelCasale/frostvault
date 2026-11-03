@@ -1,6 +1,8 @@
 """Stats are catalog aggregates plus Source Volume safety, with no filesystem walk."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import json
 import tempfile
 import unittest
@@ -10,7 +12,7 @@ from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.main import stats
 from app.services.runtime_status import runtime_status, snapshot_runtime_status_for_stats
 from app.services.source_layout import VaultLocalAccess
@@ -24,12 +26,12 @@ class StatsTests(unittest.TestCase):
         self.path = Path(self.temp.name) / "catalog.db"
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute("INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (9, 'files', 'Files', '/sources/photos', 'bucket', 'files')")
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(vault_id=9, path="photo.jpg", file_type="regular", size=12, mtime_ns=1, observed_at="2026-07-21")
             catalog.record_archive_version(vault_id=9, path="photo.jpg", object_key="files/photo.jpg", provider_version_id="only-copy", size=44, storage_class="STANDARD", etag="etag", uploaded_at="2026-07-21", observed_at="2026-07-21", scan_id="scan")
-        self.cfg = replace(settings, db_backend="sqlite", sqlite_path=str(self.path))
+        self.cfg = replace(settings, database_dsn=database_dsn(str(self.path)))
         runtime_status.pop(9, None)
         self.addCleanup(runtime_status.pop, 9, None)
 
@@ -53,7 +55,7 @@ class StatsTests(unittest.TestCase):
             self.assertNotIn("filesystem", payload["runtime"])
 
     def test_summary_is_scoped_and_matches_listing(self):
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             catalog = ArchiveCatalog(connection)
             rows = catalog.list_file_rows(9)
             with patch.object(ArchiveCatalog, "list_file_rows", side_effect=AssertionError("not an aggregate")):

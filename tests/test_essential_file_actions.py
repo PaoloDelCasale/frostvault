@@ -1,6 +1,8 @@
 """#417: only safe automatic renames may clean up verified cloud content."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
 
 import tempfile
@@ -12,7 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog, VaultFileNotFound
-from app.database import SQLiteConnection
+
 from app.main import app
 from app.storage import apply_auto_renames, process_jobs_once
 from tests.test_rename_sync import _prepare_renamed_plain_file, _sha256_hex
@@ -66,7 +68,7 @@ class _RenameCloud:
 
     def delete_object(self, *, Bucket, Key, VersionId):
         # No unversioned hide is permitted for a Current Snapshot rename.
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             destination = connection.execute(
                 "SELECT integrity, plaintext_sha256 FROM archive_versions WHERE object_key=%s AND provider_version_id=%s",
                 (NEW, "new-s3-version"),
@@ -84,7 +86,7 @@ class _RenameCloud:
 @contextmanager
 def _worker(database_path: Path, cloud: _RenameCloud):
     with (
-        patch("app.database.settings", SimpleNamespace(db_backend="sqlite", sqlite_path=str(database_path))),
+        patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(str(database_path)))),
         patch("app.storage.settings", SimpleNamespace(operation_concurrency=1, restore_poll_interval=900)),
         patch("app.storage.validate_cloud_vault"),
         patch("app.storage.s3_client", return_value=cloud),
@@ -99,7 +101,7 @@ class EssentialFileActionTests(unittest.TestCase):
         source, database_path, file_id = _prepare_renamed_plain_file(
             root, old_path="old/photo.jpg", new_path="new/photo.jpg", payload=PAYLOAD, confirm=False,
         )
-        with SQLiteConnection(str(database_path)) as connection:
+        with PostgresConnection(str(database_path)) as connection:
             vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
         return source, database_path, file_id, vault
 
@@ -115,7 +117,7 @@ class EssentialFileActionTests(unittest.TestCase):
             self.assertEqual(cloud.deleted, [(OLD, "old-s3-version")])
             self.assertEqual(cloud.versions, {OLD: set(), NEW: {"new-s3-version"}})
             self.assertEqual((source / "new/photo.jpg").read_bytes(), PAYLOAD)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 self.assertEqual(catalog.get_file_by_path(2, "new/photo.jpg")["id"], file_id)
                 self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM vault_files WHERE status='active'").fetchone()["n"], 1)
@@ -127,7 +129,7 @@ class EssentialFileActionTests(unittest.TestCase):
         for extra_present in (False, True):
             with self.subTest(extra_present=extra_present), tempfile.TemporaryDirectory() as directory:
                 source, database_path, file_id, vault = self._prepare(Path(directory))
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     catalog = ArchiveCatalog(connection)
                     path = "other/photo.jpg"
                     extra_id = catalog.observe_local_copy(vault_id=2, path=path, file_type="regular", size=len(PAYLOAD), mtime_ns=1, observed_at="2026-07-21T11:00:00+00:00")
@@ -139,7 +141,7 @@ class EssentialFileActionTests(unittest.TestCase):
                 cloud = _RenameCloud(database_path)
                 with _worker(database_path, cloud):
                     summary = apply_auto_renames(vault)
-                    with SQLiteConnection(str(database_path)) as connection:
+                    with PostgresConnection(str(database_path)) as connection:
                         jobs, _total, _eligible = ArchiveCatalog(connection).queue_jobs(
                             vault_id=2, path="new/photo.jpg", action="upload",
                             requested_by=1, requested_at="2026-07-21T11:05:00+00:00",
@@ -150,7 +152,7 @@ class EssentialFileActionTests(unittest.TestCase):
                 self.assertEqual(summary["confirmed"], 0)
                 self.assertEqual(cloud.deleted, [])
                 self.assertEqual(cloud.downloaded, [])
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     catalog = ArchiveCatalog(connection)
                     current = catalog.get_file_by_path(2, "new/photo.jpg")
                     self.assertNotEqual(current["id"], file_id)
@@ -176,7 +178,7 @@ class EssentialFileActionTests(unittest.TestCase):
                     process_jobs_once()
                 self.assertEqual(cloud.deleted, [])
                 self.assertTrue(cloud.versions[OLD])
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone()["status"], "failed")
                     self.assertEqual(connection.execute("SELECT availability FROM archive_versions WHERE object_key=%s", (OLD,)).fetchone()["availability"], "available")
 
@@ -188,7 +190,7 @@ class EssentialFileActionTests(unittest.TestCase):
             with _worker(database_path, cloud):
                 apply_auto_renames(vault)
                 process_jobs_once()
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 catalog.record_delete_marker(vault_id=2, path="new/photo.jpg", object_key=OLD, provider_version_id="legacy-marker", created_at="2026-07-21", observed_at="2026-07-21")
                 connection.execute("UPDATE jobs SET status='queued', claim_token=NULL, claim_expires_at=NULL")
@@ -196,7 +198,7 @@ class EssentialFileActionTests(unittest.TestCase):
             with _worker(database_path, cloud):
                 process_jobs_once()
             self.assertEqual(cloud.deleted, [(OLD, "old-s3-version")])
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone()["status"], "completed")
                 self.assertEqual(len([v for v in ArchiveCatalog(connection).list_versions(2, "new/photo.jpg") if v["recoverable"]]), 1)
 
@@ -204,7 +206,7 @@ class EssentialFileActionTests(unittest.TestCase):
         for state in ("archived", "uploading"):
             with self.subTest(state=state), tempfile.TemporaryDirectory() as directory:
                 _source, database_path, _file_id, vault = self._prepare(Path(directory))
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     catalog = ArchiveCatalog(connection)
                     destination_id = catalog.get_file_by_path(2, "new/photo.jpg")["id"]
                     if state == "archived":
@@ -224,13 +226,13 @@ class EssentialFileActionTests(unittest.TestCase):
                     summary = apply_auto_renames(vault)
                 self.assertEqual(summary["confirmed"], 0)
                 self.assertEqual(cloud.deleted, [])
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     self.assertEqual(ArchiveCatalog(connection).get_file_by_path(2, "new/photo.jpg")["id"], destination_id)
 
     def test_confirmation_rechecks_only_its_fingerprint_group(self):
         with tempfile.TemporaryDirectory() as directory:
             _source, database_path, file_id, _vault = self._prepare(Path(directory))
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 with patch.object(catalog, "list_rename_candidates", wraps=catalog.list_rename_candidates) as recheck:
                     catalog.confirm_file_rename(

@@ -1,11 +1,13 @@
 """Helpers for plaintext S3-compatible integrity proofs (CI-only buckets)."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import os
 from pathlib import Path
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.services.s3_prefix_cleanup import cleanup_prefix_versions
 from app.storage import s3_client
 from tests.test_database import run_alembic
@@ -71,7 +73,7 @@ def prepare_plain_vault(
     database_path = root / "catalog.db"
     migrated = run_alembic(database_path)
     assert migrated.returncode == 0, migrated.stderr
-    with SQLiteConnection(str(database_path)) as connection:
+    with PostgresConnection(str(database_path)) as connection:
         connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
         connection.execute("""
             INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix)

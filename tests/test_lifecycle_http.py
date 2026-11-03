@@ -1,3 +1,4 @@
+from tests.postgres import PostgresConnection, database_dsn
 import tempfile
 import unittest
 from dataclasses import replace
@@ -6,7 +7,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from app import main
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.sessions import create_session, csrf_token_for
 from tests.test_database import run_alembic
 
@@ -18,12 +19,12 @@ class VaultLifecycleHttpTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / "app.db"
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
             connection.execute("INSERT INTO vaults(id, uuid, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'uuid', 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid/')")
             token = create_session(connection, user_id=1, auth_method="oidc")
             csrf = csrf_token_for(connection, token)
-        test_settings = replace(settings, db_backend="sqlite", sqlite_path=str(self.path), cookie_secure=False)
+        test_settings = replace(settings, database_dsn=database_dsn(str(self.path)), cookie_secure=False)
         for name in ["app.main.settings", "app.database.settings", "app.sessions.settings"]:
             p = patch(name, test_settings)
             p.start()

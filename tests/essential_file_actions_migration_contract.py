@@ -1,4 +1,4 @@
-"""Shared SQLite/PostgreSQL preservation contract for #417."""
+"""Shared PostgreSQL preservation contract for #417."""
 from __future__ import annotations
 
 from app.catalog import ArchiveCatalog

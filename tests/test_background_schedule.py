@@ -9,6 +9,8 @@ uptime instead of to when the task really last ran.
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import math
 import tempfile
 import threading
@@ -18,7 +20,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app import storage
-from app.database import SQLiteConnection
+
 from tests.test_database import run_alembic
 
 
@@ -102,7 +104,7 @@ class PersistedAgesTests(unittest.TestCase):
     def _ages(self) -> dict[str, float | None]:
         with patch(
             "app.storage.db",
-            side_effect=lambda: SQLiteConnection(str(self.path)),
+            side_effect=lambda: PostgresConnection(str(self.path)),
         ):
             return storage.persisted_maintenance_ages(now=self.now)
 
@@ -113,7 +115,7 @@ class PersistedAgesTests(unittest.TestCase):
         )
 
     def test_ages_come_from_durable_records_and_the_scan_is_always_due(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             for vault_id in (1, 2):
                 connection.execute(
                     "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, %s, %s, '/source', 'bucket', 'p')",
@@ -137,8 +139,8 @@ class PersistedAgesTests(unittest.TestCase):
                 INSERT INTO metadata_backup_runs(
                     created_at, finished_at, reason, backend, status, verified_at
                 ) VALUES
-                    (%s, %s, 'pre_upgrade', 'sqlite', 'succeeded', NULL),
-                    (%s, %s, 'scheduled', 'sqlite', 'verified', %s)
+                    (%s, %s, 'pre_upgrade', 'postgresql', 'succeeded', NULL),
+                    (%s, %s, 'scheduled', 'postgresql', 'verified', %s)
                 """,
                 (
                     (self.now - timedelta(hours=1)).isoformat(),
@@ -158,7 +160,7 @@ class PersistedAgesTests(unittest.TestCase):
         self.assertEqual(ages["backup_verify"], 6 * 60 * 60)
 
     def test_one_vault_without_an_audit_record_makes_the_audit_due(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             for vault_id in (1, 2):
                 connection.execute(
                     "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, %s, %s, '/source', 'bucket', 'p')",

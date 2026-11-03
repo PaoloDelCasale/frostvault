@@ -1,6 +1,8 @@
 """Deployment-owned SMTP adapters and unchanged event routing (#414)."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import socket
 import tempfile
 import threading
@@ -11,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 from app.catalog import ArchiveCatalog
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.services import notifications
 from app.storage import _deliver_notifications_once, set_job
 from tests.test_database import run_alembic
@@ -101,7 +103,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
         patcher = patch.object(notifications, "settings", self.email_settings)
         patcher.start()
         self.addCleanup(patcher.stop)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "INSERT INTO users(id, username, display_name, password_hash) "
                 "VALUES (1, 'owner@example.com', 'Owner', 'hash')"
@@ -135,7 +137,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
         self.addCleanup(smtp.stop)
         with patch.object(
             notifications, "settings", replace(self.email_settings, smtp_port=smtp.port)
-        ), SQLiteConnection(str(self.path)) as connection:
+        ), PostgresConnection(str(self.path)) as connection:
             notifications.enqueue_notification(
                 connection, user_id=1, vault_id=2, event="job_failed",
                 title="Upload failed", body="AccessDenied", job_id=self.job_id,
@@ -157,10 +159,10 @@ class OutboundDeliveryClientTests(unittest.TestCase):
     def test_terminal_jobs_keep_existing_email_routing(self) -> None:
         for status in ("completed", "failed"):
             with self.subTest(status=status), patch(
-                "app.storage.db", side_effect=lambda: SQLiteConnection(str(self.path))
+                "app.storage.db", side_effect=lambda: PostgresConnection(str(self.path))
             ):
                 self.assertTrue(set_job(self.job_id, status, "result"))
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             rows = connection.execute(
                 "SELECT n.event, d.channel FROM notification_deliveries d "
                 "JOIN notifications n ON n.id=d.notification_id"
@@ -169,7 +171,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
             self.assertEqual(len(notifications.list_in_app_notifications(connection, user_id=1)), 2)
 
     def test_existing_incidents_reach_both_channels_once(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             for incident_id, enqueue in enumerate((
                 notifications.enqueue_archive_version_missing,
                 notifications.enqueue_cloud_only_conflict,
@@ -186,7 +188,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
         for field in ("smtp_host", "smtp_from_address", "smtp_to_address"):
             with self.subTest(field=field), patch.object(
                 notifications, "settings", replace(self.email_settings, **{field: " "})
-            ), SQLiteConnection(str(self.path)) as connection:
+            ), PostgresConnection(str(self.path)) as connection:
                 self.assertIsNone(notifications.production_smtp_client())
                 notifications.enqueue_cloud_only_conflict(
                     connection, incident={"id": len(field), "vault_id": 2, "path": "a.txt"}
@@ -200,16 +202,16 @@ class OutboundDeliveryClientTests(unittest.TestCase):
         smtp = _SmtpRecorder()
         smtp.start()
         self.addCleanup(smtp.stop)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             notifications.enqueue_notification(
                 connection, user_id=1, event="job_failed", title="failed",
                 channels=("in_app", "email"),
             )
         with patch.object(
             notifications, "settings", replace(self.email_settings, smtp_port=smtp.port)
-        ), patch("app.storage.db", side_effect=lambda: SQLiteConnection(str(self.path))):
+        ), patch("app.storage.db", side_effect=lambda: PostgresConnection(str(self.path))):
             _deliver_notifications_once()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             delivery = connection.execute(
                 "SELECT status, attempt_count FROM notification_deliveries"
             ).fetchone()
@@ -218,7 +220,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
         self.assertEqual(len(smtp.messages), 1)
 
     def test_retry_backoff_is_in_the_future_and_errors_are_redacted(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             notifications.enqueue_notification(
                 connection, user_id=1, event="job_failed", title="failed",
                 channels=("in_app", "email"),

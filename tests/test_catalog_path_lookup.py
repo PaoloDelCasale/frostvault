@@ -8,12 +8,14 @@ upload completion, and automatic upload queueing scale with Vault size.
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from pathlib import Path
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from tests.test_database import run_alembic
 
 
@@ -24,7 +26,7 @@ class SinglePathLookupPlanTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / "catalog.db"
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs')"
             )
@@ -39,14 +41,15 @@ class SinglePathLookupPlanTests(unittest.TestCase):
                     observed_at="2026-09-30T00:00:00+00:00",
                 )
 
-    def _plan(self, connection: SQLiteConnection, sql: str, params: tuple) -> str:
-        rows = connection.connection.execute(
-            "EXPLAIN QUERY PLAN " + sql.replace("%s", "?"), params
-        ).fetchall()
-        return "\n".join(str(row[3]) for row in rows)
+    def _plan(self, connection: PostgresConnection, sql: str, params: tuple) -> str:
+        # Small fixtures may legitimately prefer a sequential scan. Force index
+        # planning to prove this query can bound lookup by both keys at scale.
+        connection.execute("SET LOCAL enable_seqscan=off")
+        rows = connection.execute("EXPLAIN " + sql, params).fetchall()
+        return "\n".join(row["QUERY PLAN"] for row in rows)
 
     def test_path_lookups_search_file_paths_by_vault_and_path(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             catalog = ArchiveCatalog(connection)
             captured: list[tuple[str, tuple]] = []
             original = connection.execute
@@ -83,11 +86,12 @@ class SinglePathLookupPlanTests(unittest.TestCase):
             for sql, params in path_lookups:
                 plan = self._plan(connection, sql, params)
                 self.assertIn(
-                    "file_paths_one_current_path_uq (vault_id=? AND path=?)",
+                    "file_paths_one_current_path_uq",
                     plan,
                     f"plan scans the Vault instead of the path index:\n{plan}\n{sql}",
                 )
-                self.assertNotIn("SCAN vf", plan)
+                self.assertRegex(plan, r"Index Cond: .*vault_id = 1.*path =")
+                self.assertNotIn("Seq Scan on vault_files", plan)
 
 
 if __name__ == "__main__":

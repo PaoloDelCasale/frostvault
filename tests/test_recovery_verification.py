@@ -20,6 +20,8 @@ while still cancelling the Job.
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import hashlib
 import io
 import os
@@ -31,7 +33,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.main import cancel_job_group, queue_jobs
 from app.storage import (
     download_exact_version_plaintext,
@@ -111,7 +113,7 @@ def _prepare_cloud_only_version(
     assert migrated.returncode == 0, migrated.stderr
     digest = _sha256_hex(payload)
     key = object_key or f"docs/{relative_path}"
-    with SQLiteConnection(str(database_path)) as connection:
+    with PostgresConnection(str(database_path)) as connection:
         connection.execute(
             """
             INSERT INTO users(
@@ -214,8 +216,7 @@ def _run_plain_recover(
     client.head_calls = head_calls
 
     database_settings = SimpleNamespace(
-        db_backend="sqlite",
-        sqlite_path=str(database_path),
+        database_dsn=database_dsn(str(database_path)),
     )
     worker_settings = SimpleNamespace(
         operation_concurrency=1,
@@ -248,12 +249,11 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
         relative_path: str,
     ) -> int:
         database_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(database_path),
+            database_dsn=database_dsn(str(database_path)),
         )
         with patch("app.database.settings", database_settings):
             queued = queue_jobs(relative_path, "recover", 2, 1)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     UPDATE jobs
@@ -285,14 +285,14 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             destination.write_bytes(payload)
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite", sqlite_path=str(database_path)
+                database_dsn=database_dsn(str(database_path))
             )
             with patch("app.database.settings", database_settings):
                 summary = reconcile_interrupted_jobs()
 
             self.assertEqual(summary, {"completed": 1, "requeued": 0, "failed": 0})
             self.assertEqual(destination.read_bytes(), payload)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(
                     2, "report.txt"
                 )
@@ -333,14 +333,14 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             destination.write_bytes(conflict)
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite", sqlite_path=str(database_path)
+                database_dsn=database_dsn(str(database_path))
             )
             with patch("app.database.settings", database_settings):
                 summary = reconcile_interrupted_jobs()
 
             self.assertEqual(summary, {"completed": 0, "requeued": 0, "failed": 1})
             self.assertEqual(destination.read_bytes(), conflict)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(
                     2, "report.txt"
                 )
@@ -373,7 +373,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             foreign.write_bytes(b"keep")
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite", sqlite_path=str(database_path)
+                database_dsn=database_dsn(str(database_path))
             )
             with patch("app.database.settings", database_settings):
                 summary = reconcile_interrupted_jobs()
@@ -382,7 +382,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             self.assertFalse(target.exists())
             self.assertFalse(owned.exists())
             self.assertEqual(foreign.read_bytes(), b"keep")
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     "SELECT status FROM jobs WHERE id=%s", (job_id,)
                 ).fetchone()
@@ -405,14 +405,14 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             destination.symlink_to(source / "outside.txt")
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite", sqlite_path=str(database_path)
+                database_dsn=database_dsn(str(database_path))
             )
             with patch("app.database.settings", database_settings):
                 summary = reconcile_interrupted_jobs()
 
             self.assertEqual(summary["failed"], 1)
             self.assertTrue(destination.is_symlink())
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     "SELECT status FROM jobs WHERE id=%s", (job_id,)
                 ).fetchone()
@@ -449,7 +449,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             )
             client.sdk_upload.assert_not_called()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = catalog.get_file_by_path(2, "report.txt")
                 listed = catalog.list_file_rows(2)
@@ -503,7 +503,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), payload)
             self.assertEqual(target.stat().st_mtime, original_mtime)
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute("DELETE FROM jobs")
                 set_policy(
                     connection,
@@ -556,7 +556,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             self.assertFalse(target.exists())
             self.assertEqual(list(source.glob("**/.*.restore-*.tmp")), [])
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(
                     2, "report.txt"
                 )
@@ -623,7 +623,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             destination = source / "report.txt"
             destination.write_bytes(preexisting)
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(
                     2, "report.txt"
                 )
@@ -642,7 +642,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             )
             self.assertEqual(list(source.glob("**/.*.restore-*.tmp")), [])
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(
                     2, "report.txt"
                 )
@@ -689,7 +689,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
             client.get_object.assert_not_called()
             self.assertFalse((source / "cold.txt").exists())
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     "SELECT status, message FROM jobs WHERE path=%s",
                     ("cold.txt",),
@@ -708,7 +708,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
 
         Seam: ``cancel_job_group`` for action ``recover``, observed through Job
         status and Archive Version ``restore_state`` / ``restore_expiry`` on a
-        real SQLite catalog (same cancel path as ``/api/jobs/cancel``).
+        real PostgreSQL catalog (same cancel path as ``/api/jobs/cancel``).
 
         After RestoreObject has been accepted, cancel must stop the Job but
         retain restore polling/expiry context for a later recover.
@@ -725,12 +725,11 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
             )
             restore_expiry = "2026-07-28T12:00:00+00:00"
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", database_settings):
                 queued = queue_jobs("cold.txt", "recover", 2, 1)
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     connection.execute(
                         """
                         UPDATE jobs
@@ -762,7 +761,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
                 )
 
             self.assertEqual(result["cancelled_count"], 1)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     "SELECT status, group_id FROM jobs WHERE id=%s",
                     (queued["job_ids"][0],),
@@ -799,12 +798,11 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
                 object_key="docs/cold.txt",
             )
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", database_settings):
                 queue_jobs("cold.txt", "recover", 2, 1)
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     connection.execute(
                         "UPDATE jobs SET status='restoring', updated_at=%s",
                         ("2020-01-01T00:00:00+00:00",),
@@ -843,7 +841,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
             client.download_file.assert_called_once()
             client.get_object.assert_called_once()
             self.assertEqual((source / "cold.txt").read_bytes(), payload)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     "SELECT status FROM jobs WHERE path=%s", ("cold.txt",)
                 ).fetchone()

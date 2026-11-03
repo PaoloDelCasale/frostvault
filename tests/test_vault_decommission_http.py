@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -9,7 +11,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.main import app
 from app.services.vault_relocation import enroll_vault_root_identity
 from app.sessions import create_session
@@ -26,7 +28,7 @@ class VaultDecommissionHttpTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         self.root = Path(self.tmp.name) / "root"
         self.root.mkdir()
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(id, username, display_name, password_hash)
@@ -44,8 +46,7 @@ class VaultDecommissionHttpTests(unittest.TestCase):
             enroll_vault_root_identity(connection, 7, str(self.root))
         configured = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
+            database_dsn=database_dsn(str(self.db_path)),
             cookie_secure=False,
             allow_local_delete=True,
             frontend_dist_dir=str(write_spa_dist(Path(self.tmp.name))),
@@ -65,7 +66,7 @@ class VaultDecommissionHttpTests(unittest.TestCase):
         self, *, stale_reauth: bool = False
     ) -> tuple[TestClient, dict[str, str]]:
         client = TestClient(app, client=("127.0.0.1", 50001))
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             token = create_session(connection, user_id=1, auth_method="oidc")
             if stale_reauth:
                 connection.execute(
@@ -158,7 +159,7 @@ class VaultDecommissionHttpTests(unittest.TestCase):
             headers=headers,
         )
         self.assertEqual(stale.status_code, 409)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             self.assertEqual(
                 connection.execute(
                     "SELECT decommission_state FROM vaults WHERE id=7"

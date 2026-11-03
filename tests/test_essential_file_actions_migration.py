@@ -1,9 +1,10 @@
-"""SQLite half of #417's populated upgrade/downgrade/re-upgrade contract."""
+"""PostgreSQL half of #417's populated upgrade/downgrade/re-upgrade contract."""
+from tests.postgres import PostgresConnection, database_dsn
 import tempfile
 import unittest
 from pathlib import Path
 
-from app.database import SQLiteConnection
+
 from tests.essential_file_actions_migration_contract import assert_file_actions_migration
 from tests.test_database import run_alembic
 
@@ -15,5 +16,5 @@ class EssentialFileActionsMigrationTests(unittest.TestCase):
             assert_file_actions_migration(
                 self,
                 lambda target, command="upgrade": run_alembic(path, target, command),
-                lambda: SQLiteConnection(str(path)),
+                lambda: PostgresConnection(str(path)),
             )

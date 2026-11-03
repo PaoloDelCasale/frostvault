@@ -8,6 +8,8 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
 
 import hashlib
@@ -20,7 +22,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.main import queue_jobs
 from app.storage import (
     OperationCancelled,
@@ -45,7 +47,7 @@ def _prepare_plain_vault(
     database_path = root / "catalog.db"
     migrated = run_alembic(database_path)
     assert migrated.returncode == 0, migrated.stderr
-    with SQLiteConnection(str(database_path)) as connection:
+    with PostgresConnection(str(database_path)) as connection:
         connection.execute(
             """
             INSERT INTO users(
@@ -100,8 +102,7 @@ def _run_plain_upload(
         return len(read_back_bytes)
 
     database_settings = SimpleNamespace(
-        db_backend="sqlite",
-        sqlite_path=str(database_path),
+        database_dsn=database_dsn(str(database_path)),
     )
     worker_settings = SimpleNamespace(
         operation_concurrency=1,
@@ -139,7 +140,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             payload = b"good"
             _source, path = _prepare_plain_vault(Path(directory), relative_path="report.txt", payload=payload)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 previous = catalog.record_archive_version(
                     vault_id=2, path="report.txt", object_key="docs/report.txt",
@@ -153,11 +154,11 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 head_object=lambda **kwargs: {"VersionId": kwargs.get("VersionId") or "concurrent-writer",
                                               "ContentLength": len(payload), "ETag": "etag"},
             )
-            with patch("app.database.settings", SimpleNamespace(db_backend="sqlite", sqlite_path=str(path))):
+            with patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(str(path)))):
                 queue_jobs("report.txt", "upload", 2, 1)
                 with patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=provider), patch("app.storage.upload_s3_file", return_value={"VersionId": "upload-response"}):
                     process_jobs_once()
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 versions = ArchiveCatalog(connection).list_versions(2, "report.txt")
                 job = connection.execute("SELECT status, message FROM jobs").fetchone()
             self.assertEqual({row["provider_version_id"] for row in versions}, {"previous-only-copy", "upload-response"})
@@ -172,7 +173,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
             root = Path(directory)
             payload = b"good"
             _source, path = _prepare_plain_vault(root, relative_path="report.txt", payload=payload)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 previous = catalog.record_archive_version(
                     vault_id=2, path="report.txt", object_key="docs/report.txt",
@@ -181,7 +182,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 )
                 catalog.mark_version_verified(previous, plaintext_sha256=_sha256_hex(b"old"), verified_at="2026-07-20")
             _run_plain_upload(path, relative_path="report.txt", read_back_bytes=payload, exact_version_bytes=b"evil")
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 versions = catalog.list_versions(2, "report.txt")
                 old = next(row for row in versions if row["id"] == previous)
@@ -197,7 +198,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
             root = Path(directory)
             _source, path = _prepare_plain_vault(root, relative_path="report.txt", payload=b"good")
             _run_plain_upload(path, relative_path="report.txt", read_back_bytes=b"evil", exact_version_bytes=b"good")
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
                 job = connection.execute("SELECT status FROM jobs").fetchone()
             self.assertEqual(job["status"], "completed")
@@ -219,7 +220,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 read_back_bytes=payload,
             )
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = catalog.get_file_by_path(2, "report.txt")
                 listed = catalog.list_file_rows(2)
@@ -256,7 +257,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 read_back_bytes=None,
             )
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = catalog.get_file_by_path(2, "report.txt")
                 listed = catalog.list_file_rows(2)
@@ -289,7 +290,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 read_back_bytes=b"different-remote-bytes",
             )
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = catalog.get_file_by_path(2, "report.txt")
                 listed = catalog.list_file_rows(2)
@@ -348,8 +349,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 return len(payload)
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
@@ -375,7 +375,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 ):
                     process_jobs_once()
 
-                    with SQLiteConnection(str(database_path)) as connection:
+                    with PostgresConnection(str(database_path)) as connection:
                         first = connection.execute(
                             "SELECT status, retry_after, archive_version_id FROM jobs WHERE path=%s",
                             ("report.txt",),
@@ -393,7 +393,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
 
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     "SELECT status, archive_version_id FROM jobs WHERE path=%s",
                     ("report.txt",),
@@ -442,8 +442,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 return len(original)
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
@@ -470,14 +469,14 @@ class PlainUploadVerificationTests(unittest.TestCase):
                     process_jobs_once()
                     source.joinpath("report.txt").write_bytes(mutated)
 
-                    with SQLiteConnection(str(database_path)) as connection:
+                    with PostgresConnection(str(database_path)) as connection:
                         connection.execute(
                             "UPDATE jobs SET retry_after='2000-01-01T00:00:00+00:00' WHERE path=%s",
                             ("report.txt",),
                         )
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
                 job = connection.execute(
                     """
@@ -539,8 +538,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 return len(payload)
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
@@ -568,7 +566,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 ):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(
                     2, "report.txt"
                 )
@@ -610,7 +608,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                         relative_path=relative_path,
                         read_back_bytes=payload,
                     )
-                    with SQLiteConnection(str(database_path)) as connection:
+                    with PostgresConnection(str(database_path)) as connection:
                         observed = ArchiveCatalog(connection).get_file_by_path(
                             2, relative_path
                         )
@@ -639,8 +637,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 raise RuntimeError("SlowDown: Please reduce your request rate")
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
@@ -666,7 +663,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 ):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     """
                     SELECT status, retry_count, retry_after, message
@@ -705,8 +702,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 raise OperationCancelled("Upload stopped")
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
@@ -714,7 +710,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
             )
             with patch("app.database.settings", database_settings):
                 queued = queue_jobs("report.txt", "upload", 2, 1)
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     job_id_holder["id"] = connection.execute(
                         "SELECT id FROM jobs WHERE path=%s",
                         ("report.txt",),
@@ -738,7 +734,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 ):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     "SELECT status FROM jobs WHERE path=%s",
                     ("report.txt",),

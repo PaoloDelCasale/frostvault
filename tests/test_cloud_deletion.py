@@ -12,11 +12,13 @@ Seams under test:
 - Lifecycle rule builder emits NoncurrentVersionTransitions for retained
   noncurrent Archive Versions (cheapest configured archive class).
 
-System boundaries mocked: S3 client. Catalog and jobs use a real SQLite
+System boundaries mocked: S3 client. Catalog and jobs use a real PostgreSQL
 schema via Alembic.
 """
 
 from __future__ import annotations
+
+from tests.postgres import PostgresConnection, database_dsn
 
 import tempfile
 import threading
@@ -28,7 +30,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.services import cloud_deletion
 from app.storage import process_jobs_once
 from app import storage as storage_module
@@ -61,7 +63,7 @@ def _prepare_vault_with_versions(
     assert migrated.returncode == 0, migrated.stderr
     source = root / "source"
     source.mkdir()
-    with SQLiteConnection(str(database_path)) as connection:
+    with PostgresConnection(str(database_path)) as connection:
         connection.execute(
             """
             INSERT INTO users(id, username, display_name, password_hash)
@@ -126,7 +128,7 @@ class CloudDeletionSettingTests(_CloudDeletionTestCase):
             root = Path(directory)
             database_path = root / "catalog.db"
             self.assertEqual(run_alembic(database_path).returncode, 0)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO vaults(
@@ -141,7 +143,7 @@ class CloudDeletionSettingTests(_CloudDeletionTestCase):
             root = Path(directory)
             database_path = root / "catalog.db"
             self.assertEqual(run_alembic(database_path).returncode, 0)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO users(id, username, display_name, password_hash)
@@ -166,7 +168,7 @@ class DeletionPreviewTests(_CloudDeletionTestCase):
             database_path, vault_id, _file_id = _prepare_vault_with_versions(
                 Path(directory), version_count=2
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 preview = cloud_deletion.preview_selection(
                     connection,
                     vault_id=vault_id,
@@ -186,7 +188,7 @@ class DeletionPreviewTests(_CloudDeletionTestCase):
             self.assertEqual(run_alembic(database_path).returncode, 0)
             source = root / "source"
             source.mkdir()
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO users(id, username, display_name, password_hash)
@@ -296,7 +298,7 @@ class PermanentPurgeGateTests(_CloudDeletionTestCase):
             database_path, vault_id, _ = _prepare_vault_with_versions(
                 Path(directory), cloud_deletion_enabled=True, version_count=0
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 catalog.observe_local_copy(
                     vault_id=vault_id,
@@ -342,7 +344,7 @@ class PermanentPurgeGateTests(_CloudDeletionTestCase):
             database_path, vault_id, _file_id = _prepare_vault_with_versions(
                 Path(directory), cloud_deletion_enabled=True
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 catalog.observe_local_copy(
                     vault_id=vault_id,
@@ -402,7 +404,7 @@ class PermanentPurgeGateTests(_CloudDeletionTestCase):
                 cloud_deletion_enabled=True,
                 revision="0026_invite_revocation",
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 catalog.observe_local_copy(
                     vault_id=vault_id,
@@ -446,7 +448,7 @@ class PermanentPurgeGateTests(_CloudDeletionTestCase):
 
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 total = connection.execute(
                     "SELECT SUM(total_bytes) AS total FROM jobs WHERE group_id=%s",
                     (scheduled.group_id,),
@@ -459,7 +461,7 @@ class PermanentPurgeGateTests(_CloudDeletionTestCase):
             database_path, vault_id, _file_id = _prepare_vault_with_versions(
                 Path(directory), cloud_deletion_enabled=True
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 with self.assertRaises(cloud_deletion.ConfirmationRequired):
                     cloud_deletion.schedule_cloud_purge(
                         connection,
@@ -514,7 +516,7 @@ class PermanentPurgeGateTests(_CloudDeletionTestCase):
             database_path, vault_id, _file_id = _prepare_vault_with_versions(
                 Path(directory), cloud_deletion_enabled=True
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 scheduled = cloud_deletion.schedule_cloud_purge(
                     connection,
                     vault_id=vault_id,
@@ -560,7 +562,7 @@ class PermanentPurgeGateTests(_CloudDeletionTestCase):
             database_path, vault_id, _file_id = _prepare_vault_with_versions(
                 Path(directory), cloud_deletion_enabled=True
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 scheduled = cloud_deletion.schedule_cloud_purge(
                     connection,
                     vault_id=vault_id,
@@ -584,8 +586,7 @@ class PermanentPurgeGateTests(_CloudDeletionTestCase):
 
             client = Mock()
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
@@ -610,7 +611,7 @@ class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
                 Path(directory), cloud_deletion_enabled=True, version_count=0
             )
             paths: list[str] = []
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 for index in range(10):
                     path = f"bulk/file-{index:02}.txt"
@@ -657,8 +658,7 @@ class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
             client.delete_objects.return_value = {}
             preflight = Mock()
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(operation_concurrency=16)
             with (
@@ -675,7 +675,7 @@ class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
                 len(client.delete_objects.call_args.kwargs["Delete"]["Objects"]),
                 10,
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 statuses = connection.execute(
                     "SELECT status FROM jobs WHERE group_id=%s",
                     (scheduled.group_id,),
@@ -687,7 +687,7 @@ class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
             database_path, vault_id, file_id = _prepare_vault_with_versions(
                 Path(directory), cloud_deletion_enabled=True, version_count=100
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 scheduled = cloud_deletion.schedule_cloud_purge(
                     connection,
                     vault_id=vault_id,
@@ -708,8 +708,7 @@ class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
             client = Mock()
             client.delete_objects.return_value = {}
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(operation_concurrency=1)
             with (
@@ -726,7 +725,7 @@ class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
                 100,
             )
             client.delete_object.assert_not_called()
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     "SELECT status FROM jobs WHERE id=%s",
                     (scheduled.job_ids[0],),
@@ -746,7 +745,7 @@ class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
             database_path, vault_id, file_id = _prepare_vault_with_versions(
                 Path(directory), cloud_deletion_enabled=True, version_count=2
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 catalog.record_delete_marker(
                     vault_id=vault_id,
@@ -792,8 +791,7 @@ class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
 
             client.delete_objects = Mock(side_effect=delete_objects)
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(operation_concurrency=1)
             with (
@@ -810,7 +808,7 @@ class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
             self.assertIn("s3-v1", version_ids_called)
             self.assertIn("marker-old", version_ids_called)
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 items = connection.execute(
                     """
                     SELECT kind, provider_version_id, status
@@ -837,7 +835,7 @@ class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
 
             # Resume: fix the failing version and rerun.
             client.delete_objects = Mock(return_value={})
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     "UPDATE jobs SET status='queued', message=NULL WHERE id=%s",
                     (scheduled.job_ids[0],),
@@ -858,7 +856,7 @@ class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
             ):
                 process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 pending = connection.execute(
                     """
                     SELECT COUNT(*) AS total FROM cloud_deletion_items
@@ -890,7 +888,7 @@ class ClaimLeaseSchedulerTests(_CloudDeletionTestCase):
             database_path, vault_id, _file_id = _prepare_vault_with_versions(
                 Path(directory), cloud_deletion_enabled=True, version_count=1
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 second_file = catalog.observe_local_copy(
                     vault_id=vault_id,
@@ -938,7 +936,7 @@ class ClaimLeaseSchedulerTests(_CloudDeletionTestCase):
                 )
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite", sqlite_path=str(database_path)
+                database_dsn=database_dsn(str(database_path))
             )
             runtime = SimpleNamespace(
                 operation_concurrency=1,
@@ -963,7 +961,7 @@ class ClaimLeaseSchedulerTests(_CloudDeletionTestCase):
                 patch("app.storage._runtime_settings", return_value=runtime),
                 patch(
                     "app.storage.db",
-                    side_effect=lambda: SQLiteConnection(str(database_path)),
+                    side_effect=lambda: PostgresConnection(str(database_path)),
                 ),
                 patch("app.storage.process_job", side_effect=record),
             ):
@@ -972,7 +970,7 @@ class ClaimLeaseSchedulerTests(_CloudDeletionTestCase):
 
             self.assertEqual(sum(results), 1)
             self.assertEqual(len(processed), 1)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 jobs = connection.execute(
                     """
                     SELECT status, claim_token
@@ -993,7 +991,7 @@ class ClaimLeaseTakeoverTests(_CloudDeletionTestCase):
                 Path(directory), cloud_deletion_enabled=True, version_count=1
             )
             requested_at = _iso(_now() - timedelta(hours=25))
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 scheduled = cloud_deletion.schedule_cloud_purge(
                     connection,
                     vault_id=vault_id,
@@ -1058,7 +1056,7 @@ class ClaimLeaseTakeoverTests(_CloudDeletionTestCase):
 
             client.delete_objects.side_effect = blocked_delete
             database_settings = SimpleNamespace(
-                db_backend="sqlite", sqlite_path=str(database_path)
+                database_dsn=database_dsn(str(database_path))
             )
             result: list[bool] = []
             real_heartbeat = storage_module._ClaimLeaseHeartbeat
@@ -1090,7 +1088,7 @@ class ClaimLeaseTakeoverTests(_CloudDeletionTestCase):
                 # Expire the real durable lease while DeleteObjects is blocked.
                 # The heartbeat must observe this failed renewal; no test-owned
                 # loss event is injected into the worker context.
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     connection.execute(
                         """
                         UPDATE jobs
@@ -1106,7 +1104,7 @@ class ClaimLeaseTakeoverTests(_CloudDeletionTestCase):
                 )
                 replacement_at = storage_module.now_iso()
                 replacement_expiry = "2099-01-01T00:00:00+00:00"
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     replacement = ArchiveCatalog(connection).claim_purge_group(
                         lead_job_id=scheduled.job_ids[0],
                         claim_token="replacement-worker",
@@ -1127,7 +1125,7 @@ class ClaimLeaseTakeoverTests(_CloudDeletionTestCase):
 
             self.assertEqual(result, [False])
             client.delete_objects.assert_called_once()
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 jobs = connection.execute(
                     """
                     SELECT status, claim_token, claim_expires_at
@@ -1176,7 +1174,7 @@ class ClaimLeaseRestartTests(_CloudDeletionTestCase):
             database_path, vault_id, _file_id = _prepare_vault_with_versions(
                 Path(directory), cloud_deletion_enabled=True, version_count=2
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 scheduled = cloud_deletion.schedule_cloud_purge(
                     connection,
                     vault_id=vault_id,
@@ -1213,7 +1211,7 @@ class ClaimLeaseRestartTests(_CloudDeletionTestCase):
                 )
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite", sqlite_path=str(database_path)
+                database_dsn=database_dsn(str(database_path))
             )
             with patch("app.database.settings", database_settings):
                 summary = storage_module.reconcile_interrupted_jobs()
@@ -1229,7 +1227,7 @@ class ClaimLeaseRestartTests(_CloudDeletionTestCase):
             ):
                 process_jobs_once()
             client.delete_objects.assert_not_called()
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     """
                     SELECT status, claim_token, claim_expires_at

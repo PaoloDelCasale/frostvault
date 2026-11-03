@@ -1,9 +1,10 @@
+from tests.postgres import PostgresConnection, database_dsn
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.services.lifecycle_profiles import GUIDED_PROFILES
 from app.services.lifecycle_policies import load_vault_plan, set_vault_plan, sync_lifecycle_rules_for_bucket
 from tests.test_database import run_alembic
@@ -15,7 +16,7 @@ class VaultStoragePlanTests(unittest.TestCase):
             path = Path(directory) / "catalog.db"
             result = run_alembic(path)
             self.assertEqual(result.returncode, 0, result.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 for i in [1, 2]:
                     connection.execute("INSERT INTO vaults(id, uuid, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, %s, %s, 'Vault', '/source', 'bucket', %s)", (i, f"uuid-{i}", f"v-{i}", f"vaults/uuid-{i}/"))
                 catalog = ArchiveCatalog(connection)

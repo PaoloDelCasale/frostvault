@@ -322,7 +322,7 @@ class CatalogEventStore:
             payload_json=payload_json,
             created_at=created_at,
         )
-        with transaction(self.connection, immediate=True):
+        with transaction(self.connection):
             self._lock_vault(vault_id)
             result = mutation(self.connection)
             event = self._append_locked(

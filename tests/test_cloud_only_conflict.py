@@ -9,6 +9,8 @@ becomes a Local Copy again. Only an explicit confirmation replaces the copy.
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
 
 import hashlib
@@ -32,7 +34,7 @@ from fastapi import HTTPException
 
 from app.catalog import ArchiveCatalog
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.main import confirm_cloud_only_replacement, queue_jobs
 from app.services import notifications as notification_service
 from app.services.email_templates import render_email
@@ -65,7 +67,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
         self.database_path = root / "catalog.db"
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(id, username, display_name, password_hash)
@@ -85,7 +87,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
                 OperationPolicy(auto_upload=True, stability_seconds=0),
             )
         database_settings = SimpleNamespace(
-            db_backend="sqlite", sqlite_path=str(self.database_path)
+            database_dsn=database_dsn(str(self.database_path))
         )
         patcher = patch("app.database.settings", database_settings)
         patcher.start()
@@ -97,7 +99,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
         self._scan()
         self._upload(OLD, "s3-old")
         self.local.unlink()
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             file_id = connection.execute(
                 "SELECT vault_file_id FROM jobs ORDER BY id LIMIT 1"
             ).fetchone()["vault_file_id"]
@@ -108,7 +110,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
 
     def _write(self, payload: bytes) -> None:
         self.local.write_bytes(payload)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             ArchiveCatalog(connection).observe_local_copy(
                 vault_id=2,
                 path=PATH,
@@ -121,7 +123,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
     def _scan(self) -> int:
         """Hash Local Copies, settle reappearances, queue automatic uploads."""
         apply_auto_renames({"id": 2, "source_root": str(self.source)})
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             return queue_auto_uploads(
                 connection,
                 vault_id=2,
@@ -150,19 +152,19 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
             process_jobs_once()
 
     def _upload_jobs(self) -> list[dict]:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             return connection.execute(
                 "SELECT id, status FROM jobs WHERE action='upload' ORDER BY id"
             ).fetchall()
 
     def _incidents(self) -> list[dict]:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             return connection.execute(
                 "SELECT kind, status, path FROM catalog_incidents ORDER BY id"
             ).fetchall()
 
     def _versions(self) -> dict[str, str]:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             rows = ArchiveCatalog(connection).list_versions(2, PATH)
         return {row["provider_version_id"]: row["availability"] for row in rows}
 
@@ -182,7 +184,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
             self._incidents(),
             [{"kind": "cloud_only_conflict", "status": "open", "path": PATH}],
         )
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             notifications = connection.execute(
                 "SELECT event, title_key, in_app_enabled FROM notifications "
                 "WHERE event<>'job_completed'"
@@ -196,7 +198,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
         # A second scan keeps one conflict and one notification.
         self.assertEqual(self._scan(), 0)
         self.assertEqual(len(self._incidents()), 1)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             count = connection.execute(
                 "SELECT COUNT(*) AS n FROM notifications "
                 "WHERE event='cloud_only_conflict'"
@@ -216,7 +218,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
             self._write(NEW)
             self._scan()
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             channels = connection.execute(
                 """
                 SELECT d.channel
@@ -235,13 +237,13 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
     ) -> None:
         self._write(NEW)
         self._scan()
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             held = connection.execute(
                 "SELECT cloud_only_version_id FROM local_copies"
             ).fetchone()["cloud_only_version_id"]
             connection.execute("UPDATE local_copies SET cloud_only_version_id=NULL")
         queue_jobs(PATH, "upload", 2, 1)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 "UPDATE local_copies SET cloud_only_version_id=%s", (held,)
             )
@@ -264,7 +266,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
         self.assertEqual(len(self._upload_jobs()), 1, "no new upload")
         self.assertEqual(self._incidents(), [])
         self.assertEqual(self.s3.deleted, [])
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             local = connection.execute(
                 """
                 SELECT lc.presence, lc.plaintext_sha256,
@@ -319,7 +321,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
 
         renamed = self.source / "IMG_0001-new.jpg"
         self.local.rename(renamed)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             catalog = ArchiveCatalog(connection)
             catalog.mark_local_path_missing(
                 vault_id=2, path=PATH, observed_at="2026-11-02T12:00:00+00:00"
@@ -340,7 +342,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
         self.assertEqual(
             [row["status"] for row in self._incidents()], ["resolved"]
         )
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             paths = connection.execute(
                 """
                 SELECT fp.path, av.provider_version_id, av.integrity

@@ -7,6 +7,8 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -17,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.i18n import LOCALE_COOKIE_NAME, present_job_message
 from app.main import app
 from app.security import hash_password
@@ -62,7 +64,7 @@ class JobMessagePersistenceTests(unittest.TestCase):
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(id, username, display_name, password_hash)
@@ -100,8 +102,7 @@ class JobMessagePersistenceTests(unittest.TestCase):
 
         self.settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
         )
         for target in ("app.database.settings", "app.storage.settings"):
             patcher = patch(target, self.settings)
@@ -114,7 +115,7 @@ class JobMessagePersistenceTests(unittest.TestCase):
             "completed",
             message_key="job.upload_verified",
         )
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             row = connection.execute(
                 "SELECT status, message, message_key, message_params FROM jobs WHERE id=%s",
                 (self.job_id,),
@@ -145,7 +146,7 @@ class JobMessagePersistenceTests(unittest.TestCase):
         ):
             set_job(self.job_id, "completed", message_key="job.upload_verified")
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             row = connection.execute(
                 "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
             ).fetchone()
@@ -158,7 +159,7 @@ class JobMessagePersistenceTests(unittest.TestCase):
             message_params={"error": "SlowDown"},
             retry_count=1,
         )
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             row = connection.execute(
                 "SELECT status, message, message_key, message_params FROM jobs WHERE id=%s",
                 (self.job_id,),
@@ -179,7 +180,7 @@ class JobMessageHttpTests(unittest.TestCase):
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             password_hash = hash_password(self.PASSWORD)
             user_id = connection.execute(
                 """
@@ -224,8 +225,7 @@ class JobMessageHttpTests(unittest.TestCase):
 
         self.settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
         )
         for target in (
@@ -238,7 +238,7 @@ class JobMessageHttpTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
         self.client = TestClient(app, client=("127.0.0.1", 50000))
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             raw = create_session(
                 connection,
                 user_id=self.user_id,

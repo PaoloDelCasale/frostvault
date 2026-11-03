@@ -1,6 +1,8 @@
 """Vault decommission lifecycle, dispositions, and root occupancy (issue #153)."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import os
 import tempfile
 import unittest
@@ -10,7 +12,7 @@ from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
 from app.config import Settings
-from app.database import SQLiteConnection
+
 from app.services import source_directories, source_layout, vault_decommission
 from app.services.vault_relocation import enroll_vault_root_identity
 from app import storage
@@ -31,8 +33,7 @@ class VaultDecommissionTests(unittest.TestCase):
         self.addCleanup(vault_decommission.release_runtime_gate, 7)
         self.settings = replace(
             Settings(),
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
+            database_dsn=database_dsn(str(self.db_path)),
             vault_s3_bucket="bucket",
 
         )
@@ -43,7 +44,7 @@ class VaultDecommissionTests(unittest.TestCase):
             patcher = patch(target, self.settings)
             patcher.start()
             self.addCleanup(patcher.stop)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(id, username, display_name, password_hash)
@@ -61,7 +62,7 @@ class VaultDecommissionTests(unittest.TestCase):
             enroll_vault_root_identity(connection, 7, str(self.root))
 
     def preview(self, local: str = "retain", cloud: str = "retain") -> dict:
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             return vault_decommission.build_preview(
                 connection,
                 vault_id=7,
@@ -71,7 +72,7 @@ class VaultDecommissionTests(unittest.TestCase):
             )
 
     def start(self, preview: dict) -> dict:
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             vault_decommission.start_decommission(
                 connection,
                 vault_id=7,
@@ -97,7 +98,7 @@ class VaultDecommissionTests(unittest.TestCase):
         target.write_bytes(b"verified content")
         info = target.stat()
         digest = __import__("hashlib").sha256(target.read_bytes()).hexdigest()
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             catalog = ArchiveCatalog(connection)
             file_id = catalog.observe_local_copy(
                 vault_id=7,
@@ -135,7 +136,7 @@ class VaultDecommissionTests(unittest.TestCase):
 
     def test_preview_is_authoritative_and_reports_counts_blockers_and_fingerprint(self) -> None:
         self.add_verified_local_copy()
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             file_id = connection.execute(
                 "SELECT id FROM vault_files WHERE vault_id=7"
             ).fetchone()["id"]
@@ -163,7 +164,7 @@ class VaultDecommissionTests(unittest.TestCase):
 
     def test_stale_fingerprint_and_exact_name_are_rejected_without_quiescing(self) -> None:
         preview = self.preview()
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             with self.assertRaises(vault_decommission.VaultDecommissionError) as stale:
                 vault_decommission.start_decommission(
                     connection,
@@ -178,14 +179,14 @@ class VaultDecommissionTests(unittest.TestCase):
                     purge_delay_seconds=3600,
                 )
             self.assertEqual(stale.exception.reason, "stale_preview")
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             row = connection.execute(
                 "SELECT decommission_state, root_released_at FROM vaults WHERE id=7"
             ).fetchone()
         self.assertEqual(row["decommission_state"], "active")
         self.assertIsNone(row["root_released_at"])
 
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             with self.assertRaises(vault_decommission.VaultDecommissionError) as confirm:
                 vault_decommission.start_decommission(
                     connection,
@@ -203,7 +204,7 @@ class VaultDecommissionTests(unittest.TestCase):
 
     def test_retain_retain_preserves_data_and_history_and_releases_atomically(self) -> None:
         self.add_verified_local_copy()
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute("UPDATE vaults SET enabled=FALSE WHERE id=7")
         preview = self.preview()
         status = self.start(preview)
@@ -211,7 +212,7 @@ class VaultDecommissionTests(unittest.TestCase):
         self.assertTrue(status["root_released"])
         self.assertTrue((self.root / "report.txt").is_file())
 
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             vault = connection.execute("SELECT * FROM vaults WHERE id=7").fetchone()
             self.assertFalse(vault["enabled"])
             self.assertEqual(vault["decommission_state"], "decommissioned")
@@ -234,7 +235,7 @@ class VaultDecommissionTests(unittest.TestCase):
 
     def test_terminal_root_release_rolls_back_atomically_if_audit_notification_fails(self) -> None:
         preview = self.preview()
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             vault_decommission.start_decommission(
                 connection,
                 vault_id=7,
@@ -252,14 +253,14 @@ class VaultDecommissionTests(unittest.TestCase):
             side_effect=RuntimeError("notification store unavailable"),
         ):
             with self.assertRaises(RuntimeError):
-                with SQLiteConnection(str(self.db_path)) as connection:
+                with PostgresConnection(str(self.db_path)) as connection:
                     vault_decommission.reconcile_one(
                         connection,
                         vault_id=7,
                         local_delete_enabled=True,
                         purge_delay_seconds=3600,
                     )
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             vault = connection.execute(
                 "SELECT decommission_state, root_released_at FROM vaults WHERE id=7"
             ).fetchone()
@@ -285,7 +286,7 @@ class VaultDecommissionTests(unittest.TestCase):
             "local_delete_enabled": True,
             "purge_delay_seconds": 3600,
         }
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             first = vault_decommission.start_decommission(connection, **request)
             replay = vault_decommission.start_decommission(connection, **request)
             operation_count = connection.execute(
@@ -303,7 +304,7 @@ class VaultDecommissionTests(unittest.TestCase):
         preview = self.preview()
         completed = self.start(preview)
         self.assertEqual(completed["state"], "completed")
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             replay = vault_decommission.start_decommission(
                 connection,
                 vault_id=7,
@@ -335,7 +336,7 @@ class VaultDecommissionTests(unittest.TestCase):
     def test_remove_queues_only_decommission_free_space_and_holds_root(self) -> None:
         self.add_verified_local_copy()
         preview = self.preview(local="remove")
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             started = vault_decommission.start_decommission(
                 connection,
                 vault_id=7,
@@ -364,7 +365,7 @@ class VaultDecommissionTests(unittest.TestCase):
 
         self.add_verified_local_copy()
         preview = self.preview(local="remove")
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             vault_decommission.start_decommission(
                 connection,
                 vault_id=7,
@@ -387,7 +388,7 @@ class VaultDecommissionTests(unittest.TestCase):
                     bandwidth_limit_kibps=None,
                 ),
             ),
-            patch("app.storage.db", side_effect=lambda: SQLiteConnection(str(self.db_path))),
+            patch("app.storage.db", side_effect=lambda: PostgresConnection(str(self.db_path))),
             patch("app.storage.process_job", side_effect=lambda job: processed.append(job)),
         ):
             self.assertEqual(process_jobs_once(), 1)
@@ -402,7 +403,7 @@ class VaultDecommissionTests(unittest.TestCase):
 
         self.add_verified_local_copy()
         preview = self.preview(local="remove")
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             vault_decommission.start_decommission(
                 connection,
                 vault_id=7,
@@ -436,7 +437,7 @@ class VaultDecommissionTests(unittest.TestCase):
             client.return_value.head_object.return_value = {"ContentLength": 16}
             process_free_space(dict(job))
         self.assertFalse((self.root / "report.txt").exists())
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             completed = vault_decommission.reconcile_one(
                 connection,
                 vault_id=7,
@@ -448,10 +449,10 @@ class VaultDecommissionTests(unittest.TestCase):
 
     def test_cloud_purge_reuses_delay_and_releases_only_after_verified_terminal_items(self) -> None:
         self.add_verified_local_copy()
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute("UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=7")
         preview = self.preview(cloud="purge")
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             vault_decommission.start_decommission(
                 connection,
                 vault_id=7,
@@ -500,7 +501,7 @@ class VaultDecommissionTests(unittest.TestCase):
 
     def test_whole_vault_purge_includes_active_version_and_orphan_marker(self) -> None:
         self.add_verified_local_copy()
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             catalog = ArchiveCatalog(connection)
             marker_id = catalog.record_delete_marker(
                 vault_id=7,
@@ -522,7 +523,7 @@ class VaultDecommissionTests(unittest.TestCase):
         self.assertEqual(preview["counts"]["archive_versions"], 1)
         self.assertEqual(preview["counts"]["delete_markers"], 1)
 
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             vault_decommission.start_decommission(
                 connection,
                 vault_id=7,
@@ -587,7 +588,7 @@ class VaultDecommissionTests(unittest.TestCase):
 
     def test_root_replacement_during_descriptor_inventory_blocks_release(self) -> None:
         preview = self.preview()
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             vault_decommission.start_decommission(
                 connection,
                 vault_id=7,
@@ -617,7 +618,7 @@ class VaultDecommissionTests(unittest.TestCase):
             "app.services.vault_decommission.os.listdir",
             side_effect=replace_after_open,
         ):
-            with SQLiteConnection(str(self.db_path)) as connection:
+            with PostgresConnection(str(self.db_path)) as connection:
                 status = vault_decommission.reconcile_one(
                     connection,
                     vault_id=7,
@@ -630,7 +631,7 @@ class VaultDecommissionTests(unittest.TestCase):
 
     def test_root_symlink_replacement_during_descriptor_inventory_blocks_release(self) -> None:
         preview = self.preview()
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             vault_decommission.start_decommission(
                 connection,
                 vault_id=7,
@@ -660,7 +661,7 @@ class VaultDecommissionTests(unittest.TestCase):
             "app.services.vault_decommission.os.listdir",
             side_effect=replace_with_symlink_after_open,
         ):
-            with SQLiteConnection(str(self.db_path)) as connection:
+            with PostgresConnection(str(self.db_path)) as connection:
                 status = vault_decommission.reconcile_one(
                     connection,
                     vault_id=7,
@@ -673,10 +674,10 @@ class VaultDecommissionTests(unittest.TestCase):
 
     def test_cloud_purge_delay_remains_cancellable_and_keeps_root_occupied(self) -> None:
         self.add_verified_local_copy()
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute("UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=7")
         preview = self.preview(cloud="purge")
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             vault_decommission.start_decommission(
                 connection,
                 vault_id=7,
@@ -718,7 +719,7 @@ class VaultDecommissionTests(unittest.TestCase):
         photos.mkdir()
         occupied = photos / "archive"
         self.root.rename(occupied)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 "UPDATE vaults SET source_root=%s, enabled=FALSE WHERE id=7",
                 (str(occupied),),
@@ -726,7 +727,7 @@ class VaultDecommissionTests(unittest.TestCase):
         volume = source_layout.SourceVolume(
             alias="photos", path=str(photos), access="rw", health="ok"
         )
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             roots = source_directories._occupied_vault_roots(connection, volume)
             self.assertEqual([item["relative_path"] for item in roots], ["archive"])
             stamp = "2026-08-01T12:00:00+00:00"
@@ -737,7 +738,7 @@ class VaultDecommissionTests(unittest.TestCase):
                 """,
                 (stamp, stamp),
             )
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             self.assertEqual(source_directories._occupied_vault_roots(connection, volume), [])
 
 
@@ -747,7 +748,7 @@ class VaultDecommissionMigrationTests(unittest.TestCase):
             path = Path(directory) / "upgrade.db"
             baseline = run_alembic(path, "0030_vault_root_relocation")
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute(
                     "INSERT INTO users(id, username, display_name, password_hash) "
                     "VALUES (1, 'owner', 'Owner', 'hash')"
@@ -763,7 +764,7 @@ class VaultDecommissionMigrationTests(unittest.TestCase):
                 )
             upgraded = run_alembic(path)
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 vault = connection.execute(
                     """
                     SELECT enabled, decommission_state, decommissioned_at,
@@ -773,7 +774,7 @@ class VaultDecommissionMigrationTests(unittest.TestCase):
                 tables = {
                     row["name"]
                     for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
+                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()
                 }
             self.assertFalse(vault["enabled"])
@@ -793,20 +794,21 @@ class VaultDecommissionMigrationTests(unittest.TestCase):
                 command="downgrade",
             )
             self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 vault_columns = {
                     row["name"]
-                    for row in connection.execute("PRAGMA table_info(vaults)").fetchall()
+                    for row in connection.execute("SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='vaults'").fetchall()
                 }
                 tables = {
                     row["name"]
                     for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
+                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()
                 }
                 jobs_sql = connection.execute(
-                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'"
-                ).fetchone()["sql"]
+                    "SELECT string_agg(pg_get_constraintdef(oid), ' ') AS definition "
+                    "FROM pg_constraint WHERE conrelid='jobs'::regclass"
+                ).fetchone()["definition"]
             self.assertNotIn("root_released_at", vault_columns)
             self.assertNotIn("vault_decommissions", tables)
             self.assertNotIn("decommission", jobs_sql)

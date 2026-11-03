@@ -15,7 +15,7 @@ const INTEGRITY_RUN = {
   created_at: "2026-07-10T00:00:00+00:00",
   finished_at: "2026-07-10T00:00:01+00:00",
   reason: "manual",
-  backend: "sqlite",
+  backend: "postgresql",
   status: "succeeded",
   digest_sha256: ARTIFACT_DIGEST,
   database_sha256: "b".repeat(64),

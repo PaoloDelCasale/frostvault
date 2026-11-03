@@ -11,17 +11,19 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from tests.test_database import run_alembic
 
 
-def _seed_vault(connection: SQLiteConnection, vault_id: int = 2) -> None:
+def _seed_vault(connection: PostgresConnection, vault_id: int = 2) -> None:
     connection.execute(
         """
         INSERT INTO vaults(
@@ -38,7 +40,7 @@ class CatalogScanBatchIdentityTests(unittest.TestCase):
         self.db_path = Path(self.tmp.name) / "catalog.db"
         migrated = run_alembic(self.db_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = SQLiteConnection(str(self.db_path))
+        self.connection = PostgresConnection(str(self.db_path))
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         self.catalog = ArchiveCatalog(self.connection)
@@ -158,12 +160,12 @@ class CatalogScanBatchIdentityTests(unittest.TestCase):
     def test_batch_and_serialized_path_are_semantically_equivalent(self) -> None:
         """The batch path must produce exactly the per-file serialized state."""
         # Serialized per-file reference on a second migrated database file so
-        # the two SQLite handles never contend on one WAL file.
+        # the two PostgreSQL handles never contend on one WAL file.
         ref_db = Path(self.tmp.name) / "reference.db"
         migrated_ref = run_alembic(ref_db)
         self.assertEqual(migrated_ref.returncode, 0, migrated_ref.stderr)
         serialized_rows = None
-        with SQLiteConnection(str(ref_db)) as reference:
+        with PostgresConnection(str(ref_db)) as reference:
             reference.execute(
                 """
                 INSERT INTO vaults(
@@ -253,7 +255,7 @@ class CatalogScanBatchStatementCountTests(unittest.TestCase):
         self.db_path = Path(self.tmp.name) / "catalog.db"
         migrated = run_alembic(self.db_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = SQLiteConnection(str(self.db_path))
+        self.connection = PostgresConnection(str(self.db_path))
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         self.catalog = ArchiveCatalog(self.connection)

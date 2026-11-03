@@ -7,6 +7,8 @@ Seams under test:
 """
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -17,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.security import hash_password
 from app.services import health as health_service
 from app.services import source_layout
@@ -33,7 +35,7 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -44,8 +46,7 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
 
         self.test_settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
             allowed_hosts="",
         )

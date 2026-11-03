@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -12,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from app import main, oidc
 from app.config import settings
-from app.database import SQLiteConnection
+
 from tests.oidc_fake import FakeOidcProvider
 from tests.test_database import run_alembic
 
@@ -27,7 +29,7 @@ class OidcHttpTests(unittest.TestCase):
 
         self.provider = FakeOidcProvider()
         self.subject = "subject-123"
-        with SQLiteConnection(str(database_path)) as connection:
+        with PostgresConnection(str(database_path)) as connection:
             self.user_id = connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -45,8 +47,7 @@ class OidcHttpTests(unittest.TestCase):
 
         self.test_settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(database_path),
+            database_dsn=database_dsn(str(database_path)),
             cookie_secure=False,
             oidc_enabled=True,
             oidc_issuer=self.provider.issuer,
@@ -82,13 +83,13 @@ class OidcHttpTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def _latest_login(self) -> dict:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             return connection.execute(
                 "SELECT state, nonce FROM oidc_login ORDER BY rowid DESC LIMIT 1"
             ).fetchone()
 
     def _add_vault(self) -> int:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             vault_id = connection.execute(
                 """
                 INSERT INTO vaults(
@@ -139,13 +140,13 @@ class OidcHttpTests(unittest.TestCase):
         )
 
     def test_first_login_binds_the_owner_identity(self) -> None:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute("DELETE FROM user_identities")
 
         first = self._complete_login("first-subject")
         self.assertEqual(first.status_code, 303, first.text)
         self.assertEqual(self.client.get("/api/me").json()["username"], "alice")
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             identities = connection.execute(
                 "SELECT user_id, issuer, subject FROM user_identities"
             ).fetchall()
@@ -215,14 +216,14 @@ class OidcHttpTests(unittest.TestCase):
         self.assertEqual(callback.status_code, 303)
 
     def _reauth_at(self) -> str | None:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             return connection.execute(
                 "SELECT reauth_at FROM sessions ORDER BY rowid DESC LIMIT 1"
             ).fetchone()["reauth_at"]
 
     def test_step_up_reauth_refreshes_the_reauth_window(self) -> None:
         self._sign_in()
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 "UPDATE sessions SET reauth_at=%s", ("2000-01-01T00:00:00+00:00",)
             )

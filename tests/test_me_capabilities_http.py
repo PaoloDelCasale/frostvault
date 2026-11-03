@@ -8,6 +8,8 @@ without calling the expensive ``/api/stats`` endpoint. The single owner
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -17,7 +19,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.main import app
 from app.security import hash_password
 from app.sessions import create_session
@@ -36,7 +38,7 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         self.dist_dir = write_spa_dist(Path(self._tmp.name))
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             self.owner_id = connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -47,8 +49,7 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
 
         self.test_settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
             allow_local_delete=True,
             frontend_dist_dir=str(self.dist_dir),
@@ -64,7 +65,7 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         self.client = TestClient(app, client=("127.0.0.1", 50000))
 
     def _create_vault(self) -> int:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             return connection.execute(
                 """
                 INSERT INTO vaults(
@@ -74,7 +75,7 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
             ).fetchone()["id"]
 
     def _me(self) -> dict:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             raw_token = create_session(
                 connection, user_id=self.owner_id, auth_method="oidc"
             )
@@ -111,7 +112,7 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         vault_id = self._create_vault()
         self.assertFalse(self._me()["vault"]["cloud_deletion_enabled"])
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 "UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=%s",
                 (vault_id,),

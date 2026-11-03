@@ -1,6 +1,8 @@
 """HTTP/SSE coverage for event-driven catalog invalidation (#227)."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import asyncio
 import json
 import tempfile
@@ -16,7 +18,7 @@ from watchfiles import Change
 
 from app import main, storage
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.security import hash_password
 from app.services.catalog_event_hub import (
     catalog_event_hub,
@@ -103,7 +105,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         migrated = run_alembic(self.db_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 "INSERT INTO users(id, username, display_name, password_hash) "
                 "VALUES (1, 'owner', 'Owner', %s)",
@@ -121,8 +123,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
         self.test_settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
+            database_dsn=database_dsn(str(self.db_path)),
             cookie_secure=False,
             filesystem_watch_enabled=False,
         )
@@ -160,7 +161,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         self.owner_session_id = self._session_id_for_user(1)
 
     def _authenticate(self, user_id: int, *, vault_id: int | None) -> str:
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             raw_token = create_session(
                 connection, user_id=user_id, auth_method="local"
             )
@@ -185,7 +186,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         return raw_token
 
     def _session_id_for_user(self, user_id: int) -> str:
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             row = connection.execute(
                 """
                 SELECT id FROM sessions
@@ -242,7 +243,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         )
         self.assertEqual(changed, 5)
 
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             store = CatalogEventStore(connection)
             self.assertEqual(store.current_revision(1), 1)
             page = store.read_events(vault_id=1, after_revision=0)
@@ -279,7 +280,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
                     {(Change.deleted, str(self.source / "kept.txt"))},
                 )
 
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             self.assertEqual(CatalogEventStore(connection).current_revision(1), 1)
             presence = connection.execute(
                 """
@@ -297,7 +298,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         self.assertIn(response.status_code, {401, 403})
 
     def test_sse_hello_and_catchup_are_vault_scoped(self) -> None:
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             CatalogEventStore(connection).append_event(
                 vault_id=1,
                 domain="catalog",
@@ -337,7 +338,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         self.assertTrue(snapshot.json()["changed"])
 
     def test_reconnect_after_revision_does_not_replay_older_events(self) -> None:
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             store = CatalogEventStore(connection)
             store.append_event(
                 vault_id=1,
@@ -404,7 +405,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
             async def publish_durable() -> None:
                 await asyncio.sleep(0.08)
                 # Intentionally skip catalog_event_hub.publish — other process.
-                with SQLiteConnection(str(self.db_path)) as connection:
+                with PostgresConnection(str(self.db_path)) as connection:
                     record_catalog_revision(
                         connection,
                         vault_id=1,
@@ -456,7 +457,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
             async def revoke() -> None:
                 await asyncio.sleep(0.08)
-                with SQLiteConnection(str(self.db_path)) as connection:
+                with PostgresConnection(str(self.db_path)) as connection:
                     self.assertTrue(revoke_session(connection, self.owner_session_id))
                 self.assertIsNone(session_stream_state(self.owner_session_id))
 
@@ -544,7 +545,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
                 if not published and any(
                     event.get("event") == "hello" for event in events
                 ):
-                    with SQLiteConnection(str(self.db_path)) as connection:
+                    with PostgresConnection(str(self.db_path)) as connection:
                         event = record_catalog_revision(
                             connection,
                             vault_id=1,
@@ -581,7 +582,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         self.assertEqual(subscribers, 0)
 
     def test_tick_snapshot_uses_one_connection_and_bounded_statements(self) -> None:
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             record_catalog_revision(
                 connection, vault_id=1, reason="a", invalidate=["files"]
             )
@@ -605,7 +606,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
     def test_bounded_backlog_thousands_of_events_emits_has_gap(self) -> None:
         total = 2500
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             for index in range(total):
                 CatalogEventStore(connection).append_event(
                     vault_id=1,
@@ -617,7 +618,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
                 )
 
         statements = [0]
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             original_execute = connection.execute
 
             def counting_execute(sql, params=()):
@@ -690,7 +691,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
             async def publish_and_spoof_hub() -> None:
                 await asyncio.sleep(0.05)
-                with SQLiteConnection(str(self.db_path)) as connection:
+                with PostgresConnection(str(self.db_path)) as connection:
                     CatalogEventStore(connection).append_event(
                         vault_id=1,
                         domain="catalog",
@@ -759,7 +760,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
     def test_idle_expiry_closes_live_stream(self) -> None:
         def expire() -> None:
-            with SQLiteConnection(str(self.db_path)) as connection:
+            with PostgresConnection(str(self.db_path)) as connection:
                 connection.execute(
                     "UPDATE sessions SET idle_expires_at=%s WHERE id=%s",
                     ("2000-01-01T00:00:00+00:00", self.owner_session_id),
@@ -772,7 +773,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
     def test_absolute_expiry_closes_live_stream(self) -> None:
         def expire() -> None:
-            with SQLiteConnection(str(self.db_path)) as connection:
+            with PostgresConnection(str(self.db_path)) as connection:
                 connection.execute(
                     "UPDATE sessions SET absolute_expires_at=%s WHERE id=%s",
                     ("2000-01-01T00:00:00+00:00", self.owner_session_id),
@@ -785,7 +786,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
     def test_session_version_mismatch_closes_live_stream(self) -> None:
         def bump_user_version() -> None:
-            with SQLiteConnection(str(self.db_path)) as connection:
+            with PostgresConnection(str(self.db_path)) as connection:
                 connection.execute(
                     "UPDATE users SET session_version=session_version+1 WHERE id=1"
                 )

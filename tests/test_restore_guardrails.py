@@ -13,6 +13,8 @@ with ``POST /api/recover/estimate``), not from another region's rates (#413).
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import hashlib
 import tempfile
 import unittest
@@ -21,7 +23,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.main import queue_jobs
 from app.services.cost_estimates import list_prices
 from app.services.restore_estimates import (
@@ -99,15 +101,14 @@ class HighImpactApprovalTests(unittest.TestCase):
                 storage_class="GLACIER",
                 object_key="docs/huge.bin",
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     "UPDATE archive_versions SET size=%s WHERE id=%s",
                     (size, version_id),
                 )
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
@@ -140,7 +141,7 @@ class HighImpactApprovalTests(unittest.TestCase):
             client.restore_object.assert_not_called()
             client.get_object.assert_not_called()
             client.head_object.assert_not_called()
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     "SELECT status, message, pending_until FROM jobs WHERE path=%s",
                     ("huge.bin",),
@@ -171,15 +172,14 @@ class HighImpactApprovalTests(unittest.TestCase):
                 storage_class="GLACIER",
                 object_key="docs/priced.bin",
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     "UPDATE archive_versions SET size=%s WHERE id=%s",
                     (size, version_id),
                 )
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
@@ -212,7 +212,7 @@ class HighImpactApprovalTests(unittest.TestCase):
 
             client.restore_object.assert_not_called()
             client.head_object.assert_not_called()
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     """
                     SELECT status, pending_until, estimated_cost_eur

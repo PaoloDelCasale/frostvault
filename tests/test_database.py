@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import atexit
 import shutil
 import subprocess
@@ -11,99 +13,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.database import (
-    DatabaseSchemaError,
-    SQLiteConnection,
-    initialize_database,
-)
+from app.database import DatabaseSchemaError, initialize_database
 
 
-def _run_alembic_subprocess(
-    path: Path,
-    revision: str,
-    command: str,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "alembic",
-            "-x",
-            f"database_url=sqlite:///{path.as_posix()}",
-            command,
-            revision,
-        ],
-        cwd=Path(__file__).parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-# Resolved at import: some tests patch ``tempfile.gettempdir`` to a directory
-# they delete, which must never host the process-wide template.
-_HEAD_TEMPLATE_ROOT = tempfile.gettempdir()
-_HEAD_TEMPLATE_LOCK = threading.Lock()
-_HEAD_TEMPLATE: dict[str, Path | subprocess.CompletedProcess[str]] = {}
-
-
-def _head_schema_template() -> tuple[Path | None, subprocess.CompletedProcess[str]]:
-    """Migrate one fresh SQLite database to HEAD per test process and reuse it.
-
-    Hundreds of tests start from an empty database at HEAD.  Running the Alembic
-    subprocess once and copying the resulting file keeps every test on the real
-    migration graph while removing a ~1 s subprocess from each setUp.
-    """
-    with _HEAD_TEMPLATE_LOCK:
-        if "result" not in _HEAD_TEMPLATE:
-            directory = Path(
-                tempfile.mkdtemp(prefix="frostvault-schema-", dir=_HEAD_TEMPLATE_ROOT)
-            )
-            atexit.register(shutil.rmtree, directory, True)
-            template = directory / "head.db"
-            result = _run_alembic_subprocess(template, "head", "upgrade")
-            _HEAD_TEMPLATE["result"] = result
-            _HEAD_TEMPLATE["path"] = template if result.returncode == 0 else None
-        template_path = _HEAD_TEMPLATE["path"]
-        result = _HEAD_TEMPLATE["result"]
-        assert isinstance(result, subprocess.CompletedProcess)
-        return (template_path if isinstance(template_path, Path) else None), result
-
-
-def run_alembic(
-    path: Path,
-    revision: str = "head",
-    command: str = "upgrade",
-) -> subprocess.CompletedProcess[str]:
-    """Bring ``path`` to ``revision`` with Alembic.
-
-    A fresh database upgraded straight to HEAD is served from a per-process
-    template copy; every other request (existing file, downgrade, pinned
-    revision) runs the real Alembic subprocess against ``path``.
-    """
-    fresh_head = (
-        command == "upgrade"
-        and revision == "head"
-        and not path.exists()
-        and not path.with_name(path.name + "-wal").exists()
-    )
-    if fresh_head:
-        template, result = _head_schema_template()
-        if template is not None:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(template, path)
-            return subprocess.CompletedProcess(
-                result.args, 0, result.stdout, result.stderr
-            )
-        return result
-    return _run_alembic_subprocess(path, revision, command)
+from tests.postgres import run_alembic
 
 
 class DatabaseMigrationTests(unittest.TestCase):
     def test_startup_rejects_an_unmigrated_database(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "unmigrated.db")
-            test_settings = SimpleNamespace(db_backend="sqlite", sqlite_path=path)
+            test_settings = SimpleNamespace(database_dsn=database_dsn(path))
 
             with patch("app.database.settings", test_settings):
                 with self.assertRaisesRegex(
@@ -112,49 +32,48 @@ class DatabaseMigrationTests(unittest.TestCase):
                 ):
                     initialize_database()
 
-            with SQLiteConnection(path) as connection:
+            with PostgresConnection(path) as connection:
                 tables = connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
+                    "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                 ).fetchall()
             self.assertEqual(tables, [])
 
-    def test_fresh_sqlite_database_migrates_to_a_startable_schema(self) -> None:
+    def test_fresh_postgresql_database_migrates_to_a_startable_schema(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "fresh.db"
             result = run_alembic(path)
             self.assertEqual(result.returncode, 0, result.stderr)
 
             test_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(path),
+                database_dsn=database_dsn(str(path)),
                 bootstrap_admin_username="admin",
                 bootstrap_admin_password="a-secure-test-password",
                 bootstrap_admin_display_name="Administrator",
             )
             with patch("app.database.settings", test_settings):
                 initialize_database()
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 policy_columns = {
                     row["name"]
                     for row in connection.execute(
-                        "PRAGMA table_info(vault_operation_policies)"
+                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='vault_operation_policies'"
                     ).fetchall()
                 }
                 system_setting_columns = {
                     row["name"]
                     for row in connection.execute(
-                        "PRAGMA table_info(system_settings)"
+                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='system_settings'"
                     ).fetchall()
                 }
                 table_names = {
                     row["name"]
                     for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
+                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()
                 }
                 job_columns = {
                     row["name"]
-                    for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+                    for row in connection.execute("SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='jobs'").fetchall()
                 }
             # No quotas, operating windows or per-Vault bandwidth (#413).
             self.assertEqual(
@@ -192,23 +111,23 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "catalog-state-schema.db"
             upgraded = run_alembic(path)
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 tables = {
                     row["name"]
                     for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
+                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()
                 }
                 revision_columns = {
                     row["name"]
                     for row in connection.execute(
-                        "PRAGMA table_info(vault_catalog_revisions)"
+                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='vault_catalog_revisions'"
                     ).fetchall()
                 }
                 event_columns = {
                     row["name"]
                     for row in connection.execute(
-                        "PRAGMA table_info(catalog_events)"
+                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='catalog_events'"
                     ).fetchall()
                 }
             self.assertIn("vault_catalog_revisions", tables)
@@ -235,11 +154,11 @@ class DatabaseMigrationTests(unittest.TestCase):
                 command="downgrade",
             )
             self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 names = {
                     row["name"]
                     for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
+                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()
                 }
             self.assertNotIn("catalog_events", names)
@@ -253,7 +172,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "current.db"
             baseline = run_alembic(path, "0001_current_schema")
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO users(
@@ -298,7 +217,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             migrated = run_alembic(path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 file = ArchiveCatalog(connection).get_file_by_path(
                     2, "docs/report.txt"
                 )
@@ -315,7 +234,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "invalid-current.db"
             baseline = run_alembic(path, "0001_current_schema")
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute("DROP INDEX jobs_one_active_action_uq")
                 connection.execute("DROP TABLE alembic_version")
 
@@ -331,7 +250,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "catalog.db"
             migrated = run_alembic(path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO vaults(
@@ -362,7 +281,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "rename.db"
             migrated = run_alembic(path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO vaults(
@@ -405,7 +324,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "concurrent-upload.db"
             migrated = run_alembic(path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO vaults(
@@ -455,7 +374,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "session-transition.db"
             baseline = run_alembic(path, "0032_notification_inbox")
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 user_id = connection.execute(
                     """
                     INSERT INTO users(username, display_name, password_hash, is_admin)
@@ -482,7 +401,7 @@ class DatabaseMigrationTests(unittest.TestCase):
 
             upgraded = run_alembic(path)
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 row = connection.execute(
                     """
                     SELECT transition_version, token_hash, csrf_token
@@ -516,11 +435,11 @@ class DatabaseMigrationTests(unittest.TestCase):
             upgraded = run_alembic(path)
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
 
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 names = {
                     row["name"]
                     for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
+                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()
                 }
             self.assertIn("oidc_login", names)
@@ -532,11 +451,11 @@ class DatabaseMigrationTests(unittest.TestCase):
                 command="downgrade",
             )
             self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 names = {
                     row["name"]
                     for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
+                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()
                 }
             self.assertNotIn("oidc_login", names)
@@ -547,7 +466,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "protected.db"
             upgraded = run_alembic(path)
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO vaults(
@@ -585,11 +504,11 @@ class DatabaseMigrationTests(unittest.TestCase):
             upgraded = run_alembic(path)
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
 
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 names = {
                     row["name"]
                     for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
+                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()
                 }
                 self.assertNotIn("invites", names)
@@ -597,7 +516,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 users = {
                     row["name"]: row
                     for row in connection.execute(
-                        "PRAGMA table_info(users)"
+                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='users'"
                     ).fetchall()
                 }
                 self.assertNotIn("is_admin", users)
@@ -606,7 +525,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 login_columns = {
                     row["name"]
                     for row in connection.execute(
-                        "PRAGMA table_info(oidc_login)"
+                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='oidc_login'"
                     ).fetchall()
                 }
                 self.assertNotIn("invite_id", login_columns)
@@ -638,7 +557,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                         VALUES (1, 'https://id.example', 'two', '2026-08-01')
                         """
                     )
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute("DELETE FROM user_identities")
                 # Passwordless Users block the downgrade that restores NOT NULL.
                 connection.execute("DELETE FROM users")
@@ -649,17 +568,17 @@ class DatabaseMigrationTests(unittest.TestCase):
                 command="downgrade",
             )
             self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 names = {
                     row["name"]
                     for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
+                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()
                 }
                 users = {
                     row["name"]
                     for row in connection.execute(
-                        "PRAGMA table_info(users)"
+                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='users'"
                     ).fetchall()
                 }
             self.assertLessEqual(
@@ -678,7 +597,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "owner.db"
             baseline = run_alembic(path, "0043_cloud_only_conflict")
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO users(id, username, display_name, password_hash, is_admin)
@@ -716,7 +635,7 @@ class DatabaseMigrationTests(unittest.TestCase):
 
             migrated = run_alembic(path, "0044_single_owner")
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 users = connection.execute(
                     "SELECT id, username FROM users ORDER BY id"
                 ).fetchall()
@@ -744,7 +663,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "quotas.db"
             baseline = run_alembic(path, "0044_single_owner")
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO vaults(
@@ -775,14 +694,14 @@ class DatabaseMigrationTests(unittest.TestCase):
 
             migrated = run_alembic(path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 policy = connection.execute(
                     "SELECT * FROM vault_operation_policies WHERE vault_id=5"
                 ).fetchone()
                 tables = {
                     row["name"]
                     for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
+                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()
                 }
             self.assertEqual(
@@ -808,7 +727,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "notifications.db"
             baseline = run_alembic(path, "0045_drop_quotas_windows")
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 seed_legacy_notifications(connection)
                 before = preserved_state(connection)
             for revision, command in (
@@ -818,10 +737,10 @@ class DatabaseMigrationTests(unittest.TestCase):
             ):
                 result = run_alembic(path, revision, command)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                with SQLiteConnection(str(path)) as connection:
+                with PostgresConnection(str(path)) as connection:
                     self.assertEqual(preserved_state(connection), before)
                     tables = {row["name"] for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
+                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()}
                     if command == "upgrade":
                         self.assertFalse(tables & REMOVED_TABLES)
@@ -843,12 +762,12 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "remove-offline.db"
             baseline = run_alembic(path, "0045_drop_quotas_windows")
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 seed_legacy_notifications(connection)
                 connection.execute("UPDATE sessions SET offline_cache_generation=7")
             baseline = run_alembic(path, "0046_simplify_notifications")
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 before = normalized_state(connection)
             for revision, command in (
                 ("0047_remove_offline_cache", "upgrade"),
@@ -857,7 +776,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             ):
                 result = run_alembic(path, revision, command)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                with SQLiteConnection(str(path)) as connection:
+                with PostgresConnection(str(path)) as connection:
                     self.assertEqual(normalized_state(connection), before)
                     assert_session_schema(self, connection, upgraded=command == "upgrade")
 
@@ -866,7 +785,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "preserve.db"
             baseline = run_alembic(path, "0004_oidc_login")
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 user_id = connection.execute(
                     """
                     INSERT INTO users(username, display_name, password_hash, is_admin)
@@ -900,7 +819,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             upgraded = run_alembic(path)
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
 
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 self.assertEqual(
                     connection.execute(
                         "SELECT COUNT(*) AS total FROM users"
@@ -926,18 +845,18 @@ class DatabaseMigrationTests(unittest.TestCase):
             upgraded = run_alembic(path)
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
 
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 names = {
                     row["name"]
                     for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
+                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()
                 }
                 self.assertIn("auth_backoff", names)
                 columns = {
                     row["name"]
                     for row in connection.execute(
-                        "PRAGMA table_info(auth_backoff)"
+                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='auth_backoff'"
                     ).fetchall()
                 }
                 self.assertEqual(
@@ -965,7 +884,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                         VALUES ('ip', '203.0.113.5', 2, '2026-07-21T00:00:00+00:00')
                         """
                     )
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 # The scope is constrained to the two known throttle dimensions.
                 with self.assertRaises(Exception):
                     connection.execute(
@@ -981,11 +900,11 @@ class DatabaseMigrationTests(unittest.TestCase):
                 command="downgrade",
             )
             self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 names = {
                     row["name"]
                     for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
+                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()
                 }
             self.assertNotIn("auth_backoff", names)
@@ -995,7 +914,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "missing-version.db"
             baseline = run_alembic(path, "0001_current_schema")
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO users(
@@ -1028,7 +947,7 @@ class DatabaseMigrationTests(unittest.TestCase):
 
             upgraded = run_alembic(path)
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute(
                     """
                     UPDATE archive_versions
@@ -1051,7 +970,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "conflicting-jobs.db"
             baseline = run_alembic(path, "0001_current_schema")
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO users(
@@ -1098,7 +1017,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "multiple non-terminal jobs target one file",
                 migrated.stderr,
             )
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 legacy_file = connection.execute(
                     "SELECT path FROM files WHERE vault_id=2"
                 ).fetchone()
@@ -1109,7 +1028,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             path = Path(directory) / "migration.db"
             baseline = run_alembic(path, "0001_current_schema")
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO users(
@@ -1152,7 +1071,7 @@ class DatabaseMigrationTests(unittest.TestCase):
 
             migrated = run_alembic(path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 preserved = connection.execute(
                     """
                     SELECT j.action, j.total_bytes, fp.path

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
 
 import hashlib
@@ -23,7 +25,7 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.main import queue_jobs
 from app.config import Settings
 from app.services import source_layout
@@ -47,15 +49,14 @@ class SnapshotCreationTests(unittest.TestCase):
         self.sources_root.mkdir()
         self.addCleanup(source_layout.reset_sources_root_override)
         source_layout.override_sources_root(self.sources_root)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 "INSERT INTO users(id, username, display_name, password_hash) "
                 "VALUES (1, 'alice', 'Alice', 'hash')"
             )
         self.settings = replace(
             Settings(),
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             vault_s3_bucket="test-bucket",
 
         )
@@ -65,7 +66,7 @@ class SnapshotCreationTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def _vaults(self) -> list[dict]:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             return connection.execute("SELECT * FROM vaults").fetchall()
     def test_creation_has_no_history_choice_or_column(self) -> None:
         vault = vaults_service.create_vault("Snapshot Archive")
@@ -123,7 +124,7 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
         target.write_bytes(payload)
         database_path = root / "catalog.db"
         self.assertEqual(run_alembic(database_path).returncode, 0)
-        with SQLiteConnection(str(database_path)) as connection:
+        with PostgresConnection(str(database_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(id, username, display_name, password_hash)
@@ -169,8 +170,7 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
         fake_s3.head_size = len(payload)
         fake_s3.payload = payload
         database_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(database_path),
+            database_dsn=database_dsn(str(database_path)),
         )
         worker_settings = SimpleNamespace(
             operation_concurrency=1,
@@ -196,7 +196,7 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
                 self._run_upload(database_path, s3, payload=b"original", version_id="s3-a")
                 local = source / "report.txt"
                 local.write_bytes(b"replacement")
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     ArchiveCatalog(connection).observe_local_copy(
                         vault_id=2, path="report.txt", file_type="regular",
                         size=local.stat().st_size, mtime_ns=local.stat().st_mtime_ns,
@@ -205,7 +205,7 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
                 self._run_upload(database_path, s3, payload=b"replacement", version_id="s3-b", failure=failure)
                 self.assertEqual(s3.deleted, [])
                 self.assertIn("s3-a", s3.versions["docs/report.txt"])
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     versions = ArchiveCatalog(connection).list_versions(2, "report.txt")
                 prior = next(row for row in versions if row["provider_version_id"] == "s3-a")
                 self.assertTrue(prior["recoverable"])
@@ -219,7 +219,7 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
                 self._run_upload(database_path, s3, payload=b"original", version_id="s3-a")
                 local = source / "report.txt"
                 local.write_bytes(b"replacement")
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     ArchiveCatalog(connection).observe_local_copy(
                         vault_id=2, path="report.txt", file_type="regular",
                         size=local.stat().st_size, mtime_ns=local.stat().st_mtime_ns,
@@ -237,7 +237,7 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
                     self._run_upload(database_path, s3, payload=b"replacement", version_id="s3-b")
                 self.assertEqual(s3.deleted, [])
                 self.assertIn("s3-a", s3.versions["docs/report.txt"])
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     prior = next(row for row in ArchiveCatalog(connection).list_versions(2, "report.txt") if row["provider_version_id"] == "s3-a")
                 self.assertTrue(prior["recoverable"])
 
@@ -253,7 +253,7 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
             )
             local = source / "report.txt"
             local.write_bytes(payload_b)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 ArchiveCatalog(connection).observe_local_copy(
                     vault_id=2,
                     path="report.txt",
@@ -265,7 +265,7 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
             self._run_upload(
                 database_path, fake_s3, payload=payload_b, version_id="s3-b"
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 versions = ArchiveCatalog(connection).list_versions(2, "report.txt")
                 jobs = connection.execute(
                     "SELECT status FROM jobs ORDER BY id"

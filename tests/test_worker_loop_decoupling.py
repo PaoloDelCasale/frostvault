@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import os
 import tempfile
 import threading
@@ -20,7 +22,7 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.services import health as health_service
 from app.storage import (
     NOTIFICATION_MAX_LATENCY_SECONDS,
@@ -38,7 +40,7 @@ class WorkerLoopDecouplingTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / "loop.db"
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "INSERT INTO users(id, username, display_name, password_hash) "
                 "VALUES (1, 'owner', 'Owner', 'hash')"
@@ -65,7 +67,7 @@ class WorkerLoopDecouplingTests(unittest.TestCase):
             )
 
     def _insert_job(self, path: str, requested_at: str) -> int:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             return int(
                 connection.execute(
                     """
@@ -97,7 +99,7 @@ class WorkerLoopDecouplingTests(unittest.TestCase):
             patch("app.storage._runtime_settings", return_value=runtime),
             patch(
                 "app.storage.db",
-                side_effect=lambda: SQLiteConnection(str(self.path)),
+                side_effect=lambda: PostgresConnection(str(self.path)),
             ),
             patch("app.storage.process_job", side_effect=process_job),
         )

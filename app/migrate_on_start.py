@@ -164,7 +164,7 @@ def _persist_pre_upgrade_backup_failure(
         with db() as connection:
             metadata_backups.record_pre_upgrade_backup_failure(
                 connection,
-                backend=settings.db_backend,
+                backend="postgresql",
                 block_reason=block_reason,
             )
     except Exception:
@@ -192,8 +192,7 @@ def _upgrade_existing_with_backup() -> None:
             outcome = metadata_backups.run_pre_upgrade_backup_gate(
                 backup_dir=backup_dir,
                 settings_obj=settings,
-                db_backend=settings.db_backend,
-                sqlite_path=settings.sqlite_path,
+
                 retention=runtime.metadata_backup_retention,
                 s3_prefix=runtime.metadata_backup_s3_prefix,
                 connection=connection,

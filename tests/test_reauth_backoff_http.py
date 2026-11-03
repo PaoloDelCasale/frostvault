@@ -1,6 +1,8 @@
 """HTTP security seams for Local Reauthentication backoff (issue #191)."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import json
 import tempfile
 import unittest
@@ -14,7 +16,7 @@ from fastapi.testclient import TestClient
 from app import backoff, main
 from app.backoff import reauth_account_key, reauth_ip_key
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.security import hash_password
 from app.sessions import create_session, csrf_token_for
 from tests.test_database import run_alembic
@@ -33,7 +35,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             self.user_id = connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -45,8 +47,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
 
         self.settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
             break_glass_allowed_cidrs="",
         )
@@ -60,7 +61,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             self.raw_token = create_session(
                 connection,
                 user_id=self.user_id,
@@ -91,14 +92,14 @@ class ReauthBackoffHttpTests(unittest.TestCase):
         )
 
     def _session_reauth_at(self) -> str | None:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             return connection.execute(
                 "SELECT reauth_at FROM sessions WHERE id=%s", (self.session_id,)
             ).fetchone()["reauth_at"]
 
     def _insert_counter(
         self,
-        connection: SQLiteConnection,
+        connection: PostgresConnection,
         *,
         scope: str,
         key: str,
@@ -131,7 +132,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
         self.assertIn("Retry-After", blocked.headers)
         self.assertEqual(self._session_reauth_at(), self.STALE_REAUTH_AT)
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             counters = connection.execute(
                 """
                 SELECT scope, key, failure_count
@@ -177,7 +178,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
     def test_success_clears_only_reauth_counters(self) -> None:
         """A Local Reauthentication must not reset Local Sign-in counters."""
         now = datetime.now(timezone.utc).isoformat()
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             # Existing Local Sign-in counters deliberately use the unprefixed
             # keys and must remain untouched by the reauth success below.
             self._insert_counter(
@@ -213,7 +214,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotEqual(self._session_reauth_at(), self.STALE_REAUTH_AT)
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             retained = connection.execute(
                 """
                 SELECT scope, key FROM auth_backoff
@@ -256,7 +257,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
     def test_retry_after_uses_the_longest_active_reauth_dimension(self) -> None:
         """A shorter IP delay must not understate a longer account delay."""
         now = datetime(2030, 1, 1, tzinfo=timezone.utc)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             self._insert_counter(
                 connection,
                 scope="ip",

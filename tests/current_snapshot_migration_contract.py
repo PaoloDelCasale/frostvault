@@ -1,4 +1,4 @@
-"""Populated SQLite/PostgreSQL preservation contract for #418."""
+"""Populated PostgreSQL preservation contract for #418."""
 from tests.notification_migration_contract import preserved_state, seed_legacy_notifications
 from app.catalog import ArchiveCatalog
 

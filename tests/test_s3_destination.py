@@ -7,6 +7,8 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import hashlib
 import os
 import tempfile
@@ -26,7 +28,7 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.main import queue_jobs
 from app.storage import expected_cloud_key, process_jobs_once
 from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
@@ -70,7 +72,7 @@ class S3UploadPrefixTests(unittest.TestCase):
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO users(
@@ -110,8 +112,7 @@ class S3UploadPrefixTests(unittest.TestCase):
                 return len(payload)
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
@@ -174,7 +175,7 @@ class S3RenamePrefixTests(unittest.TestCase):
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
             digest = hashlib.sha256(payload).hexdigest()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO users(
@@ -281,8 +282,7 @@ class S3RenamePrefixTests(unittest.TestCase):
                     Callback(len(payload))
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
