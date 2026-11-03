@@ -28,6 +28,11 @@ class WorkerErrorTests(unittest.TestCase):
                 self.assertIn("errore interno", italian[0]["title"])
                 self.assertNotIn("SECRET", str(english))
                 self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM notification_deliveries").fetchone()["n"], 0)
+                notifications.mark_notification_read(connection, notification_id=english[0]["id"], user_id=1)
+                self.assertEqual(notifications.count_unread_notifications(connection, user_id=1), 0)
+                worker_errors.record_worker_error(connection, component="cloud_scan", exc=RuntimeError("SECRET recurrence"))
+                self.assertEqual(notifications.count_unread_notifications(connection, user_id=1), 1)
+                self.assertEqual(len(notifications.list_in_app_notifications(connection, user_id=1)), 1)
 
     def test_fresh_database_before_owner_bootstrap_has_no_recipient(self):
         with tempfile.TemporaryDirectory() as directory:

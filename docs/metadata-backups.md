@@ -60,14 +60,14 @@ misleading successful backup record.
   `METADATA_BACKUP_VERIFY_INTERVAL_SECONDS` (default 7d). Verification restores
   into an isolated temporary database / scratch directory and never mutates the
   live database or production `vaults/` S3 keys.
-- Admin API (global administrators, reauthentication required for runs):
+- Owner API (authenticated Session; manual runs also require CSRF):
   - `GET /api/admin/metadata-backups` — status and recent runs
   - `POST /api/admin/metadata-backups/run` — manual backup
   - `GET /api/admin/metadata-backups/download/{run_id}` — download ciphertext
 
 Failed backups record `metadata_backup_runs.status=failed`, enqueue
-`metadata_backup_failed` notifications for administrators, and emit worker
-errors / metrics.
+`metadata_backup_failed` notifications for the Owner, and surface generic
+internal-error problems / backup metrics.
 
 ## Pre-upgrade gate
 

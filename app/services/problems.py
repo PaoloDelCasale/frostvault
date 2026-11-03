@@ -21,10 +21,20 @@ def report_problem(
     if owner_id is None:
         return None
     identity = hashlib.sha256(f"{path}\0{component}".encode()).hexdigest()
-    return enqueue_notification(
+    notification = enqueue_notification(
         connection, user_id=owner_id, vault_id=vault_id, event=event,
         title="", body="", title_key=f"notification.{event}.title",
         body_key=f"notification.{event}.body",
         message_params={"path": path, "component": component},
         dedupe_key=f"{event}:{vault_id}:{identity}", channels=("in_app",),
     )
+    # Reading an earlier occurrence must not hide a later failure of this same
+    # path or worker. Keep one durable entry, but make the problem visible again.
+    if notification["read"]:
+        connection.execute(
+            "UPDATE notifications SET read_at=NULL WHERE id=%s AND user_id=%s",
+            (notification["id"], owner_id),
+        )
+        notification["read"] = False
+        notification["read_at"] = None
+    return notification

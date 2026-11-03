@@ -2080,6 +2080,16 @@ def admin_run_metadata_backup(
             )
         except metadata_backup_service.BackupError as exc:
             raise HTTPException(500, str(exc)) from exc
+        # An explicit export of the metadata database is sensitive. Routine
+        # scheduled backups do not create action-log entries.
+        audit_event_store.record_audit_event(
+            connection,
+            event="metadata_backup_created",
+            actor_user_id=admin["id"],
+            outcome="success",
+            reason=action.reason,
+            digest_sha256=result["digest_sha256"],
+        )
     return result
 
 
