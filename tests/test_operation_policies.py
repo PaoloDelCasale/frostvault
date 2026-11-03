@@ -621,6 +621,9 @@ class AutoUploadEligibilityTests(unittest.TestCase):
             for name, verified_at in (
                 ("due.txt", "2026-07-01T12:00:00+00:00"),
                 ("not-due.txt", "2026-07-02T12:00:00+00:00"),
+                # Identical bytes reimported with old preserved mtime and an
+                # already verified cloud snapshot still get a full new period.
+                ("imported-old.jpg", "2015-01-01T12:00:00+00:00"),
                 # Verified long ago, but written back locally yesterday: a
                 # recovered Local Copy starts a fresh retention window.
                 ("recovered.txt", "2026-01-01T12:00:00+00:00"),
@@ -641,7 +644,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                     file_type="regular",
                     size=len(content),
                     mtime_ns=target.stat().st_mtime_ns,
-                    observed_at=verified_at,
+                    observed_at=now.isoformat() if name == "imported-old.jpg" else verified_at,
                 )
                 version_id = catalog.record_archive_version(
                     vault_id=2,

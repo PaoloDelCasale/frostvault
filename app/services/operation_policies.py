@@ -2,8 +2,9 @@
 
 This module is the operation-policy seam used by watcher/scan auto-upload,
 automatic local cleanup, and HTTP configuration. A missing row means automatic
-upload with a five-minute observed stability window. Fixed automatic noise
-exclusions cannot be overridden by user globs; manual operations remain explicit.
+upload with a five-minute observed stability window and local release OFF.
+Upload exclusions never restrict local release, which covers all Protected files.
+Fixed upload noise exclusions cannot be overridden; manual operations remain explicit.
 The only transfer throttle is the global ``BANDWIDTH_LIMIT_KIBPS`` for uploads.
 """
 

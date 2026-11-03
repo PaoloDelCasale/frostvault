@@ -159,6 +159,8 @@ and Cloud-only Conflicts remain held back.
   enabled ones: the removed global environment gate cannot be inferred and old
   filters had a narrower scope. Pending legacy free-space Jobs are cancelled;
   request manual actions again, and explicitly enable the new rule if desired.
+  Complete active local-removal decommissions before upgrading; cancellation of
+  their pending Jobs leaves them blocked with the root reserved, never released.
   Upgrade refuses interrupted `cleaning` Jobs: reconcile them with the previous
   release first so hidden rename-claims are never stranded. No file/cloud content
   or verification evidence is changed. Downgrade also leaves automation off.

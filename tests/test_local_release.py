@@ -16,7 +16,7 @@ from app import storage
 from app.config import Settings
 from app.services.operation_policies import (
     LOCAL_RELEASE_PERIODS, OperationPolicy, local_cleanup_is_due,
-    local_release_is_confirmed, validate_policy,
+    local_release_is_confirmed, queue_auto_local_cleanups, validate_policy,
 )
 
 
@@ -42,6 +42,18 @@ class LocalReleasePolicyTests(unittest.TestCase):
                 with self.subTest(days=days, field=field):
                     self.assertFalse(local_cleanup_is_due(**args, retention_days=days, now=due - timedelta(microseconds=1)))
                     self.assertTrue(local_cleanup_is_due(**args, retention_days=days, now=due))
+
+    def test_absent_volume_never_queues_automatic_release(self):
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = {
+            "source_root": "/absent", "enabled": True, "relocation_state": "ready", "decommission_state": "active",
+        }
+        with (patch("app.services.operation_policies.get_policy", return_value=OperationPolicy(local_release_after_days=90)),
+              patch("app.services.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=False)),
+              patch("app.catalog.ArchiveCatalog") as catalog):
+            self.assertEqual(queue_auto_local_cleanups(connection, vault_id=1, requested_by=1), 0)
+            catalog.assert_not_called()
+            self.assertEqual(connection.execute.call_count, 1)  # Only the Vault health gate.
 
     def test_cleanup_preflight_blockage_is_not_an_immediate_notification(self):
         with (patch("app.storage._validate_cloud_vault", side_effect=RuntimeError("cloud unavailable")),
