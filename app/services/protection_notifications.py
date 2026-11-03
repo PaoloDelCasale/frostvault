@@ -68,11 +68,16 @@ def monitor_vault(connection: Any, vault: Mapping[str, Any], *, now: datetime) -
                       now - _time(suspended_since, now) >= timedelta(hours=24),
                       params={"component": "suspended"})
     access = vault_local_access(str(vault["source_root"]))
-    # This gate checks the mount only. A successful mount check cannot resolve
-    # a failed full source scan; that belongs to record_component_health.
-    inbox.set_problem(connection, key=f"blocked:{vault_id}:volume", event="protection_blocked",
-                      vault_id=vault_id, active=not access.local_operations_allowed,
-                      params={"component": "source_volume"})
+    # Share the source episode with failed scans, without allowing a mount-only
+    # check to clear a failed full source scan. Its next success owns resolution.
+    source_health = connection.execute(
+        "SELECT last_error FROM vault_component_health WHERE vault_id=%s AND component='source'",
+        (vault_id,),
+    ).fetchone()
+    inbox.set_problem(connection, key=f"blocked:{vault_id}:source", event="protection_blocked",
+                      vault_id=vault_id, active=not access.local_operations_allowed or
+                      bool(source_health and source_health['last_error']),
+                      params={"component": "source"})
     rows = connection.execute(f"""
         SELECT vf.id, fp.path, lc.mtime_ns, lc.content_observed_at,
                COALESCE(lc.content_observed_at,lc.observed_at,vf.created_at) AS observed_at

@@ -77,7 +77,7 @@ class FixedNotificationPostgresTests(unittest.TestCase):
         from tests import test_notifications as fixture
         fixture.NotificationDeliveryTests.setUp(self)
         self.email = replace(settings, smtp_host='smtp.example.test',
-                             smtp_from_address='alerts@example.test', smtp_to_address='owner@example.test')
+                             smtp_from_address='alerts@example.com', smtp_to_address='owner@example.com')
         self.email_patch = patch.object(inbox, 'settings', self.email)
         self.email_patch.start()
         self.addCleanup(self.email_patch.stop)
@@ -207,6 +207,99 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             self.assertEqual(inbox.list_in_app_notifications(c,user_id=self.user_id)[0]['problem_status'],'resolved')
             # Notification resolution never changes or removes the sole cloud copy.
             self.assertEqual(c.execute('SELECT count(*) AS n FROM archive_versions WHERE id=%s',(version,)).fetchone()['n'],1)
+
+    def test_summary_reads_success_dates_freed_space_cost_and_all_five_states(self):
+        from app.catalog import ArchiveCatalog
+        from app.services.component_health import record_component_health
+        from app.services.metadata_backups import record_backup_run
+        with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
+            catalog = ArchiveCatalog(c)
+            for state in monitor.STATES:
+                local = state != 'cloud_only'
+                version = None
+                if local:
+                    catalog.observe_local_copy(vault_id=self.vault_id,path=state+'.jpg',file_type='regular',
+                                               size=1024**3,mtime_ns=1,observed_at=NOW.isoformat())
+                if state != 'pending':
+                    version = catalog.record_archive_version(vault_id=self.vault_id,path=state+'.jpg',
+                        object_key='docs/'+state,provider_version_id=state,size=1024**3,
+                        storage_class='STANDARD',etag='e',uploaded_at=NOW.isoformat(),
+                        observed_at=NOW.isoformat(),scan_id='scan')
+                    availability = {'problem':'missing','unconfirmed':'unknown'}.get(state,'available')
+                    c.execute("UPDATE archive_versions SET integrity='verified',plaintext_sha256=%s,availability=%s WHERE id=%s",
+                              ('a'*64,availability,version))
+                    if local:
+                        catalog.set_local_fingerprint(vault_id=self.vault_id,path=state+'.jpg',plaintext_sha256='a'*64,
+                                                      matched_archive_version_id=version)
+            record_component_health(c,vault_id=self.vault_id,component='source',ok=True,at='2026-11-02T10:00:00+00:00')
+            record_component_health(c,vault_id=self.vault_id,component='audit',ok=True,at='2026-11-01T10:00:00+00:00')
+            record_backup_run(c,reason='test',backend='postgresql',status='verified',verified_at='2026-11-02T11:00:00+00:00')
+            for status, age in (('completed',1),('completed',9),('failed',1)):
+                c.execute("INSERT INTO jobs(vault_id,path,action,status,requested_at,updated_at,total_bytes) "
+                          "VALUES (%s,'protected.jpg','free-space',%s,%s,%s,1048576)",
+                          (self.vault_id,status,NOW.isoformat(),(NOW-timedelta(days=age)).isoformat()))
+            inbox.set_problem(c,key='safe-worker',event='internal_error',active=True,params={'component':'worker'})
+            summary = monitor.weekly_summary(c,now=NOW)
+            self.assertEqual(summary['states'],dict.fromkeys(monitor.STATES,1))
+            self.assertEqual(summary['last_verified_backup'],'2026-11-02T11:00:00+00:00')
+            self.assertEqual(summary['vaults'][0]['last_scan'],'2026-11-02T10:00:00+00:00')
+            self.assertEqual(summary['vaults'][0]['last_audit'],'2026-11-01T10:00:00+00:00')
+            self.assertEqual(summary['open_problems'],1)
+            self.assertEqual(summary['freed_files'],1)
+            self.assertEqual(summary['freed_bytes'],1048576)
+            self.assertEqual(summary['cleanup_blocked'],1)
+            self.assertGreater(summary['monthly_cost_estimate'],0)
+            self.assertIn('not an AWS',summary['cost_disclaimer'])
+            with patch('app.services.source_layout.vault_local_access',return_value=VaultLocalAccess(False,True,None,'absent')):
+                self.assertEqual(monitor.weekly_summary(c,now=NOW)['states'],
+                                 {**dict.fromkeys(monitor.STATES,0),'unconfirmed':5})
+
+    def test_migration_removes_only_routine_history_preserving_recovery_and_copy_evidence(self):
+        from tests.postgres import run_alembic
+        from app.catalog import ArchiveCatalog
+        with self.connect() as c:
+            catalog = ArchiveCatalog(c)
+            catalog.observe_local_copy(vault_id=self.vault_id,path='sole.jpg',file_type='regular',size=2,
+                                       mtime_ns=1,observed_at=NOW.isoformat())
+            version = catalog.record_archive_version(vault_id=self.vault_id,path='sole.jpg',object_key='docs/sole',
+                provider_version_id='sole',size=2,storage_class='STANDARD',etag='e',uploaded_at=NOW.isoformat(),
+                observed_at=NOW.isoformat(),scan_id='scan')
+            c.execute("UPDATE archive_versions SET integrity='verified',plaintext_sha256=%s WHERE id=%s",('a'*64,version))
+        result = run_alembic(self.path,'0055_protection_states','downgrade')
+        self.assertEqual(result.returncode,0,result.stderr)
+        with self.connect() as c:
+            recover = c.execute("INSERT INTO jobs(vault_id,path,action,status,requested_at,updated_at) "
+                                "VALUES (%s,'sole.jpg','recover','completed',%s,%s) RETURNING id",
+                                (self.vault_id,NOW.isoformat(),NOW.isoformat())).fetchone()['id']
+            for event, job in (('job_completed',self.job_id),('local_cleanup.completed',self.job_id),('job_completed',recover)):
+                inbox.enqueue_notification(c,user_id=self.user_id,vault_id=self.vault_id,job_id=job,event=event,
+                                           title='Historical',message_params={'path':'sole.jpg'},channels=('in_app','email'))
+            tables = ('vault_files','file_paths','local_copies','archive_versions','jobs')
+            before = {table:c.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall() for table in tables}
+        result = run_alembic(self.path)
+        self.assertEqual(result.returncode,0,result.stderr)
+        with self.connect() as c:
+            after = {table:c.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall() for table in tables}
+            self.assertEqual(after,before)
+            self.assertEqual([row['event'] for row in c.execute('SELECT event FROM notifications').fetchall()],['recovery_completed'])
+            self.assertEqual(c.execute('SELECT count(*) AS n FROM notification_deliveries').fetchone()['n'],1)
+            self.assertEqual(inbox.enqueue_job_terminal_notification(c,job_id=recover),0)
+
+    def test_cloud_preflight_failure_and_recovery_only_persist_safe_context(self):
+        from app import storage
+        vault = {'id':self.vault_id,'s3_bucket':'bucket'}
+        with patch('app.storage.db',side_effect=self.connect), patch('app.storage._validate_cloud_vault',side_effect=RuntimeError('SECRET credentials')):
+            with self.assertRaises(RuntimeError):
+                storage.validate_cloud_vault(vault)
+        with self.connect() as c:
+            rows = inbox.list_in_app_notifications(c,user_id=self.user_id)
+            self.assertEqual(rows[0]['problem_status'],'open')
+            self.assertNotIn('SECRET',str(rows))
+        with patch('app.storage.db',side_effect=self.connect), patch('app.storage._validate_cloud_vault'):
+            storage.validate_cloud_vault(vault)
+        with self.connect() as c:
+            self.assertEqual(inbox.count_open_problems(c,user_id=self.user_id),0)
+            self.assertEqual(inbox.count_unread_notifications(c,user_id=self.user_id),0)
 
     def test_delivery_failure_is_redacted_bounded_and_does_not_change_open_problem(self):
         with self.connect() as c:

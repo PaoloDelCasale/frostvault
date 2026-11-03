@@ -218,6 +218,7 @@ export function NotificationCenter({
     {
       ...notificationsQueryOptions("unread", UNREAD_PAGE_SIZE),
       staleTime: 15_000,
+      refetchInterval: open ? 15_000 : 60_000,
     },
     queryClient,
   );
@@ -516,6 +517,9 @@ export function NotificationCenter({
     setOpen(nextOpen);
     if (nextOpen) {
       setMarkError(null);
+      if (notificationsQuery.data && notificationsQuery.isStale) {
+        void notificationsQuery.refetch();
+      }
     }
   }
 
