@@ -1,8 +1,8 @@
 # FrostVault
 
 This context tracks logical files in isolated vaults. Local Copies can appear,
-change, or be removed. A Vault's Cloud History Policy is Archive History or
-Current Snapshot.
+change, or be removed. Each Vault keeps only the last verified cloud content
+of each Vault File.
 
 ## Language
 
@@ -62,18 +62,9 @@ _Avoid_: Source file, local version
 One immutable, recoverable cloud representation of a Vault File's content.
 _Avoid_: Object, backup, revision
 
-**Cloud History Policy**:
-The creation-time, immutable choice of how many Archive Versions a Vault keeps
-recoverable.
-_Avoid_: Versioning mode, Sync mode, Bucket versioning
-
-**Archive History**:
-A Cloud History Policy that keeps every verified Archive Version recoverable.
-_Avoid_: Versioned, Full history, Versioning
-
 **Current Snapshot**:
-A Cloud History Policy that permits at most one recoverable Archive Version per
-Vault File.
+The single recoverable cloud representation of a Vault File: its last verified
+content, retained until a replacement is verified.
 _Avoid_: Sync, Mirror, Unversioned, Revision
 
 **Cloud-only Conflict**:
