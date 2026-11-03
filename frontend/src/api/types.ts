@@ -15,7 +15,6 @@ export type CloudDeletionPreview = components["schemas"]["CloudDeletionPreview"]
 export type CloudDeletionPreviewRequest = components["schemas"]["CloudDeletionPreviewRequest"];
 export type CloudDeletionSettingUpdate = components["schemas"]["CloudDeletionSettingUpdate"];
 export type CloudDeletionSettings = components["schemas"]["CloudDeletionSettings"];
-export type CloudHistoryPolicy = components["schemas"]["CloudHistoryPolicy"];
 export type CloudOnlyReplacementAction = components["schemas"]["CloudOnlyReplacementAction"];
 export type CloudPurgePayload = components["schemas"]["CloudPurgePayload"];
 export type CloudPurgeRequest = components["schemas"]["CloudPurgeRequest"];

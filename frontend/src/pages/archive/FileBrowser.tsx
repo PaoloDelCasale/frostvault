@@ -123,7 +123,6 @@ export function FileBrowser({
   });
   const demoConfirm = getDemoSearchParam("confirm");
   const demoConfirmTarget = getDemoSearchParam("target") || "readme.txt";
-  const demoVersions = getDemoSearchParam("versions");
 
   const query = useMemo(
     () => ({
@@ -593,7 +592,6 @@ export function FileBrowser({
                 ? { action: demoConfirm, path: demoConfirmTarget }
                 : null
             }
-            demoVersionsPath={demoVersions}
           >
             {({
               jobsByPath,

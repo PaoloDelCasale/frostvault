@@ -40,8 +40,7 @@ from .services.rclone_runtime import (
 )
 from .services.vault_crypto import safe_error_message
 from .services.vault_recovery import secrets_for_vault
-from .services.cloud_history import (
-    is_current_snapshot,
+from .services.current_snapshot import (
     keep_discovered_snapshot_version,
 )
 from .services.s3_preflight import check_bucket_readiness, preflight_failure_message
@@ -975,18 +974,16 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
 
     versions.sort(key=lambda entry: (entry[0], entry[6], entry[2], entry[1]))
     markers.sort(key=lambda entry: (entry[0], entry[3], entry[2], entry[1]))
-    snapshot_mode = is_current_snapshot(vault)
     listed_version_ids: dict[str, set[str]] = {}
-    if snapshot_mode:
-        grouped: dict[str, list[tuple[str, str, str, Any, str, str, str]]] = {}
-        for entry in versions:
-            grouped.setdefault(entry[0], []).append(entry)
-            listed_version_ids.setdefault(entry[0], set()).add(str(entry[1]))
-        versions = []
-        for path in sorted(grouped):
-            versions.extend(
-                sorted(grouped[path], key=lambda item: item[6], reverse=True)
-            )
+    grouped: dict[str, list[tuple[str, str, str, Any, str, str, str]]] = {}
+    for entry in versions:
+        grouped.setdefault(entry[0], []).append(entry)
+        listed_version_ids.setdefault(entry[0], set()).add(str(entry[1]))
+    versions = []
+    for path in sorted(grouped):
+        versions.extend(
+            sorted(grouped[path], key=lambda item: item[6], reverse=True)
+        )
 
     from .services.lifecycle_pins import load_lifecycle_pins
 
@@ -1039,30 +1036,41 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                 timestamp,
                 applied_policy_id,
             ) in tagged:
-                if snapshot_mode:
-                    catalog_keep = catalog.latest_available_provider_version_id(
-                        int(vault["id"]), logical_path
-                    )
-                    # A catalog behind S3 (restored metadata backup) may name a
-                    # version already purged. Trusting it would delete the
-                    # only copy left, so keep the newest listed version.
-                    if catalog_keep is not None and catalog_keep not in (
-                        listed_version_ids.get(logical_path, set())
-                    ):
-                        catalog_keep = None
-                        stale_keeper_paths.add(logical_path)
-                    if not keep_discovered_snapshot_version(
-                        provider_version_id=str(version_id),
-                        catalog_keep_provider_version_id=catalog_keep,
-                        already_kept_provider_version_id=snapshot_kept_by_path.get(
-                            logical_path
-                        ),
-                    ):
-                        snapshot_extras.append(
-                            (logical_path, str(version_id), object_key)
-                        )
-                        continue
+                catalog_keep = catalog.latest_available_provider_version_id(
+                    int(vault["id"]), logical_path
+                )
+                # Catalog lag never authorizes destruction of discovered data.
+                if catalog_keep is not None and catalog_keep not in (
+                    listed_version_ids.get(logical_path, set())
+                ):
+                    catalog_keep = None
+                    stale_keeper_paths.add(logical_path)
+                keep = keep_discovered_snapshot_version(
+                    provider_version_id=str(version_id),
+                    catalog_keep_provider_version_id=catalog_keep,
+                    already_kept_provider_version_id=snapshot_kept_by_path.get(
+                        logical_path
+                    ),
+                )
+                if keep:
                     snapshot_kept_by_path[logical_path] = str(version_id)
+                elif not decode_failures:
+                    # Preserve legacy/unverified/mismatched copies. Only a
+                    # verified keeper that is also newest in this listing can
+                    # authorize background cleanup; discovery grants no trust.
+                    keeper = next((
+                        row for row in catalog.list_versions(vault["id"], logical_path)
+                        if row["provider_version_id"] == snapshot_kept_by_path.get(logical_path)
+                    ), None)
+                    newest = max(grouped[logical_path], key=lambda item: item[6])
+                    if (
+                        keeper and keeper["integrity"] == "verified"
+                        and keeper["availability"] == "available"
+                        and (keeper["object_key"], keeper["provider_version_id"])
+                        == (newest[2], newest[1])
+                    ):
+                        snapshot_extras.append((logical_path, str(version_id), object_key))
+                        continue
                 desired_policy_id = (
                     None
                     if _path_matches_lifecycle_pins(logical_path, pins)
@@ -2705,8 +2713,6 @@ def purge_current_snapshot_superseded(
     The upload/rename Job is not complete until this succeeds. Missing provider
     versions are treated as already gone so a retry can finish catalog purge.
     """
-    if not is_current_snapshot(job):
-        return
     if not keep_version_id:
         raise RuntimeError("Current Snapshot purge requires the kept Archive Version")
     with db() as connection:
@@ -2802,8 +2808,22 @@ def _purge_current_snapshot_scan_extras(
     client: Any,
 ) -> None:
     """Delete uncatalogued extra VersionIds found during a Current Snapshot scan."""
-    for _path, version_id, object_key in extras:
+    for path, version_id, object_key in extras:
         try:
+            with db() as connection:
+                rows = ArchiveCatalog(connection).list_versions(vault["id"], path)
+            keeper = next((row for row in rows if row["availability"] == "available"), None)
+            if not keeper or keeper["integrity"] != "verified":
+                continue
+            # Recheck the exact keeper immediately before deletion. A failed
+            # listing or changed catalog must leave every extra untouched.
+            present, _markers = _object_version_entries(
+                client, bucket=vault["s3_bucket"], object_key=keeper["object_key"],
+            )
+            if str(keeper["provider_version_id"]) not in present:
+                continue
+            if (object_key, version_id) == (keeper["object_key"], keeper["provider_version_id"]):
+                continue
             _delete_s3_version(
                 client,
                 bucket=vault["s3_bucket"],
@@ -3718,14 +3738,13 @@ def _complete_verified_upload(
                     version_id if matches_snapshot else None
                 ),
             )
-    if is_current_snapshot(job):
-        set_job(job["id"], "uploading", message_key="job.purging_previous_snapshot")
-        ensure_job_active(job["id"], "Upload claim was lost")
-        purge_current_snapshot_superseded(
-            job,
-            keep_version_id=str(version_id),
-            client=s3_client(),
-        )
+    set_job(job["id"], "uploading", message_key="job.purging_previous_snapshot")
+    ensure_job_active(job["id"], "Upload claim was lost")
+    purge_current_snapshot_superseded(
+        job,
+        keep_version_id=str(version_id),
+        client=s3_client(),
+    )
     progress_bytes = int(job.get("total_bytes") or 0)
     if local_stat is not None and progress_bytes <= 0:
         progress_bytes = int(local_stat.st_size)
@@ -4262,14 +4281,6 @@ def process_rename(job: dict[str, Any]) -> None:
                 """,
                 (job["vault_file_id"], new_key),
             ).fetchall()
-            existing_marker = connection.execute(
-                """
-                SELECT id FROM delete_markers
-                WHERE vault_file_id=%s AND object_key=%s
-                LIMIT 1
-                """,
-                (job["vault_file_id"], old_key),
-            ).fetchone()
 
         live_destination = _select_live_rename_destination(
             client,
@@ -4277,23 +4288,6 @@ def process_rename(job: dict[str, Any]) -> None:
             rows=destination_rows,
             expected_digest=previous.get("plaintext_sha256"),
         )
-        if (
-            not is_current_snapshot(job)
-            and existing_marker is not None
-            and live_destination is not None
-            and live_destination["integrity"] == "verified"
-        ):
-            catalog_link = str(live_destination["id"])
-            with db() as connection:
-                ensure_job_claim_owned_in_transaction(
-                    connection,
-                    job,
-                    "Rename claim was lost",
-                )
-                ArchiveCatalog(connection).link_job_version(job["id"], catalog_link)
-            set_job(job["id"], "completed", message_key="job.rename_already_completed")
-            return
-
         version_id: str | None = None
         destination_version_id: str | None = None
         source_stat = source.stat(follow_symlinks=False)
@@ -4422,81 +4416,21 @@ def process_rename(job: dict[str, Any]) -> None:
             provider_version_id=destination_version_id,
             operation="Rename",
         )
-        if is_current_snapshot(job):
-            set_job(
-                job["id"],
-                "cleaning",
-                message_key="job.purging_previous_snapshot",
-            )
-            ensure_job_active(job["id"], "Rename claim was lost")
-            purge_current_snapshot_superseded(
-                job,
-                keep_version_id=str(version_id),
-                client=client,
-                require_catalogued_versions=True,
-            )
-            with db() as connection:
-                ensure_job_claim_owned_in_transaction(
-                    connection,
-                    job,
-                    "Rename claim was lost",
-                )
-                ArchiveCatalog(connection).link_job_version(job["id"], version_id)
-            set_job_progress(
-                job["id"],
-                int(job.get("total_bytes") or getattr(source_stat, "st_size", 0) or 0),
-            )
-            set_job(job["id"], "completed", message_key="job.rename_verified")
-            return
-        if existing_marker is not None:
-            with db() as connection:
-                ensure_job_claim_owned_in_transaction(
-                    connection,
-                    job,
-                    "Rename claim was lost",
-                )
-                ArchiveCatalog(connection).link_job_version(job["id"], version_id)
-            set_job_progress(
-                job["id"],
-                int(job.get("total_bytes") or getattr(source_stat, "st_size", 0) or 0),
-            )
-            set_job(job["id"], "completed", message_key="job.rename_verified")
-            return
-        set_job(job["id"], "cleaning", message_key="job.rename_hiding_previous")
-        ensure_scheduled_current_version(
-            bucket=job["s3_bucket"],
-            object_key=old_key,
-            expected_version_id=previous.get("provider_version_id"),
-            operation="Rename hide",
+        set_job(
+            job["id"], "cleaning", message_key="job.purging_previous_snapshot",
         )
         ensure_job_active(job["id"], "Rename claim was lost")
-        delete_result = client.delete_object(
-            Bucket=job["s3_bucket"],
-            Key=old_key,
+        purge_current_snapshot_superseded(
+            job,
+            keep_version_id=str(version_id),
+            client=client,
+            require_catalogued_versions=True,
         )
-        marker_version = delete_result.get("VersionId")
-        if not marker_version:
-            raise RuntimeError(
-                "S3 did not return a delete marker VersionId for the previous key"
-            )
-        ensure_job_active(job["id"], "Rename claim was lost")
-        marker_at = now_iso()
         with db() as connection:
             ensure_job_claim_owned_in_transaction(
-                connection,
-                job,
-                "Rename claim was lost",
+                connection, job, "Rename claim was lost",
             )
-            catalog = ArchiveCatalog(connection)
-            catalog.record_delete_marker(
-                vault_id=job["vault_id"],
-                path=job["path"],
-                object_key=old_key,
-                provider_version_id=marker_version,
-                created_at=marker_at,
-                observed_at=marker_at,
-            )
-            catalog.link_job_version(job["id"], version_id)
+            ArchiveCatalog(connection).link_job_version(job["id"], version_id)
         set_job_progress(
             job["id"],
             int(job.get("total_bytes") or getattr(source_stat, "st_size", 0) or 0),

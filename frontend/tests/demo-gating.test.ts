@@ -39,9 +39,7 @@ describe("capture/demo seams", () => {
     expect(operations).toMatch(
       /DEMO_MODE_ENABLED\s*\?\s*demoConfirm\s*:\s*null/,
     );
-    expect(operations).toMatch(
-      /DEMO_MODE_ENABLED\s*\?\s*demoVersionsPath\s*:\s*null/,
-    );
+    expect(operations).not.toContain("demoVersionsPath");
   });
 
   it("does not patch fetch when the capture gate is off", async () => {

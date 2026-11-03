@@ -17,11 +17,6 @@ is immutable afterwards. Crypt vaults receive a unique sealed secret pair;
 mode changes are a guided migration to a *new* vault, never an in-place
 reinterpretation of existing object keys.
 
-``cloud_history_policy`` (``archive_history`` or ``current_snapshot``) is the
-same kind of creation-time immutable choice. Interactive callers must supply
-it; omitted values persist Archive History so existing tests keep that
-promise.
-
 Vault row and local root are provisioned as one
 unit. Empty mode creates the managed directory inside the transaction;
 adoption binds an existing directory in place and never moves, copies,
@@ -41,10 +36,6 @@ from ..config import settings
 from ..database import INTEGRITY_ERRORS, db
 from . import source_directories
 from .source_layout import ensure_managed_directory, managed_vault_path
-from .cloud_history import (
-    InvalidCloudHistoryPolicy,
-    normalize_cloud_history_policy,
-)
 from .vault_crypto import encrypt_vault_secrets, generate_crypt_secrets
 from .vault_relocation import enroll_vault_root_identity
 
@@ -91,7 +82,6 @@ _VAULT_INVENTORY_FIELDS = (
     "rclone_remote",
     "enabled",
     "encryption_mode",
-    "cloud_history_policy",
     "decommission_state",
     "decommissioned_at",
     "root_released_at",
@@ -116,12 +106,10 @@ def create_vault(
     name: str,
     slug: str | None = None,
     encryption_mode: str = "plain",
-    cloud_history_policy: str | None = None,
     *,
     creation_mode: str = "empty",
     volume_alias: str | None = None,
     relative_path: str | None = None,
-    require_cloud_history_policy: bool = False,
 ) -> dict[str, Any]:
     """Create a Vault and return it with its sealed recovery ciphertexts.
 
@@ -133,14 +121,6 @@ def create_vault(
     mode = (encryption_mode or "plain").strip().lower()
     if mode not in _ENCRYPTION_MODES:
         raise InvalidVaultName("encryption_mode must be 'plain' or 'crypt'")
-    try:
-        history_policy = normalize_cloud_history_policy(
-            cloud_history_policy,
-            required=require_cloud_history_policy,
-        )
-    except InvalidCloudHistoryPolicy as exc:
-        raise InvalidVaultName(str(exc)) from exc
-
     create_mode = (creation_mode or "empty").strip().lower()
     if create_mode not in _CREATION_MODES:
         raise InvalidVaultName("creation_mode must be 'empty' or 'adopt'")
@@ -221,14 +201,13 @@ def create_vault(
                 """
                 INSERT INTO vaults(
                     uuid, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote, encryption_mode, cloud_history_policy,
+                    rclone_remote, encryption_mode,
                     crypt_password_ciphertext, crypt_password2_ciphertext
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING
                     id, uuid, slug, name, source_root, s3_bucket, s3_prefix,
                     rclone_remote, enabled, encryption_mode,
-                    cloud_history_policy,
                     recovery_custody_confirmed_at, decommission_state,
                     decommissioned_at, root_released_at
                 """,
@@ -241,7 +220,6 @@ def create_vault(
                     s3_prefix,
                     default_remote,
                     mode,
-                    history_policy,
                     password_ciphertext,
                     password2_ciphertext,
                 ),

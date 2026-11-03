@@ -1,4 +1,4 @@
-"""Cloud History Policy: Current Snapshot creation and overwrite purge."""
+"""The only cloud behavior: verified snapshot replacement and fail-closed purge."""
 
 from __future__ import annotations
 
@@ -22,13 +22,7 @@ for _flag, _value in (
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
 from app.main import queue_jobs
-from app.services.cloud_history import (
-    ARCHIVE_HISTORY,
-    CURRENT_SNAPSHOT,
-    InvalidCloudHistoryPolicy,
-    keep_discovered_snapshot_version,
-    normalize_cloud_history_policy,
-)
+from app.services.current_snapshot import keep_discovered_snapshot_version
 from app.config import Settings
 from app.services import source_layout
 from app.services import vaults as vaults_service
@@ -40,19 +34,7 @@ def _sha(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-class CloudHistoryPolicyUnitTests(unittest.TestCase):
-    def test_normalize_defaults_to_archive_history(self) -> None:
-        self.assertEqual(normalize_cloud_history_policy(None), ARCHIVE_HISTORY)
-        self.assertEqual(normalize_cloud_history_policy(" "), ARCHIVE_HISTORY)
-
-    def test_normalize_required_rejects_omission(self) -> None:
-        with self.assertRaises(InvalidCloudHistoryPolicy):
-            normalize_cloud_history_policy(None, required=True)
-
-    def test_normalize_rejects_unknown_values(self) -> None:
-        with self.assertRaises(InvalidCloudHistoryPolicy):
-            normalize_cloud_history_policy("unversioned")
-
+class SnapshotReconciliationUnitTests(unittest.TestCase):
     def test_scan_keep_prefers_catalogued_snapshot(self) -> None:
         self.assertFalse(
             keep_discovered_snapshot_version(
@@ -86,7 +68,7 @@ class CloudHistoryPolicyUnitTests(unittest.TestCase):
         )
 
 
-class CloudHistoryPolicyCreationTests(unittest.TestCase):
+class SnapshotCreationTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -117,25 +99,10 @@ class CloudHistoryPolicyCreationTests(unittest.TestCase):
     def _vaults(self) -> list[dict]:
         with SQLiteConnection(str(self.database_path)) as connection:
             return connection.execute("SELECT * FROM vaults").fetchall()
-    def test_omitted_policy_persists_archive_history(self) -> None:
-        vault = vaults_service.create_vault("History Archive")
-        self.assertEqual(vault["cloud_history_policy"], ARCHIVE_HISTORY)
-
-    def test_current_snapshot_is_persisted(self) -> None:
-        vault = vaults_service.create_vault(
-            "Snapshot Archive",
-            cloud_history_policy=CURRENT_SNAPSHOT,
-        )
-        self.assertEqual(vault["cloud_history_policy"], CURRENT_SNAPSHOT)
-        stored = self._vaults()[0]
-        self.assertEqual(stored["cloud_history_policy"], CURRENT_SNAPSHOT)
-
-    def test_interactive_requirement_rejects_omission(self) -> None:
-        with self.assertRaises(vaults_service.InvalidVaultName):
-            vaults_service.create_vault(
-                "Needs Choice",
-                require_cloud_history_policy=True,
-            )
+    def test_creation_has_no_history_choice_or_column(self) -> None:
+        vault = vaults_service.create_vault("Snapshot Archive")
+        self.assertNotIn("cloud_history_policy", vault)
+        self.assertNotIn("cloud_history_policy", self._vaults()[0])
 
 
 class _FakeS3:
@@ -193,10 +160,10 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
                 """
                 INSERT INTO vaults(
                     id, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote, cloud_history_policy
-                ) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote', %s)
+                    rclone_remote
+                ) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote')
                 """,
-                (str(source), CURRENT_SNAPSHOT),
+                (str(source),)
             )
             ArchiveCatalog(connection).observe_local_copy(
                 vault_id=2,
@@ -215,13 +182,16 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
         *,
         payload: bytes,
         version_id: str,
+        failure: str | None = None,
     ) -> None:
         def fake_rclone(*args, **kwargs) -> None:
-            return None
+            if failure == "upload":
+                raise RuntimeError("transfer failed")
 
         def fake_stream(*args, **kwargs) -> int:
-            kwargs["on_chunk"](payload)
-            return len(payload)
+            data = b"wrong-cloud-bytes" if failure == "verify" else payload
+            kwargs["on_chunk"](data)
+            return len(data)
 
         fake_s3.head_version_id = version_id
         fake_s3.head_size = len(payload)
@@ -247,6 +217,29 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
                 patch("app.storage.s3_client", return_value=fake_s3),
             ):
                 process_jobs_once()
+
+    def test_failed_upload_or_verification_preserves_previous_verified_copy(self) -> None:
+        for failure in ("upload", "verify"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                source, database_path = self._prepare(Path(directory), b"original")
+                s3 = _FakeS3()
+                self._run_upload(database_path, s3, payload=b"original", version_id="s3-a")
+                local = source / "report.txt"
+                local.write_bytes(b"replacement")
+                with SQLiteConnection(str(database_path)) as connection:
+                    ArchiveCatalog(connection).observe_local_copy(
+                        vault_id=2, path="report.txt", file_type="regular",
+                        size=local.stat().st_size, mtime_ns=local.stat().st_mtime_ns,
+                        observed_at="2026-11-03T11:00:00+00:00",
+                    )
+                self._run_upload(database_path, s3, payload=b"replacement", version_id="s3-b", failure=failure)
+                self.assertEqual(s3.deleted, [])
+                self.assertIn("s3-a", s3.versions["docs/report.txt"])
+                with SQLiteConnection(str(database_path)) as connection:
+                    versions = ArchiveCatalog(connection).list_versions(2, "report.txt")
+                prior = next(row for row in versions if row["provider_version_id"] == "s3-a")
+                self.assertTrue(prior["recoverable"])
+                self.assertFalse(any(row["provider_version_id"] == "s3-b" and row["integrity"] == "verified" for row in versions))
 
     def test_overwrite_purges_previous_archive_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

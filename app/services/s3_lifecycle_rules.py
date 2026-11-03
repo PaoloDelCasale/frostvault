@@ -42,8 +42,6 @@ def build_policy_lifecycle_rule(
             }
             for transition in profile.transitions
         ]
-    if profile.expiration_days is not None:
-        rule["Expiration"] = {"Days": profile.expiration_days}
     if profile.noncurrent_transitions:
         rule["NoncurrentVersionTransitions"] = [
             {
@@ -52,10 +50,6 @@ def build_policy_lifecycle_rule(
             }
             for transition in profile.noncurrent_transitions
         ]
-    if profile.noncurrent_expiration_days is not None:
-        rule["NoncurrentVersionExpiration"] = {
-            "NoncurrentDays": profile.noncurrent_expiration_days
-        }
     return rule
 
 
@@ -114,6 +108,4 @@ def build_rules_for_policies(
         for policy_id, profile in policies
         if profile.transitions
         or profile.noncurrent_transitions
-        or profile.expiration_days is not None
-        or profile.noncurrent_expiration_days is not None
     ]

@@ -367,7 +367,6 @@ describe("foundation endpoint helpers", () => {
       createVault({
         name: "Docs",
         encryption_mode: "crypt",
-        cloud_history_policy: "archive_history",
       }),
     ).resolves.toMatchObject({ recovery_export: "export-body" });
     await expect(selectVault({ vault_id: 3 })).resolves.toEqual({ vault_id: 3 });

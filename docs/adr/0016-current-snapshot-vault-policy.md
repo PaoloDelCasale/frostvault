@@ -1,43 +1,48 @@
-# Current Snapshot is a creation-time Vault policy
+# Current Snapshot is the only cloud behavior
 
-FrostVault's shared archive bucket is versioned. A Vault's Cloud History Policy
-is chosen at creation and is immutable: Archive History keeps every verified
-Archive Version recoverable; Current Snapshot keeps only the last verified
-upload. Current Snapshot is implemented by deleting previous S3 VersionIds after
-the new Archive Version is verified — not by an unversioned bucket, a mutable
-catalog row, or in-place conversion of an Archive History Vault.
+Decision #362 removes user-facing cloud history and its creation-time policy
+choice. Every Vault keeps only the last verified content of each Vault File.
+The shared bucket stays versioned as an internal verified-replacement mechanism:
+upload first, read and verify the exact VersionId, then delete superseded
+VersionIds. Immutable Archive Version identities remain for Jobs, Integrity and
+Availability; replaced versions become `purged`, not rewritten in place.
 
-The catalog still stores immutable Archive Versions; under Current Snapshot at
-most one stays `available` per Vault File. Upload automation remains a separate
-operation policy. Interactive creation requires an explicit Cloud History Policy;
-there is no implicit default. Lifecycle, storage-class, and Glacier apply to
-that single Archive Version as they do under Archive History.
+## Consequences
 
-Rename still keeps one Vault File and Path History. After the new key is
-verified, every VersionId at the old key is deleted rather than hidden
-(derogates ADR-0001 for this policy only). Manual cloud hiding has been removed
-(#417, decision #366 Q4). Permanent purge remains a separate explicit action;
-a Local Copy can still be removed without touching cloud.
+A failed upload or verification preserves the previous cloud copy. A cleanup
+requires a verified, available keeper whose exact key and VersionId are present
+in a successful listing. Discovery never grants verification: legacy unverified
+or mismatched copies are retained fail-closed. A stale catalog, a missing keeper,
+unknown rename content or a failed listing never authorizes cloud deletion.
+Migration 0050 removes the policy column without calling S3 or modifying Archive
+Version trust/content. There is no compatibility promise for test Vaults; the
+owner can recreate them. Downgrade recreates the column as snapshot for every
+Vault, not the retired history promise.
 
-Because a verified upload deletes the previous version, content that appears
-at the path of a file whose Local Copy was absent is never uploaded
-automatically: the single cloud copy would be destroyed by an unrelated file
-(a reset camera counter, a different file copied over). It becomes a
-Cloud-only Conflict until the new file is renamed away or the owner confirms
-the replacement. Identical content simply becomes the Local Copy again.
+Rename retains stable Vault File identity and internal Path History. After
+verifying the exact bytes at the new key, all versions at the old key are purged
+(ADR-0001). Ambiguity is a new Vault File, never authority to remove another
+file. Deleting a Local Copy, including via SMB, never deletes cloud content.
+Content differing from the cloud copy at the path of a previously absent Local
+Copy remains a Cloud-only Conflict until renamed away or explicitly replaced.
+Identical content simply becomes the Local Copy again.
 
-The Vault S3 prefix is application-owned. Manual edits in the bucket are
-unsupported. Extra VersionIds (crash before purge, external drift) are not
-recoverable; they raise an incident and the worker retries purge.
+Recovery offers the current verified content, never a version picker. S3
+VersionIds and Archive Version IDs are internal pins, not a history interface.
+Lifecycle profiles cannot emit current or noncurrent expiration; legacy profile
+expiration fields are ignored. Existing application-owned bucket rules are
+replaced on lifecycle synchronization, not during the schema migration.
 
-Bootstrap Vaults (`BOOTSTRAP_*`) are Archive History so
-existing deploys keep their promise; only the interactive form forces an
-explicit choice.
+The owner accepts that mistaken SMB overwrites, corruption or ransomware can
+replace the only good cloud copy after verification. Verification proves equality
+with the uploaded local bytes, not that those bytes are desirable. There is no
+previous-version retention window. Cold-storage early-deletion charges may apply.
 
 ## Considered Options
 
-- A second unversioned bucket: splits provisioning, preflight, and IAM for one
-  installation.
-- Updating one catalog row in place: Jobs, Integrity, and Availability already
-  target Archive Version identity.
-- Converting an existing history Vault: a mass purge disguised as a setting.
+- Retaining user-facing history: extra choices and recovery complexity rejected
+  by the owner in #362 in favor of one current recoverable copy.
+- An unversioned bucket: cannot safely verify replacement before deleting the
+  previous bytes, and splits provisioning/preflight assumptions.
+- Updating one catalog row in place: loses exact immutable Job and integrity
+  targets; internal identities remain necessary even without a history UI.

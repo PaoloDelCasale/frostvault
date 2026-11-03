@@ -96,7 +96,6 @@ class EssentialFileActionTests(unittest.TestCase):
             root, old_path="old/photo.jpg", new_path="new/photo.jpg", payload=PAYLOAD, confirm=False,
         )
         with SQLiteConnection(str(database_path)) as connection:
-            connection.execute("UPDATE vaults SET cloud_history_policy='current_snapshot' WHERE id=2")
             vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
         return source, database_path, file_id, vault
 

@@ -1,9 +1,4 @@
-"""Version selection for recovery (issue #4).
-
-Seams under test:
-- ArchiveCatalog.list_versions / queue_jobs: recoverable flag, explicit
-  not-selectable reasons, and recover targeting a chosen Archive Version.
-"""
+"""Internal recovery pins target the current verified snapshot, never history."""
 
 from __future__ import annotations
 
@@ -125,13 +120,13 @@ class VersionSelectionTests(unittest.TestCase):
             self.assertTrue(by_provider["v-new"]["recoverable"])
             self.assertIsNone(by_provider["v-new"]["not_selectable_reason"])
 
-    def test_queue_recover_can_target_explicit_archive_version(self) -> None:
+    def test_legacy_older_available_copy_cannot_be_selected_for_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = self._fixture(Path(directory))
             with SQLiteConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 versions = catalog.list_versions(2, "notes.txt")
-                # Make older available again and target it explicitly
+                # Legacy copies survive upgrade without becoming a history UI.
                 older = next(v for v in versions if v["provider_version_id"] == "v-old")
                 connection.execute(
                     """
@@ -150,13 +145,8 @@ class VersionSelectionTests(unittest.TestCase):
                     is_directory=False,
                     archive_version_id=older["id"],
                 )
-                job = connection.execute(
-                    "SELECT archive_version_id FROM jobs WHERE id=%s",
-                    (job_ids[0],),
-                ).fetchone()
-
-            self.assertEqual(eligible, 1)
-            self.assertEqual(job["archive_version_id"], older["id"])
+            self.assertEqual(eligible, 0)
+            self.assertEqual(job_ids, [])
 
     def test_default_recover_targets_highest_recoverable_version_number(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

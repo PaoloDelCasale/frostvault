@@ -33,7 +33,6 @@ from app.config import settings
 from app.database import SQLiteConnection
 from app.main import confirm_cloud_only_replacement, queue_jobs
 from app.services import notifications as notification_service
-from app.services.cloud_history import CURRENT_SNAPSHOT
 from app.services.email_templates import render_email
 from app.services.operation_policies import (
     OperationPolicy,
@@ -41,7 +40,7 @@ from app.services.operation_policies import (
     set_policy,
 )
 from app.storage import apply_auto_renames, process_jobs_once
-from tests.test_cloud_history_policy import _FakeS3
+from tests.test_current_snapshot import _FakeS3
 from tests.test_database import run_alembic
 
 PATH = "IMG_0001.jpg"
@@ -75,10 +74,10 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
                 """
                 INSERT INTO vaults(
                     id, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote, cloud_history_policy
-                ) VALUES (2, 'photos', 'Photos', %s, 'bucket', 'photos', 'remote', %s)
+                    rclone_remote
+                ) VALUES (2, 'photos', 'Photos', %s, 'bucket', 'photos', 'remote')
                 """,
-                (str(self.source), CURRENT_SNAPSHOT),
+                (str(self.source),)
             )
             set_policy(
                 connection,

@@ -601,8 +601,7 @@ class VaultSelection(BaseModel):
 class VaultSelfServiceCreate(BaseModel):
     """Self-service vault creation payload (issues #7, #6, and #150).
 
-    Labels, encryption_mode, and cloud_history_policy are always accepted.
-    Cloud History Policy is required (no implicit default). Adoption adds a
+    Labels and encryption_mode are accepted. Adoption adds a
     constrained ``volume_alias`` + ``relative_path`` pair — never an absolute
     filesystem path, S3 identity, rclone remote, or crypt secret.
     """
@@ -612,9 +611,6 @@ class VaultSelfServiceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     slug: str | None = Field(default=None, min_length=2, max_length=60)
     encryption_mode: str = Field(default="plain", pattern="^(plain|crypt)$")
-    cloud_history_policy: str = Field(
-        pattern="^(archive_history|current_snapshot)$"
-    )
     creation_mode: str = Field(default="empty", pattern="^(empty|adopt)$")
     volume_alias: str | None = Field(default=None, min_length=1, max_length=120)
     relative_path: str | None = Field(default=None, max_length=1024)
@@ -745,8 +741,6 @@ class LifecycleProfileUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     transitions: list[LifecycleTransitionUpdate] = Field(default_factory=list)
-    expiration_days: int | None = None
-    noncurrent_expiration_days: int | None = None
     noncurrent_transitions: list[LifecycleTransitionUpdate] = Field(
         default_factory=list
     )
@@ -760,8 +754,6 @@ class LifecycleProfileUpdate(BaseModel):
                 )
                 for item in self.transitions
             ),
-            expiration_days=self.expiration_days,
-            noncurrent_expiration_days=self.noncurrent_expiration_days,
             noncurrent_transitions=tuple(
                 LifecycleTransition(
                     days=item.days,
@@ -1322,8 +1314,6 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
             "name": vault["name"],
             "delete_enabled": _runtime_settings().allow_local_delete,
             "cloud_deletion_enabled": bool(vault.get("cloud_deletion_enabled")),
-            "cloud_history_policy": vault.get("cloud_history_policy")
-            or "archive_history",
         }
     else:
         selected_id = request.state.session.get("vault_id")
@@ -1404,7 +1394,7 @@ def list_vaults(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         rows = connection.execute(
             f"""
-            SELECT v.id, v.slug, v.name, v.cloud_history_policy
+            SELECT v.id, v.slug, v.name
             FROM vaults v
             WHERE {_OPERATIONAL_VAULT}
             ORDER BY v.name
@@ -1431,11 +1421,9 @@ def create_owner_vault(
             action.name,
             action.slug,
             encryption_mode=action.encryption_mode,
-            cloud_history_policy=action.cloud_history_policy,
             creation_mode=action.creation_mode,
             volume_alias=action.volume_alias,
             relative_path=action.relative_path,
-            require_cloud_history_policy=True,
         )
     except VaultSlugTaken as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -1457,7 +1445,6 @@ def create_owner_vault(
         "slug": vault["slug"],
         "name": vault["name"],
         "encryption_mode": vault["encryption_mode"],
-        "cloud_history_policy": vault["cloud_history_policy"],
         "recovery_custody_confirmed": bool(
             vault.get("recovery_custody_confirmed_at")
         ),
@@ -2328,7 +2315,9 @@ def queue_jobs(
                     None,
                 )
                 if selected is None or (
-                    action == "recover" and not selected["recoverable"]
+                    action == "recover" and (
+                        not selectable or selected["id"] != selectable[0]["id"]
+                    )
                 ):
                     raise HTTPException(
                         409,
@@ -2458,11 +2447,12 @@ def file_versions(
     logical_path = safe_relative_path(path).as_posix()
     with db() as connection:
         versions = ArchiveCatalog(connection).list_versions(vault["id"], logical_path)
-    recoverable = [row for row in versions if row["recoverable"]]
+    # The response is an internal exact-version pin for recovery, not history.
+    recoverable = [row for row in versions if row["recoverable"]][:1]
     default_version_id = recoverable[0]["id"] if recoverable else None
     return {
         "path": logical_path,
-        "items": versions,
+        "items": recoverable,
         "recoverable_count": len(recoverable),
         "default_archive_version_id": default_version_id,
         "supported_restore_tiers": list(SUPPORTED_RESTORE_TIERS),
@@ -2483,17 +2473,11 @@ def recover_estimate(
     logical_path = safe_relative_path(action.path).as_posix()
     with db() as connection:
         versions = ArchiveCatalog(connection).list_versions(vault["id"], logical_path)
-    if action.archive_version_id:
-        selected = next(
-            (row for row in versions if row["id"] == action.archive_version_id),
-            None,
-        )
-    else:
-        selected = next((row for row in versions if row["recoverable"]), None)
+    selected = next((row for row in versions if row["recoverable"]), None)
     if selected is None:
         raise HTTPException(404, "No recoverable Archive Version found")
-    if not selected["recoverable"]:
-        raise HTTPException(409, "The selected Archive Version is not recoverable")
+    if action.archive_version_id and action.archive_version_id != selected["id"]:
+        raise HTTPException(409, "The current snapshot changed; retry recovery")
     requires_restore = storage_class_requires_restore(selected.get("storage_class"))
     days = int(
         action.restore_days
@@ -3293,8 +3277,6 @@ def _lifecycle_payload(connection: Any, vault: dict[str, Any]) -> dict[str, Any]
                     }
                     for transition in profile.transitions
                 ],
-                "expiration_days": profile.expiration_days,
-                "noncurrent_expiration_days": profile.noncurrent_expiration_days,
                 "noncurrent_transitions": [
                     {
                         "days": transition.days,
