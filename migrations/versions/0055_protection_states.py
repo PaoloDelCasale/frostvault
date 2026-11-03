@@ -25,6 +25,9 @@ def _invalidate() -> None:
 
 
 def upgrade() -> None:
+    # Latest upload outcome is read per file by the shared state CASE.
+    op.create_index("jobs_file_upload_outcome_idx", "jobs", ["vault_file_id", "id"],
+                    postgresql_where=sa.text("action='upload'"))
     _invalidate()
     for old, new in (("local_only", "pending"), ("both", "protected"), ("restoring", "problem")):
         op.alter_column("directory_aggregates", f"state_{old}", new_column_name=f"state_{new}")
@@ -32,6 +35,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_index("jobs_file_upload_outcome_idx", table_name="jobs")
     _invalidate()
     op.drop_column("directory_aggregates", "state_unconfirmed")
     for old, new in (("pending", "local_only"), ("protected", "both"), ("problem", "restoring")):

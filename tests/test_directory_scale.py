@@ -861,7 +861,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
 
         self._seed_both_file()
         before = self.catalog.list_files_page(2)["items"][0]
-        self.assertEqual(before["state"], "both")
+        self.assertEqual(before["state"], "protected")
         self.assertEqual(before["available_actions"]["free-space"], 1)
 
         vault = self.connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
@@ -876,7 +876,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         audit_vault_catalog(self.connection, vault, _EmptyClient())
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         after = self.catalog.list_files_page(2)["items"][0]
-        self.assertEqual(after["state"], "local_only")
+        self.assertEqual(after["state"], "problem")
         self.assertEqual(after["available_actions"]["upload"], 1)
         self.assertEqual(after["available_actions"]["free-space"], 0)
         self.assertIsNone(after.get("storage_class"))
@@ -958,7 +958,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         after = self.catalog.list_files_page(2)["items"][0]
-        self.assertEqual(after["state"], "local_only")
+        self.assertEqual(after["state"], "pending")
         self.assertEqual(after["available_actions"]["cloud-purge"], 0)
         self.assertEqual(after["cloud_size"], 0)
 
@@ -1142,7 +1142,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         self.assertIn("cloud-new", names)
         self.assertNotIn("cloud-old", names)
         folder = next(item for item in root if item["name"] == "cloud-new")
-        self.assertEqual(folder["state"], "both")
+        self.assertEqual(folder["state"], "protected")
         self.assertEqual(folder["available_actions"]["free-space"], 1)
         self.assertEqual(folder["storage_class"], "STANDARD")
         self.assertEqual(folder["cloud_size"], 100)

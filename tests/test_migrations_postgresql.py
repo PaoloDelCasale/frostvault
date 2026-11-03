@@ -645,7 +645,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertEqual(len(changed), 1)
         self.assertEqual(eligible, 1)
         self.assertTrue(row["upload_eligible"])
-        self.assertEqual(row["state"], "both")
+        self.assertEqual(row["state"], "pending")
         self.assertEqual(after_id, file_id)
 
     def test_terminal_job_commits_when_notification_savepoint_fails_on_postgresql(

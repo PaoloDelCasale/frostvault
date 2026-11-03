@@ -24,8 +24,10 @@ const messages: Record<string, string> = {
   "ui.local_space": "Local space",
   "ui.cloud_space": "Cloud space",
   "ui.active_operations": "Active operations",
-  "state.both": "Local and cloud",
-  "state.local_only": "Local only",
+  "state.protected": "Protected",
+  "state.pending": "Pending",
+  "state.problem": "Problem",
+  "state.unconfirmed": "Unconfirmed",
   "state.cloud_only": "Cloud only",
   "ui.protected_archive": "Protected archive · {name}",
   "ui.protected_archive_detail":
@@ -50,7 +52,7 @@ function jsonResponse(data: unknown, status = 200): Response {
 
 /** Empty current Vault — matches an empty catalog from /api/files. */
 const emptyVaultStats: StatsResponse = {
-  states: { both: 0, local_only: 0, cloud_only: 0 },
+  states: { protected: 0, pending: 0, cloud_only: 0 },
   storage: { local_bytes: 0, cloud_bytes: 0 },
   active_jobs: 0,
   runtime: {},
@@ -60,7 +62,7 @@ const emptyVaultStats: StatsResponse = {
 
 /** Non-demo live values — must not collide with hardcoded demoStats (12 / 7 / 100 MB / alias.txt). */
 const liveVaultStats: StatsResponse = {
-  states: { both: 4, local_only: 1, cloud_only: 2 },
+  states: { protected: 4, pending: 1, cloud_only: 2 },
   storage: { local_bytes: 512, cloud_bytes: 2048 },
   active_jobs: 0,
   runtime: {},
@@ -184,7 +186,7 @@ describe("ArchivePage from /api/stats", () => {
       await secondGate;
       return jsonResponse({
         ...liveVaultStats,
-        states: { both: 9, local_only: 1, cloud_only: 2 },
+        states: { protected: 9, pending: 1, cloud_only: 2 },
       });
     });
 
@@ -263,12 +265,12 @@ describe("ArchivePage from /api/stats", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const busyStats: StatsResponse = {
       ...liveVaultStats,
-      states: { both: 4, local_only: 0, cloud_only: 3 },
+      states: { protected: 4, pending: 0, cloud_only: 3 },
       active_jobs: 3,
     };
     const afterProgress: StatsResponse = {
       ...busyStats,
-      states: { both: 5, local_only: 0, cloud_only: 2 },
+      states: { protected: 5, pending: 0, cloud_only: 2 },
       active_jobs: 2,
     };
     fetchMock

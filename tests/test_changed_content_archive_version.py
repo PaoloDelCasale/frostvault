@@ -159,7 +159,8 @@ class ChangedContentAdmissionTests(unittest.TestCase):
         self.assertEqual(none, [])
         self.assertEqual(len(job_ids), 1)
         self.assertEqual(eligible, 1)
-        self.assertEqual(row["state"], "both")
+        self.assertEqual(row["state"], "pending")
+        self.assertTrue(row["previous_snapshot_protected"])
         self.assertTrue(row["upload_eligible"])
         self.assertFalse(row["cleanup_eligible"])
         self.assertEqual(after["id"], file_id)
@@ -250,9 +251,9 @@ class ChangedContentAdmissionTests(unittest.TestCase):
         after_dir = catalog.list_files_page(2)["items"][0]
         after_file = catalog.list_files_page(2, directory="notes")["items"][0]
         self.assertEqual(after_dir["available_actions"]["upload"], 1)
-        self.assertEqual(after_dir["state"], "both")
+        self.assertEqual(after_dir["state"], "pending")
         self.assertTrue(after_file["upload_eligible"])
-        self.assertEqual(after_file["state"], "both")
+        self.assertEqual(after_file["state"], "pending")
 
     def test_unverified_and_mismatch_terminal_versions_are_upload_eligible(self) -> None:
         connection = self._open()

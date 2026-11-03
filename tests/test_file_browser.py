@@ -24,10 +24,10 @@ from tests.test_database import run_alembic
 class FileBrowserTests(unittest.TestCase):
     def setUp(self) -> None:
         self.rows = [
-            {"path": "photos/2025/sea.jpg", "state": "both"},
-            {"path": "photos/cover.jpg", "state": "local_only"},
+            {"path": "photos/2025/sea.jpg", "state": "protected"},
+            {"path": "photos/cover.jpg", "state": "pending"},
             {"path": "documents/invoice.pdf", "state": "cloud_only"},
-            {"path": "leggimi.txt", "state": "both"},
+            {"path": "leggimi.txt", "state": "protected"},
         ]
 
     def test_root_contains_folders_before_files(self) -> None:
@@ -56,7 +56,7 @@ class FileBrowserTests(unittest.TestCase):
         rows = [
             {
                 "path": "photos/small.jpg",
-                "state": "local_only",
+                "state": "pending",
                 "local_size": 1_000_000,
                 "cloud_size": None,
                 "storage_class": None,
@@ -70,7 +70,7 @@ class FileBrowserTests(unittest.TestCase):
             },
             {
                 "path": "photos/safe.jpg",
-                "state": "both",
+                "state": "protected",
                 "local_size": 2_000_000,
                 "cloud_size": 2_000_032,
                 "storage_class": "STANDARD",
@@ -80,8 +80,8 @@ class FileBrowserTests(unittest.TestCase):
         folder = build_directory_items(rows, "")[0]
 
         self.assertEqual(folder["total_size"], 103_000_000)
-        self.assertEqual(folder["state"], "mixed")
-        self.assertEqual(folder["state_counts"], {"local_only": 1, "cloud_only": 1, "both": 1})
+        self.assertEqual(folder["state"], "pending")
+        self.assertEqual(folder["state_counts"], {"pending": 1, "cloud_only": 1, "protected": 1})
         self.assertEqual(
             folder["available_actions"],
             {
@@ -95,15 +95,15 @@ class FileBrowserTests(unittest.TestCase):
 
     def test_state_filter_keeps_real_directory_aggregates(self) -> None:
         rows = [
-            {"path": "photos/a.jpg", "state": "local_only"},
+            {"path": "photos/a.jpg", "state": "pending"},
             {"path": "photos/b.jpg", "state": "cloud_only"},
             {"path": "documents/c.pdf", "state": "cloud_only"},
         ]
 
-        items = build_directory_items(rows, "", "local_only")
+        items = build_directory_items(rows, "", "pending")
 
         self.assertEqual([item["name"] for item in items], ["photos"])
-        self.assertEqual(items[0]["state"], "mixed")
+        self.assertEqual(items[0]["state"], "pending")
         self.assertEqual(items[0]["item_count"], 2)
 
     def test_folder_progress_is_weighted_by_bytes_not_file_count(self) -> None:
@@ -270,7 +270,8 @@ class FileBrowserTests(unittest.TestCase):
 
             self.assertEqual(result["total"], 1)
             self.assertEqual(result["items"][0]["path"], "reports/annual.txt")
-            self.assertEqual(result["items"][0]["state"], "both")
+            # Mere presence in S3 is not content verification.
+            self.assertEqual(result["items"][0]["state"], "pending")
             self.assertEqual(result["items"][0]["cloud_size"], 7)
             self.assertFalse(result["items"][0]["cleanup_eligible"])
 

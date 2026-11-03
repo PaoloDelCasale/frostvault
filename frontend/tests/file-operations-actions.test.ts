@@ -161,21 +161,21 @@ describe("availableActions — capability gating (seam 2)", () => {
     ]);
   });
 
-  it("falls back to state_counts when directory omits cloud action counts", () => {
+  it("never authorizes cloud deletion from protection state counts alone", () => {
     const legacyDir: ArchiveListItem = {
       type: "directory",
       name: "legacy",
       path: "legacy",
       item_count: 4,
       total_size: 10,
-      state: "mixed",
-      state_counts: { both: 1, cloud_only: 2, local_only: 1 },
+      state: "pending",
+      state_counts: { protected: 1, cloud_only: 2, pending: 1 },
       available_actions: { upload: 1, recover: 2, "free-space": 1 },
     };
     const purge = availableActions(legacyDir, ownerCaps).find(
       (a) => a.id === "cloud-purge",
     );
-    expect(purge?.count).toBe(3);
+    expect(purge).toBeUndefined();
   });
 });
 

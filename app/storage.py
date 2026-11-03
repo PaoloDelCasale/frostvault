@@ -2038,6 +2038,8 @@ def schedule_upload_retry(
                     job_id,
                 ),
             )
+        if _claim_write_succeeded(result) and action == "upload":
+            _dirty_job_protection(connection, job_id)
     updated = _claim_write_succeeded(result)
     if updated:
         _record_committed_job_counter("retries", action)
