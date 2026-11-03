@@ -201,6 +201,22 @@ class FrontendSpaHttpTests(unittest.TestCase):
         self.assertEqual(payload["username"], "owner")
         self.assertNotIn("spa-shell", response.text)
 
+    def test_catalog_is_network_only_with_ordinary_session_authentication(self) -> None:
+        denied = self.client.get("/api/files")
+        self.assertEqual(denied.status_code, 401)
+        self.assertEqual(denied.headers["cache-control"], "no-store")
+        self._authenticate()
+        me = self.client.get("/api/me")
+        self.assertNotIn("offline_cache_generation", me.json())
+        self.assertNotIn("transition_version", me.json())
+        self.assertEqual(me.headers["cache-control"], "no-store")
+        listing = self.client.get("/api/files", headers={
+            "X-FrostVault-Offline-Cache-Authorization": "obsolete-client-value",
+        })
+        self.assertEqual(listing.status_code, 200, listing.text)
+        self.assertEqual(listing.headers["cache-control"], "no-store")
+        self.assertNotIn("X-FrostVault-Offline-Cache-Authorization", listing.headers)
+
     def test_unknown_route_falls_back_to_spa(self) -> None:
         response = self.client.get("/some/unknown/route")
         self.assertEqual(response.status_code, 200, response.text)

@@ -818,9 +818,9 @@ class DatabaseMigrationTests(unittest.TestCase):
                 seed_legacy_notifications(connection)
                 before = preserved_state(connection)
             for revision, command in (
-                ("head", "upgrade"),
+                ("0046_simplify_notifications", "upgrade"),
                 ("0045_drop_quotas_windows", "downgrade"),
-                ("head", "upgrade"),
+                ("0046_simplify_notifications", "upgrade"),
             ):
                 result = run_alembic(path, revision, command)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -840,6 +840,32 @@ class DatabaseMigrationTests(unittest.TestCase):
                             self.assertEqual(connection.execute(
                                 f"SELECT COUNT(*) AS total FROM {table}"
                             ).fetchone()["total"], 0)
+
+    def test_offline_removal_preserves_sessions_and_the_only_cloud_copy(self) -> None:
+        from tests.notification_migration_contract import seed_legacy_notifications
+        from tests.offline_removal_migration_contract import normalized_state, assert_session_schema
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "remove-offline.db"
+            baseline = run_alembic(path, "0045_drop_quotas_windows")
+            self.assertEqual(baseline.returncode, 0, baseline.stderr)
+            with SQLiteConnection(str(path)) as connection:
+                seed_legacy_notifications(connection)
+                connection.execute("UPDATE sessions SET offline_cache_generation=7")
+            baseline = run_alembic(path, "0046_simplify_notifications")
+            self.assertEqual(baseline.returncode, 0, baseline.stderr)
+            with SQLiteConnection(str(path)) as connection:
+                before = normalized_state(connection)
+            for revision, command in (
+                ("0047_remove_offline_cache", "upgrade"),
+                ("0046_simplify_notifications", "downgrade"),
+                ("0047_remove_offline_cache", "upgrade"),
+            ):
+                result = run_alembic(path, revision, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                with SQLiteConnection(str(path)) as connection:
+                    self.assertEqual(normalized_state(connection), before)
+                    assert_session_schema(self, connection, upgraded=command == "upgrade")
 
     def test_invites_migration_preserves_existing_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

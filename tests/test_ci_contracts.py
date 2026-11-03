@@ -432,7 +432,6 @@ class NpmAuditBaselineContractTests(unittest.TestCase):
             "brace-expansion@2": (2, 1, 7),
             "brace-expansion@5": (5, 0, 12),
             "fast-uri@3": (3, 1, 8),
-            "glob": (14, 0, 2),
             "ip-address@10": (10, 7, 5),
             "nanoid@3": (3, 3, 18),
             "qs@6": (6, 16, 0),
@@ -465,7 +464,10 @@ class NpmAuditBaselineContractTests(unittest.TestCase):
             if name in found and pkg.get("version"):
                 found[name].append((path, pkg["version"]))
         for name, copies in found.items():
-            self.assertTrue(copies, f"expected lockfile copies of {name}")
+            # glob left the dependency graph with Workbox (#415). Retain its
+            # advisory floor below if a future toolchain brings it back.
+            if name != "glob":
+                self.assertTrue(copies, f"expected lockfile copies of {name}")
 
         for path, version in found["brace-expansion"]:
             major, minor, patch = _semver(version)

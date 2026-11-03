@@ -4,7 +4,6 @@ from __future__ import annotations
 from typing import Any
 
 from app.catalog import ArchiveCatalog
-from app.sessions import create_session
 
 REMOVED_TABLES = {
     "notification_endpoints",
@@ -51,8 +50,19 @@ def seed_legacy_notifications(connection: Any) -> None:
         """,
         (file_id, STAMP, STAMP),
     )
-    create_session(connection, user_id=1, auth_method="local")
-    session_id = connection.execute("SELECT id FROM sessions").fetchone()["id"]
+    # This fixture targets the historical 0045 schema, not today's Session API.
+    session_id = "notification-migration-session"
+    connection.execute(
+        """
+        INSERT INTO sessions(
+            id, user_id, token_hash, auth_method, csrf_token, session_version,
+            offline_cache_generation, offline_cache_nonce,
+            created_at, last_seen_at, idle_expires_at, absolute_expires_at
+        ) VALUES (%s, 1, 'fixture-token-hash', 'local', 'fixture-csrf', 1,
+                  1, 'fixture-nonce', %s, %s, %s, %s)
+        """,
+        (session_id, STAMP, STAMP, STAMP, STAMP),
+    )
     for kind in ("smtp", "webhook"):
         connection.execute(
             "INSERT INTO notification_endpoints(kind, config_json, created_at, updated_at) "

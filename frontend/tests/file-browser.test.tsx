@@ -181,6 +181,41 @@ describe("FileBrowser — cards and table from /api/files", () => {
     );
   }
 
+  it("uses the network without persisting catalog listings or sending cache authorization", async () => {
+    localStorage.clear();
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("X-FrostVault-Offline-Cache-Authorization")).toBeNull();
+      if (String(input).includes("/api/jobs")) return jsonResponse({ items: [], groups: [] });
+      return jsonResponse(realisticBrowse);
+    });
+    try {
+      renderBrowser();
+      await screen.findByTestId("file-list-table");
+      expect(storageWrite).not.toHaveBeenCalled();
+    } finally {
+      storageWrite.mockRestore();
+    }
+  });
+
+  it("does not load an old persisted listing when the API fails", async () => {
+    const key = "frostvault.files.cache.v3:old-session";
+    localStorage.setItem(key, JSON.stringify({ data: realisticBrowse }));
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/jobs")) return jsonResponse({ items: [], groups: [] });
+      throw new TypeError("Network unavailable");
+    });
+    try {
+      renderBrowser();
+      await screen.findByTestId("file-list-error");
+      expect(screen.queryByTestId("file-list-table")).not.toBeInTheDocument();
+      expect(screen.queryByText("readme.txt")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("offline-stale-banner")).not.toBeInTheDocument();
+    } finally {
+      localStorage.removeItem(key);
+    }
+  });
+
   it("renders a realistic /api/files payload as cards below md and as a table from md up, with the same information in both", async () => {
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       if (String(input).includes("/api/jobs")) {

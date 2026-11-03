@@ -3814,7 +3814,10 @@ def metrics():
     )
 
 
-_SPA_FALLBACK_EXCLUDED_PREFIXES = frozenset({"api", "auth", "static", "assets"})
+_SPA_FALLBACK_EXCLUDED_PREFIXES = frozenset({
+    "api", "auth", "static", "assets",
+    "manifest.webmanifest", "pwa-192.png", "pwa-512.png",
+})
 
 
 @app.get("/assets/{asset_path:path}")

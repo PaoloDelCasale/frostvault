@@ -6,14 +6,18 @@ self.addEventListener("install", (event) => {
 });
 self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {
-    for (const name of await caches.keys()) {
-      if (
-        name === "frostvault-file-listing" ||
-        /^frostvault-file-listing-v[23]:/.test(name) ||
-        (name.startsWith("workbox-precache-v2-") && name.endsWith(self.registration.scope))
-      ) {
-        await caches.delete(name);
+    try {
+      for (const name of await caches.keys()) {
+        if (
+          name === "frostvault-file-listing" ||
+          /^frostvault-file-listing-v[23]:/.test(name) ||
+          (name.startsWith("workbox-precache-v2-") && name.endsWith(self.registration.scope))
+        ) {
+          await caches.delete(name);
+        }
       }
+    } catch {
+      // Even if storage is unavailable, the old Worker must stop controlling.
     }
     await self.registration.unregister();
     const clients = await self.clients.matchAll({ type: "window" });
