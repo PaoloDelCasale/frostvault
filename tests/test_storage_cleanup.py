@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
 
 import hashlib
@@ -16,7 +18,7 @@ from watchfiles import Change
 
 from app import storage
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.main import FileAction, cancel_job_group, free_space, jobs, queue_jobs
 
 
@@ -166,7 +168,7 @@ class StorageCleanupTests(unittest.TestCase):
             database_path = root / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO vaults(
@@ -175,8 +177,7 @@ class StorageCleanupTests(unittest.TestCase):
                     (str(source),),
                 )
             test_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", test_settings):
                 count = scan_tree(
@@ -184,7 +185,7 @@ class StorageCleanupTests(unittest.TestCase):
                     "2026-07-20T20:00:00+00:00",
                 )
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 visible = catalog.get_file_by_path(2, "visible.txt")
                 temporary = catalog.get_file_by_path(
@@ -208,7 +209,7 @@ class StorageCleanupTests(unittest.TestCase):
             database_path = root / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO vaults(
@@ -218,8 +219,7 @@ class StorageCleanupTests(unittest.TestCase):
                 )
 
             test_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", test_settings):
                 count = scan_tree(
@@ -227,7 +227,7 @@ class StorageCleanupTests(unittest.TestCase):
                     "2026-07-21T10:00:00+00:00",
                 )
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(2, "visible.txt")
 
             self.assertEqual(count, 1)
@@ -239,7 +239,7 @@ class StorageCleanupTests(unittest.TestCase):
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO vaults(
@@ -279,7 +279,7 @@ class StorageCleanupTests(unittest.TestCase):
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO vaults(
@@ -307,8 +307,7 @@ class StorageCleanupTests(unittest.TestCase):
                 return paginator
 
             test_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with (
                 patch("app.database.settings", test_settings),
@@ -328,7 +327,7 @@ class StorageCleanupTests(unittest.TestCase):
                     "2026-07-21T10:00:00+00:00",
                 )
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(
                     2, "reports/annual.txt"
                 )
@@ -346,7 +345,7 @@ class StorageCleanupTests(unittest.TestCase):
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO vaults(
@@ -374,8 +373,7 @@ class StorageCleanupTests(unittest.TestCase):
                 get_paginator=lambda _: SimpleNamespace(paginate=lambda **__: [page])
             )
             test_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with (
                 patch("app.database.settings", test_settings),
@@ -392,7 +390,7 @@ class StorageCleanupTests(unittest.TestCase):
                     "2026-07-21T10:00:00+00:00",
                 )
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 versions = ArchiveCatalog(connection).list_versions(
                     2, "report.txt"
                 )
@@ -410,7 +408,7 @@ class StorageCleanupTests(unittest.TestCase):
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO users(
@@ -433,8 +431,7 @@ class StorageCleanupTests(unittest.TestCase):
                     observed_at="2026-07-21T10:00:00+00:00",
                 )
             test_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", test_settings):
                 queued = queue_jobs("report.txt", "upload", 2, 1)
@@ -453,7 +450,7 @@ class StorageCleanupTests(unittest.TestCase):
             database_path = root / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO users(
@@ -477,8 +474,7 @@ class StorageCleanupTests(unittest.TestCase):
                     observed_at="2026-07-21T10:00:00+00:00",
                 )
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
@@ -504,7 +500,7 @@ class StorageCleanupTests(unittest.TestCase):
                 ):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
 
             self.assertEqual(
@@ -535,7 +531,7 @@ class StorageCleanupTests(unittest.TestCase):
             database_path = root / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as database:
+            with PostgresConnection(str(database_path)) as database:
                 database.execute(
                     """
                     INSERT INTO vaults(
@@ -552,8 +548,7 @@ class StorageCleanupTests(unittest.TestCase):
                     observed_at="2026-07-20T19:00:00+00:00",
                 )
             test_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with (
                 patch("app.database.settings", test_settings),
@@ -566,7 +561,7 @@ class StorageCleanupTests(unittest.TestCase):
                     {"id": 2, "source_root": str(source)}, changes
                 )
 
-            with SQLiteConnection(str(database_path)) as database:
+            with PostgresConnection(str(database_path)) as database:
                 catalog = ArchiveCatalog(database)
                 added_file = catalog.get_file_by_path(2, "docs/added.txt")
                 deleted_file = catalog.get_file_by_path(2, "docs/deleted.txt")
@@ -774,7 +769,7 @@ class StorageCleanupTests(unittest.TestCase):
             database_path = Path(directory) / "app.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO vaults(
@@ -821,13 +816,13 @@ class StorageCleanupTests(unittest.TestCase):
                 ).fetchone()["id"]
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite", sqlite_path=str(database_path)
+                database_dsn=database_dsn(str(database_path))
             )
             with patch("app.database.settings", database_settings):
                 summary = reconcile_interrupted_jobs()
 
             self.assertEqual(summary, {"completed": 0, "requeued": 0, "failed": 1})
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     """
                     SELECT status, claim_token, claimed_at, claim_expires_at
@@ -858,7 +853,7 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertFalse(target.exists())
             self.assertTrue(claim.is_file())
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 file_row = ArchiveCatalog(connection).get_file_by_path(
                     2, "docs/file.txt"
                 )
@@ -878,8 +873,7 @@ class StorageCleanupTests(unittest.TestCase):
                 ).fetchone()["id"]
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with (
                 patch("app.database.settings", database_settings),
@@ -902,7 +896,7 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertEqual(summary["requeued"], 1)
             self.assertEqual(summary["failed"], 0)
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     "SELECT status, message FROM jobs WHERE id=%s",
                     (job_id,),
@@ -924,7 +918,7 @@ class StorageCleanupTests(unittest.TestCase):
             )
             target.rename(claim)
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 file_row = ArchiveCatalog(connection).get_file_by_path(
                     2, "docs/file.txt"
                 )
@@ -944,8 +938,7 @@ class StorageCleanupTests(unittest.TestCase):
                 ).fetchone()["id"]
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with (
                 patch("app.database.settings", database_settings),
@@ -963,7 +956,7 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertFalse(target.exists())
             self.assertEqual(summary["completed"], 0)
             self.assertEqual(summary["failed"], 1)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     "SELECT status, message FROM jobs WHERE id=%s",
                     (job_id,),
@@ -1091,7 +1084,7 @@ class StorageCleanupTests(unittest.TestCase):
         migrated = run_alembic(database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         digest = hashlib.sha256(b"content").hexdigest()
-        with SQLiteConnection(str(database_path)) as connection:
+        with PostgresConnection(str(database_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(
@@ -1170,8 +1163,7 @@ class StorageCleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target, database_path = self.cleanup_fixture(directory)
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 allow_local_delete=True,
@@ -1193,7 +1185,7 @@ class StorageCleanupTests(unittest.TestCase):
                 process_jobs_once()
 
             self.assertFalse(target.exists())
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(
                     2, "docs/file.txt"
                 )
@@ -1208,7 +1200,7 @@ class StorageCleanupTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             target, database_path = self.cleanup_fixture(directory)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 set_policy(
                     connection,
                     2,
@@ -1226,8 +1218,7 @@ class StorageCleanupTests(unittest.TestCase):
                 )
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 allow_local_delete=True,
@@ -1250,7 +1241,7 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertEqual(queued, 1)
             self.assertEqual(processed, 1)
             self.assertFalse(target.exists())
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 file_row = ArchiveCatalog(connection).get_file_by_path(
                     2, "docs/file.txt"
                 )
@@ -1286,8 +1277,7 @@ class StorageCleanupTests(unittest.TestCase):
                 raise RuntimeError("S3 is unreachable")
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 allow_local_delete=True,
@@ -1324,7 +1314,7 @@ class StorageCleanupTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             target, database_path = self.cleanup_fixture(directory)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 set_policy(
                     connection,
                     2,
@@ -1342,8 +1332,7 @@ class StorageCleanupTests(unittest.TestCase):
                 )
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 allow_local_delete=True,
@@ -1364,7 +1353,7 @@ class StorageCleanupTests(unittest.TestCase):
                 process_jobs_once()
 
             self.assertTrue(target.exists())
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     "SELECT status, message FROM jobs WHERE origin='automatic'"
                 ).fetchone()
@@ -1390,8 +1379,7 @@ class StorageCleanupTests(unittest.TestCase):
             target, database_path = self.cleanup_fixture(directory)
             target.write_text("changed", encoding="utf-8")
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 allow_local_delete=True,
@@ -1426,8 +1414,7 @@ class StorageCleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target, database_path = self.cleanup_fixture(directory)
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 allow_local_delete=True,
@@ -1461,7 +1448,7 @@ class StorageCleanupTests(unittest.TestCase):
                 target.read_text(encoding="utf-8"),
                 "newer content",
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(
                     2, "docs/file.txt"
                 )
@@ -1473,14 +1460,13 @@ class StorageCleanupTests(unittest.TestCase):
             target, database_path = self.cleanup_fixture(directory)
             payload = target.read_bytes()
             target.unlink()
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 file = ArchiveCatalog(connection).get_file_by_path(2, "docs/file.txt")
                 ArchiveCatalog(connection).mark_local_copy_missing(
                     file["id"], observed_at="2026-07-21T11:00:00+00:00"
                 )
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,

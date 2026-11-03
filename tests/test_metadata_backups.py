@@ -22,6 +22,8 @@ Seams under test (confirmed for this issue):
 """
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import hashlib
 import json
 import tempfile
@@ -34,9 +36,10 @@ from unittest.mock import MagicMock, patch
 from cryptography.fernet import Fernet
 
 from app import storage
-from app.database import SQLiteConnection
+
 from app.services import metadata_backups
 from tests.test_database import run_alembic
+from tests.postgres import database_state, restore_database
 
 
 class CreateMetadataBackupTests(unittest.TestCase):
@@ -52,7 +55,7 @@ class CreateMetadataBackupTests(unittest.TestCase):
         migrated = run_alembic(self.db_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -69,8 +72,7 @@ class CreateMetadataBackupTests(unittest.TestCase):
         self.master_key = Fernet.generate_key().decode("ascii")
         self.settings = replace(
             __import__("app.config", fromlist=["settings"]).settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
+            database_dsn=database_dsn(str(self.db_path)),
             archive_master_key=self.master_key,
             bootstrap_admin_password="super-secret-bootstrap-password",
             oidc_client_secret="oidc-secret-value",
@@ -86,7 +88,7 @@ class CreateMetadataBackupTests(unittest.TestCase):
             )
 
         self.assertTrue(artifact["path"].exists())
-        self.assertEqual(artifact["backend"], "sqlite")
+        self.assertEqual(artifact["backend"], "postgresql")
         self.assertEqual(artifact["reason"], "manual")
         self.assertEqual(len(artifact["digest_sha256"]), 64)
         self.assertEqual(
@@ -101,15 +103,15 @@ class CreateMetadataBackupTests(unittest.TestCase):
 
         plaintext = Fernet(self.master_key.encode("ascii")).decrypt(ciphertext)
         payload = metadata_backups.unpack_backup_payload(plaintext)
-        self.assertEqual(payload["manifest"]["backend"], "sqlite")
+        self.assertEqual(payload["manifest"]["backend"], "postgresql")
         self.assertIn("database", payload)
         self.assertNotIn("archive_master_key", payload["config"])
         self.assertNotIn(self.master_key, json.dumps(payload["config"]))
         self.assertNotIn("super-secret-bootstrap-password", json.dumps(payload["config"]))
 
-        restored_db = self.root / "restored.db"
-        restored_db.write_bytes(payload["database"])
-        with SQLiteConnection(str(restored_db)) as connection:
+        restored_db = self.root / "restored"
+        restore_database(restored_db, payload["database"])
+        with PostgresConnection(str(restored_db)) as connection:
             users = connection.execute("SELECT username FROM users").fetchall()
             vaults = connection.execute("SELECT slug FROM vaults").fetchall()
         self.assertEqual([row["username"] for row in users], ["admin"])
@@ -130,7 +132,7 @@ class LocalRetentionRotationTests(unittest.TestCase):
 
     def test_retention_keeps_newest_artifacts_only(self) -> None:
         for index in range(4):
-            path = self.backup_dir / f"2026010{index}T000000Z-sqlite-scheduled.bak.enc"
+            path = self.backup_dir / f"2026010{index}T000000Z-postgresql-scheduled.bak.enc"
             path.write_bytes(b"ciphertext-%d" % index)
             path.with_suffix(path.suffix + ".sha256").write_text(
                 hashlib.sha256(path.read_bytes()).hexdigest() + "\n",
@@ -143,16 +145,16 @@ class LocalRetentionRotationTests(unittest.TestCase):
         self.assertEqual(
             remaining,
             [
-                "20260102T000000Z-sqlite-scheduled.bak.enc",
-                "20260103T000000Z-sqlite-scheduled.bak.enc",
+                "20260102T000000Z-postgresql-scheduled.bak.enc",
+                "20260103T000000Z-postgresql-scheduled.bak.enc",
             ],
         )
         # Sidecars for removed artifacts are gone; kept ones remain.
         self.assertFalse(
-            (self.backup_dir / "20260100T000000Z-sqlite-scheduled.bak.enc.sha256").exists()
+            (self.backup_dir / "20260100T000000Z-postgresql-scheduled.bak.enc.sha256").exists()
         )
         self.assertTrue(
-            (self.backup_dir / "20260103T000000Z-sqlite-scheduled.bak.enc.sha256").exists()
+            (self.backup_dir / "20260103T000000Z-postgresql-scheduled.bak.enc.sha256").exists()
         )
 
 
@@ -193,9 +195,8 @@ class ObjectStoreBackupTests(unittest.TestCase):
             reason="scheduled",
             backup_dir=self.backup_dir,
             master_key=self.master_key,
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
-            config_snapshot={"db_backend": "sqlite"},
+            database_dsn=database_dsn(str(self.db_path)),
+            config_snapshot={"scan_interval": 3600},
         )
         stored = metadata_backups.store_backup_to_object_store(
             artifact,
@@ -226,7 +227,7 @@ class IsolatedRestoreVerificationTests(unittest.TestCase):
         self.backup_dir.mkdir()
         migrated = run_alembic(self.db_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -241,13 +242,12 @@ class IsolatedRestoreVerificationTests(unittest.TestCase):
             reason="manual",
             backup_dir=self.backup_dir,
             master_key=self.master_key,
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
-            config_snapshot={"db_backend": "sqlite"},
+            database_dsn=database_dsn(str(self.db_path)),
+            config_snapshot={"scan_interval": 3600},
         )
         # Poison the object store with a vault key that must never be touched.
         self.store.objects["vaults/abc/file.bin"] = b"do-not-touch"
-        live_before = self.db_path.read_bytes()
+        live_before = database_state(self.db_path)
 
         result = metadata_backups.verify_restore_isolated(
             artifact["path"],
@@ -257,7 +257,7 @@ class IsolatedRestoreVerificationTests(unittest.TestCase):
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result["user_count"], 1)
-        self.assertEqual(self.db_path.read_bytes(), live_before)
+        self.assertEqual(database_state(self.db_path), live_before)
         self.assertEqual(self.store.objects["vaults/abc/file.bin"], b"do-not-touch")
         self.assertEqual(
             [key for key in self.store.objects if key.startswith("vaults/")],
@@ -277,7 +277,7 @@ class MetadataVerifyRunBindingTests(unittest.TestCase):
         self.backup_dir.mkdir()
         migrated = run_alembic(self.db_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -287,8 +287,7 @@ class MetadataVerifyRunBindingTests(unittest.TestCase):
         self.master_key = Fernet.generate_key().decode("ascii")
         self.settings = replace(
             __import__("app.config", fromlist=["settings"]).settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
+            database_dsn=database_dsn(str(self.db_path)),
             archive_master_key=self.master_key,
             metadata_backup_dir=str(self.backup_dir),
             metadata_backup_verify_interval_seconds=60,
@@ -310,9 +309,8 @@ class MetadataVerifyRunBindingTests(unittest.TestCase):
                 reason="manual",
                 backup_dir=self.backup_dir,
                 master_key=self.master_key,
-                db_backend="sqlite",
-                sqlite_path=str(self.db_path),
-                config_snapshot={"db_backend": "sqlite"},
+                database_dsn=database_dsn(str(self.db_path)),
+                config_snapshot={"scan_interval": 3600},
             )
 
         orphan = self.backup_dir / "zzzz-unbound-orphan.bak.enc"
@@ -321,11 +319,11 @@ class MetadataVerifyRunBindingTests(unittest.TestCase):
         self.assertEqual(listed[0], orphan)
         self.assertIn(artifact["path"], listed)
 
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             run = metadata_backups.record_backup_run(
                 connection,
                 reason="manual",
-                backend="sqlite",
+                backend="postgresql",
                 status="succeeded",
                 digest_sha256=artifact["digest_sha256"],
                 local_path=str(artifact["path"]),
@@ -334,8 +332,7 @@ class MetadataVerifyRunBindingTests(unittest.TestCase):
             run_id = run["id"]
 
         database_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
+            database_dsn=database_dsn(str(self.db_path)),
         )
         with (
             patch("app.database.settings", database_settings),
@@ -344,7 +341,7 @@ class MetadataVerifyRunBindingTests(unittest.TestCase):
         ):
             storage._verify_latest_metadata_backup_once()
 
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             row = connection.execute(
                 "SELECT status, verified_at FROM metadata_backup_runs WHERE id=%s",
                 (run_id,),
@@ -414,9 +411,8 @@ class PreUpgradeBackupGateTests(unittest.TestCase):
         result = metadata_backups.run_pre_upgrade_backup(
             backup_dir=self.backup_dir,
             master_key=self.master_key,
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
-            config_snapshot={"db_backend": "sqlite"},
+            database_dsn=database_dsn(str(self.db_path)),
+            config_snapshot={"scan_interval": 3600},
             object_store=self.store,
             retention=5,
         )
@@ -432,9 +428,8 @@ class PreUpgradeBackupGateTests(unittest.TestCase):
             metadata_backups.run_pre_upgrade_backup(
                 backup_dir=self.backup_dir,
                 master_key="",  # missing master key must fail closed
-                db_backend="sqlite",
-                sqlite_path=str(self.db_path),
-                config_snapshot={"db_backend": "sqlite"},
+                database_dsn=database_dsn(str(self.db_path)),
+                config_snapshot={"scan_interval": 3600},
                 object_store=self.store,
             )
         self.assertIn("ARCHIVE_MASTER_KEY", str(ctx.exception))
@@ -444,8 +439,7 @@ class PreUpgradeBackupGateTests(unittest.TestCase):
         configured = SimpleNamespace(
             vault_s3_bucket="production-backups",
             archive_master_key=self.master_key,
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
+            database_dsn=database_dsn(str(self.db_path)),
         )
         with patch.object(
             metadata_backups,
@@ -473,8 +467,7 @@ class PreUpgradeBackupGateTests(unittest.TestCase):
         configured = SimpleNamespace(
             vault_s3_bucket="production-backups",
             archive_master_key=self.master_key,
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
+            database_dsn=database_dsn(str(self.db_path)),
         )
 
         class FailingUploadStore(RecordingObjectStore):
@@ -515,8 +508,7 @@ class PreUpgradeBackupGateTests(unittest.TestCase):
         configured = SimpleNamespace(
             vault_s3_bucket="production-backups",
             archive_master_key="",
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
+            database_dsn=database_dsn(str(self.db_path)),
         )
         with self.assertRaises(
             metadata_backups.PreUpgradeBackupBlockedError
@@ -538,8 +530,7 @@ class PreUpgradeBackupGateTests(unittest.TestCase):
         local_only = SimpleNamespace(
             vault_s3_bucket="",
             archive_master_key="",
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
+            database_dsn=database_dsn(str(self.db_path)),
         )
         with patch.object(metadata_backups, "run_pre_upgrade_backup") as backup:
             outcome = metadata_backups.run_pre_upgrade_backup_gate(
@@ -559,16 +550,14 @@ class PreUpgradeBackupGateTests(unittest.TestCase):
         local_only = SimpleNamespace(
             vault_s3_bucket="",
             archive_master_key=self.master_key,
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
+            database_dsn=database_dsn(str(self.db_path)),
         )
         off_host = SimpleNamespace(
             vault_s3_bucket="production-backups",
             archive_master_key=self.master_key,
-            db_backend="sqlite",
-            sqlite_path=str(self.db_path),
+            database_dsn=database_dsn(str(self.db_path)),
         )
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             local_outcome = metadata_backups.run_pre_upgrade_backup_gate(
                 backup_dir=self.backup_dir,
                 settings_obj=local_only,
@@ -613,7 +602,7 @@ class BackupOrchestrationNotificationTests(unittest.TestCase):
         self.backup_dir.mkdir()
         migrated = run_alembic(self.db_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -627,16 +616,15 @@ class BackupOrchestrationNotificationTests(unittest.TestCase):
         self.store = RecordingObjectStore()
 
     def test_failed_backup_records_status_and_notifies_admins(self) -> None:
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             with self.assertRaises(metadata_backups.BackupError):
                 metadata_backups.run_metadata_backup(
                     connection,
                     reason="scheduled",
                     backup_dir=self.backup_dir,
                     master_key="",
-                    db_backend="sqlite",
-                    sqlite_path=str(self.db_path),
-                    config_snapshot={"db_backend": "sqlite"},
+                    database_dsn=database_dsn(str(self.db_path)),
+                    config_snapshot={"scan_interval": 3600},
                     object_store=self.store,
                     retention=5,
                 )

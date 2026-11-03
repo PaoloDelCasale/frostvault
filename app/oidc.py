@@ -339,10 +339,8 @@ def bind_owner_identity(connection: Any, claims: OidcClaims) -> int:
     owner_id = owner_user_id(connection)
     if owner_id is None:
         raise IdentityRejected("no_owner")
-    if getattr(connection, "backend", None) != "sqlite":
-        # Serialize concurrent first logins: only one subject may be bound.
-        # SQLite already holds the write lock taken by the state deletion.
-        connection.execute("SELECT id FROM users WHERE id=%s FOR UPDATE", (owner_id,))
+    # Serialize concurrent first logins: only one subject may be bound.
+    connection.execute("SELECT id FROM users WHERE id=%s FOR UPDATE", (owner_id,))
     bound = connection.execute(
         "SELECT user_id, subject FROM user_identities WHERE issuer=%s",
         (claims.issuer,),

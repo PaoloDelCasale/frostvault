@@ -83,26 +83,16 @@ class ArchiveCatalog:
         """Keep migration-time catalog writes compatible with pre-0040 schemas."""
         if self._storage_class_source_supported is not None:
             return self._storage_class_source_supported
-        if getattr(self.connection, "backend", None) == "sqlite":
-            present = any(
-                column["name"] == "storage_class_source"
-                for column in self.connection.execute(
-                    "PRAGMA table_info(archive_versions)"
-                ).fetchall()
-            )
-        else:
-            present = bool(
-                self.connection.execute(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                        WHERE table_schema=current_schema()
-                          AND table_name='archive_versions'
-                          AND column_name='storage_class_source'
-                    ) AS present
-                    """
-                ).fetchone()["present"]
-            )
+        present = bool(self.connection.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema=current_schema()
+                  AND table_name='archive_versions'
+                  AND column_name='storage_class_source'
+            ) AS present
+            """
+        ).fetchone()["present"])
         self._storage_class_source_supported = present
         return present
 
@@ -110,26 +100,16 @@ class ArchiveCatalog:
         """Keep migration-time catalog writes compatible with pre-0043 schemas."""
         if self._cloud_only_hold_supported is not None:
             return self._cloud_only_hold_supported
-        if getattr(self.connection, "backend", None) == "sqlite":
-            present = any(
-                column["name"] == "cloud_only_version_id"
-                for column in self.connection.execute(
-                    "PRAGMA table_info(local_copies)"
-                ).fetchall()
-            )
-        else:
-            present = bool(
-                self.connection.execute(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                        WHERE table_schema=current_schema()
-                          AND table_name='local_copies'
-                          AND column_name='cloud_only_version_id'
-                    ) AS present
-                    """
-                ).fetchone()["present"]
-            )
+        present = bool(self.connection.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema=current_schema()
+                  AND table_name='local_copies'
+                  AND column_name='cloud_only_version_id'
+            ) AS present
+            """
+        ).fetchone()["present"])
         self._cloud_only_hold_supported = present
         return present
 
@@ -380,7 +360,6 @@ class ArchiveCatalog:
                 continue
             # One portable derived table: (id, path) pairs for this chunk.
             # Explicit casts keep PostgreSQL's UNION ALL type inference stable
-            # (SQLite ignores the cast names).
             id_values = " UNION ALL ".join(
                 ["SELECT CAST(%s AS VARCHAR) AS id, CAST(%s AS TEXT) AS path"]
                 * len(new_paths)
@@ -493,9 +472,8 @@ class ArchiveCatalog:
                     entry_observed_at,
                 ]
             )
-        # SQLite does not support ON CONFLICT DO UPDATE on an INSERT...SELECT
-        # source, so the batch upsert is expressed as a portable pair: a
-        # conditional UPDATE of existing rows (digest/matched-version preserved
+        # Update existing observations before inserting new identities, with
+        # digest/matched-version preserved
         # exactly when the observation is unchanged, mirroring the per-file
         # ON CONFLICT semantics), then a guarded INSERT of the new rows.  Both
         # statements run in the caller's transaction; the Vault row lock
@@ -1383,34 +1361,20 @@ class ArchiveCatalog:
             )
         return candidates
 
-    def _rename_backend(self) -> str:
-        return str(getattr(self.connection, "backend", "postgresql") or "postgresql")
-
     def _reserve_rename_confirmation(self, vault_id: int) -> None:
         """Serialize a confirmation before its candidate is inspected.
 
-        SQLite must reserve its single writer before the candidate SELECT; a
-        deferred transaction would let two confirmations read the same pair
-        and make one fail later with ``database is locked``. PostgreSQL locks
-        one deterministic Vault row before locking the two candidate rows.
+        PostgreSQL locks one deterministic Vault row before locking the two
+        candidate rows.
         Scanner writes that use the same Vault lock serialize normally, while
         the conditional writes below still fail closed for any writer that
         does not take it.
         """
-        if self._rename_backend() == "sqlite":
-            raw_connection = getattr(self.connection, "connection", None)
-            if raw_connection is None or not raw_connection.in_transaction:
-                self.connection.begin_immediate()
-            query = """
-                SELECT id FROM vaults
-                WHERE id=%s AND decommission_state='active'
-            """
-        else:
-            query = """
-                SELECT id FROM vaults
-                WHERE id=%s AND decommission_state='active'
-                FOR UPDATE
-            """
+        query = """
+            SELECT id FROM vaults
+            WHERE id=%s AND decommission_state='active'
+            FOR UPDATE
+        """
         if self.connection.execute(query, (vault_id,)).fetchone() is None:
             raise VaultFileNotFound()
 
@@ -1692,12 +1656,11 @@ class ArchiveCatalog:
               AND lower(provisional_copy.plaintext_sha256)
                   = lower(missing_copy.plaintext_sha256)
             """
-        if self._rename_backend() != "sqlite":
-            query += """
-                FOR UPDATE OF
-                    missing, missing_path, missing_copy,
-                    provisional, provisional_path, provisional_copy
-            """
+        query += """
+            FOR UPDATE OF
+                missing, missing_path, missing_copy,
+                provisional, provisional_path, provisional_copy
+        """
         snapshot = self.connection.execute(
             query,
             (vault_file_id, vault_id, vault_id, new_path),
@@ -2486,7 +2449,7 @@ class ArchiveCatalog:
                 .replace("%", "\\%")
                 .replace("_", "\\_")
             )
-            # Immediate children only (portable SQLite + PostgreSQL).
+            # Immediate children only.
             clauses.append("fp.path LIKE %s ESCAPE '\\'")
             params.append(f"{escaped}/%")
             clauses.append("fp.path NOT LIKE %s ESCAPE '\\'")
@@ -2932,9 +2895,6 @@ class ArchiveCatalog:
             and str(row["pending_until"]) <= now
         )
 
-    def _job_claim_backend(self) -> str:
-        return str(getattr(self.connection, "backend", "postgresql") or "postgresql")
-
     def claim_job(
         self,
         *,
@@ -2947,9 +2907,8 @@ class ArchiveCatalog:
     ) -> dict[str, Any] | None:
         """Atomically lease one runnable Job.
 
-        The conditional UPDATE is the acquisition primitive for both SQLite and
-        PostgreSQL.  SQLite serializes writers; PostgreSQL locks the matching
-        row while it rechecks the predicate.  A loser therefore observes no
+        The conditional UPDATE locks the matching PostgreSQL row while it
+        rechecks the predicate.  A loser therefore observes no
         returned row instead of executing a stale in-memory selection.
         """
         if not claim_token:
@@ -2995,23 +2954,12 @@ class ArchiveCatalog:
 
         A permanent purge may span many Vault Files.  Its group is only
         executable when every non-terminal member is due and unclaimed (or its
-        prior lease has expired).  SQLite obtains the writer reservation before
-        inspecting the group; PostgreSQL locks the group rows in deterministic
+        prior lease has expired). PostgreSQL locks the group rows in deterministic
         ``requested_at, id`` order.  This prevents two workers from splitting a
         destructive group between themselves.
         """
         if not claim_token:
             raise ValueError("A Job claim token is required")
-        backend = self._job_claim_backend()
-        raw_connection = getattr(self.connection, "connection", None)
-        if (
-            backend == "sqlite"
-            and raw_connection is not None
-            and not getattr(raw_connection, "in_transaction", False)
-        ):
-            self.connection.begin_immediate()
-
-        lock = " FOR UPDATE" if backend != "sqlite" else ""
         # Do not lock the nominated lead first on PostgreSQL: two schedulers can
         # nominate different members of the same group.  Both instead acquire
         # the full group below in requested_at/id order, avoiding an AB/BA row
@@ -3026,29 +2974,23 @@ class ArchiveCatalog:
         ).fetchone()
         if lead is None or not lead.get("group_id"):
             return []
-        if backend != "sqlite":
-            # Do not block a scheduler thread behind another worker's whole
-            # destructive group.  The transaction-scoped advisory lock is a
-            # stable provider-independent key; a loser simply tries another
-            # fair candidate on the next poll, while row locks below still
-            # protect cancellation and non-cooperating writers.
-            advisory = self.connection.execute(
-                """
-                SELECT pg_try_advisory_xact_lock(
-                    hashtextextended(%s, 0)
-                ) AS acquired
-                """,
-                (f"frostvault:cloud-purge:{lead['vault_id']}:{lead['group_id']}",),
-            ).fetchone()
-            if not advisory or not advisory["acquired"]:
-                return []
+        # A contended destructive group must not block the scheduler thread.
+        # Row locks below still protect cancellation/non-cooperating writers.
+        advisory = self.connection.execute(
+            """
+            SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0)) AS acquired
+            """,
+            (f"frostvault:cloud-purge:{lead['vault_id']}:{lead['group_id']}",),
+        ).fetchone()
+        if not advisory or not advisory["acquired"]:
+            return []
         rows = self.connection.execute(
             f"""
             SELECT id, status, pending_until, claim_token, claim_expires_at,
                    requested_at
             FROM jobs
             WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
-            ORDER BY requested_at ASC, id ASC{lock}
+            ORDER BY requested_at ASC, id ASC FOR UPDATE
             """,
             (lead["vault_id"], lead["group_id"]),
         ).fetchall()
@@ -3357,8 +3299,8 @@ class ArchiveCatalog:
         target_storage_class: str | None = None,
         whole_vault: bool = False,
     ) -> tuple[list[int], int, int]:
-        # This write is deliberately first: PostgreSQL takes a row lock and
-        # SQLite takes its write lock before the candidate read and inserts.
+        # This write is deliberately first: take the Vault row lock before
+        # the candidate read and inserts.
         # Every manual upload/recovery/free-space admission therefore observes
         # one serialized Vault state.
         lock_vault(

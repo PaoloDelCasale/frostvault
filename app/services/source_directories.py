@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ..config import settings
 from . import source_layout
 
 # Advisory lock key that serializes Vault-root allocation, relocation, and
@@ -42,20 +41,12 @@ def paths_overlap(left: str, right: str) -> bool:
 def lock_vault_root_allocation(connection: Any) -> None:
     """Serialize Vault-root allocation against concurrent overlap races.
 
-    SQLite takes the database-wide write lock; PostgreSQL takes a transaction
-    advisory lock shared by creation, relocation, and root release.
+    A transaction advisory lock is shared by creation, relocation, and root release.
     """
-    backend = getattr(connection, "backend", None) or settings.db_backend
-    if backend == "sqlite":
-        raw = getattr(connection, "connection", None)
-        if raw is not None and getattr(raw, "in_transaction", False):
-            return
-        connection.begin_immediate()
-    else:
-        connection.execute(
-            "SELECT pg_advisory_xact_lock(%s)",
-            (_VAULT_ROOT_LOCK_KEY,),
-        )
+    connection.execute(
+        "SELECT pg_advisory_xact_lock(%s)",
+        (_VAULT_ROOT_LOCK_KEY,),
+    )
 
 
 def canonicalize_relative_path(relative_path: str) -> str:

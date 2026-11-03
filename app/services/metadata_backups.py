@@ -10,10 +10,8 @@ import hashlib
 import io
 import json
 import os
-import sqlite3
 import subprocess
 import tarfile
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -222,7 +220,7 @@ def _fernet(master_key: str) -> Fernet:
 # Explicit allow-list: new settings and arbitrary caller-supplied snapshot keys
 # are excluded until reviewed. Credentials never enter the manifest.
 _SNAPSHOT_KEYS = frozenset("""
-    db_backend sqlite_path session_cookie_name csrf_cookie_name
+    session_cookie_name csrf_cookie_name
     session_idle_seconds session_absolute_seconds cookie_secure allowed_hosts
     trusted_proxies reauth_window_seconds break_glass_allowed_cidrs
     aws_region scan_interval audit_interval filesystem_watch_enabled
@@ -246,26 +244,25 @@ def build_config_snapshot(source: Settings | Any | None = None) -> dict[str, Any
     return {key: getattr(cfg, key) for key in sorted(_SNAPSHOT_KEYS) if hasattr(cfg, key)}
 
 
-def _dump_sqlite_bytes(db_path: str | Path) -> bytes:
-    """Return a consistent SQLite database file image via the backup API."""
-    source = sqlite3.connect(str(db_path))
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
-            temp_path = Path(handle.name)
-        try:
-            dest = sqlite3.connect(str(temp_path))
-            try:
-                source.backup(dest)
-            finally:
-                dest.close()
-            return temp_path.read_bytes()
-        finally:
-            temp_path.unlink(missing_ok=True)
-    finally:
-        source.close()
+def _postgres_env(database_dsn: str | None = None) -> dict[str, str]:
+    """Keep connection credentials in child environment, never process arguments."""
+    from psycopg.conninfo import conninfo_to_dict
+
+    env = os.environ.copy()
+    values = conninfo_to_dict(
+        database_dsn if database_dsn is not None else settings.database_dsn
+    )
+    for key, value in values.items():
+        name = {
+            "dbname": "PGDATABASE",
+            "connect_timeout": "PGCONNECT_TIMEOUT",
+            "application_name": "PGAPPNAME",
+        }.get(key, "PG" + key.replace("_", "").upper())
+        env[name] = value
+    return env
 
 
-def _dump_postgres_bytes() -> bytes:
+def _dump_postgres_bytes(database_dsn: str | None = None) -> bytes:
     """Return a PostgreSQL custom-format dump using pg_dump and PG* env vars."""
     command = [
         "pg_dump",
@@ -278,6 +275,7 @@ def _dump_postgres_bytes() -> bytes:
             command,
             check=False,
             capture_output=True,
+            env=_postgres_env(database_dsn),
         )
     except FileNotFoundError:
         raise BackupError(
@@ -328,14 +326,13 @@ def create_metadata_backup(
     backup_dir: str | Path,
     master_key: str | None = None,
     config_snapshot: dict[str, Any] | None = None,
-    db_backend: str | None = None,
-    sqlite_path: str | None = None,
+    database_dsn: str | None = None,
 ) -> dict[str, Any]:
     """Create one encrypted metadata backup artifact on the local backup volume.
 
     Returns a public artifact descriptor (path, digest, backend, reason, created_at).
     """
-    backend = (db_backend or settings.db_backend).strip().lower()
+    backend = "postgresql"
     key = master_key if master_key is not None else settings.archive_master_key
     fernet = _fernet(key)
     config = config_snapshot if config_snapshot is not None else build_config_snapshot()
@@ -345,15 +342,8 @@ def create_metadata_backup(
         if key in _SNAPSHOT_KEYS
     }
 
-    if backend == "sqlite":
-        path = sqlite_path or settings.sqlite_path
-        database_bytes = _dump_sqlite_bytes(path)
-        schema_format = "sqlite-file"
-    elif backend == "postgresql":
-        database_bytes = _dump_postgres_bytes()
-        schema_format = "postgresql-custom"
-    else:
-        raise BackupError(f"Unsupported database backend for backup: {backend}")
+    database_bytes = _dump_postgres_bytes(database_dsn)
+    schema_format = "postgresql-custom"
 
     created_at = now_iso()
     content_digest = hashlib.sha256(database_bytes).hexdigest()
@@ -494,53 +484,16 @@ def verify_restore_isolated(
     work = Path(work_dir)
     work.mkdir(parents=True, exist_ok=True)
     payload = decrypt_backup_file(artifact_path, master_key=master_key)
-    backend = payload["manifest"].get("backend", "sqlite")
+    backend = payload["manifest"].get("backend")
+    if backend != "postgresql" or payload["manifest"].get("schema_format") != "postgresql-custom":
+        raise BackupError("Only PostgreSQL custom-format backups are supported")
 
     vault_keys_before: list[str] = []
     if object_store is not None:
         vault_keys_before = object_store.list_keys("vaults/")
 
-    if backend == "sqlite":
-        temp_db = work / "restored-verify.db"
-        if temp_db.exists():
-            temp_db.unlink()
-        temp_db.write_bytes(payload["database"])
-        connection = sqlite3.connect(str(temp_db))
-        try:
-            connection.row_factory = sqlite3.Row
-            user_count = connection.execute(
-                "SELECT COUNT(*) AS total FROM users"
-            ).fetchone()["total"]
-            vault_count = connection.execute(
-                "SELECT COUNT(*) AS total FROM vaults"
-            ).fetchone()["total"]
-            has_alembic = connection.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='alembic_version'"
-            ).fetchone()
-            schema_revision = None
-            if has_alembic:
-                row = connection.execute(
-                    "SELECT version_num FROM alembic_version"
-                ).fetchone()
-                schema_revision = row["version_num"] if row else None
-        finally:
-            connection.close()
-        result = {
-            "ok": True,
-            "backend": backend,
-            "user_count": int(user_count),
-            "vault_count": int(vault_count),
-            "schema_revision": schema_revision,
-            "temp_db": str(temp_db),
-        }
-    elif backend == "postgresql":
-        result = _verify_postgres_dump_isolated(payload["database"], work)
-        result["backend"] = backend
-    else:
-        raise BackupError(
-            f"Isolated restore verification for backend {backend!r} is not implemented"
-        )
+    result = _verify_postgres_dump_isolated(payload["database"], work)
+    result["backend"] = backend
 
     if object_store is not None:
         vault_keys_after = object_store.list_keys("vaults/")
@@ -558,10 +511,12 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
     """
     dump_path = work / "restore.dump"
     dump_path.write_bytes(database_bytes)
+    env = _postgres_env()
     list_result = subprocess.run(
         ["pg_restore", "--list", str(dump_path)],
         check=False,
         capture_output=True,
+        env=env,
     )
     if list_result.returncode != 0:
         raise BackupError("PostgreSQL dump failed verification")
@@ -571,6 +526,7 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
         ["createdb", temp_db_name],
         check=False,
         capture_output=True,
+        env=env,
     )
     if created.returncode != 0:
         # Listing succeeded; treat as verified when a scratch DB cannot be created.
@@ -588,6 +544,7 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
             ["pg_restore", "--dbname", temp_db_name, "--no-owner", "--no-acl", str(dump_path)],
             check=False,
             capture_output=True,
+            env=env,
         )
         if restored.returncode not in {0, 1}:
             # pg_restore uses 1 for warnings; >1 is hard failure.
@@ -607,6 +564,7 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
             check=False,
             capture_output=True,
             text=True,
+            env=env,
         )
         user_count = vault_count = schema_revision = None
         if counted.returncode == 0 and counted.stdout.strip():
@@ -628,7 +586,7 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
             "verification_mode": "temp_database",
         }
     finally:
-        subprocess.run(["dropdb", "--if-exists", temp_db_name], check=False, capture_output=True)
+        subprocess.run(["dropdb", "--if-exists", temp_db_name], check=False, capture_output=True, env=env)
 
 
 def _row_run(row: dict[str, Any]) -> dict[str, Any]:
@@ -795,15 +753,14 @@ def run_metadata_backup(
     reason: str,
     backup_dir: str | Path,
     master_key: str | None = None,
-    db_backend: str | None = None,
-    sqlite_path: str | None = None,
+    database_dsn: str | None = None,
     config_snapshot: dict[str, Any] | None = None,
     object_store: ObjectStore | None = None,
     retention: int | None = None,
     s3_prefix: str = S3_BACKUP_PREFIX,
 ) -> dict[str, Any]:
     """Create, optionally upload, rotate, and record one metadata backup."""
-    backend = (db_backend or settings.db_backend).strip().lower()
+    backend = "postgresql"
     keep = retention if retention is not None else settings.metadata_backup_retention
     if config_snapshot is None:
         config_snapshot = build_config_snapshot()
@@ -813,8 +770,7 @@ def run_metadata_backup(
             backup_dir=backup_dir,
             master_key=master_key,
             config_snapshot=config_snapshot,
-            db_backend=backend,
-            sqlite_path=sqlite_path,
+            database_dsn=database_dsn,
         )
         s3_key = None
         if object_store is not None:
@@ -887,8 +843,7 @@ def run_pre_upgrade_backup(
     *,
     backup_dir: str | Path,
     master_key: str | None = None,
-    db_backend: str | None = None,
-    sqlite_path: str | None = None,
+    database_dsn: str | None = None,
     config_snapshot: dict[str, Any] | None = None,
     object_store: ObjectStore | None = None,
     retention: int | None = None,
@@ -906,8 +861,7 @@ def run_pre_upgrade_backup(
         reason="pre_upgrade",
         backup_dir=backup_dir,
         master_key=master_key,
-        db_backend=db_backend,
-        sqlite_path=sqlite_path,
+        database_dsn=database_dsn,
         config_snapshot=config_snapshot,
         object_store=object_store,
         retention=retention,
@@ -934,8 +888,7 @@ def run_pre_upgrade_backup_gate(
     backup_dir: str | Path,
     settings_obj: Settings | Any | None = None,
     master_key: str | None = None,
-    db_backend: str | None = None,
-    sqlite_path: str | None = None,
+    database_dsn: str | None = None,
     config_snapshot: dict[str, Any] | None = None,
     object_store: ObjectStore | None = None,
     retention: int | None = None,
@@ -974,16 +927,7 @@ def run_pre_upgrade_backup_gate(
         result = run_pre_upgrade_backup(
             backup_dir=backup_dir,
             master_key=effective_master_key,
-            db_backend=(
-                db_backend
-                if db_backend is not None
-                else getattr(cfg, "db_backend", None)
-            ),
-            sqlite_path=(
-                sqlite_path
-                if sqlite_path is not None
-                else getattr(cfg, "sqlite_path", None)
-            ),
+            database_dsn=(database_dsn if database_dsn is not None else getattr(cfg, "database_dsn", settings.database_dsn)),
             config_snapshot=config_snapshot,
             object_store=object_store,
             retention=retention,

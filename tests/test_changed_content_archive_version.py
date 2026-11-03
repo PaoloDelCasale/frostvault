@@ -8,6 +8,8 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
 
 import hashlib
@@ -29,7 +31,7 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.main import queue_jobs
 from app.services import directory_aggregates as aggregates
 from app.storage import process_jobs_once
@@ -40,7 +42,7 @@ def _sha(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _seed_user_vault(connection: SQLiteConnection, source: Path) -> None:
+def _seed_user_vault(connection: PostgresConnection, source: Path) -> None:
     connection.execute(
         """
         INSERT INTO users(id, username, display_name, password_hash)
@@ -93,8 +95,8 @@ class ChangedContentAdmissionTests(unittest.TestCase):
         self.database_path = Path(self.tmp.name) / "catalog.db"
         self.assertEqual(run_alembic(self.database_path).returncode, 0)
 
-    def _open(self) -> SQLiteConnection:
-        connection = SQLiteConnection(str(self.database_path))
+    def _open(self) -> PostgresConnection:
+        connection = PostgresConnection(str(self.database_path))
         connection.__enter__()
         self.addCleanup(connection.__exit__, None, None, None)
         return connection
@@ -414,7 +416,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
         target.write_bytes(payload)
         database_path = root / "catalog.db"
         self.assertEqual(run_alembic(database_path).returncode, 0)
-        with SQLiteConnection(str(database_path)) as connection:
+        with PostgresConnection(str(database_path)) as connection:
             _seed_user_vault(connection, source)
             ArchiveCatalog(connection).observe_local_copy(
                 vault_id=2,
@@ -446,8 +448,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             return len(payload)
 
         database_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(database_path),
+            database_dsn=database_dsn(str(database_path)),
         )
         worker_settings = SimpleNamespace(
             operation_concurrency=1,
@@ -488,7 +489,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             )
             local = source / "report.txt"
             local.write_bytes(payload_b)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 ArchiveCatalog(connection).observe_local_copy(
                     vault_id=2,
                     path="report.txt",
@@ -503,7 +504,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             commands_b = self._run_upload(
                 database_path, payload=payload_b, version_id="s3-b"
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = catalog.get_file_by_path(2, "report.txt")
                 versions = catalog.list_versions(2, "report.txt")
@@ -527,7 +528,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             self._run_upload(database_path, payload=payload, version_id="s3-a")
             local = source / "report.txt"
             local.write_bytes(payload)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 ArchiveCatalog(connection).observe_local_copy(
                     vault_id=2,
                     path="report.txt",
@@ -539,7 +540,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             commands = self._run_upload(
                 database_path, payload=payload, version_id="s3-should-not-apply"
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 versions = connection.execute(
                     """
                     SELECT provider_version_id, integrity FROM archive_versions
@@ -561,7 +562,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             payload = b"needs-verify"
             source, database_path = self._prepare(root, payload)
             local = source / "report.txt"
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 version_id = catalog.record_archive_version(
                     vault_id=2,
@@ -595,7 +596,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             commands = self._run_upload(
                 database_path, payload=payload, version_id="s3-unverified"
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 versions = connection.execute(
                     """
                     SELECT provider_version_id, integrity FROM archive_versions
@@ -615,7 +616,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             root = Path(directory)
             payload = b"retry-after-mismatch"
             _source, database_path = self._prepare(root, payload)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 version_id = catalog.record_archive_version(
                     vault_id=2,
@@ -637,7 +638,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             commands = self._run_upload(
                 database_path, payload=payload, version_id="s3-retry"
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 versions = connection.execute(
                     """
                     SELECT provider_version_id, integrity
@@ -661,14 +662,14 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             for index, payload in enumerate(payloads, start=1):
                 if index > 1:
                     local.write_bytes(payload)
-                    with SQLiteConnection(str(database_path)) as connection:
+                    with PostgresConnection(str(database_path)) as connection:
                         ArchiveCatalog(connection).observe_local_copy(
                             vault_id=2, path="report.txt", file_type="regular", size=len(payload),
                             mtime_ns=local.stat().st_mtime_ns,
                             observed_at=f"2026-07-21T1{index}:00:00+00:00",
                         )
                 self._run_upload(database_path, payload=payload, version_id=f"s3-{index}")
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 versions = catalog.list_versions(2, "report.txt")
                 file_id = catalog.get_file_by_path(2, "report.txt")["id"]

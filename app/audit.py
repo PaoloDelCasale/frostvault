@@ -12,8 +12,8 @@ def audit_log(event: str, connection: Any | None = None, **fields: Any) -> None:
     Sensitive keys are redacted. When ``connection`` is provided the event is
     also appended to ``audit_events`` on that same connection so it commits or
     rolls back with the caller's transaction. This function never opens its own
-    database connection — doing so from inside an open SQLite transaction would
-    nest writers and can discard auth-backoff counters.
+    database connection: persistence belongs to the caller's transaction,
+    including auth-backoff counters.
     """
     redacted = redact_sensitive(fields)
     actor_user_id = redacted.pop("actor_user_id", None)

@@ -1,4 +1,4 @@
-"""Additional populated migration cases shared by SQLite and PostgreSQL CI."""
+"""Additional populated migration cases shared by PostgreSQL and PostgreSQL CI."""
 import json
 from tests.storage_plan_migration_contract import seed, state, legacy_policy
 

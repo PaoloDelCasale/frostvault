@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.services.catalog_audit import audit_vault_catalog
 from tests.test_database import run_alembic
 import tempfile
@@ -19,7 +21,7 @@ class CatalogAuditTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / "audit.db"
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid')"
             )
@@ -50,7 +52,7 @@ class CatalogAuditTests(unittest.TestCase):
         client = Mock()
         client.get_paginator.return_value = self._paginator([])
         vault = {"id": 1, "s3_bucket": "bucket", "s3_prefix": "vaults/uuid"}
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             report = audit_vault_catalog(connection, vault, client)
             row = connection.execute(
                 "SELECT availability FROM archive_versions"
@@ -75,7 +77,7 @@ class CatalogAuditTests(unittest.TestCase):
             ]
         )
         vault = {"id": 1, "s3_bucket": "bucket", "s3_prefix": "vaults/uuid"}
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             report = audit_vault_catalog(connection, vault, client)
             row = connection.execute(
                 "SELECT storage_class, availability FROM archive_versions"

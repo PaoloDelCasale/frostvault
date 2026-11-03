@@ -183,8 +183,8 @@ class CatalogEventStore:
 
     def _lock_vault(self, vault_id: int) -> None:
         # The existing Vault row is the cross-backend serialization point.  An
-        # UPDATE that writes the same value still takes a row lock on PostgreSQL
-        # and the database write lock on SQLite, without changing canonical data.
+        # Even a same-value UPDATE takes a PostgreSQL row lock without
+        # changing canonical data.
         result = self.connection.execute(
             "UPDATE vaults SET name=name WHERE id=%s",
             (vault_id,),
@@ -322,7 +322,7 @@ class CatalogEventStore:
             payload_json=payload_json,
             created_at=created_at,
         )
-        with transaction(self.connection, immediate=True):
+        with transaction(self.connection):
             self._lock_vault(vault_id)
             result = mutation(self.connection)
             event = self._append_locked(

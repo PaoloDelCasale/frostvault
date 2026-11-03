@@ -1,6 +1,8 @@
 """Directory listing scale + durable aggregates (issue #229)."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import os
 import tempfile
 import threading
@@ -11,7 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.main import build_directory_items, list_files
 from app.services import directory_aggregates as aggregates
 from app.services import metrics as metrics_service
@@ -19,7 +21,7 @@ from tests.test_database import run_alembic
 
 
 def _seed_vault(
-    connection: SQLiteConnection,
+    connection: PostgresConnection,
     vault_id: int = 2,
     *,
     slug: str | None = None,
@@ -48,14 +50,14 @@ def _directory_scale_file_count() -> int:
 
 
 def _bulk_local_files(
-    connection: SQLiteConnection,
+    connection: PostgresConnection,
     *,
     vault_id: int,
     paths_and_sizes: list[tuple[str, int]],
     observed_at: str = "2026-07-21T10:00:00+00:00",
 ) -> None:
     """Insert many active local-only files with minimal Python overhead."""
-    raw = connection.connection
+    raw = connection.cursor()
     file_rows = []
     path_rows = []
     local_rows = []
@@ -67,7 +69,7 @@ def _bulk_local_files(
     raw.executemany(
         """
         INSERT INTO vault_files(id, vault_id, status, created_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
         """,
         file_rows,
     )
@@ -75,7 +77,7 @@ def _bulk_local_files(
         """
         INSERT INTO file_paths(
             vault_file_id, vault_id, path, valid_from, valid_to
-        ) VALUES (?, ?, ?, ?, NULL)
+        ) VALUES (%s, %s, %s, %s, NULL)
         """,
         path_rows,
     )
@@ -85,23 +87,27 @@ def _bulk_local_files(
             vault_file_id, presence, file_type, size, mtime_ns,
             plaintext_sha256, matched_archive_version_id,
             last_seen_at, observed_at
-        ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+        ) VALUES (%s, %s, %s, %s, %s, NULL, NULL, %s, %s)
         """,
         local_rows,
     )
+    raw.close()
+    # These large fixture writes are uncommitted: autovacuum cannot provide
+    # planner statistics before the test queries them on this connection.
+    connection.execute("ANALYZE vault_files, file_paths, local_copies")
 
 
 class DirectoryScaleTests(unittest.TestCase):
     def setUp(self) -> None:
         metrics_service.reset_for_tests()
         # Request-path scheduling must not spawn background rebuild threads in
-        # unit tests (they race the shared SQLite fixture connection).
+        # unit tests (they race the shared PostgreSQL fixture connection).
         aggregates.set_maintenance_scheduling_enabled(False)
         self._tmp = tempfile.TemporaryDirectory()
         self.database_path = Path(self._tmp.name) / "catalog.db"
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = SQLiteConnection(str(self.database_path))
+        self.connection = PostgresConnection(str(self.database_path))
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         self.catalog = ArchiveCatalog(self.connection)
@@ -115,7 +121,7 @@ class DirectoryScaleTests(unittest.TestCase):
         tables = {
             row["name"]
             for row in self.connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
+                "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
             ).fetchall()
         }
         self.assertIn("directory_aggregates", tables)
@@ -408,11 +414,10 @@ class DirectoryScaleTests(unittest.TestCase):
         self.assertEqual(page["items"][0]["item_count"], per_dir)
 
         # HTTP seam also stays bounded. Release this connection's write lock
-        # first so list_files can open its own SQLite handle.
+        # first so list_files can open its own PostgreSQL handle.
         self.connection.commit()
         test_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
         )
         with patch("app.database.settings", test_settings):
             with patch.object(ArchiveCatalog, "list_file_rows", blocked):
@@ -802,7 +807,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         self.database_path = Path(self._tmp.name) / "catalog.db"
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = SQLiteConnection(str(self.database_path))
+        self.connection = PostgresConnection(str(self.database_path))
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         self.catalog = ArchiveCatalog(self.connection)
@@ -1330,7 +1335,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         self.connection.commit()
 
         # Restart recovery: a fresh connection still sees durable dirty rows.
-        with SQLiteConnection(str(self.database_path)) as other:
+        with PostgresConnection(str(self.database_path)) as other:
             dirty = {
                 row["path"]
                 for row in other.execute(
@@ -1341,7 +1346,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
             aggregates.flush_directory_aggregates(other, vault_id=2)
             other.commit()
 
-        with SQLiteConnection(str(self.database_path)) as verify:
+        with PostgresConnection(str(self.database_path)) as verify:
             catalog = ArchiveCatalog(verify)
             names = {
                 item["name"] for item in catalog.list_files_page(2)["items"]
@@ -1361,14 +1366,13 @@ class DirectoryAggregateMaintenanceSingleFlightTests(unittest.TestCase):
         self.database_path = Path(self._tmp.name) / "catalog.db"
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = SQLiteConnection(str(self.database_path))
+        self.connection = PostgresConnection(str(self.database_path))
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         _seed_vault(self.connection, 3)
         self.catalog = ArchiveCatalog(self.connection)
         self._db_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
         )
 
     def tearDown(self) -> None:
@@ -1396,8 +1400,8 @@ class DirectoryAggregateMaintenanceSingleFlightTests(unittest.TestCase):
         # Leave durable dirty work for maintenance (no flush).
         self.connection.commit()
 
-    def _open_db(self) -> SQLiteConnection:
-        return SQLiteConnection(str(self.database_path))
+    def _open_db(self) -> PostgresConnection:
+        return PostgresConnection(str(self.database_path))
 
     def _drain_maintenance_workers(self) -> None:
         """Join inflight workers; suppress further pending reschedules."""

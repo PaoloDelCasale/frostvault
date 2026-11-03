@@ -1,12 +1,14 @@
 """Append-only action log and sensitive-field redaction (no read API)."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from app.database import SQLiteConnection
+
 from app.security import hash_password
 from app.services import audit_events
 from tests.test_database import run_alembic
@@ -20,7 +22,7 @@ class AuditEventPersistenceTests(unittest.TestCase):
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -44,7 +46,7 @@ class AuditEventPersistenceTests(unittest.TestCase):
             ).fetchone()["id"]
 
     def test_recorded_audit_event_is_retrievable_for_the_vault(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             recorded = audit_events.record_audit_event(
                 connection,
                 event="vault_root_relocated",
@@ -70,7 +72,7 @@ class AuditEventPersistenceTests(unittest.TestCase):
         self.assertEqual(detail["role"], "viewer")
 
     def test_sensitive_fields_are_redacted_in_persisted_detail(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             recorded = audit_events.record_audit_event(
                 connection,
                 event="break_glass_failed",
@@ -92,7 +94,7 @@ class AuditEventPersistenceTests(unittest.TestCase):
         self.assertEqual(detail["cookie"], "[REDACTED]")
         self.assertEqual(detail["recovery_secret"], "[REDACTED]")
         self.assertEqual(detail["ip"], "203.0.113.9")
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             row = connection.execute(
                 "SELECT detail_json FROM audit_events WHERE id=%s",
                 (recorded["id"],),

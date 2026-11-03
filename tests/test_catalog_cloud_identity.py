@@ -10,12 +10,14 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from pathlib import Path
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from tests.test_database import run_alembic
 
 
@@ -42,7 +44,7 @@ class CloudRediscoveryIdentityTests(unittest.TestCase):
         object_key = "docs/reports/q1.pdf"
         provider_version_id = "s3-v-old"
 
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO vaults(
@@ -151,7 +153,7 @@ class CloudRediscoveryIdentityTests(unittest.TestCase):
         old_path = "reports/q2.pdf"
         new_path = "archive/q2.pdf"
 
-        with SQLiteConnection(str(self.db_path)) as connection:
+        with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO vaults(

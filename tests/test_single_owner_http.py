@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -11,7 +13,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.main import app
 from app.sessions import create_session
 from tests.spa_fixture import write_spa_dist
@@ -66,7 +68,7 @@ class RemovedMultiUserEndpointsTests(unittest.TestCase):
         db_path = Path(self.tmp.name) / "app.db"
         migrated = run_alembic(db_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with SQLiteConnection(str(db_path)) as connection:
+        with PostgresConnection(str(db_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(id, username, display_name, password_hash)
@@ -75,8 +77,7 @@ class RemovedMultiUserEndpointsTests(unittest.TestCase):
             )
         configured = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(db_path),
+            database_dsn=database_dsn(str(db_path)),
             cookie_secure=False,
             frontend_dist_dir=str(write_spa_dist(Path(self.tmp.name))),
         )
@@ -89,7 +90,7 @@ class RemovedMultiUserEndpointsTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.client = TestClient(app, client=("127.0.0.1", 50001))
-        with SQLiteConnection(str(db_path)) as connection:
+        with PostgresConnection(str(db_path)) as connection:
             token = create_session(connection, user_id=1, auth_method="oidc")
         self.client.cookies.set(configured.session_cookie_name, token)
         self.csrf = self.client.get("/api/me").json()["csrf_token"]

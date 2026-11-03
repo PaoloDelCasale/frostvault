@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -11,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 from app import oidc, oidc_network
 from app.config import Settings
-from app.database import SQLiteConnection
+
 from tests.oidc_fake import FakeOidcProvider, at_hash_for
 from tests.test_database import run_alembic
 
@@ -81,8 +83,8 @@ class OidcTestBase(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def connect(self) -> SQLiteConnection:
-        return SQLiteConnection(str(self.database_path))
+    def connect(self) -> PostgresConnection:
+        return PostgresConnection(str(self.database_path))
 
     def _rows(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
@@ -161,7 +163,7 @@ class CompleteLoginTests(OidcTestBase):
             )
             return connection.execute(
                 "SELECT state, nonce, code_verifier FROM oidc_login "
-                "ORDER BY rowid DESC LIMIT 1"
+                "ORDER BY created_at DESC, state DESC LIMIT 1"
             ).fetchone()
 
     def _id_token(self, nonce: str, **kwargs: Any) -> str:

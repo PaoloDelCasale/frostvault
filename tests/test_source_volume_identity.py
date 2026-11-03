@@ -1,6 +1,8 @@
 """Markerless Source Volume replacement detection (issue #151)."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import asyncio
 import json
 import tempfile
@@ -10,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.config import Settings
-from app.database import SQLiteConnection
+
 from app.services import source_identity, source_layout
 from tests.test_database import run_alembic
 
@@ -113,7 +115,7 @@ class PersistedSourceIdentityTests(unittest.TestCase):
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         self.settings = replace(
-            Settings(), db_backend="sqlite", sqlite_path=str(self.database_path)
+            Settings(), database_dsn=database_dsn(str(self.database_path))
         )
         settings_patcher = patch("app.database.settings", self.settings)
         settings_patcher.start()
@@ -149,7 +151,7 @@ class PersistedSourceIdentityTests(unittest.TestCase):
         )
         access = source_layout.vault_local_access(self.vault_root)
         self.assertTrue(access.local_operations_allowed)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             row = connection.execute("SELECT * FROM source_volumes").fetchone()
         serialized = json.dumps(row, sort_keys=True)
         self.assertNotIn("/host/photos", serialized)
@@ -160,7 +162,7 @@ class PersistedSourceIdentityTests(unittest.TestCase):
         from app.storage import scan_tree
 
         self.enroll()
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             vault_id = connection.execute(
                 """
                 INSERT INTO vaults(slug, name, source_root, s3_bucket, s3_prefix)
@@ -180,7 +182,7 @@ class PersistedSourceIdentityTests(unittest.TestCase):
         )
         source_layout.reconcile_source_volume_identities()
         source_layout.reconcile_source_volume_identities()
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             events = connection.execute(
                 "SELECT detail_json FROM audit_events "
                 "WHERE event='source_volume_identity_transition'"

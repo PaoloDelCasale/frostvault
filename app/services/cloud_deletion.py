@@ -342,24 +342,16 @@ def _require_enabled(
 ) -> None:
     # Serialize destructive admission with decommission's lifecycle transition.
     connection.execute("UPDATE vaults SET name=name WHERE id=%s", (vault_id,))
-    if getattr(connection, "backend", None) == "sqlite":
-        lifecycle_present = any(
-            column["name"] == "decommission_state"
-            for column in connection.execute("PRAGMA table_info(vaults)").fetchall()
-        )
-    else:
-        lifecycle_present = bool(
-            connection.execute(
-                """
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema=current_schema()
-                      AND table_name='vaults'
-                      AND column_name='decommission_state'
-                ) AS present
-                """
-            ).fetchone()["present"]
-        )
+    lifecycle_present = bool(connection.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema=current_schema()
+              AND table_name='vaults'
+              AND column_name='decommission_state'
+        ) AS present
+        """
+    ).fetchone()["present"])
     if lifecycle_present:
         row = connection.execute(
             """

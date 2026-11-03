@@ -8,6 +8,8 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
 
 import os
@@ -28,14 +30,14 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.main import queue_jobs
 from app.storage import UPLOAD_RETRY_MAX_ATTEMPTS, process_jobs_once
 from tests.test_upload_verification import _prepare_plain_vault, _sha256_hex
 
 
 def _force_retry_due(database_path: Path, relative_path: str = "report.txt") -> None:
-    with SQLiteConnection(str(database_path)) as connection:
+    with PostgresConnection(str(database_path)) as connection:
         connection.execute(
             "UPDATE jobs SET retry_after='2000-01-01T00:00:00+00:00' WHERE path=%s",
             (relative_path,),
@@ -43,7 +45,7 @@ def _force_retry_due(database_path: Path, relative_path: str = "report.txt") -> 
 
 
 def _job_row(database_path: Path, relative_path: str = "report.txt"):
-    with SQLiteConnection(str(database_path)) as connection:
+    with PostgresConnection(str(database_path)) as connection:
         return connection.execute(
             """
             SELECT status, retry_count, archive_version_id,
@@ -65,8 +67,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
         content_length: int,
     ) -> None:
         database_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(database_path),
+            database_dsn=database_dsn(str(database_path)),
         )
         worker_settings = SimpleNamespace(
             operation_concurrency=1,
@@ -126,7 +127,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
 
             with patch(
                 "app.database.settings",
-                SimpleNamespace(db_backend="sqlite", sqlite_path=str(database_path)),
+                SimpleNamespace(database_dsn=database_dsn(str(database_path))),
             ):
                 queue_jobs("report.txt", "upload", 2, 1)
             self._run_worker(
@@ -147,7 +148,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 )
 
             job = _job_row(database_path)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
                 versions = connection.execute(
                     "SELECT COUNT(*) AS total FROM archive_versions"
@@ -197,7 +198,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
 
             with patch(
                 "app.database.settings",
-                SimpleNamespace(db_backend="sqlite", sqlite_path=str(database_path)),
+                SimpleNamespace(database_dsn=database_dsn(str(database_path))),
             ):
                 queue_jobs("report.txt", "upload", 2, 1)
             self._run_worker(
@@ -232,7 +233,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 kwargs["on_chunk"](mutated)
                 return len(mutated)
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 job_ids, _, eligible = catalog.queue_jobs(
                     vault_id=2,
@@ -255,7 +256,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 version_id="s3-b",
                 content_length=len(mutated),
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 versions = connection.execute(
                     """
                     SELECT provider_version_id, integrity, plaintext_sha256
@@ -304,7 +305,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
 
             with patch(
                 "app.database.settings",
-                SimpleNamespace(db_backend="sqlite", sqlite_path=str(database_path)),
+                SimpleNamespace(database_dsn=database_dsn(str(database_path))),
             ):
                 queue_jobs("report.txt", "upload", 2, 1)
             self._run_worker(
@@ -315,7 +316,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 content_length=len(original),
             )
             job = _job_row(database_path)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
                 local_copy = connection.execute(
                     "SELECT matched_archive_version_id FROM local_copies"
@@ -354,7 +355,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
 
             with patch(
                 "app.database.settings",
-                SimpleNamespace(db_backend="sqlite", sqlite_path=str(database_path)),
+                SimpleNamespace(database_dsn=database_dsn(str(database_path))),
             ):
                 queue_jobs("report.txt", "upload", 2, 1)
             self._run_worker(
@@ -374,7 +375,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 content_length=len(original),
             )
             job = _job_row(database_path)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
             self.assertEqual(job["status"], "completed")
             self.assertEqual(observed["latest_version"]["integrity"], "verified")
@@ -402,7 +403,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
 
             with patch(
                 "app.database.settings",
-                SimpleNamespace(db_backend="sqlite", sqlite_path=str(database_path)),
+                SimpleNamespace(database_dsn=database_dsn(str(database_path))),
             ):
                 queue_jobs("report.txt", "upload", 2, 1)
 
@@ -421,7 +422,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                     _force_retry_due(database_path)
 
             job = _job_row(database_path)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 versions = connection.execute(
                     "SELECT COUNT(*) AS total FROM archive_versions"
                 ).fetchone()["total"]

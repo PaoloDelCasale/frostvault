@@ -5,6 +5,8 @@ No mocking of the preflight or transfers. AWS CI buckets are pre-provisioned.
 """
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import hashlib
 import os
 import tempfile
@@ -15,7 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.main import queue_jobs
 from app.services.s3_prefix_cleanup import cleanup_prefix_versions
 from app.storage import process_jobs_once, s3_client
@@ -49,7 +51,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                 root, relative_path=relative_path, payload=payload, bucket=self.bucket,
                 prefix=self.prefix,
             )
-            database_settings = SimpleNamespace(db_backend="sqlite", sqlite_path=str(database_path))
+            database_settings = SimpleNamespace(database_dsn=database_dsn(str(database_path)))
             worker_settings = SimpleNamespace(
                 aws_region=self.env["AWS_DEFAULT_REGION"],
                 operation_concurrency=1, restore_poll_interval=900,
@@ -57,7 +59,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
             with patch("app.database.settings", database_settings), patch("app.storage.settings", worker_settings):
                 queue_jobs(relative_path, "upload", 2, 1)
                 process_jobs_once()
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     catalog = ArchiveCatalog(connection)
                     observed = catalog.get_file_by_path(2, relative_path)
                     job = connection.execute("SELECT status, message FROM jobs WHERE action='upload'").fetchone()
@@ -73,7 +75,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                     catalog.mark_local_copy_missing(observed["id"], observed_at="2026-07-22T12:30:00+00:00")
                 queue_jobs(relative_path, "recover", 2, 1)
                 process_jobs_once()
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     job = connection.execute("SELECT status, message FROM jobs WHERE action='recover'").fetchone()
                     self.assertEqual(job["status"], "completed", job["message"])
                 self.assertEqual(hashlib.sha256(local.read_bytes()).hexdigest(), digest)

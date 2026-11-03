@@ -12,6 +12,8 @@ Seams under test (confirmed):
 """
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -19,7 +21,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.config import Settings
-from app.database import SQLiteConnection
+
 from app.services import source_layout
 from app.services import vaults as vaults_service
 from tests.test_database import run_alembic
@@ -38,7 +40,7 @@ class ManagedEmptyVaultRootTests(unittest.TestCase):
         self.sources_root = Path(self._tmp.name) / "sources"
         self.sources_root.mkdir()
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 "INSERT INTO users(id, username, display_name, password_hash) "
                 "VALUES (1, 'alice', 'Alice', 'hash')"
@@ -46,8 +48,7 @@ class ManagedEmptyVaultRootTests(unittest.TestCase):
 
         self.settings = replace(
             Settings(),
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             vault_s3_bucket="test-bucket",
 
         )
@@ -377,8 +378,7 @@ class SourceVolumeInventoryTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         self.settings = replace(
             Settings(),
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
         )
         patcher = patch("app.database.settings", self.settings)
         patcher.start()
@@ -387,7 +387,7 @@ class SourceVolumeInventoryTests(unittest.TestCase):
     def test_inventory_includes_vault_counts(self) -> None:
         vault_root = self.photos / "family"
         vault_root.mkdir()
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO vaults(
@@ -469,7 +469,7 @@ class LocalOpsGateTests(unittest.TestCase):
         self.database_path = Path(self._tmp.name) / "app.db"
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 "INSERT INTO users(id, username, display_name, password_hash) "
                 "VALUES (1, 'alice', 'Alice', 'hash')"
@@ -484,8 +484,7 @@ class LocalOpsGateTests(unittest.TestCase):
             ).fetchone()["id"]
         self.settings = replace(
             Settings(),
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
             allow_local_delete=True,
         )
@@ -514,7 +513,7 @@ class LocalOpsGateTests(unittest.TestCase):
 
         source_layout.note_mount_lost("photos")
         (self.vault_root / "a.txt").write_text("a", encoding="utf-8")
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             ArchiveCatalog(connection).observe_local_copy(
                 vault_id=self.vault_id,
                 path="gone.txt",
@@ -534,7 +533,7 @@ class LocalOpsGateTests(unittest.TestCase):
                     "scan-1",
                 )
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             missing = connection.execute(
                 "SELECT COUNT(*) AS total FROM local_copies WHERE presence='missing'"
             ).fetchone()["total"]
@@ -569,7 +568,7 @@ class AdminSourceVolumeInventoryHttpTests(unittest.TestCase):
         self.database_path = Path(self._tmp.name) / "app.db"
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             self.admin_id = connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -579,8 +578,7 @@ class AdminSourceVolumeInventoryHttpTests(unittest.TestCase):
             ).fetchone()["id"]
         self.settings = replace(
             Settings(),
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
         )
         for target in (
@@ -602,7 +600,7 @@ class AdminSourceVolumeInventoryHttpTests(unittest.TestCase):
         self.addCleanup(writable_patcher.stop)
         source_layout.prepare_sources_layout()
         self.client = TestClient(app, client=("127.0.0.1", 50000))
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             token = create_session(
                 connection, user_id=self.admin_id, auth_method="oidc"
             )

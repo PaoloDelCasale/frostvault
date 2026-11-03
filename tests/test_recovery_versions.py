@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import hashlib
 import tempfile
 import unittest
 from pathlib import Path
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from tests.test_database import run_alembic
 
 
@@ -22,7 +24,7 @@ class VersionSelectionTests(unittest.TestCase):
         source.mkdir()
         database_path = root / "catalog.db"
         self.assertEqual(run_alembic(database_path).returncode, 0)
-        with SQLiteConnection(str(database_path)) as connection:
+        with PostgresConnection(str(database_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(id, username, display_name, password_hash)
@@ -108,7 +110,7 @@ class VersionSelectionTests(unittest.TestCase):
     def test_list_versions_marks_non_selectable_with_reason(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = self._fixture(Path(directory))
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 versions = ArchiveCatalog(connection).list_versions(2, "notes.txt")
 
             by_provider = {row["provider_version_id"]: row for row in versions}
@@ -122,7 +124,7 @@ class VersionSelectionTests(unittest.TestCase):
     def test_legacy_older_available_copy_cannot_be_selected_for_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = self._fixture(Path(directory))
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 versions = catalog.list_versions(2, "notes.txt")
                 # Legacy copies survive upgrade without becoming a history UI.
@@ -150,7 +152,7 @@ class VersionSelectionTests(unittest.TestCase):
     def test_default_recover_targets_highest_recoverable_version_number(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = self._fixture(Path(directory))
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 versions = catalog.list_versions(2, "notes.txt")
                 expected = next(

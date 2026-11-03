@@ -39,7 +39,7 @@ Before the **first** `docker compose up` (or `docker compose -f
 compose.traefik.yaml up`), create the repository's `./data` bind source on the
 host and give that directory to exactly the identity selected in `.env`. Docker
 would otherwise create a missing bind source as root, and the non-root Compose
-process could not create the SQLite database, migration files, or backup
+process could not create migration scratch files or encrypted backup
 directory.
 
 For the default Unraid identity (omit `sudo` when your shell is already root,

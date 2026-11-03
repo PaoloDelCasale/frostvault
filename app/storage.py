@@ -132,12 +132,12 @@ _maintenance_futures: dict[str, Future[Any]] = {}
 _maintenance_lock = threading.Lock()
 
 # Local scans deliberately keep filesystem work outside write transactions.
-# This is small enough to give other SQLite writers frequent admission while
+# This is small enough to give other PostgreSQL writers frequent admission while
 # avoiding one transaction per catalogued entry.
 LOCAL_SCAN_WRITE_BATCH_SIZE = 250
 
 # Cloud scans keep provider I/O outside write transactions and commit catalog
-# merges in bounded batches so SQLite/PostgreSQL writers (lease renewal,
+# merges in bounded batches so other writers (lease renewal,
 # notifications) are not blocked for the full listing.
 CLOUD_SCAN_WRITE_BATCH_SIZE = 250
 
@@ -767,7 +767,7 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
 
     Provider listings stay outside write transactions.
     Catalog merges commit in ``CLOUD_SCAN_WRITE_BATCH_SIZE`` chunks so other
-    SQLite/PostgreSQL writers can renew leases and persist notifications.
+    writers can renew leases and persist notifications.
     Unseen versions are marked missing only after a complete, interpretable
     listing, and only if this scan generation is still current.
     """
@@ -1275,7 +1275,7 @@ def _verified_local_scan(
 ) -> tuple[int, dict[str, int], str | None, bool]:
     """Walk/hash outside writes, then publish bounded catalog stages.
 
-    Local observations are committed in short batches so ordinary SQLite
+    Local observations are committed in short batches so ordinary PostgreSQL
     writers are not held behind directory traversal or hashing.  Missing
     transitions, rename decisions, and relocation recovery remain in one final
     transaction guarded by the enrolled root and scan generation.
@@ -1301,7 +1301,7 @@ def _verified_local_scan(
         # The walk itself uses short catalog batches. Keeping this connection
         # open preserves the old rollback seam when a test or an early failure
         # writes directly before the final identity check; normal batches
-        # commit inside _scan_tree and release SQLite's write lock.
+        # commit inside _scan_tree and release their PostgreSQL row locks.
         with db() as connection:
             _current_verified_scan_row(connection, vault)
             if not _scan_generation_is_current(int(vault["id"]), scan_id):

@@ -1,4 +1,4 @@
-"""Shared populated SQLite/PostgreSQL contract; never calls cloud storage."""
+"""Shared populated PostgreSQL contract; never calls cloud storage."""
 import json
 from tests.notification_migration_contract import preserved_state, seed_legacy_notifications
 

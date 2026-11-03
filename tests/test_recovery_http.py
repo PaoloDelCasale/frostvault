@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import hashlib
 import tempfile
 import unittest
@@ -14,7 +16,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.catalog import ArchiveCatalog
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.security import hash_password
 from app.sessions import create_session, csrf_token_for
 from app.storage import process_jobs_once
@@ -37,7 +39,7 @@ class RecoveryHttpTests(unittest.TestCase):
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             self.owner_id = connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -87,8 +89,7 @@ class RecoveryHttpTests(unittest.TestCase):
 
         self.test_settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
             restore_high_impact_gib=100,
             restore_high_impact_eur=10.0,
@@ -111,7 +112,7 @@ class RecoveryHttpTests(unittest.TestCase):
         )
 
     def _authenticate(self, user_id: int) -> None:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             raw_token = create_session(connection, user_id=user_id, auth_method="oidc")
             csrf_token = csrf_token_for(connection, raw_token)
         self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
@@ -150,7 +151,7 @@ class RecoveryHttpTests(unittest.TestCase):
         self.assertEqual(payload["estimate"]["region"], payload["estimate"]["assumptions"]["region"])
 
     def test_legacy_copies_are_preserved_but_cannot_be_chosen_as_history(self) -> None:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             catalog = ArchiveCatalog(connection)
             newest = catalog.record_archive_version(
                 vault_id=self.vault_id, path="docs/note.txt", object_key="docs/docs/note.txt",
@@ -169,13 +170,13 @@ class RecoveryHttpTests(unittest.TestCase):
             self.assertEqual(rejected.status_code, 409, rejected.text)
         queued = self.client.post("/api/recover", headers=self._csrf(), json={"path": "docs/note.txt"})
         self.assertEqual(queued.status_code, 202, queued.text)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             rows = ArchiveCatalog(connection).list_versions(self.vault_id, "docs/note.txt")
             self.assertTrue(all(row["recoverable"] for row in rows), "No implicit cloud purge on read/recovery")
             self.assertEqual(connection.execute("SELECT archive_version_id FROM jobs").fetchone()["archive_version_id"], newest)
 
     def test_owner_approves_high_impact_restore(self) -> None:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 "UPDATE archive_versions SET size=%s WHERE id=%s",
                 (100 * 1024**3, self.version_id),

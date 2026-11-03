@@ -7,6 +7,8 @@ Seams under test:
 """
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -18,7 +20,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.security import hash_password
 from app.services import metadata_backups
 from app.sessions import create_session, csrf_token_for
@@ -40,7 +42,7 @@ class MetadataBackupHttpTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
         self.master_key = Fernet.generate_key().decode("ascii")
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             self.admin_id = connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -51,8 +53,7 @@ class MetadataBackupHttpTests(unittest.TestCase):
 
         self.test_settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
             archive_master_key=self.master_key,
             metadata_backup_dir=str(self.backup_dir),
@@ -84,7 +85,7 @@ class MetadataBackupHttpTests(unittest.TestCase):
         )
 
     def _authenticate(self, user_id: int, *, reauth: bool = True) -> None:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             raw_token = create_session(connection, user_id=user_id, auth_method="oidc")
             if reauth:
                 connection.execute(
@@ -129,7 +130,7 @@ class MetadataBackupHttpTests(unittest.TestCase):
             hashlib_sha256(download.content),
             payload["runs"][0]["digest_sha256"],
         )
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             actions = connection.execute("SELECT event, detail_json FROM audit_events ORDER BY id").fetchall()
         self.assertEqual([row["event"] for row in actions], ["metadata_backup_created", "metadata_backup_downloaded"])
         self.assertIn("operator requested backup", actions[0]["detail_json"])

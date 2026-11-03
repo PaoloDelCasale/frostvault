@@ -11,6 +11,8 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,7 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app import storage as storage_module
 from tests.test_database import run_alembic
 
@@ -32,7 +34,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / "app.db"
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(id, username, display_name, password_hash)
@@ -94,7 +96,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             ).fetchone()["id"]
 
     def _job_row(self) -> dict:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             return connection.execute(
                 """
                 SELECT j.*, v.s3_bucket, v.s3_prefix, v.source_root,
@@ -131,8 +133,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         )
         client.delete_object = Mock(return_value={})
         database_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(self.path),
+            database_dsn=database_dsn(str(self.path)),
         )
         with (
             patch("app.database.settings", database_settings),
@@ -143,7 +144,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             job = dict(self._job_row())
             storage_module.process_job(job)
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status, message_key, archive_version_id FROM jobs WHERE id=%s",
                 (self.job_id,),
@@ -165,7 +166,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         self.assertEqual(copy_kwargs["Key"], "docs/report.txt")
 
     def test_restart_completes_catalogued_storage_class_destination_after_provider_check(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             ArchiveCatalog(connection).update_version_storage_placement(
                 self.version_id,
                 provider_version_id="s3-v2",
@@ -191,7 +192,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             "ETag": '"etag2"',
         }
         database_settings = SimpleNamespace(
-            db_backend="sqlite", sqlite_path=str(self.path)
+            database_dsn=database_dsn(str(self.path))
         )
         with (
             patch("app.database.settings", database_settings),
@@ -200,7 +201,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             summary = storage_module.reconcile_interrupted_jobs()
 
         self.assertEqual(summary, {"completed": 1, "requeued": 0, "failed": 0})
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status, claim_token FROM jobs WHERE id=%s", (self.job_id,)
             ).fetchone()
@@ -210,7 +211,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
 
     def test_restart_after_copy_before_catalog_fails_closed_without_second_copy(self) -> None:
         """Issue #193: an unrecorded CopyObject result is never blindly retried."""
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 UPDATE jobs
@@ -231,7 +232,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             "ETag": '"etag"',
         }
         database_settings = SimpleNamespace(
-            db_backend="sqlite", sqlite_path=str(self.path)
+            database_dsn=database_dsn(str(self.path))
         )
         with (
             patch("app.database.settings", database_settings),
@@ -240,7 +241,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             summary = storage_module.reconcile_interrupted_jobs()
 
         self.assertEqual(summary, {"completed": 0, "requeued": 0, "failed": 1})
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status, message FROM jobs WHERE id=%s", (self.job_id,)
             ).fetchone()
@@ -259,7 +260,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
 
     def _large_copy_fixture(self, *, destination: dict | None = None) -> tuple[Mock, int]:
         size = storage_module.S3_SINGLE_COPY_MAX_BYTES + 1
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "UPDATE archive_versions SET size=%s WHERE id=%s",
                 (size, self.version_id),
@@ -300,8 +301,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
     def test_oversized_change_uses_exact_version_multipart_copy(self) -> None:
         client, size = self._large_copy_fixture()
         database_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(self.path),
+            database_dsn=database_dsn(str(self.path)),
         )
         with (
             patch("app.database.settings", database_settings),
@@ -333,8 +333,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             ]
         }
         database_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(self.path),
+            database_dsn=database_dsn(str(self.path)),
         )
         with (
             patch("app.database.settings", database_settings),
@@ -359,8 +358,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         client.upload_part_copy.side_effect = RuntimeError("copy part failed")
         client.abort_multipart_upload.side_effect = RuntimeError("abort failed")
         database_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(self.path),
+            database_dsn=database_dsn(str(self.path)),
         )
         with (
             patch("app.database.settings", database_settings),
@@ -374,7 +372,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             Bucket="bucket", Key="docs/report.txt", UploadId="upload-1"
         )
         client.complete_multipart_upload.assert_not_called()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status, message FROM jobs WHERE id=%s", (self.job_id,)
             ).fetchone()
@@ -397,8 +395,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
 
         client.upload_part_copy.side_effect = cancel_after_first_part
         database_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(self.path),
+            database_dsn=database_dsn(str(self.path)),
         )
         try:
             with (
@@ -414,7 +411,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
 
         client.abort_multipart_upload.assert_called_once()
         client.complete_multipart_upload.assert_not_called()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
             ).fetchone()
@@ -432,14 +429,13 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
                 "ChecksumSHA256": "destination-checksum",
             }
         )
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "UPDATE archive_versions SET integrity='verified' WHERE id=%s",
                 (self.version_id,),
             )
         database_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(self.path),
+            database_dsn=database_dsn(str(self.path)),
         )
         with (
             patch("app.database.settings", database_settings),
@@ -449,7 +445,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         ):
             storage_module.process_job(dict(self._job_row()))
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
             ).fetchone()
@@ -474,7 +470,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             }
         )
         # Use the small path for a focused destination verification failure.
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "UPDATE archive_versions SET size=12 WHERE id=%s",
                 (self.version_id,),
@@ -504,8 +500,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             return_value={"VersionId": "s3-v2", "CopyObjectResult": {"ETag": '"etag2"'}}
         )
         database_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(self.path),
+            database_dsn=database_dsn(str(self.path)),
         )
         with (
             patch("app.database.settings", database_settings),
@@ -517,7 +512,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
 
         client.copy_object.assert_called_once()
         client.delete_object.assert_not_called()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
             ).fetchone()
@@ -530,7 +525,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         self.assertEqual(version["storage_class"], "STANDARD")
 
     def test_unrestored_deep_archive_requests_restore_and_enters_restoring(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 UPDATE archive_versions
@@ -560,8 +555,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         client.restore_object = Mock(return_value={})
         client.copy_object = Mock()
         database_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(self.path),
+            database_dsn=database_dsn(str(self.path)),
         )
         with (
             patch("app.database.settings", database_settings),
@@ -572,7 +566,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             job = dict(self._job_row())
             storage_module.process_job(job)
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status, message_key FROM jobs WHERE id=%s",
                 (self.job_id,),
@@ -600,7 +594,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
     def test_restored_deep_archive_warms_to_standard_with_local_copy_present(
         self,
     ) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 UPDATE archive_versions
@@ -641,8 +635,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         client.delete_object = Mock(return_value={})
         client.restore_object = Mock()
         database_settings = SimpleNamespace(
-            db_backend="sqlite",
-            sqlite_path=str(self.path),
+            database_dsn=database_dsn(str(self.path)),
             restore_poll_interval=0,
         )
         with (
@@ -655,7 +648,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             processed = storage_module.process_job(job)
 
         self.assertTrue(processed)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status, message_key, archive_version_id FROM jobs WHERE id=%s",
                 (self.job_id,),

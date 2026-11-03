@@ -10,6 +10,8 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -22,7 +24,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.catalog import ArchiveCatalog
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.security import hash_password
 from app.sessions import create_session, csrf_token_for
 from app import storage as storage_module
@@ -38,7 +40,7 @@ class CloudDeletionHttpTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / "app.db"
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             self.owner_id = self._user(connection, "owner")
             self.vault_id = connection.execute(
                 """
@@ -80,8 +82,7 @@ class CloudDeletionHttpTests(unittest.TestCase):
             )
         test_settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.path),
+            database_dsn=database_dsn(str(self.path)),
             cookie_secure=False,
             cloud_purge_delay_seconds=86400,
         )
@@ -106,7 +107,7 @@ class CloudDeletionHttpTests(unittest.TestCase):
         ).fetchone()["id"]
 
     def _authenticate(self, user_id: int, *, reauth: bool = True) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             token = create_session(connection, user_id=user_id, auth_method="oidc")
             csrf = csrf_token_for(connection, token)
             if reauth:
@@ -144,14 +145,14 @@ class CloudDeletionHttpTests(unittest.TestCase):
         self.assertTrue(enabled.json()["enabled"])
 
     def test_stale_reauth_blocks_cloud_deletion_without_side_effects(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=%s",
                 (self.vault_id,),
             )
         self._authenticate(self.owner_id, reauth=False)
         self._select_vault()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "UPDATE sessions SET reauth_at=%s WHERE user_id=%s",
                 ("2000-01-01T00:00:00+00:00", self.owner_id),
@@ -169,13 +170,13 @@ class CloudDeletionHttpTests(unittest.TestCase):
         )
         self.assertEqual(purge.status_code, 403, purge.text)
         self.assertEqual(purge.json(), {"error": "reauth_required"})
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             jobs = connection.execute("SELECT COUNT(*) AS total FROM jobs").fetchone()
         # The only cloud copy is untouched: nothing was even scheduled.
         self.assertEqual(jobs["total"], 0)
 
     def test_owner_purge_requires_confirmation_and_schedules_delay(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=%s",
                 (self.vault_id,),
@@ -228,7 +229,7 @@ class CloudDeletionHttpTests(unittest.TestCase):
         self.assertEqual(cancel.json()["cancelled_count"], 1)
 
     def test_owner_can_accelerate_pending_purge_delay(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=%s",
                 (self.vault_id,),
@@ -251,7 +252,7 @@ class CloudDeletionHttpTests(unittest.TestCase):
 
         self._authenticate(self.owner_id)
         self._select_vault()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "UPDATE sessions SET reauth_at=%s WHERE user_id=%s",
                 ("2000-01-01T00:00:00+00:00", self.owner_id),
@@ -277,7 +278,7 @@ class CloudDeletionHttpTests(unittest.TestCase):
         self.assertEqual(body["accelerated_count"], 1)
         self.assertEqual(body["message_key"], "api.cloud_purge_accelerated")
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status, pending_until, message_key FROM jobs WHERE group_id=%s",
                 (group_id,),

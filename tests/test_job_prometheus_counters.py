@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import os
 import tempfile
 import unittest
@@ -17,7 +19,7 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.services import metrics as metrics_service
 from app.storage import (
     observe_failed_job_backlog,
@@ -36,7 +38,7 @@ class JobPrometheusCounterTests(unittest.TestCase):
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         metrics_service.reset_for_tests()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(id, username, display_name, password_hash)
@@ -74,7 +76,7 @@ class JobPrometheusCounterTests(unittest.TestCase):
             )
         self._db = patch(
             "app.storage.db",
-            side_effect=lambda: SQLiteConnection(str(self.path)),
+            side_effect=lambda: PostgresConnection(str(self.path)),
         )
         self._db.start()
         self.addCleanup(self._db.stop)
@@ -115,7 +117,7 @@ class JobPrometheusCounterTests(unittest.TestCase):
         self.assertNotIn("jobs_failed_total", text)
 
     def test_reconcile_failed_job_increments_after_commit(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 UPDATE jobs
@@ -142,7 +144,7 @@ class JobPrometheusCounterTests(unittest.TestCase):
         self.assertNotIn("jobs_completed_total", text)
 
     def test_reconcile_failure_increments_failed_counter(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 UPDATE jobs
@@ -167,7 +169,7 @@ class JobPrometheusCounterTests(unittest.TestCase):
         self.assertEqual(summary["failed"], 1)
         text = metrics_service.render_prometheus()
         self.assertIn('jobs_failed_total{action="recover"} 1', text)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             status = connection.execute(
                 "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
             ).fetchone()["status"]

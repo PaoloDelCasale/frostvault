@@ -1,11 +1,13 @@
 """Worker errors are deduplicated internal-error problems in the Owner inbox."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from pathlib import Path
 
-from app.database import SQLiteConnection
+
 from app.services import notifications, worker_errors
 from tests.test_database import run_alembic
 
@@ -16,7 +18,7 @@ class WorkerErrorTests(unittest.TestCase):
             path = Path(directory) / "worker.db"
             result = run_alembic(path)
             self.assertEqual(result.returncode, 0, result.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
                 for _ in range(2):
                     worker_errors.record_worker_error(connection, component="cloud_scan", exc=RuntimeError("SECRET raw exception"), password="SECRET")
@@ -39,5 +41,5 @@ class WorkerErrorTests(unittest.TestCase):
             path = Path(directory) / "worker.db"
             result = run_alembic(path)
             self.assertEqual(result.returncode, 0, result.stderr)
-            with SQLiteConnection(str(path)) as connection:
+            with PostgresConnection(str(path)) as connection:
                 self.assertIsNone(worker_errors.record_worker_error(connection, component="startup", exc=RuntimeError("not exposed")))

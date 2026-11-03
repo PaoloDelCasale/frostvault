@@ -1,4 +1,4 @@
-"""Populated SQLite/PostgreSQL contract for the transport-only schema cut."""
+"""Populated PostgreSQL contract for the transport-only schema cut."""
 from tests.notification_migration_contract import preserved_state, seed_legacy_notifications
 
 

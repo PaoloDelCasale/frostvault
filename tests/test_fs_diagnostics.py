@@ -1,6 +1,8 @@
 """Filesystem problems come from the actual scan/watcher, never a sampled banner."""
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import os
 import tempfile
 import unittest
@@ -13,7 +15,7 @@ from watchfiles import Change
 from app import storage
 from app.catalog import ArchiveCatalog
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.services import source_layout
 from app.services.fs_preflight import inspect_entry
 from tests.test_database import run_alembic
@@ -31,28 +33,28 @@ class FilesystemProblemTests(unittest.TestCase):
         self.path = base / "catalog.db"
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
             connection.execute(
                 "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (9, 'files', 'Files', %s, 'bucket', 'files')",
                 (str(self.root),),
             )
         self.vault = {"id": 9, "source_root": str(self.root)}
-        self.cfg = replace(settings, db_backend="sqlite", sqlite_path=str(self.path))
+        self.cfg = replace(settings, database_dsn=database_dsn(str(self.path)))
         self.patch = patch("app.database.settings", self.cfg)
         self.patch.start()
         self.addCleanup(self.patch.stop)
         storage.runtime_status.pop(9, None)
 
     def problems(self):
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             return connection.execute("SELECT event, message_params FROM notifications ORDER BY id").fetchall()
 
     def test_symlink_is_catalogued_as_unsupported_and_never_followed(self):
         (self.root / "ok.txt").write_text("hello")
         (self.root / "link.txt").symlink_to(self.root / "ok.txt")
         self.assertEqual(storage.scan_tree(self.vault, "scan"), 2)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(9)}
         self.assertTrue(rows["ok.txt"]["upload_eligible"])
         self.assertFalse(rows["link.txt"]["upload_eligible"])
@@ -82,7 +84,7 @@ class FilesystemProblemTests(unittest.TestCase):
         self.assertEqual({json.loads(p["message_params"])["path"] for p in problems}, {f"{n}.bin" for n in range(40)})
         self.assertTrue(all(p["event"] == "file_unreadable" for p in problems))
         self.assertNotIn("sensitive exception", str(problems))
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             copies = connection.execute("SELECT presence FROM local_copies").fetchall()
         self.assertEqual(len(copies), 40)
         self.assertTrue(all(row["presence"] == "present" for row in copies))
@@ -107,7 +109,7 @@ class FilesystemProblemTests(unittest.TestCase):
         with patch("app.services.fs_preflight.os.walk", side_effect=inaccessible):
             self.assertEqual(storage.scan_tree(self.vault, "incomplete"), 0)
         self.assertIn("private", str(self.problems()))
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             self.assertEqual(connection.execute("SELECT presence FROM local_copies").fetchone()["presence"], "present")
 
     def test_watcher_checks_content_readability_not_just_stat(self):

@@ -94,16 +94,14 @@ def record_failure(
     """Atomically count one failure and return its committed count and deadline.
 
     The ``ON CONFLICT ... DO UPDATE`` is a write on the conflicting row, so
-    SQLite serializes it and PostgreSQL holds that row lock for the enclosing
-    transaction. Both the incremented count and the matching deadline are
+    PostgreSQL holds that row lock for the enclosing transaction. Both the incremented count and the matching deadline are
     returned by the same statement rather than being calculated from a stale
     Python-side read.
     """
     now = _now()
     now_iso = now.isoformat()
     decay_cutoff = (now - timedelta(seconds=DECAY_SECONDS)).isoformat()
-    # Keep timestamp arithmetic out of the UPSERT: SQLite and PostgreSQL do not
-    # share a timestamp-addition expression, while the stored values are text.
+    # The stored deadline values are ISO timestamps represented as text.
     # The final value is the capped deadline for every count beyond this range.
     deadline_values = tuple(
         (now + timedelta(seconds=_backoff_seconds(count))).isoformat()

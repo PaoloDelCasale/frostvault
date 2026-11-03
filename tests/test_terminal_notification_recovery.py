@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import os
 import tempfile
 import unittest
@@ -17,7 +19,7 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.services import notifications as notification_service
 from app.storage import set_job
 from tests.test_database import run_alembic
@@ -30,7 +32,7 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / "notify.db"
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "INSERT INTO users(id, username, display_name, password_hash) "
                 "VALUES (1, 'owner', 'Owner', 'hash')"
@@ -65,14 +67,14 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
     def test_terminal_notification_insert_failure_is_retried(self) -> None:
         with patch(
             "app.storage.db",
-            side_effect=lambda: SQLiteConnection(str(self.path)),
+            side_effect=lambda: PostgresConnection(str(self.path)),
         ), patch(
             "app.services.notifications.enqueue_job_terminal_notification",
             side_effect=RuntimeError("savepoint boom"),
         ):
             self.assertTrue(set_job(self.job_id, "failed", "AccessDenied"))
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status, terminal_notification_status FROM jobs WHERE id=%s",
                 (self.job_id,),
@@ -85,7 +87,7 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
         self.assertEqual(job["terminal_notification_status"], "pending")
         self.assertEqual(notifications, [])
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             recovered = notification_service.reconcile_pending_terminal_notifications(
                 connection
             )
@@ -106,7 +108,7 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["event"], "job_failed")
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             again = notification_service.reconcile_pending_terminal_notifications(
                 connection
             )
@@ -120,10 +122,10 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
     def test_successful_terminal_transition_marks_notification_done(self) -> None:
         with patch(
             "app.storage.db",
-            side_effect=lambda: SQLiteConnection(str(self.path)),
+            side_effect=lambda: PostgresConnection(str(self.path)),
         ):
             self.assertTrue(set_job(self.job_id, "completed", "ok"))
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status, terminal_notification_status FROM jobs WHERE id=%s",
                 (self.job_id,),

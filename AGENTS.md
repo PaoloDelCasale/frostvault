@@ -18,30 +18,62 @@ Uses default labels: needs-triage, needs-info, ready-for-agent, ready-for-human,
 
 Single-context: CONTEXT.md at the repo root; ADRs in docs/adr/. See docs/agents/domain.md.
 
-## Cursor Cloud specific instructions
+## Native / cloud development (PostgreSQL 16)
 
-Python 3.12 FastAPI app ("FrostVault"). The startup update script creates
-a virtualenv at `.venv/` and installs `requirements.txt` into it. Use `.venv/bin/python`.
+Python 3.12 FastAPI app ("FrostVault"). Create `.venv/`, install
+`requirements.txt`, and use `.venv/bin/python`.
 
 ### Tests
-- Python: `.venv/bin/python -m unittest discover -s tests -v` (this is what CI runs).
-- Frontend: `cd frontend && npm ci && npm run lint && npm run test` (Vitest).
-  Playwright e2e: `cd frontend && npm run test:e2e` (requires `npm run build` and Chromium).
-- The `*_postgresql` migration tests are skipped unless `TEST_POSTGRES_URL` points at a
-  Postgres 16 server (see `.github/workflows/migrations.yml`); everything else runs on SQLite.
+- Locally run only targeted modules: `.venv/bin/python -m unittest tests.test_<module> -v`.
+  Full Python/migration/S3/frontend/build verification belongs to PR CI (#410).
+  Open a draft PR early, push, inspect `gh run view <id> --log-failed`, and fix
+  until every applicable check is green.
+- Frontend locally: `cd frontend && npx vitest run <file>` for a targeted change.
+  Full lint/Vitest, Playwright, frontend and image builds run in PR CI.
+- Database tests require `TEST_POSTGRES_URL` pointing at a disposable PostgreSQL 16
+  server with a CREATEDB role (see `.github/workflows/migrations.yml`). Fixtures
+  create uniquely named databases from a migrated template; never use a production
+  server. Missing configuration is an error, not skipped database coverage.
 - S3-compatible integrity tests run only when `TEST_S3_ENDPOINT` is set (MinIO job in CI).
   Contributor-facing CI status: `docs/ci.md`.
-- There is no configured linter (no ruff/flake8/eslint config in the repo).
+- There is no Python linter configured; the frontend has ESLint.
 
 ### Running the app locally (no Docker)
-Docker is not installed; run natively with the SQLite backend instead of `docker compose`.
+PostgreSQL is the only backend, including native development and tests. Docker
+is optional. With PostgreSQL 16 binaries already on PATH, run an isolated cluster
+as your unprivileged OS user (not root):
+
+```bash
+# Use your own session folder; keep the server off public interfaces.
+SESSION="$PWD/sessioni/$(date +%F)-postgres-dev"
+mkdir -p "$SESSION"
+# Trust is for this disposable, loopback-only cluster with no real data.
+# Choose an unused port, never the port of an existing database service.
+initdb -D "$SESSION/pgdata" -U frostvault --auth=trust
+pg_ctl -D "$SESSION/pgdata" -l "$SESSION/postgres.log" \
+  -o "-h 127.0.0.1 -p 55432 -k ''" -w start
+export PGHOST=127.0.0.1 PGPORT=55432 PGUSER=frostvault PGDATABASE=frostvault
+createdb frostvault
+createdb frostvault_test
+export TEST_POSTGRES_URL="postgresql+psycopg://frostvault@127.0.0.1:55432/frostvault_test"
+# After targeted tests / native development:
+# pg_ctl -D "$SESSION/pgdata" -m fast -w stop
+```
+
+Cloud agents without Docker need PostgreSQL 16 server and client tools
+(`initdb`, `pg_ctl`, `pg_dump`, `pg_restore`, `createdb`, `dropdb`, `psql`). Use
+preinstalled binaries or a user-owned installation; ask when unavailable rather
+than using a live database or changing system packages. Root agents must run the
+isolated process under an existing unprivileged account, with access limited to
+that session directory. Do not start/restart a system PostgreSQL service.
+
 - The app does NOT auto-load `.env` (`app/config.py` reads `os.getenv` at import), so export
   the vars yourself. A local `.env` (gitignored) is used for this; load it with
   `set -a && . ./.env && set +a`. If it is missing, recreate it from `.env.local.example`,
   and quote values containing spaces (e.g. `BOOTSTRAP_ADMIN_DISPLAY_NAME="Local Admin"`)
   or `source` will fail.
-- `.env.local.example` uses container-style paths (`/data/...`, `/sources/...`). For a native run, repoint them at real writable paths under
-  the repo and create the dirs first, e.g. `SQLITE_PATH=/workspace/data/frostvault.db`
+- `.env.local.example` uses container-style paths (`/data/...`, `/sources/...`). For a native run, keep `PG*` pointed at your isolated cluster and repoint filesystem paths under
+  the session folder and create the dirs first, e.g. `METADATA_BACKUP_DIR=$SESSION/backups`
   (set `FROSTVAULT_TEST_SOURCES_ROOT` to relocate the fixed `/sources` layout for
   native/test seams). Vaults are created from the UI; empty Vaults
   use `/sources/managed/<uuid>`; custom volumes must be direct mounts under
@@ -52,7 +84,6 @@ Docker is not installed; run natively with the SQLite backend instead of `docker
   `.venv/bin/python -m app.backup_upgrade` (or `alembic upgrade head` for empty
   local DBs). The app still refuses to serve on a stale schema
   (`HEAD_SCHEMA_REVISION`).
-- Build the SPA first: `cd frontend && npm ci && npm run build`.
 - Start: `.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080`
   (serves `frontend/dist`; missing dist returns HTTP 503 with build instructions).
 - Local break-glass admin login is configured through `BOOTSTRAP_ADMIN_*` in the
@@ -63,8 +94,8 @@ Docker is not installed; run natively with the SQLite backend instead of `docker
 The UI is a Vite + React SPA. uvicorn always serves `frontend/dist` for HTML
 routes (hashed `/assets/*` → `Cache-Control: public, max-age=31536000, immutable`;
 `index.html` → `no-store`). Missing `dist` returns HTTP 503 with build
-instructions. Image builds produce `dist`; locally run
-`cd frontend && npm ci && npm run build` before pointing a browser at uvicorn.
+instructions. Image builds produce `dist`; use Vite for ordinary local work.
+Build locally only when explicitly testing production serving is requested.
 
 **Local SPA development (Vite + uvicorn):**
 
@@ -80,7 +111,8 @@ cd frontend && npm ci && npm run dev
 ```
 
 Open the Vite URL (default `http://127.0.0.1:5173`). For the production serving
-path without Docker: build `frontend/dist`, then open `http://127.0.0.1:8080`.
+path without Docker (when explicitly requested): build `frontend/dist`, then open
+`http://127.0.0.1:8080`.
 
 ### Non-obvious gotchas
 - AWS credentials are placeholders locally. Local file cataloging (scan + browse)

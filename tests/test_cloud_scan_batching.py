@@ -9,8 +9,10 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import os
-import sqlite3
+import psycopg
 import tempfile
 import threading
 import unittest
@@ -29,12 +31,12 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.storage import CLOUD_SCAN_WRITE_BATCH_SIZE, scan_cloud
 from tests.test_database import run_alembic
 
 
-def _seed_vault(connection: SQLiteConnection, *, source_root: str = "/source") -> None:
+def _seed_vault(connection: PostgresConnection, *, source_root: str = "/source") -> None:
     connection.execute(
         """
         INSERT INTO users(id, username, display_name, password_hash)
@@ -82,8 +84,7 @@ def _run_scan(
         ),
     )
     test_settings = SimpleNamespace(
-        db_backend="sqlite",
-        sqlite_path=str(database_path),
+        database_dsn=database_dsn(str(database_path)),
     )
     with (
         patch("app.database.settings", test_settings),
@@ -102,12 +103,12 @@ def _run_scan(
 
 
 class CloudScanLockAndBatchTests(unittest.TestCase):
-    def test_cloud_listing_io_does_not_hold_sqlite_writer_lock(self) -> None:
+    def test_cloud_listing_io_does_not_hold_postgresql_writer_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 _seed_vault(connection)
 
             second_started = threading.Event()
@@ -122,9 +123,8 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             def concurrent_writer() -> None:
                 second_started.wait(timeout=5)
                 try:
-                    conn = sqlite3.connect(str(database_path), timeout=0)
+                    conn = psycopg.connect(database_dsn(database_path), options="-c lock_timeout=1000")
                     try:
-                        conn.execute("BEGIN IMMEDIATE")
                         conn.execute(
                             "UPDATE users SET display_name='concurrent' WHERE id=1"
                         )
@@ -155,7 +155,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             worker.join(timeout=5)
             self.assertEqual(count, 2)
             self.assertEqual(concurrent_error, [])
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 name = connection.execute(
                     "SELECT display_name FROM users WHERE id=1"
                 ).fetchone()["display_name"]
@@ -166,7 +166,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 _seed_vault(connection)
                 catalog = ArchiveCatalog(connection)
                 catalog.observe_local_copy(
@@ -205,7 +205,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "listing truncated"):
                 _run_scan(database_path, pages=[], paginate=paginate)
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 kept = ArchiveCatalog(connection).get_file_by_path(2, "kept.txt")
             self.assertEqual(kept["latest_version"]["availability"], "available")
             self.assertEqual(
@@ -217,7 +217,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 _seed_vault(connection)
                 catalog = ArchiveCatalog(connection)
                 catalog.observe_local_copy(
@@ -250,7 +250,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                     }
                 ],
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 gone = ArchiveCatalog(connection).get_file_by_path(2, "gone.txt")
                 still = ArchiveCatalog(connection).get_file_by_path(2, "still.txt")
             self.assertEqual(gone["latest_version"]["availability"], "missing")
@@ -261,7 +261,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 _seed_vault(connection)
                 catalog = ArchiveCatalog(connection)
                 catalog.observe_local_copy(
@@ -300,7 +300,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 database_path,
                 pages=[{"Versions": [], "DeleteMarkers": []}],
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 kept = ArchiveCatalog(connection).get_file_by_path(2, "kept.txt")
             self.assertEqual(kept["latest_version"]["availability"], "available")
 
@@ -309,7 +309,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 _seed_vault(connection)
 
             db_contexts: list[str] = []
@@ -354,8 +354,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 }
             ]
             test_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with (
                 patch("app.database.settings", test_settings),
@@ -389,7 +388,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 _seed_vault(connection)
                 catalog = ArchiveCatalog(connection)
                 catalog.observe_local_copy(
@@ -428,9 +427,8 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
 
             def renew_lease() -> None:
                 started.wait(timeout=5)
-                conn = sqlite3.connect(str(database_path), timeout=0)
+                conn = psycopg.connect(database_dsn(database_path), options="-c lock_timeout=1000")
                 try:
-                    conn.execute("BEGIN IMMEDIATE")
                     conn.execute(
                         """
                         UPDATE jobs
@@ -458,7 +456,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             )
             worker.join(timeout=5)
             self.assertEqual(renewed, ["ok"])
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 expiry = connection.execute(
                     "SELECT claim_expires_at FROM jobs WHERE claim_token='live-worker'"
                 ).fetchone()["claim_expires_at"]

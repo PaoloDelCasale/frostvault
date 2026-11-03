@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import threading
+import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -21,45 +19,27 @@ from app.services import notifications
 from app.services.catalog_events import CatalogEventStore
 
 
-POSTGRES_URL = os.getenv("TEST_POSTGRES_URL", "")
-REPOSITORY_ROOT = Path(__file__).parents[1]
+from tests.postgres import database_dsn, run_alembic as migrate_fixture
 
 
-def run_alembic(
-    revision: str = "head",
-    command: str = "upgrade",
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "alembic",
-            "-x",
-            f"database_url={POSTGRES_URL}",
-            command,
-            revision,
-        ],
-        cwd=REPOSITORY_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-@unittest.skipUnless(POSTGRES_URL, "TEST_POSTGRES_URL is not configured")
 class PostgreSQLMigrationTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.engine = sa.create_engine(POSTGRES_URL)
-        with self.engine.begin() as connection:
-            connection.execute(sa.text("DROP SCHEMA public CASCADE"))
-            connection.execute(sa.text("CREATE SCHEMA public"))
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.identity = Path(self._tmp.name) / "migration"
+        self.postgres_url = database_dsn(self.identity)
+        from psycopg.conninfo import conninfo_to_dict
+        self.engine = sa.create_engine(sa.URL.create("postgresql+psycopg", query=conninfo_to_dict(self.postgres_url)))
 
     def tearDown(self) -> None:
         self.engine.dispose()
 
+    def run_alembic(self, revision="head", command="upgrade"):
+        return migrate_fixture(self.identity, revision, command)
+
     def _connection(self) -> psycopg.Connection:
         return psycopg.connect(
-            POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://"),
+            self.postgres_url,
             row_factory=dict_row,
         )
 
@@ -108,47 +88,47 @@ class PostgreSQLMigrationTests(unittest.TestCase):
 
     def test_storage_plan_migration_preserves_populated_catalog_and_only_cloud_copy(self):
         from tests.storage_plan_migration_contract import assert_storage_plan_migration
-        assert_storage_plan_migration(self, run_alembic, self._connection)
+        assert_storage_plan_migration(self, self.run_alembic, self._connection)
 
     def test_storage_plan_migration_refuses_ambiguous_folder_policies(self):
         from tests.storage_plan_migration_contract import assert_ambiguous_plan_refused
-        assert_ambiguous_plan_refused(self, run_alembic, self._connection)
+        assert_ambiguous_plan_refused(self, self.run_alembic, self._connection)
 
     def test_storage_plan_migration_maps_missing_default_and_redundant_pins(self):
         from tests.storage_plan_safety_contract import assert_standard_plan_mapping
-        assert_standard_plan_mapping(self, run_alembic, self._connection)
+        assert_standard_plan_mapping(self, self.run_alembic, self._connection)
 
     def test_storage_plan_migration_refuses_unsafe_legacy_namespaces(self):
         from tests.storage_plan_safety_contract import assert_unsafe_namespaces_refused
-        assert_unsafe_namespaces_refused(self, run_alembic, self._connection)
+        assert_unsafe_namespaces_refused(self, self.run_alembic, self._connection)
 
     def test_storage_plan_migration_refuses_pins_before_ddl(self):
         from tests.storage_plan_migration_contract import assert_ambiguous_plan_refused
-        assert_ambiguous_plan_refused(self, run_alembic, self._connection, pinned=True)
+        assert_ambiguous_plan_refused(self, self.run_alembic, self._connection, pinned=True)
 
     def test_sdk_migration_preserves_populated_catalog_and_only_cloud_copy(self) -> None:
         from tests.s3_sdk_migration_contract import assert_sdk_migration
-        assert_sdk_migration(self, run_alembic, self._connection)
+        assert_sdk_migration(self, self.run_alembic, self._connection)
 
     def test_plaintext_vaults_populated_roundtrip_and_legacy_refusal(self) -> None:
         from tests.plaintext_vaults_migration_contract import assert_plaintext_migration
-        assert_plaintext_migration(self, run_alembic, self._connection)
+        assert_plaintext_migration(self, self.run_alembic, self._connection)
 
     def test_current_snapshot_preserves_every_copy_and_trust_on_upgrade_downgrade_reupgrade(self) -> None:
         from tests.current_snapshot_migration_contract import assert_current_snapshot_migration
-        assert_current_snapshot_migration(self, run_alembic, self._connection)
+        assert_current_snapshot_migration(self, self.run_alembic, self._connection)
 
     def test_file_action_cut_preserves_cloud_content_and_cancels_only_legacy_hides(self) -> None:
         from tests.essential_file_actions_migration_contract import assert_file_actions_migration
 
-        assert_file_actions_migration(self, run_alembic, self._connection)
+        assert_file_actions_migration(self, self.run_alembic, self._connection)
 
     def test_notification_cut_preserves_inbox_email_and_only_cloud_copy(self) -> None:
         from tests.notification_migration_contract import (
             REMOVED_TABLES, preserved_state, seed_legacy_notifications,
         )
 
-        baseline = run_alembic("0045_drop_quotas_windows")
+        baseline = self.run_alembic("0045_drop_quotas_windows")
         self.assertEqual(baseline.returncode, 0, baseline.stderr)
         with self._connection() as connection:
             seed_legacy_notifications(connection)
@@ -158,7 +138,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             ("0045_drop_quotas_windows", "downgrade"),
             ("0046_simplify_notifications", "upgrade"),
         ):
-            result = run_alembic(revision, command)
+            result = self.run_alembic(revision, command)
             self.assertEqual(result.returncode, 0, result.stderr)
             tables = set(sa.inspect(self.engine).get_table_names())
             with self._connection() as connection:
@@ -179,12 +159,12 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         from tests.notification_migration_contract import seed_legacy_notifications
         from tests.offline_removal_migration_contract import normalized_state, assert_session_schema
 
-        baseline = run_alembic("0045_drop_quotas_windows")
+        baseline = self.run_alembic("0045_drop_quotas_windows")
         self.assertEqual(baseline.returncode, 0, baseline.stderr)
         with self._connection() as connection:
             seed_legacy_notifications(connection)
             connection.execute("UPDATE sessions SET offline_cache_generation=7")
-        baseline = run_alembic("0046_simplify_notifications")
+        baseline = self.run_alembic("0046_simplify_notifications")
         self.assertEqual(baseline.returncode, 0, baseline.stderr)
         with self._connection() as connection:
             before = normalized_state(connection)
@@ -193,7 +173,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             ("0046_simplify_notifications", "downgrade"),
             ("0047_remove_offline_cache", "upgrade"),
         ):
-            result = run_alembic(revision, command)
+            result = self.run_alembic(revision, command)
             self.assertEqual(result.returncode, 0, result.stderr)
             with self._connection() as connection:
                 self.assertEqual(normalized_state(connection), before)
@@ -201,11 +181,11 @@ class PostgreSQLMigrationTests(unittest.TestCase):
 
     def test_administration_cut_preserves_sessions_jobs_and_only_cloud_copy(self) -> None:
         from tests.essential_administration_migration_contract import assert_administration_migration
-        assert_administration_migration(self, run_alembic, self._connection)
+        assert_administration_migration(self, self.run_alembic, self._connection)
         self.assertTrue({"system_settings", "worker_errors"}.isdisjoint(sa.inspect(self.engine).get_table_names()))
 
     def test_fresh_database_upgrades_and_rolls_back_losslessly(self) -> None:
-        upgraded = run_alembic()
+        upgraded = self.run_alembic()
         self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
         policy_columns = {
             column["name"]
@@ -269,14 +249,14 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertNotIn("filesystem_health_snapshots", inspector.get_table_names())
         self.assertNotIn("filesystem_health_findings", inspector.get_table_names())
 
-        downgraded = run_alembic("0001_current_schema", command="downgrade")
+        downgraded = self.run_alembic("0001_current_schema", command="downgrade")
         self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
 
-        upgraded_again = run_alembic()
+        upgraded_again = self.run_alembic()
         self.assertEqual(upgraded_again.returncode, 0, upgraded_again.stderr)
 
     def test_catalog_state_helpers_commit_and_roll_back_on_postgresql(self) -> None:
-        upgraded = run_alembic()
+        upgraded = self.run_alembic()
         self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
         with self._connection() as connection:
             connection.execute(
@@ -312,7 +292,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             )
 
     def test_current_release_data_migrates_without_loss(self) -> None:
-        baseline = run_alembic("0001_current_schema")
+        baseline = self.run_alembic("0001_current_schema")
         self.assertEqual(baseline.returncode, 0, baseline.stderr)
         with self.engine.begin() as connection:
             connection.execute(
@@ -372,7 +352,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             )
             connection.execute(sa.text("DROP TABLE alembic_version"))
 
-        migrated = run_alembic()
+        migrated = self.run_alembic()
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with self.engine.connect() as connection:
             preserved = connection.execute(
@@ -400,7 +380,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         })
 
     def test_vault_ownership_migration_preserves_normal_and_narrows_multi_owner_data(self) -> None:
-        baseline = run_alembic("0006_auth_backoff")
+        baseline = self.run_alembic("0006_auth_backoff")
         self.assertEqual(baseline.returncode, 0, baseline.stderr)
         with self.engine.begin() as connection:
             for user_id in range(1, 5):
@@ -432,7 +412,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 )
             )
 
-        migrated = run_alembic("0007_vault_ownership")
+        migrated = self.run_alembic("0007_vault_ownership")
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with self.engine.connect() as connection:
             roles = connection.execute(
@@ -452,7 +432,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         )
 
     def test_zero_owner_vault_fails_atomically_without_widening_access(self) -> None:
-        baseline = run_alembic("0006_auth_backoff")
+        baseline = self.run_alembic("0006_auth_backoff")
         self.assertEqual(baseline.returncode, 0, baseline.stderr)
         with self.engine.begin() as connection:
             connection.execute(
@@ -475,7 +455,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 )
             )
 
-        migrated = run_alembic("0007_vault_ownership")
+        migrated = self.run_alembic("0007_vault_ownership")
         self.assertNotEqual(migrated.returncode, 0)
         self.assertIn("vault 1 has no primary owner", migrated.stderr)
         self.assertIn("assign exactly one authorized existing member", migrated.stderr)
@@ -497,7 +477,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertNotIn("uuid", columns)
 
     def test_ownerless_vault_without_memberships_fails_atomically(self) -> None:
-        baseline = run_alembic("0006_auth_backoff")
+        baseline = self.run_alembic("0006_auth_backoff")
         self.assertEqual(baseline.returncode, 0, baseline.stderr)
         with self.engine.begin() as connection:
             connection.execute(
@@ -508,7 +488,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 )
             )
 
-        migrated = run_alembic("0007_vault_ownership")
+        migrated = self.run_alembic("0007_vault_ownership")
         self.assertNotEqual(migrated.returncode, 0)
         self.assertIn("vault 1 has no primary owner", migrated.stderr)
         with self.engine.connect() as connection:
@@ -523,7 +503,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertNotIn("uuid", columns)
 
     def test_duplicate_job_does_not_abort_the_catalog_transaction(self) -> None:
-        upgraded = run_alembic()
+        upgraded = self.run_alembic()
         self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
         with self.engine.begin() as connection:
             connection.execute(
@@ -547,7 +527,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 )
             )
 
-        connect_url = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
+        connect_url = self.postgres_url
         with psycopg.connect(connect_url, row_factory=dict_row) as connection:
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(
@@ -582,7 +562,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertEqual(duplicate, [])
 
     def test_changed_local_copy_can_queue_second_upload_on_postgresql(self) -> None:
-        upgraded = run_alembic()
+        upgraded = self.run_alembic()
         self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
         digest_a = "a" * 64
         with self._connection() as connection:
@@ -671,10 +651,10 @@ class PostgreSQLMigrationTests(unittest.TestCase):
     def test_terminal_job_commits_when_notification_savepoint_fails_on_postgresql(
         self,
     ) -> None:
-        upgraded = run_alembic()
+        upgraded = self.run_alembic()
         self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
 
-        connect_url = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
+        connect_url = self.postgres_url
         with psycopg.connect(connect_url, row_factory=dict_row) as connection:
             user_id = connection.execute(
                 """
@@ -767,7 +747,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             )
 
     def test_single_owner_migration_keeps_only_the_administrator(self) -> None:
-        baseline = run_alembic("0043_cloud_only_conflict")
+        baseline = self.run_alembic("0043_cloud_only_conflict")
         self.assertEqual(baseline.returncode, 0, baseline.stderr)
         with self.engine.begin() as connection:
             connection.execute(
@@ -791,7 +771,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 )
             )
 
-        migrated = run_alembic("0044_single_owner")
+        migrated = self.run_alembic("0044_single_owner")
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with self.engine.connect() as connection:
             users = connection.execute(
@@ -808,7 +788,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertEqual(updated_by, 2)
 
     def test_issue_188_concurrent_confirms_consume_one_candidate_once(self) -> None:
-        upgraded = run_alembic()
+        upgraded = self.run_alembic()
         self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
         missing_id = self._seed_rename_candidate()
         start = threading.Barrier(2)
@@ -857,7 +837,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertEqual(copies, 1)
 
     def test_issue_188_scan_state_change_wins_before_confirmation_claim(self) -> None:
-        upgraded = run_alembic()
+        upgraded = self.run_alembic()
         self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
         missing_id = self._seed_rename_candidate()
         scanner_updated = threading.Event()
@@ -962,7 +942,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertEqual(current_paths, 2)
 
     def test_issue_193_postgresql_claim_is_atomic_across_two_workers(self) -> None:
-        upgraded = run_alembic()
+        upgraded = self.run_alembic()
         self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
         with self._connection() as connection:
             connection.execute(
@@ -1029,7 +1009,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertEqual(job["claim_expires_at"], "2026-08-01T10:06:00+00:00")
 
     def test_issue_193_postgresql_expired_takeover_cancel_and_group_contention(self) -> None:
-        upgraded = run_alembic()
+        upgraded = self.run_alembic()
         self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
         with self._connection() as connection:
             connection.execute(
@@ -1147,7 +1127,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self,
     ) -> None:
         """A real PostgreSQL row lock preserves each count/deadline pair."""
-        upgraded = run_alembic()
+        upgraded = self.run_alembic()
         self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
         attempts = backoff.THRESHOLD + 2
         now = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)

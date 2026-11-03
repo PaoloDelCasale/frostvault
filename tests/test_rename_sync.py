@@ -12,6 +12,8 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
 
 import hashlib
@@ -34,7 +36,7 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog, VaultFileNotFound
-from app.database import SQLiteConnection
+
 from app.main import queue_jobs
 from app.storage import process_jobs_once
 from tests.test_database import run_alembic
@@ -82,7 +84,7 @@ def _prepare_renamed_plain_file(
     migrated = run_alembic(database_path)
     assert migrated.returncode == 0, migrated.stderr
     digest = _sha256_hex(payload)
-    with SQLiteConnection(str(database_path)) as connection:
+    with PostgresConnection(str(database_path)) as connection:
         _seed_vault(connection, source_root=str(source))
         catalog = ArchiveCatalog(connection)
         file_id = catalog.observe_local_copy(
@@ -240,8 +242,7 @@ def _rename_worker(
         return {"VersionId": "delete-marker-1", "DeleteMarker": True}
 
     database_settings = SimpleNamespace(
-        db_backend="sqlite",
-        sqlite_path=str(database_path),
+        database_dsn=database_dsn(str(database_path)),
     )
     worker_settings = SimpleNamespace(
         operation_concurrency=1,
@@ -276,7 +277,7 @@ class RenameMatchingTests(unittest.TestCase):
             database_path = Path(directory) / "rename.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 _seed_vault(connection)
                 catalog = ArchiveCatalog(connection)
                 old_id = catalog.observe_local_copy(
@@ -341,7 +342,7 @@ class RenameMatchingTests(unittest.TestCase):
             database_path = Path(directory) / "stale-rename.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 _seed_vault(connection)
                 catalog = ArchiveCatalog(connection)
                 old_id = catalog.observe_local_copy(
@@ -386,7 +387,7 @@ class RenameMatchingTests(unittest.TestCase):
             database_path = Path(directory) / "changed-content.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 _seed_vault(connection)
                 catalog = ArchiveCatalog(connection)
                 old_id = catalog.observe_local_copy(
@@ -438,7 +439,7 @@ class RenameMatchingTests(unittest.TestCase):
             database_path = Path(directory) / "ambiguous.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 _seed_vault(connection)
                 catalog = ArchiveCatalog(connection)
                 missing_ids = []
@@ -490,7 +491,7 @@ class RenameMatchingTests(unittest.TestCase):
             database_path = Path(directory) / "metadata-only.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 _seed_vault(connection)
                 catalog = ArchiveCatalog(connection)
                 old_id = catalog.observe_local_copy(
@@ -545,8 +546,7 @@ class RenameCloudJobTests(unittest.TestCase):
             )
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", database_settings):
                 queued = queue_jobs(new_path, "rename", 2, 1)
@@ -559,7 +559,7 @@ class RenameCloudJobTests(unittest.TestCase):
                 ) as (upload_calls, deleted_keys, head_calls, download_calls):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = catalog.get_file_by_path(2, new_path)
                 versions = catalog.list_versions(2, new_path)
@@ -657,8 +657,7 @@ class RenameCloudJobTests(unittest.TestCase):
                 }
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
@@ -691,7 +690,7 @@ class RenameCloudJobTests(unittest.TestCase):
                 ):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 markers = connection.execute(
                     "SELECT id FROM delete_markers WHERE vault_file_id=%s",
                     (file_id,),
@@ -748,8 +747,7 @@ class RenameCloudJobTests(unittest.TestCase):
                     Callback(len(b"tampered-cloud-bytes"))
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
@@ -779,7 +777,7 @@ class RenameCloudJobTests(unittest.TestCase):
                 ):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 versions = catalog.list_versions(2, new_path)
                 markers = connection.execute(
@@ -821,8 +819,7 @@ class RenameCloudJobTests(unittest.TestCase):
 
             deleted: list[str] = []
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
                 operation_concurrency=1,
@@ -830,7 +827,7 @@ class RenameCloudJobTests(unittest.TestCase):
             )
             with patch("app.database.settings", database_settings):
                 queue_jobs(new_path, "rename", 2, 1)
-                with SQLiteConnection(str(database_path)) as connection:
+                with PostgresConnection(str(database_path)) as connection:
                     job_id_holder["id"] = connection.execute(
                         "SELECT id FROM jobs WHERE path=%s",
                         (new_path,),
@@ -855,7 +852,7 @@ class RenameCloudJobTests(unittest.TestCase):
                 ):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = catalog.get_file_by_path(2, new_path)
                 versions = catalog.list_versions(2, new_path)
@@ -883,7 +880,7 @@ class FolderRenameTests(unittest.TestCase):
             database_path = Path(directory) / "folder.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 _seed_vault(connection)
                 catalog = ArchiveCatalog(connection)
                 ids = {}
@@ -959,7 +956,7 @@ class FolderRenameTests(unittest.TestCase):
                     migrated = run_alembic(database_path)
                     self.assertEqual(migrated.returncode, 0, migrated.stderr)
                     digest = _sha256_hex(f"{old_path}->{new_path}".encode())
-                    with SQLiteConnection(str(database_path)) as connection:
+                    with PostgresConnection(str(database_path)) as connection:
                         _seed_vault(connection)
                         catalog = ArchiveCatalog(connection)
                         file_id = catalog.observe_local_copy(
@@ -1031,7 +1028,7 @@ class PlaintextNamespaceRenameTests(unittest.TestCase):
             database_path = root / "catalog.db"
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
                     INSERT INTO users(
@@ -1119,8 +1116,7 @@ class PlaintextNamespaceRenameTests(unittest.TestCase):
 
             deleted: list[str] = []
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", database_settings):
                 queue_jobs(new_path, "rename", 2, 1)
@@ -1162,7 +1158,7 @@ class PlaintextNamespaceRenameTests(unittest.TestCase):
                 ):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = catalog.get_file_by_path(2, new_path)
                 versions = catalog.list_versions(2, new_path)
@@ -1215,7 +1211,7 @@ class RenameRestartTests(unittest.TestCase):
                 payload=payload,
             )
             digest = _sha256_hex(payload)
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 new_version_id = catalog.record_archive_version(
                     vault_id=2,
@@ -1265,8 +1261,7 @@ class RenameRestartTests(unittest.TestCase):
                 )
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             deleted: list[str] = []
             upload_calls: list[tuple[str, ...]] = []
@@ -1333,7 +1328,7 @@ class RenameRestartTests(unittest.TestCase):
                 ):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 versions = ArchiveCatalog(connection).list_versions(2, new_path)
                 markers = connection.execute(
                     """
@@ -1375,7 +1370,7 @@ def _insert_destination_version(
     integrity: str = "verified",
     availability: str = "available",
 ) -> str:
-    with SQLiteConnection(str(database_path)) as connection:
+    with PostgresConnection(str(database_path)) as connection:
         catalog = ArchiveCatalog(connection)
         version_id = catalog.record_archive_version(
             vault_id=2,
@@ -1409,7 +1404,7 @@ def _insert_destination_version(
 
 
 def _insert_old_key_marker(database_path: Path, *, file_id: str, old_key: str) -> None:
-    with SQLiteConnection(str(database_path)) as connection:
+    with PostgresConnection(str(database_path)) as connection:
         ArchiveCatalog(connection).record_delete_marker(
             vault_id=2,
             path="new.txt",
@@ -1453,8 +1448,7 @@ class RenameDestinationProofTests(unittest.TestCase):
             )
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", database_settings):
                 queued = queue_jobs(new_path, "rename", 2, 1)
@@ -1467,7 +1461,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                 ) as (upload_calls, deleted_keys, head_calls, download_calls):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 versions = catalog.list_versions(2, new_path)
                 job = connection.execute(
@@ -1565,8 +1559,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                     Callback(len(body))
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", database_settings):
                 queue_jobs(new_path, "rename", 2, 1)
@@ -1596,7 +1589,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                 ):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 versions = ArchiveCatalog(connection).list_versions(2, new_path)
                 job = connection.execute(
                     "SELECT status FROM jobs WHERE path=%s",
@@ -1638,8 +1631,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                 payload=payload,
             )
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", database_settings):
                 queued = queue_jobs(new_path, "rename", 2, 1)
@@ -1663,7 +1655,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                 ) as (upload_calls, deleted_keys, head_calls, download_calls):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     "SELECT status, message_key, archive_version_id FROM jobs WHERE path=%s",
                     (new_path,),
@@ -1707,8 +1699,7 @@ class RenameDestinationProofTests(unittest.TestCase):
             _insert_old_key_marker(database_path, file_id=file_id, old_key=old_key)
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", database_settings):
                 queue_jobs(new_path, "rename", 2, 1)
@@ -1720,7 +1711,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                 ) as (upload_calls, deleted_keys, _head_calls, download_calls):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 versions = ArchiveCatalog(connection).list_versions(2, new_path)
                 job = connection.execute(
                     "SELECT status, message_key FROM jobs WHERE path=%s",
@@ -1758,8 +1749,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                 payload=payload,
             )
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", database_settings):
                 queued = queue_jobs(new_path, "rename", 2, 1)
@@ -1782,7 +1772,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                 ) as (_upload_calls, deleted_keys, head_calls, download_calls):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 versions = ArchiveCatalog(connection).list_versions(2, new_path)
                 job = connection.execute(
                     "SELECT status, archive_version_id FROM jobs WHERE path=%s",
@@ -1828,7 +1818,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                 payload_size=len(payload),
                 integrity="unverified",
             )
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 old_version = connection.execute(
                     """
                     SELECT id FROM archive_versions
@@ -1859,8 +1849,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                 )
 
             database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+                database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", database_settings):
                 with _rename_worker(
@@ -1871,7 +1860,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                 ) as (upload_calls, deleted_keys, _head_calls, download_calls):
                     process_jobs_once()
 
-            with SQLiteConnection(str(database_path)) as connection:
+            with PostgresConnection(str(database_path)) as connection:
                 version = connection.execute(
                     "SELECT integrity, plaintext_sha256 FROM archive_versions WHERE id=%s",
                     (unverified_id,),

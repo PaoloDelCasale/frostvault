@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seed a SQLite FrostVault and serve the SPA for Playwright e2e (issue #70).
+"""Seed a PostgreSQL FrostVault and serve the SPA for Playwright e2e (issue #70).
 
 Creates the single Owner (Emergency Password sign-in plus a pre-minted Session
 cookie), two vaults, and a small catalog tree with Path History. Then runs uvicorn serving the built SPA.
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -34,12 +33,7 @@ def _ensure_runtime() -> dict[str, Path]:
     (source_primary / "note.txt").write_text("a local note\n", encoding="utf-8")
     (source_secondary / "hello.txt").write_text("secondary\n", encoding="utf-8")
     db_path = RUNTIME / "frostvault-e2e.db"
-    if db_path.exists():
-        db_path.unlink()
-    for suffix in ("-wal", "-shm"):
-        side = Path(str(db_path) + suffix)
-        if side.exists():
-            side.unlink()
+    # This path is an opaque identity for a uniquely named disposable database.
     return {
         "db": db_path,
         "source_primary": source_primary,
@@ -48,21 +42,10 @@ def _ensure_runtime() -> dict[str, Path]:
 
 
 def _migrate(db_path: Path) -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "alembic",
-            "-x",
-            f"database_url=sqlite:///{db_path.as_posix()}",
-            "upgrade",
-            "head",
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    sys.path.insert(0, str(REPO_ROOT))
+    from tests.postgres import run_alembic, database_dsn
+    result = run_alembic(db_path)
+    os.environ["DATABASE_URL"] = database_dsn(db_path)
     if result.returncode != 0:
         sys.stderr.write(result.stdout)
         sys.stderr.write(result.stderr)
@@ -70,15 +53,15 @@ def _migrate(db_path: Path) -> None:
 
 
 def _seed(paths: dict[str, Path]) -> dict:
-    # Import after env is prepared so settings pick up SQLITE_PATH etc.
+    # Import after the isolated PostgreSQL DSN and filesystem env are prepared.
     sys.path.insert(0, str(REPO_ROOT))
     from app.catalog import ArchiveCatalog
-    from app.database import SQLiteConnection
+    from app.database import db
     from app.security import hash_password
     from app.sessions import create_session, csrf_token_for
 
     password_hash = hash_password(PASSWORD)
-    with SQLiteConnection(str(paths["db"])) as connection:
+    with db() as connection:
         owner_id = connection.execute(
             """
             INSERT INTO users(username, display_name, password_hash)
@@ -211,8 +194,6 @@ def _apply_env(paths: dict[str, Path]) -> None:
 
         master_key = Fernet.generate_key().decode()
     env = {
-        "DB_BACKEND": "sqlite",
-        "SQLITE_PATH": str(paths["db"]),
         "COOKIE_SECURE": "false",
         "FRONTEND_DIST_DIR": str(REPO_ROOT / "frontend" / "dist"),
         "ALLOW_LOCAL_DELETE": "true",

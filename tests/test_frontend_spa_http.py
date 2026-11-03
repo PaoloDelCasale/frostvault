@@ -6,6 +6,8 @@ JSON.
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import os
 import tempfile
 import unittest
@@ -16,7 +18,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.main import app
 from app.security import hash_password
 from app.sessions import create_session
@@ -120,7 +122,7 @@ class FrontendSpaHttpTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             self.user_id = connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -138,8 +140,7 @@ class FrontendSpaHttpTests(unittest.TestCase):
 
         self.test_settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
             frontend_dist_dir=str(self.dist_dir),
         )
@@ -154,7 +155,7 @@ class FrontendSpaHttpTests(unittest.TestCase):
         self.client = TestClient(app, client=("127.0.0.1", 50000))
 
     def _authenticate(self, user_id: int | None = None) -> None:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             raw_token = create_session(
                 connection,
                 user_id=user_id if user_id is not None else self.user_id,

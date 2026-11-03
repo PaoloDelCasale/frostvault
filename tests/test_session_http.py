@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -9,7 +11,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.main import app
 from app.security import hash_password
 from tests.test_database import run_alembic
@@ -25,7 +27,7 @@ class SessionHttpTests(unittest.TestCase):
 
         self.username = "alice"
         self.password = "correct horse battery"
-        with SQLiteConnection(str(database_path)) as connection:
+        with PostgresConnection(str(database_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -36,8 +38,7 @@ class SessionHttpTests(unittest.TestCase):
 
         self.settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(database_path),
+            database_dsn=database_dsn(str(database_path)),
             cookie_secure=False,
         )
         for target in (

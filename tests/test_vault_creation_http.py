@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -10,7 +12,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.main import app
 from app.services import source_layout
 from app.sessions import create_session
@@ -19,7 +21,7 @@ from tests.test_database import run_alembic
 
 
 class VaultCreationHttpTestCase(unittest.TestCase):
-    """Shared harness: a migrated SQLite database with the single owner
+    """Shared harness: a migrated PostgreSQL database with the single owner
     (#412), authenticated through an already-established session as after
     an OIDC login."""
 
@@ -39,7 +41,7 @@ class VaultCreationHttpTestCase(unittest.TestCase):
         self.managed_root = source_layout.ensure_managed_directory()
 
         self.username = "alice"
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             self.user_id = connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -49,8 +51,7 @@ class VaultCreationHttpTestCase(unittest.TestCase):
             ).fetchone()["id"]
 
         overrides: dict[str, object] = {
-            "db_backend": "sqlite",
-            "sqlite_path": str(self.database_path),
+            "database_dsn": database_dsn(str(self.database_path)),
             "cookie_secure": False,
             "vault_s3_bucket": "test-bucket",
 
@@ -73,7 +74,7 @@ class VaultCreationHttpTestCase(unittest.TestCase):
     def _authenticate(self, client: TestClient, user_id: int) -> None:
         """Attach a live session cookie for ``user_id``, as if the user had
         already completed authentication (e.g. via OIDC)."""
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             raw_token = create_session(connection, user_id=user_id, auth_method="oidc")
         client.cookies.set(self.settings.session_cookie_name, raw_token)
 
@@ -177,7 +178,7 @@ class VaultCreationTests(VaultCreationHttpTestCase):
             response = self._create("Readable")
         self.assertEqual(response.status_code, 201, response.text)
         self.assertEqual(set(response.json()), {"id", "uuid", "slug", "name", "creation_mode"})
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             row = connection.execute("SELECT * FROM vaults WHERE id=%s", (response.json()["id"],)).fetchone()
         self.assertEqual(row["s3_prefix"], f"vaults/{row['uuid']}/")
         self.assertFalse(any("crypt" in key or "custody" in key for key in row))
@@ -250,7 +251,7 @@ class VaultCreationTests(VaultCreationHttpTestCase):
 
     def test_no_new_user_is_ever_provisioned_by_creating_a_vault(self) -> None:
         self._login()
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             before = connection.execute("SELECT COUNT(*) AS total FROM users").fetchone()[
                 "total"
             ]
@@ -258,7 +259,7 @@ class VaultCreationTests(VaultCreationHttpTestCase):
         response = self._create("Docs")
 
         self.assertEqual(response.status_code, 201, response.text)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             after = connection.execute("SELECT COUNT(*) AS total FROM users").fetchone()[
                 "total"
             ]

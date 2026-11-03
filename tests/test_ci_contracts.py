@@ -52,7 +52,7 @@ class PullRequestCiContractTests(unittest.TestCase):
         triggers = _workflow_on(workflow)
         self.assertIn("pull_request", triggers)
         job_names = set(workflow["jobs"])
-        self.assertIn("sqlite-and-postgresql", job_names)
+        self.assertIn("unit-and-migration-tests", job_names)
         self.assertIn("s3-compatible-integrity", job_names)
         self.assertIn("playwright-e2e", job_names)
         s3_job_runs = "\n".join(
@@ -185,18 +185,18 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertIn("e2e", scripts["lint"])
         self.assertIn("git diff --exit-code", scripts["check:generated"])
 
-    def test_pr_isolates_postgresql_tests_from_the_sqlite_unit_job(self) -> None:
+    def test_pr_isolates_postgresql_tests_from_the_postgresql_unit_job(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
         jobs = workflow["jobs"]
-        sqlite_job = jobs["sqlite-and-postgresql"]
+        postgresql_job = jobs["unit-and-migration-tests"]
         python_job = jobs["python-unit-tests"]
         postgres_job = jobs["postgresql-tests"]
         self.assertEqual(
             python_job["strategy"]["matrix"]["shard"],
             [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
         )
-        self.assertEqual(sqlite_job["needs"], "python-unit-tests")
-        self.assertEqual(sqlite_job["if"], "${{ always() }}")
+        self.assertEqual(postgresql_job["needs"], ["python-unit-tests", "postgresql-tests"])
+        self.assertEqual(postgresql_job["if"], "${{ always() }}")
         python_runs = "\n".join(
             step.get("run", "") for step in python_job["steps"]
         )
@@ -206,8 +206,12 @@ class PullRequestCiContractTests(unittest.TestCase):
             python_job["steps"][-1].get("env", {}).get("SHARD_COUNT"),
             "12",
         )
-        self.assertNotIn("postgres", python_job.get("services") or {})
-        self.assertNotIn("TEST_POSTGRES_URL", python_job.get("env") or {})
+        self.assertIn("postgres", python_job.get("services") or {})
+        self.assertIn("TEST_POSTGRES_URL", python_job.get("env") or {})
+        for name in ("python-unit-tests", "postgresql-tests", "s3-compatible-integrity", "playwright-e2e"):
+            self.assertEqual(jobs[name]["services"]["postgres"]["image"], "postgres:16")
+            self.assertIn("TEST_POSTGRES_URL", jobs[name]["env"])
+        self.assertIn('if path.stem != "test_migrations_postgresql"', python_runs)
         self.assertIn("postgres", postgres_job.get("services") or {})
         postgres_runs = "\n".join(
             step.get("run", "") for step in postgres_job["steps"]

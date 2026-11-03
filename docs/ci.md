@@ -9,15 +9,15 @@ Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.y
 
 | Job | What it proves | Credentials |
 | --- | --- | --- |
-| Unit and migration tests | Python `unittest` suite against SQLite, partitioned across twelve parallel shards by packing largest test modules first so slow files do not land together, then reported through one stable aggregate check. PostgreSQL-only cases skip here and run in the parallel job below. | None. Live AWS/MinIO env vars are intentionally unset so S3 integration cases skip. |
+| Unit and migration tests | Python `unittest` suite against isolated `postgres:16` services, partitioned across twelve parallel shards by packing largest test modules first. The stable aggregate requires all shards and the dedicated migration/concurrency job below. Each fixture uses its own database, with a migrated HEAD template for fresh fixtures; populated upgrades/downgrades still run Alembic. No database regression skips without configuration. | None. Live AWS/MinIO env vars are intentionally unset so S3 integration cases skip. |
 | PostgreSQL migration and concurrency tests | PostgreSQL-specific migration and concurrency cases against `postgres:16`. | Ephemeral Postgres service only. |
 | Frontend generate and typecheck | Regenerates the committed OpenAPI TypeScript artifacts from `frontend/openapi.json`, fails on generated-artifact drift, then runs the strict browser/Node/Vitest/Playwright TypeScript projects. | None. |
 | Frontend lint and unit tests | ESLint (including `e2e/`) and Vitest on Node 22, in parallel with typecheck and the production build. | None. |
 | Frontend unit tests (Node 24) | The same Vitest suite on Node 24, which `frontend/package.json` engines already allow. Guards Blob/Response/WebCrypto download checks that can pass on Node 22 and fail on jsdom+Node 24. | None. |
 | Frontend production build | Vite production build only (`npm run build:ci`); TypeScript is already checked in the parallel typecheck job. | None. |
-| Playwright e2e (mobile-375 / desktop-1280) | Chromium Playwright against uvicorn + SQLite with seeded fixtures, split into two parallel projects: 375×667 and 1280×800. | None. Placeholder AWS env only; no live cloud calls. Browsers cached under `~/.cache/ms-playwright`. Uses `E2E_PYTHON=python` (setup-python on PATH; no repo `.venv` in CI). Failure screenshots upload as `playwright-e2e-failures-<project>`; successful 375px shots as `playwright-e2e-375px`. |
+| Playwright e2e (mobile-375 / desktop-1280) | Chromium Playwright against uvicorn + isolated PostgreSQL 16 with seeded fixtures, split into two parallel projects: 375×667 and 1280×800. | None. Placeholder AWS env only; no live cloud calls. Browsers cached under `~/.cache/ms-playwright`. Uses `E2E_PYTHON=python` (setup-python on PATH; no repo `.venv` in CI). Failure screenshots upload as `playwright-e2e-failures-<project>`; successful 375px shots as `playwright-e2e-375px`. |
 | Production image PostgreSQL backup | Builds the production Docker image, checks `pg_dump`/`pg_restore`/`createdb`/`dropdb`/`psql`, then runs Alembic + `backup_upgrade --skip-upgrade` + isolated restore verification against `postgres:16` | Ephemeral Postgres service only. |
-| S3-compatible integrity (MinIO) | Real SDK upload/recovery SHA-256 proofs against a versioned S3-compatible endpoint (plaintext, empty, Unicode, multipart cutoff; all four bucket BPA flags required) plus prefix cleanup | Ephemeral moto S3 server (`moto[server]` pinned, from PyPI) on `127.0.0.1:9000`. No AWS account. The job keeps its historical name because release gates require it; MinIO no longer publishes community images (Docker Hub `minio/minio` is gone and `quay.io/minio/minio` refuses anonymous pulls). |
+| S3-compatible integrity (MinIO) | Real SDK upload/recovery SHA-256 proofs against a versioned S3-compatible endpoint (plaintext, empty, Unicode, multipart cutoff; all four bucket BPA flags required) plus prefix cleanup | Ephemeral PostgreSQL 16 and moto S3 server (`moto[server]` pinned, from PyPI) on `127.0.0.1:9000`. No AWS account. The job keeps its historical name because release gates require it; MinIO no longer publishes community images (Docker Hub `minio/minio` is gone and `quay.io/minio/minio` refuses anonymous pulls). |
 
 Failed S3-compatible cleanup writes `artifacts/s3-cleanup-report.json` and uploads it as a
 workflow artifact. Rerun cleanup locally or in CI with:
@@ -55,7 +55,7 @@ Workflow: [`.github/workflows/publish-image.yml`](../.github/workflows/publish-i
   `workflow_run` and `pull_request_target` are forbidden.
 - A `require-ci` job gates publish on the **exact commit SHA** (or the git tag
   `vX.Y.Z` when promoting). It waits for GitHub check runs from [CI](../.github/workflows/migrations.yml):
-  SQLite aggregate, PostgreSQL 16, MinIO S3-compatible integrity, frontend
+  PostgreSQL unit/migration aggregate, PostgreSQL concurrency, MinIO S3-compatible integrity, frontend
   generate/typecheck/lint/unit/Node 24/build, Playwright (375 and 1280), and
   the production-image PostgreSQL backup. Missing, pending, cancelled, skipped,
   or failed checks block the image. The script is

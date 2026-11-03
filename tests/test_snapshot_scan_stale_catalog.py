@@ -7,6 +7,8 @@ newer verified upload (B). The scan must keep B, never delete it.
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import os
 import tempfile
 import unittest
@@ -24,7 +26,7 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.storage import scan_cloud
 from tests.test_database import run_alembic
 
@@ -96,7 +98,7 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
         self.database_path = Path(self._tmp.name) / "catalog.db"
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(id, username, display_name, password_hash)
@@ -111,7 +113,7 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
             )
 
     def _scan(self, s3: _ListingS3, scan_id: str) -> None:
-        settings = SimpleNamespace(db_backend="sqlite", sqlite_path=str(self.database_path))
+        settings = SimpleNamespace(database_dsn=database_dsn(str(self.database_path)))
         with (
             patch("app.database.settings", settings),
             patch("app.storage.validate_cloud_vault"),
@@ -120,7 +122,7 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
             scan_cloud(dict(VAULT), scan_id)
 
     def _versions(self) -> dict[str, str]:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             rows = ArchiveCatalog(connection).list_versions(2, "report.txt")
         return {row["provider_version_id"]: row["availability"] for row in rows}
 
@@ -138,7 +140,7 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
         self.assertEqual(versions.get("s3-b"), "available")
         # A is superseded, not a loss: no false missing-copy incident.
         self.assertEqual(versions.get("s3-a"), "purged")
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             incidents = connection.execute(
                 "SELECT COUNT(*) AS n FROM catalog_incidents"
             ).fetchone()
@@ -148,13 +150,13 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
         for integrity in ("unverified", "mismatch"):
             with self.subTest(integrity=integrity):
                 self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
-                with SQLiteConnection(str(self.database_path)) as connection:
+                with PostgresConnection(str(self.database_path)) as connection:
                     connection.execute("UPDATE archive_versions SET integrity=%s", (integrity,))
                 s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 10)])
                 self._scan(s3, _scan_id())
                 self.assertEqual(s3.deleted, [])
                 self.assertEqual(set(self._versions().values()), {"available"})
-                with SQLiteConnection(str(self.database_path)) as connection:
+                with PostgresConnection(str(self.database_path)) as connection:
                     rows = connection.execute("SELECT integrity FROM archive_versions").fetchall()
                 self.assertFalse(any(row["integrity"] == "verified" for row in rows))
 
@@ -166,7 +168,7 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
         self.assertEqual(s3.deleted, [])
 
     def _verify(self, provider: str) -> None:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute("UPDATE archive_versions SET integrity='verified', plaintext_sha256=%s WHERE provider_version_id=%s", ("a" * 64, provider))
 
     def test_extra_is_purged_only_with_verified_newest_keeper_present(self) -> None:
@@ -188,7 +190,7 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
     def test_active_job_prevents_scan_cleanup(self) -> None:
         self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
         self._verify("s3-a")
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             file_id = connection.execute("SELECT vault_file_id FROM archive_versions").fetchone()["vault_file_id"]
             connection.execute("INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_at, updated_at) VALUES (2, %s, 'report.txt', 'upload', 'queued', '2026-11-03', '2026-11-03')", (file_id,))
         s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 10)])

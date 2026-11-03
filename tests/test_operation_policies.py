@@ -8,6 +8,8 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import hashlib
 import os
 import tempfile
@@ -17,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.catalog import ArchiveCatalog
-from app.database import SQLiteConnection
+
 from app.services.operation_policies import (
     OperationPolicy,
     file_is_stable,
@@ -36,13 +38,13 @@ class OperationPolicyDefaultTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / "policies.db"
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs')"
             )
 
     def test_missing_row_means_manual_upload_and_no_exclusions(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             policy = get_policy(connection, 1)
         self.assertEqual(
             policy,
@@ -182,7 +184,7 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / "policies.db"
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs')"
             )
@@ -196,7 +198,7 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
             include_globs=("**/*.pdf",),
             exclude_globs=("tmp/**",),
         )
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             stored = set_policy(connection, 1, desired)
             loaded = get_policy(connection, 1)
         self.assertEqual(stored, desired)
@@ -210,7 +212,7 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
         def update_policy() -> None:
             transition_started.wait(2)
             try:
-                with SQLiteConnection(str(self.path)) as connection:
+                with PostgresConnection(str(self.path)) as connection:
                     set_policy(connection, 1, OperationPolicy(auto_upload=True))
             except BaseException as exc:
                 errors.append(exc)
@@ -219,7 +221,7 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
 
         thread = threading.Thread(target=update_policy)
         thread.start()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "UPDATE vaults SET decommission_state='decommissioning' WHERE id=1"
             )
@@ -230,7 +232,7 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIsInstance(errors[0], LookupError)
         self.assertEqual(str(errors[0]), "vault_quiesced")
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             count = connection.execute(
                 "SELECT COUNT(*) AS total FROM vault_operation_policies WHERE vault_id=1"
             ).fetchone()["total"]
@@ -247,7 +249,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         self.path = self.root / "catalog.db"
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "INSERT INTO users(id, username, display_name, password_hash) "
                 "VALUES (1, 'owner', 'Owner', 'hash')"
@@ -274,7 +276,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         os.utime(stable, (old, old))
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             catalog = ArchiveCatalog(connection)
             for name, path in (
                 ("ready.txt", stable),
@@ -325,7 +327,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
 
         os.utime(target, (old, old))
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             ArchiveCatalog(connection).observe_local_copy(
                 vault_id=2,
                 path="ready.txt",
@@ -360,7 +362,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         os.utime(target, (old, old))
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
         digest = hashlib.sha256(original).hexdigest()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(
                 vault_id=2,
@@ -444,7 +446,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         os.utime(target, (old, old))
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
         digest = hashlib.sha256(payload).hexdigest()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(
                 vault_id=2,
@@ -536,7 +538,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         os.utime(target, (old, old))
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
         digest = hashlib.sha256(payload).hexdigest()
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(
                 vault_id=2,
@@ -596,7 +598,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
 
         now = datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc)
         due_version_id = None
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             catalog = ArchiveCatalog(connection)
             for name, verified_at in (
                 ("due.txt", "2026-07-01T12:00:00+00:00"),

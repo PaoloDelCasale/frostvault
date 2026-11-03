@@ -1,4 +1,4 @@
-"""Shared SQLite/PostgreSQL preservation contract for migration #415."""
+"""Shared PostgreSQL preservation contract for migration #415."""
 from __future__ import annotations
 
 from typing import Any

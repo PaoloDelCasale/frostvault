@@ -7,6 +7,8 @@ Seams under test:
 """
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -16,7 +18,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.database import SQLiteConnection
+
 from app.main import app
 from app.security import hash_password
 from app.services import notifications
@@ -41,7 +43,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -95,7 +97,7 @@ class NotificationDeliveryTests(unittest.TestCase):
             ).fetchone()["id"]
 
     def test_enqueue_creates_retrievable_in_app_notification(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             item = notifications.enqueue_notification(
                 connection,
                 user_id=self.user_id,
@@ -115,7 +117,7 @@ class NotificationDeliveryTests(unittest.TestCase):
 
     def test_terminal_events_always_reach_the_owner_inbox_without_email(self) -> None:
         with patch.object(notifications, "settings", replace(settings, smtp_host="")):
-            with SQLiteConnection(str(self.path)) as connection:
+            with PostgresConnection(str(self.path)) as connection:
                 for status, event in (
                     ("completed", "job_completed"), ("failed", "job_failed"),
                 ):
@@ -145,7 +147,7 @@ class NotificationDeliveryTests(unittest.TestCase):
                 ).fetchone()["total"], 0)
 
     def test_unread_count_ignores_limit_and_historical_email_only_rows(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             for index in range(3):
                 notifications.enqueue_notification(
                     connection, user_id=self.user_id, vault_id=self.vault_id,
@@ -171,7 +173,7 @@ class NotificationDeliveryTests(unittest.TestCase):
             smtp_from_address="alerts@example.com", smtp_to_address="owner@example.com",
         )
         with patch.object(notifications, "settings", email_settings):
-            with SQLiteConnection(str(self.path)) as connection:
+            with PostgresConnection(str(self.path)) as connection:
                 connection.execute(
                     "UPDATE jobs SET status='failed' WHERE id=%s", (self.job_id,)
                 )
@@ -195,7 +197,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertEqual([row["channel"] for row in deliveries], ["email"])
 
     def test_removed_channels_are_rejected_before_writing_any_notification(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             for channel in ("webhook", "push"):
                 with self.subTest(channel=channel), self.assertRaises(ValueError):
                     notifications.enqueue_notification(
@@ -207,7 +209,7 @@ class NotificationDeliveryTests(unittest.TestCase):
             ).fetchone()["total"], 0)
 
     def test_keyed_terminal_notification_renders_italian_and_legacy_fallback(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             notifications.enqueue_notification(
                 connection,
                 user_id=self.user_id,
@@ -240,7 +242,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertEqual(historical["body"], "Historical body")
 
     def test_mark_notification_read_persists_for_visible_member(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             item = notifications.enqueue_notification(
                 connection,
                 user_id=self.user_id,
@@ -263,7 +265,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertIsNotNone(stored["read_at"])
 
     def test_mark_notification_read_rejects_cross_user_without_mutation(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             item = notifications.enqueue_notification(
                 connection,
                 user_id=self.user_id,
@@ -285,7 +287,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertIsNone(stored["read_at"])
 
     def test_list_filters_unread_and_read_independently(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             older_unread = notifications.enqueue_notification(
                 connection,
                 user_id=self.user_id,
@@ -327,7 +329,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertEqual({item["id"] for item in unread}, {older_unread["id"], newer_unread["id"]})
 
     def test_list_before_id_bounds_incremental_history(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             ids = []
             for index in range(5):
                 item = notifications.enqueue_notification(
@@ -350,7 +352,7 @@ class NotificationDeliveryTests(unittest.TestCase):
 
     def test_list_has_more_sentinel_works_at_max_public_page_size(self) -> None:
         """Public limit=200 must still detect a 201st row via internal sentinel."""
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             for index in range(201):
                 notifications.enqueue_notification(
                     connection,
@@ -371,7 +373,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertEqual(len(fetched), 201)
 
     def test_mark_all_notifications_read_is_idempotent_and_user_scoped(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             first = notifications.enqueue_notification(
                 connection,
                 user_id=self.user_id,
@@ -430,7 +432,7 @@ class NotificationDeliveryTests(unittest.TestCase):
             connection.execute("INSERT INTO missing_notification_table(id) VALUES (1)")
             return 0
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 "UPDATE jobs SET status='completed' WHERE id=%s", (self.job_id,)
             )
@@ -444,7 +446,7 @@ class NotificationDeliveryTests(unittest.TestCase):
                 )
             self.assertIsNone(enqueued)
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
                 "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
             ).fetchone()
@@ -461,7 +463,7 @@ class NotificationDeliveryTests(unittest.TestCase):
             smtp_from_address="alerts@example.com", smtp_to_address="owner@example.com",
         )
         with patch.object(notifications, "settings", email_settings):
-            with SQLiteConnection(str(self.path)) as connection:
+            with PostgresConnection(str(self.path)) as connection:
                 notifications.enqueue_notification(
                     connection, user_id=self.user_id, vault_id=self.vault_id,
                     event="upload_verified", title="Upload verified",
@@ -502,7 +504,7 @@ class NotificationReadHttpTests(unittest.TestCase):
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             self.owner_id = connection.execute(
                 """
                 INSERT INTO users(username, display_name, password_hash)
@@ -529,8 +531,7 @@ class NotificationReadHttpTests(unittest.TestCase):
 
         self.test_settings = replace(
             settings,
-            db_backend="sqlite",
-            sqlite_path=str(self.path),
+            database_dsn=database_dsn(str(self.path)),
             cookie_secure=False,
             allowed_hosts="",
             trusted_proxies="",
@@ -544,7 +545,7 @@ class NotificationReadHttpTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             self.owner_token = create_session(
                 connection, user_id=self.owner_id, auth_method="local"
             )
@@ -561,7 +562,7 @@ class NotificationReadHttpTests(unittest.TestCase):
         self.client.cookies.set(self.test_settings.csrf_cookie_name, csrf)
 
     def _create_notification(self) -> int:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             item = notifications.enqueue_notification(
                 connection,
                 user_id=self.owner_id,
@@ -573,7 +574,7 @@ class NotificationReadHttpTests(unittest.TestCase):
         return int(item["id"])
 
     def test_notifications_http_count_is_independent_of_limit_and_email_only(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             for index in range(3):
                 notifications.enqueue_notification(
                     connection,
@@ -628,7 +629,7 @@ class NotificationReadHttpTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertTrue(response.json()["read"])
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             row = connection.execute(
                 "SELECT read_at FROM notifications WHERE id=%s",
                 (notification_id,),
@@ -646,7 +647,7 @@ class NotificationReadHttpTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 404, response.text)
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             row = connection.execute(
                 "SELECT read_at FROM notifications WHERE id=%s",
                 (notification_id,),
@@ -654,7 +655,7 @@ class NotificationReadHttpTests(unittest.TestCase):
         self.assertIsNone(row["read_at"])
 
     def test_notifications_http_has_more_at_max_limit(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             for index in range(201):
                 notifications.enqueue_notification(
                     connection,
@@ -673,7 +674,7 @@ class NotificationReadHttpTests(unittest.TestCase):
         self.assertEqual(body["unread_count"], 201)
 
     def test_notifications_http_filters_status_and_reports_has_more(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             older = notifications.enqueue_notification(
                 connection,
                 user_id=self.owner_id,
@@ -726,7 +727,7 @@ class NotificationReadHttpTests(unittest.TestCase):
         self.assertEqual(invalid.status_code, 422, invalid.text)
 
     def test_mark_all_read_http_is_idempotent_and_authz_scoped(self) -> None:
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             first = notifications.enqueue_notification(
                 connection,
                 user_id=self.owner_id,
@@ -766,7 +767,7 @@ class NotificationReadHttpTests(unittest.TestCase):
         self.assertEqual(second_response.json()["marked_count"], 0)
         self.assertEqual(second_response.json()["unread_count"], 0)
 
-        with SQLiteConnection(str(self.path)) as connection:
+        with PostgresConnection(str(self.path)) as connection:
             owner_unread = connection.execute(
                 "SELECT COUNT(*) AS total FROM notifications "
                 "WHERE user_id=%s AND read_at IS NULL",

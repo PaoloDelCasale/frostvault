@@ -14,6 +14,8 @@ Seams under test (confirmed):
 """
 from __future__ import annotations
 
+from tests.postgres import PostgresConnection, database_dsn
+
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -22,7 +24,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.config import Settings
-from app.database import SQLiteConnection
+
 from app.services import source_layout
 from app.services import vaults as vaults_service
 from tests.test_database import run_alembic
@@ -46,7 +48,7 @@ class _AdoptionFixture(unittest.TestCase):
         self.albums.mkdir()
         (self.albums / "photo.jpg").write_bytes(b"jpeg-bytes")
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 "INSERT INTO users(id, username, display_name, password_hash) "
                 "VALUES (1, 'alice', 'Alice', 'hash')"
@@ -54,15 +56,13 @@ class _AdoptionFixture(unittest.TestCase):
 
         self.settings = replace(
             Settings(),
-            db_backend="sqlite",
-            sqlite_path=str(self.database_path),
+            database_dsn=database_dsn(str(self.database_path)),
             vault_s3_bucket="test-bucket",
 
         )
         for target in (
             "app.database.settings",
             "app.services.vaults.settings",
-            "app.services.source_directories.settings",
         ):
             patcher = patch(target, self.settings)
             patcher.start()
@@ -80,7 +80,7 @@ class _AdoptionFixture(unittest.TestCase):
         self.addCleanup(mount_patcher.stop)
 
     def _vault_count(self) -> int:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             row = connection.execute("SELECT COUNT(*) AS total FROM vaults").fetchone()
         return int(row["total"])
 
@@ -229,7 +229,7 @@ class VaultAdoptionOverlapTests(_AdoptionFixture):
     """Seam 5: Vault root overlap and concurrent adoption fail closed."""
 
     def _insert_vault(self, source_root: Path, *, enabled: bool = True) -> None:
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 """
                 INSERT INTO vaults(
@@ -240,7 +240,7 @@ class VaultAdoptionOverlapTests(_AdoptionFixture):
                     'Existing', %s, 'bucket', 'vaults/existing/', %s
                 )
                 """,
-                (str(source_root), 1 if enabled else 0),
+                (str(source_root), enabled),
             )
 
     def test_exact_inside_and_contains_overlap_are_rejected(self) -> None:
@@ -262,8 +262,8 @@ class VaultAdoptionOverlapTests(_AdoptionFixture):
             self._adopt(name="Contains", relative_path="albums")
         self.assertEqual(contains.exception.reason, "overlap")
 
-        with SQLiteConnection(str(self.database_path)) as connection:
-            connection.execute("UPDATE vaults SET enabled=0 WHERE id=1")
+        with PostgresConnection(str(self.database_path)) as connection:
+            connection.execute("UPDATE vaults SET enabled=FALSE WHERE id=1")
         with self.assertRaises(vaults_service.VaultAdoptionError) as disabled:
             self._adopt(name="Disabled", relative_path="albums/2020")
         self.assertEqual(disabled.exception.reason, "overlap")
@@ -304,7 +304,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
 
     def _adopt_for_verified_scan(self):
         created = self._adopt()
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             return connection.execute("SELECT * FROM vaults WHERE id=%s", (created["id"],)).fetchone()
 
     def test_successful_adoption_scan_catalogs_existing_regular_file(self) -> None:
@@ -325,7 +325,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
             result = scan_vault(dict(vault))
 
         self.assertGreaterEqual(result.get("local", 0), 1)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             rows = ArchiveCatalog(connection).list_file_rows(int(vault["id"]))
         by_path = {row["path"]: row for row in rows}
         self.assertIn("photo.jpg", by_path)
@@ -368,7 +368,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         scan_tree(dict(vault), "before")
         (self.albums / "old.jpg").unlink()
         (self.albums / "healthy.jpg").write_bytes(b"healthy new content")
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             version_id = ArchiveCatalog(connection).record_archive_version(
                 vault_id=vault["id"], path="photo.jpg", object_key="only/photo.jpg",
                 provider_version_id="only-copy", size=10, storage_class="STANDARD",
@@ -393,7 +393,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         renames.assert_not_called()
         self.assertEqual(result["local"], 1)
         self.assertEqual(result["local_incomplete"], 1)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             problems = connection.execute("SELECT event, message_params FROM notifications").fetchall()
             self.assertTrue(any(p["event"] == "file_unreadable" and "photo.jpg" in p["message_params"] for p in problems))
             self.assertFalse(any(p["event"] == "protection_blocked" for p in problems))
@@ -408,7 +408,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         from app.storage import _verified_local_scan
 
         vault = self._adopt_for_verified_scan()
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             connection.execute("UPDATE vaults SET relocation_state='scan_required' WHERE id=%s", (vault["id"],))
         vault["relocation_state"] = "scan_required"
         real_open = os.open
@@ -423,11 +423,11 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         with patch("app.storage.hash_stable_regular_file", side_effect=PermissionError("denied")):
             *_, complete = _verified_local_scan(vault, "hash-incomplete")
         self.assertFalse(complete)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             self.assertEqual(connection.execute("SELECT relocation_state FROM vaults WHERE id=%s", (vault["id"],)).fetchone()["relocation_state"], "scan_required")
         *_, complete = _verified_local_scan(vault, "complete")
         self.assertTrue(complete)
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             self.assertEqual(connection.execute("SELECT relocation_state FROM vaults WHERE id=%s", (vault["id"],)).fetchone()["relocation_state"], "ready")
 
     def test_incomplete_scan_still_holds_and_notifies_cloud_only_conflicts(self) -> None:
@@ -439,7 +439,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
 
         vault = self._adopt_for_verified_scan()
         scan_tree(dict(vault), "before")
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             catalog = ArchiveCatalog(connection)
             version_id = catalog.record_archive_version(
                 vault_id=vault["id"], path="photo.jpg", object_key="only/photo.jpg",
@@ -469,7 +469,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         self.assertEqual(result["local_incomplete"], 1)
         self.assertEqual(result["auto_uploads"], 0)
         cloud.return_value.delete_object.assert_not_called()
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             self.assertEqual(connection.execute("SELECT availability FROM archive_versions WHERE id=%s", (version_id,)).fetchone()["availability"], "available")
             events = {r["event"] for r in connection.execute("SELECT event FROM notifications").fetchall()}
             self.assertLessEqual({"file_unreadable", "cloud_only_conflict"}, events)
@@ -485,7 +485,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         count = scan_tree(dict(vault), "scan-adopt-1")
         self.assertGreaterEqual(count, 2)
 
-        with SQLiteConnection(str(self.database_path)) as connection:
+        with PostgresConnection(str(self.database_path)) as connection:
             rows = ArchiveCatalog(connection).list_file_rows(int(vault["id"]))
         by_path = {row["path"]: row for row in rows}
         self.assertEqual(by_path["photo.jpg"]["local_file_type"], "regular")
