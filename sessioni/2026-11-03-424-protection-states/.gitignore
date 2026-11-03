@@ -7,3 +7,4 @@ ci-*.log
 initial-ci-failed.log
 pip-install.log
 npm-ci.log
+e2e-failure/
