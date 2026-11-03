@@ -7,12 +7,14 @@ CRC32 supports FULL_OBJECT multipart checksums (SHA256 is composite in S3).
 from __future__ import annotations
 
 import base64
+import logging
 import threading
 import zlib
 from pathlib import Path
 from typing import Any, Callable
 
 from boto3.s3.transfer import TransferConfig
+from botocore.exceptions import ClientError
 from s3transfer.bandwidth import BandwidthLimiter, LeakyBucket
 from s3transfer.manager import TransferManager
 from s3transfer.subscribers import BaseSubscriber
@@ -52,7 +54,14 @@ class _UploadClient:
         return self.response
 
     def abort_multipart_upload(self, **kwargs: Any) -> dict[str, Any]:
-        result = self.client.abort_multipart_upload(**kwargs)
+        try:
+            result = self.client.abort_multipart_upload(**kwargs)
+        except ClientError as exc:
+            # Completion may have succeeded but its response was interrupted.
+            # Never delete a completed object to compensate an ambiguous result.
+            if exc.response.get("Error", {}).get("Code") != "NoSuchUpload":
+                raise
+            result = {}
         self.pending = None
         return result
 
@@ -115,7 +124,18 @@ def upload_file(
         response = facade.response
         if not response or not response.get("VersionId") or response["VersionId"] == "null":
             raise RuntimeError("Upload stored without an S3 VersionId; bucket Versioning is required")
-        if response.get("ChecksumCRC32") != checksum or response.get("ChecksumType", "FULL_OBJECT") != "FULL_OBJECT":
+        proof = response
+        if not proof.get("ChecksumCRC32"):
+            # Some compatible servers omit checksums in completion responses.
+            # Read ONLY the response VersionId's independently computed checksum;
+            # never discover identity from HEAD or accept size/ETag as integrity.
+            proof = client.head_object(Bucket=bucket, Key=key,
+                                       VersionId=response["VersionId"], ChecksumMode="ENABLED")
+            if str(proof.get("VersionId") or "") != str(response["VersionId"]):
+                raise RuntimeError("S3 checksum proof returned a different VersionId")
+            if proof.get("ChecksumType") != "FULL_OBJECT":
+                raise RuntimeError("S3 did not confirm the FULL_OBJECT upload checksum")
+        if proof.get("ChecksumCRC32") != checksum or proof.get("ChecksumType", "FULL_OBJECT") != "FULL_OBJECT":
             raise RuntimeError("S3 did not confirm the FULL_OBJECT upload checksum")
         failed = False
         return response
@@ -128,4 +148,12 @@ def upload_file(
             if facade.pending is not None:
                 # Explicit fallback if SDK cleanup failed/interruption raced
                 # initiation. Lifecycle also reaps uploads after process death.
-                facade.abort_multipart_upload(**facade.pending)
+                try:
+                    facade.abort_multipart_upload(**facade.pending)
+                except Exception:
+                    # Preserve the original cancellation/transport exception and
+                    # therefore the existing Job retry classification. Never log
+                    # provider messages, keys or credentials from cleanup errors.
+                    logging.getLogger(__name__).warning(
+                        "Incomplete multipart abort failed; lifecycle cleanup is required"
+                    )

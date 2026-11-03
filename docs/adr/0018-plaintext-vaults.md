@@ -23,8 +23,11 @@ restore. The unified Recovery Kit belongs to #427, not this removal.
 #420 replaces the transport with managed SDK multipart uploads. S3 validates a
 CRC32 FULL_OBJECT checksum supplied at completion (SHA256 multipart checksums
 would be composite). VersionId is captured from PutObject/CompleteMultipartUpload,
-never inferred from a later HEAD. A single streamed GetObject of that exact
-VersionId is compared to the durable local SHA256 snapshot. Concurrent uploads
+never inferred from a later HEAD. If a compatible server omits the checksum in
+its completion response, an exact-VersionId checksum-enabled HEAD must independently
+confirm the FULL_OBJECT CRC32; missing/composite/wrong checksums fail closed.
+A single streamed GetObject of that exact VersionId is compared to the durable
+local SHA256 snapshot. Concurrent uploads
 share one bandwidth budget; progress writes are throttled. Cancellation/failure
 cancels the manager and explicitly aborts incomplete multipart uploads, while a
 seven-day prefix-only lifecycle rule catches process crashes. Completed objects

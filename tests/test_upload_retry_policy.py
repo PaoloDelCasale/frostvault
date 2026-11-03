@@ -47,6 +47,14 @@ class UploadRetryPolicyTests(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertEqual(classify_upload_failure(message), "transient")
 
+    def test_sdk_endpoint_and_interrupted_body_failures_keep_job_retries(self) -> None:
+        from botocore.exceptions import EndpointConnectionError, IncompleteReadError, ResponseStreamingError
+        for error in (EndpointConnectionError(endpoint_url="https://example.invalid"),
+                      IncompleteReadError(actual_bytes=3, expected_bytes=10),
+                      ResponseStreamingError(error="connection interrupted")):
+            with self.subTest(error=type(error).__name__):
+                self.assertEqual(classify_upload_failure(str(error)), "transient")
+
     def test_source_mutation_retries_are_bounded(self) -> None:
         self.assertGreaterEqual(UPLOAD_RETRY_MAX_ATTEMPTS, 1)
 

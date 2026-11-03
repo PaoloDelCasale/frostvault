@@ -45,8 +45,26 @@ class ManagedUploadTests(unittest.TestCase):
         for response in ({"VersionId": "v"}, {"ChecksumCRC32": "abc"}, {"VersionId": "null"}):
             with self.subTest(response=response), Stubber(self.client) as stub:
                 stub.add_response("put_object", response)
+                if response == {"VersionId": "v"}:
+                    stub.add_response("head_object", {"VersionId": "v"})
                 with self.assertRaises(RuntimeError):
                     self.upload()
+
+    def test_missing_completion_checksum_requires_exact_version_full_object_proof(self):
+        checksum = base64.b64encode(zlib.crc32(b"content").to_bytes(4, "big")).decode()
+        for head, succeeds in (({"VersionId": "response-v", "ChecksumType": "FULL_OBJECT", "ChecksumCRC32": checksum}, True),
+                               ({"VersionId": "current-other", "ChecksumType": "FULL_OBJECT", "ChecksumCRC32": checksum}, False),
+                               ({"VersionId": "response-v", "ChecksumType": "COMPOSITE", "ChecksumCRC32": checksum}, False),
+                               ({"VersionId": "response-v", "ChecksumType": "FULL_OBJECT", "ChecksumCRC32": "wrong"}, False)):
+            with self.subTest(head=head), Stubber(self.client) as stub:
+                stub.add_response("put_object", {"VersionId": "response-v"})
+                stub.add_response("head_object", head, {"Bucket": "bucket", "Key": "vaults/id/file", "VersionId": "response-v", "ChecksumMode": "ENABLED"})
+                if succeeds:
+                    self.assertEqual(self.upload()["VersionId"], "response-v")
+                else:
+                    with self.assertRaises(RuntimeError):
+                        self.upload()
+                stub.assert_no_pending_responses()
 
     def test_multipart_full_object_checksum_and_response_identity(self):
         payload = b"x" * (9 * 1024 * 1024)
@@ -98,6 +116,33 @@ class ManagedUploadTests(unittest.TestCase):
                 with self.assertRaises(OperationCancelled):
                     self.upload(b"x" * (9 * 1024 * 1024), check_active=active)
             stub.assert_no_pending_responses()
+
+    def test_interrupted_completion_preserves_original_error_and_never_deletes(self):
+        from botocore.exceptions import ClientError
+        with Stubber(self.client) as stub:
+            stub.add_response("create_multipart_upload", {"UploadId": "mpu"})
+            for i in range(2):
+                stub.add_response("upload_part", {"ETag": f"part-{i}"})
+            stub.add_client_error("complete_multipart_upload", service_error_code="RequestTimeout")
+            # The object may already be committed. Abort is safe/idempotent;
+            # deleting a completed version to roll back would not be safe.
+            stub.add_client_error("abort_multipart_upload", service_error_code="NoSuchUpload")
+            with self.assertRaises(ClientError) as error:
+                self.upload(b"x" * (9 * 1024 * 1024))
+            self.assertEqual(error.exception.response["Error"]["Code"], "RequestTimeout")
+            stub.assert_no_pending_responses()
+
+    def test_source_change_during_checksum_pass_prevents_transfer(self):
+        checks = 0
+        def mutate():
+            nonlocal checks
+            checks += 1
+            if checks == 2:
+                self.path.write_bytes(b"new-longer-content")
+        with patch.object(self.client, "put_object") as put:
+            with self.assertRaisesRegex(RuntimeError, "changed since fingerprinting"):
+                self.upload(check_active=mutate)
+            put.assert_not_called()
 
     def test_bandwidth_budget_is_shared_across_concurrent_managers(self):
         self.assertIs(_shared_budget(1024), _shared_budget(1024))

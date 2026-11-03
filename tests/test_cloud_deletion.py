@@ -70,12 +70,16 @@ def _prepare_vault_with_versions(
             VALUES (1, 'owner', 'Owner', 'hash')
             """
         )
+        # The migration test seeds a pre-SDK schema; current fixtures have no
+        # transport identity. Keep the historical column only at that boundary.
+        legacy_column = ", rclone_remote" if revision != "head" else ""
+        legacy_value = ", 'remote'" if revision != "head" else ""
         connection.execute(
-            """
+            f"""
             INSERT INTO vaults(
-                id, slug, name, source_root, s3_bucket, s3_prefix, cloud_deletion_enabled
+                id, slug, name, source_root, s3_bucket, s3_prefix, cloud_deletion_enabled{legacy_column}
             ) VALUES (
-                2, 'docs', 'Docs Archive', %s, 'bucket', 'docs', %s
+                2, 'docs', 'Docs Archive', %s, 'bucket', 'docs', %s{legacy_value}
             )
             """,
             (str(source), cloud_deletion_enabled),

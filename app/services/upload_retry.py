@@ -32,6 +32,11 @@ _TRANSIENT_UPLOAD_FAILURE_MARKERS = (
     "connection reset",
     "connection refused",
     "connection aborted",
+    # SDK endpoint/stream exceptions after botocore's own retries are exhausted.
+    "could not connect to the endpoint url",
+    "connection was closed before",
+    "read, but total bytes expected",
+    "error occurred while reading from response stream",
     "network is unreachable",
     "no route to host",
     "broken pipe",

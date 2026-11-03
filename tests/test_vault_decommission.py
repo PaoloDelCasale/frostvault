@@ -755,9 +755,10 @@ class VaultDecommissionMigrationTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix, enabled
+                        id, slug, name, source_root, s3_bucket, s3_prefix,
+                        rclone_remote, enabled
                     ) VALUES (7, 'archive', 'Archive', '/source', 'bucket',
-                              'vaults/archive/', FALSE)
+                              'vaults/archive/', 'remote', FALSE)
                     """
                 )
             upgraded = run_alembic(path)
