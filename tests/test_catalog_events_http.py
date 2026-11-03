@@ -252,7 +252,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
             self.assertEqual(event["domain"], "catalog")
             self.assertEqual(
                 event["payload"]["invalidate"],
-                ["files", "stats", "rename_candidates"],
+                ["files", "stats"],
             )
             self.assertEqual(event["payload"]["reason"], "filesystem_watch")
             self.assertEqual(event["payload"]["changed_paths"], 5)
@@ -638,7 +638,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         self.assertEqual(signal["revision"], total)
         self.assertEqual(
             sorted(signal["domains"]),
-            ["files", "rename_candidates", "stats"],
+            ["files", "stats"],
         )
         self.assertLessEqual(events_read, MAX_CATCHUP_EVENTS)
         # High-water + one bounded page only — never O(n) queries.

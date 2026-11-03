@@ -135,7 +135,6 @@ class CloudDeletionHttpTests(unittest.TestCase):
         response = self.client.get("/api/vault/cloud-deletion")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertFalse(response.json()["enabled"])
-        self.assertIn("Delete Marker", response.json()["delete_marker_explanation"])
 
         enabled = self.client.put(
             "/api/vault/cloud-deletion",
@@ -158,11 +157,6 @@ class CloudDeletionHttpTests(unittest.TestCase):
                 "UPDATE sessions SET reauth_at=%s WHERE user_id=%s",
                 ("2000-01-01T00:00:00+00:00", self.owner_id),
             )
-        archive = self.client.post(
-            "/api/cloud-archive",
-            json={"path": "report.txt", "is_directory": False},
-            headers=self._headers(),
-        )
         purge = self.client.post(
             "/api/cloud-purge",
             json={
@@ -174,9 +168,8 @@ class CloudDeletionHttpTests(unittest.TestCase):
             },
             headers=self._headers(),
         )
-        for response in (archive, purge):
-            self.assertEqual(response.status_code, 403, response.text)
-            self.assertEqual(response.json(), {"error": "reauth_required"})
+        self.assertEqual(purge.status_code, 403, purge.text)
+        self.assertEqual(purge.json(), {"error": "reauth_required"})
         with SQLiteConnection(str(self.path)) as connection:
             jobs = connection.execute("SELECT COUNT(*) AS total FROM jobs").fetchone()
         # The only cloud copy is untouched: nothing was even scheduled.

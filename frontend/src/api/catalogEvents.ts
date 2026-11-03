@@ -3,7 +3,6 @@
 export type CatalogInvalidationDomains =
   | "files"
   | "stats"
-  | "rename_candidates"
   | (string & {});
 
 export type CatalogRevisionSignal = {
@@ -22,7 +21,6 @@ export type CatalogHelloSignal = {
 const DEFAULT_DOMAINS: CatalogInvalidationDomains[] = [
   "files",
   "stats",
-  "rename_candidates",
 ];
 
 export function catalogEventsUrl(afterRevision = 0): string {

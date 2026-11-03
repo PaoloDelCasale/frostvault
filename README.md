@@ -64,13 +64,17 @@ Search remains global across every file in the selected vault.
 - A lifecycle pin suspends automatic storage-class transitions for a path until
   it is unpinned. Automatic lifecycle policies may move data only to deeper
   classes; they never warm it.
-- **Hide in cloud** creates a reversible Delete Marker and retains noncurrent
-  Archive Versions. **Purge from cloud permanently** deletes every selected
-  Archive Version and Delete Marker after a confirmed, cancellable delay.
+- **Purge from cloud permanently** deletes every selected Archive Version and
+  Delete Marker after a confirmed, cancellable delay.
   A recently reauthenticated Owner can skip the remaining delay with
   **Delete now**.
 - Cloud actions work on files and folders. Permanent folder and vault purges
   batch S3 deletions while preserving per-item failures for safe retries.
+- Safe renames are recognized automatically only for unique, identical content
+  observed within the scan window. The new cloud key is verified before cleaning
+  up the old key (permanently under Current Snapshot). Ambiguous matches stay new
+  files; no cloud content is deleted on their behalf. Path History is internal,
+  not a UI action, and there is no manual rename confirmation.
 - Archive statistics, file-state badges, and Job progress refresh automatically
   while background operations are active.
 
@@ -366,9 +370,12 @@ model and reconnect semantics.
 ## Indicative minimum AWS permissions
 
 The application role/user must be able to list the bucket and, within the
-configured prefix, read, upload, and request object restores. **Hide in cloud**
-and permanent purge additionally require `s3:DeleteObject` and
-`s3:DeleteObjectVersion`; omit them when vault cloud deletion remains disabled.
+configured prefix, read, upload, and request object restores. Automatic rename
+cleanup requires `s3:DeleteObject` (Archive History) or `s3:DeleteObjectVersion`
+(Current Snapshot). Current Snapshot also needs `s3:DeleteObjectVersion` to
+remove superseded versions after verified uploads; permanent purge uses it too.
+Disabling the manual cloud-deletion setting does not disable verified snapshot
+replacement or automatic rename cleanup.
 
 Use the Terraform baseline in
 [`infra/terraform/archive-bucket/`](infra/terraform/archive-bucket/) or apply

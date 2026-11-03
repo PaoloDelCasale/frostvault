@@ -18,7 +18,6 @@ from typing import Any
 DEFAULT_INVALIDATE_DOMAINS: tuple[str, ...] = (
     "files",
     "stats",
-    "rename_candidates",
 )
 
 

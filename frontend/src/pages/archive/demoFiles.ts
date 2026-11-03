@@ -17,7 +17,6 @@ import {
 } from "./fileSort";
 import type {
   ArchiveVersionItem,
-  ArchiveVersionSummary,
   FilesResponse,
   JobGroup,
   JobsResponse,
@@ -305,17 +304,6 @@ function demoVersionsForPath(path: string): ArchiveVersionItem[] {
   return [...versions].sort(
     (left, right) => right.version_number - left.version_number,
   );
-}
-
-function demoVersionSummaries(path: string): ArchiveVersionSummary[] {
-  return demoVersionsForPath(path).map((version) => ({
-    version_number: version.version_number,
-    uploaded_at: version.created_at,
-    storage_class: version.storage_class,
-    size: version.size,
-    object_key: version.object_key,
-    storage_class_source: version.storage_class_source,
-  }));
 }
 
 const demoActiveJobs: JobsResponse = {
@@ -627,10 +615,6 @@ function applyFileAction(
     item.lifecycle_pinned = true;
   } else if (action === "lifecycle-unpin") {
     item.lifecycle_pinned = false;
-  } else if (action === "cloud-archive") {
-    item.state = "cloud_only";
-    item.local_exists = 0;
-    item.local_size = null;
   }
 }
 
@@ -1007,7 +991,6 @@ export function installDemoFilesFetch(): void {
       return json({
         enabled: true,
         purge_delay_seconds: 60,
-        delete_marker_explanation: "Delete markers hide the current key.",
         generated_phrase: "PURGE-PHRASE",
       });
     }
@@ -1018,16 +1001,6 @@ export function installDemoFilesFetch(): void {
         version_count: 2,
         delete_marker_count: 1,
         byte_count: 2048,
-      });
-    }
-
-    if (path === "/api/file-history") {
-      const historyPath = search.get("path") || "readme.txt";
-      return json({
-        vault_file_id: `demo-${historyPath}`,
-        path: historyPath,
-        path_history: [{ path: historyPath, valid_from: "2024-06-01T00:00:00Z" }],
-        versions: demoVersionSummaries(historyPath),
       });
     }
 
@@ -1086,10 +1059,6 @@ export function installDemoFilesFetch(): void {
 
     if (path === "/api/storage-classes") {
       return json(storageClasses);
-    }
-
-    if (path === "/api/rename-candidates") {
-      return json({ items: [] });
     }
 
     if (path === "/api/catalog/revision") {
@@ -1314,7 +1283,6 @@ export function installDemoFilesFetch(): void {
       "/api/upload",
       "/api/recover",
       "/api/free-space",
-      "/api/cloud-archive",
       "/api/storage-class",
       "/api/cloud-purge",
       "/api/recover/approve",

@@ -296,9 +296,6 @@
         "delete_marker_count": {
           "type": "number"
         },
-        "delete_marker_explanation": {
-          "type": "string"
-        },
         "object_count": {
           "type": "number"
         },
@@ -318,9 +315,6 @@
       "additionalProperties": true,
       "properties": {
         "accepted_single_identity_risk": {
-          "type": "string"
-        },
-        "delete_marker_explanation": {
           "type": "string"
         },
         "enabled": {
@@ -446,37 +440,6 @@
       ],
       "type": "string"
     },
-    "FileHistoryResponse": {
-      "additionalProperties": true,
-      "description": "Path History + Archive Versions for one Vault File (/api/file-history).",
-      "properties": {
-        "path": {
-          "type": "string"
-        },
-        "path_history": {
-          "items": {
-            "$ref": "#/components/schemas/PathHistoryEntry"
-          },
-          "type": "array"
-        },
-        "vault_file_id": {
-          "type": "string"
-        },
-        "versions": {
-          "items": {
-            "$ref": "#/components/schemas/ArchiveVersionSummary"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "vault_file_id",
-        "path",
-        "path_history",
-        "versions"
-      ],
-      "type": "object"
-    },
     "FileOperationAction": {
       "description": "Job / file-operation types (issue #67).",
       "enum": [
@@ -484,7 +447,6 @@
         "recover",
         "free-space",
         "storage-class",
-        "cloud-archive",
         "cloud-purge",
         "rename"
       ],
@@ -1398,30 +1360,6 @@
         "stability_seconds",
         "include_globs",
         "exclude_globs"
-      ],
-      "type": "object"
-    },
-    "PathHistoryEntry": {
-      "additionalProperties": true,
-      "properties": {
-        "path": {
-          "type": "string"
-        },
-        "valid_from": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "valid_to": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "path"
       ],
       "type": "object"
     },

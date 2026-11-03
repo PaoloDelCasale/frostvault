@@ -92,7 +92,7 @@ describe("useCatalogEvents", () => {
     cleanup();
   });
 
-  it("invalidates files/stats/rename queries on catalog signals", async () => {
+  it("invalidates files/stats queries on catalog signals", async () => {
     const client = createQueryClient();
     const invalidateSpy = vi.spyOn(client, "invalidateQueries");
     const catalogHandlers: MessageListener[] = [];
@@ -114,7 +114,7 @@ describe("useCatalogEvents", () => {
       data: JSON.stringify({
         vault_id: 1,
         revision: 3,
-        domains: ["files", "stats", "rename_candidates"],
+        domains: ["files", "stats"],
         has_gap: false,
       }),
     } as MessageEvent<string>);
@@ -125,9 +125,6 @@ describe("useCatalogEvents", () => {
       );
       expect(invalidateSpy).toHaveBeenCalledWith(
         expect.objectContaining({ queryKey: apiQueryKeys.stats }),
-      );
-      expect(invalidateSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ queryKey: ["rename-candidates"] }),
       );
     });
   });

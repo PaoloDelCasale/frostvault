@@ -657,17 +657,6 @@ class RecoverApproveAction(BaseModel):
     group_id: str = Field(min_length=1, max_length=64)
 
 
-class ConfirmRenameAction(BaseModel):
-    vault_file_id: str = Field(min_length=36, max_length=36)
-    new_path: str = Field(max_length=1024)
-    allow_content_change: bool = False
-
-
-class ConfirmFolderRenameAction(BaseModel):
-    old_prefix: str = Field(max_length=1024)
-    new_prefix: str = Field(max_length=1024)
-
-
 class GroupCancelAction(BaseModel):
     group_id: str = Field(min_length=1, max_length=64)
 
@@ -683,14 +672,6 @@ class CloudDeletionSettingUpdate(BaseModel):
 
 
 class CloudDeletionPreviewRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    path: str = Field(min_length=1, max_length=1024)
-    is_directory: bool = False
-    paths: list[str] | None = None
-
-
-class CloudArchiveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str = Field(min_length=1, max_length=1024)
@@ -894,7 +875,6 @@ def build_directory_items(
                         "upload": 0,
                         "recover": 0,
                         "free-space": 0,
-                        "cloud-archive": 0,
                         "cloud-purge": 0,
                         "storage-class": 0,
                     },
@@ -920,7 +900,6 @@ def build_directory_items(
                 "upload": row.get("upload_eligible", row["state"] == "local_only"),
                 "recover": row.get("recover_eligible", row["state"] == "cloud_only"),
                 "free-space": row.get("cleanup_eligible", row["state"] == "both"),
-                "cloud-archive": has_cloud,
                 "cloud-purge": has_cloud,
                 "storage-class": row.get("storage_class_eligible", has_cloud),
             }
@@ -1814,129 +1793,6 @@ def list_files(
     }
 
 
-@app.get(
-    "/api/file-history",
-    response_model=response_model("FileHistoryResponse"),
-    responses={**LOGICAL_PATH_ERROR_RESPONSES, **SCOPED_NOT_FOUND_RESPONSES},
-)
-def file_history(
-    path: str,
-    vault: dict[str, Any] = Depends(current_vault),
-):
-    logical_path = safe_relative_path(path).as_posix()
-    with db() as connection:
-        catalog = ArchiveCatalog(connection)
-        observed = catalog.get_file_by_path(vault["id"], logical_path)
-        if observed is None:
-            raise HTTPException(404, "File not found")
-        versions = catalog.list_versions(vault["id"], logical_path)
-        path_history = catalog.list_path_history(
-            observed["id"], vault_id=vault["id"]
-        )
-    return {
-        "vault_file_id": observed["id"],
-        "path": logical_path,
-        "path_history": path_history,
-        "versions": versions,
-    }
-
-
-@app.get("/api/rename-candidates", response_model=JsonObjectResponse)
-def rename_candidates(vault: dict[str, Any] = Depends(current_vault)):
-    with db() as connection:
-        candidates = ArchiveCatalog(connection).list_rename_candidates(vault["id"])
-    return {"items": candidates}
-
-
-@app.post(
-    "/api/confirm-rename",
-    status_code=202,
-    response_model=JsonObjectResponse,
-    responses={**LOGICAL_PATH_ERROR_RESPONSES, **SCOPED_NOT_FOUND_RESPONSES},
-)
-def confirm_rename(
-    action: ConfirmRenameAction,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
-):
-    if vault_relocation_service.local_work_suspended(vault):
-        raise HTTPException(409, "Local work is suspended pending relocation scan")
-    new_path = safe_relative_path(action.new_path).as_posix()
-    with db() as connection:
-        catalog = ArchiveCatalog(connection)
-        try:
-            confirmed_file_id = catalog.confirm_file_rename(
-                vault_file_id=action.vault_file_id,
-                new_path=new_path,
-                changed_at=now_iso(),
-                vault_id=vault["id"],
-                allow_digest_mismatch=action.allow_content_change,
-            )
-        except VaultFileNotFound as exc:
-            # Do not reveal whether a supplied ID is foreign, retired, or absent.
-            raise HTTPException(404, "Vault File not found") from exc
-    try:
-        queued = queue_jobs(new_path, "rename", vault["id"], user["id"])
-    except HTTPException as exc:
-        if exc.status_code == 409:
-            return {
-                "vault_file_id": confirmed_file_id,
-                "path": new_path,
-                "message": "Rename confirmed; no cloud migration required",
-            }
-        raise
-    return {
-        **queued,
-        "vault_file_id": confirmed_file_id,
-        "path": new_path,
-        "message": "Rename confirmed",
-    }
-
-
-@app.post(
-    "/api/confirm-folder-rename",
-    status_code=202,
-    response_model=JsonObjectResponse,
-    responses={**LOGICAL_PATH_ERROR_RESPONSES, **SCOPED_NOT_FOUND_RESPONSES},
-)
-def confirm_folder_rename(
-    action: ConfirmFolderRenameAction,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
-):
-    if vault_relocation_service.local_work_suspended(vault):
-        raise HTTPException(409, "Local work is suspended pending relocation scan")
-    old_prefix = safe_relative_path(action.old_prefix).as_posix()
-    new_prefix = safe_relative_path(action.new_prefix).as_posix()
-    with db() as connection:
-        catalog = ArchiveCatalog(connection)
-        try:
-            renamed_ids = catalog.confirm_folder_rename(
-                vault_id=vault["id"],
-                old_prefix=old_prefix,
-                new_prefix=new_prefix,
-                changed_at=now_iso(),
-            )
-        except VaultFileNotFound as exc:
-            raise HTTPException(404, "Vault File not found") from exc
-    try:
-        queued = queue_jobs(
-            new_prefix, "rename", vault["id"], user["id"], is_directory=True
-        )
-    except HTTPException as exc:
-        if exc.status_code == 409:
-            return {
-                "renamed_ids": renamed_ids,
-                "message": "Folder rename confirmed; no cloud migration required",
-            }
-        raise
-    return {
-        **queued,
-        "renamed_ids": renamed_ids,
-        "message": "Folder rename confirmed",
-    }
-
-
 @app.get("/api/stats", response_model=response_model("StatsResponse"))
 def stats(vault: dict[str, Any] = Depends(current_vault)):
     source_root = vault.get("source_root") or ""
@@ -2759,7 +2615,6 @@ def cancel_job_group(
         "recover": "job.recovery_stopped",
         "free-space": "job.cleanup_stopped",
         "rename": "job.rename_stopped",
-        "cloud-archive": "job.cloud_archive_stopped",
         "cloud-purge": "job.cloud_purge_stopped",
         "storage-class": "job.storage_class_stopped",
     }
@@ -2768,7 +2623,7 @@ def cancel_job_group(
     message_key = message_keys[job_action]
     message = translate(message_key, locale=DEFAULT_LOCALE)
     with db() as connection:
-        if job_action in {"cloud-archive", "cloud-purge"}:
+        if job_action == "cloud-purge":
             try:
                 cancelled = cloud_deletion_service.cancel_cloud_deletion(
                     connection,
@@ -3065,7 +2920,7 @@ def update_lifecycle_pin(
     }
 
 
-def _cloud_deletion_paths(action: CloudDeletionPreviewRequest | CloudArchiveRequest | CloudPurgeRequest) -> list[str]:
+def _cloud_deletion_paths(action: CloudDeletionPreviewRequest | CloudPurgeRequest) -> list[str]:
     if action.paths:
         return list(action.paths)
     return [action.path]
@@ -3080,7 +2935,6 @@ def get_cloud_deletion_setting(vault: dict[str, Any] = Depends(current_vault)):
     return {
         "enabled": enabled,
         "purge_delay_seconds": _runtime_settings().cloud_purge_delay_seconds,
-        "delete_marker_explanation": cloud_deletion_service.delete_marker_explanation(),
         "generated_phrase": cloud_deletion_service.generate_confirmation_phrase(),
         "accepted_single_identity_risk": (
             "This installation may use one IAM identity for ordinary archive "
@@ -3124,38 +2978,6 @@ def preview_cloud_deletion(
         )
     return {
         **preview.as_dict(),
-        "delete_marker_explanation": cloud_deletion_service.delete_marker_explanation(),
-    }
-
-
-@app.post("/api/cloud-archive", status_code=202, response_model=JsonObjectResponse)
-def cloud_archive(
-    action: CloudArchiveRequest,
-    request: Request,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    try:
-        with db() as connection:
-            scheduled = cloud_deletion_service.schedule_cloud_archive(
-                connection,
-                vault_id=vault["id"],
-                paths=_cloud_deletion_paths(action),
-                is_directory=action.is_directory,
-                actor_user_id=user["id"],
-                requested_at=now_iso(),
-            )
-    except cloud_deletion_service.CloudDeletionDisabled as exc:
-        raise HTTPException(403, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    return {
-        "group_id": scheduled.group_id,
-        "job_ids": scheduled.job_ids,
-        "preview": scheduled.preview.as_dict(),
-        "delete_marker_explanation": cloud_deletion_service.delete_marker_explanation(),
-        **_api_message(request, "api.cloud_archive_started"),
     }
 
 

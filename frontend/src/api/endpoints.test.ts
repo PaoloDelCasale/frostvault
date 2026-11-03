@@ -2,8 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { configureApiClient, resetApiClientForTests } from "./client";
 import {
-  confirmFileRename,
-  confirmFolderRename,
   confirmRecoveryCustody,
   downloadAdminMetadataBackup,
   fetchAdminMetadataBackups,
@@ -14,7 +12,6 @@ import {
   fetchI18nCatalog,
   fetchMe,
   fetchNotifications,
-  fetchRenameCandidates,
   fetchVaults,
   relocateAdminVault,
   requestScan,
@@ -69,40 +66,6 @@ describe("foundation endpoint helpers", () => {
     expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get("X-CSRF-Token")).toBe(
       "from-me",
     );
-  });
-
-  it("uses current-Vault rename routes and shared CSRF handling", async () => {
-    document.cookie = "frostvault_csrf=rename-csrf";
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ items: [] }))
-      .mockResolvedValueOnce(jsonResponse({ vault_file_id: "old-id" }, 202))
-      .mockResolvedValueOnce(jsonResponse({ renamed_ids: ["old-id"] }, 202));
-
-    await expect(fetchRenameCandidates()).resolves.toEqual({ items: [] });
-    await confirmFileRename({
-      vault_file_id: "00000000-0000-0000-0000-000000000001",
-      new_path: "new/name.txt",
-    });
-    await confirmFolderRename({ old_prefix: "old", new_prefix: "new" });
-
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/rename-candidates");
-    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("GET");
-    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/confirm-rename");
-    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
-      method: "POST",
-      body: JSON.stringify({
-        vault_file_id: "00000000-0000-0000-0000-000000000001",
-        new_path: "new/name.txt",
-      }),
-    });
-    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/confirm-folder-rename");
-    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({
-      method: "POST",
-      body: JSON.stringify({ old_prefix: "old", new_prefix: "new" }),
-    });
-    for (const call of fetchMock.mock.calls.slice(1)) {
-      expect(new Headers(call[1]?.headers).get("X-CSRF-Token")).toBe("rename-csrf");
-    }
   });
 
   it("uses the notification inbox contracts", async () => {

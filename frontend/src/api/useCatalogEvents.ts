@@ -48,14 +48,6 @@ function invalidateForSignal(
       }),
     );
   }
-  if (domains.includes("rename_candidates") || signal.has_gap) {
-    tasks.push(
-      queryClient.invalidateQueries({
-        queryKey: ["rename-candidates"],
-        refetchType: "active",
-      }),
-    );
-  }
   void Promise.all(tasks);
 }
 

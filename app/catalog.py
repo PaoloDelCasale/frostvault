@@ -1348,7 +1348,11 @@ class ArchiveCatalog:
         )
 
     def list_rename_candidates(self, vault_id: int) -> list[dict[str, Any]]:
-        """Match newly missing Local Copies to newly present paths by digest."""
+        """Return only unique equal-digest matches within the scan window.
+
+        Ambiguous, stale and changed-content paths remain independent Vault
+        Files. No manual decision can merge them or authorize cloud deletion.
+        """
         rows = self.connection.execute(
             """
             SELECT
@@ -1376,33 +1380,26 @@ class ArchiveCatalog:
         ).fetchall()
         missing_by_digest: dict[str, list[dict[str, Any]]] = {}
         present_by_digest: dict[str, list[dict[str, Any]]] = {}
-        missing_rows: list[dict[str, Any]] = []
-        present_rows: list[dict[str, Any]] = []
         for row in rows:
             digest = str(row["digest"]).lower()
             if row["presence"] == "missing":
                 missing_by_digest.setdefault(digest, []).append(row)
-                missing_rows.append(row)
             else:
                 present_by_digest.setdefault(digest, []).append(row)
-                present_rows.append(row)
         candidates: list[dict[str, Any]] = []
-        claimed_ids: set[str] = set()
         for digest, digest_missing in missing_by_digest.items():
             digest_present = present_by_digest.get(digest, [])
             if not digest_present:
                 continue
-            unique = len(digest_missing) == 1 and len(digest_present) == 1
-            decision = "auto" if unique else "ambiguous"
-            if unique and not _within_rename_window(
+            if len(digest_missing) != 1 or len(digest_present) != 1:
+                continue
+            if not _within_rename_window(
                 digest_missing[0]["observed_at"],
                 digest_present[0]["observed_at"],
             ):
-                decision = "review"
+                continue
             for missing in digest_missing:
                 for present in digest_present:
-                    claimed_ids.add(str(missing["vault_file_id"]))
-                    claimed_ids.add(str(present["vault_file_id"]))
                     candidates.append(
                         {
                             "missing_vault_file_id": missing["vault_file_id"],
@@ -1410,43 +1407,9 @@ class ArchiveCatalog:
                             "new_vault_file_id": present["vault_file_id"],
                             "new_path": present["path"],
                             "digest": digest,
-                            "decision": decision,
                             "size": present.get("size"),
                         }
                     )
-        missing_by_name: dict[str, list[dict[str, Any]]] = {}
-        present_by_name: dict[str, list[dict[str, Any]]] = {}
-        for row in missing_rows:
-            if str(row["vault_file_id"]) in claimed_ids:
-                continue
-            missing_by_name.setdefault(_path_basename(row["path"]), []).append(row)
-        for row in present_rows:
-            if str(row["vault_file_id"]) in claimed_ids:
-                continue
-            present_by_name.setdefault(_path_basename(row["path"]), []).append(row)
-        for basename, named_missing in missing_by_name.items():
-            named_present = present_by_name.get(basename, [])
-            if len(named_missing) != 1 or len(named_present) != 1:
-                continue
-            missing = named_missing[0]
-            present = named_present[0]
-            if str(missing["digest"]).lower() == str(present["digest"]).lower():
-                continue
-            if not _within_rename_window(
-                missing["observed_at"], present["observed_at"]
-            ):
-                continue
-            candidates.append(
-                {
-                    "missing_vault_file_id": missing["vault_file_id"],
-                    "missing_path": missing["path"],
-                    "new_vault_file_id": present["vault_file_id"],
-                    "new_path": present["path"],
-                    "digest": str(present["digest"]).lower(),
-                    "decision": "content_changed",
-                    "size": present.get("size"),
-                }
-            )
         return candidates
 
     def _rename_backend(self) -> str:
@@ -1691,7 +1654,6 @@ class ArchiveCatalog:
         vault_file_id: str,
         new_path: str,
         vault_id: int,
-        require_matching_digest: bool = True,
     ) -> dict[str, Any] | None:
         query = """
             SELECT
@@ -1754,8 +1716,7 @@ class ArchiveCatalog:
               AND provisional_copy.plaintext_sha256 IS NOT NULL
               AND provisional_copy.cloud_only_version_id IS NULL
         """
-        if require_matching_digest:
-            query += """
+        query += """
               AND lower(provisional_copy.plaintext_sha256)
                   = lower(missing_copy.plaintext_sha256)
             """
@@ -1780,7 +1741,6 @@ class ArchiveCatalog:
         new_path: str,
         changed_at: str,
         vault_id: int,
-        allow_digest_mismatch: bool = False,
     ) -> str:
         """Atomically consume one current, Vault-local rename candidate.
 
@@ -1790,17 +1750,18 @@ class ArchiveCatalog:
         the caller's transaction rolls back all earlier transitions.
         """
         self._reserve_rename_confirmation(vault_id)
+        if not any(
+            candidate["missing_vault_file_id"] == vault_file_id
+            and candidate["new_path"] == new_path
+            for candidate in self.list_rename_candidates(vault_id)
+        ):
+            raise VaultFileNotFound()
         snapshot = self._load_rename_candidate(
             vault_file_id=vault_file_id,
             new_path=new_path,
             vault_id=vault_id,
-            require_matching_digest=not allow_digest_mismatch,
         )
         if snapshot is None:
-            raise VaultFileNotFound()
-        if allow_digest_mismatch and _path_basename(
-            snapshot["missing_path"]
-        ) != _path_basename(snapshot["provisional_path"]):
             raise VaultFileNotFound()
         # The endpoint maps VaultFileNotFound to its non-oracular 404 outside
         # the transaction. Keep this scoped rollback too, so direct catalog
@@ -2012,60 +1973,6 @@ class ArchiveCatalog:
         )
         self.connection.execute("RELEASE SAVEPOINT rename_confirmation_cas")
         return vault_file_id
-
-    def confirm_folder_rename(
-        self,
-        *,
-        vault_id: int,
-        old_prefix: str,
-        new_prefix: str,
-        changed_at: str,
-    ) -> list[str]:
-        """Rename every descendant under ``old_prefix`` in one logical batch."""
-        old_prefix = old_prefix.strip("/")
-        new_prefix = new_prefix.strip("/")
-        if not old_prefix or not new_prefix:
-            raise ValueError("Folder rename prefixes must be non-empty")
-        if old_prefix == new_prefix:
-            return []
-        self._reserve_rename_confirmation(vault_id)
-        escaped = (
-            old_prefix.replace("\\", "\\\\")
-            .replace("%", "\\%")
-            .replace("_", "\\_")
-        )
-        rows = self.connection.execute(
-            """
-            SELECT vf.id AS vault_file_id, fp.path
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id
-             AND fp.vault_id=vf.vault_id
-             AND fp.valid_to IS NULL
-            WHERE vf.vault_id=%s
-              AND vf.status='active'
-              AND (fp.path=%s OR fp.path LIKE %s ESCAPE '\\')
-            ORDER BY lower(fp.path)
-            """,
-            (vault_id, old_prefix, f"{escaped}/%"),
-        ).fetchall()
-        renamed_ids: list[str] = []
-        for row in rows:
-            path = row["path"]
-            if path == old_prefix:
-                new_path = new_prefix
-            elif path.startswith(f"{old_prefix}/"):
-                new_path = f"{new_prefix}/{path[len(old_prefix) + 1:]}"
-            else:
-                continue
-            self.confirm_file_rename(
-                vault_file_id=row["vault_file_id"],
-                new_path=new_path,
-                changed_at=changed_at,
-                vault_id=vault_id,
-            )
-            renamed_ids.append(row["vault_file_id"])
-        return renamed_ids
 
     def list_path_history(
         self, vault_file_id: str, *, vault_id: int

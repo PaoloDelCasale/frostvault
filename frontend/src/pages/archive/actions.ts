@@ -20,7 +20,6 @@ export type RowActionId =
   | "storage-class"
   | "lifecycle-pin"
   | "lifecycle-unpin"
-  | "cloud-archive"
   | "cloud-purge";
 
 export type RowAction = {
@@ -39,7 +38,6 @@ export const ROW_ACTION_CATEGORY: Record<RowActionId, RowActionCategory> = {
   "storage-class": "storage",
   "lifecycle-pin": "storage",
   "lifecycle-unpin": "storage",
-  "cloud-archive": "deletion",
   "cloud-purge": "deletion",
 };
 
@@ -136,7 +134,7 @@ function fileHasCloudContent(item: ArchiveListItem): boolean {
 function directoryCloudDeletionCount(item: ArchiveListItem): number {
   if (!isDirectory(item)) return 0;
   const available = item.available_actions || {};
-  const counted = available["cloud-purge"] ?? available["cloud-archive"];
+  const counted = available["cloud-purge"];
   if (typeof counted === "number" && counted > 0) return counted;
   // Fallback when older API payloads omit cloud deletion counts: any
   // cloud-bearing state under the folder means at least one target.
@@ -233,16 +231,10 @@ export function availableActions(
 
   if (caps.cloud_deletion_enabled) {
     if (isVaultFile(item) && fileHasCloudContent(item)) {
-      actions.push({ id: "cloud-archive", count: 1, tone: "default" });
       actions.push({ id: "cloud-purge", count: 1, tone: "danger" });
     } else if (isDirectory(item)) {
       const cloudCount = directoryCloudDeletionCount(item);
       if (cloudCount > 0) {
-        actions.push({
-          id: "cloud-archive",
-          count: cloudCount,
-          tone: "default",
-        });
         actions.push({ id: "cloud-purge", count: cloudCount, tone: "danger" });
       }
     }
@@ -260,7 +252,6 @@ const ROW_ACTION_LABEL_KEYS: Record<RowActionId, string> = {
   "storage-class": "ui.row_action_storage_class",
   "lifecycle-pin": "ui.row_action_lifecycle_pin",
   "lifecycle-unpin": "ui.row_action_lifecycle_unpin",
-  "cloud-archive": "ui.row_action_cloud_archive",
   "cloud-purge": "ui.row_action_cloud_purge",
 };
 
@@ -271,7 +262,6 @@ const ROW_ACTION_HINT_KEYS: Record<RowActionId, string> = {
   "storage-class": "ui.row_action_storage_class_hint",
   "lifecycle-pin": "ui.row_action_lifecycle_pin_hint",
   "lifecycle-unpin": "ui.row_action_lifecycle_unpin_hint",
-  "cloud-archive": "ui.row_action_cloud_archive_hint",
   "cloud-purge": "ui.row_action_cloud_purge_hint",
 };
 
@@ -328,7 +318,6 @@ export function operationStatusLabel(
 export function isDestructiveAction(action: RowActionId): boolean {
   return (
     action === "free-space" ||
-    action === "cloud-archive" ||
     action === "cloud-purge"
   );
 }

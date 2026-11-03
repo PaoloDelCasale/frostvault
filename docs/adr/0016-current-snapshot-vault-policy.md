@@ -15,9 +15,9 @@ that single Archive Version as they do under Archive History.
 
 Rename still keeps one Vault File and Path History. After the new key is
 verified, every VersionId at the old key is deleted rather than hidden
-(derogates ADR-0001 for this policy only). Hide in cloud and permanent purge
-both remain: Hide is a reversible Delete Marker on the single copy; Purge
-destroys it. A Local Copy can still be removed without touching cloud.
+(derogates ADR-0001 for this policy only). Manual cloud hiding has been removed
+(#417, decision #366 Q4). Permanent purge remains a separate explicit action;
+a Local Copy can still be removed without touching cloud.
 
 Because a verified upload deletes the previous version, content that appears
 at the path of a file whose Local Copy was absent is never uploaded

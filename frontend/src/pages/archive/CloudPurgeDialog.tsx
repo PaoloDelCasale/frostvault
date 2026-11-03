@@ -82,9 +82,6 @@ export function CloudPurgeDialog({
         <p className="text-sm text-muted" data-testid="cloud-purge-local-note">
           {t("ui.cloud_purge_local_note")}
         </p>
-        {settings?.delete_marker_explanation ? (
-          <p className="text-sm text-muted">{settings.delete_marker_explanation}</p>
-        ) : null}
         {preview ? (
           <p className="text-sm font-bold text-ink" data-testid="cloud-purge-preview">
             {t("ui.cloud_purge_preview", {

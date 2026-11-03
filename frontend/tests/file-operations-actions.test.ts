@@ -62,7 +62,6 @@ const directory: ArchiveListItem = {
     upload: 2,
     recover: 1,
     "free-space": 3,
-    "cloud-archive": 2,
     "cloud-purge": 2,
     "storage-class": 2,
   },
@@ -87,14 +86,12 @@ describe("availableActions — capability gating (seam 2)", () => {
       "free-space",
       "storage-class",
       "lifecycle-pin",
-      "cloud-archive",
       "cloud-purge",
     ]);
     expect(availableActions(cloudOnlyFile, ownerCaps).map((a) => a.id)).toEqual([
       "recover",
       "storage-class",
       "lifecycle-pin",
-      "cloud-archive",
       "cloud-purge",
     ]);
   });
@@ -102,7 +99,7 @@ describe("availableActions — capability gating (seam 2)", () => {
   it("marks only permanent purge as danger; free-space stays default", () => {
     const actions = availableActions(eligibleFile, ownerCaps);
     expect(actions.find((a) => a.id === "free-space")?.tone).toBe("default");
-    expect(actions.find((a) => a.id === "cloud-archive")?.tone).toBe("default");
+    expect(actions.map((a) => a.id)).not.toContain("cloud-archive");
     expect(actions.find((a) => a.id === "cloud-purge")?.tone).toBe("danger");
   });
 
@@ -132,7 +129,6 @@ describe("availableActions — capability gating (seam 2)", () => {
       "recover",
       "storage-class",
       "lifecycle-pin",
-      "cloud-archive",
       "cloud-purge",
     ]);
     expect(
@@ -140,7 +136,7 @@ describe("availableActions — capability gating (seam 2)", () => {
     ).not.toContain("free-space");
   });
 
-  it("hides cloud-archive and cloud-purge when cloud_deletion_enabled is off", () => {
+  it("hides cloud-purge when cloud_deletion_enabled is off", () => {
     const caps: VaultCapabilities = {
       ...ownerCaps,
       cloud_deletion_enabled: false,
@@ -168,7 +164,6 @@ describe("availableActions — capability gating (seam 2)", () => {
       "free-space",
       "storage-class",
       "lifecycle-pin",
-      "cloud-archive",
       "cloud-purge",
     ]);
     expect(
@@ -220,7 +215,6 @@ describe("partitionRowActions — essential vs overflow", () => {
       "free-space",
       "storage-class",
       "lifecycle-pin",
-      "cloud-archive",
       "cloud-purge",
     ]);
     expect(
@@ -234,12 +228,10 @@ describe("actionHint — scope copy", () => {
     const t = (key: string) =>
       ({
         "ui.row_action_free_space_hint": "local only",
-        "ui.row_action_cloud_archive_hint": "hide cloud",
         "ui.row_action_cloud_purge_hint": "purge cloud",
         "ui.row_action_storage_class_hint": "change class",
       })[key] ?? key;
     expect(actionHint("free-space", t)).toBe("local only");
-    expect(actionHint("cloud-archive", t)).toBe("hide cloud");
     expect(actionHint("cloud-purge", t)).toBe("purge cloud");
     expect(actionHint("storage-class", t)).toBe("change class");
   });
@@ -252,7 +244,6 @@ describe("endpointForAction — route mapping (seam 1 foundation)", () => {
     expect(endpointForAction("free-space")).toBe("/api/free-space");
     expect(endpointForAction("storage-class")).toBe("/api/storage-class");
     expect(endpointForAction("lifecycle-pin")).toBe("/api/lifecycle-pin");
-    expect(endpointForAction("cloud-archive")).toBe("/api/cloud-archive");
     expect(endpointForAction("cloud-purge")).toBe("/api/cloud-purge");
   });
 });

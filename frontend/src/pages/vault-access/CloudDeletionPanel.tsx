@@ -22,7 +22,7 @@ export function CloudDeletionPanel({ onNotice }: CloudDeletionPanelProps) {
     try {
       const data = await fetchCloudDeletion();
       setEnabled(Boolean(data.enabled));
-      setHelp(data.delete_marker_explanation || t("access.cloud_deletion_help"));
+      setHelp(t("access.cloud_deletion_help"));
       setRisk(data.accepted_single_identity_risk || "");
       setLoadState(
         data.enabled

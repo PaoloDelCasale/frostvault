@@ -212,23 +212,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/cloud-archive": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Cloud Archive */
-        post: operations["cloud_archive_api_cloud_archive_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/cloud-deletion/preview": {
         parameters: {
             query?: never;
@@ -277,57 +260,6 @@ export interface paths {
          * @description Skip the cancellable delay and queue permanent purge immediately.
          */
         post: operations["accelerate_cloud_purge_api_cloud_purge_accelerate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/confirm-folder-rename": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Confirm Folder Rename */
-        post: operations["confirm_folder_rename_api_confirm_folder_rename_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/confirm-rename": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Confirm Rename */
-        post: operations["confirm_rename_api_confirm_rename_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/file-history": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** File History */
-        get: operations["file_history_api_file_history_get"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -678,23 +610,6 @@ export interface paths {
         put?: never;
         /** Recover Estimate */
         post: operations["recover_estimate_api_recover_estimate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/rename-candidates": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Rename Candidates */
-        get: operations["rename_candidates_api_rename_candidates_get"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1430,22 +1345,9 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** CloudArchiveRequest */
-        CloudArchiveRequest: {
-            /**
-             * Is Directory
-             * @default false
-             */
-            is_directory: boolean;
-            /** Path */
-            path: string;
-            /** Paths */
-            paths?: string[] | null;
-        };
         CloudDeletionPreview: {
             byte_count: number;
             delete_marker_count: number;
-            delete_marker_explanation?: string;
             object_count: number;
             version_count: number;
         } & {
@@ -1470,7 +1372,6 @@ export interface components {
         };
         CloudDeletionSettings: {
             accepted_single_identity_risk?: string;
-            delete_marker_explanation?: string;
             enabled: boolean;
             generated_phrase?: string;
             purge_delay_seconds?: number;
@@ -1510,25 +1411,6 @@ export interface components {
             paths?: string[] | null;
             /** Reason */
             reason: string;
-        };
-        /** ConfirmFolderRenameAction */
-        ConfirmFolderRenameAction: {
-            /** New Prefix */
-            new_prefix: string;
-            /** Old Prefix */
-            old_prefix: string;
-        };
-        /** ConfirmRenameAction */
-        ConfirmRenameAction: {
-            /**
-             * Allow Content Change
-             * @default false
-             */
-            allow_content_change: boolean;
-            /** New Path */
-            new_path: string;
-            /** Vault File Id */
-            vault_file_id: string;
         };
         /** @description Directory aggregate as returned by /api/files browse mode. */
         DirectoryListItem: {
@@ -1572,20 +1454,11 @@ export interface components {
             /** Restore Tier */
             restore_tier?: string | null;
         };
-        /** @description Path History + Archive Versions for one Vault File (/api/file-history). */
-        FileHistoryResponse: {
-            path: string;
-            path_history: components["schemas"]["PathHistoryEntry"][];
-            vault_file_id: string;
-            versions: components["schemas"]["ArchiveVersionSummary"][];
-        } & {
-            [key: string]: unknown;
-        };
         /**
          * @description Job / file-operation types (issue #67).
          * @enum {string}
          */
-        FileOperationAction: "upload" | "recover" | "free-space" | "storage-class" | "cloud-archive" | "cloud-purge" | "rename";
+        FileOperationAction: "upload" | "recover" | "free-space" | "storage-class" | "cloud-purge" | "rename";
         FileOperationPayload: {
             archive_version_id?: string;
             is_directory?: boolean;
@@ -1971,13 +1844,6 @@ export interface components {
              * @default 300
              */
             stability_seconds: number;
-        };
-        PathHistoryEntry: {
-            path: string;
-            valid_from?: string | null;
-            valid_to?: string | null;
-        } & {
-            [key: string]: unknown;
         };
         /** ReauthRequest */
         ReauthRequest: {
@@ -2794,39 +2660,6 @@ export interface operations {
             };
         };
     };
-    cloud_archive_api_cloud_archive_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CloudArchiveRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     preview_cloud_deletion_api_cloud_deletion_preview_post: {
         parameters: {
             query?: never;
@@ -2922,136 +2755,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    confirm_folder_rename_api_confirm_folder_rename_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ConfirmFolderRenameAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description The requested Vault-scoped resource is absent, stale, or foreign */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        detail: string;
-                    };
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    confirm_rename_api_confirm_rename_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ConfirmRenameAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description The requested Vault-scoped resource is absent, stale, or foreign */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        detail: string;
-                    };
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    file_history_api_file_history_get: {
-        parameters: {
-            query: {
-                path: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FileHistoryResponse"];
-                };
-            };
-            /** @description The requested Vault-scoped resource is absent, stale, or foreign */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        detail: string;
-                    };
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
@@ -3636,26 +3339,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    rename_candidates_api_rename_candidates_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
         };

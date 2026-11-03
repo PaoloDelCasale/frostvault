@@ -417,7 +417,7 @@ def build_preview(
     pending_destructive = sum(
         1
         for row in active_jobs
-        if row["action"] in {"free-space", "cloud-archive", "cloud-purge"}
+        if row["action"] in {"free-space", "cloud-purge"}
     )
     if pending_destructive:
         _append_blocker(

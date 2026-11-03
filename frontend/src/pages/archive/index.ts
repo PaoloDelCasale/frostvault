@@ -4,8 +4,6 @@ export { FileBrowser } from "./FileBrowser";
 export type { FileBrowserProps } from "./FileBrowser";
 export { FileList } from "./FileList";
 export type { FileListProps } from "./FileList";
-export { PathHistoryPanel } from "./PathHistoryPanel";
-export type { PathHistoryPanelProps } from "./PathHistoryPanel";
 export { SafetyFooter } from "./SafetyFooter";
 export { StatsSummary } from "./StatsSummary";
 export { formatBytes, formatCompactCount, formatCount, pickDurationUnit } from "./format";

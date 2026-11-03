@@ -288,41 +288,6 @@
         ],
         "type": "object"
       },
-      "CloudArchiveRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "is_directory": {
-            "default": false,
-            "title": "Is Directory",
-            "type": "boolean"
-          },
-          "path": {
-            "maxLength": 1024,
-            "minLength": 1,
-            "title": "Path",
-            "type": "string"
-          },
-          "paths": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Paths"
-          }
-        },
-        "required": [
-          "path"
-        ],
-        "title": "CloudArchiveRequest",
-        "type": "object"
-      },
       "CloudDeletionPreview": {
         "additionalProperties": {},
         "properties": {
@@ -331,9 +296,6 @@
           },
           "delete_marker_count": {
             "type": "number"
-          },
-          "delete_marker_explanation": {
-            "type": "string"
           },
           "object_count": {
             "type": "number"
@@ -403,9 +365,6 @@
         "additionalProperties": true,
         "properties": {
           "accepted_single_identity_risk": {
-            "type": "string"
-          },
-          "delete_marker_explanation": {
             "type": "string"
           },
           "enabled": {
@@ -525,52 +484,6 @@
           "generated_phrase"
         ],
         "title": "CloudPurgeRequest",
-        "type": "object"
-      },
-      "ConfirmFolderRenameAction": {
-        "properties": {
-          "new_prefix": {
-            "maxLength": 1024,
-            "title": "New Prefix",
-            "type": "string"
-          },
-          "old_prefix": {
-            "maxLength": 1024,
-            "title": "Old Prefix",
-            "type": "string"
-          }
-        },
-        "required": [
-          "old_prefix",
-          "new_prefix"
-        ],
-        "title": "ConfirmFolderRenameAction",
-        "type": "object"
-      },
-      "ConfirmRenameAction": {
-        "properties": {
-          "allow_content_change": {
-            "default": false,
-            "title": "Allow Content Change",
-            "type": "boolean"
-          },
-          "new_path": {
-            "maxLength": 1024,
-            "title": "New Path",
-            "type": "string"
-          },
-          "vault_file_id": {
-            "maxLength": 36,
-            "minLength": 36,
-            "title": "Vault File Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "vault_file_id",
-          "new_path"
-        ],
-        "title": "ConfirmRenameAction",
         "type": "object"
       },
       "DirectoryListItem": {
@@ -700,37 +613,6 @@
         "title": "FileAction",
         "type": "object"
       },
-      "FileHistoryResponse": {
-        "additionalProperties": true,
-        "description": "Path History + Archive Versions for one Vault File (/api/file-history).",
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "path_history": {
-            "items": {
-              "$ref": "#/components/schemas/PathHistoryEntry"
-            },
-            "type": "array"
-          },
-          "vault_file_id": {
-            "type": "string"
-          },
-          "versions": {
-            "items": {
-              "$ref": "#/components/schemas/ArchiveVersionSummary"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "vault_file_id",
-          "path",
-          "path_history",
-          "versions"
-        ],
-        "type": "object"
-      },
       "FileOperationAction": {
         "description": "Job / file-operation types (issue #67).",
         "enum": [
@@ -738,7 +620,6 @@
           "recover",
           "free-space",
           "storage-class",
-          "cloud-archive",
           "cloud-purge",
           "rename"
         ],
@@ -2039,30 +1920,6 @@
           }
         },
         "title": "OperationPolicyUpdate",
-        "type": "object"
-      },
-      "PathHistoryEntry": {
-        "additionalProperties": true,
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "valid_from": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "valid_to": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "path"
-        ],
         "type": "object"
       },
       "ReauthRequest": {
@@ -3988,44 +3845,6 @@
         "summary": "Catalog Revision Snapshot"
       }
     },
-    "/api/cloud-archive": {
-      "post": {
-        "operationId": "cloud_archive_api_cloud_archive_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CloudArchiveRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Cloud Archive"
-      }
-    },
     "/api/cloud-deletion/preview": {
       "post": {
         "operationId": "preview_cloud_deletion_api_cloud_deletion_preview_post",
@@ -4139,178 +3958,6 @@
           }
         },
         "summary": "Accelerate Cloud Purge"
-      }
-    },
-    "/api/confirm-folder-rename": {
-      "post": {
-        "operationId": "confirm_folder_rename_api_confirm_folder_rename_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ConfirmFolderRenameAction"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "detail": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "detail"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "The requested Vault-scoped resource is absent, stale, or foreign"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorResponse"
-                }
-              }
-            },
-            "description": "The logical path is empty, absolute, or traverses outside the Vault"
-          }
-        },
-        "summary": "Confirm Folder Rename"
-      }
-    },
-    "/api/confirm-rename": {
-      "post": {
-        "operationId": "confirm_rename_api_confirm_rename_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ConfirmRenameAction"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "detail": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "detail"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "The requested Vault-scoped resource is absent, stale, or foreign"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorResponse"
-                }
-              }
-            },
-            "description": "The logical path is empty, absolute, or traverses outside the Vault"
-          }
-        },
-        "summary": "Confirm Rename"
-      }
-    },
-    "/api/file-history": {
-      "get": {
-        "operationId": "file_history_api_file_history_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "path",
-            "required": true,
-            "schema": {
-              "title": "Path",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/FileHistoryResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "detail": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "detail"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "The requested Vault-scoped resource is absent, stale, or foreign"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorResponse"
-                }
-              }
-            },
-            "description": "The logical path is empty, absolute, or traverses outside the Vault"
-          }
-        },
-        "summary": "File History"
       }
     },
     "/api/files": {
@@ -5067,24 +4714,6 @@
           }
         },
         "summary": "Recover Estimate"
-      }
-    },
-    "/api/rename-candidates": {
-      "get": {
-        "operationId": "rename_candidates_api_rename_candidates_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Rename Candidates"
       }
     },
     "/api/scan": {

@@ -31,9 +31,10 @@ name. The policy grants:
 ### Accepted single-identity deletion risk
 
 The initial product accepts one IAM identity for ordinary archive operations and
-for permanent `DeleteObject` / `DeleteObjectVersion` calls used by reversible
-archival (Delete Markers) and permanent purge. That identity can therefore both
-write Archive Versions and destroy them.
+for `DeleteObject` / `DeleteObjectVersion` calls used by verified automatic
+rename cleanup, Current Snapshot replacement and permanent purge. There is no
+manual reversible cloud-hiding action. That identity can therefore both write
+Archive Versions and destroy them.
 
 Mitigations built into the application:
 

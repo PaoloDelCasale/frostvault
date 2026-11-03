@@ -7,14 +7,12 @@ import type { ReactNode } from "react";
 import { createElement } from "react";
 
 import {
-  fetchFileHistory,
   fetchFileVersions,
   fetchFiles,
   fetchI18nCatalog,
   fetchJobs,
   fetchMe,
   fetchNotifications,
-  fetchRenameCandidates,
   fetchStats,
   fetchVaults,
 } from "./endpoints";
@@ -30,7 +28,6 @@ export const apiQueryKeys = {
   vaults: ["vaults"] as const,
   stats: ["stats"] as const,
   jobs: ["jobs"] as const,
-  renameCandidates: (vaultId: number) => ["rename-candidates", vaultId] as const,
   i18nCatalog: (locale?: string) => ["i18n", "catalog", locale ?? "default"] as const,
   files: (query: FilesQuery) =>
     [
@@ -44,7 +41,6 @@ export const apiQueryKeys = {
       typeof query.sort === "string" ? query.sort : "",
       typeof query.order === "string" ? query.order : "",
     ] as const,
-  fileHistory: (path: string) => ["file-history", path] as const,
   fileVersions: (path: string) => ["file-versions", path] as const,
   /** Prefix shared by every notifications list query (status-scoped children). */
   notifications: ["notifications"] as const,
@@ -114,21 +110,6 @@ export function filesQueryOptions(
   return {
     queryKey: apiQueryKeys.files(query),
     queryFn: () => fetchFiles(query, options),
-  };
-}
-
-export function renameCandidatesQueryOptions(vaultId: number) {
-  return {
-    queryKey: apiQueryKeys.renameCandidates(vaultId),
-    queryFn: fetchRenameCandidates,
-  };
-}
-
-export function fileHistoryQueryOptions(path: string) {
-  return {
-    queryKey: apiQueryKeys.fileHistory(path),
-    queryFn: () => fetchFileHistory(path),
-    enabled: Boolean(path),
   };
 }
 

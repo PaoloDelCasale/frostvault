@@ -69,7 +69,6 @@ _ACTION_COLUMNS = {
     "upload": "action_upload",
     "recover": "action_recover",
     "free-space": "action_free_space",
-    "cloud-archive": "action_cloud_archive",
     "cloud-purge": "action_cloud_purge",
     "storage-class": "action_storage_class",
 }
@@ -893,7 +892,6 @@ class _DirectoryRollup:
         if contribution.cleanup_eligible:
             self.action_counts["free-space"] += 1
         if contribution.has_cloud:
-            self.action_counts["cloud-archive"] += 1
             self.action_counts["cloud-purge"] += 1
         if contribution.storage_class_eligible:
             self.action_counts["storage-class"] += 1
@@ -1159,7 +1157,6 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
             COALESCE(SUM(classified.upload_eligible), 0) AS action_upload,
             COALESCE(SUM(classified.recover_eligible), 0) AS action_recover,
             COALESCE(SUM(classified.cleanup_eligible), 0) AS action_free_space,
-            COALESCE(SUM(classified.has_cloud), 0) AS action_cloud_archive,
             COALESCE(SUM(classified.has_cloud), 0) AS action_cloud_purge,
             COALESCE(SUM(classified.storage_class_eligible), 0) AS action_storage_class,
             COALESCE(SUM(classified.lifecycle_pinned), 0) AS pinned_count
@@ -1342,7 +1339,6 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
             "upload": int(summary["action_upload"] or 0),
             "recover": int(summary["action_recover"] or 0),
             "free-space": int(summary["action_free_space"] or 0),
-            "cloud-archive": int(summary["action_cloud_archive"] or 0),
             "cloud-purge": int(summary["action_cloud_purge"] or 0),
             "storage-class": int(summary["action_storage_class"] or 0),
         },
@@ -1372,14 +1368,14 @@ def _upsert_rollup(
             item_count, total_size, local_size, cloud_size,
             state_local_only, state_cloud_only, state_both, state_restoring,
             action_upload, action_recover, action_free_space,
-            action_cloud_archive, action_cloud_purge, action_storage_class,
+            action_cloud_purge, action_storage_class,
             pinned_count, storage_class_counts, updated_at
         ) VALUES (
             %s, %s, %s, %s,
             %s, %s, %s, %s,
             %s, %s, %s, %s,
             %s, %s, %s,
-            %s, %s, %s,
+            %s, %s,
             %s, %s, %s
         )
         ON CONFLICT(vault_id, path) DO UPDATE SET
@@ -1396,7 +1392,6 @@ def _upsert_rollup(
             action_upload=excluded.action_upload,
             action_recover=excluded.action_recover,
             action_free_space=excluded.action_free_space,
-            action_cloud_archive=excluded.action_cloud_archive,
             action_cloud_purge=excluded.action_cloud_purge,
             action_storage_class=excluded.action_storage_class,
             pinned_count=excluded.pinned_count,
@@ -1419,7 +1414,6 @@ def _upsert_rollup(
             int(rollup.action_counts.get("upload", 0)),
             int(rollup.action_counts.get("recover", 0)),
             int(rollup.action_counts.get("free-space", 0)),
-            int(rollup.action_counts.get("cloud-archive", 0)),
             int(rollup.action_counts.get("cloud-purge", 0)),
             int(rollup.action_counts.get("storage-class", 0)),
             int(rollup.pinned_count),
@@ -1465,7 +1459,6 @@ def directory_row_to_item(row: Mapping[str, Any]) -> dict[str, Any]:
             "upload": int(row["action_upload"] or 0),
             "recover": int(row["action_recover"] or 0),
             "free-space": int(row["action_free_space"] or 0),
-            "cloud-archive": int(row["action_cloud_archive"] or 0),
             "cloud-purge": int(row["action_cloud_purge"] or 0),
             "storage-class": int(row["action_storage_class"] or 0),
         },
