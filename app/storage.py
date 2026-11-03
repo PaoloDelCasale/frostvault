@@ -104,7 +104,7 @@ from .services.runtime_status import (
     scan_lock_for_vault,
     snapshot_runtime_status_for_stats,
 )
-from .services.fs_preflight import UnreadablePathsError, inspect_entry, walk_entries
+from .services.fs_preflight import inspect_entry, walk_entries
 from .services.problems import report_problem
 from .services.local_files import (
     hash_stable_regular_file,
@@ -641,6 +641,8 @@ def _scan_tree(
     def failed(entry: Path, error: OSError) -> None:
         nonlocal unreadable
         unreadable = True
+        if scan_journal is not None:
+            scan_journal["incomplete"] = True
         relative = entry.relative_to(root).as_posix()
         report_problem(
             connection, event="file_unreadable", vault_id=vault_id, path=relative,
@@ -671,17 +673,17 @@ def _scan_tree(
             flush()
     flush()
     if unreadable:
-        # Preserve every problem before the caller rolls back partial catalog
-        # observations. Never mark unseen copies missing after an incomplete walk.
+        # Keep the per-path problems durable even if a later identity check
+        # rejects the scan. Healthy observations may still be protected, but an
+        # incomplete walk cannot authorize missing transitions or recovery.
         connection.commit()
-        raise UnreadablePathsError("Source scan incomplete: unreadable paths")
 
     if _persisted_scan(vault):
         _current_verified_scan_row(connection, vault)
     access = source_layout.vault_local_access(vault["source_root"])
     alias = access.volume_alias
     safe_scan_result = access.local_operations_allowed or access.volume_health == "scan_required"
-    if finalize_missing and safe_scan_result and (
+    if finalize_missing and not unreadable and safe_scan_result and (
         alias is None or source_layout.should_emit_local_copy_removals(alias)
     ):
         ArchiveCatalog(connection).mark_unseen_local_copies_missing(
@@ -694,7 +696,7 @@ def _scan_tree(
             connection.commit()
     completed_alias = (
         alias
-        if safe_scan_result and alias and source_layout.requires_full_local_scan(alias)
+        if not unreadable and safe_scan_result and alias and source_layout.requires_full_local_scan(alias)
         else None
     )
     return count, completed_alias
@@ -1263,7 +1265,7 @@ def _unfingerprinted_local_rows(vault_id: int) -> list[dict[str, Any]]:
 
 
 def _collect_local_fingerprint_updates(
-    vault: dict[str, Any], root: Path
+    vault: dict[str, Any], root: Path, *, scan_journal: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Hash Local Copies without holding a database write transaction."""
     updates: list[dict[str, Any]] = []
@@ -1274,6 +1276,8 @@ def _collect_local_fingerprint_updates(
                 continue
             digest, stat_result = hash_stable_regular_file(local_path)
         except OSError:
+            if scan_journal is not None:
+                scan_journal["incomplete"] = True
             with db() as connection:
                 report_problem(
                     connection, event="file_unreadable", vault_id=int(vault["id"]),
@@ -1460,7 +1464,7 @@ def _rollback_local_scan_journal(
 
 def _verified_local_scan(
     vault: dict[str, Any], scan_id: str
-) -> tuple[int, dict[str, int], str | None]:
+) -> tuple[int, dict[str, int], str | None, bool]:
     """Walk/hash outside writes, then publish bounded catalog stages.
 
     Local observations are committed in short batches so ordinary SQLite
@@ -1471,7 +1475,11 @@ def _verified_local_scan(
     # Minimal in-memory Vaults are a longstanding unit-test seam. Persisted
     # rows always contain identity columns and always use the staged path.
     if "root_identity" not in vault and "root_identity_version" not in vault:
-        return scan_tree(vault, scan_id), apply_auto_renames(vault), None
+        scan_journal: dict[str, Any] = {}
+        count = scan_tree(vault, scan_id, _scan_journal=scan_journal)
+        complete = not scan_journal.get("incomplete", False)
+        renames = apply_auto_renames(vault, _recognize_renames=complete)
+        return count, renames, None, complete
 
     access = source_layout.vault_local_access(vault["source_root"])
     if not access.local_operations_allowed and access.volume_health != "scan_required":
@@ -1502,13 +1510,14 @@ def _verified_local_scan(
 
         # Hashing happens with no write transaction open. Publishing uses
         # compare-and-swap predicates so watcher replacements win safely.
-        updates = _collect_local_fingerprint_updates(vault, pinned_root)
+        updates = _collect_local_fingerprint_updates(vault, pinned_root, scan_journal=scan_journal)
         _apply_local_fingerprint_updates(vault, scan_id, updates)
 
+        complete = not scan_journal.get("incomplete", False)
         alias = access.volume_alias
         completed_alias = (
             alias
-            if alias and source_layout.requires_full_local_scan(alias)
+            if complete and alias and source_layout.requires_full_local_scan(alias)
             else None
         )
         with db() as connection:
@@ -1516,10 +1525,8 @@ def _verified_local_scan(
             if not _scan_generation_is_current(int(vault["id"]), scan_id):
                 raise _ScanRootMismatch("Local scan was superseded")
             rename_summary = _apply_auto_renames(
-                connection,
-                vault,
-                root=pinned_root,
-                hash_missing=False,
+                connection, vault, root=pinned_root, hash_missing=False,
+                recognize_renames=complete,
             )
             rename_summary["hashed"] = len(updates)
             _current_verified_scan_row(connection, vault)
@@ -1528,7 +1535,7 @@ def _verified_local_scan(
                 final_access.local_operations_allowed
                 or final_access.volume_health == "scan_required"
             )
-            if safe_scan_result and (
+            if complete and safe_scan_result and (
                 final_access.volume_alias is None
                 or source_layout.should_emit_local_copy_removals(
                     final_access.volume_alias
@@ -1548,6 +1555,7 @@ def _verified_local_scan(
                 ).fetchone()["relocation_state"]
                 == "scan_required"
             )
+            was_relocation_scan = was_relocation_scan and complete
             if was_relocation_scan:
                 vault_relocation.complete_relocation_scan(
                     connection, int(vault["id"]), release_runtime=False
@@ -1559,7 +1567,7 @@ def _verified_local_scan(
         if completed_alias:
             source_layout.note_full_local_scan_completed(completed_alias)
         _active_scan_journals.pop(journal_key, None)
-        return count, rename_summary, completed_alias
+        return count, rename_summary, completed_alias, complete
 
 
 def _report_worker_error(component: str, exc: BaseException, vault_id: int) -> None:
@@ -1663,10 +1671,12 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
         access = source_layout.vault_local_access(vault["source_root"])
         if access.local_operations_allowed or access.volume_health == "scan_required":
             try:
-                count, rename_summary, _completed_alias = _verified_local_scan(
+                count, rename_summary, _completed_alias, complete = _verified_local_scan(
                     vault, scan_id
                 )
                 result["local"] = count
+                if not complete:
+                    result["local_incomplete"] = 1
                 result.update(
                     {f"rename_{key}": value for key, value in rename_summary.items()}
                 )
@@ -1697,11 +1707,12 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 result["local"] = -1
                 _record_scan_component_health(
                     vault_id, "source", ok=False, error=status["last_error"],
-                    notify_problem=not isinstance(exc, UnreadablePathsError),
                 )
             else:
                 _record_scan_component_health(
-                    vault_id, "source", ok=True, verified=True
+                    vault_id, "source", ok=complete, verified=complete,
+                    error=None if complete else "Source scan incomplete: unreadable paths",
+                    notify_problem=complete,
                 )
         else:
             result["local_skipped"] = 1
@@ -1801,6 +1812,7 @@ def _apply_auto_renames(
     root: Path,
     requested_by: int | None = None,
     hash_missing: bool = True,
+    recognize_renames: bool = True,
 ) -> dict[str, int]:
     """Apply rename analysis inside the caller-owned transaction.
 
@@ -1838,6 +1850,7 @@ def _apply_auto_renames(
                     continue
                 digest, stat_result = hash_stable_regular_file(local_path)
             except OSError:
+                recognize_renames = False
                 report_problem(
                     connection, event="file_unreadable", vault_id=int(vault["id"]),
                     path=row["path"],
@@ -1874,6 +1887,10 @@ def _apply_auto_renames(
     # Hashed content that reappeared at a cloud-only path is decided before
     # renames and uploads: identical → Local Copy, different → held back.
     settle_cloud_only_copies(connection, vault_id=int(vault["id"]))
+    if not recognize_renames:
+        # An unreadable subtree prevents proving a unique rename, but must
+        # never bypass the hold/notification for a cloud-only conflict.
+        return summary
     candidates = catalog.list_rename_candidates(vault_id=vault["id"])
     changed_at = now_iso()
     for candidate in candidates:
@@ -1914,6 +1931,7 @@ def apply_auto_renames(
     requested_by: int | None = None,
     _connection: Any | None = None,
     _root: Path | None = None,
+    _recognize_renames: bool = True,
 ) -> dict[str, int]:
     """Hash outside writes, then confirm renames atomically."""
     root = _root or Path(vault["source_root"]).resolve()
@@ -1921,10 +1939,13 @@ def apply_auto_renames(
         # Preserve the caller-owned transaction seam used by direct catalog
         # callers and the relocation rollback tests.
         return _apply_auto_renames(
-            _connection, vault, root=root, requested_by=requested_by
+            _connection, vault, root=root, requested_by=requested_by,
+            recognize_renames=_recognize_renames,
         )
     scan_id = now_iso()
-    updates = _collect_local_fingerprint_updates(vault, root)
+    hash_status: dict[str, Any] = {}
+    updates = _collect_local_fingerprint_updates(vault, root, scan_journal=hash_status)
+    _recognize_renames = _recognize_renames and not hash_status.get("incomplete", False)
     _apply_local_fingerprint_updates(vault, scan_id, updates)
     with db() as connection:
         summary = _apply_auto_renames(
@@ -1933,6 +1954,7 @@ def apply_auto_renames(
             root=root,
             requested_by=requested_by,
             hash_missing=False,
+            recognize_renames=_recognize_renames,
         )
     summary["hashed"] = len(updates)
     return summary

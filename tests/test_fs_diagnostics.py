@@ -76,8 +76,7 @@ class FilesystemProblemTests(unittest.TestCase):
 
         with patch("app.services.fs_preflight.os.open", side_effect=denied):
             for scan in ("denied-1", "denied-2"):
-                with self.assertRaises(PermissionError):
-                    storage.scan_tree(self.vault, scan)
+                self.assertEqual(storage.scan_tree(self.vault, scan), 0)
         problems = self.problems()
         self.assertEqual(len(problems), 40)  # all paths, deduplicated across scans
         self.assertEqual({json.loads(p["message_params"])["path"] for p in problems}, {f"{n}.bin" for n in range(40)})
@@ -96,8 +95,7 @@ class FilesystemProblemTests(unittest.TestCase):
                 raise PermissionError("denied")
             return original(path, *args, **kwargs)
         with patch.object(Path, "lstat", denied):
-            with self.assertRaises(PermissionError):
-                storage.scan_tree(self.vault, "scan")
+            self.assertEqual(storage.scan_tree(self.vault, "scan"), 0)
         self.assertIn("stat.bin", str(self.problems()))
 
     def test_inaccessible_subtree_is_reported_and_never_marks_copies_missing(self):
@@ -107,8 +105,7 @@ class FilesystemProblemTests(unittest.TestCase):
             onerror(PermissionError(13, "denied", str(self.root / "private")))
             return iter(())
         with patch("app.services.fs_preflight.os.walk", side_effect=inaccessible):
-            with self.assertRaises(PermissionError):
-                storage.scan_tree(self.vault, "incomplete")
+            self.assertEqual(storage.scan_tree(self.vault, "incomplete"), 0)
         self.assertIn("private", str(self.problems()))
         with SQLiteConnection(str(self.path)) as connection:
             self.assertEqual(connection.execute("SELECT presence FROM local_copies").fetchone()["presence"], "present")
@@ -140,8 +137,7 @@ class FilesystemProblemTests(unittest.TestCase):
         target = self.root / "bad\udcff.jpg"
         target.write_bytes(b"data")
         with patch("app.services.fs_preflight.os.open", side_effect=PermissionError("denied")):
-            with self.assertRaises(PermissionError):
-                storage.scan_tree(self.vault, "non-utf8")
+            self.assertEqual(storage.scan_tree(self.vault, "non-utf8"), 0)
         problems = self.problems()
         self.assertEqual(len(problems), 1)
         self.assertEqual(problems[0]["event"], "file_unreadable")

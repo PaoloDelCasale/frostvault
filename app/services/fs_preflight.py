@@ -7,10 +7,6 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 
-class UnreadablePathsError(PermissionError):
-    """The scan is incomplete, but its unreadable paths already have problems."""
-
-
 def inspect_entry(path: Path) -> tuple[str, os.stat_result] | None:
     """Classify without following symlinks; prove regular files can be opened.
 
