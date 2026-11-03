@@ -352,8 +352,10 @@
     },
     "DirectoryListItem": {
       "additionalProperties": true,
-      "description": "Directory aggregate as returned by /api/files browse mode.",
+      "description": "Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed.",
       "properties": {
+        "last_known_states": { "type": "object", "additionalProperties": { "type": "number" } },
+        "last_known_at": { "type": ["string", "null"] },
         "available_actions": {
           "additionalProperties": {
             "type": "number"
@@ -579,6 +581,7 @@
     "FilesResponse": {
       "additionalProperties": true,
       "properties": {
+        "protection_suspended": { "type": "boolean" },
         "aggregate_status": {
           "description": "Directory aggregate readiness for this listing: ready, loading (no projection yet), or stale (showing prior projection while rebuild/dirty work converges).",
           "enum": [
@@ -1480,6 +1483,9 @@
     "StatsResponse": {
       "additionalProperties": true,
       "properties": {
+        "protection_suspended": { "type": "boolean" },
+        "protection_state": { "type": ["string", "null"] },
+        "last_known_states": { "type": "object", "additionalProperties": { "type": "number" } },
         "active_jobs": {
           "type": "number"
         },
@@ -2027,8 +2033,11 @@
     },
     "VaultFileListItem": {
       "additionalProperties": true,
-      "description": "Vault File row as returned by /api/files (browse or search).",
+      "description": "Vault File protection observation: pending, protected, problem, unconfirmed or cloud_only. Restore progress is independent.",
       "properties": {
+        "last_known_state": { "type": "string" },
+        "last_known_at": { "type": ["string", "null"] },
+        "previous_snapshot_protected": { "type": "boolean" },
         "availability": {
           "type": [
             "string",

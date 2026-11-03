@@ -255,8 +255,8 @@ class DirectoryScaleTests(unittest.TestCase):
                 ("recordings/keep-me.bin", 1),
             ],
         )
-        # Make one cloud_only file for state filtering.
-        self.catalog.record_archive_version(
+        # Only a verified, available snapshot can be Cloud only.
+        cloud_version = self.catalog.record_archive_version(
             vault_id=2,
             path="clips/cloud-only.bin",
             object_key="docs/clips/cloud-only.bin",
@@ -268,6 +268,7 @@ class DirectoryScaleTests(unittest.TestCase):
             observed_at="2026-07-21T10:00:00+00:00",
             scan_id="scan-1",
         )
+        self.connection.execute("UPDATE archive_versions SET integrity='verified' WHERE id=%s", (cloud_version,))
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
 
         search = self.catalog.list_files_page(
@@ -861,7 +862,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
 
         self._seed_both_file()
         before = self.catalog.list_files_page(2)["items"][0]
-        self.assertEqual(before["state"], "both")
+        self.assertEqual(before["state"], "protected")
         self.assertEqual(before["available_actions"]["free-space"], 1)
 
         vault = self.connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
@@ -876,7 +877,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         audit_vault_catalog(self.connection, vault, _EmptyClient())
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         after = self.catalog.list_files_page(2)["items"][0]
-        self.assertEqual(after["state"], "local_only")
+        self.assertEqual(after["state"], "problem")
         self.assertEqual(after["available_actions"]["upload"], 1)
         self.assertEqual(after["available_actions"]["free-space"], 0)
         self.assertIsNone(after.get("storage_class"))
@@ -958,7 +959,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         after = self.catalog.list_files_page(2)["items"][0]
-        self.assertEqual(after["state"], "local_only")
+        self.assertEqual(after["state"], "pending")
         self.assertEqual(after["available_actions"]["cloud-purge"], 0)
         self.assertEqual(after["cloud_size"], 0)
 
@@ -1142,7 +1143,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         self.assertIn("cloud-new", names)
         self.assertNotIn("cloud-old", names)
         folder = next(item for item in root if item["name"] == "cloud-new")
-        self.assertEqual(folder["state"], "both")
+        self.assertEqual(folder["state"], "protected")
         self.assertEqual(folder["available_actions"]["free-space"], 1)
         self.assertEqual(folder["storage_class"], "STANDARD")
         self.assertEqual(folder["cloud_size"], 100)

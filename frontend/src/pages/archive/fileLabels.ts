@@ -9,32 +9,24 @@ export function itemStateBadge(
   item: ArchiveListItem,
   t: Translate,
 ): { state: BadgeState; label: string } {
-  if (item.type === "file") {
-    if (item.local_file_type === "symlink") {
-      return { state: "unsupported", label: t("ui.symlink_rejected") };
-    }
-    if (
-      item.local_file_type &&
-      item.local_file_type !== "regular" &&
-      item.local_exists
-    ) {
-      return { state: "unsupported", label: t("ui.unsupported_local_entry") };
-    }
-  }
   const raw = item.state;
   const known: BadgeState[] = [
-    "both",
-    "local_only",
-    "cloud_only",
-    "restoring",
-    "mixed",
-    "missing",
-    "unsupported",
+    "pending", "protected", "problem", "unconfirmed", "cloud_only",
   ];
-  const state = (known.includes(raw as BadgeState) ? raw : "missing") as BadgeState;
+  const state = (known.includes(raw as BadgeState) ? raw : "unconfirmed") as BadgeState;
   const key = `state.${state}`;
   const label = t(key);
-  return { state, label: label === key ? state : label };
+  const text = label === key ? state : label;
+  if (item.type === "file" && state === "unconfirmed" && item.last_known_at) {
+    return { state, label: `${text} · ${t("state.last_known", {
+      state: t(`state.${item.last_known_state || "unconfirmed"}`),
+      date: item.last_known_at,
+    })}` };
+  }
+  if (item.type === "file" && item.previous_snapshot_protected) {
+    return { state, label: `${text} · ${t("state.previous_snapshot_protected")}` };
+  }
+  return { state, label: text };
 }
 
 export function itemSizeBytes(item: ArchiveListItem): number | null | undefined {

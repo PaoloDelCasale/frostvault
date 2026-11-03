@@ -1,0 +1,10 @@
+# Session-local issue snapshots and CI diagnostics (not product sources).
+issue-*.json
+checks-*.json
+job-*.log
+ci-*.log
+*-targeted*.log
+initial-ci-failed.log
+pip-install.log
+npm-ci.log
+e2e-failure/

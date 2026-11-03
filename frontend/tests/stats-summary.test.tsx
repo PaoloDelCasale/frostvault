@@ -5,8 +5,11 @@ import type { StatsResponse } from "@/api/types";
 import { StatsSummary } from "@/pages/archive/StatsSummary";
 
 const messages: Record<string, string> = {
-  "state.both": "Local and cloud",
-  "state.local_only": "Local only",
+  "state.protected": "Protected",
+  "state.pending": "Pending",
+  "state.problem": "Problem",
+  "state.unconfirmed": "Unconfirmed",
+  "state.protection_suspended": "Protection suspended",
   "state.cloud_only": "Cloud only",
   "ui.local_space": "Local space",
   "ui.cloud_space": "Cloud space",
@@ -23,7 +26,7 @@ function t(key: string): string {
 
 /** Realistic /api/stats payload (counts + mixed byte scales). */
 const realisticStats: StatsResponse = {
-  states: { both: 12, local_only: 3, cloud_only: 1042 },
+  states: { protected: 12, pending: 3, problem: 4, unconfirmed: 5, cloud_only: 1042 },
   storage: { local_bytes: 1536, cloud_bytes: 1099511627776 },
   active_jobs: 2,
   runtime: {},
@@ -32,7 +35,7 @@ const realisticStats: StatsResponse = {
 };
 
 const emptyVaultStats: StatsResponse = {
-  states: { both: 0, local_only: 0, cloud_only: 0 },
+  states: {},
   storage: { local_bytes: 0, cloud_bytes: 0 },
   active_jobs: 0,
   runtime: {},
@@ -41,19 +44,28 @@ const emptyVaultStats: StatsResponse = {
 };
 
 describe("StatsSummary from /api/stats", () => {
+  it("shows suspension separately from existing protection", () => {
+    render(<StatsSummary stats={{ ...realisticStats, protection_suspended: true }} status="ready" t={t} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Protection suspended");
+    expect(screen.getAllByText("Protected").length).toBeGreaterThan(0);
+  });
   it("renders statistic cards with correctly formatted counts and bytes", () => {
     render(<StatsSummary stats={realisticStats} status="ready" t={t} />);
 
     // Both compact and expanded trees are in the DOM (CSS toggles visibility),
     // so assert via getAllByText that the formatted values are present.
-    expect(screen.getAllByText("Local and cloud").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Protected").length).toBeGreaterThan(0);
     expect(screen.getAllByText("12").length).toBeGreaterThan(0);
 
-    expect(screen.getAllByText("Local only").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Pending").length).toBeGreaterThan(0);
     expect(screen.getAllByText("3").length).toBeGreaterThan(0);
 
     expect(screen.getAllByText("Cloud only").length).toBeGreaterThan(0);
     expect(screen.getAllByText("1,042").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Problem").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("4").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Unconfirmed").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("5").length).toBeGreaterThan(0);
 
     expect(screen.getAllByText("Local space").length).toBeGreaterThan(0);
     expect(screen.getAllByText("1.5 KB").length).toBeGreaterThan(0);

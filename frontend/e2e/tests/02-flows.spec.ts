@@ -77,9 +77,9 @@ test.describe("archive flows", () => {
     await chooseMenuOption(
       page,
       page.getByTestId("state-filter"),
-      /local and cloud/i,
+      /^protected$/i,
     );
-    await expect(page).toHaveURL(/state=both/);
+    await expect(page).toHaveURL(/state=protected/);
   });
 
   test("flow 4 — a file opens actions without rename or path-history controls", async ({
@@ -99,6 +99,15 @@ test.describe("archive flows", () => {
     page,
   }, testInfo) => {
     await emergencyPasswordLogin(page);
+    // These are real API preconditions, not an exemption from source safety.
+    const statsResponse = await page.request.get("/api/stats");
+    expect(statsResponse.ok()).toBe(true);
+    expect((await statsResponse.json()).source_volume.local_operations_allowed).toBe(true);
+    const filesResponse = await page.request.get("/api/files");
+    expect(filesResponse.ok()).toBe(true);
+    const note = (await filesResponse.json()).items.find((item: { path: string }) => item.path === "note.txt");
+    expect(note?.state).toBe("protected");
+    expect(note?.cleanup_eligible).toBe(true);
     if (testInfo.project.name === "mobile-375") {
       await page
         .locator('[data-testid="more-actions-note.txt"]')

@@ -47,7 +47,7 @@ class StatsTests(unittest.TestCase):
                 patch.object(ArchiveCatalog, "list_file_rows", side_effect=AssertionError("SQL aggregates only")),
             ):
                 payload = stats({"id": 9, "source_root": "/sources/photos"})
-            self.assertEqual(payload["states"], {"both": 1})
+            self.assertEqual(payload["states"], {"pending" if health == "ok" else "unconfirmed": 1})
             self.assertEqual(payload["storage"], {"local_bytes": 12, "cloud_bytes": 44})
             self.assertEqual(payload["source_volume"]["health"], health)
             self.assertEqual(payload["source_volume"]["local_operations_allowed"], health == "ok")

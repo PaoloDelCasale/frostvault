@@ -32,8 +32,8 @@ export const demoRootListing: FilesResponse = {
       total_size: 1536,
       local_size: 1024,
       cloud_size: 512,
-      state: "mixed",
-      state_counts: { both: 2, local_only: 1 },
+      state: "pending",
+      state_counts: { protected: 2, pending: 1 },
       storage_class: null,
       storage_class_count: 2,
       available_actions: {
@@ -53,7 +53,7 @@ export const demoRootListing: FilesResponse = {
       cloud_exists: 1,
       cloud_size: 1024,
       storage_class: "STANDARD",
-      state: "both",
+      state: "protected",
       upload_eligible: false,
       recover_eligible: false,
       cleanup_eligible: true,
@@ -91,8 +91,8 @@ const demoNestedListing: FilesResponse = {
       path: "reports/2024",
       item_count: 2,
       total_size: 4096,
-      state: "both",
-      state_counts: { both: 2 },
+      state: "protected",
+      state_counts: { protected: 2 },
       storage_class: "STANDARD",
       storage_class_count: 1,
     },
@@ -106,7 +106,7 @@ const demoNestedListing: FilesResponse = {
       cloud_exists: 0,
       cloud_size: null,
       storage_class: null,
-      state: "local_only",
+      state: "pending",
       upload_eligible: true,
       recover_eligible: false,
       cleanup_eligible: false,
@@ -130,7 +130,7 @@ const demoYearListing: FilesResponse = {
       cloud_exists: 1,
       cloud_size: 2048,
       storage_class: "STANDARD",
-      state: "both",
+      state: "protected",
     },
     {
       type: "file",
@@ -141,7 +141,7 @@ const demoYearListing: FilesResponse = {
       cloud_exists: 1,
       cloud_size: 2048,
       storage_class: "STANDARD",
-      state: "both",
+      state: "protected",
     },
   ],
   total: 2,
@@ -162,7 +162,7 @@ const demoSearchListing: FilesResponse = {
       cloud_exists: 1,
       cloud_size: 8192,
       storage_class: "GLACIER",
-      state: "both",
+      state: "protected",
     },
   ],
   total: 1,
@@ -189,7 +189,7 @@ function buildDemoPhotosListing(): FilesResponse {
         cloud_exists: 1,
         cloud_size: 2_048_000,
         storage_class: "STANDARD",
-        state: "both" as const,
+        state: "protected" as const,
       };
     }
     if (slot === 2) {
@@ -203,7 +203,7 @@ function buildDemoPhotosListing(): FilesResponse {
         cloud_exists: 0,
         cloud_size: null,
         storage_class: null,
-        state: "local_only" as const,
+        state: "pending" as const,
         upload_eligible: true,
         recover_eligible: false,
         cleanup_eligible: false,
@@ -245,10 +245,10 @@ const demoPhotosFolder = {
     (sum, item) => sum + Number(item.local_size ?? item.cloud_size ?? 0),
     0,
   ),
-  state: "mixed" as const,
+  state: "pending" as const,
   state_counts: {
-    both: Math.ceil(DEMO_PHOTO_COUNT / 3),
-    local_only: Math.floor(DEMO_PHOTO_COUNT / 3),
+    protected: Math.ceil(DEMO_PHOTO_COUNT / 3),
+    pending: Math.floor(DEMO_PHOTO_COUNT / 3),
     cloud_only: Math.floor(DEMO_PHOTO_COUNT / 3),
   },
   storage_class: null,
@@ -562,7 +562,7 @@ function applyFileAction(
   if (action === "upload") {
     item.cloud_exists = 1;
     item.cloud_size = item.local_size ?? item.cloud_size ?? 1024;
-    item.state = "both";
+    item.state = "protected";
     item.upload_eligible = false;
     item.cleanup_eligible = true;
     item.storage_class = item.storage_class ?? "STANDARD";
@@ -570,7 +570,7 @@ function applyFileAction(
     item.local_exists = 1;
     item.local_size = item.cloud_size ?? item.local_size ?? 1024;
     item.local_file_type = "regular";
-    item.state = "both";
+    item.state = "protected";
     item.recover_eligible = false;
     item.cleanup_eligible = true;
   } else if (action === "free-space") {

@@ -3,6 +3,10 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 export type BadgeState =
+  | "pending"
+  | "protected"
+  | "problem"
+  | "unconfirmed"
   | "both"
   | "local_only"
   | "cloud_only"
@@ -13,6 +17,10 @@ export type BadgeState =
 
 /** Sole source of state-specific classes used by rendering and contrast checks. */
 export const BADGE_STATE_VARIANT_CLASSES = {
+  pending: "bg-[var(--state-local-bg)] text-[var(--state-local-fg)]",
+  protected: "bg-[var(--state-both-bg)] text-[var(--state-both-fg)]",
+  problem: "bg-[var(--state-missing-bg)] text-[var(--state-missing-fg)]",
+  unconfirmed: "bg-[var(--state-unsupported-bg)] text-[var(--state-unsupported-fg)]",
   both: "bg-[var(--state-both-bg)] text-[var(--state-both-fg)]",
   local_only: "bg-[var(--state-local-bg)] text-[var(--state-local-fg)]",
   cloud_only: "bg-[var(--state-cloud-bg)] text-[var(--state-cloud-fg)]",
@@ -24,8 +32,12 @@ export const BADGE_STATE_VARIANT_CLASSES = {
 
 /** Independent labels — colour is never the only carrier of state. */
 export const BADGE_STATE_LABELS: Record<BadgeState, string> = {
-  both: "Local and cloud",
-  local_only: "Local only",
+  pending: "Pending",
+  protected: "Protected",
+  problem: "Problem",
+  unconfirmed: "Unconfirmed",
+  both: "Available",
+  local_only: "Local backup",
   cloud_only: "Cloud only",
   restoring: "Recovery in progress",
   mixed: "Mixed state",

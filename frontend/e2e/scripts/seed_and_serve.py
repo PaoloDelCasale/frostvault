@@ -7,10 +7,13 @@ cookie), two vaults, and a small catalog tree with Path History. Then runs uvico
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RUNTIME = Path(__file__).resolve().parents[1] / ".runtime"
@@ -22,8 +25,10 @@ OWNER_USERNAME = "e2e-owner"
 
 def _ensure_runtime() -> dict[str, Path]:
     RUNTIME.mkdir(parents=True, exist_ok=True)
-    source_primary = RUNTIME / "sources" / "family"
-    source_secondary = RUNTIME / "sources" / "secondary"
+    # Ordinary direct children are not Source Volumes. Use actual managed
+    # UUID roots so the same containment/access gate as production is exercised.
+    source_primary = RUNTIME / "sources" / "managed" / "00000000-0000-4000-8000-000000000001"
+    source_secondary = RUNTIME / "sources" / "managed" / "00000000-0000-4000-8000-000000000002"
     source_primary.mkdir(parents=True, exist_ok=True)
     source_secondary.mkdir(parents=True, exist_ok=True)
     (source_primary / "reports").mkdir(exist_ok=True)
@@ -118,12 +123,14 @@ def _seed(paths: dict[str, Path]) -> dict:
             observed_at="2026-07-01T11:00:00+00:00",
             scan_id="seed-scan",
         )
+        note_path = paths["source_primary"] / "note.txt"
+        note_stat = note_path.stat()
         catalog.observe_local_copy(
             vault_id=primary_id,
             path="note.txt",
             file_type="regular",
-            size=12,
-            mtime_ns=1_700_000_000_100_000_000,
+            size=note_stat.st_size,
+            mtime_ns=note_stat.st_mtime_ns,
             observed_at="2026-07-02T10:00:00+00:00",
         )
         note_version_id = catalog.record_archive_version(
@@ -131,14 +138,14 @@ def _seed(paths: dict[str, Path]) -> dict:
             path="note.txt",
             object_key="family/note.txt",
             provider_version_id="v-note-1",
-            size=12,
+            size=note_stat.st_size,
             storage_class="STANDARD",
             etag="etag-note",
             uploaded_at="2026-07-02T11:00:00+00:00",
             observed_at="2026-07-02T11:00:00+00:00",
             scan_id="seed-scan",
         )
-        note_digest = "a" * 64
+        note_digest = hashlib.sha256(note_path.read_bytes()).hexdigest()
         catalog.mark_version_verified(
             note_version_id,
             plaintext_sha256=note_digest,
@@ -158,6 +165,15 @@ def _seed(paths: dict[str, Path]) -> dict:
             mtime_ns=1_700_000_000_200_000_000,
             observed_at="2026-07-03T10:00:00+00:00",
         )
+
+        # UI flows use fixed cloud evidence, not a live S3 provider. Suspend
+        # automatic admission explicitly; suspension must not revoke protection
+        # of the verified note or its manual free-space affordance.
+        for vault_id in (primary_id, secondary_id):
+            connection.execute(
+                "INSERT INTO vault_operation_policies(vault_id, auto_upload) VALUES (%s, FALSE)",
+                (vault_id,),
+            )
 
         owner_token = create_session(
             connection, user_id=owner_id, auth_method="local"
@@ -220,6 +236,35 @@ def _apply_env(paths: dict[str, Path]) -> None:
     os.environ.update(env)
 
 
+@contextmanager
+def _native_fixture_runtime():
+    """Model only the native mount boundary and a freshly seeded catalog.
+
+    UI tests do not provision Linux mounts or a real S3 bucket. Keep the actual
+    source-access, fingerprint and API authorization checks, but represent the
+    test sources root as mounted (no arbitrary child gets mount status). Treat
+    seeding as the latest maintenance pass so the fake provider is not audited
+    and does not race the UI scenarios. Real maintenance/S3 has separate CI jobs.
+    """
+    from app import storage
+    from app.services import source_layout
+
+    real_mount_probe = source_layout.path_is_mount
+    sources = source_layout.get_sources_root().resolve()
+    real_maintenance_ages = storage.persisted_maintenance_ages
+
+    def fixture_mount(path):
+        return Path(path).resolve() == sources or real_mount_probe(path)
+
+    def fixture_maintenance_ages(**kwargs):
+        return {**real_maintenance_ages(**kwargs), "scan": 0.0, "audit": 0.0}
+
+    with patch.object(source_layout, "path_is_mount", fixture_mount), patch.object(
+        storage, "persisted_maintenance_ages", fixture_maintenance_ages,
+    ):
+        yield
+
+
 def main() -> None:
     paths = _ensure_runtime()
     _apply_env(paths)
@@ -234,7 +279,8 @@ def main() -> None:
 
     host = os.environ.get("E2E_HOST", "127.0.0.1")
     port = int(os.environ.get("E2E_PORT", "8080"))
-    uvicorn.run("app.main:app", host=host, port=port, log_level="warning")
+    with _native_fixture_runtime():
+        uvicorn.run("app.main:app", host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":

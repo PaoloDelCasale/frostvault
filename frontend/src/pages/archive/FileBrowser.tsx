@@ -344,10 +344,11 @@ export function FileBrowser({
   const hasFilter = Boolean(q || state || storage);
   const stateFilterOptions = [
     { value: "", label: t("ui.all_items") },
-    { value: "local_only", label: t("state.filter.local_only") },
-    { value: "both", label: t("state.filter.both") },
-    { value: "cloud_only", label: t("state.filter.cloud_only") },
-    { value: "restoring", label: t("state.filter.restoring") },
+    { value: "pending", label: t("state.pending") },
+    { value: "protected", label: t("state.protected") },
+    { value: "problem", label: t("state.problem") },
+    { value: "unconfirmed", label: t("state.unconfirmed") },
+    { value: "cloud_only", label: t("state.cloud_only") },
   ].filter(
     (option) =>
       !option.value ||

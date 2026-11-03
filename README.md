@@ -55,6 +55,29 @@ Search remains global across every file in the selected vault.
 
 ## Automatic protection
 
+Browsing and statistics use five **protection states**, not copy-presence labels:
+
+- **Pending**: new or changed local content not yet verified. A retained verified
+  previous snapshot is indicated separately; it does not protect the new bytes.
+- **Protected**: the regular Local Copy's fingerprint and matched Archive Version
+  agree, with `integrity=verified` and `availability=available`.
+- **Problem**: terminal upload failure, mismatched content verification, missing
+  Archive Version, unsupported local entry, or a held Cloud-only Conflict.
+- **Unconfirmed**: the Source Volume/relocation gate prevents observation or cloud
+  requests cannot confirm availability. Last catalog evidence and its observation
+  date remain visible; absence of a volume never turns files into Cloud only.
+- **Cloud only**: no Local Copy is present and the retained cloud snapshot is
+  verified and available. Recovery progress is independent of protection state.
+
+Folders show counts for all five states; Vault statistics use the same derivation.
+The aggregate headline prioritizes Problem, Unconfirmed, Pending, Protected, then
+Cloud only (empty Vaults have no headline state). **Protection suspended** is a
+separate per-Vault flag: pausing uploads does not invalidate already verified
+content. None of these display states authorizes deleting a Local Copy or cloud
+content; operation-specific safety checks remain mandatory.
+Migration `0055_protection_states` rebuilds disposable directory projections only;
+it changes no file, cloud object, fingerprint or verification evidence.
+
 New Vaults enable automatic upload by default. The per-Vault **Enable automatic
 upload** switch (or `PUT /api/vault/operation-policy`, `auto_upload`) pauses or
 resumes it. Pausing holds queued automatic uploads; an already uploaded Archive

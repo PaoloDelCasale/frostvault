@@ -1931,6 +1931,8 @@ def set_job(
                 ),
             )
         updated = _claim_write_succeeded(result)
+        if updated and action == "upload":
+            _dirty_job_protection(connection, job_id)
         if updated and status in {"completed", "failed"}:
             notification_service.enqueue_job_terminal_notification_best_effort(
                 connection, job_id=job_id
@@ -2036,6 +2038,8 @@ def schedule_upload_retry(
                     job_id,
                 ),
             )
+        if _claim_write_succeeded(result) and action == "upload":
+            _dirty_job_protection(connection, job_id)
     updated = _claim_write_succeeded(result)
     if updated:
         _record_committed_job_counter("retries", action)
@@ -2136,6 +2140,14 @@ def cleanup_abandoned_restore_files() -> int:
     return removed
 
 
+def _dirty_job_protection(connection: Any, job_id: int) -> None:
+    row = connection.execute(
+        "SELECT vault_id, path FROM jobs WHERE id=%s AND action='upload'", (job_id,),
+    ).fetchone()
+    if row:
+        mark_path_dirty(connection, int(row["vault_id"]), row["path"])
+
+
 def _reconcile_claim_is_stale_sql() -> str:
     """Predicate that lets restart repair legacy or expired claims, never live ones."""
     return "(claim_token IS NULL OR claim_expires_at IS NULL OR claim_expires_at <= %s)"
@@ -2171,6 +2183,8 @@ def _reconcile_job_transition(
         (message, timestamp, timestamp, job_id),
     )
     updated = _claim_write_succeeded(result)
+    if updated:
+        _dirty_job_protection(connection, job_id)
     if updated and status in {"completed", "failed"}:
         row = connection.execute(
             "SELECT action FROM jobs WHERE id=%s",

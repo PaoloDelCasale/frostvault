@@ -96,7 +96,7 @@ export function activeJobsForPath(
 function fileHasCloudContent(item: ArchiveListItem): boolean {
   if (!isVaultFile(item)) return false;
   return Boolean(
-    item.cloud_exists || item.state === "cloud_only" || item.state === "both",
+    item.cloud_exists,
   );
 }
 
@@ -105,12 +105,7 @@ function directoryCloudDeletionCount(item: ArchiveListItem): number {
   const available = item.available_actions || {};
   const counted = available["cloud-purge"];
   if (typeof counted === "number" && counted > 0) return counted;
-  // Fallback when older API payloads omit cloud deletion counts: any
-  // cloud-bearing state under the folder means at least one target.
-  const states = item.state_counts || {};
-  const cloudBearing =
-    (states.both || 0) + (states.cloud_only || 0) + (states.restoring || 0);
-  if (cloudBearing > 0) return cloudBearing;
+  // Protection labels never authorize deletion: rely on copy/action evidence.
   if ((item.cloud_size || 0) > 0) return item.item_count || 1;
   return 0;
 }

@@ -49,16 +49,11 @@ const messages: Record<string, string> = {
   "ui.file_list_loading": "Loading folder…",
   "ui.file_list_error": "Unable to load this folder.",
   "ui.file_list_retry": "Retry",
-  "state.both": "Local and cloud",
-  "state.local_only": "Local only",
+  "state.protected": "Protected",
+  "state.pending": "Pending",
+  "state.problem": "Problem",
+  "state.unconfirmed": "Unconfirmed",
   "state.cloud_only": "Cloud only",
-  "state.restoring": "Recovery in progress",
-  "state.mixed": "Mixed state",
-  "state.missing": "Unavailable",
-  "state.filter.local_only": "Local only",
-  "state.filter.both": "Local and cloud",
-  "state.filter.cloud_only": "Cloud only",
-  "state.filter.restoring": "Recovery in progress",
   "storage.STANDARD": "Standard",
   "storage.DEEP_ARCHIVE": "Deep Archive",
   "ui.symlink_rejected": "Symbolic link (rejected)",
@@ -98,8 +93,8 @@ const realisticBrowse: FilesResponse = {
       total_size: 1536,
       local_size: 1024,
       cloud_size: 512,
-      state: "mixed",
-      state_counts: { both: 2, local_only: 1 },
+      state: "pending",
+      state_counts: { protected: 2, pending: 1 },
       storage_class: null,
       storage_class_count: 2,
       available_actions: { upload: 1, recover: 0, "free-space": 2 },
@@ -114,7 +109,7 @@ const realisticBrowse: FilesResponse = {
       cloud_exists: 1,
       cloud_size: 1024,
       storage_class: "STANDARD",
-      state: "both",
+      state: "protected",
       upload_eligible: false,
       recover_eligible: false,
       cleanup_eligible: true,
@@ -168,6 +163,31 @@ describe("FileBrowser — cards and table from /api/files", () => {
       </ApiQueryProvider>,
     );
   }
+
+  it("keeps the overflow menu actionable when protection statistics push a row to the viewport bottom", async () => {
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.dataset.testid === "more-actions-desktop-readme.txt") {
+        return { ...originalRect.call(this), top: window.innerHeight - 48, bottom: window.innerHeight - 4, right: 1200, height: 44 };
+      }
+      if (this.getAttribute("role") === "menu") {
+        return { ...originalRect.call(this), height: 160 };
+      }
+      return originalRect.call(this);
+    });
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => String(input).includes("/api/jobs")
+      ? jsonResponse({ items: [], groups: [] }) : jsonResponse(realisticBrowse));
+    try {
+      renderBrowser();
+      const { userEvent } = await import("@testing-library/user-event");
+      await userEvent.setup().click(await screen.findByTestId("more-actions-desktop-readme.txt"));
+      const menu = await screen.findByRole("menu");
+      expect(parseFloat(menu.style.top) + 160).toBeLessThanOrEqual(window.innerHeight - 8);
+      expect(within(menu).getByRole("menuitem", { name: "Free local space" })).toBeEnabled();
+    } finally {
+      rect.mockRestore();
+    }
+  });
 
   it("uses the network without persisting catalog listings or sending cache authorization", async () => {
     localStorage.clear();
@@ -236,10 +256,10 @@ describe("FileBrowser — cards and table from /api/files", () => {
     // Size, state Badge, and cloud storage class appear in both
     expect(within(cards).getAllByText("1.5 KB").length).toBeGreaterThan(0);
     expect(within(table).getAllByText("1.5 KB").length).toBeGreaterThan(0);
-    expect(within(cards).getAllByText("Mixed state").length).toBeGreaterThan(0);
-    expect(within(table).getAllByText("Mixed state").length).toBeGreaterThan(0);
-    expect(within(cards).getAllByText("Local and cloud").length).toBeGreaterThan(0);
-    expect(within(table).getAllByText("Local and cloud").length).toBeGreaterThan(0);
+    expect(within(cards).getByText("2 Protected · 1 Pending")).toBeInTheDocument();
+    expect(within(table).getByText("2 Protected · 1 Pending")).toBeInTheDocument();
+    expect(within(cards).getAllByText("Protected").length).toBeGreaterThan(0);
+    expect(within(table).getAllByText("Protected").length).toBeGreaterThan(0);
     expect(within(cards).getAllByText("Deep Archive").length).toBeGreaterThan(0);
     expect(within(table).getAllByText("Deep Archive").length).toBeGreaterThan(0);
     expect(within(cards).getAllByText("2 cloud classes").length).toBeGreaterThan(0);
@@ -704,7 +724,7 @@ describe("FileBrowser — search, filter, pagination", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
     await user.click(screen.getByTestId("state-filter"));
-    await user.click(screen.getByRole("option", { name: messages["state.filter.cloud_only"] }));
+    await user.click(screen.getByRole("option", { name: messages["state.cloud_only"] }));
     await waitFor(() => {
       expect(lastFilesParams().get("state")).toBe("cloud_only");
     });

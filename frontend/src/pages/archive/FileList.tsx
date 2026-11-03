@@ -237,6 +237,15 @@ function OverflowMenu({
     };
   }, [open]);
 
+  // Five-state statistics can move the trigger near the viewport bottom.
+  // Measure the portalled menu after mounting and keep every action reachable.
+  useLayoutEffect(() => {
+    if (!open || !coords || !menuRef.current) return;
+    const height = menuRef.current.getBoundingClientRect().height;
+    const top = Math.max(8, Math.min(coords.top, window.innerHeight - height - 8));
+    if (top !== coords.top) setCoords({ ...coords, top });
+  }, [open, coords]);
+
   return (
     <div ref={rootRef} className="relative">
       <MoreActionsButton
@@ -255,7 +264,7 @@ function OverflowMenu({
               role="menu"
               aria-label={t("ui.more_actions")}
               className="fixed z-[80] min-w-[16rem] overflow-auto rounded-[10px] border border-line bg-surface p-1 text-ink shadow-lg"
-              style={{ top: coords.top, right: coords.right }}
+              style={{ top: coords.top, right: Math.max(8, coords.right), maxHeight: "calc(100vh - 16px)" }}
             >
               {groups.map((group) => (
                 <div key={group.category} className="py-1">
@@ -483,12 +492,7 @@ function ItemName({
 }
 
 const STATE_COUNT_ORDER: BadgeState[] = [
-  "both",
-  "local_only",
-  "cloud_only",
-  "restoring",
-  "missing",
-  "unsupported",
+  "protected", "pending", "problem", "unconfirmed", "cloud_only",
 ];
 
 type DirectoryStateBreakdownEntry = {
@@ -500,6 +504,10 @@ type DirectoryStateBreakdownEntry = {
 // Miniature two-tone versions of the primary state Badges: the fill uses
 // the Badge background and the inset outline uses its foreground colour.
 const STATE_DOT_CLASSES: Record<BadgeState, string> = {
+  protected: "bg-[var(--state-both-bg)] ring-1 ring-inset ring-[var(--state-both-fg)]/50",
+  pending: "bg-[var(--state-local-bg)] ring-1 ring-inset ring-[var(--state-local-fg)]/50",
+  problem: "bg-[var(--state-missing-bg)] ring-1 ring-inset ring-[var(--state-missing-fg)]/50",
+  unconfirmed: "bg-[var(--state-unsupported-bg)] ring-1 ring-inset ring-[var(--state-unsupported-fg)]/50",
   both:
     "bg-[var(--state-both-bg)] ring-1 ring-inset ring-[var(--state-both-fg)]/50",
   local_only:
@@ -585,6 +593,7 @@ function DirectoryStateControl({
   const entries = directoryStateBreakdown(item, t);
   const total = typeof item.item_count === "number" ? item.item_count : null;
   if (!entries.length) return <Badge state={badge.state} label={badge.label} />;
+  const summary = entries.map((entry) => `${entry.count} ${entry.label}`).join(" · ");
 
   const dots = (
     <span className="flex -space-x-0.5" aria-hidden="true">
@@ -607,12 +616,12 @@ function DirectoryStateControl({
           <button
             type="button"
             className="relative z-10 flex min-h-11 w-full max-w-full items-center gap-2 rounded-lg border border-line bg-canvas px-3 text-left outline-none transition-colors hover:border-[var(--interactive-border-hover)] hover:bg-green-soft/35 focus-visible:ring-2 focus-visible:ring-ring/40 motion-reduce:transition-none"
-            aria-label={`${badge.label}. ${t("ui.view_state_details")}`}
+            aria-label={`${summary}. ${t("ui.view_state_details")}`}
             data-testid={`state-details-mobile-${item.path}`}
             onClick={(event) => event.stopPropagation()}
           >
             {dots}
-            <span className="truncate text-sm font-bold text-ink">{badge.label}</span>
+            <span className="truncate text-sm font-bold text-ink" title={summary}>{summary}</span>
             <span className="ml-auto shrink-0 text-xs font-bold text-green">
               {t("ui.view_details")}
             </span>
@@ -662,11 +671,11 @@ function DirectoryStateControl({
         <button
           type="button"
           className="inline-flex max-w-full items-center gap-[7px] rounded-badge bg-[var(--state-mixed-bg)] px-2.5 py-1.5 text-[13px] font-bold whitespace-nowrap text-[var(--state-mixed-fg)] outline-none ring-1 ring-transparent transition-[box-shadow,filter] hover:brightness-110 hover:ring-[var(--state-mixed-fg)]/25 focus-visible:ring-2 focus-visible:ring-ring/50 motion-reduce:transition-none"
-          aria-label={`${badge.label}. ${t("ui.view_state_details")}`}
+          aria-label={`${summary}. ${t("ui.view_state_details")}`}
           data-testid={`state-details-desktop-${item.path}`}
         >
           {dots}
-          <span className="truncate">{badge.label}</span>
+          <span className="truncate" title={summary}>{summary}</span>
           <ChevronDown className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-180")} aria-hidden="true" />
         </button>
       </Popover.Trigger>
