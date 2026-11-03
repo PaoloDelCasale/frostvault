@@ -14,19 +14,15 @@ import {
   exportRecoverySecret,
   fetchI18nCatalog,
   fetchMe,
-  fetchNotificationPreferences,
   fetchNotifications,
   fetchRenameCandidates,
   fetchVaultAuditEvents,
   fetchVaults,
   relocateAdminVault,
   requestScan,
-  saveAdminSmtpEndpoint,
-  saveAdminWebhookEndpoint,
   selectVault,
   markNotificationRead,
   markAllNotificationsRead,
-  setNotificationPreference,
 } from "./endpoints";
 
 function jsonResponse(data: unknown, status = 200): Response {
@@ -111,7 +107,7 @@ describe("foundation endpoint helpers", () => {
     }
   });
 
-  it("uses the notification inbox and personal preference contracts", async () => {
+  it("uses the notification inbox contracts", async () => {
     document.cookie = "frostvault_csrf=notification-csrf";
     fetchMock
       .mockResolvedValueOnce(
@@ -122,17 +118,6 @@ describe("foundation endpoint helpers", () => {
           items: [{ id: 1, read: false }],
           unread_count: 1,
           has_more: true,
-        }),
-      )
-      .mockResolvedValueOnce(jsonResponse({ items: [] }))
-      .mockResolvedValueOnce(
-        jsonResponse({
-          id: 42,
-          user_id: 7,
-          vault_id: 9,
-          event: "job_completed",
-          channel: "in_app",
-          enabled: true,
         }),
       )
       .mockResolvedValueOnce(
@@ -161,16 +146,6 @@ describe("foundation endpoint helpers", () => {
       unread_count: 1,
       has_more: true,
     });
-    await expect(fetchNotificationPreferences()).resolves.toMatchObject({
-      items: [],
-    });
-    await expect(
-      setNotificationPreference({
-        event: "job_completed",
-        channel: "in_app",
-        enabled: true,
-      }),
-    ).resolves.toMatchObject({ enabled: true });
     await expect(markNotificationRead(10)).resolves.toMatchObject({
       id: 10,
       read: true,
@@ -183,20 +158,13 @@ describe("foundation endpoint helpers", () => {
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       "/api/notifications",
       "/api/notifications?limit=25&status=unread&before_id=99",
-      "/api/vault/notification-preferences",
-      "/api/vault/notification-preferences",
       "/api/notifications/read",
       "/api/notifications/read-all",
     ]);
-    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
-      event: "job_completed",
-      channel: "in_app",
-      enabled: true,
-    });
-    expect(JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body))).toEqual({
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
       notification_id: 10,
     });
-    for (const call of fetchMock.mock.calls.slice(3)) {
+    for (const call of fetchMock.mock.calls.slice(2)) {
       expect(new Headers(call[1]?.headers).get("X-CSRF-Token")).toBe(
         "notification-csrf",
       );
@@ -382,87 +350,6 @@ describe("foundation endpoint helpers", () => {
     expect(
       new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("X-CSRF-Token"),
     ).toBeNull();
-  });
-
-  it("configures the webhook endpoint through the admin mutation helper", async () => {
-    configureApiClient({ csrfToken: "notification-csrf" });
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({
-        id: 4,
-        kind: "webhook",
-        name: "global-webhook",
-        enabled: true,
-      }),
-    );
-
-    await expect(
-      saveAdminWebhookEndpoint({
-        url: "https://hooks.example.test/frostvault",
-        enabled: true,
-        reason: "configure outbound alerts",
-      }),
-    ).resolves.toMatchObject({ id: 4, kind: "webhook", enabled: true });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/admin/notification-endpoints/webhook",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          url: "https://hooks.example.test/frostvault",
-          enabled: true,
-          reason: "configure outbound alerts",
-        }),
-      }),
-    );
-    expect(
-      new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("X-CSRF-Token"),
-    ).toBe("notification-csrf");
-  });
-
-  it("replays SMTP endpoint configuration once after recent reauthentication", async () => {
-    const requestPassword = vi.fn(async () => "reauth-password");
-    const password = "smtp-write-only-secret";
-    configureApiClient({
-      csrfToken: "notification-csrf",
-      getAuthMethod: () => "local",
-      requestPassword,
-    });
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ error: "reauth_required" }, 403))
-      .mockResolvedValueOnce(jsonResponse({ ok: true }))
-      .mockResolvedValueOnce(
-        jsonResponse({ id: 5, kind: "smtp", enabled: true }),
-      );
-
-    await expect(
-      saveAdminSmtpEndpoint({
-        host: "smtp.example.test",
-        port: 587,
-        username: "alerts",
-        password,
-        from_address: "alerts@example.com",
-        to_address: "",
-        use_tls: true,
-        enabled: true,
-        reason: "configure email alerts",
-      }),
-    ).resolves.toMatchObject({ id: 5, kind: "smtp", enabled: true });
-
-    expect(requestPassword).toHaveBeenCalledOnce();
-    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-      "/api/admin/notification-endpoints/smtp",
-      "/api/reauth",
-      "/api/admin/notification-endpoints/smtp",
-    ]);
-    const replayBody = JSON.parse(
-      String(fetchMock.mock.calls[2]?.[1]?.body),
-    ) as Record<string, unknown>;
-    expect(replayBody.password).toBe(password);
-    for (const call of fetchMock.mock.calls) {
-      expect(new Headers(call[1]?.headers).get("X-CSRF-Token")).toBe(
-        "notification-csrf",
-      );
-    }
   });
 
   it("requests each admin storage estimate through the typed mutation helper", async () => {

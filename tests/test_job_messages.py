@@ -141,7 +141,7 @@ class JobMessagePersistenceTests(unittest.TestCase):
             connection.execute("INSERT INTO missing_notification_table(id) VALUES (1)")
 
         with patch(
-            "app.storage.notification_service.enqueue_job_terminal_push",
+            "app.storage.notification_service.enqueue_job_terminal_notification",
             side_effect=fail_notification,
         ):
             set_job(self.job_id, "completed", message_key="job.upload_verified")

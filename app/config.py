@@ -175,28 +175,24 @@ class Settings:
     # Built React SPA (Vite) directory served for all HTML routes.
     frontend_dist_dir: str = os.getenv("FRONTEND_DIST_DIR", _DEFAULT_FRONTEND_DIST)
 
-    # Web Push (VAPID). When unset, push degrades cleanly like placeholder AWS.
-    vapid_public_key: str = os.getenv("VAPID_PUBLIC_KEY", "")
-    vapid_private_key: str = os.getenv("VAPID_PRIVATE_KEY", "")
-    vapid_subject: str = os.getenv("VAPID_SUBJECT", "mailto:admin@localhost")
+    # Optional installation-wide email delivery, owned by the deployment (#414).
+    # All three addresses/host inputs are required; without them only the inbox
+    # receives events. Credentials are never stored in the database.
+    smtp_host: str = os.getenv("SMTP_HOST", "")
+    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+    smtp_username: str = os.getenv("SMTP_USERNAME", "")
+    smtp_password: str = os.getenv("SMTP_PASSWORD", "")
+    smtp_from_address: str = os.getenv("SMTP_FROM_ADDRESS", "")
+    smtp_to_address: str = os.getenv("SMTP_TO_ADDRESS", "")
+    smtp_use_tls: bool = as_bool("SMTP_USE_TLS", True)
 
 
 settings = Settings()
 
 
-def push_configured(settings_obj: Settings | None = None) -> bool:
-    """Whether VAPID keys are present and usable for Web Push."""
-    cfg = settings_obj or settings
-    public = cfg.vapid_public_key.strip()
-    private = cfg.vapid_private_key.strip()
-    if not public or not private:
-        return False
-    if is_placeholder(public) or is_placeholder(private):
-        return False
-    return True
-
-
 def validate_settings() -> None:
+    if not 1 <= settings.smtp_port <= 65535:
+        raise RuntimeError("SMTP_PORT must be between 1 and 65535")
     if settings.db_backend not in {"sqlite", "postgresql"}:
         raise RuntimeError("DB_BACKEND must be sqlite or postgresql")
     for entry in settings.trusted_proxies.split(","):

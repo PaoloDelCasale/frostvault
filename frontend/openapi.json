@@ -2245,29 +2245,6 @@
         ],
         "type": "object"
       },
-      "PushSubscribeAction": {
-        "properties": {
-          "endpoint": {
-            "maxLength": 2000,
-            "minLength": 8,
-            "title": "Endpoint",
-            "type": "string"
-          },
-          "keys": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "title": "Keys",
-            "type": "object"
-          }
-        },
-        "required": [
-          "endpoint",
-          "keys"
-        ],
-        "title": "PushSubscribeAction",
-        "type": "object"
-      },
       "ReauthRequest": {
         "properties": {
           "password": {
@@ -2519,68 +2496,6 @@
           "message",
           "message_key"
         ],
-        "type": "object"
-      },
-      "SmtpEndpointAction": {
-        "properties": {
-          "enabled": {
-            "default": true,
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "from_address": {
-            "maxLength": 320,
-            "minLength": 3,
-            "title": "From Address",
-            "type": "string"
-          },
-          "host": {
-            "maxLength": 255,
-            "minLength": 1,
-            "title": "Host",
-            "type": "string"
-          },
-          "password": {
-            "default": "",
-            "title": "Password",
-            "type": "string"
-          },
-          "port": {
-            "default": 587,
-            "maximum": 65535.0,
-            "minimum": 1.0,
-            "title": "Port",
-            "type": "integer"
-          },
-          "reason": {
-            "maxLength": 500,
-            "minLength": 3,
-            "title": "Reason",
-            "type": "string"
-          },
-          "to_address": {
-            "default": "",
-            "maxLength": 320,
-            "title": "To Address",
-            "type": "string"
-          },
-          "use_tls": {
-            "default": true,
-            "title": "Use Tls",
-            "type": "boolean"
-          },
-          "username": {
-            "default": "",
-            "title": "Username",
-            "type": "string"
-          }
-        },
-        "required": [
-          "host",
-          "from_address",
-          "reason"
-        ],
-        "title": "SmtpEndpointAction",
         "type": "object"
       },
       "SourceDirectoryBrowseResponse": {
@@ -3862,40 +3777,6 @@
         ],
         "type": "object"
       },
-      "VaultNotificationPreferenceAction": {
-        "properties": {
-          "channel": {
-            "maxLength": 20,
-            "minLength": 1,
-            "title": "Channel",
-            "type": "string"
-          },
-          "enabled": {
-            "default": true,
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "event": {
-            "maxLength": 100,
-            "minLength": 1,
-            "title": "Event",
-            "type": "string"
-          },
-          "recipient_user_ids": {
-            "items": {
-              "type": "integer"
-            },
-            "title": "Recipient User Ids",
-            "type": "array"
-          }
-        },
-        "required": [
-          "event",
-          "channel"
-        ],
-        "title": "VaultNotificationPreferenceAction",
-        "type": "object"
-      },
       "VaultRelocate": {
         "additionalProperties": false,
         "description": "Constrained destination within the Vault's existing Source Volume.",
@@ -4049,33 +3930,6 @@
         "required": [
           "items"
         ],
-        "type": "object"
-      },
-      "WebhookEndpointAction": {
-        "properties": {
-          "enabled": {
-            "default": true,
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "reason": {
-            "maxLength": 500,
-            "minLength": 3,
-            "title": "Reason",
-            "type": "string"
-          },
-          "url": {
-            "maxLength": 2000,
-            "minLength": 8,
-            "title": "Url",
-            "type": "string"
-          }
-        },
-        "required": [
-          "url",
-          "reason"
-        ],
-        "title": "WebhookEndpointAction",
         "type": "object"
       }
     }
@@ -4269,82 +4123,6 @@
           }
         },
         "summary": "Admin Run Metadata Backup"
-      }
-    },
-    "/api/admin/notification-endpoints/smtp": {
-      "post": {
-        "operationId": "admin_set_smtp_endpoint_api_admin_notification_endpoints_smtp_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SmtpEndpointAction"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Set Smtp Endpoint"
-      }
-    },
-    "/api/admin/notification-endpoints/webhook": {
-      "post": {
-        "operationId": "admin_set_webhook_endpoint_api_admin_notification_endpoints_webhook_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WebhookEndpointAction"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Set Webhook Endpoint"
       }
     },
     "/api/admin/settings": {
@@ -5609,64 +5387,6 @@
         "summary": "Mark All Notifications Read"
       }
     },
-    "/api/push/config": {
-      "get": {
-        "description": "Public VAPID config; degrades cleanly when push is unconfigured.",
-        "operationId": "push_config_api_push_config_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Push Config"
-      }
-    },
-    "/api/push/subscriptions": {
-      "post": {
-        "description": "Persist a Web Push subscription for the current Session/device.",
-        "operationId": "subscribe_push_api_push_subscriptions_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PushSubscribeAction"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Subscribe Push"
-      }
-    },
     "/api/reauth": {
       "post": {
         "description": "Emergency Password Reauthentication with an isolated durable backoff.\n\nAccepted only from loopback and the LAN CIDRs; elsewhere the Owner steps\nup through the provider (see ``/auth/oidc/reauth``). Its account/IP\ncounters deliberately use namespaced keys so a Reauthentication success\ncannot reset sign-in or OIDC-related throttling state.",
@@ -6370,44 +6090,6 @@
           }
         },
         "summary": "Upsert Vault Lifecycle Folder Override"
-      }
-    },
-    "/api/vault/notification-preferences": {
-      "post": {
-        "operationId": "set_vault_notification_preference_api_vault_notification_preferences_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VaultNotificationPreferenceAction"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Set Vault Notification Preference"
       }
     },
     "/api/vault/operation-policy": {

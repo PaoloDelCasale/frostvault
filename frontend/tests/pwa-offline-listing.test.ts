@@ -1,11 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-import {
-  clearPushPermissionDenied,
-  ensurePushSubscription,
-  rememberPushPermissionDenied,
-  wasPushPermissionDenied,
-} from "@/pwa";
+import { describe, expect, it } from "vitest";
 import {
   clearOfflineFileCache,
   loadCachedFilesListing,
@@ -124,39 +117,5 @@ describe("offline file listing cache (seam 3)", () => {
 
     expect(loadCachedFilesListing(userAVaultA, query, storage)).toBeNull();
     expect(storage.length).toBe(0);
-  });
-});
-
-describe("push permission (seam 8)", () => {
-  beforeEach(() => {
-    clearPushPermissionDenied(memoryStorage());
-  });
-
-  it("does not ask again after permission was denied", async () => {
-    const storage = memoryStorage();
-    rememberPushPermissionDenied(storage);
-    expect(wasPushPermissionDenied(storage)).toBe(true);
-
-    const requestPermission = vi.fn(async () => "denied" as NotificationPermission);
-    const result = await ensurePushSubscription({
-      storage,
-      fetchConfig: async () => ({
-        configured: true,
-        vapid_public_key: "BPtest",
-      }),
-      requestPermission,
-    });
-    expect(result).toBe("denied");
-    expect(requestPermission).not.toHaveBeenCalled();
-  });
-
-  it("skips quietly when push is not configured (seam 7)", async () => {
-    const storage = memoryStorage();
-    const result = await ensurePushSubscription({
-      storage,
-      fetchConfig: async () => ({ configured: false, vapid_public_key: null }),
-      requestPermission: vi.fn(async () => "granted" as NotificationPermission),
-    });
-    expect(result).toBe("skipped");
   });
 });

@@ -263,10 +263,6 @@ def revoke_session(connection: Any, session_id: str) -> bool:
     ).fetchone()
     if not changed:
         return False
-    # Device push subscriptions must not outlive the Session (issue #72 seam 6).
-    from .services.notifications import delete_push_subscriptions_for_session
-
-    delete_push_subscriptions_for_session(connection, session_id)
     return True
 
 

@@ -1,9 +1,5 @@
 import { useContext, useEffect, useRef, useState } from "react";
-import type { QueryClient } from "@tanstack/react-query";
-
-import type { VaultListItem } from "@/api";
 import { Dialog } from "@/components/Dialog";
-import { NotificationPreferencesPanel } from "@/components/NotificationPreferencesPanel";
 import { ThemeControl } from "@/components/ThemeControl";
 import { Button } from "@/components/ui/button";
 import { I18nContext } from "@/i18n/context";
@@ -25,9 +21,6 @@ const MENU_KEYS = {
   languageEn: ["ui", "language_en"].join("."),
   languageIt: ["ui", "language_it"].join("."),
   signOut: ["ui", "sign_out"].join("."),
-  notificationPreferences: ["ui", "notifications_preferences_heading"].join(
-    ".",
-  ),
 } as const;
 
 const FALLBACK_LABELS = {
@@ -46,7 +39,6 @@ const FALLBACK_LABELS = {
     languageEn: "English",
     languageIt: "Italiano",
     signOut: "Sign out",
-    notificationPreferences: "Notification preferences",
   },
   it: {
     open: "Apri menu account",
@@ -63,7 +55,6 @@ const FALLBACK_LABELS = {
     languageEn: "English",
     languageIt: "Italiano",
     signOut: "Esci",
-    notificationPreferences: "Preferenze notifiche",
   },
 } as const;
 
@@ -85,17 +76,6 @@ export type AccountMenuHandlers = {
   onAdministration?: () => void;
   onSignOut?: () => void;
   onLocaleChange?: (locale: string) => void;
-  onVaultChange?: (vaultId: number) => void;
-};
-
-export type NotificationPreferencesMenuContext = {
-  currentVaultId?: number;
-  vaultName?: string;
-  vaults?: VaultListItem[];
-  queryClient?: QueryClient;
-  /** Controlled open state so the inbox can deep-link into the same surface. */
-  open?: boolean;
-  onOpenChange?: (open: boolean) => void;
 };
 
 type AccountPreferencesMenuProps = {
@@ -108,8 +88,6 @@ type AccountPreferencesMenuProps = {
    * menu stays appearance-only for no-Vault / create screens.
    */
   handlers?: AccountMenuHandlers;
-  /** Vault-scoped notification delivery preferences (shell only). */
-  notificationPreferences?: NotificationPreferencesMenuContext;
   t?: (key: string, params?: Record<string, unknown>) => string;
 };
 
@@ -122,7 +100,6 @@ export function AccountPreferencesMenu({
   locale: localeProp,
   locales,
   handlers,
-  notificationPreferences,
   t: tProp,
 }: AccountPreferencesMenuProps) {
   const i18n = useContext(I18nContext);
@@ -130,7 +107,6 @@ export function AccountPreferencesMenu({
   const t = tProp ?? i18n?.t ?? ((key: string) => key);
   const fallback = locale === "it" ? FALLBACK_LABELS.it : FALLBACK_LABELS.en;
   const [open, setOpen] = useState(false);
-  const [prefsOpenInternal, setPrefsOpenInternal] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const wasOpenRef = useRef(false);
 
@@ -144,19 +120,6 @@ export function AccountPreferencesMenu({
 
   const shellSecondary = Boolean(handlers);
   const availableLocales = locales ?? i18n?.locales ?? ["en", "it"];
-  const prefsControlled = notificationPreferences?.onOpenChange != null;
-  const prefsOpen = prefsControlled
-    ? Boolean(notificationPreferences?.open)
-    : prefsOpenInternal;
-  const setPrefsOpen = (next: boolean) => {
-    if (prefsControlled) {
-      notificationPreferences?.onOpenChange?.(next);
-      return;
-    }
-    setPrefsOpenInternal(next);
-  };
-  const showNotificationPreferences =
-    shellSecondary && notificationPreferences != null;
 
   const openLabel = translatedLabel(
     shellSecondary ? MENU_KEYS.open : MENU_KEYS.openPreferences,
@@ -199,11 +162,6 @@ export function AccountPreferencesMenu({
     t(MENU_KEYS.signOut),
     fallback.signOut,
   );
-  const notificationPreferencesLabel = translatedLabel(
-    MENU_KEYS.notificationPreferences,
-    t(MENU_KEYS.notificationPreferences),
-    fallback.notificationPreferences,
-  );
 
   const actionClass =
     "min-h-11 w-full justify-start rounded-[10px] border border-input bg-surface px-4 text-left font-bold text-ink";
@@ -213,11 +171,6 @@ export function AccountPreferencesMenu({
   function runAndClose(action?: () => void) {
     setOpen(false);
     action?.();
-  }
-
-  function openNotificationPreferences() {
-    setOpen(false);
-    setPrefsOpen(true);
   }
 
   return (
@@ -304,18 +257,6 @@ export function AccountPreferencesMenu({
 
           <ThemeControl t={t} locale={locale} className="max-w-full" />
 
-          {showNotificationPreferences ? (
-            <Button
-              type="button"
-              variant="secondary"
-              className={actionClass}
-              data-testid="account-notification-preferences"
-              onClick={openNotificationPreferences}
-            >
-              {notificationPreferencesLabel}
-            </Button>
-          ) : null}
-
           {shellSecondary ? (
             <Button
               type="button"
@@ -328,20 +269,6 @@ export function AccountPreferencesMenu({
           ) : null}
         </div>
       </Dialog>
-
-      {showNotificationPreferences ? (
-        <NotificationPreferencesPanel
-          open={prefsOpen}
-          onOpenChange={setPrefsOpen}
-          currentVaultId={notificationPreferences?.currentVaultId}
-          vaultName={notificationPreferences?.vaultName}
-          vaults={notificationPreferences?.vaults}
-          onVaultChange={handlers?.onVaultChange}
-          locale={locale}
-          t={t}
-          queryClient={notificationPreferences?.queryClient}
-        />
-      ) : null}
     </>
   );
 }

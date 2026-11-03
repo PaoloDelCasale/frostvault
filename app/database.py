@@ -16,7 +16,7 @@ from .services.rclone_runtime import cleanup_runtime_configs
 
 
 INTEGRITY_ERRORS = (UniqueViolation, sqlite3.IntegrityError)
-HEAD_SCHEMA_REVISION = "0045_drop_quotas_windows"
+HEAD_SCHEMA_REVISION = "0046_simplify_notifications"
 _logger = logging.getLogger(__name__)
 
 

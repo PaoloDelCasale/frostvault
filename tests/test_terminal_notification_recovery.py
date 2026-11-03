@@ -68,7 +68,7 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
             "app.storage.db",
             side_effect=lambda: SQLiteConnection(str(self.path)),
         ), patch(
-            "app.services.notifications.enqueue_job_terminal_push",
+            "app.services.notifications.enqueue_job_terminal_notification",
             side_effect=RuntimeError("savepoint boom"),
         ):
             self.assertTrue(set_job(self.job_id, "failed", "AccessDenied"))

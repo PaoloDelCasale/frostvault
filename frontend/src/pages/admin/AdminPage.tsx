@@ -17,7 +17,6 @@ import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 
 import { AdminAuditEventsSection } from "./AuditEventsSection";
-import { NotificationsSection } from "./NotificationsSection";
 import { RelocateVaultDialog } from "./RelocateVaultDialog";
 import { SettingsSection } from "./SettingsSection";
 import { SourceVolumesSection } from "./SourceVolumesSection";
@@ -36,7 +35,6 @@ const DEDICATED_SECTION_PATHS = new Set([
   "/admin/storage-cost-estimates",
   "/admin/audit-events",
   "/admin/worker-errors",
-  "/admin/notifications",
   "/admin/metadata-backups",
   "/admin/defaults",
   "/admin/deployment",
@@ -131,7 +129,6 @@ export function AdminPage() {
               ["admin.section_vaults", "/admin/vaults"],
               ["admin.section_sources", "/admin/sources"],
               ["admin.section_defaults", "/admin/defaults"],
-              ["admin.section_notifications", "/admin/notifications"],
               ["admin.section_deployment", "/admin/deployment"],
               ["admin.section_storage_estimates", "/admin/storage-cost-estimates"],
               ["admin.section_audit_events", "/admin/audit-events"],
@@ -157,8 +154,6 @@ export function AdminPage() {
           <AdminAuditEventsSection />
         ) : pathname === "/admin/worker-errors" ? (
           <WorkerErrorsSection />
-        ) : pathname === "/admin/notifications" ? (
-          <NotificationsSection />
         ) : pathname === "/admin/metadata-backups" ? (
           <MetadataBackupsSection />
         ) : settingsMode ? (

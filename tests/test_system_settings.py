@@ -84,6 +84,19 @@ class SystemSettingsResolverTests(unittest.TestCase):
     def test_deployment_only_keys_are_rejected(self) -> None:
         self._assert_setting_rejected("archive_master_key", "unsafe")
 
+    def test_smtp_configuration_is_deployment_owned_and_password_redacted(self) -> None:
+        from app.system_settings import system_settings_response
+
+        self._assert_setting_rejected("smtp_host", "smtp.example.test")
+        self._assert_setting_rejected("smtp_password", "test-only-password")
+        configured = replace(settings, smtp_password="test-only-password")
+        with SQLiteConnection(str(self.database_path)) as connection:
+            response = system_settings_response(connection, settings_obj=configured)
+            snapshot = metadata_backups.build_config_snapshot(configured, connection=connection)
+        self.assertNotIn("test-only-password", str(response))
+        self.assertNotIn("smtp_password", snapshot)
+        self.assertNotIn("test-only-password", str(snapshot))
+
     def test_incorrectly_typed_values_are_rejected(self) -> None:
         self._assert_setting_rejected("scan_interval", "1800")
         with SQLiteConnection(str(self.database_path)) as connection:

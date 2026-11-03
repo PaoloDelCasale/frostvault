@@ -126,40 +126,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/admin/notification-endpoints/smtp": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Admin Set Smtp Endpoint */
-        post: operations["admin_set_smtp_endpoint_api_admin_notification_endpoints_smtp_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/notification-endpoints/webhook": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Admin Set Webhook Endpoint */
-        post: operations["admin_set_webhook_endpoint_api_admin_notification_endpoints_webhook_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/admin/settings": {
         parameters: {
             query?: never;
@@ -722,46 +688,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/push/config": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Push Config
-         * @description Public VAPID config; degrades cleanly when push is unconfigured.
-         */
-        get: operations["push_config_api_push_config_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/push/subscriptions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Subscribe Push
-         * @description Persist a Web Push subscription for the current Session/device.
-         */
-        post: operations["subscribe_push_api_push_subscriptions_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/reauth": {
         parameters: {
             query?: never;
@@ -1113,23 +1039,6 @@ export interface paths {
         post?: never;
         /** Delete Vault Lifecycle Folder Override */
         delete: operations["delete_vault_lifecycle_folder_override_api_vault_lifecycle_folder_overrides_delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vault/notification-preferences": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Set Vault Notification Preference */
-        post: operations["set_vault_notification_preference_api_vault_notification_preferences_post"];
-        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2208,15 +2117,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** PushSubscribeAction */
-        PushSubscribeAction: {
-            /** Endpoint */
-            endpoint: string;
-            /** Keys */
-            keys: {
-                [key: string]: string;
-            };
-        };
         /** ReauthRequest */
         ReauthRequest: {
             /** Password */
@@ -2299,45 +2199,6 @@ export interface components {
             message_key: string;
         } & {
             [key: string]: unknown;
-        };
-        /** SmtpEndpointAction */
-        SmtpEndpointAction: {
-            /**
-             * Enabled
-             * @default true
-             */
-            enabled: boolean;
-            /** From Address */
-            from_address: string;
-            /** Host */
-            host: string;
-            /**
-             * Password
-             * @default
-             */
-            password: string;
-            /**
-             * Port
-             * @default 587
-             */
-            port: number;
-            /** Reason */
-            reason: string;
-            /**
-             * To Address
-             * @default
-             */
-            to_address: string;
-            /**
-             * Use Tls
-             * @default true
-             */
-            use_tls: boolean;
-            /**
-             * Username
-             * @default
-             */
-            username: string;
         };
         SourceDirectoryBrowseResponse: {
             items: components["schemas"]["SourceDirectoryEntry"][];
@@ -2746,20 +2607,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** VaultNotificationPreferenceAction */
-        VaultNotificationPreferenceAction: {
-            /** Channel */
-            channel: string;
-            /**
-             * Enabled
-             * @default true
-             */
-            enabled: boolean;
-            /** Event */
-            event: string;
-            /** Recipient User Ids */
-            recipient_user_ids?: number[];
-        };
         /**
          * VaultRelocate
          * @description Constrained destination within the Vault's existing Source Volume.
@@ -2825,18 +2672,6 @@ export interface components {
             items: components["schemas"]["VaultListItem"][];
         } & {
             [key: string]: unknown;
-        };
-        /** WebhookEndpointAction */
-        WebhookEndpointAction: {
-            /**
-             * Enabled
-             * @default true
-             */
-            enabled: boolean;
-            /** Reason */
-            reason: string;
-            /** Url */
-            url: string;
         };
     };
     responses: never;
@@ -3001,72 +2836,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["MetadataBackupRunAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    admin_set_smtp_endpoint_api_admin_notification_endpoints_smtp_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SmtpEndpointAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    admin_set_webhook_endpoint_api_admin_notification_endpoints_webhook_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["WebhookEndpointAction"];
             };
         };
         responses: {
@@ -4047,59 +3816,6 @@ export interface operations {
             };
         };
     };
-    push_config_api_push_config_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-        };
-    };
-    subscribe_push_api_push_subscriptions_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PushSubscribeAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     reauth_api_reauth_post: {
         parameters: {
             query?: never;
@@ -4720,39 +4436,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LifecycleResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    set_vault_notification_preference_api_vault_notification_preferences_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultNotificationPreferenceAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
             /** @description Validation Error */

@@ -34,13 +34,10 @@ export function AppShell({
   children,
 }: AppShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [notificationPreferencesOpen, setNotificationPreferencesOpen] =
-    useState(false);
 
   useEffect(() => {
     if (authReconciliationPending) {
       setDrawerOpen(false);
-      setNotificationPreferencesOpen(false);
     }
   }, [authReconciliationPending]);
   const fallbackQueryClient = useMemo(() => createAppQueryClient(), []);
@@ -68,7 +65,6 @@ export function AppShell({
         onAdministration: handlers.onAdministration,
         onSignOut: handlers.onSignOut,
         onLocaleChange: handlers.onLocaleChange,
-        onVaultChange: handlers.onVaultChange,
       }
     : undefined;
 
@@ -120,7 +116,6 @@ export function AppShell({
                 locale={capabilities.locale}
                 t={t}
                 queryClient={queryClient}
-                onOpenPreferences={() => setNotificationPreferencesOpen(true)}
               />
 
               <AccountPreferencesMenu
@@ -128,14 +123,6 @@ export function AppShell({
                 locales={capabilities.locales}
                 handlers={accountHandlers}
                 t={t}
-                notificationPreferences={{
-                  currentVaultId: capabilities.currentVaultId,
-                  vaultName: capabilities.vaultName,
-                  vaults: capabilities.vaults,
-                  queryClient,
-                  open: notificationPreferencesOpen,
-                  onOpenChange: setNotificationPreferencesOpen,
-                }}
               />
 
               <div className="md:hidden">

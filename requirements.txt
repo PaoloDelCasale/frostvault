@@ -11,6 +11,5 @@ httpx==0.28.1
 authlib==1.9.1
 cryptography==50.0.2
 PyYAML==6.0.3
-pywebpush==2.5.0
 msgpack==1.2.3
 setuptools==84.2.1

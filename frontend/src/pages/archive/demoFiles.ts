@@ -1245,24 +1245,6 @@ export function installDemoFilesFetch(): void {
       return json({ marked_count: marked, unread_count: 0 });
     }
 
-    if (path === "/api/vault/notification-preferences") {
-      if (method === "POST") {
-        return json({
-          id: 1,
-          user_id: 1,
-          vault_id: 1,
-          event: body.event ?? "upload.completed",
-          in_app_enabled: body.in_app_enabled ?? true,
-          push_enabled: body.push_enabled ?? false,
-        });
-      }
-      return json({ items: [] });
-    }
-
-    if (path === "/api/push/config") {
-      return json({ configured: false, vapid_public_key: null });
-    }
-
     if (path === "/api/vault/lifecycle" || path === "/api/lifecycle") {
       return json(state.lifecycle);
     }
