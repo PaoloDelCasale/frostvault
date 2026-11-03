@@ -1150,28 +1150,6 @@ class ArchiveCatalog:
                 int(owned["vault_id"]), owned["vault_file_id"]
             )
 
-    def latest_available_provider_version_id(
-        self, vault_id: int, path: str
-    ) -> str | None:
-        """Return the recoverable Archive Version's S3 VersionId for one path."""
-        row = self.connection.execute(
-            """
-            SELECT av.provider_version_id
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            JOIN archive_versions av ON av.vault_file_id=vf.id
-            WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
-              AND av.availability NOT IN ('missing', 'purged')
-            ORDER BY av.version_number DESC
-            LIMIT 1
-            """,
-            (vault_id, path),
-        ).fetchone()
-        if row is None or not row["provider_version_id"]:
-            return None
-        return str(row["provider_version_id"])
-
     def mark_unlisted_snapshot_versions_superseded(
         self,
         *,

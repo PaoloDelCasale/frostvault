@@ -40,9 +40,6 @@ from .services.rclone_runtime import (
 )
 from .services.vault_crypto import safe_error_message
 from .services.vault_recovery import secrets_for_vault
-from .services.current_snapshot import (
-    keep_discovered_snapshot_version,
-)
 from .services.s3_preflight import check_bucket_readiness, preflight_failure_message
 from .services.catalog_audit import audit_vault_catalog
 from .services.directory_aggregates import (
@@ -974,28 +971,43 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
 
     versions.sort(key=lambda entry: (entry[0], entry[6], entry[2], entry[1]))
     markers.sort(key=lambda entry: (entry[0], entry[3], entry[2], entry[1]))
-    listed_version_ids: dict[str, set[str]] = {}
     grouped: dict[str, list[tuple[str, str, str, Any, str, str, str]]] = {}
     for entry in versions:
         grouped.setdefault(entry[0], []).append(entry)
-        listed_version_ids.setdefault(entry[0], set()).add(str(entry[1]))
-    versions = []
-    for path in sorted(grouped):
-        versions.extend(
-            sorted(grouped[path], key=lambda item: item[6], reverse=True)
-        )
 
     from .services.lifecycle_pins import load_lifecycle_pins
 
     with db() as connection:
         assignments = load_policy_assignments(connection, vault["id"])
         pins = load_lifecycle_pins(connection, vault["id"])
+        # Decide cleanup authority before discovery changes internal version
+        # numbers. Record all listed copies chronologically, without granting
+        # trust. Legacy/unverified/mismatched or ambiguous keepers fail closed.
+        catalog = ArchiveCatalog(connection)
+        verified_keepers: dict[str, dict[str, Any]] = {}
+        stale_keeper_paths: set[str] = set()
+        for path, entries in grouped.items():
+            known = catalog.list_versions(vault["id"], path)
+            keeper = next((row for row in known if row["availability"] not in {"missing", "purged"}), None)
+            if keeper is None:
+                continue
+            identity = (keeper["object_key"], keeper["provider_version_id"])
+            if identity not in {(entry[2], entry[1]) for entry in entries}:
+                stale_keeper_paths.add(path)
+                continue
+            newest = entries[-1]
+            keeper = next((
+                row for row in known
+                if (row["object_key"], row["provider_version_id"]) == (newest[2], newest[1])
+            ), None)
+            if (
+                not decode_failures and keeper and keeper["recoverable"]
+                and sum(entry[6] == newest[6] for entry in entries) == 1
+            ):
+                verified_keepers[path] = keeper
 
     count = 0
-    snapshot_extras: list[tuple[str, str, str]] = []
-    snapshot_kept_by_path: dict[str, str] = {}
-    # Paths whose catalogued keeper is absent from a complete listing.
-    stale_keeper_paths: set[str] = set()
+    snapshot_extras: list[tuple[str, str, str, str]] = []
     for offset in range(0, len(versions), CLOUD_SCAN_WRITE_BATCH_SIZE):
         if not _cloud_scan_still_current(vault, scan_id):
             return count
@@ -1036,41 +1048,15 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                 timestamp,
                 applied_policy_id,
             ) in tagged:
-                catalog_keep = catalog.latest_available_provider_version_id(
-                    int(vault["id"]), logical_path
-                )
-                # Catalog lag never authorizes destruction of discovered data.
-                if catalog_keep is not None and catalog_keep not in (
-                    listed_version_ids.get(logical_path, set())
+                keeper = verified_keepers.get(logical_path)
+                if keeper and (object_key, str(version_id)) != (
+                    keeper["object_key"], keeper["provider_version_id"],
                 ):
-                    catalog_keep = None
-                    stale_keeper_paths.add(logical_path)
-                keep = keep_discovered_snapshot_version(
-                    provider_version_id=str(version_id),
-                    catalog_keep_provider_version_id=catalog_keep,
-                    already_kept_provider_version_id=snapshot_kept_by_path.get(
-                        logical_path
-                    ),
-                )
-                if keep:
-                    snapshot_kept_by_path[logical_path] = str(version_id)
-                elif not decode_failures:
-                    # Preserve legacy/unverified/mismatched copies. Only a
-                    # verified keeper that is also newest in this listing can
-                    # authorize background cleanup; discovery grants no trust.
-                    keeper = next((
-                        row for row in catalog.list_versions(vault["id"], logical_path)
-                        if row["provider_version_id"] == snapshot_kept_by_path.get(logical_path)
-                    ), None)
-                    newest = max(grouped[logical_path], key=lambda item: item[6])
-                    if (
-                        keeper and keeper["integrity"] == "verified"
-                        and keeper["availability"] == "available"
-                        and (keeper["object_key"], keeper["provider_version_id"])
-                        == (newest[2], newest[1])
-                    ):
-                        snapshot_extras.append((logical_path, str(version_id), object_key))
-                        continue
+                    snapshot_extras.append((
+                        logical_path, str(version_id), object_key, str(keeper["id"]),
+                    ))
+                # A failed cleanup still leaves every discovered copy catalogued
+                # as present, rather than producing a false missing-copy signal.
                 desired_policy_id = (
                     None
                     if _path_matches_lifecycle_pins(logical_path, pins)
@@ -2706,7 +2692,6 @@ def purge_current_snapshot_superseded(
     *,
     keep_version_id: str,
     client: Any,
-    require_catalogued_versions: bool = False,
 ) -> None:
     """Destroy every S3 VersionId except the verified Current Snapshot.
 
@@ -2759,17 +2744,16 @@ def purge_current_snapshot_superseded(
     }
     if keep_provider not in listings[keep_key][0]:
         raise RuntimeError("Current Snapshot keeper is absent from cloud listing")
-    if require_catalogued_versions:
-        known = {(keep_key, keep_provider)} | {
-            (str(row["object_key"]), str(row["provider_version_id"]))
-            for row in superseded
-        }
-        if any(
-            (object_key, str(version_id)) not in known
-            for object_key, (versions, _markers) in listings.items()
-            for version_id in versions
-        ):
-            raise RuntimeError("Rename found uncatalogued cloud content; no deletion allowed")
+    known = {(keep_key, keep_provider)} | {
+        (str(row["object_key"]), str(row["provider_version_id"]))
+        for row in superseded
+    }
+    if any(
+        (object_key, str(version_id)) not in known
+        for object_key, (versions, _markers) in listings.items()
+        for version_id in versions
+    ):
+        raise RuntimeError("Snapshot found uncatalogued cloud content; no deletion allowed")
     for object_key, (versions, markers) in listings.items():
         for version_id in versions:
             if object_key == keep_key and str(version_id) == keep_provider:
@@ -2804,16 +2788,22 @@ def purge_current_snapshot_superseded(
 
 def _purge_current_snapshot_scan_extras(
     vault: dict[str, Any],
-    extras: list[tuple[str, str, str]],
+    extras: list[tuple[str, str, str, str]],
     client: Any,
 ) -> None:
-    """Delete uncatalogued extra VersionIds found during a Current Snapshot scan."""
-    for path, version_id, object_key in extras:
+    """Delete extras only while the exact verified scan keeper remains available."""
+    for path, version_id, object_key, keeper_id in extras:
         try:
             with db() as connection:
                 rows = ArchiveCatalog(connection).list_versions(vault["id"], path)
-            keeper = next((row for row in rows if row["availability"] == "available"), None)
-            if not keeper or keeper["integrity"] != "verified":
+                active = connection.execute(
+                    """SELECT 1 FROM jobs WHERE vault_file_id=(
+                           SELECT vault_file_id FROM archive_versions WHERE id=%s)
+                       AND status NOT IN ('completed', 'failed', 'cancelled') LIMIT 1""",
+                    (keeper_id,),
+                ).fetchone()
+            keeper = next((row for row in rows if str(row["id"]) == keeper_id), None)
+            if active or not keeper or not keeper["recoverable"]:
                 continue
             # Recheck the exact keeper immediately before deletion. A failed
             # listing or changed catalog must leave every extra untouched.
@@ -4424,7 +4414,6 @@ def process_rename(job: dict[str, Any]) -> None:
             job,
             keep_version_id=str(version_id),
             client=client,
-            require_catalogued_versions=True,
         )
         with db() as connection:
             ensure_job_claim_owned_in_transaction(

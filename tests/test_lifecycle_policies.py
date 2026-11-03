@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from tests.snapshot_s3_stub import VersionedS3Stub
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -216,7 +217,7 @@ class UploadPolicyTagIntegrationTests(unittest.TestCase):
             set_vault_default_policy(connection, 1, policy_id)
             self.policy_id = policy_id
 
-        s3 = SimpleNamespace(
+        s3 = VersionedS3Stub(
             head_object=lambda **_: {
                 "VersionId": "ver-123",
                 "ContentLength": 5,

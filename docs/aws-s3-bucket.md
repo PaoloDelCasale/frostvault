@@ -88,7 +88,10 @@ Policy identities are UUIDs only; mutable display names live in
 Each `lifecycle_policies.profile_json` stores a guided transition profile.
 Validation enforces supported storage classes, strictly increasing transition
 days, and AWS minimum durations. Glacier-family transitions also return cost
-warnings about retrieval and minimum storage-duration billing.
+warnings about retrieval and minimum storage-duration billing. Current and
+noncurrent expiration are not supported: neither `Expiration` nor
+`NoncurrentVersionExpiration` can be emitted, including from legacy stored
+profiles. There is only one recoverable copy per file.
 
 During each vault scan the application rebuilds only its own lifecycle rules
 (`psa-policy-<uuid>` IDs) and merges them with existing bucket rules such as the
@@ -121,13 +124,19 @@ Detected drift updates storage class, applied policy tags, and availability
 - **Versioning must stay enabled**: suspending versioning blocks destructive
   local cleanup and new uploads that rely on immutable Archive Versions.
 - **Lifecycle rules**: the Terraform module only manages the multipart-abort
-  baseline. Application-managed lifecycle profiles (future work) add their own
-  rules and enforce the 1,000-rule bucket limit.
+  baseline. Application-managed profiles enforce the 1,000-rule bucket limit.
+  Migration `0050_current_snapshot_only` makes no S3 calls; existing
+  application-owned expiration rules are removed on the next successful
+  lifecycle synchronization. Before using an upgraded test bucket, confirm
+  that synchronization succeeded; externally managed expiration rules are
+  preserved and must be reviewed by the operator.
 
 ## Costs
 
-- **Versioning** retains every Archive Version; storage grows with each content
-  change until lifecycle transitions or explicit deletion.
+- **Versioning** is internal to verified replacement. Each successful verified
+  upload or safe rename deletes superseded versions. Failed uploads/verifications
+  and legacy copies without a verified available keeper remain fail-closed;
+  storage may temporarily include those extra bytes. There is no recovery history.
 - **Storage classes** (Standard, IA, Glacier tiers) affect retrieval cost and
   minimum retention; guided profiles will surface estimates before apply.
 - **Restore requests** from Glacier tiers incur per-GB and per-request charges.

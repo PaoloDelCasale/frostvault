@@ -22,7 +22,6 @@ for _flag, _value in (
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
 from app.main import queue_jobs
-from app.services.current_snapshot import keep_discovered_snapshot_version
 from app.config import Settings
 from app.services import source_layout
 from app.services import vaults as vaults_service
@@ -32,40 +31,6 @@ from tests.test_database import run_alembic
 
 def _sha(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
-
-
-class SnapshotReconciliationUnitTests(unittest.TestCase):
-    def test_scan_keep_prefers_catalogued_snapshot(self) -> None:
-        self.assertFalse(
-            keep_discovered_snapshot_version(
-                provider_version_id="s3-b",
-                catalog_keep_provider_version_id="s3-a",
-                already_kept_provider_version_id=None,
-            )
-        )
-        self.assertTrue(
-            keep_discovered_snapshot_version(
-                provider_version_id="s3-a",
-                catalog_keep_provider_version_id="s3-a",
-                already_kept_provider_version_id=None,
-            )
-        )
-
-    def test_scan_keep_first_candidate_when_empty(self) -> None:
-        self.assertTrue(
-            keep_discovered_snapshot_version(
-                provider_version_id="s3-newest",
-                catalog_keep_provider_version_id=None,
-                already_kept_provider_version_id=None,
-            )
-        )
-        self.assertFalse(
-            keep_discovered_snapshot_version(
-                provider_version_id="s3-older",
-                catalog_keep_provider_version_id=None,
-                already_kept_provider_version_id="s3-newest",
-            )
-        )
 
 
 class SnapshotCreationTests(unittest.TestCase):
@@ -240,6 +205,36 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
                 prior = next(row for row in versions if row["provider_version_id"] == "s3-a")
                 self.assertTrue(prior["recoverable"])
                 self.assertFalse(any(row["provider_version_id"] == "s3-b" and row["integrity"] == "verified" for row in versions))
+
+    def test_listing_failure_missing_keeper_and_uncatalogued_content_fail_closed(self) -> None:
+        for failure in ("listing", "missing_keeper", "uncatalogued"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                source, database_path = self._prepare(Path(directory), b"original")
+                s3 = _FakeS3()
+                self._run_upload(database_path, s3, payload=b"original", version_id="s3-a")
+                local = source / "report.txt"
+                local.write_bytes(b"replacement")
+                with SQLiteConnection(str(database_path)) as connection:
+                    ArchiveCatalog(connection).observe_local_copy(
+                        vault_id=2, path="report.txt", file_type="regular",
+                        size=local.stat().st_size, mtime_ns=local.stat().st_mtime_ns,
+                        observed_at="2026-11-03T11:00:00+00:00",
+                    )
+                if failure == "uncatalogued":
+                    s3.versions["docs/report.txt"].add("s3-unknown")
+                    listing = s3.list_object_versions
+                elif failure == "missing_keeper":
+                    listing = lambda **kwargs: {"Versions": [{"Key": "docs/report.txt", "VersionId": "s3-a"}]}
+                else:
+                    def listing(**kwargs):
+                        raise RuntimeError("listing unavailable")
+                with patch.object(s3, "list_object_versions", side_effect=listing):
+                    self._run_upload(database_path, s3, payload=b"replacement", version_id="s3-b")
+                self.assertEqual(s3.deleted, [])
+                self.assertIn("s3-a", s3.versions["docs/report.txt"])
+                with SQLiteConnection(str(database_path)) as connection:
+                    prior = next(row for row in ArchiveCatalog(connection).list_versions(2, "report.txt") if row["provider_version_id"] == "s3-a")
+                self.assertTrue(prior["recoverable"])
 
     def test_overwrite_purges_previous_archive_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

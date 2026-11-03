@@ -12,6 +12,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from tests.snapshot_s3_stub import VersionedS3Stub
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -141,7 +142,7 @@ class PlainUploadPrefixedRemoteTests(unittest.TestCase):
                     patch("app.storage.run_rclone_stream", side_effect=fake_rclone_stream),
                     patch(
                         "app.storage.s3_client",
-                        return_value=SimpleNamespace(
+                        return_value=VersionedS3Stub(
                             head_object=lambda **kwargs: (
                                 head_keys.append(kwargs["Key"])
                                 or {
@@ -316,7 +317,8 @@ class PlainRenamePrefixedRemoteTests(unittest.TestCase):
                     patch("app.storage.run_rclone", side_effect=fake_rclone),
                     patch(
                         "app.storage.s3_client",
-                        return_value=SimpleNamespace(
+                        return_value=VersionedS3Stub(
+                            initial_versions={old_key: {"old-s3-version"}},
                             head_object=lambda **kwargs: (
                                 head_keys.append(kwargs["Key"])
                                 or {
@@ -342,7 +344,7 @@ class PlainRenamePrefixedRemoteTests(unittest.TestCase):
 
             self.assertTrue(rclone_calls)
             self.assertEqual(rclone_calls[0][2], expected_remote)
-            self.assertEqual(head_keys, [new_key, new_key, old_key])
+            self.assertEqual(head_keys, [new_key, new_key])
             self.assertEqual(
                 download_calls,
                 [

@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
+from tests.snapshot_s3_stub import VersionedS3Stub
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -120,7 +121,7 @@ def _run_plain_upload(
             patch("app.storage.run_rclone_stream", side_effect=fake_rclone_stream),
             patch(
                 "app.storage.s3_client",
-                return_value=SimpleNamespace(
+                return_value=VersionedS3Stub(
                     head_object=lambda **_: {
                         "VersionId": "s3-version-1",
                         "ContentLength": size,
@@ -345,7 +346,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 operation_concurrency=1,
                 restore_poll_interval=900,
             )
-            s3 = SimpleNamespace(
+            s3 = VersionedS3Stub(
                 head_object=lambda **_: {
                     "VersionId": "one-version",
                     "ContentLength": len(payload),
@@ -439,7 +440,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 operation_concurrency=1,
                 restore_poll_interval=900,
             )
-            s3 = SimpleNamespace(
+            s3 = VersionedS3Stub(
                 head_object=lambda **_: {
                     "VersionId": "one-version",
                     "ContentLength": len(original),
@@ -546,7 +547,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                     patch("app.storage.run_rclone_stream", side_effect=fake_stream),
                     patch(
                         "app.storage.s3_client",
-                        return_value=SimpleNamespace(
+                        return_value=VersionedS3Stub(
                             head_object=lambda **_: {
                                 "VersionId": "s3-version-1",
                                 "ContentLength": len(payload),
@@ -645,7 +646,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                     patch("app.storage.run_rclone", side_effect=flaky_rclone),
                     patch(
                         "app.storage.s3_client",
-                        return_value=SimpleNamespace(
+                        return_value=VersionedS3Stub(
                             head_object=lambda **_: {
                                 "VersionId": "s3-version-1",
                                 "ContentLength": len(payload),
@@ -718,7 +719,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                     patch("app.storage.run_rclone_stream", side_effect=cancelling_stream),
                     patch(
                         "app.storage.s3_client",
-                        return_value=SimpleNamespace(
+                        return_value=VersionedS3Stub(
                             head_object=lambda **_: {
                                 "VersionId": "s3-version-1",
                                 "ContentLength": len(payload),
@@ -786,7 +787,7 @@ class ContentCryptUploadVerificationTests(unittest.TestCase):
                     patch("app.storage.run_rclone_stream", side_effect=fake_stream),
                     patch(
                         "app.storage.s3_client",
-                        return_value=SimpleNamespace(
+                        return_value=VersionedS3Stub(
                             head_object=lambda **_: {
                                 "VersionId": "content-crypt-v1",
                                 "ContentLength": len(payload),
@@ -915,7 +916,7 @@ class CryptUploadVerificationTests(unittest.TestCase):
                     patch("app.storage.run_rclone_stream", side_effect=fake_rclone_stream),
                     patch(
                         "app.storage.s3_client",
-                        return_value=SimpleNamespace(
+                        return_value=VersionedS3Stub(
                             head_object=lambda **kwargs: {
                                 "VersionId": "crypt-v1",
                                 "ContentLength": len(payload),

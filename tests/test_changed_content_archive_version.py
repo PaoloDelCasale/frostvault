@@ -13,6 +13,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from tests.snapshot_s3_stub import VersionedS3Stub
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -465,7 +466,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
                 patch("app.storage.run_rclone_stream", side_effect=fake_stream),
                 patch(
                     "app.storage.s3_client",
-                    return_value=SimpleNamespace(
+                    return_value=VersionedS3Stub(
                         head_object=lambda **_: {
                             "VersionId": version_id,
                             "ContentLength": len(payload),
@@ -516,7 +517,8 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             self.assertEqual(observed["id"], file_id)
             self.assertEqual(observed["latest_version"]["provider_version_id"], "s3-b")
             self.assertEqual(len(versions), 2)
-            self.assertTrue(all(row["recoverable"] for row in versions))
+            self.assertEqual([row["provider_version_id"] for row in versions if row["recoverable"]], ["s3-b"])
+            self.assertEqual(versions[1]["availability"], "purged")
             self.assertEqual([job["status"] for job in jobs], ["completed", "completed"])
 
     def test_unchanged_digest_relinks_without_new_s3_object(self) -> None:
@@ -652,7 +654,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             self.assertEqual(versions[1]["provider_version_id"], "s3-retry")
             self.assertEqual(versions[1]["integrity"], "verified")
 
-    def test_abc_plain_and_crypt_keep_three_recoverable_versions(self) -> None:
+    def test_abc_plain_and_crypt_keep_only_latest_recoverable_snapshot(self) -> None:
         for crypt in (False, True):
             with self.subTest(crypt=crypt), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -688,7 +690,8 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
                         ).fetchall()
                     }
                 self.assertEqual(len(versions), 3)
-                self.assertTrue(all(row["recoverable"] for row in versions))
+                self.assertEqual([row["provider_version_id"] for row in versions if row["recoverable"]], ["s3-3"])
+                self.assertTrue(all(row["availability"] == "purged" for row in versions[1:]))
                 self.assertEqual(ids, {file_id})
 
 

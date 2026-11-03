@@ -12,6 +12,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from tests.snapshot_s3_stub import VersionedS3Stub
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -78,7 +79,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             patch("app.storage.run_rclone_stream", side_effect=run_rclone_stream),
             patch(
                 "app.storage.s3_client",
-                return_value=SimpleNamespace(
+                return_value=VersionedS3Stub(
                     head_object=lambda **_: {
                         "VersionId": version_id,
                         "ContentLength": content_length,
