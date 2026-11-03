@@ -657,7 +657,7 @@ def start_decommission(
     succeeded = False
     try:
         source_directories.lock_vault_root_allocation(connection)
-        # PostgreSQL row lock / SQLite write lock: operation admission and root
+        # PostgreSQL row lock: operation admission and root
         # release share the Vault-root allocation serialization boundary.
         connection.execute("UPDATE vaults SET name=name WHERE id=%s", (vault_id,))
         vault = connection.execute(

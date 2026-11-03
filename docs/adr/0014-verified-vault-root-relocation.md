@@ -11,7 +11,7 @@ Relocation is rejected when the old root still exists, identity was not enrolled
 the filesystem cannot expose a stable inode, the destination differs, overlaps
 another Vault, crosses a symlink or nested mount, is inaccessible, or any Job or
 scan is active. The Vault-root allocation transaction lock serializes overlap
-checks on SQLite and PostgreSQL. The atomic update changes only `source_root` and
+checks through a PostgreSQL transaction advisory lock (#422). The atomic update changes only `source_root` and
 persistent relocation recovery state; Vault UUID, plaintext cloud namespace,
 policies, Vault File and Archive Version rows, and audit identities
 are untouched.

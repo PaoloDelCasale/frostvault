@@ -85,12 +85,12 @@ class SinglePathLookupPlanTests(unittest.TestCase):
             self.assertGreaterEqual(len(path_lookups), 4)
             for sql, params in path_lookups:
                 plan = self._plan(connection, sql, params)
-                self.assertIn(
-                    "file_paths_one_current_path_uq",
+                self.assertRegex(
                     plan,
+                    r"(?:Index Scan|Index Only Scan|Bitmap Index Scan) using file_paths_(?:one_current_path_uq|vault_current_path_idx)",
                     f"plan scans the Vault instead of the path index:\n{plan}\n{sql}",
                 )
-                self.assertRegex(plan, r"Index Cond: .*vault_id = 1.*path =")
+                self.assertRegex(plan, r"Index Cond: .*vault_id = .*1.*path =")
                 self.assertNotIn("Seq Scan on vault_files", plan)
 
 

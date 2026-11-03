@@ -55,7 +55,6 @@ class VaultDecommissionHttpTests(unittest.TestCase):
             "app.main.settings",
             "app.database.settings",
             "app.sessions.settings",
-            "app.services.source_directories.settings",
         ):
             patcher = patch(target, configured)
             patcher.start()

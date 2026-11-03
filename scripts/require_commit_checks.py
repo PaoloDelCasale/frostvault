@@ -2,7 +2,7 @@
 """Fail closed unless required GitHub check runs succeeded for one SHA.
 
 Used by the image publish workflow so a tag, main push, or manual dispatch
-cannot promote a commit whose SQLite, PostgreSQL, MinIO, or frontend jobs
+cannot promote a commit whose PostgreSQL, MinIO, or frontend jobs
 are missing, pending, cancelled, or failed. Counters and scrapers stay
 process-local; this gate is about the commit under promotion.
 

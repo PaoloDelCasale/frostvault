@@ -536,7 +536,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                     VALUES ('dana', 'Dana', NULL)
                     """
                 )
-                with self.assertRaises(Exception):
+                with self.assertRaises(Exception), connection.transaction():
                     connection.execute(
                         """
                         INSERT INTO users(username, display_name, password_hash)
@@ -550,7 +550,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                     VALUES (1, 'https://id.example', 'one', '2026-08-01')
                     """
                 )
-                with self.assertRaises(Exception):
+                with self.assertRaises(Exception), connection.transaction():
                     connection.execute(
                         """
                         INSERT INTO user_identities(user_id, issuer, subject, created_at)

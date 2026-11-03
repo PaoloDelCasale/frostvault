@@ -1,7 +1,7 @@
 """Per-Vault serialization of Job admission.
 
-``lock_vault`` takes a row lock on PostgreSQL and a database write lock on
-SQLite before a caller reads Job state, so two admissions never decide from
+``lock_vault`` takes a PostgreSQL row lock before reading Job state, so
+concurrent admissions never decide from
 one stale snapshot. It also rejects normal work for a quiesced Vault.
 """
 from __future__ import annotations

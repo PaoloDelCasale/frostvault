@@ -91,6 +91,10 @@ def _bulk_local_files(
         """,
         local_rows,
     )
+    raw.close()
+    # These large fixture writes are uncommitted: autovacuum cannot provide
+    # planner statistics before the test queries them on this connection.
+    connection.execute("ANALYZE vault_files, file_paths, local_copies")
 
 
 class DirectoryScaleTests(unittest.TestCase):

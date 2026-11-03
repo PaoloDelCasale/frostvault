@@ -360,7 +360,6 @@ class ArchiveCatalog:
                 continue
             # One portable derived table: (id, path) pairs for this chunk.
             # Explicit casts keep PostgreSQL's UNION ALL type inference stable
-            # (SQLite ignores the cast names).
             id_values = " UNION ALL ".join(
                 ["SELECT CAST(%s AS VARCHAR) AS id, CAST(%s AS TEXT) AS path"]
                 * len(new_paths)
@@ -473,9 +472,8 @@ class ArchiveCatalog:
                     entry_observed_at,
                 ]
             )
-        # SQLite does not support ON CONFLICT DO UPDATE on an INSERT...SELECT
-        # source, so the batch upsert is expressed as a portable pair: a
-        # conditional UPDATE of existing rows (digest/matched-version preserved
+        # Update existing observations before inserting new identities, with
+        # digest/matched-version preserved
         # exactly when the observation is unchanged, mirroring the per-file
         # ON CONFLICT semantics), then a guarded INSERT of the new rows.  Both
         # statements run in the caller's transaction; the Vault row lock
@@ -2451,7 +2449,7 @@ class ArchiveCatalog:
                 .replace("%", "\\%")
                 .replace("_", "\\_")
             )
-            # Immediate children only (portable SQLite + PostgreSQL).
+            # Immediate children only.
             clauses.append("fp.path LIKE %s ESCAPE '\\'")
             params.append(f"{escaped}/%")
             clauses.append("fp.path NOT LIKE %s ESCAPE '\\'")
@@ -3301,8 +3299,8 @@ class ArchiveCatalog:
         target_storage_class: str | None = None,
         whole_vault: bool = False,
     ) -> tuple[list[int], int, int]:
-        # This write is deliberately first: PostgreSQL takes a row lock and
-        # SQLite takes its write lock before the candidate read and inserts.
+        # This write is deliberately first: take the Vault row lock before
+        # the candidate read and inserts.
         # Every manual upload/recovery/free-space admission therefore observes
         # one serialized Vault state.
         lock_vault(

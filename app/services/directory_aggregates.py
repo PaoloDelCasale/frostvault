@@ -290,7 +290,7 @@ def invalidate_for_archive_version_ids(
     ids = [str(version_id) for version_id in version_ids if version_id]
     if not ids:
         return
-    # Chunk to keep parameter lists portable across SQLite/PostgreSQL.
+    # Bound parameter lists for large catalogs.
     for offset in range(0, len(ids), 500):
         batch = ids[offset : offset + 500]
         placeholders = ", ".join(["%s"] * len(batch))
@@ -898,7 +898,7 @@ def _visible_file_select_sql(
     keyset_path: str | None = None,
     limit: int | None = None,
 ) -> tuple[str, list[Any]]:
-    """Shared SELECT for visible catalog rows (SQLite/PG portable)."""
+    """Shared SELECT for visible catalog rows."""
     clauses = ["vf.vault_id=%s", "vf.status='active'"]
     params: list[Any] = []
     # vault_id is bound by the caller as the first param after building SQL.

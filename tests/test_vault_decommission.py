@@ -39,7 +39,6 @@ class VaultDecommissionTests(unittest.TestCase):
         )
         for target in (
             "app.database.settings",
-            "app.services.source_directories.settings",
         ):
             patcher = patch(target, self.settings)
             patcher.start()

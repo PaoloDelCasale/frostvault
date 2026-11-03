@@ -42,7 +42,11 @@ def _server_dsn() -> str:
 
 
 def _dsn(name: str) -> str:
-    return make_conninfo(_server_dsn(), dbname=name)
+    return make_conninfo(
+        _server_dsn(), dbname=name,
+        options="-c lock_timeout=15000 -c statement_timeout=120000",
+        connect_timeout=10,
+    )
 
 
 def _drop(name: str) -> None:

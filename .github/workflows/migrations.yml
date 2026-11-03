@@ -53,7 +53,10 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt
       - name: Use PostgreSQL 16 client tools
-        run: echo '/usr/lib/postgresql/16/bin' >> "$GITHUB_PATH"
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client-16
+          echo '/usr/lib/postgresql/16/bin' >> "$GITHUB_PATH"
       - name: Run PostgreSQL unit-test shard
         env:
           SHARD_INDEX: ${{ matrix.shard }}

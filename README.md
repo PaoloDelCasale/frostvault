@@ -3,7 +3,7 @@
 FrostVault is a self-hosted web application for cataloging files, archiving
 versioned copies in Amazon S3 storage classes, verifying uploaded content, safely
 freeing local space, and recovering exact versions. It is a personal
-archive with a single owner, isolated plaintext vaults, OIDC, and SQLite or PostgreSQL.
+archive with a single owner, isolated plaintext vaults, OIDC, and PostgreSQL.
 
 The archive works like a file manager: it shows top-level folders, lets you
 open them, and provides breadcrumbs for navigating back to parent folders.
@@ -106,8 +106,8 @@ Search remains global across every file in the selected vault.
   Python 3.12+ for native development
 - An S3 bucket with versioning and all four Block Public Access flags enabled,
   plus a least-privilege IAM principal (including `s3:GetBucketPublicAccessBlock`)
-- PostgreSQL 16 for production; SQLite is supported for development and small
-  single-node installations
+- PostgreSQL 16 for production, local development and tests (the only backend)
+- PostgreSQL 16 client tools for native metadata backups and restore verification
 - An HTTPS reverse proxy for any network-accessible deployment
 
 FrostVault never replaces independent backups. Keep encrypted metadata backups
@@ -129,7 +129,7 @@ filesystem, `cap_drop: [ALL]`, and `no-new-privileges` contract.
 Before the first Compose start, create the repository's `./data` bind source on
 the host with the identity selected in `.env`. A missing bind source may be
 created by Docker as root, which prevents the non-root service from creating
-its database and migration/backup files:
+its migration scratch and encrypted backup files:
 
 ```bash
 # Use the same values in .env. These are the Unraid defaults.
@@ -147,19 +147,22 @@ of an existing catalog. It deliberately changes only `./data`: prepare
 source permissions. Full Linux, Unraid, Docker Desktop, and invalid-identity
 guidance is in [docs/filesystem-permissions.md](docs/filesystem-permissions.md).
 
-### Local development with SQLite
+### Local development with PostgreSQL
 
 The local configuration uses:
 
-- a SQLite catalog at `data/frostvault.db`;
+- a dedicated PostgreSQL 16 catalog (never a production database);
 - a test source at `local-data/sources/test`;
 - a real AWS bucket restricted to the `development/test` prefix;
 - credentials read only from the Git-ignored `.env` file.
 
 Local setup:
 
-1. Copy `.env.local.example` to `.env` if the file does not already exist.
-2. Edit only these values in your local `.env`:
+1. Provision a disposable PostgreSQL 16 server and database. For native/cloud
+   development without Docker, follow the isolated `initdb` / `pg_ctl` procedure
+   in [AGENTS.md](AGENTS.md). Use a user-owned cluster, not a system service.
+2. Copy `.env.local.example` to `.env` if absent; configure `PGHOST`, `PGPORT`,
+   `PGDATABASE`, `PGUSER` and database authentication. For cloud tests also set:
 
    ```text
    AWS_ACCESS_KEY_ID=...
@@ -378,13 +381,13 @@ the full model.
 
 ## Configuration
 
-Start from `.env.local.example` for local SQLite use or `.env.example` for a
+Start from `.env.local.example` for local PostgreSQL use or `.env.example` for a
 PostgreSQL deployment. Every value containing `REPLACE` is a placeholder and
 must be replaced before the corresponding integration is used. Important groups:
 
 | Area | Variables |
 | --- | --- |
-| Database | `DB_BACKEND`, `SQLITE_PATH`, `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
+| Database | `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` (or `.pgpass`); optional PostgreSQL `DATABASE_URL` overrides corresponding `PG*` values |
 | Authentication | `BOOTSTRAP_ADMIN_*` (the Owner and its Emergency Password), `OIDC_*`, `BREAK_GLASS_ALLOWED_CIDRS` (LAN networks that accept the Emergency Password) |
 | Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES` |
 | Frontend | `FRONTEND_DIST_DIR` (Vite build output; required for HTML routes) |
@@ -472,10 +475,11 @@ database migration before starting the app:
 ```bash
 python -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-DB_BACKEND=sqlite SQLITE_PATH=./data/frostvault.db \
-  .venv/bin/python -m alembic upgrade head
-DB_BACKEND=sqlite SQLITE_PATH=./data/frostvault.db \
-  .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+# PostgreSQL 16 must already be running (native setup: AGENTS.md).
+# .env is not auto-loaded; keep credentials in this Git-ignored file.
+set -a; . ./.env; set +a
+.venv/bin/python -m alembic upgrade head
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
 ```
 
 On Windows PowerShell, use `.venv\Scripts\python.exe` and set environment
@@ -496,8 +500,8 @@ hard-to-diagnose login failures.
 
 ```bash
 # terminal 1
-DB_BACKEND=sqlite SQLITE_PATH=./data/frostvault.db \
-  .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+set -a; . ./.env; set +a
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
 
 # terminal 2
 cd frontend && npm ci && npm run dev
@@ -507,15 +511,20 @@ Open the Vite URL (default `http://127.0.0.1:5173`). To exercise the production
 serving path without Docker: `cd frontend && npm run build`, then start uvicorn
 and open `http://127.0.0.1:8080`.
 
-Run the same portable suites used by pull-request CI:
+Open a draft PR early and use its CI for complete Python, PostgreSQL/migration,
+S3, Playwright, frontend and image verification (#410). Locally run only targeted
+modules, for example:
 
 ```bash
-.venv/bin/python -m unittest discover -s tests -v
-cd frontend && npm ci && npm run lint && npm run test
+.venv/bin/python -m unittest tests.test_database.DatabaseMigrationTests.test_fresh_postgresql_database_migrates_to_a_startable_schema -v
 ```
 
-PostgreSQL migration tests require `TEST_POSTGRES_URL`; S3-compatible integrity
-tests require `TEST_S3_ENDPOINT`. See [docs/ci.md](docs/ci.md).
+All database tests require `TEST_POSTGRES_URL` pointing at an **isolated**
+PostgreSQL 16 server with a CREATEDB role. They create uniquely named databases
+and clone a real migrated HEAD template for fast empty fixtures; populated and
+pinned migration cases still execute Alembic. Missing configuration fails rather
+than skipping database regressions. S3-compatible cases additionally require
+`TEST_S3_ENDPOINT`. See [docs/ci.md](docs/ci.md).
 
 ## Known limits
 
@@ -524,8 +533,8 @@ tests require `TEST_S3_ENDPOINT`. See [docs/ci.md](docs/ci.md).
 - AWS operations depend on external service availability and may
   incur storage, retrieval, request, and transfer charges.
 - Glacier restore requests cannot be cancelled after S3 accepts them.
-- SQLite does not provide PostgreSQL's production concurrency and operational
-  tooling.
+- Legacy SQLite installations/backups require the previous release for recovery;
+  there is no automatic conversion to PostgreSQL. See [metadata backups](docs/metadata-backups.md#postgresql-only-release-422).
 - The application protects archive workflows but does not replace offline,
   independently tested disaster-recovery copies.
 

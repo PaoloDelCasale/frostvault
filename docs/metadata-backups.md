@@ -7,7 +7,7 @@ authorization unsafe. Vault contents and filenames are plaintext in S3; metadata
 backups remain encrypted.
 
 This document covers scheduled and pre-upgrade backups, restore procedures for
-SQLite and PostgreSQL, restore verification, and off-server custody of the
+PostgreSQL 16, restore verification, and off-server custody of the
 application master key. There is no per-Vault recovery export or custody gate.
 
 ## What is backed up
@@ -15,13 +15,12 @@ application master key. There is no per-Vault recovery export or custody gate.
 Each backup artifact is a Fernet-encrypted archive (sealed with
 `ARCHIVE_MASTER_KEY`) that contains:
 
-- a consistent database dump (SQLite file image or PostgreSQL `pg_dump`
-  custom format)
+- a consistent PostgreSQL custom-format dump (`pg_dump --format=custom --no-owner --no-acl`)
 - a reconstructable configuration snapshot
 - a manifest with reason, backend, timestamps, and content digests
 
 The artifact **never contains** `ARCHIVE_MASTER_KEY`, bootstrap passwords, or
-OIDC client secrets. A SHA-256 digest of the ciphertext is stored alongside the
+OIDC client secrets or database DSNs/credentials. A SHA-256 digest of the ciphertext is stored alongside the
 file and in `metadata_backup_runs`.
 
 The configuration snapshot contains allow-listed, non-secret deployment values
@@ -117,46 +116,72 @@ It does not make an ahead, unknown, or divergent database compatible: deploy
 the image containing its revision, or restore a compatible metadata backup,
 before a deliberate manual recovery.
 
-## Restore flow — SQLite
-
-1. Stop the application.
-2. Keep `ARCHIVE_MASTER_KEY` available from offline custody (not from the backup).
-3. Choose an artifact from `/data/backups` or download from `system/backups/`.
-4. Verify the ciphertext digest against the `.sha256` sidecar.
-5. Decrypt and unpack:
-
-   ```bash
-   python - <<'PY'
-   from pathlib import Path
-   from app.services.metadata_backups import decrypt_backup_file
-   payload = decrypt_backup_file(Path("/data/backups/ARTIFACT.bak.enc"))
-   Path("/data/frostvault.db.restored").write_bytes(payload["database"])
-   print(payload["manifest"])
-   print("config keys:", sorted(payload["config"]))
-   PY
-   ```
-
-6. Replace the live SQLite file with the restored image only after validation.
-7. Confirm `alembic_version` matches the application release, or run
-   `python -m app.backup_upgrade` / `alembic upgrade head` as appropriate.
-8. Start the application and confirm the Owner can sign in. OIDC comes from
-   the `OIDC_*` environment and the restored Identity binding; the
-   `BOOTSTRAP_ADMIN_*` Emergency Password is re-applied at start.
-
 ## Restore flow — PostgreSQL
 
-1. Stop the application.
-2. Keep `ARCHIVE_MASTER_KEY` and PostgreSQL credentials from offline custody.
-3. Decrypt the artifact as above; write `payload["database"]` to a dump file.
-4. Restore into an empty target database (never into a live production DB while
-   the app is writing):
+Use PostgreSQL 16 server and client tools. Connections use libpq's `PG*`
+environment (`PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` / `.pgpass`)
+or optional `DATABASE_URL`; keep credentials out of command arguments and logs.
+The image includes `pg_dump`, `pg_restore`, `createdb`, `dropdb`, and `psql`.
+
+1. Stop the application and retain the original database until recovery is proven.
+2. Retrieve `ARCHIVE_MASTER_KEY` and database access from independent custody.
+3. Choose an artifact from `/data/backups` or `system/backups/`. In a private
+   scratch directory, validate the ciphertext digest and decrypt it:
 
    ```bash
-   pg_restore --clean --if-exists --no-owner --no-acl -d frostvault restore.dump
+   umask 077
+   python - <<'PY'
+   import hashlib
+   from pathlib import Path
+   from app.services.metadata_backups import decrypt_backup_file
+   artifact = Path("/data/backups/ARTIFACT.bak.enc")
+   expected = Path(str(artifact) + ".sha256").read_text().strip()
+   assert hashlib.sha256(artifact.read_bytes()).hexdigest() == expected
+   payload = decrypt_backup_file(artifact)
+   assert payload["manifest"]["backend"] == "postgresql"
+   assert payload["manifest"]["schema_format"] == "postgresql-custom"
+   assert hashlib.sha256(payload["database"]).hexdigest() == payload["manifest"]["database_sha256"]
+   Path("restore.dump").write_bytes(payload["database"])
+   PY
+   pg_restore --list restore.dump > /dev/null
    ```
 
-5. Start the application against the restored database after schema validation
-   and confirm the Owner can sign in.
+4. Restore into a **new empty isolated database**, never into the live catalog.
+   Supply the target host/role securely through `PG*` / `.pgpass`; the names here
+   are examples, not permission to overwrite an existing database:
+
+   ```bash
+   createdb frostvault_restored
+   pg_restore --exit-on-error --no-owner --no-acl -d frostvault_restored restore.dump
+   psql -d frostvault_restored -At -c 'SELECT version_num FROM alembic_version'
+   ```
+
+5. Validate metadata counts and the schema revision against the intended release.
+   For a supported older PostgreSQL revision, point the app at that restored
+   database and use `python -m app.backup_upgrade`; it enforces the pre-upgrade
+   gate. Unknown/ahead revisions require the matching release, not forced stamps.
+6. Only after validation, deliberately configure the app to use the restored
+   database and start it. Confirm the Owner can sign in: OIDC uses `OIDC_*` and
+   the restored Identity binding; `BOOTSTRAP_ADMIN_*` re-applies the Emergency
+   Password. Retire scratch plaintext dumps securely under your own retention policy.
+
+Weekly verification uses a separate temporary database, checks users, Vaults and
+`alembic_version`, and drops only that temporary database. Without CREATEDB
+permission it reports `verification_mode=pg_restore_list`, not a proven full
+restore. It never writes to the live catalog or mutates `vaults/` objects.
+
+### PostgreSQL-only release (#422)
+
+Production, native development and tests now use PostgreSQL only. `DB_BACKEND`
+and `SQLITE_PATH` are removed. Existing PostgreSQL databases retain the historical
+Alembic upgrade/downgrade graph (including populated storage-plan migration 0053);
+this change requires no new schema revision and performs no S3 calls.
+
+Legacy SQLite artifacts are not PostgreSQL dumps and cannot be restored by
+`pg_restore` or this release's verification path. Keep those artifacts and the
+previous application release if needed for recovery; this release neither deletes
+nor converts them. Recover wanted legacy content with that release before moving
+to a PostgreSQL installation. There is no automatic cross-backend data conversion.
 
 ## Master key custody and emergency file recovery
 

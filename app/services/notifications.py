@@ -400,7 +400,7 @@ def enqueue_job_terminal_notification_best_effort(
     try:
         connection.execute(f"SAVEPOINT {savepoint}")
     except Exception:
-        # A normal SQLite/PostgreSQL transaction always supports SAVEPOINT.  If
+        # A PostgreSQL transaction always supports SAVEPOINT. If
         # a connection wrapper does not, skip optional notification work rather
         # than making the already-authoritative Job transition fail.
         return None
@@ -412,7 +412,7 @@ def enqueue_job_terminal_notification_best_effort(
             connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
         finally:
             # RELEASE is required after ROLLBACK TO so the outer transaction
-            # remains usable on both SQLite and PostgreSQL.
+            # remains usable.
             connection.execute(f"RELEASE SAVEPOINT {savepoint}")
         return None
 
@@ -475,8 +475,7 @@ def _visible_notification_predicate(alias: str = "n") -> str:
     """Return the inbox visibility predicate for a SELECT or UPDATE.
 
     SELECT callers pass the explicit ``n`` alias.  UPDATE deliberately passes
-    an empty alias because UPDATE alias syntax is not shared consistently by
-    SQLite and PostgreSQL.
+    an empty alias to qualify the target table's columns directly.
     """
     prefix = f"{alias}." if alias else ""
     return f"""

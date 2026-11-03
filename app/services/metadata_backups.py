@@ -926,7 +926,7 @@ def run_pre_upgrade_backup_gate(
         result = run_pre_upgrade_backup(
             backup_dir=backup_dir,
             master_key=effective_master_key,
-            database_dsn=(database_dsn if database_dsn is not None else cfg.database_dsn),
+            database_dsn=(database_dsn if database_dsn is not None else getattr(cfg, "database_dsn", settings.database_dsn)),
             config_snapshot=config_snapshot,
             object_store=object_store,
             retention=retention,

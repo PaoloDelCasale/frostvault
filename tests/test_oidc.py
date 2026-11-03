@@ -163,7 +163,7 @@ class CompleteLoginTests(OidcTestBase):
             )
             return connection.execute(
                 "SELECT state, nonce, code_verifier FROM oidc_login "
-                "ORDER BY rowid DESC LIMIT 1"
+                "ORDER BY created_at DESC, state DESC LIMIT 1"
             ).fetchone()
 
     def _id_token(self, nonce: str, **kwargs: Any) -> str:

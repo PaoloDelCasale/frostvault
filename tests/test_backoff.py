@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tests.postgres import PostgresConnection, database_dsn
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -202,9 +203,8 @@ class BackoffTests(BackoffTestBase):
         self._fail(backoff.THRESHOLD)
         check = """
 from app import backoff
-from app.database import PostgresConnection
-import sys
-with PostgresConnection(sys.argv[1]) as connection:
+from app.database import db
+with db() as connection:
     try:
         backoff.guard(connection, scope='ip', key='k')
     except backoff.BackoffError:
@@ -212,8 +212,9 @@ with PostgresConnection(sys.argv[1]) as connection:
 raise SystemExit(1)
 """
         result = subprocess.run(
-            [sys.executable, "-c", check, str(self.database_path)],
+            [sys.executable, "-c", check],
             cwd=REPOSITORY_ROOT,
+            env={**os.environ, "DATABASE_URL": database_dsn(self.database_path)},
             capture_output=True,
             text=True,
             check=False,

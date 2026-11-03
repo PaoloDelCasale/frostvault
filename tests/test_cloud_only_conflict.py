@@ -352,7 +352,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
                 ORDER BY fp.path
                 """
             ).fetchall()
-        self.assertEqual(
+        self.assertCountEqual(
             [(row["path"], row["provider_version_id"]) for row in paths],
             [("IMG_0001-new.jpg", "s3-renamed"), (PATH, "s3-old")],
         )

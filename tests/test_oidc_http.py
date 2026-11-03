@@ -85,7 +85,7 @@ class OidcHttpTests(unittest.TestCase):
     def _latest_login(self) -> dict:
         with PostgresConnection(str(self.database_path)) as connection:
             return connection.execute(
-                "SELECT state, nonce FROM oidc_login ORDER BY rowid DESC LIMIT 1"
+                "SELECT state, nonce FROM oidc_login ORDER BY created_at DESC, state DESC LIMIT 1"
             ).fetchone()
 
     def _add_vault(self) -> int:
@@ -218,7 +218,7 @@ class OidcHttpTests(unittest.TestCase):
     def _reauth_at(self) -> str | None:
         with PostgresConnection(str(self.database_path)) as connection:
             return connection.execute(
-                "SELECT reauth_at FROM sessions ORDER BY rowid DESC LIMIT 1"
+                "SELECT reauth_at FROM sessions ORDER BY created_at DESC, id DESC LIMIT 1"
             ).fetchone()["reauth_at"]
 
     def test_step_up_reauth_refreshes_the_reauth_window(self) -> None:
