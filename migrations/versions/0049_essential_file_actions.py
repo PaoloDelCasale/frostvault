@@ -24,9 +24,14 @@ def upgrade() -> None:
           AND status NOT IN ('completed', 'failed', 'cancelled')
     """)
     op.drop_column("directory_aggregates", "action_cloud_archive")
+    op.create_index(
+        "local_copies_rename_digest_idx", "local_copies",
+        [sa.text("lower(plaintext_sha256)")],
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("local_copies_rename_digest_idx", table_name="local_copies")
     identifier = sa.BigInteger().with_variant(sa.Integer(), "sqlite")
     op.add_column(
         "directory_aggregates",

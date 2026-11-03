@@ -224,6 +224,18 @@ class EssentialFileActionTests(unittest.TestCase):
                 with SQLiteConnection(str(database_path)) as connection:
                     self.assertEqual(ArchiveCatalog(connection).get_file_by_path(2, "new/photo.jpg")["id"], destination_id)
 
+    def test_confirmation_rechecks_only_its_fingerprint_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _source, database_path, file_id, _vault = self._prepare(Path(directory))
+            with SQLiteConnection(str(database_path)) as connection:
+                catalog = ArchiveCatalog(connection)
+                with patch.object(catalog, "list_rename_candidates", wraps=catalog.list_rename_candidates) as recheck:
+                    catalog.confirm_file_rename(
+                        vault_file_id=file_id, new_path="new/photo.jpg",
+                        changed_at="2026-07-21T11:05:00+00:00", vault_id=2,
+                    )
+                recheck.assert_called_once_with(2, digest=_sha256_hex(PAYLOAD))
+
     def test_removed_routes_and_contracts_are_not_exposed(self):
         paths = app.openapi()["paths"]
         for path in ("/api/cloud-archive", "/api/rename-candidates", "/api/confirm-rename", "/api/confirm-folder-rename", "/api/file-history"):

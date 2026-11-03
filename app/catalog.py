@@ -1343,14 +1343,17 @@ class ArchiveCatalog:
             (vault_file_id, vault_id, new_path, changed_at),
         )
 
-    def list_rename_candidates(self, vault_id: int) -> list[dict[str, Any]]:
+    def list_rename_candidates(
+        self, vault_id: int, *, digest: str | None = None
+    ) -> list[dict[str, Any]]:
         """Return only unique equal-digest matches within the scan window.
 
         Ambiguous, stale and changed-content paths remain independent Vault
         Files. No manual decision can merge them or authorize cloud deletion.
+        A digest-scoped recheck uses the fingerprint index instead of reloading
+        the whole Vault for each file in a large folder move.
         """
-        rows = self.connection.execute(
-            """
+        query = """
             SELECT
                 vf.id AS vault_file_id,
                 fp.path,
@@ -1375,10 +1378,13 @@ class ArchiveCatalog:
               AND lc.plaintext_sha256 IS NOT NULL
               AND lc.presence IN ('missing', 'present')
               AND lc.cloud_only_version_id IS NULL
-            ORDER BY lower(fp.path)
-            """,
-            (vault_id,),
-        ).fetchall()
+            """
+        params: list[Any] = [vault_id]
+        if digest is not None:
+            query += " AND lower(lc.plaintext_sha256)=%s"
+            params.append(digest.lower())
+        query += " ORDER BY lower(fp.path)"
+        rows = self.connection.execute(query, tuple(params)).fetchall()
         missing_by_digest: dict[str, list[dict[str, Any]]] = {}
         present_by_digest: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
@@ -1755,18 +1761,18 @@ class ArchiveCatalog:
         the caller's transaction rolls back all earlier transitions.
         """
         self._reserve_rename_confirmation(vault_id)
-        if not any(
-            candidate["missing_vault_file_id"] == vault_file_id
-            and candidate["new_path"] == new_path
-            for candidate in self.list_rename_candidates(vault_id)
-        ):
-            raise VaultFileNotFound()
         snapshot = self._load_rename_candidate(
             vault_file_id=vault_file_id,
             new_path=new_path,
             vault_id=vault_id,
         )
-        if snapshot is None:
+        if snapshot is None or not any(
+            candidate["missing_vault_file_id"] == vault_file_id
+            and candidate["new_path"] == new_path
+            for candidate in self.list_rename_candidates(
+                vault_id, digest=snapshot["missing_plaintext_sha256"]
+            )
+        ):
             raise VaultFileNotFound()
         # Keep a scoped rollback so catalog callers cannot accidentally commit
         # a partial candidate consumption after a failed compare-and-swap.
