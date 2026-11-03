@@ -30,7 +30,7 @@ def upgrade() -> None:
         UPDATE notifications n SET event='recovery_completed',
             title_key='notification.recovery_completed.title',
             body_key='notification.recovery_completed.body',
-            dedupe_key='job:' || n.job_id::text || ':recovery_completed'
+            dedupe_key='job:' || n.job_id::text || chr(58) || 'recovery_completed'
         FROM jobs j WHERE n.job_id=j.id AND n.event='job_completed'
             AND j.action='recover' AND j.origin='manual'
     """)
@@ -38,7 +38,7 @@ def upgrade() -> None:
         UPDATE notifications n SET event='recovery_failed',
             title_key='notification.recovery_failed.title',
             body_key='notification.recovery_failed.body',
-            dedupe_key='job:' || n.job_id::text || ':recovery_failed'
+            dedupe_key='job:' || n.job_id::text || chr(58) || 'recovery_failed'
         FROM jobs j WHERE n.job_id=j.id AND n.event='job_failed'
             AND j.action='recover' AND j.origin='manual'
     """)
@@ -53,8 +53,8 @@ def upgrade() -> None:
                         'protection_blocked', 'file_unreadable', 'internal_error', 'job_failed')
     """)
     op.execute("""
-        UPDATE notifications SET dedupe_key='blocked:' || vault_id::text || ':source',
-            problem_key='blocked:' || vault_id::text || ':source'
+        UPDATE notifications SET dedupe_key='blocked:' || vault_id::text || chr(58) || 'source',
+            problem_key='blocked:' || vault_id::text || chr(58) || 'source'
         WHERE event='protection_blocked' AND message_params::jsonb->>'component'='source'
     """)
 

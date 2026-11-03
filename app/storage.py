@@ -3192,6 +3192,9 @@ def _complete_verified_upload(
                     version_id if matches_snapshot else None
                 ),
             )
+            if matches_snapshot:
+                connection.execute("DELETE FROM protection_pending WHERE vault_file_id=%s",
+                                   (job["vault_file_id"],))
     set_job(job["id"], "uploading", message_key="job.purging_previous_snapshot")
     ensure_job_active(job["id"], "Upload claim was lost")
     purge_current_snapshot_superseded(
@@ -5241,14 +5244,22 @@ def audit_all_vaults() -> None:
 
 
 def _deliver_notifications_once() -> None:
-    """Best-effort outbound notification delivery pass."""
+    """Best-effort monitoring and delivery, with independent transactions.
+
+    Monitoring faults must not suppress already durable terminal/incident email;
+    network delivery must not hold the Owner's episode-scheduling lock.
+    """
+    try:
+        from .services.protection_notifications import maintain_notifications
+        with db() as connection:
+            maintain_notifications(connection)
+    except Exception as exc:
+        _report_worker_error("notification_monitor", exc)
     try:
         with db() as connection:
             notification_service.reconcile_pending_terminal_notifications(
                 connection
             )
-            from .services.protection_notifications import maintain_notifications
-            maintain_notifications(connection)
             try:
                 metrics_service.set_gauge(
                     "jobs_notification_backlog",

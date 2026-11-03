@@ -570,7 +570,7 @@ def set_problem(
             "next_attempt_at=%s, last_error=NULL, updated_at=%s WHERE notification_id=%s",
             (stamp, stamp, item["id"]),
         )
-    return item
+    return _row_notification(connection.execute("SELECT * FROM notifications WHERE id=%s", (item["id"],)).fetchone())
 
 
 def reconcile_problem_states(connection: Any) -> None:
@@ -607,7 +607,7 @@ def count_open_problems(connection: Any, *, user_id: int) -> int:
     reconcile_problem_states(connection)
     row = connection.execute(
         "SELECT count(*) AS total FROM notifications WHERE user_id=%s "
-        "AND in_app_enabled=TRUE AND problem_status='open'", (user_id,),
+        "AND COALESCE(in_app_enabled,TRUE)=TRUE AND problem_status='open'", (user_id,),
     ).fetchone()
     return int(row["total"] or 0)
 
@@ -705,6 +705,7 @@ def mark_notification_read(
     user_id: int,
     locale: str | None = None,
 ) -> dict[str, Any] | None:
+    reconcile_problem_states(connection)
     stamp = now_iso()
     update_predicate = _visible_notification_predicate("")
     connection.execute(
@@ -737,6 +738,7 @@ def mark_all_notifications_read(
     in-app visibility predicate are left untouched. Returns the number of
     rows newly stamped plus the authoritative remaining unread count.
     """
+    reconcile_problem_states(connection)
     stamp = now_iso()
     update_predicate = _visible_notification_predicate("")
     result = connection.execute(

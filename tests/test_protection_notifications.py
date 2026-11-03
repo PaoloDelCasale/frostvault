@@ -46,6 +46,15 @@ class DelayRuleTests(unittest.TestCase):
         self.assertEqual(self.counts([])['stalled'], 0)
         self.assertEqual(self.counts([self.row(.5)])['stalled'], 0)
 
+    def test_migration_sql_has_no_accidental_sqlalchemy_bind_parameters(self):
+        import importlib
+        import sqlalchemy as sa
+        migration = importlib.import_module('migrations.versions.0056_notification_problems')
+        with patch.object(migration, 'op') as operations:
+            migration.upgrade()
+        for call in operations.execute.call_args_list:
+            self.assertEqual(sa.text(call.args[0]).compile().params, {})
+
     def test_summary_renders_dates_states_and_metrics_in_both_languages(self):
         data = {'states': {'pending': 3, 'protected': 2, 'problem': 1, 'unconfirmed': 4, 'cloud_only': 5},
                 'last_verified_backup': '2026-11-02', 'open_problems': 2,

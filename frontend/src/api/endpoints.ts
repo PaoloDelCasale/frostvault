@@ -49,11 +49,8 @@ import { translate } from "@/i18n/translate";
 
 const DEFAULT_PAGE_SIZE = 100;
 
-/**
- * The notification routes intentionally use the generic JSON response model on
- * the server. Keep the inbox wire types here instead of claiming they are
- * generated OpenAPI schemas (the preferences GET is a Starlette route).
- */
+/** Inbox extension fields stay optional for compatible older/demo payloads.
+ * The canonical current response is also documented in OpenAPI. */
 export type NotificationItem = {
   id: number;
   user_id: number;
