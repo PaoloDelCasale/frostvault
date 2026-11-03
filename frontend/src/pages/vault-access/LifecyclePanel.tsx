@@ -61,8 +61,6 @@ type EditorTarget = "default" | "folder";
 function normalizeProfile(profile?: LifecycleGuidedProfile): LifecycleProfile {
   return {
     transitions: (profile?.transitions ?? []).map((rule) => ({ ...rule })),
-    expiration_days: profile?.expiration_days ?? null,
-    noncurrent_expiration_days: profile?.noncurrent_expiration_days ?? null,
     noncurrent_transitions: (profile?.noncurrent_transitions ?? []).map((rule) => ({
       ...rule,
     })),

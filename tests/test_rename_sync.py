@@ -18,6 +18,7 @@ import tempfile
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
+from tests.snapshot_s3_stub import VersionedS3Stub
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -254,7 +255,8 @@ def _rename_worker(
             patch("app.storage.run_rclone", side_effect=fake_rclone),
             patch(
                 "app.storage.s3_client",
-                return_value=SimpleNamespace(
+                return_value=VersionedS3Stub(
+                    initial_versions={old_key: {"old-s3-version"}},
                     head_object=fake_head_object,
                     delete_object=fake_delete_object,
                     download_file=_write_versioned_download(
@@ -528,7 +530,7 @@ class RenameCloudJobTests(unittest.TestCase):
 
         storage.cancelled_jobs.clear()
 
-    def test_plain_rename_verifies_new_key_before_hiding_old_key(self) -> None:
+    def test_plain_rename_verifies_new_key_before_purging_old_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"rename-plain"
@@ -585,15 +587,15 @@ class RenameCloudJobTests(unittest.TestCase):
             self.assertEqual(by_key[new_key]["plaintext_sha256"], _sha256_hex(payload))
             self.assertEqual(
                 [(row["object_key"], row["provider_version_id"]) for row in markers],
-                [(old_key, "delete-marker-1")],
+                [],
             )
             self.assertEqual(
                 deleted_keys,
-                [{"Bucket": "bucket", "Key": old_key, "VersionId": ""}],
+                [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}],
             )
             self.assertEqual(
                 [call["Key"] for call in head_calls],
-                [new_key, new_key, old_key],
+                [new_key, new_key],
             )
             self.assertEqual(head_calls[1]["VersionId"], "new-s3-version")
             self.assertEqual(
@@ -615,12 +617,11 @@ class RenameCloudJobTests(unittest.TestCase):
                 )
             )
 
-    def test_bug_002_rename_hide_detects_concurrent_version(self) -> None:
-        """[BUG-002][Req: REQ-004] rename hide aborts on live VersionId mismatch.
+    def test_bug_002_rename_purge_detects_concurrent_version(self) -> None:
+        """[BUG-002][Req: REQ-004] unknown cloud content cannot authorize purge.
 
-        After a verified copy to the new key, Head on the previous key shows a
-        newer current VersionId than the scheduled Archive Version; hide must
-        abort without creating a Delete Marker.
+        After verifying the new key, a listing at the old key contains a newer
+        uncatalogued VersionId. Preserve it and fail without any deletion.
         """
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -673,7 +674,8 @@ class RenameCloudJobTests(unittest.TestCase):
                     patch("app.storage.run_rclone"),
                     patch(
                         "app.storage.s3_client",
-                        return_value=SimpleNamespace(
+                        return_value=VersionedS3Stub(
+                            initial_versions={old_key: {"old-s3-concurrent"}},
                             head_object=fake_head_object,
                             delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
                             or {
@@ -704,8 +706,8 @@ class RenameCloudJobTests(unittest.TestCase):
             self.assertEqual(deleted, [])
             self.assertEqual(markers, [])
             self.assertEqual(job["status"], "failed")
-            self.assertIn("VersionId", job["message"] or "")
-            self.assertEqual(head_keys, [new_key, new_key, old_key])
+            self.assertIn("uncatalogued cloud content", job["message"] or "")
+            self.assertEqual(head_keys, [new_key, new_key])
             self.assertEqual(
                 download_calls[0]["VersionId"],
                 "new-s3-version",
@@ -764,7 +766,8 @@ class RenameCloudJobTests(unittest.TestCase):
                     patch("app.storage.run_rclone"),
                     patch(
                         "app.storage.s3_client",
-                        return_value=SimpleNamespace(
+                        return_value=VersionedS3Stub(
+                            initial_versions={old_key: {"old-s3-version"}},
                             head_object=lambda **_: {
                                 "VersionId": "new-s3-version",
                                 "ContentLength": len(payload),
@@ -842,7 +845,7 @@ class RenameCloudJobTests(unittest.TestCase):
                     patch("app.storage.run_rclone", side_effect=cancelling_rclone),
                     patch(
                         "app.storage.s3_client",
-                        return_value=SimpleNamespace(
+                        return_value=VersionedS3Stub(
                             head_object=lambda **_: {
                                 "VersionId": "new-s3-version",
                                 "ContentLength": len(payload),
@@ -1016,7 +1019,7 @@ class CryptRenameTests(unittest.TestCase):
 
         storage.cancelled_jobs.clear()
 
-    def test_crypt_rename_verifies_new_key_before_hiding_old_key(self) -> None:
+    def test_crypt_rename_verifies_new_key_before_purging_old_key(self) -> None:
         from app.services.rclone_runtime import RuntimeRcloneConfig
 
         with tempfile.TemporaryDirectory() as directory:
@@ -1173,7 +1176,8 @@ class CryptRenameTests(unittest.TestCase):
                     patch("app.storage.run_rclone", side_effect=fake_rclone),
                     patch(
                         "app.storage.s3_client",
-                        return_value=SimpleNamespace(
+                        return_value=VersionedS3Stub(
+                            initial_versions={old_key: {"crypt-old"}},
                             head_object=lambda **kwargs: {
                                 "VersionId": (
                                     "crypt-old"
@@ -1219,7 +1223,7 @@ class CryptRenameTests(unittest.TestCase):
             self.assertEqual(deleted, [old_key])
             self.assertEqual(
                 [(row["object_key"], row["provider_version_id"]) for row in markers],
-                [(old_key, "crypt-delete-marker")],
+                [],
             )
             self.assertTrue(
                 any(
@@ -1353,7 +1357,8 @@ class RenameRestartTests(unittest.TestCase):
                     ),
                     patch(
                         "app.storage.s3_client",
-                        return_value=SimpleNamespace(
+                        return_value=VersionedS3Stub(
+                            initial_versions={old_key: {"old-s3-version"}},
                             head_object=fake_head_object,
                             delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
                             or {
@@ -1397,7 +1402,7 @@ class RenameRestartTests(unittest.TestCase):
             self.assertEqual(download_calls, [])
             self.assertEqual(
                 [(row["object_key"], row["provider_version_id"]) for row in markers],
-                [(old_key, "delete-marker-resume")],
+                [],
             )
 
 
@@ -1518,15 +1523,15 @@ class RenameDestinationProofTests(unittest.TestCase):
                 ).fetchone()
 
             self.assertEqual(job["status"], "completed")
-            self.assertEqual(missing["availability"], "missing")
+            self.assertEqual(missing["availability"], "purged")
             self.assertEqual(
                 deleted_keys,
-                [{"Bucket": "bucket", "Key": old_key, "VersionId": ""}],
+                [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}],
             )
             self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
             self.assertTrue(any(call[:1] == ("copyto",) for call in rclone_calls))
             by_provider = {row["provider_version_id"]: row for row in versions}
-            self.assertEqual(by_provider["missing-s3-version"]["availability"], "missing")
+            self.assertEqual(by_provider["missing-s3-version"]["availability"], "purged")
             self.assertEqual(by_provider["new-s3-version"]["integrity"], "verified")
             self.assertEqual(by_provider["new-s3-version"]["availability"], "available")
             self.assertNotEqual(job["archive_version_id"], missing_id)
@@ -1621,7 +1626,8 @@ class RenameDestinationProofTests(unittest.TestCase):
                     patch("app.storage.run_rclone"),
                     patch(
                         "app.storage.s3_client",
-                        return_value=SimpleNamespace(
+                        return_value=VersionedS3Stub(
+                            initial_versions={old_key: {"old-s3-version"}},
                             head_object=fake_head_object,
                             delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
                             or {
@@ -1708,17 +1714,17 @@ class RenameDestinationProofTests(unittest.TestCase):
                 ).fetchone()
 
             self.assertEqual(job["status"], "completed")
-            self.assertEqual(job["message_key"], "job.rename_already_completed")
-            self.assertEqual(deleted_keys, [])
+            self.assertEqual(job["message_key"], "job.rename_verified")
+            self.assertEqual(deleted_keys, [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}])
             self.assertEqual(rclone_calls, [])
             self.assertEqual(download_calls, [])
             self.assertEqual(job["archive_version_id"], live_id)
             self.assertEqual(
                 [call["VersionId"] for call in head_calls],
-                ["new-s3-version"],
+                ["new-s3-version", "new-s3-version"],
             )
 
-    def test_missing_destination_with_marker_recopies_without_second_hide(self) -> None:
+    def test_missing_destination_with_marker_recopies_before_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"rename-restore-dest"
@@ -1771,17 +1777,17 @@ class RenameDestinationProofTests(unittest.TestCase):
 
             self.assertEqual(job["status"], "completed")
             self.assertEqual(job["message_key"], "job.rename_verified")
-            self.assertEqual(deleted_keys, [])
+            self.assertEqual(deleted_keys, [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}])
             self.assertTrue(any(call[:1] == ("copyto",) for call in rclone_calls))
             self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
             by_provider = {row["provider_version_id"]: row for row in versions}
             self.assertEqual(by_provider["new-s3-version"]["integrity"], "verified")
             self.assertEqual(
                 [row["provider_version_id"] for row in markers],
-                ["existing-delete-marker"],
+                [],
             )
 
-    def test_different_digest_destination_does_not_authorize_hide(self) -> None:
+    def test_different_digest_destination_is_not_reused(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"rename-current"
@@ -1830,7 +1836,7 @@ class RenameDestinationProofTests(unittest.TestCase):
             self.assertEqual(job["status"], "completed")
             self.assertEqual(
                 deleted_keys,
-                [{"Bucket": "bucket", "Key": old_key, "VersionId": ""}],
+                [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}],
             )
             self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
             self.assertNotEqual(job["archive_version_id"], stale_id)
@@ -1926,7 +1932,7 @@ class RenameDestinationProofTests(unittest.TestCase):
             self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
             self.assertEqual(
                 deleted_keys,
-                [{"Bucket": "bucket", "Key": old_key, "VersionId": ""}],
+                [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}],
             )
 
 

@@ -209,8 +209,6 @@ def list_vault_policies(connection: Any, vault_id: int) -> list[dict[str, Any]]:
                             }
                             for transition in profile.transitions
                         ],
-                        "expiration_days": profile.expiration_days,
-                        "noncurrent_expiration_days": profile.noncurrent_expiration_days,
                         "noncurrent_transitions": [
                             {
                                 "days": transition.days,

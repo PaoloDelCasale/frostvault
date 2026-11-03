@@ -1150,28 +1150,6 @@ class ArchiveCatalog:
                 int(owned["vault_id"]), owned["vault_file_id"]
             )
 
-    def latest_available_provider_version_id(
-        self, vault_id: int, path: str
-    ) -> str | None:
-        """Return the recoverable Archive Version's S3 VersionId for one path."""
-        row = self.connection.execute(
-            """
-            SELECT av.provider_version_id
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            JOIN archive_versions av ON av.vault_file_id=vf.id
-            WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
-              AND av.availability NOT IN ('missing', 'purged')
-            ORDER BY av.version_number DESC
-            LIMIT 1
-            """,
-            (vault_id, path),
-        ).fetchone()
-        if row is None or not row["provider_version_id"]:
-            return None
-        return str(row["provider_version_id"])
-
     def mark_unlisted_snapshot_versions_superseded(
         self,
         *,
@@ -2955,7 +2933,6 @@ class ArchiveCatalog:
             f"""
             SELECT j.*, v.source_root, v.s3_bucket,
                    v.s3_prefix, v.rclone_remote, v.encryption_mode,
-                   v.cloud_history_policy,
                    v.crypt_password_ciphertext, v.crypt_password2_ciphertext,
                    v.uuid AS vault_uuid, v.name AS vault_name,
                    v.cloud_deletion_enabled, v.decommission_state
@@ -3472,8 +3449,17 @@ class ArchiveCatalog:
         else:
             clauses.append("fp.path=%s")
             params.append(path)
-        version_select_actions = {"recover", "storage-class"}
-        if action in version_select_actions and archive_version_id and not is_directory and not whole_vault:
+        if action == "recover" and archive_version_id:
+            # Exact IDs pin the current snapshot; they cannot select history,
+            # including legacy available copies retained fail-closed at upgrade.
+            clauses.append("""
+                av.id=(SELECT current_snapshot.id FROM archive_versions current_snapshot
+                       WHERE current_snapshot.vault_file_id=vf.id
+                         AND current_snapshot.integrity='verified'
+                         AND current_snapshot.availability='available'
+                       ORDER BY current_snapshot.version_number DESC LIMIT 1)
+            """)
+        if action in {"recover", "storage-class"} and archive_version_id and not is_directory and not whole_vault:
             candidates = self.connection.execute(
                 f"""
                 SELECT

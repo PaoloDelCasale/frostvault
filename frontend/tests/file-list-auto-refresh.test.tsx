@@ -89,7 +89,6 @@ const ownerCaps: MeVault = {
   name: "Test Archive",
   delete_enabled: true,
   cloud_deletion_enabled: true,
-    cloud_history_policy: "archive_history" as const,
 };
 
 const localOnlyFile: FilesResponse = {

@@ -108,6 +108,10 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             )
         return missing_id
 
+    def test_current_snapshot_preserves_every_copy_and_trust_on_upgrade_downgrade_reupgrade(self) -> None:
+        from tests.current_snapshot_migration_contract import assert_current_snapshot_migration
+        assert_current_snapshot_migration(self, run_alembic, self._connection)
+
     def test_file_action_cut_preserves_cloud_content_and_cancels_only_legacy_hides(self) -> None:
         from tests.essential_file_actions_migration_contract import assert_file_actions_migration
 

@@ -127,11 +127,6 @@ describe("VaultCreatePage", () => {
       "family-photos",
     );
     await user.click(
-      screen.getByRole("radio", {
-        name: en["ui.vault_create.cloud_history_archive_history"],
-      }),
-    );
-    await user.click(
       screen.getByRole("button", { name: en["ui.vault_create.submit"] }),
     );
 
@@ -146,7 +141,6 @@ describe("VaultCreatePage", () => {
         name: "Family Photos",
         slug: "family-photos",
         encryption_mode: "plain",
-        cloud_history_policy: "archive_history",
         creation_mode: "empty",
       });
     });
@@ -204,11 +198,6 @@ describe("VaultCreatePage", () => {
     });
     await user.type(nameInput, "Documents");
     await user.type(slugInput, "taken-slug");
-    await user.click(
-      screen.getByRole("radio", {
-        name: it["ui.vault_create.cloud_history_archive_history"],
-      }),
-    );
     await user.click(
       screen.getByRole("button", { name: it["ui.vault_create.submit"] }),
     );
@@ -272,11 +261,6 @@ describe("VaultCreatePage", () => {
       screen.getByRole("radio", { name: en["ui.vault_create.encryption_crypt"] }),
     );
     await user.click(
-      screen.getByRole("radio", {
-        name: en["ui.vault_create.cloud_history_archive_history"],
-      }),
-    );
-    await user.click(
       screen.getByRole("button", { name: en["ui.vault_create.submit"] }),
     );
 
@@ -334,11 +318,6 @@ describe("VaultCreatePage", () => {
     );
     await user.click(
       screen.getByRole("radio", { name: en["ui.vault_create.encryption_crypt"] }),
-    );
-    await user.click(
-      screen.getByRole("radio", {
-        name: en["ui.vault_create.cloud_history_archive_history"],
-      }),
     );
     await user.click(
       screen.getByRole("button", { name: en["ui.vault_create.submit"] }),
@@ -442,11 +421,6 @@ describe("VaultCreatePage", () => {
       screen.getByRole("radio", { name: en["ui.vault_create.encryption_crypt"] }),
     );
     await user.click(
-      screen.getByRole("radio", {
-        name: en["ui.vault_create.cloud_history_archive_history"],
-      }),
-    );
-    await user.click(
       screen.getByRole("button", { name: en["ui.vault_create.submit"] }),
     );
     await screen.findByRole("heading", { name: en["ui.recovery.title"] });
@@ -516,11 +490,6 @@ describe("VaultCreatePage", () => {
     );
     await user.click(
       screen.getByRole("radio", { name: en["ui.vault_create.encryption_crypt"] }),
-    );
-    await user.click(
-      screen.getByRole("radio", {
-        name: en["ui.vault_create.cloud_history_archive_history"],
-      }),
     );
     await user.click(
       screen.getByRole("button", { name: en["ui.vault_create.submit"] }),
@@ -614,11 +583,6 @@ describe("VaultCreatePage", () => {
     );
     await user.click(
       screen.getByRole("radio", { name: en["ui.vault_create.encryption_crypt"] }),
-    );
-    await user.click(
-      screen.getByRole("radio", {
-        name: en["ui.vault_create.cloud_history_archive_history"],
-      }),
     );
     await user.click(
       screen.getByRole("button", { name: en["ui.vault_create.submit"] }),
@@ -740,11 +704,6 @@ describe("VaultCreatePage", () => {
       name: en["ui.source_directory_browser_select"],
     });
     await user.click(selectButtons[0]!);
-    await user.click(
-      screen.getByRole("radio", {
-        name: en["ui.vault_create.cloud_history_archive_history"],
-      }),
-    );
 
     await user.click(
       screen.getByRole("button", { name: en["ui.vault_create.submit"] }),
@@ -760,7 +719,6 @@ describe("VaultCreatePage", () => {
       expect(JSON.parse(String((createCall![1] as RequestInit).body))).toEqual({
         name: "Albums Archive",
         encryption_mode: "plain",
-        cloud_history_policy: "archive_history",
         creation_mode: "adopt",
         volume_alias: "photos",
         relative_path: "albums/2024",

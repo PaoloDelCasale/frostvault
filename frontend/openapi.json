@@ -4,9 +4,6 @@
       "AdminVault": {
         "additionalProperties": false,
         "properties": {
-          "cloud_history_policy": {
-            "$ref": "#/components/schemas/CloudHistoryPolicy"
-          },
           "decommission_state": {
             "enum": [
               "active",
@@ -381,13 +378,6 @@
           "enabled"
         ],
         "type": "object"
-      },
-      "CloudHistoryPolicy": {
-        "enum": [
-          "archive_history",
-          "current_snapshot"
-        ],
-        "type": "string"
       },
       "CloudOnlyReplacementAction": {
         "additionalProperties": false,
@@ -1354,18 +1344,6 @@
       "LifecycleGuidedProfile": {
         "additionalProperties": true,
         "properties": {
-          "expiration_days": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "noncurrent_expiration_days": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
           "noncurrent_transitions": {
             "items": {
               "$ref": "#/components/schemas/LifecycleTransition"
@@ -1430,18 +1408,6 @@
       "LifecycleProfile": {
         "additionalProperties": true,
         "properties": {
-          "expiration_days": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "noncurrent_expiration_days": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
           "noncurrent_transitions": {
             "items": {
               "$ref": "#/components/schemas/LifecycleTransition"
@@ -1492,28 +1458,6 @@
       "LifecycleProfileUpdate": {
         "additionalProperties": false,
         "properties": {
-          "expiration_days": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Expiration Days"
-          },
-          "noncurrent_expiration_days": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Noncurrent Expiration Days"
-          },
           "noncurrent_transitions": {
             "items": {
               "$ref": "#/components/schemas/LifecycleTransitionUpdate"
@@ -1778,9 +1722,6 @@
           "cloud_deletion_enabled": {
             "type": "boolean"
           },
-          "cloud_history_policy": {
-            "$ref": "#/components/schemas/CloudHistoryPolicy"
-          },
           "delete_enabled": {
             "type": "boolean"
           },
@@ -1799,8 +1740,7 @@
           "slug",
           "name",
           "delete_enabled",
-          "cloud_deletion_enabled",
-          "cloud_history_policy"
+          "cloud_deletion_enabled"
         ],
         "type": "object"
       },
@@ -2669,9 +2609,6 @@
       "VaultCreateRequest": {
         "additionalProperties": true,
         "properties": {
-          "cloud_history_policy": {
-            "$ref": "#/components/schemas/CloudHistoryPolicy"
-          },
           "creation_mode": {
             "$ref": "#/components/schemas/VaultCreationMode"
           },
@@ -2693,17 +2630,13 @@
         },
         "required": [
           "name",
-          "encryption_mode",
-          "cloud_history_policy"
+          "encryption_mode"
         ],
         "type": "object"
       },
       "VaultCreateResponse": {
         "additionalProperties": true,
         "properties": {
-          "cloud_history_policy": {
-            "$ref": "#/components/schemas/CloudHistoryPolicy"
-          },
           "creation_mode": {
             "$ref": "#/components/schemas/VaultCreationMode"
           },
@@ -2735,7 +2668,6 @@
           "slug",
           "name",
           "encryption_mode",
-          "cloud_history_policy",
           "recovery_custody_confirmed"
         ],
         "type": "object"
@@ -3299,9 +3231,6 @@
       "VaultListItem": {
         "additionalProperties": true,
         "properties": {
-          "cloud_history_policy": {
-            "$ref": "#/components/schemas/CloudHistoryPolicy"
-          },
           "id": {
             "type": "number"
           },
@@ -3388,13 +3317,8 @@
       },
       "VaultSelfServiceCreate": {
         "additionalProperties": false,
-        "description": "Self-service vault creation payload (issues #7, #6, and #150).\n\nLabels, encryption_mode, and cloud_history_policy are always accepted.\nCloud History Policy is required (no implicit default). Adoption adds a\nconstrained ``volume_alias`` + ``relative_path`` pair \u2014 never an absolute\nfilesystem path, S3 identity, rclone remote, or crypt secret.",
+        "description": "Self-service vault creation payload (issues #7, #6, and #150).\n\nLabels and encryption_mode are accepted. Adoption adds a\nconstrained ``volume_alias`` + ``relative_path`` pair \u2014 never an absolute\nfilesystem path, S3 identity, rclone remote, or crypt secret.",
         "properties": {
-          "cloud_history_policy": {
-            "pattern": "^(archive_history|current_snapshot)$",
-            "title": "Cloud History Policy",
-            "type": "string"
-          },
           "creation_mode": {
             "default": "empty",
             "pattern": "^(empty|adopt)$",
@@ -3453,8 +3377,7 @@
           }
         },
         "required": [
-          "name",
-          "cloud_history_policy"
+          "name"
         ],
         "title": "VaultSelfServiceCreate",
         "type": "object"

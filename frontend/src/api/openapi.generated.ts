@@ -1269,7 +1269,6 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         AdminVault: {
-            cloud_history_policy?: components["schemas"]["CloudHistoryPolicy"];
             /** @enum {string} */
             decommission_state?: "active" | "decommissioning" | "decommissioned";
             decommissioned_at?: string | null;
@@ -1378,8 +1377,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** @enum {string} */
-        CloudHistoryPolicy: "archive_history" | "current_snapshot";
         /** CloudOnlyReplacementAction */
         CloudOnlyReplacementAction: {
             /** Path */
@@ -1666,8 +1663,6 @@ export interface components {
             profile?: components["schemas"]["LifecycleProfileUpdate"] | null;
         };
         LifecycleGuidedProfile: {
-            expiration_days?: number | null;
-            noncurrent_expiration_days?: number | null;
             noncurrent_transitions?: components["schemas"]["LifecycleTransition"][];
             transitions?: components["schemas"]["LifecycleTransition"][];
         } & {
@@ -1693,8 +1688,6 @@ export interface components {
             [key: string]: unknown;
         };
         LifecycleProfile: {
-            expiration_days?: number | null;
-            noncurrent_expiration_days?: number | null;
             noncurrent_transitions: components["schemas"]["LifecycleTransition"][];
             transitions: components["schemas"]["LifecycleTransition"][];
         } & {
@@ -1711,10 +1704,6 @@ export interface components {
         });
         /** LifecycleProfileUpdate */
         LifecycleProfileUpdate: {
-            /** Expiration Days */
-            expiration_days?: number | null;
-            /** Noncurrent Expiration Days */
-            noncurrent_expiration_days?: number | null;
             /** Noncurrent Transitions */
             noncurrent_transitions?: components["schemas"]["LifecycleTransitionUpdate"][];
             /** Transitions */
@@ -1793,7 +1782,6 @@ export interface components {
         };
         MeVault: {
             cloud_deletion_enabled: boolean;
-            cloud_history_policy: components["schemas"]["CloudHistoryPolicy"];
             delete_enabled: boolean;
             id: number;
             name: string;
@@ -2095,7 +2083,6 @@ export interface components {
             type: string;
         };
         VaultCreateRequest: {
-            cloud_history_policy: components["schemas"]["CloudHistoryPolicy"];
             creation_mode?: components["schemas"]["VaultCreationMode"];
             encryption_mode: components["schemas"]["EncryptionMode"];
             name: string;
@@ -2106,7 +2093,6 @@ export interface components {
             [key: string]: unknown;
         };
         VaultCreateResponse: {
-            cloud_history_policy: components["schemas"]["CloudHistoryPolicy"];
             creation_mode?: components["schemas"]["VaultCreationMode"];
             encryption_mode: components["schemas"]["EncryptionMode"];
             id: number;
@@ -2281,7 +2267,6 @@ export interface components {
             [key: string]: unknown;
         };
         VaultListItem: {
-            cloud_history_policy?: components["schemas"]["CloudHistoryPolicy"];
             id: number;
             name: string;
             slug: string;
@@ -2322,14 +2307,11 @@ export interface components {
          * VaultSelfServiceCreate
          * @description Self-service vault creation payload (issues #7, #6, and #150).
          *
-         *     Labels, encryption_mode, and cloud_history_policy are always accepted.
-         *     Cloud History Policy is required (no implicit default). Adoption adds a
+         *     Labels and encryption_mode are accepted. Adoption adds a
          *     constrained ``volume_alias`` + ``relative_path`` pair — never an absolute
          *     filesystem path, S3 identity, rclone remote, or crypt secret.
          */
         VaultSelfServiceCreate: {
-            /** Cloud History Policy */
-            cloud_history_policy: string;
             /**
              * Creation Mode
              * @default empty

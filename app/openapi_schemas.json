@@ -23,9 +23,6 @@
         "encryption_mode": {
           "type": "string"
         },
-        "cloud_history_policy": {
-          "$ref": "#/components/schemas/CloudHistoryPolicy"
-        },
         "id": {
           "type": "number"
         },
@@ -430,13 +427,6 @@
       "enum": [
         "plain",
         "crypt"
-      ],
-      "type": "string"
-    },
-    "CloudHistoryPolicy": {
-      "enum": [
-        "archive_history",
-        "current_snapshot"
       ],
       "type": "string"
     },
@@ -992,18 +982,6 @@
     "LifecycleGuidedProfile": {
       "additionalProperties": true,
       "properties": {
-        "expiration_days": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "noncurrent_expiration_days": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
         "noncurrent_transitions": {
           "items": {
             "$ref": "#/components/schemas/LifecycleTransition"
@@ -1043,18 +1021,6 @@
     "LifecycleProfile": {
       "additionalProperties": true,
       "properties": {
-        "expiration_days": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "noncurrent_expiration_days": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
         "noncurrent_transitions": {
           "items": {
             "$ref": "#/components/schemas/LifecycleTransition"
@@ -1296,9 +1262,6 @@
         "cloud_deletion_enabled": {
           "type": "boolean"
         },
-        "cloud_history_policy": {
-          "$ref": "#/components/schemas/CloudHistoryPolicy"
-        },
         "delete_enabled": {
           "type": "boolean"
         },
@@ -1317,8 +1280,7 @@
         "slug",
         "name",
         "delete_enabled",
-        "cloud_deletion_enabled",
-        "cloud_history_policy"
+        "cloud_deletion_enabled"
       ],
       "type": "object"
     },
@@ -1873,9 +1835,6 @@
         "encryption_mode": {
           "$ref": "#/components/schemas/EncryptionMode"
         },
-        "cloud_history_policy": {
-          "$ref": "#/components/schemas/CloudHistoryPolicy"
-        },
         "name": {
           "type": "string"
         },
@@ -1891,8 +1850,7 @@
       },
       "required": [
         "name",
-        "encryption_mode",
-        "cloud_history_policy"
+        "encryption_mode"
       ],
       "type": "object"
     },
@@ -1904,9 +1862,6 @@
         },
         "encryption_mode": {
           "$ref": "#/components/schemas/EncryptionMode"
-        },
-        "cloud_history_policy": {
-          "$ref": "#/components/schemas/CloudHistoryPolicy"
         },
         "id": {
           "type": "number"
@@ -1933,7 +1888,6 @@
         "slug",
         "name",
         "encryption_mode",
-        "cloud_history_policy",
         "recovery_custody_confirmed"
       ],
       "type": "object"
@@ -2437,9 +2391,6 @@
         },
         "slug": {
           "type": "string"
-        },
-        "cloud_history_policy": {
-          "$ref": "#/components/schemas/CloudHistoryPolicy"
         }
       },
       "required": [

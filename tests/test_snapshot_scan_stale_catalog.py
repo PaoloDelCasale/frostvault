@@ -25,7 +25,6 @@ for _flag, _value in (
 
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
-from app.services.cloud_history import CURRENT_SNAPSHOT
 from app.storage import scan_cloud
 from tests.test_database import run_alembic
 
@@ -34,7 +33,6 @@ VAULT = {
     "s3_bucket": "bucket",
     "s3_prefix": "docs",
     "rclone_remote": "remote",
-    "cloud_history_policy": CURRENT_SNAPSHOT,
 }
 
 
@@ -109,10 +107,9 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
                 """
                 INSERT INTO vaults(
                     id, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote, cloud_history_policy
-                ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote', %s)
-                """,
-                (CURRENT_SNAPSHOT,),
+                    rclone_remote
+                ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                """
             )
 
     def _scan(self, s3: _ListingS3, scan_id: str) -> None:
@@ -150,15 +147,67 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(incidents["n"], 0)
 
-    def test_extra_is_purged_only_when_catalog_keeper_is_present(self) -> None:
-        self._scan(_ListingS3([_item("s3-a", 10)]), _scan_id())
+    def test_unverified_or_mismatched_legacy_keeper_never_authorizes_purge(self) -> None:
+        for integrity in ("unverified", "mismatch"):
+            with self.subTest(integrity=integrity):
+                self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
+                with SQLiteConnection(str(self.database_path)) as connection:
+                    connection.execute("UPDATE archive_versions SET integrity=%s", (integrity,))
+                s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 10)])
+                self._scan(s3, _scan_id())
+                self.assertEqual(s3.deleted, [])
+                self.assertEqual(set(self._versions().values()), {"available"})
+                with SQLiteConnection(str(self.database_path)) as connection:
+                    rows = connection.execute("SELECT integrity FROM archive_versions").fetchall()
+                self.assertFalse(any(row["integrity"] == "verified" for row in rows))
 
-        # Crash before purge: A (catalogued) and an uncatalogued B both exist.
+    def test_verified_but_older_keeper_cannot_delete_newer_uncatalogued_content(self) -> None:
+        self._scan(_ListingS3([_item("s3-a", 10)]), _scan_id())
+        self._verify("s3-a")
         s3 = _ListingS3([_item("s3-a", 10), _item("s3-b", 12)])
         self._scan(s3, _scan_id())
+        self.assertEqual(s3.deleted, [])
 
+    def _verify(self, provider: str) -> None:
+        with SQLiteConnection(str(self.database_path)) as connection:
+            connection.execute("UPDATE archive_versions SET integrity='verified', plaintext_sha256=%s WHERE provider_version_id=%s", ("a" * 64, provider))
+
+    def test_extra_is_purged_only_with_verified_newest_keeper_present(self) -> None:
+        self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
+        self._verify("s3-a")
+        s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 10)])
+        self._scan(s3, _scan_id())
         self.assertEqual(s3.deleted, [("docs/report.txt", "s3-b")])
         self.assertEqual(self._versions().get("s3-a"), "available")
+
+    def test_equal_timestamp_ambiguity_preserves_both_copies(self) -> None:
+        self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
+        self._verify("s3-a")
+        s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 12)])
+        self._scan(s3, _scan_id())
+        self.assertEqual(s3.deleted, [])
+        self.assertEqual(self._versions(), {"s3-a": "available", "s3-b": "available"})
+
+    def test_active_job_prevents_scan_cleanup(self) -> None:
+        self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
+        self._verify("s3-a")
+        with SQLiteConnection(str(self.database_path)) as connection:
+            file_id = connection.execute("SELECT vault_file_id FROM archive_versions").fetchone()["vault_file_id"]
+            connection.execute("INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_at, updated_at) VALUES (2, %s, 'report.txt', 'upload', 'queued', '2026-11-03', '2026-11-03')", (file_id,))
+        s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 10)])
+        self._scan(s3, _scan_id())
+        self.assertEqual(s3.deleted, [])
+        self.assertEqual(set(self._versions().values()), {"available"})
+
+    def test_failed_or_changed_keeper_listing_never_deletes_extras(self) -> None:
+        self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
+        self._verify("s3-a")
+        for response in ({"Versions": [], "IsTruncated": False}, RuntimeError("listing failed")):
+            s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 10)])
+            with patch.object(s3, "list_object_versions", **({"side_effect": response} if isinstance(response, Exception) else {"return_value": response})):
+                self._scan(s3, _scan_id())
+            self.assertEqual(s3.deleted, [])
+            self.assertEqual(self._versions().get("s3-b"), "available", "A failed cleanup is not evidence that a discovered extra is missing")
 
 
 if __name__ == "__main__":

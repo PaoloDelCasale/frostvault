@@ -28,7 +28,6 @@ export function RecoverConfirmDialog({
 
   const lines: string[] = [
     t("ui.recover_version_summary", {
-      number: version.version_number,
       storage: version.storage_class || "STANDARD",
     }),
   ];

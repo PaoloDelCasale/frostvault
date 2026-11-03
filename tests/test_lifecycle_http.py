@@ -123,6 +123,16 @@ class VaultLifecycleHttpTests(unittest.TestCase):
         self.assertEqual(deleted.status_code, 200, deleted.text)
         self.assertEqual(deleted.json()["folder_overrides"], [])
 
+    def test_expiration_fields_are_rejected(self) -> None:
+        self._authenticate(self.owner_id)
+        for field in ("expiration_days", "noncurrent_expiration_days"):
+            response = self.client.put(
+                "/api/vault/lifecycle/default",
+                json={"profile": {field: 1}},
+                headers=self._headers(),
+            )
+            self.assertEqual(response.status_code, 422, response.text)
+
     def test_custom_default_round_trips_exact_rules_and_preserves_policy_uuid(self) -> None:
         self._authenticate(self.owner_id, reauth=True)
         profile = {
@@ -130,8 +140,6 @@ class VaultLifecycleHttpTests(unittest.TestCase):
                 {"days": 30, "storage_class": "STANDARD_IA"},
                 {"days": 180, "storage_class": "DEEP_ARCHIVE"},
             ],
-            "expiration_days": None,
-            "noncurrent_expiration_days": None,
             "noncurrent_transitions": [
                 {"days": 90, "storage_class": "GLACIER"},
                 {"days": 180, "storage_class": "DEEP_ARCHIVE"},

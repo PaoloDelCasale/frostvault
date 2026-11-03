@@ -53,13 +53,8 @@ const messages: Record<string, string> = {
   "ui.confirm_free_space_description": "Remove the Local Copy of {path}.",
   "ui.confirm_action": "Confirm",
   "ui.cancel": "Cancel",
-  "ui.select_archive_version": "Select Archive Version",
-  "ui.select_archive_version_description": "Choose version for {path}.",
-  "ui.version_option": "Version #{number} · {storage} · {size}",
-  "ui.version_date_storage": "#{number} · {date} · {storage}",
-  "ui.version_title_date": "Version #{number} · {date}",
   "ui.recover_confirm_title": "Recover {path}?",
-  "ui.recover_version_summary": "Version #{number} ({storage})",
+  "ui.recover_version_summary": "Current cloud copy ({storage})",
   "ui.recover_estimate_line": "Restore tier: {tier} for {days} days · ~€{cost} / ~{hours}h",
   "ui.recover_irreversible_note": "S3 RestoreObject cannot be cancelled after AWS accepts it.",
   "ui.recover_high_impact_note": "High-impact restore requires owner approval.",
@@ -158,7 +153,6 @@ const ownerCaps: MeVault = {
   name: "Test Archive",
   delete_enabled: true,
   cloud_deletion_enabled: true,
-    cloud_history_policy: "archive_history" as const,
 };
 
 const browsePayload: FilesResponse = {
@@ -280,14 +274,6 @@ describe("File operations — seams 1–10", () => {
           path: "archive.pdf",
           items: [
             {
-              id: "ver-old",
-              version_number: 1,
-              storage_class: "STANDARD",
-              size: 100,
-              recoverable: true,
-              created_at: "2024-01-01T00:00:00Z",
-            },
-            {
               id: "ver-new",
               version_number: 2,
               storage_class: "DEEP_ARCHIVE",
@@ -296,7 +282,7 @@ describe("File operations — seams 1–10", () => {
               created_at: "2025-06-01T12:00:00Z",
             },
           ],
-          recoverable_count: 2,
+          recoverable_count: 1,
           default_archive_version_id: "ver-new",
           supported_restore_tiers: ["Standard", "Bulk"],
           default_restore_tier: "Standard",
@@ -403,7 +389,6 @@ describe("File operations — seams 1–10", () => {
     mockRoutes({});
     const operator = {
       ...ownerCaps,
-    cloud_history_policy: "archive_history" as const,
       cloud_deletion_enabled: false,
     };
     renderBrowser(operator);
@@ -433,7 +418,7 @@ describe("File operations — seams 1–10", () => {
     ).toEqual(["upload", "storage-class", "lifecycle-pin"]);
   });
 
-  it("seam 3: version selection shows date/storage and recover sends the selected version id, never an index", async () => {
+  it("seam 3: recovery confirms the current copy directly and pins its exact internal id", async () => {
     const user = userEvent.setup();
     const calls: Array<{ url: string; body: unknown }> = [];
     mockRoutes({
@@ -450,19 +435,15 @@ describe("File operations — seams 1–10", () => {
         { name: "Recover" },
       ),
     );
-    const versionDialog = await screen.findByRole("dialog");
-    expect(within(versionDialog).getByText(/Version #1/)).toBeInTheDocument();
-    expect(within(versionDialog).getByText(/Version #2/)).toBeInTheDocument();
-    expect(within(versionDialog).getByText("Deep Archive")).toBeInTheDocument();
-    await user.click(screen.getByTestId("version-option-ver-old"));
     const confirm = await screen.findByRole("alertdialog");
-    expect(within(confirm).getByText(/Version #1/)).toBeInTheDocument();
+    expect(screen.queryByTestId("version-list")).not.toBeInTheDocument();
+    expect(within(confirm).getByText(/Current cloud copy/)).toBeInTheDocument();
     await user.click(within(confirm).getByRole("button", { name: "Recover" }));
     await waitFor(() => {
       const recoverCall = calls.find((c) => c.url === "/api/recover");
       expect(recoverCall?.body).toMatchObject({
         path: "archive.pdf",
-        archive_version_id: "ver-old",
+        archive_version_id: "ver-new",
       });
       expect(recoverCall?.body).not.toHaveProperty("version_number");
     });

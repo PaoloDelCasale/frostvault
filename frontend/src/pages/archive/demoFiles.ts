@@ -74,7 +74,7 @@ export const demoRootListing: FilesResponse = {
       upload_eligible: false,
       recover_eligible: true,
       cleanup_eligible: false,
-      recoverable_version_count: 2,
+      recoverable_version_count: 1,
     },
   ],
   total: 3,
@@ -264,16 +264,6 @@ const demoPhotosFolder = {
 
 const demoArchiveVersions: ArchiveVersionItem[] = [
   {
-    id: "ver-old",
-    version_number: 1,
-    storage_class: "DEEP_ARCHIVE",
-    size: 100,
-    recoverable: true,
-    created_at: "2024-01-01T00:00:00Z",
-    object_key: "vault/archive.pdf",
-    storage_class_source: "policy",
-  },
-  {
     id: "ver-new",
     version_number: 2,
     storage_class: "DEEP_ARCHIVE",
@@ -355,8 +345,6 @@ type DemoVault = {
 
 type DemoLifecycleProfile = {
   transitions: Array<{ days: number; storage_class: string }>;
-  expiration_days?: number | null;
-  noncurrent_expiration_days?: number | null;
   noncurrent_transitions?: Array<{ days: number; storage_class: string }>;
 };
 
@@ -769,7 +757,6 @@ function mePayload(state: DemoState) {
           name: vault.name,
           delete_enabled: true,
           cloud_deletion_enabled: true,
-          cloud_history_policy: "archive_history",
         }
       : null,
   };
@@ -963,7 +950,7 @@ export function installDemoFilesFetch(): void {
         path: versionsPath,
         items: versions,
         recoverable_count: recoverable.length,
-        default_archive_version_id: recoverable.at(-1)?.id ?? null,
+        default_archive_version_id: recoverable[0]?.id ?? null,
         supported_restore_tiers: ["Standard", "Bulk"],
         default_restore_tier: "Standard",
         default_restore_days: 7,

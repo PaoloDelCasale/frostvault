@@ -45,9 +45,6 @@ const messages: Record<string, string> = {
   "ui.action_directory_count": "{action} {count} files",
   "ui.row_actions_title": "Actions for {name}",
   "ui.cancel": "Cancel",
-  "ui.version_option": "Version #{number} · {storage} · {size}",
-  "ui.version_date_storage": "#{number} · {date} · {storage}",
-  "ui.version_title_date": "Version #{number} · {date}",
   "ui.file_list_placeholder": "File list",
   "ui.file_list_loading": "Loading folder…",
   "ui.file_list_error": "Unable to load this folder.",
@@ -72,7 +69,6 @@ const messages: Record<string, string> = {
 const testCapabilities = {
   delete_enabled: true,
   cloud_deletion_enabled: false,
-    cloud_history_policy: "archive_history" as const,
 };
 
 function t(key: string, params?: Record<string, string | number>): string {

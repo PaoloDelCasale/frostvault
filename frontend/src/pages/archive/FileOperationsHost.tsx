@@ -61,7 +61,6 @@ import {
   sourceNeedsRestoreForClassChange,
   type StorageClassOption,
 } from "./storageClassOptions";
-import { VersionSelectDialog } from "./VersionSelectDialog";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
@@ -74,8 +73,6 @@ export type FileOperationsHostProps = {
   onSheetPathChange: (path: string | null) => void;
   /** Screenshot helper: open a destructive ConfirmDialog immediately. */
   demoConfirm?: { action: string; path: string } | null;
-  /** Screenshot helper: open the Archive Version picker for this path. */
-  demoVersionsPath?: string | null;
   children: (ctx: {
     jobsByPath: Map<string, JobGroup[]>;
     onOpenActions: (path: string) => void;
@@ -91,9 +88,7 @@ export type FileOperationsHostProps = {
 
 type PendingRecover = {
   path: string;
-  isDirectory: boolean;
-  version: ArchiveVersionItem | null;
-  versions: ArchiveVersionItem[];
+  version: ArchiveVersionItem;
   estimate: RecoverEstimateResponse | null;
   estimateError: string | null;
   defaults: { restore_tier: string; restore_days: number };
@@ -111,7 +106,6 @@ export function FileOperationsHost({
   sheetPath,
   onSheetPathChange,
   demoConfirm = null,
-  demoVersionsPath = null,
   children,
 }: FileOperationsHostProps) {
   const queryClient = useQueryClient();
@@ -126,9 +120,6 @@ export function FileOperationsHost({
     isDirectory: boolean;
   } | null>(null);
   const [recover, setRecover] = useState<PendingRecover | null>(null);
-  const [recoverStep, setRecoverStep] = useState<
-    "versions" | "confirm" | null
-  >(null);
   const [purge, setPurge] = useState<{
     path: string;
     isDirectory: boolean;
@@ -296,77 +287,26 @@ export function FileOperationsHost({
         restore_tier: versions.default_restore_tier,
         restore_days: versions.default_restore_days,
       };
-      if (recoverable.length === 1) {
-        const version = recoverable[0]!;
-        let estimate: RecoverEstimateResponse | null = null;
-        let estimateError: string | null = null;
-        try {
-          estimate = await estimateRecover({
-            path,
-            archive_version_id: version.id,
-            restore_tier: defaults.restore_tier,
-            restore_days: defaults.restore_days,
-          });
-        } catch (error) {
-          estimateError =
-            error instanceof Error
-              ? error.message
-              : t("ui.recover_estimate_failed");
-          if (!estimateError) estimateError = t("ui.recover_estimate_failed");
-        }
-        setRecover({
-          path,
-          isDirectory: false,
-          version,
-          versions: recoverable,
-          estimate,
-          estimateError,
-          defaults,
-        });
-        setRecoverStep("confirm");
-        return;
-      }
-      setRecover({
-        path,
-        isDirectory: false,
-        version: null,
-        versions: recoverable,
-        estimate: null,
-        estimateError: null,
-        defaults,
-      });
-      setRecoverStep("versions");
-    },
-    [dispatchAction, t],
-  );
-
-  const onSelectVersion = useCallback(
-    async (version: ArchiveVersionItem) => {
-      if (!recover) return;
+      const version = recoverable[0]!;
       let estimate: RecoverEstimateResponse | null = null;
       let estimateError: string | null = null;
       try {
         estimate = await estimateRecover({
-          path: recover.path,
+          path,
           archive_version_id: version.id,
-          restore_tier: recover.defaults.restore_tier,
-          restore_days: recover.defaults.restore_days,
+          restore_tier: defaults.restore_tier,
+          restore_days: defaults.restore_days,
         });
       } catch (error) {
         estimateError =
           error instanceof Error
             ? error.message
             : t("ui.recover_estimate_failed");
+        if (!estimateError) estimateError = t("ui.recover_estimate_failed");
       }
-      setRecover({
-        ...recover,
-        version,
-        estimate,
-        estimateError: estimateError || (estimate ? null : t("ui.recover_estimate_failed")),
-      });
-      setRecoverStep("confirm");
+      setRecover({ path, version, estimate, estimateError, defaults });
     },
-    [recover, t],
+    [dispatchAction, t],
   );
 
   const beginCloudPurge = useCallback(
@@ -513,10 +453,9 @@ export function FileOperationsHost({
     [refreshAfterMutation, showError, showSuccess, t],
   );
 
-  // Capture-only deep-links: open confirm or version dialogs once.
+  // Capture-only deep-links: open confirmation dialogs once.
   const demoBootstrapped = useRef(false);
   const gatedDemoConfirm = DEMO_MODE_ENABLED ? demoConfirm : null;
-  const gatedDemoVersionsPath = DEMO_MODE_ENABLED ? demoVersionsPath : null;
   useEffect(() => {
     if (demoBootstrapped.current) return;
     if (gatedDemoConfirm?.action === "free-space") {
@@ -551,11 +490,7 @@ export function FileOperationsHost({
       });
       return;
     }
-    if (gatedDemoVersionsPath) {
-      demoBootstrapped.current = true;
-      void beginRecover(gatedDemoVersionsPath, false).catch(showError);
-    }
-  }, [beginRecover, gatedDemoConfirm, gatedDemoVersionsPath, showError]);
+  }, [gatedDemoConfirm]);
 
   // Expose endpoint mapping for tests via data attribute on host.
   const hostRef = useRef<HTMLDivElement>(null);
@@ -694,29 +629,10 @@ export function FileOperationsHost({
         }}
       />
 
-      <VersionSelectDialog
-        open={recoverStep === "versions" && Boolean(recover)}
-        onOpenChange={(open) => {
-          if (!open) {
-            setRecover(null);
-            setRecoverStep(null);
-          }
-        }}
-        path={recover?.path ?? ""}
-        versions={recover?.versions ?? []}
-        t={t}
-        onSelect={(version) => {
-          void onSelectVersion(version);
-        }}
-      />
-
       <RecoverConfirmDialog
-        open={recoverStep === "confirm" && Boolean(recover?.version)}
+        open={Boolean(recover)}
         onOpenChange={(open) => {
-          if (!open) {
-            setRecover(null);
-            setRecoverStep(null);
-          }
+          if (!open) setRecover(null);
         }}
         path={recover?.path ?? ""}
         version={recover?.version ?? null}
@@ -730,7 +646,6 @@ export function FileOperationsHost({
           const estimate = recover.estimate;
           const path = recover.path;
           setRecover(null);
-          setRecoverStep(null);
           void dispatchAction("recover", path, false, {
             archive_version_id: version.id,
             restore_tier:

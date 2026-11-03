@@ -31,11 +31,13 @@ Search remains global across every file in the selected vault.
   `UPLOAD_CONCURRENCY` variable remains supported as a fallback.
 - Local cleanup runs in the background and reports progress for each file or
   folder.
-- Vaults are created from the UI. Creation requires an
-  explicit **Cloud History Policy**: **Archive History** keeps every verified
-  Archive Version recoverable; **Current Snapshot** keeps only the last verified
-  upload and destroys previous cloud bytes after that verification. The choice
-  is immutable. The shared S3 bucket stays versioned either way.
+- Vaults are created from the UI with one cloud behavior: **Current Snapshot**
+  keeps the last verified content of each file. A successful upload or safe
+  rename verifies the new copy before destroying previous cloud bytes; a failed
+  upload/verification preserves the previous copy. Recovery has no version picker.
+  The shared S3 bucket stays versioned as an internal safety mechanism, not a
+  recoverable history. Mistaken overwrites or ransomware can therefore replace
+  the only good cloud copy after verification.
 - A file whose Local Copy is gone (freed or deleted via SMB) keeps its verified
   cloud copy as the only copy. If **different** content later appears at the
   same path, FrostVault does not upload it: the file shows a conflict with a
@@ -371,9 +373,9 @@ model and reconnect semantics.
 
 The application role/user must be able to list the bucket and, within the
 configured prefix, read, upload, and request object restores. Automatic rename
-cleanup requires `s3:DeleteObject` (Archive History) or `s3:DeleteObjectVersion`
-(Current Snapshot). Current Snapshot also needs `s3:DeleteObjectVersion` to
-remove superseded versions after verified uploads; permanent purge uses it too.
+cleanup requires `s3:DeleteObjectVersion` to remove the old key's versions
+only after the new key is verified. The same permission removes superseded
+versions after verified uploads; permanent purge uses it too.
 Disabling the manual cloud-deletion setting does not disable verified snapshot
 replacement or automatic rename cleanup.
 

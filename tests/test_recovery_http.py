@@ -1,4 +1,4 @@
-"""HTTP coverage for recovery version listing, estimates, and approval (issue #4)."""
+"""HTTP coverage for current snapshot recovery, exact pins, estimates and approval."""
 
 from __future__ import annotations
 
@@ -149,6 +149,31 @@ class RecoveryHttpTests(unittest.TestCase):
         self.assertEqual(payload["estimate"]["tier"], "Bulk")
         self.assertNotIn("price_book_id", payload["estimate"])
         self.assertEqual(payload["estimate"]["region"], payload["estimate"]["assumptions"]["region"])
+
+    def test_legacy_copies_are_preserved_but_cannot_be_chosen_as_history(self) -> None:
+        with SQLiteConnection(str(self.database_path)) as connection:
+            catalog = ArchiveCatalog(connection)
+            newest = catalog.record_archive_version(
+                vault_id=self.vault_id, path="docs/note.txt", object_key="docs/docs/note.txt",
+                provider_version_id="v2", size=5, storage_class="STANDARD", etag="v2",
+                uploaded_at="2026-11-03", observed_at="2026-11-03", scan_id="s2",
+            )
+            catalog.mark_version_verified(newest, plaintext_sha256=_sha(b"newer"), verified_at="2026-11-03")
+        self._authenticate(self.owner_id)
+        response = self.client.get("/api/files/versions", params={"path": "docs/note.txt"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual([row["id"] for row in response.json()["items"]], [newest])
+        for endpoint in ("/api/recover/estimate", "/api/recover"):
+            rejected = self.client.post(endpoint, headers=self._csrf(), json={
+                "path": "docs/note.txt", "archive_version_id": self.version_id,
+            })
+            self.assertEqual(rejected.status_code, 409, rejected.text)
+        queued = self.client.post("/api/recover", headers=self._csrf(), json={"path": "docs/note.txt"})
+        self.assertEqual(queued.status_code, 202, queued.text)
+        with SQLiteConnection(str(self.database_path)) as connection:
+            rows = ArchiveCatalog(connection).list_versions(self.vault_id, "docs/note.txt")
+            self.assertTrue(all(row["recoverable"] for row in rows), "No implicit cloud purge on read/recovery")
+            self.assertEqual(connection.execute("SELECT archive_version_id FROM jobs").fetchone()["archive_version_id"], newest)
 
     def test_owner_approves_high_impact_restore(self) -> None:
         with SQLiteConnection(str(self.database_path)) as connection:

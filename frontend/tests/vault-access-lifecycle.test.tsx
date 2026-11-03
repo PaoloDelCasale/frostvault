@@ -207,8 +207,6 @@ describe("VaultAccessPage — lifecycle (seam 7)", () => {
           { days: 30, storage_class: "STANDARD_IA" },
           { days: 180, storage_class: "DEEP_ARCHIVE" },
         ],
-        expiration_days: null,
-        noncurrent_expiration_days: null,
         noncurrent_transitions: [
           { days: 180, storage_class: "DEEP_ARCHIVE" },
         ],

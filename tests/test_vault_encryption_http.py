@@ -102,7 +102,7 @@ class VaultEncryptionHttpTests(unittest.TestCase):
         self._authenticate(self.owner_id)
         response = self.client.post(
             "/api/vaults",
-            json={"name": "Secret", "slug": "secret", "encryption_mode": "crypt", "cloud_history_policy": "archive_history"},
+            json={"name": "Secret", "slug": "secret", "encryption_mode": "crypt"},
             headers={"X-CSRF-Token": self._csrf()},
         )
         self.assertEqual(response.status_code, 201, response.text)
@@ -121,7 +121,6 @@ class VaultEncryptionHttpTests(unittest.TestCase):
             "rclone_remote",
             "enabled",
             "encryption_mode",
-            "cloud_history_policy",
             "decommission_state",
             "decommissioned_at",
             "root_released_at",
@@ -153,7 +152,7 @@ class VaultEncryptionHttpTests(unittest.TestCase):
 
         crypt = self.client.post(
             "/api/vaults",
-            json={"name": "Secret", "slug": "secret", "encryption_mode": "crypt", "cloud_history_policy": "archive_history"},
+            json={"name": "Secret", "slug": "secret", "encryption_mode": "crypt"},
             headers={"X-CSRF-Token": self._csrf()},
         )
         self.assertEqual(crypt.status_code, 201, crypt.text)
@@ -161,7 +160,7 @@ class VaultEncryptionHttpTests(unittest.TestCase):
 
         plain = self.client.post(
             "/api/vaults",
-            json={"name": "Plain", "slug": "plain", "encryption_mode": "plain", "cloud_history_policy": "archive_history"},
+            json={"name": "Plain", "slug": "plain", "encryption_mode": "plain"},
             headers={"X-CSRF-Token": self._csrf()},
         )
         self.assertEqual(plain.status_code, 201, plain.text)

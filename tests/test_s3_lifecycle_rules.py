@@ -15,6 +15,18 @@ from app.services.s3_lifecycle_rules import (
 
 
 class BuildPolicyLifecycleRuleTests(unittest.TestCase):
+    def test_expiration_is_unreachable_even_in_legacy_profiles(self) -> None:
+        from app.services.lifecycle_profiles import profile_from_json, profile_to_json
+        profile = profile_from_json('{"transitions":[{"days":30,"storage_class":"STANDARD_IA"}],"expiration_days":1,"noncurrent_expiration_days":1}')
+        rule = build_policy_lifecycle_rule("legacy", profile)
+        self.assertNotIn("Expiration", rule)
+        self.assertNotIn("NoncurrentVersionExpiration", rule)
+        self.assertNotIn("expiration_days", profile_to_json(profile))
+        for profile in GUIDED_PROFILES.values():
+            rule = build_policy_lifecycle_rule("guided", profile)
+            self.assertNotIn("Expiration", rule)
+            self.assertNotIn("NoncurrentVersionExpiration", rule)
+
     def test_rule_filters_by_policy_tag_not_object_prefix(self) -> None:
         policy_id = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
         rule = build_policy_lifecycle_rule(

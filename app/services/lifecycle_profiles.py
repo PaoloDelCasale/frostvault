@@ -33,8 +33,6 @@ class LifecycleTransition:
 @dataclass(frozen=True)
 class LifecycleProfile:
     transitions: tuple[LifecycleTransition, ...] = ()
-    expiration_days: int | None = None
-    noncurrent_expiration_days: int | None = None
     # NoncurrentDays → StorageClass for retained noncurrent Archive Versions
     # after a Delete Marker hides the current key (issue #10).
     noncurrent_transitions: tuple[LifecycleTransition, ...] = ()
@@ -71,8 +69,6 @@ def profile_to_json(profile: LifecycleProfile) -> str:
             {"days": transition.days, "storage_class": transition.storage_class}
             for transition in profile.transitions
         ],
-        "expiration_days": profile.expiration_days,
-        "noncurrent_expiration_days": profile.noncurrent_expiration_days,
         "noncurrent_transitions": [
             {"days": transition.days, "storage_class": transition.storage_class}
             for transition in profile.noncurrent_transitions
@@ -99,16 +95,9 @@ def profile_from_json(value: str | None) -> LifecycleProfile | None:
         )
         for item in payload.get("noncurrent_transitions", [])
     )
-    expiration_days = payload.get("expiration_days")
-    noncurrent_expiration_days = payload.get("noncurrent_expiration_days")
+    # Legacy expiration fields are deliberately ignored, never emitted to S3.
     return LifecycleProfile(
         transitions=transitions,
-        expiration_days=int(expiration_days) if expiration_days is not None else None,
-        noncurrent_expiration_days=(
-            int(noncurrent_expiration_days)
-            if noncurrent_expiration_days is not None
-            else None
-        ),
         noncurrent_transitions=noncurrent_transitions,
     )
 
@@ -147,14 +136,6 @@ def validate_lifecycle_profile(profile: LifecycleProfile) -> ProfileValidation:
             )
         previous_days = transition.days
         previous_depth = depth
-
-    if profile.expiration_days is not None and profile.expiration_days <= 0:
-        errors.append("expiration_days must be positive when set")
-    if (
-        profile.noncurrent_expiration_days is not None
-        and profile.noncurrent_expiration_days <= 0
-    ):
-        errors.append("noncurrent_expiration_days must be positive when set")
 
     previous_noncurrent_days = 0
     previous_noncurrent_depth = 0
