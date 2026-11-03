@@ -67,7 +67,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 vault_id=7,
                 local_disposition=local,
                 cloud_disposition=cloud,
-                local_delete_enabled=True,
             )
 
     def start(self, preview: dict) -> dict:
@@ -81,13 +80,11 @@ class VaultDecommissionTests(unittest.TestCase):
                 confirmation="Archive",
                 reason="retire completed archive",
                 preview_fingerprint=preview["fingerprint"],
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
             return vault_decommission.reconcile_one(
                 connection,
                 vault_id=7,
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
 
@@ -174,7 +171,6 @@ class VaultDecommissionTests(unittest.TestCase):
                     confirmation="Archive",
                     reason="retire completed archive",
                     preview_fingerprint="0" * 64,
-                    local_delete_enabled=True,
                     purge_delay_seconds=3600,
                 )
             self.assertEqual(stale.exception.reason, "stale_preview")
@@ -196,7 +192,6 @@ class VaultDecommissionTests(unittest.TestCase):
                     confirmation="archive",
                     reason="retire completed archive",
                     preview_fingerprint=preview["fingerprint"],
-                    local_delete_enabled=True,
                     purge_delay_seconds=3600,
                 )
         self.assertEqual(confirm.exception.reason, "confirmation_required")
@@ -244,7 +239,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 confirmation="Archive",
                 reason="retire completed archive",
                 preview_fingerprint=preview["fingerprint"],
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
         with patch(
@@ -256,7 +250,6 @@ class VaultDecommissionTests(unittest.TestCase):
                     vault_decommission.reconcile_one(
                         connection,
                         vault_id=7,
-                        local_delete_enabled=True,
                         purge_delay_seconds=3600,
                     )
         with PostgresConnection(str(self.db_path)) as connection:
@@ -282,7 +275,6 @@ class VaultDecommissionTests(unittest.TestCase):
             "confirmation": "Archive",
             "reason": "remove local archive copy",
             "preview_fingerprint": preview["fingerprint"],
-            "local_delete_enabled": True,
             "purge_delay_seconds": 3600,
         }
         with PostgresConnection(str(self.db_path)) as connection:
@@ -313,7 +305,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 confirmation="Archive",
                 reason="retire completed archive",
                 preview_fingerprint=preview["fingerprint"],
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
             self.assertEqual(replay["state"], "completed")
@@ -327,7 +318,6 @@ class VaultDecommissionTests(unittest.TestCase):
                     confirmation="Archive",
                     reason="a conflicting repeated reason",
                     preview_fingerprint=preview["fingerprint"],
-                    local_delete_enabled=True,
                     purge_delay_seconds=3600,
                 )
         self.assertEqual(conflict.exception.reason, "already_decommissioned")
@@ -345,7 +335,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 confirmation="Archive",
                 reason="remove local archive copy",
                 preview_fingerprint=preview["fingerprint"],
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
             job = connection.execute(
@@ -374,7 +363,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 confirmation="Archive",
                 reason="remove local archive copy",
                 preview_fingerprint=preview["fingerprint"],
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
             connection.execute("UPDATE vaults SET enabled=FALSE WHERE id=7")
@@ -412,7 +400,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 confirmation="Archive",
                 reason="remove local archive copy",
                 preview_fingerprint=preview["fingerprint"],
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
             job = connection.execute(
@@ -426,21 +413,16 @@ class VaultDecommissionTests(unittest.TestCase):
                 """
             ).fetchone()
         with (
-            patch(
-                "app.storage._runtime_settings",
-                return_value=SimpleNamespace(allow_local_delete=True),
-            ),
             patch("app.storage.validate_cloud_vault"),
             patch("app.storage.s3_client") as client,
         ):
-            client.return_value.head_object.return_value = {"ContentLength": 16}
+            client.return_value.head_object.return_value = {"ContentLength": 16, "VersionId": "provider-version-1"}
             process_free_space(dict(job))
         self.assertFalse((self.root / "report.txt").exists())
         with PostgresConnection(str(self.db_path)) as connection:
             completed = vault_decommission.reconcile_one(
                 connection,
                 vault_id=7,
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
         self.assertEqual(completed["state"], "completed")
@@ -461,13 +443,11 @@ class VaultDecommissionTests(unittest.TestCase):
                 confirmation="Archive",
                 reason="purge expired cloud archive",
                 preview_fingerprint=preview["fingerprint"],
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
             status = vault_decommission.reconcile_one(
                 connection,
                 vault_id=7,
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
             job = connection.execute(
@@ -491,7 +471,6 @@ class VaultDecommissionTests(unittest.TestCase):
             completed = vault_decommission.reconcile_one(
                 connection,
                 vault_id=7,
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
         self.assertEqual(completed["state"], "completed")
@@ -532,13 +511,11 @@ class VaultDecommissionTests(unittest.TestCase):
                 confirmation="Archive",
                 reason="purge all authoritative cloud history",
                 preview_fingerprint=preview["fingerprint"],
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
             waiting = vault_decommission.reconcile_one(
                 connection,
                 vault_id=7,
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
             group_id = connection.execute(
@@ -568,7 +545,6 @@ class VaultDecommissionTests(unittest.TestCase):
             blocked = vault_decommission.reconcile_one(
                 connection,
                 vault_id=7,
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
             self.assertEqual(blocked["error_code"], "cloud_purge_unverified")
@@ -579,7 +555,6 @@ class VaultDecommissionTests(unittest.TestCase):
             completed = vault_decommission.reconcile_one(
                 connection,
                 vault_id=7,
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
         self.assertEqual(completed["state"], "completed")
@@ -597,7 +572,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 confirmation="Archive",
                 reason="retire completed archive",
                 preview_fingerprint=preview["fingerprint"],
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
         original_listdir = os.listdir
@@ -621,7 +595,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 status = vault_decommission.reconcile_one(
                     connection,
                     vault_id=7,
-                    local_delete_enabled=True,
                     purge_delay_seconds=3600,
                 )
         self.assertEqual(status["state"], "blocked")
@@ -640,7 +613,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 confirmation="Archive",
                 reason="retire completed archive",
                 preview_fingerprint=preview["fingerprint"],
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
         original_listdir = os.listdir
@@ -664,7 +636,6 @@ class VaultDecommissionTests(unittest.TestCase):
                 status = vault_decommission.reconcile_one(
                     connection,
                     vault_id=7,
-                    local_delete_enabled=True,
                     purge_delay_seconds=3600,
                 )
         self.assertEqual(status["state"], "blocked")
@@ -686,13 +657,11 @@ class VaultDecommissionTests(unittest.TestCase):
                 confirmation="Archive",
                 reason="purge expired cloud archive",
                 preview_fingerprint=preview["fingerprint"],
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
             waiting = vault_decommission.reconcile_one(
                 connection,
                 vault_id=7,
-                local_delete_enabled=True,
                 purge_delay_seconds=3600,
             )
             self.assertTrue(waiting["cloud_cancellable"])

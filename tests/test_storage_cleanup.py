@@ -1049,7 +1049,7 @@ class StorageCleanupTests(unittest.TestCase):
             ) as cleanup_scheduler,
             patch(
                 "app.storage.settings",
-                SimpleNamespace(allow_local_delete=True),
+                SimpleNamespace(),
             ),
         ):
             result = scan_vault(vault)
@@ -1059,7 +1059,6 @@ class StorageCleanupTests(unittest.TestCase):
             connection,
             vault_id=987,
             requested_by=42,
-            local_delete_enabled=True,
         )
 
     def cleanup_fixture(self, directory: str):
@@ -1136,7 +1135,6 @@ class StorageCleanupTests(unittest.TestCase):
         }
         with (
             patch("app.main.queue_jobs", return_value=queued) as queue_jobs,
-            patch("app.main.settings", SimpleNamespace(allow_local_delete=True)),
         ):
             result = free_space(
                 FileAction(path="docs/file.txt"),
@@ -1158,7 +1156,6 @@ class StorageCleanupTests(unittest.TestCase):
                 database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
-                allow_local_delete=True,
                 operation_concurrency=1,
                 restore_poll_interval=900,
             )
@@ -1169,7 +1166,7 @@ class StorageCleanupTests(unittest.TestCase):
                 patch(
                     "app.storage.s3_client",
                     return_value=SimpleNamespace(
-                        head_object=lambda **_: {"ContentLength": 7}
+                        head_object=lambda **_: {"ContentLength": 7, "VersionId": "s3-version-1"}
                     ),
                 ),
             ):
@@ -1197,23 +1194,20 @@ class StorageCleanupTests(unittest.TestCase):
                     connection,
                     2,
                     OperationPolicy(
-                        auto_local_cleanup=True,
-                        local_retention_days=30,
+                        local_release_after_days=90,
                     ),
                 )
                 queued = queue_auto_local_cleanups(
                     connection,
                     vault_id=2,
                     requested_by=1,
-                    local_delete_enabled=True,
-                    now=datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc),
+                    now=datetime(2026, 10, 21, 12, 0, tzinfo=timezone.utc),
                 )
 
             database_settings = SimpleNamespace(
                 database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
-                allow_local_delete=True,
                 operation_concurrency=1,
                 restore_poll_interval=900,
             )
@@ -1224,7 +1218,7 @@ class StorageCleanupTests(unittest.TestCase):
                 patch(
                     "app.storage.s3_client",
                     return_value=SimpleNamespace(
-                        head_object=lambda **_: {"ContentLength": 7}
+                        head_object=lambda **_: {"ContentLength": 7, "VersionId": "s3-version-1"}
                     ),
                 ),
             ):
@@ -1265,7 +1259,6 @@ class StorageCleanupTests(unittest.TestCase):
                 database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
-                allow_local_delete=True,
                 operation_concurrency=1,
                 restore_poll_interval=900,
             )
@@ -1304,23 +1297,20 @@ class StorageCleanupTests(unittest.TestCase):
                     connection,
                     2,
                     OperationPolicy(
-                        auto_local_cleanup=True,
-                        local_retention_days=30,
+                        local_release_after_days=90,
                     ),
                 )
                 queue_auto_local_cleanups(
                     connection,
                     vault_id=2,
                     requested_by=1,
-                    local_delete_enabled=True,
-                    now=datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc),
+                    now=datetime(2026, 10, 21, 12, 0, tzinfo=timezone.utc),
                 )
 
             database_settings = SimpleNamespace(
                 database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
-                allow_local_delete=True,
                 operation_concurrency=1,
                 restore_poll_interval=900,
             )
@@ -1364,11 +1354,10 @@ class StorageCleanupTests(unittest.TestCase):
                 database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
-                allow_local_delete=True,
                 operation_concurrency=1,
                 restore_poll_interval=900,
             )
-            head_object = Mock(return_value={"ContentLength": 7})
+            head_object = Mock(return_value={"ContentLength": 7, "VersionId": "s3-version-1"})
             with (
                 patch("app.database.settings", database_settings),
                 patch("app.storage.settings", worker_settings),
@@ -1399,7 +1388,6 @@ class StorageCleanupTests(unittest.TestCase):
                 database_dsn=database_dsn(str(database_path)),
             )
             worker_settings = SimpleNamespace(
-                allow_local_delete=True,
                 operation_concurrency=1,
                 restore_poll_interval=900,
             )
@@ -1418,7 +1406,7 @@ class StorageCleanupTests(unittest.TestCase):
                 patch(
                     "app.storage.s3_client",
                     return_value=SimpleNamespace(
-                        head_object=lambda **_: {"ContentLength": 7}
+                        head_object=lambda **_: {"ContentLength": 7, "VersionId": "s3-version-1"}
                     ),
                 ),
                 patch.object(Path, "rename", rename_then_replace),

@@ -250,7 +250,7 @@ export function fetchOperationPolicy(): Promise<OperationPolicy> {
 }
 
 export function updateOperationPolicy(
-  policy: OperationPolicy,
+  policy: Partial<OperationPolicy>,
 ): Promise<OperationPolicy> {
   return apiRequest<OperationPolicy>("/api/vault/operation-policy", {
     method: "PUT",

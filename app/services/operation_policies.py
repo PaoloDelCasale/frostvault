@@ -2,8 +2,9 @@
 
 This module is the operation-policy seam used by watcher/scan auto-upload,
 automatic local cleanup, and HTTP configuration. A missing row means automatic
-upload with a five-minute observed stability window. Fixed automatic noise
-exclusions cannot be overridden by user globs; manual operations remain explicit.
+upload with a five-minute observed stability window and local release OFF.
+Upload exclusions never restrict local release, which covers all Protected files.
+Fixed upload noise exclusions cannot be overridden; manual operations remain explicit.
 The only transfer throttle is the global ``BANDWIDTH_LIMIT_KIBPS`` for uploads.
 """
 
@@ -20,6 +21,8 @@ from typing import Any, Sequence
 
 
 
+# Fixed durations, not calendar-month arithmetic: 3/6 months, 1/2 years.
+LOCAL_RELEASE_PERIODS = (90, 180, 365, 730)
 DEFAULT_STABILITY_SECONDS = 300
 AUTO_UPLOAD_EXCLUSIONS = (".DS_Store", "Thumbs.db", "._*", "*.lock", "*-wal", "*-journal")
 
@@ -36,8 +39,7 @@ def auto_upload_path_is_included(path: str, policy: OperationPolicy) -> bool:
 @dataclass(frozen=True)
 class OperationPolicy:
     auto_upload: bool = True
-    auto_local_cleanup: bool = False
-    local_retention_days: int | None = None
+    local_release_after_days: int | None = None
     stability_seconds: int = DEFAULT_STABILITY_SECONDS
     include_globs: tuple[str, ...] = ()
     exclude_globs: tuple[str, ...] = ()
@@ -45,8 +47,7 @@ class OperationPolicy:
     def as_dict(self) -> dict[str, Any]:
         return {
             "auto_upload": self.auto_upload,
-            "auto_local_cleanup": self.auto_local_cleanup,
-            "local_retention_days": self.local_retention_days,
+            "local_release_after_days": self.local_release_after_days,
             "stability_seconds": self.stability_seconds,
             "include_globs": list(self.include_globs),
             "exclude_globs": list(self.exclude_globs),
@@ -85,15 +86,11 @@ def _normalize_globs(values: Sequence[str]) -> tuple[str, ...]:
 def validate_policy(policy: OperationPolicy) -> None:
     if policy.stability_seconds < 0:
         raise ValueError("stability_seconds must be nonnegative")
-    if (
-        policy.local_retention_days is not None
-        and policy.local_retention_days <= 0
+    if policy.local_release_after_days is not None and (
+        type(policy.local_release_after_days) is not int
+        or policy.local_release_after_days not in LOCAL_RELEASE_PERIODS
     ):
-        raise ValueError("local_retention_days must be positive")
-    if policy.auto_local_cleanup and policy.local_retention_days is None:
-        raise ValueError(
-            "local_retention_days is required when automatic local cleanup is enabled"
-        )
+        raise ValueError("local_release_after_days must be null, 90, 180, 365 or 730")
     _normalize_globs(policy.include_globs)
     _normalize_globs(policy.exclude_globs)
 
@@ -107,12 +104,7 @@ def get_policy(connection: Any, vault_id: int) -> OperationPolicy:
         return OperationPolicy()
     return OperationPolicy(
         auto_upload=_as_bool(row["auto_upload"]),
-        auto_local_cleanup=_as_bool(row["auto_local_cleanup"]),
-        local_retention_days=(
-            int(row["local_retention_days"])
-            if row["local_retention_days"] is not None
-            else None
-        ),
+        local_release_after_days=row["local_release_after_days"],
         stability_seconds=int(row["stability_seconds"]),
         include_globs=tuple(_load_json_list(row["include_globs_json"])),
         exclude_globs=tuple(_load_json_list(row["exclude_globs_json"])),
@@ -139,8 +131,7 @@ def set_policy(
     exclude_globs = _normalize_globs(policy.exclude_globs)
     canonical = OperationPolicy(
         auto_upload=bool(policy.auto_upload),
-        auto_local_cleanup=bool(policy.auto_local_cleanup),
-        local_retention_days=policy.local_retention_days,
+        local_release_after_days=policy.local_release_after_days,
         stability_seconds=int(policy.stability_seconds),
         include_globs=include_globs,
         exclude_globs=exclude_globs,
@@ -148,14 +139,12 @@ def set_policy(
     connection.execute(
         """
         INSERT INTO vault_operation_policies(
-            vault_id, auto_upload, auto_local_cleanup, local_retention_days,
-            stability_seconds,
+            vault_id, auto_upload, local_release_after_days, stability_seconds,
             include_globs_json, exclude_globs_json
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT(vault_id) DO UPDATE SET
             auto_upload=excluded.auto_upload,
-            auto_local_cleanup=excluded.auto_local_cleanup,
-            local_retention_days=excluded.local_retention_days,
+            local_release_after_days=excluded.local_release_after_days,
             stability_seconds=excluded.stability_seconds,
             include_globs_json=excluded.include_globs_json,
             exclude_globs_json=excluded.exclude_globs_json
@@ -163,8 +152,7 @@ def set_policy(
         (
             vault_id,
             canonical.auto_upload,
-            canonical.auto_local_cleanup,
-            canonical.local_retention_days,
+            canonical.local_release_after_days,
             canonical.stability_seconds,
             json.dumps(list(canonical.include_globs)),
             json.dumps(list(canonical.exclude_globs)),
@@ -264,21 +252,23 @@ def local_cleanup_is_due(
     now: datetime,
     local_mtime_ns: int | None = None,
     recovered_at: str | None = None,
+    content_observed_at: str | None = None,
 ) -> bool:
     """Return True once the Local Copy has been both protected and untouched.
 
     The retention window counts from the latest of the Archive Version's
-    verification, the Local Copy's own modification time and its recovery.
+    verification, actual content observation, local modification and recovery.
+    Repeated unchanged scans do not restart the window; old imported timestamps
+    cannot shorten it.
     A recovered file therefore starts a fresh window from the moment it was
     written back, instead of being removed again on the next scan because its
     cloud copy was verified long ago.  The recovery time is explicit because a
     recovered file may keep its original (old) modification time.
     """
     reference = _aware(datetime.fromisoformat(verified_at))
-    if recovered_at is not None:
-        recovered = _aware(datetime.fromisoformat(recovered_at))
-        if recovered > reference:
-            reference = recovered
+    for observed in (recovered_at, content_observed_at):
+        if observed is not None:
+            reference = max(reference, _aware(datetime.fromisoformat(observed)))
     if local_mtime_ns is not None:
         modified = datetime.fromtimestamp(int(local_mtime_ns) / 1e9, tz=timezone.utc)
         if modified > reference:
@@ -405,12 +395,35 @@ def queue_auto_uploads(
     return queued
 
 
+def local_release_is_confirmed(
+    connection: Any, vault_id: int, *, decommission: bool = False
+) -> bool:
+    """Fail closed on absent/untrusted sources or lost cloud observability.
+
+    This is additional to, never a substitute for, the worker's exact-version
+    HEAD and local digest checks. Disabling a Vault is not consent to deletion.
+    """
+    from .component_health import load_vault_health
+    from .protection_states import observation_is_unconfirmed
+    from .source_layout import vault_local_access
+
+    vault = connection.execute(
+        "SELECT source_root, enabled, decommission_state, relocation_state FROM vaults WHERE id=%s",
+        (vault_id,),
+    ).fetchone()
+    if not vault or (not decommission and not vault["enabled"]) or vault["relocation_state"] != "ready":
+        return False
+    if vault["decommission_state"] != ("decommissioning" if decommission else "active"):
+        return False
+    return (vault_local_access(vault["source_root"]).local_operations_allowed
+            and not observation_is_unconfirmed(load_vault_health(connection, vault_id)))
+
+
 def queue_auto_local_cleanups(
     connection: Any,
     *,
     vault_id: int,
     requested_by: int,
-    local_delete_enabled: bool,
     now: datetime | None = None,
 ) -> int:
     """Queue safe Local Copy cleanup Jobs when the current policy is due."""
@@ -418,17 +431,17 @@ def queue_auto_local_cleanups(
     from .audit_events import record_audit_event
 
     policy = get_policy(connection, vault_id)
-    if (
-        not local_delete_enabled
-        or not policy.auto_local_cleanup
-        or policy.local_retention_days is None
-    ):
+    if policy.local_release_after_days is None:
+        return 0
+    validate_policy(policy)
+    if not local_release_is_confirmed(connection, vault_id):
         return 0
     current = now or datetime.now(timezone.utc)
     rows = connection.execute(
         """
         SELECT fp.path, av.id AS archive_version_id, av.verified_at,
                lc.mtime_ns AS local_mtime_ns,
+               COALESCE(lc.content_observed_at, lc.observed_at) AS content_observed_at,
                lc.recovered_at AS local_recovered_at
         FROM vault_files vf
         JOIN file_paths fp
@@ -444,6 +457,10 @@ def queue_auto_local_cleanups(
           AND av.integrity='verified'
           AND av.availability='available'
           AND av.verified_at IS NOT NULL
+          AND lc.cloud_only_version_id IS NULL
+          AND av.id=(SELECT latest.id FROM archive_versions latest
+                     WHERE latest.vault_file_id=vf.id AND latest.availability<>'purged'
+                     ORDER BY latest.version_number DESC LIMIT 1)
         ORDER BY lower(fp.path)
         """,
         (vault_id,),
@@ -452,14 +469,13 @@ def queue_auto_local_cleanups(
     timestamp = current.isoformat()
     queued = 0
     for row in rows:
-        if not path_is_included(row["path"], policy):
-            continue
         if not local_cleanup_is_due(
             verified_at=row["verified_at"],
-            retention_days=policy.local_retention_days,
+            retention_days=policy.local_release_after_days,
             now=current,
             local_mtime_ns=row["local_mtime_ns"],
             recovered_at=row["local_recovered_at"],
+            content_observed_at=row["content_observed_at"],
         ):
             continue
         job_ids, _total, _eligible = catalog.queue_jobs(

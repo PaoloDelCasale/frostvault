@@ -707,8 +707,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                     "stability_seconds": 600,
                     "include_globs_json": '["**/*.jpg"]',
                     "exclude_globs_json": '["tmp/**"]',
-                    "auto_local_cleanup": 1,
-                    "local_retention_days": 30,
+                    "local_release_after_days": None,
                     "suspended_at": None,
                 },
             )

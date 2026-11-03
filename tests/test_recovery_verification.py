@@ -226,7 +226,6 @@ def _run_plain_recover(
         restore_high_impact_gib=100,
         restore_high_impact_eur=10.0,
         restore_approval_hold_seconds=3600,
-        allow_local_delete=False,
     )
     with patch("app.database.settings", database_settings):
         queue_jobs(relative_path, "recover", 2, 1)
@@ -509,23 +508,20 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
                     connection,
                     2,
                     OperationPolicy(
-                        auto_local_cleanup=True,
-                        local_retention_days=30,
+                        local_release_after_days=90,
                     ),
                 )
                 next_pass = queue_auto_local_cleanups(
                     connection,
                     vault_id=2,
                     requested_by=1,
-                    local_delete_enabled=True,
                     now=before_recovery + timedelta(days=1),
                 )
                 after_retention = queue_auto_local_cleanups(
                     connection,
                     vault_id=2,
                     requested_by=1,
-                    local_delete_enabled=True,
-                    now=before_recovery + timedelta(days=31),
+                    now=before_recovery + timedelta(days=91),
                 )
 
             self.assertEqual(next_pass, 0)

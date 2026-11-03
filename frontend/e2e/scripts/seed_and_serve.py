@@ -212,7 +212,6 @@ def _apply_env(paths: dict[str, Path]) -> None:
     env = {
         "COOKIE_SECURE": "false",
         "FRONTEND_DIST_DIR": str(REPO_ROOT / "frontend" / "dist"),
-        "ALLOW_LOCAL_DELETE": "true",
         "BREAK_GLASS_ALLOWED_CIDRS": "",
         "ARCHIVE_MASTER_KEY": master_key,
         "S3_BUCKET": "e2e-bucket",

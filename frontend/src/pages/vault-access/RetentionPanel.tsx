@@ -5,7 +5,7 @@ import {
   updateOperationPolicy,
   type OperationPolicy,
 } from "@/api";
-import { FormField, FormInput } from "@/components/FormField";
+import { FormField, FormSelect } from "@/components/FormField";
 import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
@@ -13,29 +13,29 @@ import { useI18n } from "@/i18n";
 type RetentionPanelProps = {
   onNotice: (message: string, error?: boolean) => void;
 };
+type ReleasePeriod = NonNullable<OperationPolicy["local_release_after_days"]>;
+const periods: ReleasePeriod[] = [90, 180, 365, 730];
 
 export function RetentionPanel({ onNotice }: RetentionPanelProps) {
   const { t, ready } = useI18n();
   const [loadState, setLoadState] = useState("");
   const [policy, setPolicy] = useState<OperationPolicy | null>(null);
-  const [autoCleanup, setAutoCleanup] = useState(false);
-  const [days, setDays] = useState("");
+  const [enabled, setEnabled] = useState(false);
+  const [days, setDays] = useState<ReleasePeriod>(180);
   const [saving, setSaving] = useState(false);
+
+  function acceptPolicy(data: OperationPolicy) {
+    setPolicy(data);
+    setEnabled(data.local_release_after_days != null);
+    setDays(data.local_release_after_days ?? 180);
+  }
 
   useEffect(() => {
     if (!ready) return;
     setLoadState(t("access.retention_loading"));
     void (async () => {
       try {
-        const data = await fetchOperationPolicy();
-        setPolicy(data);
-        setAutoCleanup(Boolean(data.auto_local_cleanup));
-        setDays(
-          data.local_retention_days === null ||
-            data.local_retention_days === undefined
-            ? ""
-            : String(data.local_retention_days),
-        );
+        acceptPolicy(await fetchOperationPolicy());
         setLoadState(t("access.retention_loaded"));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -48,34 +48,12 @@ export function RetentionPanel({ onNotice }: RetentionPanelProps) {
   async function onSave(event: React.FormEvent) {
     event.preventDefault();
     if (!policy) return;
-    const retentionDays = days === "" ? null : Number(days);
-    if (
-      autoCleanup &&
-      (!Number.isInteger(retentionDays) || (retentionDays ?? 0) < 1)
-    ) {
-      onNotice(t("access.retention_days_required"), true);
-      return;
-    }
     setSaving(true);
     try {
-      const updated = await updateOperationPolicy({
-        ...policy,
-        auto_local_cleanup: autoCleanup,
-        local_retention_days: retentionDays,
-      });
-      setPolicy(updated);
-      setAutoCleanup(Boolean(updated.auto_local_cleanup));
-      setDays(
-        updated.local_retention_days === null ||
-          updated.local_retention_days === undefined
-          ? ""
-          : String(updated.local_retention_days),
-      );
-      onNotice(
-        autoCleanup
-          ? t("access.retention_enabled")
-          : t("access.retention_disabled"),
-      );
+      acceptPolicy(await updateOperationPolicy({
+        local_release_after_days: enabled ? days : null,
+      }));
+      onNotice(t(enabled ? "access.retention_enabled" : "access.retention_disabled"));
     } catch (error) {
       onNotice(error instanceof Error ? error.message : String(error), true);
     } finally {
@@ -90,31 +68,34 @@ export function RetentionPanel({ onNotice }: RetentionPanelProps) {
         <p className="mt-1 text-sm text-muted">{t("access.retention_help")}</p>
         <p className="mt-2 text-sm text-muted">{t("access.retention_example")}</p>
         <p className="mt-2 text-sm text-muted">{t("access.retention_never")}</p>
-        <p className="mt-2 text-sm text-muted" role="status">
-          {loadState}
-        </p>
+        <p className="mt-2 text-sm text-muted" role="status">{loadState}</p>
         <form className="mt-4 grid gap-3" onSubmit={(event) => void onSave(event)}>
           <label className="flex min-h-11 items-center gap-3 text-sm font-bold text-ink">
             <input
-              id="auto-local-cleanup"
+              id="local-release"
               type="checkbox"
               className="size-5"
-              checked={autoCleanup}
-              onChange={(event) => setAutoCleanup(event.target.checked)}
+              checked={enabled}
+              disabled={!policy || saving}
+              onChange={(event) => {
+                setEnabled(event.target.checked);
+                if (event.target.checked) setDays(180);
+              }}
             />
             {t("access.retention_auto")}
           </label>
-          <FormField label={t("access.retention_days")} htmlFor="local-retention-days" help={t("access.retention_days_help")}>
-            <FormInput
-              id="local-retention-days"
-              type="number"
-              min={1}
-              step={1}
-              inputMode="numeric"
-              disabled={!autoCleanup}
+          <FormField label={t("access.retention_period")} htmlFor="local-release-period" help={t("access.retention_period_help")}>
+            <FormSelect
+              id="local-release-period"
+              disabled={!enabled || saving}
               value={days}
-              onChange={(event) => setDays(event.target.value)}
-            />
+              onChange={(event) => {
+                const selected = periods.find((period) => String(period) === event.target.value);
+                if (selected) setDays(selected);
+              }}
+            >
+              {periods.map((period) => <option key={period} value={period}>{t(`access.retention_period_${period}`)}</option>)}
+            </FormSelect>
           </FormField>
           <Button type="submit" className="min-h-11 w-full sm:w-auto" disabled={saving || !policy}>
             {t("access.retention_save")}

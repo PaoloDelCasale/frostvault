@@ -486,7 +486,6 @@ class LocalOpsGateTests(unittest.TestCase):
             Settings(),
             database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
-            allow_local_delete=True,
         )
         for target in (
             "app.database.settings",

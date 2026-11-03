@@ -870,6 +870,7 @@ class ArchiveCatalog:
             """
             SELECT
                 j.id AS job_id,
+                j.origin AS job_origin,
                 j.vault_id,
                 j.vault_file_id,
                 j.archive_version_id,
@@ -879,6 +880,11 @@ class ArchiveCatalog:
                 lc.file_type AS local_file_type,
                 lc.size AS local_size,
                 lc.mtime_ns AS local_mtime_ns,
+                lc.recovered_at AS local_recovered_at,
+                av.verified_at,
+                (SELECT latest.id FROM archive_versions latest
+                 WHERE latest.vault_file_id=j.vault_file_id AND latest.availability<>'purged'
+                 ORDER BY latest.version_number DESC LIMIT 1) AS latest_archive_version_id,
                 COALESCE(lc.content_observed_at, lc.observed_at) AS content_observed_at,
                 lc.plaintext_sha256 AS local_sha256,
                 lc.matched_archive_version_id,

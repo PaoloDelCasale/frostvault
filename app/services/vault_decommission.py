@@ -56,7 +56,6 @@ _BLOCKER_MESSAGES = {
     "filesystem_unreadable": "Vault root could not be inventoried safely",
     "local_catalog_stale": "Local catalog does not match the current filesystem tree",
     "local_unsupported_entries": "Local removal cannot delete symlinks, special files, or nested mounts",
-    "local_delete_disabled": "Local Copy deletion is disabled by system policy",
     "local_copy_unprotected": "Every Local Copy must match a verified available Archive Version",
     "cloud_deletion_disabled": "Permanent cloud deletion is disabled for this Vault",
     "cloud_identity_incomplete": "Cloud history contains an item without an exact provider version identity",
@@ -380,7 +379,6 @@ def build_preview(
     vault_id: int,
     local_disposition: str,
     cloud_disposition: str,
-    local_delete_enabled: bool,
     runtime_scan_active: bool = False,
 ) -> dict[str, Any]:
     """Build the authoritative disposition snapshot and confirmation fingerprint."""
@@ -469,8 +467,6 @@ def build_preview(
         ):
             unprotected += 1
     if local_value == "remove":
-        if not local_delete_enabled:
-            _append_blocker(blockers, "local_delete_disabled")
         if filesystem["unsupported_paths"]:
             _append_blocker(
                 blockers,
@@ -643,7 +639,6 @@ def start_decommission(
     confirmation: str,
     reason: str,
     preview_fingerprint: str,
-    local_delete_enabled: bool,
     purge_delay_seconds: int,
     runtime_scan_active: bool = False,
 ) -> dict[str, Any]:
@@ -698,7 +693,6 @@ def start_decommission(
             vault_id=vault_id,
             local_disposition=local_value,
             cloud_disposition=cloud_value,
-            local_delete_enabled=local_delete_enabled,
             runtime_scan_active=runtime_scan_active,
         )
         if preview["fingerprint"] != (preview_fingerprint or "").strip():
@@ -1063,11 +1057,9 @@ def reconcile_one(
     connection: Any,
     *,
     vault_id: int,
-    local_delete_enabled: bool,
     purge_delay_seconds: int,
 ) -> dict[str, Any]:
     """Advance one persisted operation by idempotent, compare-before-write steps."""
-    del local_delete_enabled  # admission was fingerprinted; workers re-check policy
     source_directories.lock_vault_root_allocation(connection)
     connection.execute("UPDATE vaults SET name=name WHERE id=%s", (vault_id,))
     operation = connection.execute(
@@ -1397,7 +1389,6 @@ def reconcile_one(
 
 def reconcile_all(
     *,
-    local_delete_enabled: bool,
     purge_delay_seconds: int,
 ) -> dict[str, int]:
     """Advance every nonterminal operation; safe to call after every restart/poll."""
@@ -1418,7 +1409,6 @@ def reconcile_all(
                 status = reconcile_one(
                     connection,
                     vault_id=vault_id,
-                    local_delete_enabled=local_delete_enabled,
                     purge_delay_seconds=purge_delay_seconds,
                 )
             summary["processed"] += 1

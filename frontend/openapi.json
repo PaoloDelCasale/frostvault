@@ -1707,9 +1707,6 @@
       "OperationPolicy": {
         "additionalProperties": true,
         "properties": {
-          "auto_local_cleanup": {
-            "type": "boolean"
-          },
           "auto_upload": {
             "type": "boolean"
           },
@@ -1725,9 +1722,16 @@
             },
             "type": "array"
           },
-          "local_retention_days": {
+          "local_release_after_days": {
+            "enum": [
+              90,
+              180,
+              365,
+              730,
+              null
+            ],
             "type": [
-              "number",
+              "integer",
               "null"
             ]
           },
@@ -1737,8 +1741,7 @@
         },
         "required": [
           "auto_upload",
-          "auto_local_cleanup",
-          "local_retention_days",
+          "local_release_after_days",
           "stability_seconds",
           "include_globs",
           "exclude_globs"
@@ -1747,12 +1750,8 @@
       },
       "OperationPolicyUpdate": {
         "additionalProperties": false,
+        "description": "Update supplied fields only; omitted settings retain their current values.",
         "properties": {
-          "auto_local_cleanup": {
-            "default": false,
-            "title": "Auto Local Cleanup",
-            "type": "boolean"
-          },
           "auto_upload": {
             "default": true,
             "title": "Auto Upload",
@@ -1772,17 +1771,22 @@
             "title": "Include Globs",
             "type": "array"
           },
-          "local_retention_days": {
+          "local_release_after_days": {
             "anyOf": [
               {
-                "minimum": 1.0,
+                "enum": [
+                  90,
+                  180,
+                  365,
+                  730
+                ],
                 "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Local Retention Days"
+            "title": "Local Release After Days"
           },
           "stability_seconds": {
             "default": 300,

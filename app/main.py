@@ -90,6 +90,7 @@ from .services.restore_estimates import (
 from .services.operation_policies import (
     OperationPolicy,
     get_policy,
+    local_release_is_confirmed,
     preview_glob_rules,
     set_policy,
 )
@@ -199,7 +200,6 @@ async def lifespan(_: FastAPI):
         vault_decommission_service.reconcile_interrupted_jobs(connection)
     runtime = _runtime_settings()
     vault_decommission_service.reconcile_all(
-        local_delete_enabled=runtime.allow_local_delete,
         purge_delay_seconds=runtime.cloud_purge_delay_seconds,
     )
     tasks = [asyncio.create_task(background_loop()), asyncio.create_task(auto_upload_loop())]
@@ -713,11 +713,12 @@ class LifecycleProfileSelection(BaseModel):
 
 
 class OperationPolicyUpdate(BaseModel):
+    """Update supplied fields only; omitted settings retain their current values."""
+
     model_config = ConfigDict(extra="forbid")
 
     auto_upload: bool = True
-    auto_local_cleanup: bool = False
-    local_retention_days: int | None = Field(default=None, ge=1)
+    local_release_after_days: Literal[90, 180, 365, 730] | None = None
     stability_seconds: int = Field(default=300, ge=0)
     include_globs: list[str] = Field(default_factory=list)
     exclude_globs: list[str] = Field(default_factory=list)
@@ -1223,7 +1224,7 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
             "id": vault["id"],
             "slug": vault["slug"],
             "name": vault["name"],
-            "delete_enabled": _runtime_settings().allow_local_delete,
+            "delete_enabled": vault_local_access(vault["source_root"]).local_operations_allowed,
             "cloud_deletion_enabled": bool(vault.get("cloud_deletion_enabled")),
         }
     else:
@@ -1387,7 +1388,6 @@ def _preview_vault_decommission(
 ) -> dict[str, Any]:
     with status_lock:
         scan_active = bool(runtime_status.get(vault_id, {}).get("scanning"))
-    runtime = _runtime_settings()
     try:
         with db() as connection:
             return vault_decommission_service.build_preview(
@@ -1395,7 +1395,6 @@ def _preview_vault_decommission(
                 vault_id=vault_id,
                 local_disposition=action.local_disposition,
                 cloud_disposition=action.cloud_disposition,
-                local_delete_enabled=runtime.allow_local_delete,
                 runtime_scan_active=scan_active,
             )
     except vault_decommission_service.VaultDecommissionError as exc:
@@ -1428,14 +1427,12 @@ def _start_vault_decommission(
                     confirmation=action.confirmation,
                     reason=action.reason,
                     preview_fingerprint=action.preview_fingerprint,
-                    local_delete_enabled=runtime.allow_local_delete,
                     purge_delay_seconds=runtime.cloud_purge_delay_seconds,
                     runtime_scan_active=False,
                 )
                 result = vault_decommission_service.reconcile_one(
                     connection,
                     vault_id=vault_id,
-                    local_delete_enabled=runtime.allow_local_delete,
                     purge_delay_seconds=runtime.cloud_purge_delay_seconds,
                 )
         except vault_decommission_service.VaultDecommissionError as exc:
@@ -1688,7 +1685,7 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
             "health": access.volume_health,
             "local_operations_allowed": access.local_operations_allowed,
         },
-        "delete_enabled": _runtime_settings().allow_local_delete,
+        "delete_enabled": access.local_operations_allowed,
     }
 
 
@@ -2166,6 +2163,8 @@ def queue_jobs(
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
     with db() as connection:
+        if action == "free-space" and not local_release_is_confirmed(connection, vault_id):
+            raise HTTPException(409, "Local release blocked: protection is not confirmed")
         catalog = ArchiveCatalog(connection)
         if action in {"recover", "storage-class"} and not is_directory and not whole_vault:
             versions = catalog.list_versions(vault_id, logical_path)
@@ -2665,8 +2664,6 @@ def free_space(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    if not _runtime_settings().allow_local_delete:
-        raise HTTPException(403, "Freeing local space is disabled")
     queued = queue_jobs(
         action.path, "free-space", vault["id"], user["id"], action.is_directory
     )
@@ -2932,17 +2929,14 @@ def update_vault_operation_policy(
     vault: dict[str, Any] = Depends(current_vault),
     user: dict[str, Any] = Depends(current_user),
 ):
-    policy = OperationPolicy(
-        auto_upload=action.auto_upload,
-        auto_local_cleanup=action.auto_local_cleanup,
-        local_retention_days=action.local_retention_days,
-        stability_seconds=action.stability_seconds,
-        include_globs=tuple(action.include_globs),
-        exclude_globs=tuple(action.exclude_globs),
-    )
     with db() as connection:
         try:
-            stored = set_policy(connection, vault["id"], policy)
+            # Independent panels must never replay a stale local-release value
+            # when saving upload rules. Serialize read/merge/write per Vault.
+            connection.execute("UPDATE vaults SET name=name WHERE id=%s", (vault["id"],))
+            values = get_policy(connection, vault["id"]).as_dict()
+            values.update(action.model_dump(exclude_unset=True))
+            stored = set_policy(connection, vault["id"], OperationPolicy(**values))
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         except LookupError as exc:

@@ -225,7 +225,7 @@ _SNAPSHOT_KEYS = frozenset("""
     trusted_proxies reauth_window_seconds break_glass_allowed_cidrs
     aws_region scan_interval audit_interval filesystem_watch_enabled
     filesystem_watch_force_polling filesystem_watch_debounce_ms filesystem_watch_poll_ms
-    queue_poll_interval operation_concurrency cloud_purge_delay_seconds allow_local_delete
+    queue_poll_interval operation_concurrency cloud_purge_delay_seconds
     bandwidth_limit_kibps s3_download_max_concurrency s3_download_multipart_threshold_mib
     s3_download_multipart_chunksize_mib job_progress_min_interval_ms restore_poll_interval
     restore_days restore_tier restore_high_impact_gib restore_high_impact_eur
