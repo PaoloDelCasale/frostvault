@@ -71,17 +71,19 @@ def project_file(row: Mapping[str, Any], *, unconfirmed: bool = False) -> dict[s
         "last_known_state": last_known,
         "last_known_at": row.get("protection_observed_at"),
         "previous_snapshot_protected": bool(
-            known == "pending" and row.get("integrity") == "verified"
-            and row.get("availability") == "available"
+            known == "pending" and (
+                int(row.get("recoverable_version_count") or 0) > 0
+                or (row.get("integrity") == "verified" and row.get("availability") == "available")
+            )
         ),
     }
 
 
 def observation_is_unconfirmed(health: Mapping[str, Mapping[str, Any]]) -> bool:
-    """A failed cloud request prevents confirming current cloud availability.
+    """A failed source scan or cloud request prevents confirming protection.
 
     An audit that successfully located a missing copy is a known problem, not
     a loss of observability. Only its request failure makes all files unknown.
     """
     return any(bool((health.get(component) or {}).get("last_error"))
-               for component in ("cloud", "audit"))
+               for component in ("source", "cloud", "audit"))

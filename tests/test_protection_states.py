@@ -31,6 +31,11 @@ class ProtectionProjectionTests(unittest.TestCase):
         result = project_file({'protection_state': 'pending', 'integrity': 'verified', 'availability': 'available'})
         self.assertTrue(result['previous_snapshot_protected'])
 
+    def test_pending_upload_keeps_indicator_for_an_older_verified_snapshot(self):
+        result = project_file({'protection_state': 'pending', 'integrity': 'unverified',
+                               'availability': 'available', 'recoverable_version_count': 1})
+        self.assertTrue(result['previous_snapshot_protected'])
+
     def test_unknown_cloud_keeps_last_verified_state(self):
         result = project_file({'protection_state': 'unconfirmed', 'integrity': 'verified',
             'local_presence': 'present', 'matched_archive_version_id': 'v1',
@@ -43,9 +48,9 @@ class ProtectionProjectionTests(unittest.TestCase):
         self.assertEqual(aggregate_state({'problem': 1, 'unconfirmed': 100}), 'problem')
         self.assertEqual(aggregate_state({'cloud_only': 2}), 'cloud_only')
 
-    def test_only_failed_cloud_requests_make_observation_unknown(self):
+    def test_only_failed_observation_requests_make_protection_unknown(self):
         self.assertFalse(observation_is_unconfirmed({'audit': {'healthy': False}}))
-        for component in ('cloud', 'audit'):
+        for component in ('source', 'cloud', 'audit'):
             self.assertTrue(observation_is_unconfirmed({component: {'last_error': 'offline'}}))
         self.assertFalse(observation_is_unconfirmed({'policy': {'last_error': 'blocked'}}))
 
@@ -118,6 +123,12 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         with patch('app.database.settings', self.cfg), patch('app.main.vault_local_access', return_value=VaultLocalAccess(False, True, 'photos', 'absent')):
             result = list_files(directory='photos', page=1, page_size=100, vault={'id': 9, 'source_root': '/source'})
             summary = stats({'id': 9, 'source_root': '/source'})
+            root = list_files(directory='', state='unconfirmed', page=1, page_size=100, vault={'id': 9, 'source_root': '/source'})
+            no_protected = list_files(directory='', state='protected', page=1, page_size=100, vault={'id': 9, 'source_root': '/source'})
+        self.assertEqual(root['items'][0]['state_counts'], {'unconfirmed': 2})
+        self.assertEqual(root['items'][0]['last_known_states'], {'protected': 1, 'cloud_only': 1})
+        self.assertEqual(root['items'][0]['available_actions']['free-space'], 0)
+        self.assertEqual(no_protected['total'], 0)
         self.assertEqual(summary['states'], {'unconfirmed': 2})
         self.assertEqual(summary['last_known_states'], {'protected': 1, 'cloud_only': 1})
         self.assertTrue(all(item['state'] == 'unconfirmed' for item in result['items']))
@@ -135,6 +146,50 @@ class ProtectionStatePostgresTests(unittest.TestCase):
             summary = stats({'id': 9, 'source_root': '/source'})
         self.assertTrue(summary['protection_suspended'])
         self.assertEqual(summary['states'], {'protected': 1})
+
+    def test_cloud_request_failure_is_unconfirmed_but_known_missing_is_problem(self):
+        from app.services.component_health import record_component_health
+        self.seed('protected', archive=True, verified=True)
+        self.seed('missing', local=False, archive=True, verified=True, availability='missing')
+        record_component_health(self.connection, vault_id=9, component='cloud', ok=False, error='offline')
+        self.connection.commit()
+        with patch('app.database.settings', self.cfg), patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
+            self.assertEqual(stats({'id': 9, 'source_root': '/source'})['states'], {'unconfirmed': 2})
+            record_component_health(self.connection, vault_id=9, component='cloud', ok=True)
+            self.connection.commit()
+            self.assertEqual(stats({'id': 9, 'source_root': '/source'})['states'], {'protected': 1, 'problem': 1})
+
+    def test_terminal_upload_failure_invalidates_folder_and_retry_clears_it(self):
+        from app.storage import set_job
+        file_id, _ = self.seed('failed')
+        job = self.connection.execute("INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_at, updated_at) VALUES (9, %s, 'photos/failed.jpg', 'upload', 'queued', '2026-11-03', '2026-11-03') RETURNING id", (file_id,)).fetchone()['id']
+        aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
+        self.connection.commit()
+        with patch('app.database.settings', self.cfg):
+            self.assertTrue(set_job(job, 'failed'))
+        aggregates.flush_directory_aggregates(self.connection, vault_id=9)
+        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'problem': 1})
+        self.catalog.queue_jobs(vault_id=9, path='photos/failed.jpg', action='upload', requested_by=None, requested_at='2026-11-03', group_id='retry', is_directory=False)
+        aggregates.flush_directory_aggregates(self.connection, vault_id=9)
+        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'pending': 1})
+
+    def test_projection_migration_roundtrip_preserves_all_copy_evidence(self):
+        from tests.postgres import run_alembic
+        self.seed('protected', archive=True, verified=True)
+        self.seed('cloud', local=False, archive=True, verified=True)
+        aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
+        def evidence():
+            return {table: self.connection.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall()
+                    for table in ('vault_files', 'file_paths', 'local_copies', 'archive_versions', 'jobs')}
+        before = evidence()
+        self.connection.commit()
+        result = run_alembic(self.path, '0054_watcher_auto_upload', 'downgrade')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = run_alembic(self.path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(evidence(), before)
+        self.assertEqual(self.connection.execute('SELECT COUNT(*) AS n FROM directory_aggregates').fetchone()['n'], 0)
+        self.assertEqual(self.connection.execute('SELECT status FROM directory_aggregate_status WHERE vault_id=9').fetchone()['status'], 'rebuild_required')
 
     def test_failed_upload_mismatch_conflict_and_unverified_are_not_protected(self):
         failed_id, _ = self.seed('failed')

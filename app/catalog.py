@@ -2432,8 +2432,10 @@ class ArchiveCatalog:
         return f"""
             SELECT
                 {STATE_SQL} AS protection_state,
-                greatest(lc.observed_at, av.verified_at, av.availability_checked_at)
-                    AS protection_observed_at,
+                CASE WHEN av.availability='unknown'
+                     THEN greatest(lc.observed_at, av.verified_at)
+                     ELSE greatest(lc.observed_at, av.verified_at, av.availability_checked_at)
+                END AS protection_observed_at,
                 fp.path,
                 lc.presence AS local_presence,
                 lc.file_type AS local_file_type,

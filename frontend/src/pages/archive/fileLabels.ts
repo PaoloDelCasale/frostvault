@@ -13,7 +13,7 @@ export function itemStateBadge(
   const known: BadgeState[] = [
     "pending", "protected", "problem", "unconfirmed", "cloud_only",
   ];
-  const state = (known.includes(raw as BadgeState) ? raw : "missing") as BadgeState;
+  const state = (known.includes(raw as BadgeState) ? raw : "unconfirmed") as BadgeState;
   const key = `state.${state}`;
   const label = t(key);
   const text = label === key ? state : label;
