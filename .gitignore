@@ -3,6 +3,8 @@
 !.env.example
 !.env.local.example
 .env.local
+# Also protect retired/local operator configuration from accidental commits.
+config/*.conf
 data/*.db
 data/*.db-*
 *.sqlite

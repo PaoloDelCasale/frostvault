@@ -135,6 +135,38 @@ def _run_plain_upload(
 
 
 class PlainUploadVerificationTests(unittest.TestCase):
+    def test_response_version_wins_current_key_race_and_unknown_copy_is_not_purged(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = b"good"
+            _source, path = _prepare_plain_vault(Path(directory), relative_path="report.txt", payload=payload)
+            with SQLiteConnection(str(path)) as connection:
+                catalog = ArchiveCatalog(connection)
+                previous = catalog.record_archive_version(
+                    vault_id=2, path="report.txt", object_key="docs/report.txt",
+                    provider_version_id="previous-only-copy", size=3, storage_class="STANDARD",
+                    etag="old", uploaded_at="2026-07-20", observed_at="2026-07-20", scan_id="old",
+                )
+                catalog.mark_version_verified(previous, plaintext_sha256=_sha256_hex(b"old"), verified_at="2026-07-20")
+            provider = VersionedS3Stub(
+                initial_versions={"docs/report.txt": {"previous-only-copy", "concurrent-writer"}},
+                version_bytes=payload,
+                head_object=lambda **kwargs: {"VersionId": kwargs.get("VersionId") or "concurrent-writer",
+                                              "ContentLength": len(payload), "ETag": "etag"},
+            )
+            with patch("app.database.settings", SimpleNamespace(db_backend="sqlite", sqlite_path=str(path))):
+                queue_jobs("report.txt", "upload", 2, 1)
+                with patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=provider), patch("app.storage.upload_s3_file", return_value={"VersionId": "upload-response"}):
+                    process_jobs_once()
+            with SQLiteConnection(str(path)) as connection:
+                versions = ArchiveCatalog(connection).list_versions(2, "report.txt")
+                job = connection.execute("SELECT status, message FROM jobs").fetchone()
+            self.assertEqual({row["provider_version_id"] for row in versions}, {"previous-only-copy", "upload-response"})
+            self.assertTrue(all(row["integrity"] == "verified" and row["availability"] == "available" for row in versions))
+            self.assertEqual(provider.reads[0]["VersionId"], "upload-response")
+            self.assertEqual(provider.deleted, [])
+            self.assertEqual(job["status"], "failed")
+            self.assertIn("uncatalogued cloud content", job["message"])
+
     def test_matching_current_key_is_not_proof_of_the_linked_version_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
