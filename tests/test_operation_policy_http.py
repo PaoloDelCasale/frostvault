@@ -66,12 +66,12 @@ class OperationPolicyHttpTests(unittest.TestCase):
     def _headers(self) -> dict[str, str]:
         return {"X-CSRF-Token": self.client.cookies.get(settings.csrf_cookie_name) or ""}
 
-    def test_owner_reads_default_manual_policy(self) -> None:
+    def test_owner_reads_default_automatic_policy(self) -> None:
         self._authenticate(self.owner_id)
         response = self.client.get("/api/vault/operation-policy")
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
-        self.assertFalse(body["auto_upload"])
+        self.assertTrue(body["auto_upload"])
         self.assertEqual(body["stability_seconds"], 300)
         self.assertEqual(body["include_globs"], [])
         self.assertEqual(body["exclude_globs"], [])

@@ -53,6 +53,41 @@ Search remains global across every file in the selected vault.
 - Administration retains Vault, Source Volume and metadata backup operations;
   all installation settings come only from the deployment environment.
 
+## Automatic protection
+
+New Vaults enable automatic upload by default. The per-Vault **Enable automatic
+upload** switch (or `PUT /api/vault/operation-policy`, `auto_upload`) pauses or
+resumes it. Pausing holds queued automatic uploads; an already uploaded Archive
+Version still finishes verification. Explicit manual uploads remain available.
+Migration `0054_watcher_auto_upload` preserves both explicit pauses and the old
+implicit pause of existing Vaults with no policy row; enable those deliberately.
+It changes no cloud content and performs no S3 calls.
+
+Filesystem watcher observations are the upload input. After five minutes without
+changes, an independent scheduler admits them to the durable Job queue (checked
+every ten seconds), without waiting for the default six-hour full scan. Both
+mtime and the last observed content change must be old enough, so copying a file
+with a preserved old timestamp does not bypass stability. Edits restart the
+window; unchanged reconciliation scans and restarts do not. Full scans remain
+the reconciliation net for events missed while stopped or with the watcher off.
+With adequate bandwidth and a healthy provider, the target is verified protection
+within about one hour of finishing the copy, not a transfer-time guarantee.
+
+Automatic uploads always exclude `.DS_Store`, `Thumbs.db`, `._*`, `*.lock`,
+`*-wal`, and `*-journal` at any path depth. These fixed exclusions cannot be
+removed or overridden by include patterns. Existing additional include/exclude
+rules still narrow eligibility; explicit manual operations are unaffected.
+
+Enqueueing performs no cloud writes and does not depend on cloud validation or
+storage-plan/lifecycle synchronization succeeding. Those failures remain visible
+in scan health/errors. The upload worker still requires successful bucket
+preflight before writing, honors retries and leases, and verifies the exact S3
+VersionId with a full SHA-256 readback. Terminal automatic failures/cancellations
+are not silently requeued for the same observation; retry manually or make a new
+content change. Missing/replaced Source Volumes or Vault roots suspend local work
+without clearing the catalog. SMB deletion never propagates to cloud deletion,
+and Cloud-only Conflicts remain held back.
+
 ## Archive lifecycle and cloud deletion
 
 - Each Vault has one **storage plan** in **Advanced**: Always accessible

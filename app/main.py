@@ -143,6 +143,7 @@ from .storage import (
     cancel_jobs,
     cleanup_abandoned_restore_files,
     filesystem_watch_loop,
+    auto_upload_loop,
     now_iso,
     reconcile_interrupted_jobs,
     runtime_status,
@@ -201,7 +202,7 @@ async def lifespan(_: FastAPI):
         local_delete_enabled=runtime.allow_local_delete,
         purge_delay_seconds=runtime.cloud_purge_delay_seconds,
     )
-    tasks = [asyncio.create_task(background_loop())]
+    tasks = [asyncio.create_task(background_loop()), asyncio.create_task(auto_upload_loop())]
     if settings.filesystem_watch_enabled:
         tasks.append(asyncio.create_task(filesystem_watch_loop()))
     yield
@@ -714,7 +715,7 @@ class LifecycleProfileSelection(BaseModel):
 class OperationPolicyUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    auto_upload: bool = False
+    auto_upload: bool = True
     auto_local_cleanup: bool = False
     local_retention_days: int | None = Field(default=None, ge=1)
     stability_seconds: int = Field(default=300, ge=0)

@@ -1,30 +1,41 @@
 """Per-Vault operation policies for automation and transfer controls.
 
-This module is the operation-policy seam used by scan auto-upload, automatic
-local cleanup, and HTTP configuration. A missing row means the product
-defaults: manual upload, a five-minute stability window, and no
-include/exclude globs (every cataloged path is eligible for manual ops).
+This module is the operation-policy seam used by watcher/scan auto-upload,
+automatic local cleanup, and HTTP configuration. A missing row means automatic
+upload with a five-minute observed stability window. Fixed automatic noise
+exclusions cannot be overridden by user globs; manual operations remain explicit.
 The only transfer throttle is the global ``BANDWIDTH_LIMIT_KIBPS`` for uploads.
 """
 
 from __future__ import annotations
 
 import json
+import stat
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatchcase
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any, Sequence
 
 
 
 DEFAULT_STABILITY_SECONDS = 300
+AUTO_UPLOAD_EXCLUSIONS = (".DS_Store", "Thumbs.db", "._*", "*.lock", "*-wal", "*-journal")
+
+
+def auto_upload_path_is_included(path: str, policy: OperationPolicy) -> bool:
+    """Fixed noise exclusions are additional to, never editable via, user globs."""
+    return not any(
+        fnmatchcase(part, pattern)
+        for part in PurePosixPath(path.replace("\\", "/")).parts
+        for pattern in AUTO_UPLOAD_EXCLUSIONS
+    ) and path_is_included(path, policy)
 
 
 @dataclass(frozen=True)
 class OperationPolicy:
-    auto_upload: bool = False
+    auto_upload: bool = True
     auto_local_cleanup: bool = False
     local_retention_days: int | None = None
     stability_seconds: int = DEFAULT_STABILITY_SECONDS
@@ -212,7 +223,7 @@ def preview_glob_rules(
     included: list[str] = []
     excluded: list[str] = []
     for path in paths:
-        if path_is_included(path, policy):
+        if auto_upload_path_is_included(path, policy):
             included.append(path)
         else:
             excluded.append(path)
@@ -224,9 +235,14 @@ def file_is_stable(
     mtime_ns: int,
     now: datetime,
     stability_seconds: int,
+    content_observed_at: str | None = None,
 ) -> bool:
     current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
     mtime = datetime.fromtimestamp(mtime_ns / 1e9, tz=timezone.utc)
+    # Copy tools can preserve an old mtime. The observed content must also
+    # remain unchanged for a complete window, across scans and restarts.
+    if content_observed_at:
+        mtime = max(mtime, _aware(datetime.fromisoformat(content_observed_at)))
     age = (current - mtime).total_seconds()
     return age >= stability_seconds
 
@@ -274,6 +290,7 @@ def queue_auto_uploads(
 ) -> int:
     """Queue upload Jobs for stable, included Local Copies when enabled."""
     from ..catalog import ArchiveCatalog
+    from .vault_paths import safe_local_path
 
     policy = get_policy(connection, vault_id)
     if not policy.auto_upload:
@@ -289,6 +306,7 @@ def queue_auto_uploads(
     rows = connection.execute(
         """
         SELECT vf.id AS vault_file_id, fp.path, lc.size, lc.mtime_ns,
+               COALESCE(lc.content_observed_at, lc.observed_at) AS content_observed_at,
                lc.plaintext_sha256, lc.matched_archive_version_id,
                av.integrity AS matched_integrity,
                av.availability AS matched_availability,
@@ -303,6 +321,24 @@ def queue_auto_uploads(
           AND lc.presence='present'
           AND lc.file_type='regular'
           AND lc.cloud_only_version_id IS NULL
+          AND (av.availability IS NULL OR av.availability <> 'purged')
+          AND NOT (
+              lc.matched_archive_version_id IS NOT NULL
+              AND lc.plaintext_sha256 IS NOT NULL
+              AND av.integrity IS NOT DISTINCT FROM 'verified'
+              AND av.availability IS NOT DISTINCT FROM 'available'
+              AND av.plaintext_sha256 IS NOT DISTINCT FROM lc.plaintext_sha256
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM jobs active_job WHERE active_job.vault_file_id=vf.id
+                AND active_job.status NOT IN ('completed', 'failed', 'cancelled')
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM jobs stopped WHERE stopped.vault_file_id=vf.id
+                AND stopped.action='upload' AND stopped.origin='automatic'
+                AND stopped.status IN ('failed', 'cancelled')
+                AND stopped.requested_at >= COALESCE(lc.content_observed_at, lc.observed_at)
+          )
           AND NOT EXISTS (
               SELECT 1 FROM cloud_deletion_items pending_delete
               WHERE pending_delete.vault_file_id=vf.id
@@ -312,12 +348,11 @@ def queue_auto_uploads(
         """,
         (vault_id,),
     ).fetchall()
-    root = Path(source_root)
     queued = 0
     timestamp = current.isoformat()
     for row in rows:
         path = row["path"]
-        if not path_is_included(path, policy):
+        if not auto_upload_path_is_included(path, policy):
             continue
         # Already protected only when the linked Archive Version is still
         # verified, available, and digest-matching. Missing/purged/mismatched
@@ -332,13 +367,14 @@ def queue_auto_uploads(
             continue
         if row["matched_availability"] == "purged":
             continue
-        local_path = root.joinpath(*PurePosixPath(path).parts)
         try:
+            local_path = safe_local_path(source_root, path)
             stat_result = local_path.stat(follow_symlinks=False)
-        except OSError:
+        except (OSError, ValueError, RuntimeError):
             continue
         if (
-            row["size"] != stat_result.st_size
+            not stat.S_ISREG(stat_result.st_mode)
+            or row["size"] != stat_result.st_size
             or row["mtime_ns"] != stat_result.st_mtime_ns
         ):
             continue
@@ -346,6 +382,7 @@ def queue_auto_uploads(
             mtime_ns=int(stat_result.st_mtime_ns),
             now=current,
             stability_seconds=policy.stability_seconds,
+            content_observed_at=row["content_observed_at"],
         ):
             continue
         job_ids, _total, _eligible = catalog.queue_jobs(
@@ -356,6 +393,7 @@ def queue_auto_uploads(
             requested_at=timestamp,
             group_id=uuid.uuid4().hex,
             is_directory=False,
+            origin="automatic",
         )
         queued += len(job_ids)
     return queued

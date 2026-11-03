@@ -1629,7 +1629,7 @@ export interface components {
             auto_local_cleanup: boolean;
             /**
              * Auto Upload
-             * @default false
+             * @default true
              */
             auto_upload: boolean;
             /** Exclude Globs */

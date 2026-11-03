@@ -249,11 +249,21 @@ class ArchiveCatalog:
             INSERT INTO local_copies(
                 vault_file_id, presence, file_type, size, mtime_ns,
                 plaintext_sha256, matched_archive_version_id,
-                last_seen_at, observed_at{hold_column}
+                last_seen_at, observed_at, content_observed_at{hold_column}
             ) VALUES (
-                %s, %s, %s, %s, %s, NULL, NULL, %s, %s{hold_value}
+                %s, %s, %s, %s, %s, NULL, NULL, %s, %s, %s{hold_value}
             )
             ON CONFLICT(vault_file_id) DO UPDATE SET{hold_update}
+                content_observed_at=CASE
+                    WHEN (local_copies.presence, local_copies.file_type,
+                          local_copies.size, local_copies.mtime_ns)
+                         IS DISTINCT FROM
+                         (excluded.presence, excluded.file_type,
+                          excluded.size, excluded.mtime_ns)
+                    THEN excluded.observed_at
+                    ELSE COALESCE(local_copies.content_observed_at,
+                                  local_copies.observed_at, excluded.observed_at)
+                END,
                 presence=excluded.presence,
                 file_type=excluded.file_type,
                 size=excluded.size,
@@ -300,6 +310,7 @@ class ArchiveCatalog:
                 size,
                 mtime_ns,
                 last_seen_at,
+                observed_at,
                 observed_at,
                 *((presence,) if hold else ()),
                 *((file_id,) if hold and hold_from_recovery else ()),
@@ -487,6 +498,16 @@ class ArchiveCatalog:
             ) AS ({values})
             UPDATE local_copies
             SET
+                content_observed_at=CASE
+                    WHEN (local_copies.presence, local_copies.file_type,
+                          local_copies.size, local_copies.mtime_ns)
+                         IS DISTINCT FROM
+                         (SELECT s.presence, s.file_type, s.size, s.mtime_ns FROM s
+                          WHERE s.vault_file_id=local_copies.vault_file_id)
+                    THEN (SELECT s.observed_at FROM s
+                          WHERE s.vault_file_id=local_copies.vault_file_id)
+                    ELSE COALESCE(local_copies.content_observed_at, local_copies.observed_at)
+                END,
                 cloud_only_version_id=CASE
                     WHEN local_copies.presence<>'present'
                      AND (
@@ -601,12 +622,12 @@ class ArchiveCatalog:
             INSERT INTO local_copies(
                 vault_file_id, presence, file_type, size, mtime_ns,
                 plaintext_sha256, matched_archive_version_id,
-                last_seen_at, observed_at, cloud_only_version_id
+                last_seen_at, observed_at, content_observed_at, cloud_only_version_id
             )
             SELECT
                 s.vault_file_id, s.presence, s.file_type, s.size, s.mtime_ns,
                 NULL, NULL,
-                s.last_seen_at, s.observed_at,
+                s.last_seen_at, s.observed_at, s.observed_at,
                 CASE
                     WHEN s.presence='present'
                     THEN {_only_cloud_copy_sql("s.vault_file_id")}
@@ -835,6 +856,7 @@ class ArchiveCatalog:
                 lc.file_type AS local_file_type,
                 lc.size AS local_size,
                 lc.mtime_ns AS local_mtime_ns,
+                COALESCE(lc.content_observed_at, lc.observed_at) AS content_observed_at,
                 lc.plaintext_sha256 AS local_sha256,
                 lc.matched_archive_version_id,
                 lc.cloud_only_version_id,
