@@ -3885,22 +3885,26 @@ def record_automatic_cleanup_outcome(
             pass
 
 
-def _checked_local_release_target(job: dict[str, Any]) -> dict[str, Any]:
+def _checked_local_release_target(
+    job: dict[str, Any], *, connection: Any = None
+) -> dict[str, Any]:
     """Reauthorize queued automatic work; manual requests never imply automation."""
-    with db() as connection:
-        target = ArchiveCatalog(connection).get_job_target(job["id"])
-        if not local_release_is_confirmed(
-            connection, int(job["vault_id"]), decommission=job.get("origin") == "decommission"
+    if connection is None:
+        with db() as connection:
+            return _checked_local_release_target(job, connection=connection)
+    target = ArchiveCatalog(connection).get_job_target(job["id"])
+    if not local_release_is_confirmed(
+        connection, int(job["vault_id"]), decommission=job.get("origin") == "decommission"
+    ):
+        raise RuntimeError("Cleanup blocked: local or cloud protection is not confirmed")
+    if target and target["job_origin"] == "automatic":
+        policy = get_policy(connection, int(job["vault_id"]))
+        if policy.local_release_after_days is None or not target["verified_at"] or not local_cleanup_is_due(
+            verified_at=target["verified_at"], retention_days=policy.local_release_after_days,
+            now=datetime.now(timezone.utc), local_mtime_ns=target["local_mtime_ns"],
+            recovered_at=target["local_recovered_at"], content_observed_at=target["content_observed_at"],
         ):
-            raise RuntimeError("Cleanup blocked: local or cloud protection is not confirmed")
-        if target and target["job_origin"] == "automatic":
-            policy = get_policy(connection, int(job["vault_id"]))
-            if policy.local_release_after_days is None or not target["verified_at"] or not local_cleanup_is_due(
-                verified_at=target["verified_at"], retention_days=policy.local_release_after_days,
-                now=datetime.now(timezone.utc), local_mtime_ns=target["local_mtime_ns"],
-                recovered_at=target["local_recovered_at"], content_observed_at=target["content_observed_at"],
-            ):
-                raise OperationCancelled("Automatic local release is disabled or no longer due")
+            raise OperationCancelled("Automatic local release is disabled or no longer due")
     if (
         not target
         or target["local_presence"] != "present"
@@ -3961,16 +3965,22 @@ def process_free_space(job: dict[str, Any]) -> None:
         ):
             raise RuntimeError("Local file changed since fingerprinting")
         ensure_job_active(job["id"], "Freeing local space stopped")
-        fresh = _checked_local_release_target(job)
-        if (
-            fresh["archive_version_id"], fresh["object_key"], fresh["provider_version_id"],
-            fresh["cloud_size"], fresh["version_sha256"], fresh["local_size"], fresh["local_mtime_ns"],
-        ) != (
-            target["archive_version_id"], target["object_key"], target["provider_version_id"],
-            claimed_stat.st_size, local_digest, claimed_stat.st_size, claimed_stat.st_mtime_ns,
-        ):
-            raise RuntimeError("Cleanup blocked: protection changed while claiming the file")
-        claimed_path.unlink()
+        with db() as connection:
+            # Same lock order as admission: Vault, then Job. A concurrent policy
+            # disable/extension or cancellation must win before this last check,
+            # or wait until the already-authorized unlink has finished.
+            connection.execute("UPDATE vaults SET name=name WHERE id=%s", (job["vault_id"],))
+            ensure_job_claim_owned_in_transaction(connection, job, "Freeing local space claim was lost")
+            fresh = _checked_local_release_target(job, connection=connection)
+            if (
+                fresh["archive_version_id"], fresh["object_key"], fresh["provider_version_id"],
+                fresh["cloud_size"], fresh["version_sha256"], fresh["local_size"], fresh["local_mtime_ns"],
+            ) != (
+                target["archive_version_id"], target["object_key"], target["provider_version_id"],
+                claimed_stat.st_size, local_digest, claimed_stat.st_size, claimed_stat.st_mtime_ns,
+            ):
+                raise RuntimeError("Cleanup blocked: protection changed while claiming the file")
+            claimed_path.unlink()
     except Exception as exc:
         if not restore_claimed_local_copy(claimed_path, local_path):
             raise RuntimeError(
