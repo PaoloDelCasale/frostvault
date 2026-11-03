@@ -6,6 +6,7 @@ from typing import Any, Iterator
 import psycopg
 from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
+from psycopg.pq import TransactionStatus
 
 from .config import settings
 from .security import hash_password, verify_password
@@ -26,7 +27,15 @@ def db() -> psycopg.Connection:
 
 @contextmanager
 def transaction(connection: Any) -> Iterator[Any]:
-    """Use psycopg's transaction/savepoint ownership, including nested callers."""
+    """Keep commit ownership with non-autocommit callers, even before first SQL.
+
+    psycopg's connection context does not BEGIN until the first statement. Start
+    that implicit outer transaction before opening a native savepoint, so a
+    later exception in ``with db()`` still rolls back this successful helper.
+    Autocommit connections instead get a complete native transaction.
+    """
+    if not connection.autocommit and connection.info.transaction_status == TransactionStatus.IDLE:
+        connection.execute("BEGIN")
     with connection.transaction():
         yield connection
 

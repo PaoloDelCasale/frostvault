@@ -17,7 +17,22 @@ jobs:
     name: Upload and recovery digests on AWS
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: archive_test
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d archive_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
+      TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/archive_test
       AWS_DEFAULT_REGION: ${{ vars.AWS_CI_REGION || 'eu-south-1' }}
       AWS_EC2_METADATA_DISABLED: "true"
       TEST_S3_BUCKET: ${{ vars.AWS_CI_TEST_BUCKET }}

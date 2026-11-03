@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
+from app.database import HEAD_SCHEMA_REVISION
 from app.services.catalog_events import CatalogEventStore
 from tests.test_database import run_alembic
 
@@ -218,7 +219,9 @@ class CatalogStatePersistenceTests(unittest.TestCase):
             revision = connection.execute(
                 "SELECT version_num FROM alembic_version"
             ).fetchone()["version_num"]
-        self.assertEqual(revision, "0037_directory_aggregates")
+        # PostgreSQL rolls back the entire failed DDL transaction, not only
+        # the last migration. Durable history and the HEAD stamp both survive.
+        self.assertEqual(revision, HEAD_SCHEMA_REVISION)
 
 
 if __name__ == "__main__":

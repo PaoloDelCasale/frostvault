@@ -20,23 +20,23 @@ Single-context: CONTEXT.md at the repo root; ADRs in docs/adr/. See docs/agents/
 
 ## Native / cloud development (PostgreSQL 16)
 
-Python 3.12 FastAPI app ("FrostVault"). The startup update script creates
-a virtualenv at `.venv/` and installs `requirements.txt` into it. Use `.venv/bin/python`.
+Python 3.12 FastAPI app ("FrostVault"). Create `.venv/`, install
+`requirements.txt`, and use `.venv/bin/python`.
 
 ### Tests
 - Locally run only targeted modules: `.venv/bin/python -m unittest tests.test_<module> -v`.
   Full Python/migration/S3/frontend/build verification belongs to PR CI (#410).
   Open a draft PR early, push, inspect `gh run view <id> --log-failed`, and fix
   until every applicable check is green.
-- Frontend: `cd frontend && npm ci && npm run lint && npm run test` (Vitest).
-  Playwright e2e: `cd frontend && npm run test:e2e` (requires `npm run build` and Chromium).
+- Frontend locally: `cd frontend && npx vitest run <file>` for a targeted change.
+  Full lint/Vitest, Playwright, frontend and image builds run in PR CI.
 - Database tests require `TEST_POSTGRES_URL` pointing at a disposable PostgreSQL 16
   server with a CREATEDB role (see `.github/workflows/migrations.yml`). Fixtures
   create uniquely named databases from a migrated template; never use a production
   server. Missing configuration is an error, not skipped database coverage.
 - S3-compatible integrity tests run only when `TEST_S3_ENDPOINT` is set (MinIO job in CI).
   Contributor-facing CI status: `docs/ci.md`.
-- There is no configured linter (no ruff/flake8/eslint config in the repo).
+- There is no Python linter configured; the frontend has ESLint.
 
 ### Running the app locally (no Docker)
 PostgreSQL is the only backend, including native development and tests. Docker
@@ -46,14 +46,16 @@ as your unprivileged OS user (not root):
 ```bash
 # Use your own session folder; keep the server off public interfaces.
 SESSION="$PWD/sessioni/$(date +%F)-postgres-dev"
-mkdir -p "$SESSION/socket"
-initdb -D "$SESSION/pgdata" -U frostvault --auth-local=trust --auth-host=reject
+mkdir -p "$SESSION"
+# Trust is for this disposable, loopback-only cluster with no real data.
+# Choose an unused port, never the port of an existing database service.
+initdb -D "$SESSION/pgdata" -U frostvault --auth=trust
 pg_ctl -D "$SESSION/pgdata" -l "$SESSION/postgres.log" \
-  -o "-h '' -k $SESSION/socket" -w start
-export PGHOST="$SESSION/socket" PGUSER=frostvault PGDATABASE=frostvault
+  -o "-h 127.0.0.1 -p 55432 -k ''" -w start
+export PGHOST=127.0.0.1 PGPORT=55432 PGUSER=frostvault PGDATABASE=frostvault
 createdb frostvault
 createdb frostvault_test
-export TEST_POSTGRES_URL="postgresql+psycopg://frostvault@/frostvault_test?host=$PGHOST"
+export TEST_POSTGRES_URL="postgresql+psycopg://frostvault@127.0.0.1:55432/frostvault_test"
 # After targeted tests / native development:
 # pg_ctl -D "$SESSION/pgdata" -m fast -w stop
 ```
@@ -82,7 +84,6 @@ that session directory. Do not start/restart a system PostgreSQL service.
   `.venv/bin/python -m app.backup_upgrade` (or `alembic upgrade head` for empty
   local DBs). The app still refuses to serve on a stale schema
   (`HEAD_SCHEMA_REVISION`).
-- Build the SPA first: `cd frontend && npm ci && npm run build`.
 - Start: `.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080`
   (serves `frontend/dist`; missing dist returns HTTP 503 with build instructions).
 - Local break-glass admin login is configured through `BOOTSTRAP_ADMIN_*` in the
@@ -93,8 +94,8 @@ that session directory. Do not start/restart a system PostgreSQL service.
 The UI is a Vite + React SPA. uvicorn always serves `frontend/dist` for HTML
 routes (hashed `/assets/*` → `Cache-Control: public, max-age=31536000, immutable`;
 `index.html` → `no-store`). Missing `dist` returns HTTP 503 with build
-instructions. Image builds produce `dist`; locally run
-`cd frontend && npm ci && npm run build` before pointing a browser at uvicorn.
+instructions. Image builds produce `dist`; use Vite for ordinary local work.
+Build locally only when explicitly testing production serving is requested.
 
 **Local SPA development (Vite + uvicorn):**
 
@@ -110,7 +111,8 @@ cd frontend && npm ci && npm run dev
 ```
 
 Open the Vite URL (default `http://127.0.0.1:5173`). For the production serving
-path without Docker: build `frontend/dist`, then open `http://127.0.0.1:8080`.
+path without Docker (when explicitly requested): build `frontend/dist`, then open
+`http://127.0.0.1:8080`.
 
 ### Non-obvious gotchas
 - AWS credentials are placeholders locally. Local file cataloging (scan + browse)

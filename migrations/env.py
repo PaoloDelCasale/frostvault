@@ -36,7 +36,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = database_url().render_as_string(hide_password=False).replace("%", "%%")
+    configuration["sqlalchemy.url"] = database_url().render_as_string(hide_password=False)
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",
