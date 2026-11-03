@@ -99,13 +99,8 @@ from .services.cost_estimates import (
     list_prices,
 )
 from .services.lifecycle_policies import (
-    clear_folder_override,
-    create_policy,
-    list_vault_policies,
-    load_policy_assignments,
-    set_folder_override,
-    set_policy_profile,
-    set_vault_default_policy,
+    load_vault_plan,
+    set_vault_plan,
     sync_lifecycle_rules_for_bucket,
 )
 from .services.lifecycle_profiles import (
@@ -113,6 +108,7 @@ from .services.lifecycle_profiles import (
     LifecycleProfile,
     LifecycleTransition,
     guided_profile,
+    profile_to_dict,
     validate_lifecycle_profile,
 )
 from .services import cloud_deletion as cloud_deletion_service
@@ -138,7 +134,6 @@ from .sessions import (
 )
 from .services.storage_classes import (
     cold_class_warning,
-    list_storage_class_options,
     normalize_storage_class,
     source_requires_restore_for_class_change,
     validate_manual_target_class,
@@ -656,27 +651,6 @@ class CloudPurgeRequest(BaseModel):
     generated_phrase: str = Field(min_length=1, max_length=200)
 
 
-class StorageClassChangeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    path: str = Field(default="", max_length=1024)
-    is_directory: bool = False
-    whole_vault: bool = False
-    target_storage_class: str = Field(min_length=1, max_length=32)
-    archive_version_id: str | None = None
-    restore_tier: str | None = None
-    restore_days: int | None = Field(default=None, ge=1, le=30)
-    pin_after: bool = False
-
-
-class LifecyclePinRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    path: str = Field(max_length=1024)
-    is_directory: bool = False
-    pinned: bool
-
-
 class VaultRelocate(BaseModel):
     """Constrained destination within the Vault's existing Source Volume."""
 
@@ -703,7 +677,7 @@ class VaultDecommissionStart(VaultDecommissionPreview):
 class LifecycleTransitionUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    days: int
+    days: int = Field(strict=True, ge=0)
     storage_class: str = Field(min_length=1, max_length=40)
 
 
@@ -711,9 +685,6 @@ class LifecycleProfileUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     transitions: list[LifecycleTransitionUpdate] = Field(default_factory=list)
-    noncurrent_transitions: list[LifecycleTransitionUpdate] = Field(
-        default_factory=list
-    )
 
     def to_profile(self) -> LifecycleProfile:
         return LifecycleProfile(
@@ -723,13 +694,6 @@ class LifecycleProfileUpdate(BaseModel):
                     storage_class=item.storage_class.upper(),
                 )
                 for item in self.transitions
-            ),
-            noncurrent_transitions=tuple(
-                LifecycleTransition(
-                    days=item.days,
-                    storage_class=item.storage_class.upper(),
-                )
-                for item in self.noncurrent_transitions
             ),
         )
 
@@ -745,21 +709,6 @@ class LifecycleProfileSelection(BaseModel):
         if (self.guided_profile is None) == (self.profile is None):
             raise ValueError("provide exactly one of guided_profile or profile")
         return self
-
-
-class LifecycleDefaultUpdate(LifecycleProfileSelection):
-    name: str = Field(default="Vault default", min_length=1, max_length=120)
-
-
-class LifecycleFolderOverrideUpdate(LifecycleProfileSelection):
-    folder_path: str = Field(min_length=1, max_length=500)
-    name: str | None = Field(default=None, min_length=1, max_length=120)
-
-
-class LifecycleFolderOverrideDelete(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    folder_path: str = Field(min_length=1, max_length=500)
 
 
 class OperationPolicyUpdate(BaseModel):
@@ -838,10 +787,8 @@ def build_directory_items(
                         "recover": 0,
                         "free-space": 0,
                         "cloud-purge": 0,
-                        "storage-class": 0,
                     },
                     "storage_classes": set(),
-                    "pinned_count": 0,
                     "matches_filter": False,
                 },
             )
@@ -863,13 +810,10 @@ def build_directory_items(
                 "recover": row.get("recover_eligible", row["state"] == "cloud_only"),
                 "free-space": row.get("cleanup_eligible", row["state"] == "both"),
                 "cloud-purge": has_cloud,
-                "storage-class": row.get("storage_class_eligible", has_cloud),
             }
             for action, eligible in action_flags.items():
                 if eligible:
                     folder["action_counts"][action] += 1
-            if row.get("lifecycle_pinned"):
-                folder["pinned_count"] += 1
             if row.get("storage_class"):
                 folder["storage_classes"].add(row["storage_class"])
             if not state_filter or row["state"] == state_filter:
@@ -885,7 +829,6 @@ def build_directory_items(
         states = aggregate["state_counts"]
         state = next(iter(states)) if len(states) == 1 else "mixed"
         storage_classes = sorted(aggregate["storage_classes"])
-        pinned_count = int(aggregate.get("pinned_count") or 0)
         folder_items.append({
             "type": "directory",
             "name": name,
@@ -899,10 +842,6 @@ def build_directory_items(
             "storage_class": storage_classes[0] if len(storage_classes) == 1 else None,
             "storage_class_count": len(storage_classes),
             "available_actions": aggregate["action_counts"],
-            "lifecycle_pinned": pinned_count == aggregate["item_count"] and pinned_count > 0,
-            "lifecycle_pinned_partial": (
-                pinned_count > 0 and pinned_count < aggregate["item_count"]
-            ),
         })
     folder_items.sort(key=lambda item: item["name"].casefold())
     files.sort(key=lambda item: item["name"].casefold())
@@ -2718,100 +2657,6 @@ def free_space(
     return {**queued, **_api_message(request, "api.free_space_started")}
 
 
-@app.get("/api/storage-classes", response_model=response_model("StorageClassesResponse"))
-def get_storage_classes(
-    _: dict[str, Any] = Depends(current_user),
-    __: dict[str, Any] = Depends(current_vault),
-):
-    return list_storage_class_options(list_prices(settings.aws_region))
-
-
-@app.post(
-    "/api/storage-class",
-    status_code=202,
-    response_model=JsonObjectResponse,
-    responses=LOGICAL_PATH_ERROR_RESPONSES,
-)
-def change_storage_class(
-    action: StorageClassChangeRequest,
-    request: Request,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
-):
-    queued = queue_jobs(
-        action.path,
-        "storage-class",
-        vault["id"],
-        user["id"],
-        action.is_directory,
-        archive_version_id=action.archive_version_id,
-        target_storage_class=action.target_storage_class,
-        whole_vault=action.whole_vault,
-        restore_tier=action.restore_tier,
-        restore_days=action.restore_days,
-    )
-    if action.pin_after and not action.whole_vault:
-        from .services.lifecycle_pins import set_lifecycle_pin
-        from .services.lifecycle_policies import refresh_desired_policies
-
-        logical_path = (
-            ""
-            if action.whole_vault
-            else safe_relative_path(action.path).as_posix()
-        )
-        if logical_path:
-            with db() as connection:
-                set_lifecycle_pin(
-                    connection,
-                    vault_id=vault["id"],
-                    path=logical_path,
-                    is_directory=action.is_directory,
-                    pinned_by=user["id"],
-                    pinned_at=now_iso(),
-                )
-                refresh_desired_policies(connection, vault["id"])
-            queued["pin_after"] = True
-    return {**queued, **_api_message(request, "api.storage_class_started")}
-
-
-@app.put(
-    "/api/lifecycle-pin",
-    response_model=JsonObjectResponse,
-    responses=LOGICAL_PATH_ERROR_RESPONSES,
-)
-def update_lifecycle_pin(
-    action: LifecyclePinRequest,
-    request: Request,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
-):
-    logical_path = safe_relative_path(action.path).as_posix()
-    from .services.lifecycle_pins import clear_lifecycle_pin, set_lifecycle_pin
-    from .services.lifecycle_policies import refresh_desired_policies
-
-    with db() as connection:
-        if action.pinned:
-            set_lifecycle_pin(
-                connection,
-                vault_id=vault["id"],
-                path=logical_path,
-                is_directory=action.is_directory,
-                pinned_by=user["id"],
-                pinned_at=now_iso(),
-            )
-        else:
-            clear_lifecycle_pin(
-                connection, vault_id=vault["id"], path=logical_path
-            )
-        refresh_desired_policies(connection, vault["id"])
-    return {
-        "path": logical_path,
-        "is_directory": action.is_directory,
-        "pinned": action.pinned,
-        **_api_message(request, "api.lifecycle_pin_updated"),
-    }
-
-
 def _cloud_deletion_paths(action: CloudDeletionPreviewRequest | CloudPurgeRequest) -> list[str]:
     if action.paths:
         return list(action.paths)
@@ -3168,31 +3013,10 @@ def _selected_lifecycle_profile(
 
 
 def _lifecycle_payload(connection: Any, vault: dict[str, Any]) -> dict[str, Any]:
-    assignments = load_policy_assignments(connection, vault["id"])
     return {
-        "default_policy_id": assignments.default_policy_id,
-        "folder_overrides": [
-            {"folder_path": folder, "policy_id": policy_id}
-            for folder, policy_id in assignments.folder_overrides
-        ],
-        "policies": list_vault_policies(connection, vault["id"]),
+        "profile": profile_to_dict(load_vault_plan(connection, vault["id"])),
         "guided_profiles": {
-            name: {
-                "transitions": [
-                    {
-                        "days": transition.days,
-                        "storage_class": transition.storage_class,
-                    }
-                    for transition in profile.transitions
-                ],
-                "noncurrent_transitions": [
-                    {
-                        "days": transition.days,
-                        "storage_class": transition.storage_class,
-                    }
-                    for transition in profile.noncurrent_transitions
-                ],
-            }
+            name: profile_to_dict(profile)
             for name, profile in GUIDED_PROFILES.items()
         },
     }
@@ -3204,24 +3028,16 @@ def own_vault_lifecycle(vault: dict[str, Any] = Depends(current_vault)):
         return _lifecycle_payload(connection, vault)
 
 
-@app.put("/api/vault/lifecycle/default", response_model=response_model("LifecycleResponse"))
-def update_vault_lifecycle_default(
-    action: LifecycleDefaultUpdate,
+@app.put("/api/vault/lifecycle", response_model=response_model("LifecycleResponse"))
+def update_vault_storage_plan(
+    action: LifecycleProfileSelection,
     vault: dict[str, Any] = Depends(current_vault),
     user: dict[str, Any] = Depends(current_user),
 ):
     profile, guided_name = _selected_lifecycle_profile(action)
-    validation = validate_lifecycle_profile(profile)
     with db() as connection:
-        assignments = load_policy_assignments(connection, vault["id"])
-        policy_id = assignments.default_policy_id
-        if not policy_id:
-            policy_id = create_policy(connection, vault_id=vault["id"], name=action.name)
-        validation = set_policy_profile(connection, policy_id, profile)
-        if not validation.ok:  # Defensive against future validation changes.
-            raise HTTPException(status_code=400, detail="; ".join(validation.errors))
-        if assignments.default_policy_id is None:
-            set_vault_default_policy(connection, vault["id"], policy_id)
+        validation = set_vault_plan(connection, vault["id"], profile)
+        sync_pending = False
         try:
             sync_lifecycle_rules_for_bucket(
                 connection,
@@ -3229,103 +3045,23 @@ def update_vault_lifecycle_default(
                 bucket=vault["s3_bucket"],
             )
         except Exception:
-            # Durable policy/tag intent is retried by established reconciliation.
-            pass
+            # Durable plan intent is retried by the established scan sync.
+            sync_pending = True
         payload = _lifecycle_payload(connection, vault)
         audit_log(
-            "vault_lifecycle_default_updated",
+            "vault_storage_plan_updated",
             connection=connection,
             vault_id=vault["id"],
             actor_user_id=user["id"],
-            policy_id=policy_id,
             guided_profile=guided_name,
             custom_profile=guided_name is None,
         )
     return {
-        "message": "Vault default lifecycle profile updated",
+        "message": "Vault storage plan saved",
+        "sync_pending": sync_pending,
         "warnings": list(validation.warnings),
         **payload,
     }
-
-
-@app.put("/api/vault/lifecycle/folder-overrides", response_model=response_model("LifecycleResponse"))
-def upsert_vault_lifecycle_folder_override(
-    action: LifecycleFolderOverrideUpdate,
-    vault: dict[str, Any] = Depends(current_vault),
-    user: dict[str, Any] = Depends(current_user),
-):
-    profile, guided_name = _selected_lifecycle_profile(action)
-    validation = validate_lifecycle_profile(profile)
-    with db() as connection:
-        assignments = load_policy_assignments(connection, vault["id"])
-        existing = dict(assignments.folder_overrides).get(
-            action.folder_path.replace("\\", "/").strip("/")
-        )
-        if existing:
-            policy_id = existing
-        else:
-            policy_id = create_policy(
-                connection,
-                vault_id=vault["id"],
-                name=action.name or f"Folder {action.folder_path}",
-            )
-        validation = set_policy_profile(connection, policy_id, profile)
-        if not validation.ok:
-            raise HTTPException(status_code=400, detail="; ".join(validation.errors))
-        set_folder_override(
-            connection,
-            vault_id=vault["id"],
-            folder_path=action.folder_path,
-            policy_id=policy_id,
-        )
-        try:
-            sync_lifecycle_rules_for_bucket(
-                connection,
-                s3_client(),
-                bucket=vault["s3_bucket"],
-            )
-        except Exception:
-            # Durable policy/tag intent is retried by established reconciliation.
-            pass
-        payload = _lifecycle_payload(connection, vault)
-        audit_log(
-            "vault_lifecycle_folder_override_updated",
-            connection=connection,
-            vault_id=vault["id"],
-            actor_user_id=user["id"],
-            folder_path=action.folder_path,
-            policy_id=policy_id,
-            guided_profile=guided_name,
-            custom_profile=guided_name is None,
-        )
-    return {
-        "message": "Folder lifecycle override updated",
-        "warnings": list(validation.warnings),
-        **payload,
-    }
-
-
-@app.delete("/api/vault/lifecycle/folder-overrides", response_model=response_model("LifecycleResponse"))
-def delete_vault_lifecycle_folder_override(
-    action: LifecycleFolderOverrideDelete,
-    vault: dict[str, Any] = Depends(current_vault),
-    user: dict[str, Any] = Depends(current_user),
-):
-    with db() as connection:
-        clear_folder_override(
-            connection,
-            vault_id=vault["id"],
-            folder_path=action.folder_path,
-        )
-        payload = _lifecycle_payload(connection, vault)
-        audit_log(
-            "vault_lifecycle_folder_override_removed",
-            connection=connection,
-            vault_id=vault["id"],
-            actor_user_id=user["id"],
-            folder_path=action.folder_path,
-        )
-    return {"message": "Folder lifecycle override removed", **payload}
 
 
 @app.get("/health", response_model=JsonObjectResponse)

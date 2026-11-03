@@ -15,7 +15,6 @@ from app.database import SQLiteConnection
 from app.main import build_directory_items, list_files
 from app.services import directory_aggregates as aggregates
 from app.services import metrics as metrics_service
-from app.services.lifecycle_pins import set_lifecycle_pin
 from tests.test_database import run_alembic
 
 
@@ -192,8 +191,6 @@ class DirectoryScaleTests(unittest.TestCase):
             "available_actions",
             "storage_class",
             "storage_class_count",
-            "lifecycle_pinned",
-            "lifecycle_pinned_partial",
         ):
             self.assertEqual(photos[key], expected_photos[key], key)
 
@@ -342,37 +339,6 @@ class DirectoryScaleTests(unittest.TestCase):
         names = {item["name"] for item in root["items"]}
         self.assertIn("new-dir", names)
         self.assertNotIn("old-dir", names)
-
-    def test_lifecycle_pin_triggers_rebuild_and_partial_flag(self) -> None:
-        self.catalog.observe_local_copy(
-            vault_id=2,
-            path="photos/a.jpg",
-            file_type="regular",
-            size=1,
-            mtime_ns=1,
-            observed_at="2026-07-21T10:00:00+00:00",
-        )
-        self.catalog.observe_local_copy(
-            vault_id=2,
-            path="photos/b.jpg",
-            file_type="regular",
-            size=1,
-            mtime_ns=1,
-            observed_at="2026-07-21T10:00:00+00:00",
-        )
-        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        set_lifecycle_pin(
-            self.connection,
-            vault_id=2,
-            path="photos/a.jpg",
-            is_directory=False,
-            pinned_by=None,
-            pinned_at="2026-07-21T12:00:00+00:00",
-        )
-        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        photos = self.catalog.list_files_page(2)["items"][0]
-        self.assertTrue(photos["lifecycle_pinned_partial"])
-        self.assertFalse(photos["lifecycle_pinned"])
 
     def test_burst_updates_coalesce_directory_rebuilds(self) -> None:
         # Baseline directory.

@@ -30,8 +30,6 @@ from unittest.mock import Mock, patch
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
 from app.services import cloud_deletion
-from app.services.lifecycle_profiles import GUIDED_PROFILES
-from app.services.s3_lifecycle_rules import build_policy_lifecycle_rule
 from app.storage import process_jobs_once
 from app import storage as storage_module
 from tests.test_database import run_alembic
@@ -1242,20 +1240,6 @@ class ClaimLeaseRestartTests(_CloudDeletionTestCase):
             self.assertEqual(job["status"], "completed")
             self.assertIsNone(job["claim_token"])
             self.assertIsNone(job["claim_expires_at"])
-
-
-class NoncurrentLifecycleTransitionTests(_CloudDeletionTestCase):
-    def test_archive_tiered_rule_transitions_noncurrent_to_cheapest_class(self) -> None:
-        profile = GUIDED_PROFILES["archive_tiered"]
-        rule = build_policy_lifecycle_rule(
-            "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-            profile,
-        )
-        self.assertIn("NoncurrentVersionTransitions", rule)
-        cheapest = rule["NoncurrentVersionTransitions"][-1]["StorageClass"]
-        self.assertEqual(cheapest, "DEEP_ARCHIVE")
-        # Delete markers must never appear as content-bearing transitions.
-        self.assertNotIn("DeleteMarker", str(rule))
 
 
 if __name__ == "__main__":

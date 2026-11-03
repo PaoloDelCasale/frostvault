@@ -405,7 +405,7 @@ class VaultRelocationTests(unittest.TestCase):
 
         with patch("app.storage.scan_cloud", return_value=0), patch(
             "app.storage.validate_cloud_vault", return_value=None
-        ), patch("app.storage.reconcile_pending_policy_tags", return_value=0), patch(
+        ), patch(
             "app.storage.sync_lifecycle_rules_for_bucket", return_value=0
         ), patch("app.storage.queue_auto_uploads", return_value=0), patch(
             "app.storage.queue_auto_local_cleanups", return_value=0

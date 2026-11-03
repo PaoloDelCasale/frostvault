@@ -17,9 +17,9 @@ from app.services.cost_estimates import (
     estimate_storage_month,
     list_prices,
 )
-from app.services.storage_classes import MANUAL_STORAGE_CLASSES, list_storage_class_options
+from app.services.lifecycle_profiles import SUPPORTED_STORAGE_CLASSES
 
-REQUIRED_STORAGE_CLASSES = set(MANUAL_STORAGE_CLASSES)
+REQUIRED_STORAGE_CLASSES = {"STANDARD", *SUPPORTED_STORAGE_CLASSES}
 
 
 class BundledListPriceTests(unittest.TestCase):
@@ -113,16 +113,6 @@ class RestoreEstimateTests(unittest.TestCase):
         )
         self.assertEqual(estimate.tier, "Bulk")
         self.assertEqual(estimate.estimated_cost_eur, 0.005)
-
-
-class StorageClassPickerTests(unittest.TestCase):
-    def test_picker_rates_come_from_the_region_list_prices(self) -> None:
-        options = list_storage_class_options(list_prices("eu-south-1"))
-        by_id = {item["id"]: item for item in options["items"]}
-        self.assertEqual(by_id["STANDARD"]["storage_rate_eur_per_gib_month"], 0.024)
-        self.assertEqual(by_id["GLACIER_IR"]["retrieval_rate_eur_per_gib"], 0.03)
-        self.assertEqual(by_id["DEEP_ARCHIVE"]["restore_rate_eur_per_gib_standard"], 0.024)
-        self.assertEqual(options["assumptions"]["region"], "eu-south-1")
 
 
 if __name__ == "__main__":

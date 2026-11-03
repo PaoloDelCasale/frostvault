@@ -38,13 +38,7 @@ from .services.directory_aggregates import (
     mark_path_dirty,
     process_directory_aggregate_maintenance,
 )
-from .services.lifecycle_policies import (
-    load_policy_assignments,
-    resolve_effective_policy_id,
-    sync_lifecycle_rules_for_bucket,
-)
-from .services.policy_reconciliation import reconcile_pending_policy_tags
-from .services.s3_object_tags import apply_version_policy_tag, read_version_policy_tag
+from .services.lifecycle_policies import sync_lifecycle_rules_for_bucket
 from .services import health as health_service
 from .services import metadata_backups as metadata_backup_service
 from .services import metrics as metrics_service
@@ -763,21 +757,6 @@ def _cloud_scan_still_current(vault: dict[str, Any], scan_id: str) -> bool:
     return status.get("scan_id") == scan_id
 
 
-def _path_matches_lifecycle_pins(
-    path: str, pins: tuple[tuple[str, bool], ...]
-) -> bool:
-    from .services.lifecycle_policies import normalize_logical_path
-
-    normalized = normalize_logical_path(path)
-    for pin_path, is_directory in pins:
-        if is_directory:
-            if normalized == pin_path or normalized.startswith(f"{pin_path}/"):
-                return True
-        elif normalized == pin_path:
-            return True
-    return False
-
-
 def _remote_listing_timestamp(item: dict[str, Any], scan_id: str) -> str:
     value = item.get("LastModified")
     return value.isoformat() if hasattr(value, "isoformat") else str(value or scan_id)
@@ -786,7 +765,7 @@ def _remote_listing_timestamp(item: dict[str, Any], scan_id: str) -> str:
 def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
     """Merge one complete cloud listing into the catalog in bounded writes.
 
-    Provider listing and object-tag reads stay outside write transactions.
+    Provider listings stay outside write transactions.
     Catalog merges commit in ``CLOUD_SCAN_WRITE_BATCH_SIZE`` chunks so other
     SQLite/PostgreSQL writers can renew leases and persist notifications.
     Unseen versions are marked missing only after a complete, interpretable
@@ -848,11 +827,7 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
     for entry in versions:
         grouped.setdefault(entry[0], []).append(entry)
 
-    from .services.lifecycle_pins import load_lifecycle_pins
-
     with db() as connection:
-        assignments = load_policy_assignments(connection, vault["id"])
-        pins = load_lifecycle_pins(connection, vault["id"])
         # Decide cleanup authority before discovery changes internal version
         # numbers. Record all listed copies chronologically, without granting
         # trust. Legacy/unverified/mismatched or ambiguous keepers fail closed.
@@ -885,30 +860,6 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
         if not _cloud_scan_still_current(vault, scan_id):
             return count
         batch = versions[offset : offset + CLOUD_SCAN_WRITE_BATCH_SIZE]
-        tagged: list[tuple[Any, ...]] = []
-        for logical_path, version_id, object_key, size, storage_class, etag, timestamp in batch:
-            applied_policy_id = None
-            try:
-                applied_policy_id = read_version_policy_tag(
-                    client,
-                    bucket=vault["s3_bucket"],
-                    key=object_key,
-                    version_id=version_id,
-                )
-            except Exception:
-                applied_policy_id = None
-            tagged.append(
-                (
-                    logical_path,
-                    version_id,
-                    object_key,
-                    size,
-                    storage_class,
-                    etag,
-                    timestamp,
-                    applied_policy_id,
-                )
-            )
         with db() as connection:
             catalog = ArchiveCatalog(connection)
             for (
@@ -919,8 +870,7 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                 storage_class,
                 etag,
                 timestamp,
-                applied_policy_id,
-            ) in tagged:
+            ) in batch:
                 keeper = verified_keepers.get(logical_path)
                 if keeper and (object_key, str(version_id)) != (
                     keeper["object_key"], keeper["provider_version_id"],
@@ -930,11 +880,6 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                     ))
                 # A failed cleanup still leaves every discovered copy catalogued
                 # as present, rather than producing a false missing-copy signal.
-                desired_policy_id = (
-                    None
-                    if _path_matches_lifecycle_pins(logical_path, pins)
-                    else resolve_effective_policy_id(logical_path, assignments)
-                )
                 kept_archive_version_id = catalog.record_archive_version(
                     vault_id=vault["id"],
                     path=logical_path,
@@ -946,8 +891,6 @@ def scan_cloud(vault: dict[str, Any], scan_id: str) -> int:
                     uploaded_at=timestamp,
                     observed_at=now_iso(),
                     scan_id=scan_id,
-                    desired_policy_id=desired_policy_id,
-                    applied_policy_id=applied_policy_id,
                 )
                 if logical_path in stale_keeper_paths and not invalid_keys:
                     catalog.mark_unlisted_snapshot_versions_superseded(
@@ -1602,11 +1545,6 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
             try:
                 validate_cloud_vault(vault)
                 with db() as connection:
-                    result["policy_tags"] = reconcile_pending_policy_tags(
-                        connection,
-                        vault,
-                        s3_client(),
-                    )
                     result["lifecycle_rules"] = sync_lifecycle_rules_for_bucket(
                         connection,
                         s3_client(),
@@ -1628,8 +1566,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                             local_delete_enabled=_runtime_settings().allow_local_delete,
                         )
             except Exception as exc:
-                status["last_error"] = f"Policy tag reconciliation: {exc}"
-                result["policy_tags"] = -1
+                status["last_error"] = f"Storage plan synchronization: {exc}"
                 result["lifecycle_rules"] = -1
                 _record_scan_component_health(
                     vault_id, "policy", ok=False, error=status["last_error"]
@@ -3201,9 +3138,7 @@ def process_upload(job: dict[str, Any]) -> None:
     source = safe_local_path(job["source_root"], job["path"])
     local_present = source.is_file()
     with db() as connection:
-        assignments = load_policy_assignments(connection, job["vault_id"])
         linked_target = ArchiveCatalog(connection).get_job_target(job["id"])
-    policy_id = resolve_effective_policy_id(job["path"], assignments)
     linked_version_id = (
         linked_target.get("archive_version_id") if linked_target else None
     )
@@ -3352,16 +3287,6 @@ def process_upload(job: dict[str, Any]) -> None:
                     raise RuntimeError(
                         "Upload stored without an S3 VersionId; bucket Versioning is required"
                     )
-                applied_policy_id = None
-                if policy_id:
-                    apply_version_policy_tag(
-                        client,
-                        bucket=job["s3_bucket"],
-                        key=key,
-                        version_id=provider_version_id,
-                        policy_id=policy_id,
-                    )
-                    applied_policy_id = policy_id
                 ensure_job_active(job["id"], "Upload claim was lost")
                 timestamp = now_iso()
                 with db() as connection:
@@ -3383,8 +3308,6 @@ def process_upload(job: dict[str, Any]) -> None:
                         observed_at=timestamp,
                         scan_id=timestamp,
                         origin="upload",
-                        desired_policy_id=policy_id,
-                        applied_policy_id=applied_policy_id,
                     )
                     catalog.link_job_version(job["id"], version_id)
                 target = {
@@ -3644,13 +3567,11 @@ def process_rename(job: dict[str, Any]) -> None:
             """,
             (job["archive_version_id"],),
         ).fetchone()
-        assignments = load_policy_assignments(connection, job["vault_id"])
     if previous is None:
         raise RuntimeError("Rename target Archive Version is missing")
     if previous["integrity"] != "verified" or not previous["object_key"]:
         raise RuntimeError("Rename requires a verified Archive Version at the old key")
     old_key = previous["object_key"]
-    policy_id = resolve_effective_policy_id(job["path"], assignments)
     try:
         new_key = expected_cloud_key(job["path"], job["s3_prefix"])
         if new_key == old_key:
@@ -3726,16 +3647,6 @@ def process_rename(job: dict[str, Any]) -> None:
                 raise RuntimeError(
                     "Rename stored without an S3 VersionId; bucket Versioning is required"
                 )
-            applied_policy_id = None
-            if policy_id:
-                apply_version_policy_tag(
-                    client,
-                    bucket=job["s3_bucket"],
-                    key=new_key,
-                    version_id=provider_version_id,
-                    policy_id=policy_id,
-                )
-                applied_policy_id = policy_id
             ensure_job_active(job["id"], "Rename claim was lost")
             timestamp = now_iso()
             with db() as connection:
@@ -3757,8 +3668,6 @@ def process_rename(job: dict[str, Any]) -> None:
                     observed_at=timestamp,
                     scan_id=timestamp,
                     origin="upload",
-                    desired_policy_id=policy_id,
-                    applied_policy_id=applied_policy_id,
                 )
             destination_version_id = str(provider_version_id)
             ensure_job_active(job["id"], "Rename stopped")

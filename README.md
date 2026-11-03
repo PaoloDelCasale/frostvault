@@ -55,17 +55,20 @@ Search remains global across every file in the selected vault.
 
 ## Archive lifecycle and cloud deletion
 
-- The Owner can run a one-shot storage-class change for a file,
-  directory, or whole vault. Moving data out of Glacier or Deep Archive performs
-  the required restore before copying it to the selected class.
-- The storage-class picker shows storage and retrieval rates, expected restore
-  time, and early-deletion warnings. Rates are the AWS list prices bundled for
-  the configured `AWS_DEFAULT_REGION` (not editable; regenerate with
-  `scripts/update_aws_list_prices.py`). They are estimates; AWS billing remains
-  authoritative.
-- A lifecycle pin suspends automatic storage-class transitions for a path until
-  it is unpinned. Automatic lifecycle policies may move data only to deeper
-  classes; they never warm it.
+- Each Vault has one **storage plan** in **Advanced**: Always accessible
+  (Standard), Economical instant access (IA30 → GlacierIR90), Tiered archive
+  (recommended: IA30 → GlacierIR90 → DeepArchive365), Early Deep Archive (day 0),
+  or Custom (ordered object-age/class chain). Each explains timing and cost.
+  There are no folder assignments, pins or manual per-file class changes.
+- Plans emit only current-version transitions, never expiration or noncurrent
+  rules. AWS requires age 30 for IA and minimum residence in the source class
+  before the next step (30 days in IA, 90 in Glacier Instant/Flexible Retrieval),
+  not 90/180 days from Standard before archiving. Objects below 128 KB stay put
+  by default. Early replacement can incur minimum-duration charges; cold recovery
+  takes hours. A changed plan does not warm existing cold objects or move them
+  immediately. See [storage plans and upgrade safety](docs/aws-s3-bucket.md#vault-storage-plans).
+- Lifecycle synchronization preserves external bucket rules and the seven-day
+  incomplete-multipart abort rule. Changing a plan never deletes cloud content.
 - **Purge from cloud permanently** deletes every selected Archive Version and
   Delete Marker after a confirmed, cancellable delay.
   A recently reauthenticated Owner can skip the remaining delay with

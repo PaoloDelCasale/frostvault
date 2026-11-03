@@ -14,7 +14,7 @@ from .security import hash_password, verify_password
 
 
 INTEGRITY_ERRORS = (UniqueViolation, sqlite3.IntegrityError)
-HEAD_SCHEMA_REVISION = "0052_s3_sdk"
+HEAD_SCHEMA_REVISION = "0053_vault_storage_plans"
 
 
 class DatabaseSchemaError(RuntimeError):

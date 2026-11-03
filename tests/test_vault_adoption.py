@@ -316,8 +316,6 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         with patch("app.storage.scan_cloud", return_value=0), patch(
             "app.storage.validate_cloud_vault", return_value=None
         ), patch(
-            "app.storage.reconcile_pending_policy_tags", return_value=0
-        ), patch(
             "app.storage.sync_lifecycle_rules_for_bucket", return_value=0
         ), patch(
             "app.storage.queue_auto_uploads", return_value=0
@@ -345,8 +343,6 @@ class VaultAdoptionScanTests(_AdoptionFixture):
             side_effect=RuntimeError("disk vanished"),
         ), patch("app.storage.scan_cloud", return_value=0), patch(
             "app.storage.validate_cloud_vault", return_value=None
-        ), patch(
-            "app.storage.reconcile_pending_policy_tags", return_value=0
         ), patch(
             "app.storage.sync_lifecycle_rules_for_bucket", return_value=0
         ), patch(
@@ -389,7 +385,6 @@ class VaultAdoptionScanTests(_AdoptionFixture):
             patch("app.storage.scan_cloud", return_value=0),
             patch("app.storage.validate_cloud_vault"),
             patch("app.storage.s3_client"),
-            patch("app.storage.reconcile_pending_policy_tags", return_value={}),
             patch("app.storage.queue_auto_uploads", return_value=0),
             patch("app.storage.queue_auto_local_cleanups", return_value=0),
             patch.object(ArchiveCatalog, "list_rename_candidates") as renames,
@@ -469,7 +464,6 @@ class VaultAdoptionScanTests(_AdoptionFixture):
             patch("app.storage.scan_cloud", return_value=0),
             patch("app.storage.validate_cloud_vault"),
             patch("app.storage.s3_client") as cloud,
-            patch("app.storage.reconcile_pending_policy_tags", return_value={}),
         ):
             result = scan_vault(dict(vault))
         self.assertEqual(result["local_incomplete"], 1)

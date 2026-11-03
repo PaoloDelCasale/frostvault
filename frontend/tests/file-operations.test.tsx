@@ -415,7 +415,7 @@ describe("File operations — seams 1–10", () => {
         delete_enabled: false,
         cloud_deletion_enabled: false,
       }).map((action) => action.id),
-    ).toEqual(["upload", "storage-class", "lifecycle-pin"]);
+    ).toEqual(["upload"]);
   });
 
   it("seam 3: recovery confirms the current copy directly and pins its exact internal id", async () => {

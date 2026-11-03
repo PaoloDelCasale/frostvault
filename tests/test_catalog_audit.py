@@ -7,10 +7,6 @@ from unittest.mock import Mock
 from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
 from app.services.catalog_audit import audit_vault_catalog
-from app.services.lifecycle_policies import (
-    create_policy,
-    set_vault_default_policy,
-)
 from tests.test_database import run_alembic
 import tempfile
 from pathlib import Path
@@ -27,9 +23,6 @@ class CatalogAuditTests(unittest.TestCase):
             connection.execute(
                 "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid')"
             )
-            policy = create_policy(connection, vault_id=1, name="default")
-            set_vault_default_policy(connection, 1, policy)
-            self.policy_id = policy
             catalog = ArchiveCatalog(connection)
             catalog.record_archive_version(
                 vault_id=1,
@@ -42,8 +35,6 @@ class CatalogAuditTests(unittest.TestCase):
                 uploaded_at="2026-01-01T00:00:00+00:00",
                 observed_at="2026-01-01T00:00:00+00:00",
                 scan_id="2026-01-01T00:00:00+00:00",
-                desired_policy_id=policy,
-                applied_policy_id=policy,
             )
 
     def _paginator(self, versions: list[dict], markers: list[dict] | None = None):
@@ -69,7 +60,7 @@ class CatalogAuditTests(unittest.TestCase):
         client.get_object.assert_not_called()
         client.restore_object.assert_not_called()
 
-    def test_reports_storage_class_and_policy_tag_drift(self) -> None:
+    def test_reports_storage_class_drift_without_tag_reads(self) -> None:
         client = Mock()
         client.get_paginator.return_value = self._paginator(
             [
@@ -83,17 +74,12 @@ class CatalogAuditTests(unittest.TestCase):
                 }
             ]
         )
-        client.get_object_tagging.return_value = {
-            "TagSet": [{"Key": "psa:policy-id", "Value": "other-policy"}]
-        }
         vault = {"id": 1, "s3_bucket": "bucket", "s3_prefix": "vaults/uuid"}
         with SQLiteConnection(str(self.path)) as connection:
             report = audit_vault_catalog(connection, vault, client)
             row = connection.execute(
-                "SELECT storage_class, applied_policy_id, availability FROM archive_versions"
+                "SELECT storage_class, availability FROM archive_versions"
             ).fetchone()
         self.assertEqual(report["storage_class_drift"], 1)
-        self.assertEqual(report["policy_tag_drift"], 1)
         self.assertEqual(row["storage_class"], "GLACIER")
-        self.assertEqual(row["applied_policy_id"], "other-policy")
         self.assertEqual(row["availability"], "available")

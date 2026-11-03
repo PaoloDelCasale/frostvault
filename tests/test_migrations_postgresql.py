@@ -106,6 +106,26 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             )
         return missing_id
 
+    def test_storage_plan_migration_preserves_populated_catalog_and_only_cloud_copy(self):
+        from tests.storage_plan_migration_contract import assert_storage_plan_migration
+        assert_storage_plan_migration(self, run_alembic, self._connection)
+
+    def test_storage_plan_migration_refuses_ambiguous_folder_policies(self):
+        from tests.storage_plan_migration_contract import assert_ambiguous_plan_refused
+        assert_ambiguous_plan_refused(self, run_alembic, self._connection)
+
+    def test_storage_plan_migration_maps_missing_default_and_redundant_pins(self):
+        from tests.storage_plan_safety_contract import assert_standard_plan_mapping
+        assert_standard_plan_mapping(self, run_alembic, self._connection)
+
+    def test_storage_plan_migration_refuses_unsafe_legacy_namespaces(self):
+        from tests.storage_plan_safety_contract import assert_unsafe_namespaces_refused
+        assert_unsafe_namespaces_refused(self, run_alembic, self._connection)
+
+    def test_storage_plan_migration_refuses_pins_before_ddl(self):
+        from tests.storage_plan_migration_contract import assert_ambiguous_plan_refused
+        assert_ambiguous_plan_refused(self, run_alembic, self._connection, pinned=True)
+
     def test_sdk_migration_preserves_populated_catalog_and_only_cloud_copy(self) -> None:
         from tests.s3_sdk_migration_contract import assert_sdk_migration
         assert_sdk_migration(self, run_alembic, self._connection)

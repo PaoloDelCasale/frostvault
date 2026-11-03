@@ -6,7 +6,7 @@
  *
  * Edit the exported listings and the `seedDemoState()` fixtures below to change
  * the mock catalog, vaults, and notifications. Mutations (upload,
- * recover, free-space, storage-class, …) update this
+ * recover, free-space, …) update this
  * in-memory state so the SPA stays interactive without a backend.
  */
 import { DEMO_MODE_ENABLED, getDemoSearchParam } from "@/demoGate";
@@ -40,7 +40,7 @@ export const demoRootListing: FilesResponse = {
         upload: 1,
         recover: 0,
         "free-space": 2,
-        "storage-class": 2,
+
       },
     },
     {
@@ -58,7 +58,6 @@ export const demoRootListing: FilesResponse = {
       recover_eligible: false,
       cleanup_eligible: true,
       recoverable_version_count: 1,
-      lifecycle_pinned: true,
     },
     {
       type: "file",
@@ -258,7 +257,7 @@ const demoPhotosFolder = {
     upload: Math.floor(DEMO_PHOTO_COUNT / 3),
     recover: Math.floor(DEMO_PHOTO_COUNT / 3),
     "free-space": Math.ceil(DEMO_PHOTO_COUNT / 3),
-    "storage-class": Math.ceil(DEMO_PHOTO_COUNT / 3),
+
   },
 };
 
@@ -344,17 +343,10 @@ type DemoVault = {
 
 type DemoLifecycleProfile = {
   transitions: Array<{ days: number; storage_class: string }>;
-  noncurrent_transitions?: Array<{ days: number; storage_class: string }>;
 };
 
 type DemoLifecycle = {
-  default_policy_id: number | string | null;
-  folder_overrides: Array<{ folder_path: string; policy_id: number | string }>;
-  policies: Array<{
-    id: number | string;
-    name?: string;
-    profile?: DemoLifecycleProfile;
-  }>;
+  profile: DemoLifecycleProfile;
   guided_profiles: Record<string, DemoLifecycleProfile>;
   warnings: string[];
 };
@@ -452,22 +444,18 @@ function seedDemoState(): DemoState {
     ],
     locale: "en",
     lifecycle: {
-      default_policy_id: null,
-      folder_overrides: [],
-      policies: [],
+      profile: { transitions: [] },
       guided_profiles: {
         standard_only: { transitions: [] },
-        ia_after_30: {
-          transitions: [{ days: 30, storage_class: "STANDARD_IA" }],
+        economical: {
+          transitions: [{ days: 30, storage_class: "STANDARD_IA" }, { days: 90, storage_class: "GLACIER_IR" }],
         },
+        deep_archive_early: { transitions: [{ days: 0, storage_class: "DEEP_ARCHIVE" }] },
         archive_tiered: {
           transitions: [
             { days: 30, storage_class: "STANDARD_IA" },
             { days: 90, storage_class: "GLACIER_IR" },
             { days: 365, storage_class: "DEEP_ARCHIVE" },
-          ],
-          noncurrent_transitions: [
-            { days: 180, storage_class: "DEEP_ARCHIVE" },
           ],
         },
       },
@@ -567,7 +555,6 @@ function applyFileAction(
   state: DemoState,
   action: string,
   path: string,
-  extra: Record<string, unknown> = {},
 ): void {
   const item = findItem(state, path);
   if (!item || item.type !== "file") return;
@@ -593,14 +580,6 @@ function applyFileAction(
     item.state = "cloud_only";
     item.cleanup_eligible = false;
     item.recover_eligible = true;
-  } else if (action === "storage-class") {
-    const nextClass = String(extra.target_storage_class || item.storage_class || "STANDARD");
-    item.storage_class = nextClass;
-    if (extra.pin_after) item.lifecycle_pinned = true;
-  } else if (action === "lifecycle-pin") {
-    item.lifecycle_pinned = true;
-  } else if (action === "lifecycle-unpin") {
-    item.lifecycle_pinned = false;
   }
 }
 
@@ -615,7 +594,6 @@ function enqueueJob(
   state: DemoState,
   action: string,
   path: string,
-  extra: Record<string, unknown> = {},
 ): { group_id: string; message: string; job_ids: number[] } {
   state.jobSeq += 1;
   const id = `demo-job-${state.jobSeq}`;
@@ -631,8 +609,6 @@ function enqueueJob(
     completed_count: 0,
     failed_count: 0,
     cancelled_count: 0,
-    message_key:
-      action === "storage-class" ? "job.storage_class_changing" : undefined,
   };
   state.jobs.push(group);
   window.setTimeout(() => {
@@ -642,7 +618,7 @@ function enqueueJob(
     current.status = "completed";
     current.completed_count = 1;
     current.transferred_bytes = current.total_bytes;
-    applyFileAction(state, action, path, extra);
+    applyFileAction(state, action, path);
   }, 1200);
   window.setTimeout(() => {
     state.jobs = state.jobs.filter((job) => job.id !== id);
@@ -788,57 +764,6 @@ function statsPayload(state: DemoState, screenshotJobs: boolean) {
   };
 }
 
-const storageClasses = {
-  currency: "EUR",
-  items: [
-    {
-      id: "STANDARD",
-      currency: "EUR",
-      storage_rate_eur_per_gib_month: 0.023,
-      retrieval: "instant",
-      min_duration_days: 0,
-      requires_restore: false,
-      availability_zones: "multi",
-    },
-    {
-      id: "STANDARD_IA",
-      currency: "EUR",
-      storage_rate_eur_per_gib_month: 0.0125,
-      retrieval: "instant",
-      min_duration_days: 30,
-      requires_restore: false,
-      availability_zones: "multi",
-      retrieval_rate_eur_per_gib: 0.01,
-    },
-    {
-      id: "GLACIER",
-      currency: "EUR",
-      storage_rate_eur_per_gib_month: 0.004,
-      retrieval: "restore",
-      min_duration_days: 90,
-      requires_restore: true,
-      availability_zones: "multi",
-      restore_hours_bulk: 12,
-      restore_hours_standard: 5,
-      restore_rate_eur_per_gib_bulk: 0.0025,
-      restore_rate_eur_per_gib_standard: 0.01,
-    },
-    {
-      id: "DEEP_ARCHIVE",
-      currency: "EUR",
-      storage_rate_eur_per_gib_month: 0.00099,
-      retrieval: "restore",
-      min_duration_days: 180,
-      requires_restore: true,
-      availability_zones: "multi",
-      restore_hours_bulk: 48,
-      restore_hours_standard: 12,
-      restore_rate_eur_per_gib_bulk: 0.0025,
-      restore_rate_eur_per_gib_standard: 0.02,
-    },
-  ],
-};
-
 function installDemoEventSource(): void {
   if (typeof window === "undefined" || typeof window.EventSource !== "function") {
     return;
@@ -907,13 +832,7 @@ export function installDemoFilesFetch(): void {
     const method = (init?.method ?? "GET").toUpperCase();
     const { path, search } = parseUrl(url);
     const body = readJson(init);
-    const showJob =
-      getDemoSearchParam("job") === "1" ||
-      getDemoSearchParam("job") === "storage-class";
-    const jobAction =
-      getDemoSearchParam("job") === "storage-class"
-        ? "storage-class"
-        : "upload";
+    const showJob = getDemoSearchParam("job") === "1";
 
     if (!path.startsWith("/api/") && path !== "/login") {
       return realFetch(input, init);
@@ -926,13 +845,9 @@ export function installDemoFilesFetch(): void {
           groups: [
             {
               ...demoActiveJobs.groups[0],
-              action: jobAction,
-              path: jobAction === "storage-class" ? "archive.pdf" : "reports",
+              action: "upload",
+              path: "reports",
               status: "uploading",
-              message_key:
-                jobAction === "storage-class"
-                  ? "job.storage_class_changing"
-                  : undefined,
             },
           ],
         });
@@ -1042,10 +957,6 @@ export function installDemoFilesFetch(): void {
       return json(statsPayload(state, showJob));
     }
 
-    if (path === "/api/storage-classes") {
-      return json(storageClasses);
-    }
-
     if (path === "/api/catalog/revision") {
       return json({
         vault_id: 1,
@@ -1092,64 +1003,14 @@ export function installDemoFilesFetch(): void {
       return json({ marked_count: marked, unread_count: 0 });
     }
 
-    if (path === "/api/vault/lifecycle" || path === "/api/lifecycle") {
-      return json(state.lifecycle);
-    }
-
-    if (path === "/api/vault/lifecycle/default" && method === "PUT") {
-      const guidedName = typeof body.guided_profile === "string"
-        ? body.guided_profile
-        : null;
-      const profile = guidedName
-        ? state.lifecycle.guided_profiles[guidedName]
-        : (body.profile as DemoLifecycleProfile | undefined);
-      if (!profile) return json({ detail: "Choose a valid lifecycle profile" }, 422);
-      const policyId = "demo-default";
-      state.lifecycle.default_policy_id = policyId;
-      state.lifecycle.policies = [
-        ...state.lifecycle.policies.filter((item) => item.id !== policyId),
-        { id: policyId, name: guidedName ?? "Vault default", profile: clone(profile) },
-      ];
-      return json(state.lifecycle);
-    }
-
-    if (path === "/api/vault/lifecycle/folder-overrides" && method === "PUT") {
-      const folderPath = demoNormalizePath(String(body.folder_path ?? ""));
-      const guidedName = typeof body.guided_profile === "string"
-        ? body.guided_profile
-        : null;
-      const profile = guidedName
-        ? state.lifecycle.guided_profiles[guidedName]
-        : (body.profile as DemoLifecycleProfile | undefined);
-      if (!folderPath) return json({ detail: "Enter a folder path" }, 422);
-      if (!profile) return json({ detail: "Choose a valid lifecycle profile" }, 422);
-      const policyId = `demo-folder:${folderPath}`;
-      state.lifecycle.policies = [
-        ...state.lifecycle.policies.filter((item) => item.id !== policyId),
-        { id: policyId, name: guidedName ?? `Folder ${folderPath}`, profile: clone(profile) },
-      ];
-      state.lifecycle.folder_overrides = [
-        ...state.lifecycle.folder_overrides.filter(
-          (item) => item.folder_path !== folderPath,
-        ),
-        { folder_path: folderPath, policy_id: policyId },
-      ];
-      return json(state.lifecycle);
-    }
-
-    if (path === "/api/vault/lifecycle/folder-overrides" && method === "DELETE") {
-      const folderPath = demoNormalizePath(String(body.folder_path ?? ""));
-      const removedPolicyIds = new Set(
-        state.lifecycle.folder_overrides
-          .filter((item) => item.folder_path === folderPath)
-          .map((item) => item.policy_id),
-      );
-      state.lifecycle.folder_overrides = state.lifecycle.folder_overrides.filter(
-        (item) => item.folder_path !== folderPath,
-      );
-      state.lifecycle.policies = state.lifecycle.policies.filter(
-        (item) => !removedPolicyIds.has(item.id),
-      );
+    if (path === "/api/vault/lifecycle") {
+      if (method === "PUT") {
+        const profile = typeof body.guided_profile === "string"
+          ? state.lifecycle.guided_profiles[body.guided_profile]
+          : body.profile as DemoLifecycleProfile | undefined;
+        if (!profile) return json({ detail: "Choose a valid storage plan" }, 422);
+        state.lifecycle.profile = clone(profile);
+      }
       return json(state.lifecycle);
     }
 
@@ -1253,22 +1114,10 @@ export function installDemoFilesFetch(): void {
       return json({ message: "cancelled", group_id: groupId });
     }
 
-    if (path === "/api/lifecycle-pin" && (method === "PUT" || method === "POST")) {
-      const pinPath = String(body.path ?? "");
-      const pinned = Boolean(body.pinned);
-      applyFileAction(
-        state,
-        pinned ? "lifecycle-pin" : "lifecycle-unpin",
-        pinPath,
-      );
-      return json({ message: "ok", pinned, path: pinPath });
-    }
-
     const mutatingActions = new Set([
       "/api/upload",
       "/api/recover",
       "/api/free-space",
-      "/api/storage-class",
       "/api/cloud-purge",
       "/api/recover/approve",
       "/api/cloud-purge/accelerate",
@@ -1280,7 +1129,7 @@ export function installDemoFilesFetch(): void {
       if (action === "approve" || action === "accelerate" || action === "scan") {
         return json({ group_id: "demo", message: "started", job_ids: [1] });
       }
-      return json(enqueueJob(state, action, targetPath, body));
+      return json(enqueueJob(state, action, targetPath));
     }
 
     if (method !== "GET" && path.startsWith("/api/")) {

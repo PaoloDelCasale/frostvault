@@ -42,18 +42,18 @@ export const defaultPolicy = {
 };
 
 export const defaultLifecycle = {
-  default_policy_id: null as number | null,
-  folder_overrides: [] as { folder_path: string; policy_id: number | string }[],
-  policies: [] as { id: number | string; name?: string; profile?: { transitions: { days: number; storage_class: string }[] } }[],
+  profile: { transitions: [] as { days: number; storage_class: string }[] },
   guided_profiles: {
     standard_only: { transitions: [] as { days: number; storage_class: string }[] },
-    ia_after_30: {
-      transitions: [{ days: 30, storage_class: "STANDARD_IA" }],
+    economical: {
+      transitions: [{ days: 30, storage_class: "STANDARD_IA" }, { days: 90, storage_class: "GLACIER_IR" }],
     },
+    deep_archive_early: { transitions: [{ days: 0, storage_class: "DEEP_ARCHIVE" }] },
     archive_tiered: {
       transitions: [
         { days: 30, storage_class: "STANDARD_IA" },
-        { days: 90, storage_class: "GLACIER" },
+        { days: 90, storage_class: "GLACIER_IR" },
+        { days: 365, storage_class: "DEEP_ARCHIVE" },
       ],
     },
   },
