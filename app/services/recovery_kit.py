@@ -163,6 +163,20 @@ def record_metadata_restore(connection: Any, backup_created_at: str) -> None:
     stamp = datetime.fromisoformat(backup_created_at)
     if stamp.tzinfo is None:
         raise ValueError("Backup date must include its timezone")
+    # The app must be stopped. Old Jobs and local inode/mtime evidence cannot
+    # acquire authority on a replacement server, even if pathnames still match.
+    connection.execute("""
+        UPDATE vaults SET relocation_state='scan_required', root_identity=NULL,
+            reconnect_volume_fingerprint=NULL
+        WHERE decommission_state='active' AND root_released_at IS NULL
+        """)
+    connection.execute("""
+        UPDATE jobs SET status='cancelled', claim_token=NULL, claimed_at=NULL,
+            claim_expires_at=NULL, updated_at=%s,
+            message='Metadata restored; request this operation again after reconnect',
+            message_key=NULL, message_params=NULL
+        WHERE status NOT IN ('completed','failed','cancelled')
+        """, (now_iso(),))
     connection.execute("DELETE FROM metadata_restore_updates")
     connection.execute("""
         INSERT INTO metadata_restore_state(id, backup_created_at, recorded_at) VALUES (1,%s,%s)

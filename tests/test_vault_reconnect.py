@@ -162,7 +162,8 @@ class VaultReconnectTests(unittest.TestCase):
 
     def test_active_job_and_decommission_block_reconnect(self):
         with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute("INSERT INTO jobs(vault_id,path,action,status,requested_at,updated_at) VALUES (7,'a','upload','queued','now','now')")
+            file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
+            connection.execute("INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at) VALUES (7,%s,'a','upload','queued','now','now')", (file_id,))
         with self.assertRaises(vault_relocation.VaultRelocationError) as error: self.reconnect()
         self.assertEqual(error.exception.reason, "active_jobs")
         with PostgresConnection(str(self.db_path)) as connection:
@@ -230,6 +231,21 @@ class VaultReconnectTests(unittest.TestCase):
         self.assertEqual(result["root_identity_mismatch"], 1)
         self.assertEqual(self.row()["relocation_state"], "scan_required")
 
+    def test_manual_restore_invalidates_local_authority_and_stale_jobs(self):
+        from app.storage import scan_vault
+        with PostgresConnection(str(self.db_path)) as connection:
+            file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
+            connection.execute("INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at) VALUES (7,%s,'a','recover','queued','now','now')", (file_id,))
+            record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+            self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone()["status"], "cancelled")
+        self.assertEqual(vault_relocation.reconcile_vault_root_identities(), 0)
+        with patch("app.storage.scan_cloud") as cloud, patch("app.storage.scan_tree") as tree:
+            result = scan_vault(self.row())
+        self.assertEqual(result["root_identity_mismatch"], 1)
+        tree.assert_not_called(); cloud.assert_not_called()
+        self.assertIsNone(self.row()["root_identity"])
+        self.reconnect()  # No stale Job can strand reconnect indefinitely.
+
     def test_stale_catalog_reconnect_protected_cloud_only_conflict_no_cloud_deletes(self):
         # A is the restored catalog; only B remains remotely after a verified
         # replacement. Even identical local size/mtime cannot retain A's digest.
@@ -257,9 +273,9 @@ class VaultReconnectTests(unittest.TestCase):
         self.assertEqual(len(s3.reads), 3)
         with PostgresConnection(str(self.db_path)) as connection:
             rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(7)}
-            self.assertEqual(rows["same.jpg"]["protection_state"], "protected")
-            self.assertEqual(rows["missing.jpg"]["protection_state"], "cloud_only")
-            self.assertEqual(rows["conflict.jpg"]["protection_state"], "problem")
+            self.assertEqual(rows["same.jpg"]["state"], "protected")
+            self.assertEqual(rows["missing.jpg"]["state"], "cloud_only")
+            self.assertEqual(rows["conflict.jpg"]["state"], "problem")
             self.assertFalse(rows["conflict.jpg"]["upload_eligible"])
             notice = kit_status(connection)["metadata_restore"]
             self.assertEqual(notice["backup_created_at"], "2026-11-02T10:00:00+00:00")

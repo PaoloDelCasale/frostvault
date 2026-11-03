@@ -1020,7 +1020,7 @@ def _verify_reconnected_cloud(
                 "SELECT * FROM archive_versions WHERE vault_id=%s AND object_key=%s "
                 "AND provider_version_id=%s", (vault["id"], key, provider_id),
             ).fetchone()
-        if row["integrity"] == "mismatch":
+        if row["integrity"] == "mismatch" or (row.get("size") is not None and row["size"] != size):
             raise RuntimeError("Cloud content mismatch; reconnect remains suspended")
         digest = row.get("plaintext_sha256")
         if row["integrity"] != "verified" or not digest:
@@ -1209,6 +1209,8 @@ def _collect_local_fingerprint_updates(
                 )
             continue
         except (ValueError, RuntimeError):
+            if scan_journal is not None:
+                scan_journal["incomplete"] = True
             continue
         updates.append(
             {
@@ -1458,7 +1460,7 @@ def _verified_local_scan(
                 raise _ScanRootMismatch("Local scan was superseded")
             rename_summary = _apply_auto_renames(
                 connection, vault, root=pinned_root, hash_missing=False,
-                recognize_renames=complete,
+                recognize_renames=complete and vault.get("relocation_state") != "scan_required",
             )
             rename_summary["hashed"] = len(updates)
             _current_verified_scan_row(connection, vault)

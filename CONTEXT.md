@@ -28,15 +28,20 @@ it is stable across ordinary remounts and is never represented by a marker file
 or by persisted raw host paths.
 _Avoid_: Marker file, Host path, Mount ID
 
-**Vault Root Relocation**:
-Reconnecting a Vault to the same local directory after that directory moves
-within its Source Volume.
-_Avoid_: Rebind, Migration
+**Reconnect Folder**:
+The Owner's explicit acceptance of a local folder and its Source Volume for an
+existing Vault, with a complete reconciliation before local protection resumes.
+_Avoid_: Relocation, Rebind, Migration
 
-**Vault Root Rebind**:
-Retargeting a Vault to a different local directory rather than relocating the
-same one.
-_Avoid_: Relocation, Rename
+**Recovery Kit**:
+The installation's independently custodied metadata key, cloud location and
+manual recovery instructions, without any catalog contents.
+_Avoid_: Vault export, Per-Vault recovery file
+
+**Kit Fingerprint**:
+The short public identity of the current Recovery Kit, to compare with the
+independently stored kit and its one custody acknowledgment.
+_Avoid_: Master key, Checksum file
 
 **Vault Decommission**:
 A deliberate, auditable lifecycle that quiesces one Vault, applies explicit

@@ -179,10 +179,14 @@ The expected fingerprint is immutable. A normal remount with the same stable
 fields is accepted. A different fingerprint is **replaced** and fails closed
 before scans, watchers, browsing, upload, recovery, rename, free-space, or other
 local work can touch the tree. Retry and rescan cannot accept a replacement;
-restore the expected operator/Compose mount. Catalog and cloud-only views remain
-available, and a restored expected mount requires a full local scan. Moving a
-Vault root within that same healthy Source Volume remains a separate explicit
-relocation concern; this mechanism never rebinds a Vault or Source Volume.
+restore the expected operator/Compose mount or explicitly use **Reconnect
+Folder** for the selected Vault. Catalog and cloud-only views remain available.
+Reconnect accepts the observed supported mount fingerprint for that Vault only;
+it never replaces shared enrollment or unblocks sibling Vaults. It accepts a
+different directory/Source Volume with root containment/allocation checks, then
+reconciles cloud without deletions and requires a complete local rehash before
+work resumes. Different bytes are held as Cloud-only Conflicts. Future mount or
+directory replacement fails closed again (ADR-0019).
 
 Supported deployment notes:
 
@@ -207,5 +211,9 @@ Supported deployment notes:
 
 The administration Source Volume inventory retains persisted aliases while a
 mount is absent and distinguishes **absent**, **inaccessible**, and **replaced**
-health. FrostVault does not expose an “accept replacement” endpoint or UI.
+health. **Reconnect Folder** is the sole explicit per-Vault acceptance action
+(`POST /api/admin/vaults/{vault_id}/reconnect`, Session + CSRF + reason). Shared
+inventory may still say replaced while a specifically accepted Vault is healthy;
+other Vaults stay blocked. Missing/ambiguous/unsupported mounts are never accepted.
+The superseded `/relocate` endpoint no longer exists.
 

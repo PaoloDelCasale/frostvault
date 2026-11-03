@@ -1792,7 +1792,7 @@ def download_recovery_kit(
     except recovery_kit_service.RecoveryKitUnavailable as exc:
         raise HTTPException(409, str(exc)) from None
     with db() as connection:
-        record_audit_event(connection, event="recovery_kit_downloaded",
+        audit_event_store.record_audit_event(connection, event="recovery_kit_downloaded",
                            actor_user_id=int(user["id"]), outcome="success", visibility="owner")
     return Response(payload, media_type="application/octet-stream", headers={
         "Content-Disposition": 'attachment; filename="frostvault-recovery-kit.json"',
@@ -1810,7 +1810,7 @@ def acknowledge_recovery_kit(
             recovery_kit_service.acknowledge_custody(connection, action.fingerprint)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
-        record_audit_event(connection, event="recovery_kit_custody_acknowledged",
+        audit_event_store.record_audit_event(connection, event="recovery_kit_custody_acknowledged",
                            actor_user_id=int(user["id"]), outcome="success", visibility="owner",
                            fingerprint=action.fingerprint)
         return recovery_kit_service.kit_status(connection)

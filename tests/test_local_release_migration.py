@@ -45,7 +45,7 @@ class LocalReleaseMigrationTests(unittest.TestCase):
     def test_all_legacy_combinations_are_off_and_only_pending_release_jobs_cancelled(self):
         with PostgresConnection(self.path) as connection:
             before = self.evidence(connection)
-        result = run_alembic(self.path)
+        result = run_alembic(self.path, "0057_vault_local_release")
         self.assertEqual(result.returncode, 0, result.stderr)
         with PostgresConnection(self.path) as connection:
             self.assertEqual(self.evidence(connection), before)
@@ -71,7 +71,7 @@ class LocalReleaseMigrationTests(unittest.TestCase):
             connection.execute("UPDATE jobs SET status='cleaning' WHERE path='manual'")
             before = self.evidence(connection)
             jobs_before = connection.execute("SELECT * FROM jobs ORDER BY id").fetchall()
-        result = run_alembic(self.path)
+        result = run_alembic(self.path, "0057_vault_local_release")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Reconcile interrupted free-space Jobs", result.stderr)
         with PostgresConnection(self.path) as connection:

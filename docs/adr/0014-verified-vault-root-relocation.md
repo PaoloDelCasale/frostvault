@@ -1,5 +1,9 @@
 # Verify Vault Root Relocation by enrolled directory identity
 
+> Superseded by ADR-0019 (#427): one explicit Reconnect Folder accepts a
+> different directory or Source Volume, retaining fail-closed identity checks
+> and mandatory reconciliation. The original decision below is historical.
+
 FrostVault permits a global administrator to reconnect a missing custom Vault
 root only when the destination is on the same healthy, identity-verified Source
 Volume and its opaque `linux-stat-dir-v1` identity (device plus directory inode)

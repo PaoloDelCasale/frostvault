@@ -98,7 +98,7 @@ def reconcile_vault_root_identities() -> int:
             """
             SELECT id, source_root FROM vaults
             WHERE root_identity IS NULL AND root_released_at IS NULL
-              AND decommission_state='active'
+              AND decommission_state='active' AND relocation_state='ready'
             """
         ).fetchall()
         for row in rows:
@@ -242,7 +242,7 @@ def _reconnect_vault_root(
     if vault.get("decommission_state", "active") != "active" or vault.get("root_released_at"):
         raise VaultRelocationError(
             "decommission_in_progress",
-            "A decommissioned or decommissioning Vault cannot be relocated",
+            "A decommissioned or decommissioning Vault cannot be reconnected",
         )
     if runtime_busy or _active_jobs(connection, vault_id):
         raise VaultRelocationError("active_jobs", "Vault has active Jobs or a scan")

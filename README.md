@@ -63,7 +63,7 @@ Browsing and statistics use five **protection states**, not copy-presence labels
   agree, with `integrity=verified` and `availability=available`.
 - **Problem**: terminal upload failure, mismatched content verification, missing
   Archive Version, unsupported local entry, or a held Cloud-only Conflict.
-- **Unconfirmed**: the Source Volume/relocation gate prevents observation or cloud
+- **Unconfirmed**: the Source Volume/reconnect gate prevents observation or cloud
   requests cannot confirm availability. Last catalog evidence and its observation
   date remain visible; absence of a volume never turns files into Cloud only.
 - **Cloud only**: no Local Copy is present and the retained cloud snapshot is
@@ -193,9 +193,14 @@ and Cloud-only Conflicts remain held back.
 - An HTTPS reverse proxy for any network-accessible deployment
 
 FrostVault never replaces independent backups. Keep encrypted metadata backups
-and custody of `ARCHIVE_MASTER_KEY` outside this server. The key protects only
-metadata backups, not Vault content. Any authorized S3 tool can recover Vault
-files; AWS SSE-S3 and HTTPS remain required protections.
+and the installation **Recovery Kit** outside this server. Download requires
+recent reauthentication; compare the visible fingerprint and confirm custody
+once for the current kit. It contains the metadata key, cloud location and
+manual PostgreSQL/S3 instructions, not catalog data or AWS credentials. The key
+protects metadata backups only. Any authorized S3 tool can recover Vault files;
+AWS SSE-S3 and HTTPS remain required protections. After metadata restore,
+Reconnect Folder for each Vault and review the durable backup-date/updated-files
+warning. See [manual disaster recovery](docs/metadata-backups.md).
 
 ## Setup
 
@@ -295,8 +300,12 @@ instead of trying other credentials available on the computer.
    custom Source Volume. It accepts ordinary remounts of the same source but
    blocks scans, watchers, and all local operations if the alias is absent,
    inaccessible, ambiguous, unsupported, or backed by a different source. The
-   catalog remains intact. There is no “accept replacement” action: restore the
-   expected Compose mount. Bind, Docker Desktop, and NAS details and limitations
+   catalog remains intact. Restore the expected Compose mount or explicitly
+   **Reconnect Folder** for one existing Vault: accept a new volume/folder,
+   reconcile S3 without deletions, then complete a full local rehash. Matching
+   files become Protected, missing files Cloud-only and different content stays
+   held as a conflict. Sibling Vaults are never implicitly accepted. Bind, Docker
+   Desktop, and NAS details and limitations
    are documented in [docs/filesystem-permissions.md](docs/filesystem-permissions.md).
 
    When creating a Vault, the Owner can keep the default empty root
@@ -366,7 +375,7 @@ remote configuration is required.
 Migration `0051_plaintext_vaults` refuses legacy
 encrypted Vaults before any schema change; recover test data using the previous
 release before creating a fresh plaintext installation. It never rewrites or
-deletes S3 objects. See [upgrade notes](docs/metadata-backups.md#plaintext-only-upgrade-0051).
+deletes S3 objects. See [upgrade notes](docs/metadata-backups.md#older-formats-and-upgrades).
 
 ## Run
 
@@ -485,7 +494,7 @@ into deployment environment variables; the migration discards those overrides.
 See [ADR-0009](docs/adr/0009-effective-system-configuration.md).
 
 There is no audit or worker-error page. Sensitive/destructive actions (including
-cloud deletion, recovery-material downloads and root relocation) retain an
+cloud deletion, Recovery Kit downloads and folder reconnects) retain an
 append-only, redacted action log. Worker errors appear as internal-error
 problems in the notification center. The real scan/watcher reports every
 unreadable path there; inaccessible roots block protection. No background
@@ -648,7 +657,7 @@ than skipping database regressions. S3-compatible cases additionally require
   incur storage, retrieval, request, and transfer charges.
 - Glacier restore requests cannot be cancelled after S3 accepts them.
 - Legacy SQLite installations/backups require the previous release for recovery;
-  there is no automatic conversion to PostgreSQL. See [metadata backups](docs/metadata-backups.md#postgresql-only-release-422).
+  there is no automatic conversion to PostgreSQL. See [metadata backups](docs/metadata-backups.md#older-formats-and-upgrades).
 - The application protects archive workflows but does not replace offline,
   independently tested disaster-recovery copies.
 

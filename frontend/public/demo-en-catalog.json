@@ -373,7 +373,7 @@
   "decommission.blocker.active_jobs": "Active or pending Jobs must finish first ({count}).",
   "decommission.blocker.pending_destructive_actions": "A pending destructive action must reach a terminal state ({count}).",
   "decommission.blocker.scan_active": "Wait for the running Vault scan to finish.",
-  "decommission.blocker.relocation_in_progress": "Complete the mandatory relocation scan first.",
+  "decommission.blocker.relocation_in_progress": "Complete the mandatory reconnect scan first.",
   "decommission.blocker.decommission_in_progress": "This Vault is already being decommissioned.",
   "decommission.blocker.already_decommissioned": "This Vault root has already been released.",
   "decommission.blocker.source_unavailable": "Restore the expected healthy read-write Source Volume before decommissioning.",
