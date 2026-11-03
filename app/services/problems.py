@@ -20,12 +20,18 @@ def report_problem(
     owner_id = owner_user_id(connection)
     if owner_id is None:
         return None
-    identity = hashlib.sha256(f"{path}\0{component}".encode()).hexdigest()
+    identity = hashlib.sha256(
+        f"{path}\0{component}".encode("utf-8", errors="surrogatepass")
+    ).hexdigest()
+    # Linux may expose undecodable filename bytes through surrogateescape.
+    # Render them as escapes rather than letting a DB encoding error hide the
+    # problem. The identity above still distinguishes the original paths.
+    display_path = path.encode("utf-8", errors="backslashreplace").decode("utf-8")
     notification = enqueue_notification(
         connection, user_id=owner_id, vault_id=vault_id, event=event,
         title="", body="", title_key=f"notification.{event}.title",
         body_key=f"notification.{event}.body",
-        message_params={"path": path, "component": component},
+        message_params={"path": display_path, "component": component},
         dedupe_key=f"{event}:{vault_id}:{identity}", channels=("in_app",),
     )
     # Reading an earlier occurrence must not hide a later failure of this same

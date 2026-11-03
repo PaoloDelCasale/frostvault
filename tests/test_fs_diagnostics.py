@@ -136,6 +136,18 @@ class FilesystemProblemTests(unittest.TestCase):
         self.assertEqual(result["local"], -1)
         self.assertIn("protection_blocked", {p["event"] for p in self.problems()})
 
+    def test_unreadable_non_utf8_filename_is_still_signalled(self):
+        target = self.root / "bad\udcff.jpg"
+        target.write_bytes(b"data")
+        with patch("app.services.fs_preflight.os.open", side_effect=PermissionError("denied")):
+            with self.assertRaises(PermissionError):
+                storage.scan_tree(self.vault, "non-utf8")
+        problems = self.problems()
+        self.assertEqual(len(problems), 1)
+        self.assertEqual(problems[0]["event"], "file_unreadable")
+        import json
+        self.assertEqual(json.loads(problems[0]["message_params"])["path"], "bad\\udcff.jpg")
+
     def test_hash_read_failure_also_reports_the_exact_path(self):
         target = self.root / "hash.bin"
         target.write_bytes(b"data")
