@@ -170,6 +170,12 @@ def set_policy(
             json.dumps(list(canonical.exclude_globs)),
         ),
     )
+    # Keep the start of one continuous suspension, including across restart.
+    connection.execute(
+        "UPDATE vault_operation_policies SET suspended_at=CASE WHEN auto_upload THEN NULL "
+        "ELSE COALESCE(suspended_at,%s) END WHERE vault_id=%s",
+        (datetime.now(timezone.utc).isoformat(), vault_id),
+    )
     return canonical
 
 
@@ -410,7 +416,6 @@ def queue_auto_local_cleanups(
     """Queue safe Local Copy cleanup Jobs when the current policy is due."""
     from ..catalog import ArchiveCatalog
     from .audit_events import record_audit_event
-    from .notifications import enqueue_notification
 
     policy = get_policy(connection, vault_id)
     if (
@@ -478,15 +483,6 @@ def queue_auto_local_cleanups(
                 outcome="queued",
                 path=row["path"],
                 archive_version_id=row["archive_version_id"],
-            )
-            enqueue_notification(
-                connection,
-                user_id=requested_by,
-                event="local_cleanup.auto_queued",
-                title="Automatic local cleanup queued",
-                body=f"{row['path']} reached its Local Copy retention period.",
-                vault_id=vault_id,
-                job_id=job_id,
             )
         queued += len(job_ids)
     return queued

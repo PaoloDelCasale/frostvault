@@ -1427,12 +1427,15 @@ def _record_scan_component_health(
     stamp = now_iso()
     try:
         with db() as connection:
-            if not ok and notify_problem:
-                report_problem(
-                    connection, vault_id=int(vault_id),
-                    event="protection_blocked" if component == "source" else "internal_error",
-                    component=component,
+            if component in {"source", "cloud", "policy"} and (ok or notify_problem):
+                notification_service.set_problem(
+                    connection, key=f"blocked:{vault_id}:{component}",
+                    event="protection_blocked", vault_id=int(vault_id), active=not ok,
+                    params={"component": component},
                 )
+            elif not ok and notify_problem:
+                report_problem(connection, vault_id=int(vault_id),
+                               event="internal_error", component=component)
             record_component_health(
                 connection,
                 vault_id=int(vault_id),
@@ -3838,15 +3841,6 @@ def record_automatic_cleanup_outcome(
                 path=job["path"],
                 archive_version_id=job.get("archive_version_id"),
             )
-            notification_service.enqueue_notification(
-                connection,
-                user_id=int(job["requested_by"]),
-                event=event,
-                title=title,
-                body=body,
-                vault_id=job["vault_id"],
-                job_id=job["id"],
-            )
     except Exception as exc:
         try:
             with db() as connection:
@@ -5236,6 +5230,8 @@ def _deliver_notifications_once() -> None:
             notification_service.reconcile_pending_terminal_notifications(
                 connection
             )
+            from .services.protection_notifications import maintain_notifications
+            maintain_notifications(connection)
             try:
                 metrics_service.set_gauge(
                     "jobs_notification_backlog",
