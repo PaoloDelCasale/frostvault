@@ -114,7 +114,7 @@ class LocalReleaseWorkerTests(unittest.TestCase):
                 self.assertFalse(self.path.exists())
                 self.head.assert_called_with(Bucket="test", Key="photos/old-photo.jpg", VersionId="exact")
 
-    def test_unconfirmed_or_absent_volume_does_not_even_contact_cloud(self):
+    def test_unconfirmed_or_absent_volume_does_not_head_snapshot_or_touch_file(self):
         self.confirmed.return_value = False
         with self.assertRaisesRegex(RuntimeError, "not confirmed"):
             storage.process_free_space(self.job)
@@ -194,4 +194,3 @@ class LocalReleaseWorkerTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), b"photo")
         self.assertEqual(self.path.stat().st_mtime_ns, self.mtime)
         self.assertEqual(list(Path(self.tmp.name).glob("*.tmp")), [])
-
