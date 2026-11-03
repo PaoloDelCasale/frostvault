@@ -76,7 +76,6 @@ from .services.vault_paths import (
     safe_relative_path,
     safe_local_path,
     safe_local_entry_path,
-    _cloud_relative_key,
     object_key_to_path,
     expected_cloud_key,
     plain_rclone_destination,

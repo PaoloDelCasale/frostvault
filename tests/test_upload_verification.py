@@ -12,7 +12,6 @@ import hashlib
 import os
 import tempfile
 import unittest
-from contextlib import contextmanager
 from pathlib import Path
 from tests.snapshot_s3_stub import VersionedS3Stub
 from types import SimpleNamespace

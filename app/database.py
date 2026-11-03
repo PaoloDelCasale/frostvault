@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -16,7 +15,6 @@ from .security import hash_password, verify_password
 
 INTEGRITY_ERRORS = (UniqueViolation, sqlite3.IntegrityError)
 HEAD_SCHEMA_REVISION = "0051_plaintext_vaults"
-_logger = logging.getLogger(__name__)
 
 
 class DatabaseSchemaError(RuntimeError):
