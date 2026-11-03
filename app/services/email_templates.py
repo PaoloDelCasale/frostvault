@@ -40,12 +40,13 @@ TEMPLATES: dict[str, dict[str, str]] = {
             "{title}\n{body}\n"
         ),
     },
-    "job_completed": {
-        "subject": f"{SUBJECT_PREFIX} Job completed",
-        "body": (
-            "A Job completed in vault {vault_id}.\n"
-            "{title}\n{body}\n"
-        ),
+    "recovery_completed": {
+        "subject": f"{SUBJECT_PREFIX} Recovery completed",
+        "body": "{title}\n{body}\n",
+    },
+    "recovery_failed": {
+        "subject": f"{SUBJECT_PREFIX} Recovery failed",
+        "body": "{title}\n{body}\n",
     },
     "archive_version_missing": {
         "subject": f"{SUBJECT_PREFIX} Archive version missing",

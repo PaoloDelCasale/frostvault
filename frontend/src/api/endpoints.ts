@@ -70,6 +70,8 @@ export type NotificationItem = {
   created_at: string;
   read: boolean;
   read_at: string | null;
+  problem_status?: "open" | "resolved" | null;
+  resolved_at?: string | null;
 };
 
 export type NotificationListStatus = "unread" | "read" | "all";
@@ -77,6 +79,8 @@ export type NotificationListStatus = "unread" | "read" | "all";
 export type NotificationsResponse = {
   items: NotificationItem[];
   unread_count: number;
+  open_problem_count?: number;
+  email_configured?: boolean;
   /** True when another bounded page is available via ``before_id``. */
   has_more?: boolean;
 };

@@ -192,7 +192,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             notifications = connection.execute(
                 "SELECT event, title_key, in_app_enabled FROM notifications "
-                "WHERE event<>'job_completed'"
+                "WHERE event='cloud_only_conflict'"
             ).fetchall()
         self.assertEqual(
             [(row["event"], row["title_key"]) for row in notifications],

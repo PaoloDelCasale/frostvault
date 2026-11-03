@@ -26,11 +26,36 @@ def upgrade() -> None:
     op.add_column("vault_operation_policies", sa.Column("suspended_at", sa.Text(), nullable=True))
     op.execute("UPDATE vault_operation_policies SET suspended_at=CURRENT_TIMESTAMP::text WHERE NOT auto_upload")
     # Notification history only: never touch Local Copies, Jobs or cloud evidence.
+    op.execute("""
+        UPDATE notifications n SET event='recovery_completed',
+            title_key='notification.recovery_completed.title',
+            body_key='notification.recovery_completed.body',
+            dedupe_key='job:' || n.job_id::text || ':recovery_completed'
+        FROM jobs j WHERE n.job_id=j.id AND n.event='job_completed'
+            AND j.action='recover' AND j.origin='manual'
+    """)
+    op.execute("""
+        UPDATE notifications n SET event='recovery_failed',
+            title_key='notification.recovery_failed.title',
+            body_key='notification.recovery_failed.body',
+            dedupe_key='job:' || n.job_id::text || ':recovery_failed'
+        FROM jobs j WHERE n.job_id=j.id AND n.event='job_failed'
+            AND j.action='recover' AND j.origin='manual'
+    """)
     op.execute("DELETE FROM notifications WHERE event LIKE 'local_cleanup.%' OR event='job_completed'")
+    op.execute("""
+        DELETE FROM notifications n USING jobs j WHERE n.job_id=j.id
+            AND n.event='job_failed' AND j.action NOT IN ('upload','recover')
+    """)
     op.execute("""
         UPDATE notifications SET problem_key=dedupe_key, problem_status='open'
         WHERE event IN ('archive_version_missing', 'cloud_only_conflict',
                         'protection_blocked', 'file_unreadable', 'internal_error', 'job_failed')
+    """)
+    op.execute("""
+        UPDATE notifications SET dedupe_key='blocked:' || vault_id::text || ':source',
+            problem_key='blocked:' || vault_id::text || ':source'
+        WHERE event='protection_blocked' AND message_params::jsonb->>'component'='source'
     """)
 
 

@@ -997,7 +997,7 @@ class StorageCleanupTests(unittest.TestCase):
                         )
                     )
 
-    def test_cancelling_automatic_cleanup_is_audited_and_notified(self) -> None:
+    def test_cancelling_automatic_cleanup_is_audited_but_not_notified(self) -> None:
         connection = CancelGroupConnection(automatic_cleanup=True)
         with (
             patch("app.main.db", return_value=connection),
@@ -1021,15 +1021,7 @@ class StorageCleanupTests(unittest.TestCase):
             path="docs/file.txt",
             archive_version_id="version-1",
         )
-        enqueue_notification.assert_called_once_with(
-            connection,
-            user_id=1,
-            event="local_cleanup.cancelled",
-            title="Automatic local cleanup cancelled",
-            body="The Local Copy cleanup for docs/file.txt was cancelled.",
-            vault_id=2,
-            job_id=10,
-        )
+        enqueue_notification.assert_not_called()
 
     def test_vault_scan_queues_due_local_cleanup_through_policy_scheduler(self) -> None:
         from app.storage import scan_vault
@@ -1260,14 +1252,7 @@ class StorageCleanupTests(unittest.TestCase):
                     {"event": "local_cleanup.completed", "outcome": "success"},
                 ],
             )
-            self.assertEqual(
-                notifications,
-                [
-                    {"event": "local_cleanup.auto_queued"},
-                    {"event": "job_completed"},
-                    {"event": "local_cleanup.completed"},
-                ],
-            )
+            self.assertEqual(notifications, [])
 
     def test_cleanup_job_keeps_local_file_when_s3_check_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1305,7 +1290,7 @@ class StorageCleanupTests(unittest.TestCase):
                 listed["items"][0]["message"],
             )
 
-    def test_automatic_cleanup_failure_is_audited_and_notified(self) -> None:
+    def test_automatic_cleanup_failure_is_audited_but_only_summarized(self) -> None:
         from app.services.operation_policies import (
             OperationPolicy,
             queue_auto_local_cleanups,
@@ -1369,10 +1354,7 @@ class StorageCleanupTests(unittest.TestCase):
                 events[-1],
                 {"event": "local_cleanup.failed", "outcome": "failure"},
             )
-            self.assertEqual(
-                notifications[-1],
-                {"event": "local_cleanup.failed"},
-            )
+            self.assertEqual(notifications, [])
 
     def test_cleanup_never_deletes_content_changed_after_fingerprinting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
+import time
+
+_last_maintenance = 0.0
 
 from . import notifications as inbox
 from .operation_policies import auto_upload_path_is_included, file_is_stable, get_policy
@@ -83,16 +86,23 @@ def monitor_vault(connection: Any, vault: Mapping[str, Any], *, now: datetime) -
     candidates = [dict(row) for row in rows if auto_upload_path_is_included(row["path"], policy)]
     # One durable continuous timer per included pending file; no path or secret
     # persisted in monitoring tables. Existing timers never reset on writes.
-    for row in candidates:
-        connection.execute("INSERT INTO protection_pending(vault_file_id,pending_since) VALUES (%s,%s) "
-                           "ON CONFLICT(vault_file_id) DO NOTHING", (row["id"], row["observed_at"]))
+    for start in range(0, len(candidates), 500):
+        chunk = candidates[start:start + 500]
+        connection.execute(
+            "INSERT INTO protection_pending(vault_file_id,pending_since) VALUES " +
+            ",".join(["(%s,%s)"] * len(chunk)) + " ON CONFLICT(vault_file_id) DO NOTHING",
+            [value for row in chunk for value in (row["id"], row["observed_at"])],
+        )
     ages = {row["vault_file_id"]: row["pending_since"] for row in connection.execute(
         "SELECT p.* FROM protection_pending p JOIN vault_files vf ON vf.id=p.vault_file_id WHERE vf.vault_id=%s",
         (vault_id,),
     ).fetchall()}
     active = {row["id"] for row in candidates}
-    for file_id in ages.keys() - active:
-        connection.execute("DELETE FROM protection_pending WHERE vault_file_id=%s", (file_id,))
+    stale = list(ages.keys() - active)
+    for start in range(0, len(stale), 500):
+        chunk = stale[start:start + 500]
+        connection.execute("DELETE FROM protection_pending WHERE vault_file_id IN (" +
+                           ",".join(["%s"] * len(chunk)) + ")", chunk)
     for row in candidates:
         row["pending_since"] = ages[row["id"]]
     progress = connection.execute(
@@ -154,6 +164,11 @@ def weekly_summary(connection: Any, *, now: datetime) -> dict[str, Any]:
 
 def maintain_notifications(connection: Any, *, now: datetime | None = None) -> None:
     from ..owner import owner_user_id
+    global _last_maintenance
+    automatic = now is None
+    tick = time.monotonic()
+    if automatic and tick - _last_maintenance < 60:
+        return
     now = now or datetime.now(timezone.utc)
     owner = owner_user_id(connection)
     if owner is None:
@@ -166,9 +181,13 @@ def maintain_notifications(connection: Any, *, now: datetime | None = None) -> N
     latest = connection.execute("SELECT created_at FROM notifications WHERE user_id=%s AND event='weekly_summary' ORDER BY id DESC LIMIT 1",
                                 (owner,)).fetchone()
     if latest and now - _time(latest["created_at"], now) < timedelta(days=7):
+        if automatic:
+            _last_maintenance = tick
         return
     summary = weekly_summary(connection, now=now)
     inbox.enqueue_notification(connection, user_id=owner, event="weekly_summary", title="",
                                title_key="notification.weekly_summary.title", body_key="notification.weekly_summary.body",
                                message_params=summary, channels=inbox.fixed_channels(),
                                dedupe_key=f"summary:{now.date().isoformat()}")
+    if automatic:
+        _last_maintenance = tick

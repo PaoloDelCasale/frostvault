@@ -700,7 +700,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                     """
                     INSERT INTO notifications(
                         user_id, vault_id, job_id, event, title, body, created_at
-                    ) VALUES (%s, %s, %s, 'job_completed', 'Partial', '', %s)
+                    ) VALUES (%s, %s, %s, 'recovery_completed', 'Partial', '', %s)
                     """,
                     (user_id, vault_id, job_id, "2026-07-22T10:02:00+00:00"),
                 )

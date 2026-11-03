@@ -129,8 +129,15 @@ function NotificationRow({
           </time>
         </div>
         {body ? (
-          <p className="mt-0.5 line-clamp-2 break-words text-sm leading-snug text-muted">
+          <p className={cn("mt-0.5 whitespace-pre-line break-words text-sm leading-snug text-muted", item.event !== "weekly_summary" && "line-clamp-2")}>
             {body}
+          </p>
+        ) : null}
+        {item.problem_status ? (
+          <p className="text-xs font-bold" data-testid="notification-problem-status">
+            {item.problem_status === "open"
+              ? notificationLabel(t, "ui.problem_open", "Open problem")
+              : notificationLabel(t, "ui.problem_resolved", "Resolved problem")}
           </p>
         ) : null}
         <span className="sr-only">
@@ -610,6 +617,11 @@ export function NotificationCenter({
           className="grid min-h-0 flex-1 gap-4 overflow-y-auto"
           data-testid="notification-center"
         >
+          <p data-testid="notification-open-problem-count" className="text-sm font-bold">
+            {notificationLabel(t, "ui.open_problems_count", "{count} open problems", {
+              count: notificationsQuery.data?.open_problem_count ?? 0,
+            })}
+          </p>
           {markError ? (
             <p role="alert" className="text-sm font-bold text-destructive">
               {markError}

@@ -1556,6 +1556,111 @@
         "title": "MetadataBackupRunAction",
         "type": "object"
       },
+      "NotificationItem": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "body_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "dedupe_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "event": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "in_app_enabled": {
+            "type": "boolean"
+          },
+          "job_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "message_params": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "problem_status": {
+            "enum": [
+              "open",
+              "resolved",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "read": {
+            "type": "boolean"
+          },
+          "read_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "title_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_id": {
+            "type": "integer"
+          },
+          "vault_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "vault_id",
+          "job_id",
+          "event",
+          "title",
+          "body",
+          "title_key",
+          "body_key",
+          "message_params",
+          "in_app_enabled",
+          "dedupe_key",
+          "created_at",
+          "read",
+          "read_at",
+          "problem_status",
+          "resolved_at"
+        ],
+        "type": "object"
+      },
       "NotificationReadAction": {
         "properties": {
           "notification_id": {
@@ -1567,6 +1672,36 @@
           "notification_id"
         ],
         "title": "NotificationReadAction",
+        "type": "object"
+      },
+      "NotificationsResponse": {
+        "properties": {
+          "email_configured": {
+            "type": "boolean"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationItem"
+            },
+            "type": "array"
+          },
+          "open_problem_count": {
+            "type": "integer"
+          },
+          "unread_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "unread_count",
+          "open_problem_count",
+          "email_configured",
+          "has_more"
+        ],
         "type": "object"
       },
       "OperationPolicy": {
@@ -3909,7 +4044,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
+                  "$ref": "#/components/schemas/NotificationsResponse"
                 }
               }
             },

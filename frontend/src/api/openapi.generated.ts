@@ -1610,10 +1610,39 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        NotificationItem: {
+            body: string;
+            body_key: string | null;
+            created_at: string;
+            dedupe_key: string | null;
+            event: string;
+            id: number;
+            in_app_enabled: boolean;
+            job_id: number | null;
+            message_params: {
+                [key: string]: unknown;
+            };
+            /** @enum {string|null} */
+            problem_status: "open" | "resolved" | null;
+            read: boolean;
+            read_at: string | null;
+            resolved_at: string | null;
+            title: string;
+            title_key: string | null;
+            user_id: number;
+            vault_id: number | null;
+        };
         /** NotificationReadAction */
         NotificationReadAction: {
             /** Notification Id */
             notification_id: number;
+        };
+        NotificationsResponse: {
+            email_configured: boolean;
+            has_more: boolean;
+            items: components["schemas"]["NotificationItem"][];
+            open_problem_count: number;
+            unread_count: number;
         };
         OperationPolicy: {
             auto_local_cleanup: boolean;
@@ -2797,7 +2826,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["NotificationsResponse"];
                 };
             };
             /** @description Validation Error */

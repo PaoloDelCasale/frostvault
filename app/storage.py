@@ -442,6 +442,28 @@ def s3_client():
 
 
 def validate_cloud_vault(vault: dict[str, Any]) -> None:
+    # Observability must not change preflight success/failure or transfer safety.
+    try:
+        _validate_cloud_vault(vault)
+    except Exception:
+        _report_cloud_preflight(vault, blocked=True)
+        raise
+    _report_cloud_preflight(vault, blocked=False)
+
+
+def _report_cloud_preflight(vault: dict[str, Any], *, blocked: bool) -> None:
+    try:
+        vault_id = int(vault.get("vault_id") or vault["id"])
+        with db() as connection:
+            notification_service.set_problem(
+                connection, key=f"blocked:{vault_id}:preflight", event="protection_blocked",
+                vault_id=vault_id, active=blocked, params={"component": "cloud_configuration"},
+            )
+    except Exception:
+        pass
+
+
+def _validate_cloud_vault(vault: dict[str, Any]) -> None:
     bucket = vault.get("s3_bucket")
     if not bucket or is_placeholder(
         bucket,
@@ -1436,6 +1458,9 @@ def _record_scan_component_health(
             elif not ok and notify_problem:
                 report_problem(connection, vault_id=int(vault_id),
                                event="internal_error", component=component)
+            if ok:
+                report_problem(connection, vault_id=int(vault_id), event="internal_error",
+                               component=component, active=False)
             record_component_health(
                 connection,
                 vault_id=int(vault_id),
@@ -3824,8 +3849,6 @@ def record_automatic_cleanup_outcome(
     *,
     event: str,
     outcome: str,
-    title: str,
-    body: str,
 ) -> None:
     if job.get("origin") != "automatic":
         return
@@ -3956,8 +3979,6 @@ def process_free_space(job: dict[str, Any]) -> None:
             job,
             event="local_cleanup.completed",
             outcome="success",
-            title="Automatic local cleanup completed",
-            body=f"The Local Copy of {job['path']} was removed; recovery remains available.",
         )
 
 
@@ -4683,8 +4704,6 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                 job,
                 event="local_cleanup.cancelled",
                 outcome="cancelled",
-                title="Automatic local cleanup cancelled",
-                body=f"The Local Copy cleanup for {job['path']} was cancelled.",
             )
     except Exception as exc:
         if _claim_is_lost(int(job["id"])):
@@ -4726,8 +4745,6 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                 job,
                 event="local_cleanup.failed",
                 outcome="failure",
-                title="Automatic local cleanup failed",
-                body=f"The Local Copy cleanup for {job['path']} failed: {message}",
             )
     return True
 

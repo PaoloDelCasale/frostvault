@@ -52,7 +52,7 @@ const defaultVaults = [
   },
 ];
 
-async function renderAdmin() {
+async function renderAdmin(emailConfigured = false) {
   const requests: Array<{ url: string; method: string }> = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -60,6 +60,9 @@ async function renderAdmin() {
     requests.push({ url, method });
     if (url.startsWith("/api/i18n/catalog")) {
       return jsonResponse({ locale: "en", locales: ["en", "it"], messages });
+    }
+    if (url.startsWith("/api/notifications?")) {
+      return jsonResponse({ items: [], unread_count: 0, open_problem_count: 0, email_configured: emailConfigured });
     }
     if (url === "/api/admin/vaults" && method === "GET") {
       return jsonResponse({ items: structuredClone(defaultVaults) });
@@ -118,6 +121,18 @@ afterEach(() => {
 describe("AdminPage — single owner (#412)", () => {
   beforeEach(() => {
     resetApiClientForTests();
+  });
+
+  it("warns on the current General-compatible surface without optional email", async () => {
+    await renderAdmin(false);
+    expect(await screen.findByTestId("email-not-configured")).toHaveTextContent("Email is not configured");
+    expect(screen.getByTestId("email-not-configured")).toHaveTextContent("SMTP_TO_ADDRESS");
+  });
+
+  it("does not warn when optional email is configured", async () => {
+    await renderAdmin(true);
+    await screen.findByText("Vault A");
+    expect(screen.queryByTestId("email-not-configured")).not.toBeInTheDocument();
   });
 
   it("exposes stable routes without Users, Invites or OIDC sections", async () => {

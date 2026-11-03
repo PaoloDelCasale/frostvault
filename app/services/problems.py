@@ -15,7 +15,7 @@ from .notifications import set_problem
 
 def report_problem(
     connection: Any, *, event: str, vault_id: int | None = None,
-    path: str = "", component: str = "",
+    path: str = "", component: str = "", active: bool = True,
 ) -> dict[str, Any] | None:
     owner_id = owner_user_id(connection)
     if owner_id is None:
@@ -28,7 +28,7 @@ def report_problem(
     # problem. The identity above still distinguishes the original paths.
     display_path = path.encode("utf-8", errors="backslashreplace").decode("utf-8")
     return set_problem(
-        connection, vault_id=vault_id, event=event, active=True,
+        connection, vault_id=vault_id, event=event, active=active,
         key=f"{event}:{vault_id}:{identity}",
         params={"path": display_path, "component": component},
         email=event == "protection_blocked",

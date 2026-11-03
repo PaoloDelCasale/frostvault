@@ -559,10 +559,10 @@ def set_problem(
     reopen = previous and previous.get("problem_status") == "resolved"
     connection.execute(
         "UPDATE notifications SET problem_key=%s, problem_status='open', resolved_at=NULL, "
-        "message_params=%s, body=%s, read_at=CASE WHEN %s THEN NULL ELSE read_at END "
-        "WHERE id=%s",
+        "message_params=%s, body=%s, read_at=CASE WHEN %s THEN NULL ELSE read_at END, "
+        "created_at=CASE WHEN %s THEN %s ELSE created_at END WHERE id=%s",
         (key, format_message_params(context), translate(f"notification.{event}.body", **context),
-         bool(reopen), item["id"]),
+         bool(reopen), bool(reopen), stamp, item["id"]),
     )
     if reopen:
         connection.execute(
@@ -592,6 +592,12 @@ def reconcile_problem_states(connection: Any) -> None:
                   ON latest.vault_file_id=original.vault_file_id AND latest.action='upload'
                 WHERE original.id=n.job_id AND
                     (original.status<>'failed' OR latest.id>original.id)
+            )) OR (n.event='file_unreadable' AND (
+                EXISTS (SELECT 1 FROM vault_component_health h WHERE h.vault_id=n.vault_id
+                        AND h.component='source' AND h.last_error IS NULL AND h.last_success_at>n.created_at)
+                OR EXISTS (SELECT 1 FROM file_paths fp JOIN local_copies lc ON lc.vault_file_id=fp.vault_file_id
+                           WHERE fp.vault_id=n.vault_id AND fp.valid_to IS NULL
+                             AND fp.path=(n.message_params::jsonb->>'path') AND lc.observed_at>n.created_at)
             ))
         )
     """, (now_iso(), now_iso()))
@@ -832,7 +838,8 @@ def deliver_pending_notifications(
             else:
                 raise RuntimeError(f"unsupported channel: {row['channel']}")
         except Exception as exc:  # system boundary failure
-            error = str(exc)
+            # Injectable adapters are also untrusted boundaries.
+            error = "smtp delivery failed"
 
         if error is None:
             connection.execute(
