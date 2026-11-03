@@ -11,14 +11,10 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
-from app import main
 from app.catalog import ArchiveCatalog, VaultFileNotFound
 from app.config import settings
 from app.database import SQLiteConnection
 from app.security import hash_password
-from app.sessions import create_session, csrf_token_for
 from app.storage import apply_auto_renames
 from tests.test_database import run_alembic
 
@@ -26,7 +22,7 @@ DIGEST_A = hashlib.sha256(b"content-a").hexdigest()
 
 
 class RenameAuditPersistenceTests(unittest.TestCase):
-    """BUG-009: rename Path History mutations must durable-audit (REQ-021)."""
+    """Internal automatic rename transactions remain race-safe and unlogged."""
 
     PASSWORD = "correct-horse-battery"
 
@@ -64,60 +60,15 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             sqlite_path=str(self.database_path),
             cookie_secure=False,
         )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-            "app.storage.settings",
-        ):
+        for target in ("app.database.settings", "app.storage.settings"):
             patcher = patch(target, self.test_settings)
             patcher.start()
             self.addCleanup(patcher.stop)
 
-        self.client = TestClient(
-            app=main.app, client=("127.0.0.1", 50000), follow_redirects=False
-        )
 
-    def _authenticate(self, *, user_id: int | None = None) -> None:
-        with SQLiteConnection(str(self.database_path)) as connection:
-            raw_token = create_session(
-                connection,
-                user_id=self.owner_id if user_id is None else user_id,
-                auth_method="oidc",
-            )
-            csrf_token = csrf_token_for(connection, raw_token)
-        self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
-        self.client.cookies.set(self.test_settings.csrf_cookie_name, csrf_token)
 
-    def _headers(self) -> dict[str, str]:
-        return {
-            "X-CSRF-Token": self.client.cookies.get(
-                self.test_settings.csrf_cookie_name
-            )
-            or ""
-        }
 
-    def _independent_session_client(self) -> TestClient:
-        """Return a separate HTTP client for a concurrent request."""
-        client = TestClient(
-            app=main.app, client=("127.0.0.1", 50000), follow_redirects=False
-        )
-        for cookie_name in (
-            self.test_settings.session_cookie_name,
-            self.test_settings.csrf_cookie_name,
-        ):
-            cookie_value = self.client.cookies.get(cookie_name)
-            if cookie_value:
-                client.cookies.set(cookie_name, cookie_value)
-        return client
 
-    def _select_vault(self, vault_id: int | None = None) -> None:
-        response = self.client.post(
-            "/api/vaults/select",
-            json={"vault_id": self.vault_id if vault_id is None else vault_id},
-            headers=self._headers(),
-        )
-        self.assertEqual(response.status_code, 200, response.text)
 
     def _seed_digest_rename(
         self,
@@ -184,265 +135,39 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             )
             return old_id
 
-    def _create_operator_with_cross_vault_access(self) -> tuple[int, int]:
-        second_root = Path(self._tmp.name) / "second-source"
-        second_root.mkdir()
-        with SQLiteConnection(str(self.database_path)) as connection:
-            operator_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES (%s, %s, %s) RETURNING id
-                """,
-                ("operator", "Operator", hash_password(self.PASSWORD)),
-            ).fetchone()["id"]
-            second_vault_id = connection.execute(
-                """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                ) VALUES (
-                    'media', 'Media', %s, 'bucket', 'media', 'remote'
-                ) RETURNING id
-                """,
-                (str(second_root),),
-            ).fetchone()["id"]
-        return operator_id, second_vault_id
 
-    def _rename_state(self) -> dict[str, list[dict[str, object]]]:
-        with SQLiteConnection(str(self.database_path)) as connection:
-            return {
-                "vault_files": connection.execute(
-                    "SELECT * FROM vault_files ORDER BY id"
-                ).fetchall(),
-                "file_paths": connection.execute(
-                    "SELECT * FROM file_paths ORDER BY id"
-                ).fetchall(),
-                "local_copies": connection.execute(
-                    "SELECT * FROM local_copies ORDER BY vault_file_id"
-                ).fetchall(),
-                "jobs": connection.execute("SELECT * FROM jobs ORDER BY id").fetchall(),
-                "audit_events": connection.execute(
-                    "SELECT * FROM audit_events ORDER BY id"
-                ).fetchall(),
-            }
 
-    def test_routine_rename_does_not_create_action_log_entries(self) -> None:
-        """#416: renames still work, but routine activity is not audit-logged."""
-        old_id = self._seed_digest_rename(
-            old_path="reports/old-name.txt",
-            new_path="reports/new-name.txt",
-        )
-        self._authenticate()
-        self._select_vault()
-
-        confirm = self.client.post(
-            "/api/confirm-rename",
-            json={"vault_file_id": old_id, "new_path": "reports/new-name.txt"},
-            headers=self._headers(),
-        )
-        self.assertIn(confirm.status_code, {200, 202}, confirm.text)
-
-        with SQLiteConnection(str(self.database_path)) as connection:
-            self.assertEqual(connection.execute(
-                "SELECT COUNT(*) AS n FROM audit_events WHERE event='vault_file_renamed'"
-            ).fetchone()["n"], 0)
-
-    def test_issue_198_invalid_paths_have_one_stable_validation_contract(self) -> None:
-        old_id = self._seed_digest_rename(
-            old_path="api/old.txt",
-            new_path="api/new.txt",
-        )
-        self._authenticate()
-        self._select_vault()
-
-        requests = [
-            self.client.get("/api/file-history", params={"path": "../secret"}),
-            self.client.get("/api/files/versions", params={"path": ""}),
-            self.client.post(
-                "/api/recover/estimate",
-                json={"path": ""},
-                headers=self._headers(),
-            ),
-            self.client.post(
-                "/api/upload",
-                json={"path": "/absolute.txt"},
-                headers=self._headers(),
-            ),
-            self.client.post(
-                "/api/confirm-rename",
-                json={"vault_file_id": old_id, "new_path": ""},
-                headers=self._headers(),
-            ),
-            self.client.post(
-                "/api/confirm-folder-rename",
-                json={"old_prefix": "", "new_prefix": "new"},
-                headers=self._headers(),
-            ),
-        ]
-
-        for response in requests:
-            with self.subTest(response=response.request.url):
-                self.assertEqual(response.status_code, 422, response.text)
-                self.assertEqual(
-                    response.json(),
-                    {
-                        "detail": "Invalid path",
-                        "message_key": "api.invalid_path",
-                        "message": "Invalid path",
-                    },
-                )
-
-    def test_issue_188_rejects_unknown_stale_and_foreign_ids_without_side_effects(
-        self,
-    ) -> None:
-        """An operator in Vault A cannot confirm a Vault B candidate as a viewer."""
-        operator_id, second_vault_id = self._create_operator_with_cross_vault_access()
-        foreign_id = self._seed_digest_rename(
-            vault_id=second_vault_id,
-            old_path="foreign/old.txt",
-            new_path="foreign/new.txt",
-        )
-        retired_id = self._seed_digest_rename(
-            old_path="retired/old.txt",
-            new_path="retired/new.txt",
-        )
-        stale_candidate_id = self._seed_digest_rename(
-            old_path="stale/old.txt",
-            new_path="stale/new.txt",
-        )
-        with SQLiteConnection(str(self.database_path)) as connection:
-            connection.execute(
-                """
-                UPDATE vault_files
-                SET status='retired', retired_at=%s
-                WHERE id=%s
-                """,
-                ("2026-07-21T12:00:00+00:00", retired_id),
-            )
-            ArchiveCatalog(connection).confirm_file_rename(
-                vault_file_id=stale_candidate_id,
-                new_path="stale/new.txt",
-                changed_at="2026-07-21T12:00:00+00:00",
-                vault_id=self.vault_id,
-            )
-
-        self._authenticate(user_id=operator_id)
-        self._select_vault(second_vault_id)
-        candidates = self.client.get("/api/rename-candidates")
-        self.assertEqual(candidates.status_code, 200, candidates.text)
-        foreign_candidates = [
-            candidate
-            for candidate in candidates.json()["items"]
-            if candidate["missing_vault_file_id"] == foreign_id
-        ]
-        self.assertEqual(len(foreign_candidates), 1)
-        foreign_id_from_viewer_lookup = foreign_candidates[0]["missing_vault_file_id"]
-
-        self._select_vault(self.vault_id)
-        responses = []
-        for vault_file_id, new_path in (
-            (str(uuid.uuid4()), "unknown/new.txt"),
-            (retired_id, "retired/new.txt"),
-            (stale_candidate_id, "stale/new.txt"),
-            (foreign_id_from_viewer_lookup, "foreign/new.txt"),
-        ):
-            with self.subTest(vault_file_id=vault_file_id):
-                before = self._rename_state()
-                response = self.client.post(
-                    "/api/confirm-rename",
-                    json={"vault_file_id": vault_file_id, "new_path": new_path},
-                    headers=self._headers(),
-                )
-                self.assertEqual(response.status_code, 404, response.text)
-                self.assertEqual(self._rename_state(), before)
-                responses.append(response.json())
-
-        self.assertEqual(
-            responses,
-            [{"detail": "Vault File not found"}] * 4,
-            (
-                "Unknown, retired, stale-candidate, and foreign IDs must have "
-                "the same non-oracle response"
-            ),
-        )
-
-    def test_issue_188_rejects_candidate_stale_after_source_state_changes(
-        self,
-    ) -> None:
-        """A candidate must still pair a missing source with its new Local Copy."""
-        old_id = self._seed_digest_rename(
-            old_path="stale-state/old.txt",
-            new_path="stale-state/new.txt",
-        )
-        self._authenticate()
-        self._select_vault()
-
-        candidates = self.client.get("/api/rename-candidates")
-        self.assertEqual(candidates.status_code, 200, candidates.text)
-        candidate = next(
-            item
-            for item in candidates.json()["items"]
-            if item["missing_vault_file_id"] == old_id
-        )
-
-        with SQLiteConnection(str(self.database_path)) as connection:
-            connection.execute(
-                """
-                UPDATE local_copies
-                SET presence='present'
-                WHERE vault_file_id=%s
-                """,
-                (old_id,),
-            )
-
-        refreshed_candidates = self.client.get("/api/rename-candidates")
-        self.assertEqual(refreshed_candidates.status_code, 200, refreshed_candidates.text)
-        self.assertNotIn(candidate, refreshed_candidates.json()["items"])
-
-        before = self._rename_state()
-        response = self.client.post(
-            "/api/confirm-rename",
-            json={
-                "vault_file_id": candidate["missing_vault_file_id"],
-                "new_path": candidate["new_path"],
-            },
-            headers=self._headers(),
-        )
-        self.assertEqual(response.status_code, 404, response.text)
-        self.assertEqual(response.json(), {"detail": "Vault File not found"})
-        self.assertEqual(self._rename_state(), before)
 
     def test_issue_188_two_concurrent_confirms_consume_one_candidate_once(self) -> None:
-        """Two API confirmations yield one mutation and Rename Job, without routine logs."""
+        """Competing automatic matches consume one candidate and queue one Job."""
         old_id = self._seed_digest_rename(
             old_path="concurrent/old.txt",
             new_path="concurrent/new.txt",
             with_verified_version=True,
         )
-        self._authenticate()
-        self._select_vault()
 
         start = threading.Barrier(2)
 
         def confirm_once(_: int) -> tuple[int, dict[str, object]]:
-            client = self._independent_session_client()
+            start.wait(timeout=10)
             try:
-                start.wait(timeout=10)
-                response = client.post(
-                    "/api/confirm-rename",
-                    json={
-                        "vault_file_id": old_id,
-                        "new_path": "concurrent/new.txt",
-                    },
-                    headers={
-                        "X-CSRF-Token": client.cookies.get(
-                            self.test_settings.csrf_cookie_name
-                        )
-                        or ""
-                    },
-                )
-                return response.status_code, response.json()
-            finally:
-                client.close()
+                with SQLiteConnection(str(self.database_path)) as connection:
+                    catalog = ArchiveCatalog(connection)
+                    catalog.confirm_file_rename(
+                        vault_file_id=old_id,
+                        new_path="concurrent/new.txt",
+                        changed_at="2026-07-21T11:05:00+00:00",
+                        vault_id=self.vault_id,
+                    )
+                    catalog.queue_jobs(
+                        vault_id=self.vault_id, path="concurrent/new.txt",
+                        action="rename", requested_by=self.owner_id,
+                        requested_at="2026-07-21T11:05:00+00:00",
+                        group_id=str(uuid.uuid4()), is_directory=False,
+                    )
+                return 202, {}
+            except VaultFileNotFound:
+                return 404, {"detail": "Vault File not found"}
 
         with ThreadPoolExecutor(max_workers=2) as workers:
             outcomes = list(workers.map(confirm_once, range(2)))
@@ -602,27 +327,6 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         self.assertEqual(audits, 0)
         self.assertEqual(jobs, 0)
 
-    def test_routine_folder_rename_does_not_create_action_log_entries(self) -> None:
-        folder_old = self._seed_digest_rename(
-            old_path="docs/a.txt",
-            new_path="archive/a.txt",
-            digest=hashlib.sha256(b"folder-a").hexdigest(),
-        )
-        self._authenticate()
-        self._select_vault()
-
-        folder_confirm = self.client.post(
-            "/api/confirm-folder-rename",
-            json={"old_prefix": "docs", "new_prefix": "archive"},
-            headers=self._headers(),
-        )
-        self.assertIn(folder_confirm.status_code, {200, 202}, folder_confirm.text)
-        self.assertIn(folder_old, folder_confirm.json()["renamed_ids"])
-
-        with SQLiteConnection(str(self.database_path)) as connection:
-            self.assertEqual(connection.execute(
-                "SELECT COUNT(*) AS n FROM audit_events WHERE event='vault_folder_renamed'"
-            ).fetchone()["n"], 0)
 
     def test_routine_auto_rename_does_not_create_action_log_entries(self) -> None:
         old_path = "auto/old.txt"

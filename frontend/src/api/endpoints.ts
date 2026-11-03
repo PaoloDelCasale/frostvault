@@ -18,7 +18,6 @@ import type {
   CloudDeletionPreview,
   CloudDeletionSettings,
   CloudPurgePayload,
-  FileHistoryResponse,
   FileOperationPayload,
   FileOperationResponse,
   FilesQuery,
@@ -54,24 +53,6 @@ import type {
 import { translate } from "@/i18n/translate";
 
 const DEFAULT_PAGE_SIZE = 100;
-
-/**
- * The rename-candidate route intentionally has a loose backend response model.
- * These are the fields currently emitted by ArchiveCatalog; size is optional so
- * the UI can show it if the contract grows without claiming evidence it lacks.
- */
-export type RenameCandidate = {
-  missing_vault_file_id: string;
-  missing_path: string;
-  new_vault_file_id: string;
-  new_path: string;
-  digest: string;
-  decision: "auto" | "ambiguous" | "review" | "content_changed" | string;
-  size?: number | null;
-};
-
-export type RenameCandidatesResponse = { items: RenameCandidate[] };
-export type RenameConfirmationResponse = Record<string, unknown>;
 
 /**
  * The notification routes intentionally use the generic JSON response model on
@@ -217,37 +198,6 @@ export function fetchFiles(
     params.set("order", query.order);
   }
   return apiRequest<FilesResponse>(`/api/files?${params.toString()}`, options);
-}
-
-export function fetchFileHistory(path: string): Promise<FileHistoryResponse> {
-  return apiRequest<FileHistoryResponse>(
-    `/api/file-history?path=${encodeURIComponent(path)}`,
-  );
-}
-
-export function fetchRenameCandidates(): Promise<RenameCandidatesResponse> {
-  return apiRequest<RenameCandidatesResponse>("/api/rename-candidates");
-}
-
-export function confirmFileRename(payload: {
-  vault_file_id: string;
-  new_path: string;
-  allow_content_change?: boolean;
-}): Promise<RenameConfirmationResponse> {
-  return apiRequest<RenameConfirmationResponse>("/api/confirm-rename", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function confirmFolderRename(payload: {
-  old_prefix: string;
-  new_prefix: string;
-}): Promise<RenameConfirmationResponse> {
-  return apiRequest<RenameConfirmationResponse>("/api/confirm-folder-rename", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
 }
 
 export function fetchMe(): Promise<MeResponse> {
@@ -597,15 +547,6 @@ export function startFreeSpace(
   payload: FileOperationPayload,
 ): Promise<FileOperationResponse> {
   return apiRequest<FileOperationResponse>("/api/free-space", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function startCloudArchive(
-  payload: FileOperationPayload,
-): Promise<FileOperationResponse> {
-  return apiRequest<FileOperationResponse>("/api/cloud-archive", {
     method: "POST",
     body: JSON.stringify(payload),
   });

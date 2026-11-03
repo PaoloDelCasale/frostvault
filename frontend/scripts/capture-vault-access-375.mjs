@@ -146,7 +146,6 @@ await page.route("**/api/**", async (route) => {
       contentType: "application/json",
       body: JSON.stringify({
         enabled: false,
-        delete_marker_explanation: "A Delete Marker is a reversible cloud marker.",
         accepted_single_identity_risk: "Single IAM identity risk documented.",
       }),
     });

@@ -28,8 +28,6 @@ import {
   type FileSortKey,
   type FileSortOrder,
 } from "./fileSort";
-import { PathHistoryPanel } from "./PathHistoryPanel";
-import { RenameCandidatesPanel } from "./RenameCandidatesPanel";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
@@ -102,7 +100,7 @@ function writeSearchParams(
 
 /**
  * Responsive archive listing: sticky search/breadcrumbs, cards below md,
- * table from md up, Path History on file tap.
+ * table from md up.
  */
 export function FileBrowser({
   t,
@@ -123,17 +121,6 @@ export function FileBrowser({
     // Capture helper: ?sheet=<path> opens the actions bottom sheet.
     return getDemoSearchParam("sheet");
   });
-  const [historyPath, setHistoryPath] = useState<string | null>(() => {
-    // Capture / deep-link helper: ?history=<path> opens Path History.
-    return getDemoSearchParam("history");
-  });
-  const [renderedHistoryPath, setRenderedHistoryPath] = useState<string | null>(
-    historyPath,
-  );
-  useEffect(() => {
-    if (historyPath) setRenderedHistoryPath(historyPath);
-  }, [historyPath]);
-
   const demoConfirm = getDemoSearchParam("confirm");
   const demoConfirmTarget = getDemoSearchParam("target") || "readme.txt";
   const demoVersions = getDemoSearchParam("versions");
@@ -228,7 +215,6 @@ export function FileBrowser({
       setPage(next.page);
       setSortKey(next.sort);
       setSortOrder(next.order);
-      setHistoryPath(null);
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -244,7 +230,6 @@ export function FileBrowser({
     setState("");
     setStorage("");
     setPage(1);
-    setHistoryPath(null);
     writeSearchParams(
       {
         directory: path,
@@ -392,10 +377,6 @@ export function FileBrowser({
 
   return (
     <div className="min-w-0" data-testid="file-browser">
-      <RenameCandidatesPanel
-        vaultId={vaultId}
-        t={t}
-      />
       <div
         data-testid="file-browser-sticky"
         className="sticky top-0 z-10 border-b border-line bg-surface py-3"
@@ -633,15 +614,7 @@ export function FileBrowser({
                 sortOrder={sortOrder}
                 onSort={changeSort}
                 onOpenDirectory={(path) => navigateDirectory(path)}
-                onOpenFile={(path) =>
-                  setHistoryPath((current) => (current === path ? null : path))
-                }
-                selectedFilePath={historyPath}
-                renderedFilePath={renderedHistoryPath}
-                onCloseFile={() => setHistoryPath(null)}
-                onFileDetailExited={() => {
-                  if (historyPath === null) setRenderedHistoryPath(null);
-                }}
+                onOpenFile={onOpenActions}
                 onOpenActions={onOpenActions}
                 onDesktopAction={onDesktopAction}
                 jobsByPath={jobsByPath}
@@ -654,21 +627,6 @@ export function FileBrowser({
               />
             )}
           </FileOperationsHost>
-        ) : null}
-
-        {renderedHistoryPath ? (
-          <div className="md:hidden">
-            <PathHistoryPanel
-              key={renderedHistoryPath}
-              path={renderedHistoryPath}
-              t={t}
-              open={historyPath !== null}
-              onClose={() => setHistoryPath(null)}
-              onExited={() => {
-                if (historyPath === null) setRenderedHistoryPath(null);
-              }}
-            />
-          </div>
         ) : null}
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2">

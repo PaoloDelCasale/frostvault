@@ -1,5 +1,4 @@
 import {
-  Fragment,
   useEffect,
   useId,
   useLayoutEffect,
@@ -53,7 +52,6 @@ import {
   itemStateBadge,
 } from "./fileLabels";
 import { JobProgress } from "./JobProgress";
-import { PathHistoryPanel } from "./PathHistoryPanel";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
@@ -63,12 +61,6 @@ export type FileListProps = {
   capabilities: VaultCapabilities;
   onOpenDirectory: (path: string) => void;
   onOpenFile: (path: string) => void;
-  /** File whose Path History is actively open and highlighted. */
-  selectedFilePath?: string | null;
-  /** File detail retained briefly while its closing animation runs. */
-  renderedFilePath?: string | null;
-  onCloseFile?: () => void;
-  onFileDetailExited?: () => void;
   sortKey?: FileSortKey;
   sortOrder?: FileSortOrder;
   onSort?: (key: FileSortKey) => void;
@@ -629,7 +621,7 @@ function DirectoryStateControl({
         </Dialog.Trigger>
         <Dialog.Portal>
           <Dialog.Content
-            className="path-history-sheet fixed inset-x-0 bottom-0 z-50 max-h-[78svh] overflow-y-auto rounded-t-panel border border-b-0 border-line bg-surface px-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-[0_-18px_48px_var(--shadow-color)] outline-none"
+            className="directory-state-sheet fixed inset-x-0 bottom-0 z-50 max-h-[78svh] overflow-y-auto rounded-t-panel border border-b-0 border-line bg-surface px-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-[0_-18px_48px_var(--shadow-color)] outline-none"
             aria-describedby={undefined}
             data-open={open ? "true" : "false"}
             data-testid={`state-details-sheet-${item.path}`}
@@ -655,7 +647,7 @@ function DirectoryStateControl({
                 </Button>
               </Dialog.Close>
             </div>
-            <div className="path-history-sheet-content">
+            <div>
               <StateBreakdownList entries={entries} total={total} t={t} />
             </div>
           </Dialog.Content>
@@ -827,10 +819,6 @@ export function FileList({
   capabilities,
   onOpenDirectory,
   onOpenFile,
-  selectedFilePath = null,
-  renderedFilePath = selectedFilePath,
-  onCloseFile,
-  onFileDetailExited,
   sortKey = "name",
   sortOrder = "asc",
   onSort,
@@ -875,7 +863,6 @@ export function FileList({
           const size = itemSizeBytes(item);
           const deep = isDeepArchiveRow(item);
           const jobs = jobsByPath?.get(item.path) ?? [];
-          const selected = item.type === "file" && selectedFilePath === item.path;
           const openItem = () => {
             if (isDirectory(item)) onOpenDirectory(item.path);
             else onOpenFile(item.path);
@@ -887,18 +874,15 @@ export function FileList({
                 "group/mobile-card relative isolate flex min-h-[6.25rem] items-start gap-2 overflow-hidden rounded-card border bg-surface p-3 transition-[background-color,border-color,box-shadow] duration-150 motion-reduce:transition-none",
                 "hover:border-[var(--interactive-border-hover)] hover:bg-green-soft/25 has-[[aria-expanded=true]]:border-green/60 has-[[aria-expanded=true]]:bg-green-soft/55 has-[[aria-expanded=true]]:ring-2 has-[[aria-expanded=true]]:ring-ring/35",
                 deep && "deep-archive-row border-l-4 border-l-[var(--deep-archive-accent)] bg-[var(--deep-archive-row)]",
-                selected && "border-green/60 bg-green-soft/55 shadow-[0_5px_18px_var(--interactive-shadow-hover)]",
               )}
               data-path={item.path}
               data-deep-archive={deep ? "true" : undefined}
-              data-selected={selected ? "true" : undefined}
               data-testid={`mobile-file-card-${item.path}`}
             >
               <button
                 type="button"
                 className="absolute inset-0 z-0 rounded-[inherit] outline-none"
                 aria-label={item.name}
-                aria-expanded={item.type === "file" ? selected : undefined}
                 data-directory={isDirectory(item) ? item.path : undefined}
                 data-file-path={item.type === "file" ? item.path : undefined}
                 data-testid={`mobile-file-card-trigger-${item.path}`}
@@ -1010,28 +994,18 @@ export function FileList({
               const size = itemSizeBytes(item);
               const deep = isDeepArchiveRow(item);
               const jobs = jobsByPath?.get(item.path) ?? [];
-              const selected = item.type === "file" && selectedFilePath === item.path;
-              const detailRendered =
-                item.type === "file" && renderedFilePath === item.path;
               const directory = isDirectory(item);
               return (
-                <Fragment key={`${item.type}:${item.path}`}>
-                <tr
+                <tr key={`${item.type}:${item.path}`}
                   className={cn(
                     deep
                       ? "deep-archive-row border-b border-line bg-[var(--deep-archive-row)] transition-[background-color,box-shadow] duration-150 has-[[aria-expanded=true]]:shadow-[inset_0_0_0_999px_color-mix(in_srgb,var(--green-soft)_36%,transparent)] last:border-b-0 [&>td:first-child]:shadow-[inset_4px_0_0_0_var(--deep-archive-accent)] motion-reduce:transition-none"
                       : "border-b border-line transition-colors duration-150 hover:bg-green-soft/60 has-[[aria-expanded=true]]:bg-green-soft/60 last:border-b-0 motion-reduce:transition-none",
                     deep &&
-                      !selected &&
                       "hover:shadow-[inset_0_0_0_999px_color-mix(in_srgb,var(--green-soft)_36%,transparent)]",
-                    selected &&
-                      (deep
-                        ? "shadow-[inset_0_0_0_999px_color-mix(in_srgb,var(--green-soft)_36%,transparent)]"
-                        : "bg-green-soft/70 shadow-[inset_3px_0_0_var(--green)]"),
                   )}
                   data-path={item.path}
                   data-deep-archive={deep ? "true" : undefined}
-                  data-selected={selected ? "true" : undefined}
                   data-testid={`desktop-file-row-${item.path}`}
                 >
                   <td className="max-w-[16rem] py-2 pl-3 pr-3 align-middle">
@@ -1098,33 +1072,6 @@ export function FileList({
                     )}
                   </td>
                 </tr>
-                {detailRendered ? (
-                  <tr
-                    className="bg-surface"
-                    data-testid={`desktop-file-detail-${item.path}`}
-                  >
-                    <td colSpan={5} className="p-0">
-                      <div
-                        className="path-history-inline-shell"
-                        data-open={selected ? "true" : "false"}
-                      >
-                        <div className="path-history-inline-clip">
-                          <div className="px-3 pb-3 pt-2">
-                            <PathHistoryPanel
-                              path={item.path}
-                              t={t}
-                              variant="inline"
-                              open={selected}
-                              onClose={onCloseFile}
-                              onExited={onFileDetailExited}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
-                ) : null}
-                </Fragment>
               );
             })}
           </tbody>

@@ -1178,7 +1178,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         self.assertEqual(folder["storage_class"], "STANDARD")
         self.assertEqual(folder["cloud_size"], 100)
 
-    def test_confirm_folder_rename_converges_directory_chains(self) -> None:
+    def test_safe_folder_matches_converge_directory_chains(self) -> None:
         first = self._seed_rename_candidate(
             old_path="album/2024/a.bin",
             new_path="archive/2024/a.bin",
@@ -1222,12 +1222,15 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         self._clear_dirty()
 
-        renamed = self.catalog.confirm_folder_rename(
-            vault_id=2,
-            old_prefix="album/2024",
-            new_prefix="archive/2024",
-            changed_at="2026-07-21T12:30:00+00:00",
-        )
+        renamed = [
+            self.catalog.confirm_file_rename(
+                vault_file_id=match["missing_vault_file_id"],
+                new_path=match["new_path"],
+                changed_at="2026-07-21T12:30:00+00:00",
+                vault_id=2,
+            )
+            for match in self.catalog.list_rename_candidates(2)
+        ]
         self.assertEqual(set(renamed), {first, second_id})
         dirty = self._dirty_paths()
         self.assertTrue({"album", "album/2024"}.issubset(dirty))

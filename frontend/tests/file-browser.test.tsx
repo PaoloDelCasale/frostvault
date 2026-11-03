@@ -41,18 +41,10 @@ const messages: Record<string, string> = {
   "ui.row_action_upload": "Upload",
   "ui.row_action_recover": "Recover",
   "ui.row_action_free_space": "Free local space",
-  "ui.row_action_cloud_archive": "Hide in cloud",
   "ui.row_action_cloud_purge": "Purge permanently",
   "ui.action_directory_count": "{action} {count} files",
   "ui.row_actions_title": "Actions for {name}",
   "ui.cancel": "Cancel",
-  "ui.path_history": "Path History",
-  "ui.path_changes": "Path changes",
-  "ui.path_history_versions": "{count} Archive Versions",
-  "ui.path_history_no_versions": "No Archive Versions",
-  "ui.path_history_loading": "Loading Path History…",
-  "ui.path_history_error": "Unable to load Path History.",
-  "ui.close_path_history": "Close",
   "ui.version_option": "Version #{number} · {storage} · {size}",
   "ui.version_date_storage": "#{number} · {date} · {storage}",
   "ui.version_title_date": "Version #{number} · {date}",
@@ -302,7 +294,7 @@ describe("FileBrowser — cards and table from /api/files", () => {
     const stateSheet = await screen.findByTestId("state-details-sheet-reports");
     expect(stateSheet).toHaveAccessibleName("State details");
     expect(stateSheet).toHaveClass(
-      "path-history-sheet",
+      "directory-state-sheet",
       "max-h-[78svh]",
       "rounded-t-panel",
       "px-4",
@@ -788,7 +780,7 @@ describe("FileBrowser — search, filter, pagination", () => {
   });
 });
 
-describe("FileBrowser — Path History, empty states, HTML safety", () => {
+describe("FileBrowser — empty states and HTML safety", () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
@@ -813,257 +805,6 @@ describe("FileBrowser — Path History, empty states, HTML safety", () => {
       </ApiQueryProvider>,
     );
   }
-
-  it("keeps each mobile card tied to its own detail and toggles it from the full card", async () => {
-    const { userEvent } = await import("@testing-library/user-event");
-    const user = userEvent.setup();
-    const items = ["q1-report.pdf", "q2-report.pdf"].map((name) => ({
-      type: "file" as const,
-      name,
-      path: `reports/2024/${name}`,
-      local_size: 512,
-      cloud_size: 512,
-      state: "both",
-      storage_class: "STANDARD",
-      cloud_exists: 1,
-      local_exists: 1,
-    }));
-
-    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-      const raw = String(input);
-      if (raw.includes("/api/jobs")) return jsonResponse({ items: [], groups: [] });
-      if (raw.startsWith("/api/file-history")) {
-        const path = new URL(raw, "http://localhost").searchParams.get("path")!;
-        return jsonResponse({
-          vault_file_id: path,
-          path,
-          path_history: [{ path, valid_from: "2024-06-01" }],
-          versions: [{ object_key: `vault/${path}` }],
-        });
-      }
-      return jsonResponse({
-        items,
-        total: items.length,
-        page: 1,
-        directory: "reports/2024",
-        mode: "browse",
-      });
-    });
-
-    renderBrowser();
-    const q1Card = await screen.findByTestId("mobile-file-card-reports/2024/q1-report.pdf");
-    const q2Card = screen.getByTestId("mobile-file-card-reports/2024/q2-report.pdf");
-    const q1Trigger = within(q1Card).getByTestId(
-      "mobile-file-card-trigger-reports/2024/q1-report.pdf",
-    );
-    const q2Trigger = within(q2Card).getByTestId(
-      "mobile-file-card-trigger-reports/2024/q2-report.pdf",
-    );
-
-    // The full-card trigger, rather than only its text, opens the right file.
-    await user.click(q1Trigger);
-    await waitFor(() => {
-      expect(screen.getByTestId("path-history")).toHaveTextContent(
-        "reports/2024/q1-report.pdf",
-      );
-    });
-    expect(screen.queryByTestId("path-history-timeline")).not.toBeInTheDocument();
-    expect(q1Card).toHaveAttribute("data-selected", "true");
-    expect(q2Card).not.toHaveAttribute("data-selected");
-
-    await user.click(q2Trigger);
-    await waitFor(() => {
-      expect(screen.getByTestId("path-history")).toHaveTextContent(
-        "reports/2024/q2-report.pdf",
-      );
-    });
-    expect(q1Card).not.toHaveAttribute("data-selected");
-    expect(q2Card).toHaveAttribute("data-selected", "true");
-    expect(screen.queryByText("Close", { selector: "button" })).not.toBeInTheDocument();
-    expect(within(screen.getByTestId("path-history")).getByRole("button", { name: "Close" })).toHaveClass("rounded-full");
-
-    // Tapping the selected card again starts the animated exit.
-    await user.click(q2Trigger);
-    expect(screen.getByTestId("path-history")).toHaveAttribute("data-open", "false");
-    await waitFor(() => {
-      expect(screen.queryByTestId("path-history")).not.toBeInTheDocument();
-    });
-  });
-
-  it("keeps desktop q1/q2 rows tied to the selected Path History", async () => {
-    const { userEvent } = await import("@testing-library/user-event");
-    const user = userEvent.setup();
-    const items = ["q1-report.pdf", "q2-report.pdf"].map((name) => ({
-      type: "file" as const,
-      name,
-      path: `reports/2024/${name}`,
-      local_size: 512,
-      cloud_size: 512,
-      state: "both",
-      storage_class: name === "q2-report.pdf" ? "DEEP_ARCHIVE" : "STANDARD",
-      cloud_exists: 1,
-      local_exists: 1,
-    }));
-
-    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-      const raw = String(input);
-      if (raw.includes("/api/jobs")) return jsonResponse({ items: [], groups: [] });
-      if (raw.startsWith("/api/file-history")) {
-        const path = new URL(raw, "http://localhost").searchParams.get("path")!;
-        return jsonResponse({
-          vault_file_id: path,
-          path,
-          path_history: [{ path, valid_from: "2024-06-01" }],
-          versions: [{ object_key: `vault/${path}` }],
-        });
-      }
-      return jsonResponse({ items, total: 2, page: 1, directory: "reports/2024", mode: "browse" });
-    });
-
-    renderBrowser();
-    const table = await screen.findByTestId("file-list-table");
-    const q1 = within(table).getByRole("button", { name: /q1-report\.pdf/i });
-    const q2 = within(table).getByRole("button", { name: /q2-report\.pdf/i });
-
-    await user.click(q1);
-    const q1Detail = await screen.findByTestId(
-      "desktop-file-detail-reports/2024/q1-report.pdf",
-    );
-    expect(within(q1Detail).getByTestId("path-history-inline")).toHaveAttribute(
-      "data-path",
-      "reports/2024/q1-report.pdf",
-    );
-    expect(q1Detail.previousElementSibling).toBe(
-      screen.getByTestId("desktop-file-row-reports/2024/q1-report.pdf"),
-    );
-    expect(q1Detail.nextElementSibling).toBe(
-      screen.getByTestId("desktop-file-row-reports/2024/q2-report.pdf"),
-    );
-    expect(screen.getByTestId("desktop-file-row-reports/2024/q1-report.pdf")).toHaveAttribute(
-      "data-selected",
-      "true",
-    );
-
-    await user.click(q2);
-    const q2Detail = await screen.findByTestId(
-      "desktop-file-detail-reports/2024/q2-report.pdf",
-    );
-    expect(within(q2Detail).getByTestId("path-history-inline")).toHaveAttribute(
-      "data-path",
-      "reports/2024/q2-report.pdf",
-    );
-    expect(q2Detail.previousElementSibling).toBe(
-      screen.getByTestId("desktop-file-row-reports/2024/q2-report.pdf"),
-    );
-    expect(screen.getByTestId("desktop-file-row-reports/2024/q1-report.pdf")).not.toHaveAttribute(
-      "data-selected",
-    );
-    const selectedQ2Row = screen.getByTestId(
-      "desktop-file-row-reports/2024/q2-report.pdf",
-    );
-    expect(selectedQ2Row).toHaveAttribute("data-selected", "true");
-    expect(selectedQ2Row).toHaveAttribute("data-deep-archive", "true");
-    expect(selectedQ2Row.className).not.toContain("hover:shadow-");
-    expect(selectedQ2Row.className).not.toContain("bg-green-soft/70");
-    expect(selectedQ2Row.className).toContain(
-      "shadow-[inset_0_0_0_999px_color-mix(in_srgb,var(--green-soft)_36%,transparent)]",
-    );
-
-    // Closing from the same file control returns focus without leaving the
-    // whole row in its old focus-within highlight.
-    await user.click(q2);
-    const closingQ2Detail = screen.getByTestId(
-      "desktop-file-detail-reports/2024/q2-report.pdf",
-    );
-    expect(
-      within(closingQ2Detail).getByTestId("path-history-inline"),
-    ).toHaveAttribute("data-open", "false");
-    await waitFor(() => {
-      expect(
-        screen.queryByTestId("desktop-file-detail-reports/2024/q2-report.pdf"),
-      ).not.toBeInTheDocument();
-    });
-    const closedQ2Row = screen.getByTestId(
-      "desktop-file-row-reports/2024/q2-report.pdf",
-    );
-    expect(closedQ2Row).not.toHaveAttribute("data-selected");
-    expect(q2).toHaveFocus();
-    expect(closedQ2Row.className).not.toContain("focus-within:");
-  });
-
-  it("loads and displays Path History when a Vault File is tapped", async () => {
-    const { userEvent } = await import("@testing-library/user-event");
-    const user = userEvent.setup();
-
-    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-      if (String(input).includes("/api/jobs")) return jsonResponse({ items: [], groups: [] });
-      const url = String(input);
-      if (url.startsWith("/api/file-history")) {
-        return jsonResponse({
-          vault_file_id: "vf-1",
-          path: "readme.txt",
-          path_history: [
-            { path: "docs/old-readme.txt", valid_from: "2024-01-01" },
-            { path: "readme.txt", valid_from: "2024-06-01" },
-          ],
-          versions: [
-            {
-              version_number: 2,
-              object_key: "bucket/readme.txt",
-              storage_class: "DEEP_ARCHIVE",
-              size: 2048,
-              uploaded_at: "2025-06-01T12:00:00Z",
-            },
-            {
-              version_number: 1,
-              object_key: "bucket/docs/old-readme.txt",
-              storage_class: "STANDARD",
-              size: 100,
-              uploaded_at: "2024-01-01T00:00:00Z",
-            },
-          ],
-        });
-      }
-      return jsonResponse(realisticBrowse);
-    });
-
-    renderBrowser();
-    await waitFor(() => {
-      expect(screen.getAllByText("readme.txt").length).toBeGreaterThan(0);
-    });
-
-    const fileButtons = screen
-      .getAllByRole("button")
-      .filter((el) => el.getAttribute("data-file-path") === "readme.txt");
-    await user.click(fileButtons[0]!);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("path-history")).toBeInTheDocument();
-    });
-    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/api/file-history"))).toBe(
-      true,
-    );
-    const timeline = screen.getByTestId("path-history-timeline");
-    expect(within(timeline).getByText("docs/old-readme.txt")).toBeInTheDocument();
-    expect(within(timeline).getByText("readme.txt")).toBeInTheDocument();
-    const historyPanel = screen.getByTestId("path-history");
-    expect(within(historyPanel).getByText("Path changes")).toBeInTheDocument();
-    const versionList = within(historyPanel).getByTestId(
-      "path-history-version-list",
-    );
-    const versionItems = within(versionList).getAllByRole("listitem");
-    expect(versionItems[0]).toHaveTextContent(/Version #2/);
-    expect(versionItems[0]).toHaveTextContent("Deep Archive");
-    expect(versionItems[0]).toHaveTextContent("2.0 KB");
-    expect(versionItems[1]).toHaveTextContent(/Version #1/);
-    expect(versionItems[1]).toHaveTextContent("Standard");
-    expect(versionItems[1]).toHaveTextContent("100 B");
-    expect(historyPanel).not.toHaveTextContent("2024-01-01T00:00:00Z");
-    expect(historyPanel).not.toHaveTextContent("2024-06-01");
-    expect(screen.getByTestId("path-history-versions")).toHaveTextContent(
-      "2 Archive Versions",
-    );
-  });
 
   it("renders distinguishable empty states for no files vs no matches", async () => {
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {

@@ -62,8 +62,6 @@ export const defaultLifecycle = {
 export const defaultCloudDeletion = {
   enabled: false,
   purge_delay_seconds: 86400,
-  delete_marker_explanation:
-    "A Delete Marker is a reversible cloud marker that hides the current key.",
   generated_phrase: "amber-birch-10",
   accepted_single_identity_risk: "Single IAM identity risk documented.",
 };

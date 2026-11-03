@@ -175,9 +175,9 @@ class ReauthTests(HardeningHttpTestCase):
                     """
                 )
         return self.client.post(
-            "/api/cloud-archive",
+            "/api/cloud-purge",
             headers={"X-CSRF-Token": csrf},
-            json={"path": "report.txt"},
+            json={"path": "report.txt", "confirmation": "Docs", "reason": "test", "generated_phrase": "test-phrase"},
         )
 
     def _assert_not_reauth_required(self, response) -> None:

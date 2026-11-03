@@ -124,16 +124,6 @@ def confirmation_matches(
     return candidate in {vault_name.strip(), generated_phrase.strip()}
 
 
-def delete_marker_explanation() -> str:
-    """UI/docs copy: a Delete Marker hides a key; it never holds object bytes."""
-    return (
-        "A Delete Marker is a reversible cloud marker that hides the current key. "
-        "It does not contain Archive Version data and cannot transition object data "
-        "between storage classes. Noncurrent Archive Versions remain recoverable "
-        "until a separate permanent purge."
-    )
-
-
 def is_cloud_deletion_enabled(connection: Any, vault_id: int) -> bool:
     row = connection.execute(
         "SELECT cloud_deletion_enabled FROM vaults WHERE id=%s",
@@ -428,113 +418,6 @@ def _notify_owner(
             vault_id=vault_id,
             job_id=job_id,
         )
-
-
-def schedule_cloud_archive(
-    connection: Any,
-    *,
-    vault_id: int,
-    paths: list[str],
-    is_directory: bool,
-    actor_user_id: int,
-    requested_at: str,
-) -> ScheduledDeletion:
-    _require_enabled(connection, vault_id)
-    files = _selected_files(
-        connection,
-        vault_id=vault_id,
-        paths=paths,
-        is_directory=is_directory,
-    )
-    if not files:
-        raise ValueError("No Vault Files matched the selection")
-    preview = preview_selection(
-        connection,
-        vault_id=vault_id,
-        paths=paths,
-        is_directory=is_directory,
-    )
-    group_id = str(uuid.uuid4())
-    group_path = paths[0] if len(paths) == 1 else f"selection:{len(paths)}"
-    job_ids: list[int] = []
-    for row in files:
-        # Skip files that already have no available current content to hide.
-        latest = connection.execute(
-            """
-            SELECT id, object_key FROM archive_versions
-            WHERE vault_file_id=%s AND availability='available'
-            ORDER BY version_number DESC
-            LIMIT 1
-            """,
-            (row["vault_file_id"],),
-        ).fetchone()
-        if latest is None:
-            continue
-        pending = connection.execute(
-            """
-            SELECT id FROM jobs
-            WHERE vault_file_id=%s
-              AND status NOT IN ('completed', 'failed', 'cancelled')
-            """,
-            (row["vault_file_id"],),
-        ).fetchone()
-        if pending:
-            continue
-        job = connection.execute(
-            """
-            INSERT INTO jobs(
-                vault_id, vault_file_id, archive_version_id, path,
-                action, status, requested_by, requested_at, updated_at,
-                group_id, group_path, total_bytes, transferred_bytes
-            ) VALUES (
-                %s, %s, %s, %s,
-                'cloud-archive', 'queued', %s, %s, %s,
-                %s, %s, 0, 0
-            )
-            RETURNING id
-            """,
-            (
-                vault_id,
-                row["vault_file_id"],
-                latest["id"],
-                row["path"],
-                actor_user_id,
-                requested_at,
-                requested_at,
-                group_id,
-                group_path,
-            ),
-        ).fetchone()
-        job_ids.append(int(job["id"]))
-        record_audit_event(
-            connection,
-            event="cloud_deletion.archive_requested",
-            actor_user_id=actor_user_id,
-            vault_id=vault_id,
-            job_id=int(job["id"]),
-            outcome="requested",
-            path=row["path"],
-            group_id=group_id,
-        )
-    if not job_ids:
-        raise ValueError("No eligible Vault Files for reversible archival")
-    _notify_owner(
-        connection,
-        vault_id=vault_id,
-        event="cloud_deletion.archive_requested",
-        title="Reversible cloud archival requested",
-        body=(
-            f"Reversible archival queued for {len(job_ids)} Vault File(s). "
-            + delete_marker_explanation()
-        ),
-        actor_user_id=actor_user_id,
-        job_id=job_ids[0],
-    )
-    return ScheduledDeletion(
-        group_id=group_id,
-        job_ids=job_ids,
-        preview=preview,
-    )
 
 
 def schedule_cloud_purge(
@@ -859,7 +742,7 @@ def cancel_cloud_deletion(
         """
         SELECT id, action, status FROM jobs
         WHERE vault_id=%s AND group_id=%s
-          AND action IN ('cloud-archive', 'cloud-purge')
+          AND action='cloud-purge'
           AND status NOT IN ('completed', 'failed', 'cancelled')
         """,
         (vault_id, group_id),
@@ -1241,55 +1124,3 @@ def finalize_purge_job(
             job_id=job_id,
         )
     return "failed"
-
-
-def record_archive_completed(
-    connection: Any,
-    *,
-    job_id: int,
-    vault_id: int,
-    path: str,
-    marker_version_id: str,
-    actor_user_id: int | None,
-    updated_at: str,
-) -> None:
-    record_audit_event(
-        connection,
-        event="cloud_deletion.archive_completed",
-        actor_user_id=actor_user_id,
-        vault_id=vault_id,
-        job_id=job_id,
-        outcome="success",
-        path=path,
-        delete_marker_version_id=marker_version_id,
-    )
-    # Best-effort notify (parity with local cleanup observability): a notify
-    # failure must not roll back the Delete Marker catalog row or fail the job
-    # into a retry that issues another delete_object.
-    try:
-        _notify_owner(
-            connection,
-            vault_id=vault_id,
-            event="cloud_deletion.archive_completed",
-            title="Reversible cloud archival completed",
-            body=(
-                f"A Delete Marker hid {path}. "
-                + delete_marker_explanation()
-            ),
-            actor_user_id=actor_user_id,
-            job_id=job_id,
-        )
-    except Exception as exc:
-        try:
-            from . import worker_errors as worker_error_store
-
-            worker_error_store.record_worker_error(
-                connection,
-                component="cloud_archive_observability",
-                exc=exc,
-                vault_id=vault_id,
-                job_id=job_id,
-                event="cloud_deletion.archive_completed",
-            )
-        except Exception:
-            pass

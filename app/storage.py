@@ -192,7 +192,6 @@ _JOB_COUNTER_ACTIONS = frozenset(
         "recover",
         "free-space",
         "rename",
-        "cloud-archive",
         "cloud-purge",
         "storage-class",
     }
@@ -207,7 +206,6 @@ _INTERRUPTED_JOB_SQL = """
      OR (j.action='rename' AND j.status IN ('uploading', 'verifying', 'cleaning'))
      OR (j.action='free-space' AND j.status='cleaning')
      OR (j.action='storage-class' AND j.status='uploading')
-     OR (j.action='cloud-archive' AND j.status='cleaning')
      OR (j.action='cloud-purge' AND j.status='cleaning')
 )
 """
@@ -1820,7 +1818,7 @@ def _apply_auto_renames(
     hashing has already completed outside this transaction and its digests were
     published through compare-and-swap batches.
     """
-    summary = {"hashed": 0, "confirmed": 0, "queued": 0, "ambiguous": 0}
+    summary = {"hashed": 0, "confirmed": 0, "queued": 0}
     confirmed_paths: list[str] = []
     catalog = ArchiveCatalog(connection)
     from .services.catalog_incidents import settle_cloud_only_copies
@@ -1894,19 +1892,14 @@ def _apply_auto_renames(
     candidates = catalog.list_rename_candidates(vault_id=vault["id"])
     changed_at = now_iso()
     for candidate in candidates:
-            if candidate["decision"] == "ambiguous":
-                summary["ambiguous"] += 1
-                continue
-            if candidate["decision"] != "auto":
-                continue
-            catalog.confirm_file_rename(
-                vault_file_id=candidate["missing_vault_file_id"],
-                new_path=candidate["new_path"],
-                changed_at=changed_at,
-                vault_id=vault["id"],
-            )
-            confirmed_paths.append(candidate["new_path"])
-            summary["confirmed"] += 1
+        catalog.confirm_file_rename(
+            vault_file_id=candidate["missing_vault_file_id"],
+            new_path=candidate["new_path"],
+            changed_at=changed_at,
+            vault_id=vault["id"],
+        )
+        confirmed_paths.append(candidate["new_path"])
+        summary["confirmed"] += 1
 
     for path in confirmed_paths:
         job_ids, _total, eligible = catalog.queue_jobs(
@@ -2705,6 +2698,7 @@ def purge_current_snapshot_superseded(
     *,
     keep_version_id: str,
     client: Any,
+    require_catalogued_versions: bool = False,
 ) -> None:
     """Destroy every S3 VersionId except the verified Current Snapshot.
 
@@ -2718,13 +2712,20 @@ def purge_current_snapshot_superseded(
     with db() as connection:
         keep = connection.execute(
             """
-            SELECT id, vault_file_id, object_key, provider_version_id
+            SELECT id, vault_file_id, object_key, provider_version_id,
+                   integrity, availability
             FROM archive_versions WHERE id=%s
             """,
             (keep_version_id,),
         ).fetchone()
-        if keep is None:
-            raise RuntimeError("Current Snapshot keep Archive Version is missing")
+        if (
+            keep is None
+            or keep["integrity"] != "verified"
+            or keep["availability"] != "available"
+            or not keep["object_key"]
+            or not keep["provider_version_id"]
+        ):
+            raise RuntimeError("Current Snapshot requires a verified available keeper")
         superseded = connection.execute(
             """
             SELECT id, object_key, provider_version_id
@@ -2741,10 +2742,29 @@ def purge_current_snapshot_superseded(
     )
     keep_provider = str(keep.get("provider_version_id") or "")
     keep_key = str(keep.get("object_key") or "")
-    for object_key in keys:
-        versions, markers = _object_version_entries(
+    # Establish the whole provider postcondition before the first deletion.
+    # A stale catalog or missing destination must never authorize removal of
+    # the only live copy, including when a rename resumes after a crash.
+    listings = {
+        object_key: _object_version_entries(
             client, bucket=job["s3_bucket"], object_key=object_key
         )
+        for object_key in keys
+    }
+    if keep_provider not in listings[keep_key][0]:
+        raise RuntimeError("Current Snapshot keeper is absent from cloud listing")
+    if require_catalogued_versions:
+        known = {(keep_key, keep_provider)} | {
+            (str(row["object_key"]), str(row["provider_version_id"]))
+            for row in superseded
+        }
+        if any(
+            (object_key, str(version_id)) not in known
+            for object_key, (versions, _markers) in listings.items()
+            for version_id in versions
+        ):
+            raise RuntimeError("Rename found uncatalogued cloud content; no deletion allowed")
+    for object_key, (versions, markers) in listings.items():
         for version_id in versions:
             if object_key == keep_key and str(version_id) == keep_provider:
                 continue
@@ -3053,83 +3073,6 @@ def _reconcile_storage_class_job(
             "Storage class change interrupted: "
             f"{detail}; manual review is required and no automatic retry was scheduled"
         ),
-    )
-
-
-def _reconcile_cloud_archive_job(
-    connection: Any,
-    job: dict[str, Any],
-    *,
-    timestamp: str,
-) -> str:
-    """Complete a hidden key from catalog/provider proof; never create a second marker blindly."""
-    version = connection.execute(
-        """
-        SELECT object_key FROM archive_versions
-        WHERE id=%s
-        """,
-        (job.get("archive_version_id"),),
-    ).fetchone()
-    if not version or not version.get("object_key"):
-        raise RuntimeError("Cloud archive target is missing")
-    object_key = str(version["object_key"])
-    marker = connection.execute(
-        """
-        SELECT provider_version_id
-        FROM delete_markers
-        WHERE vault_file_id=%s AND object_key=%s
-        ORDER BY created_at DESC, id DESC
-        LIMIT 1
-        """,
-        (job["vault_file_id"], object_key),
-    ).fetchone()
-    if marker is None:
-        _versions, markers = _object_version_entries(
-            s3_client(),
-            bucket=str(job["s3_bucket"]),
-            object_key=object_key,
-        )
-        latest = next(
-            (item for item in markers.values() if item.get("IsLatest")),
-            None,
-        )
-        if latest is not None:
-            modified = latest.get("LastModified")
-            observed_at = modified.isoformat() if hasattr(modified, "isoformat") else timestamp
-            ArchiveCatalog(connection).record_delete_marker(
-                vault_id=int(job["vault_id"]),
-                path=str(job["path"]),
-                object_key=object_key,
-                provider_version_id=str(latest["VersionId"]),
-                created_at=observed_at,
-                observed_at=timestamp,
-            )
-            marker = latest
-    if marker is not None:
-        if _reconcile_job_transition(
-            connection,
-            job_id=int(job["id"]),
-            status="completed",
-            message="Cloud archival completed before restart",
-            timestamp=timestamp,
-        ):
-            notification_service.enqueue_job_terminal_notification_best_effort(
-                connection, job_id=int(job["id"])
-            )
-            return "completed"
-        return "skipped"
-    # Listing proved that no Delete Marker was written, so retrying the
-    # reversible operation is safe.  Provider uncertainty instead fails closed.
-    return (
-        "requeued"
-        if _reconcile_job_transition(
-            connection,
-            job_id=int(job["id"]),
-            status="queued",
-            message="Cloud archival interrupted before its Delete Marker; safely resumed",
-            timestamp=timestamp,
-        )
-        else "skipped"
     )
 
 
@@ -3471,10 +3414,6 @@ def _reconcile_interrupted_jobs_impl() -> dict[str, int]:
                                 outcome = "skipped"
                 elif job["action"] == "storage-class":
                     outcome = _reconcile_storage_class_job(
-                        connection, job, timestamp=timestamp
-                    )
-                elif job["action"] == "cloud-archive":
-                    outcome = _reconcile_cloud_archive_job(
                         connection, job, timestamp=timestamp
                     )
                 else:
@@ -4339,7 +4278,8 @@ def process_rename(job: dict[str, Any]) -> None:
             expected_digest=previous.get("plaintext_sha256"),
         )
         if (
-            existing_marker is not None
+            not is_current_snapshot(job)
+            and existing_marker is not None
             and live_destination is not None
             and live_destination["integrity"] == "verified"
         ):
@@ -4493,6 +4433,7 @@ def process_rename(job: dict[str, Any]) -> None:
                 job,
                 keep_version_id=str(version_id),
                 client=client,
+                require_catalogued_versions=True,
             )
             with db() as connection:
                 ensure_job_claim_owned_in_transaction(
@@ -5207,77 +5148,6 @@ def process_recover(job: dict[str, Any]) -> None:
     set_job(job["id"], "completed", f"Recovered to {destination}")
 
 
-def process_cloud_archive(job: dict[str, Any]) -> None:
-    """Hide the current key with a Delete Marker; never delete noncurrent versions."""
-    ensure_job_active(job["id"], "Cloud archival stopped")
-    if not job.get("cloud_deletion_enabled"):
-        raise RuntimeError("Cloud deletion is disabled for this vault")
-    validate_cloud_vault(job)
-    with db() as connection:
-        target = ArchiveCatalog(connection).get_job_target(job["id"])
-        version = connection.execute(
-            """
-            SELECT object_key, provider_version_id
-            FROM archive_versions
-            WHERE id=%s
-            """,
-            (job.get("archive_version_id"),),
-        ).fetchone()
-    if not target or not version:
-        raise RuntimeError("Archive Version target is no longer available")
-    object_key = version["object_key"]
-    set_job(job["id"], "cleaning", message_key="job.cloud_archive_creating_marker")
-    ensure_job_active(job["id"], "Cloud archival stopped")
-    ensure_scheduled_current_version(
-        bucket=job["s3_bucket"],
-        object_key=object_key,
-        expected_version_id=version.get("provider_version_id"),
-        operation="Cloud archival",
-    )
-    ensure_job_active(job["id"], "Cloud archival stopped")
-    delete_result = s3_client().delete_object(
-        Bucket=job["s3_bucket"],
-        Key=object_key,
-    )
-    marker_version = delete_result.get("VersionId")
-    if not marker_version:
-        raise RuntimeError("S3 did not return a Delete Marker VersionId")
-    # If ownership was lost while DeleteObject was stalled, leave provider
-    # evidence for restart/takeover reconciliation; never publish it from the
-    # stale worker.
-    ensure_job_active(job["id"], "Cloud archival claim was lost")
-    stamp = now_iso()
-    with db() as connection:
-        ensure_job_claim_owned_in_transaction(
-            connection,
-            job,
-            "Cloud archival claim was lost",
-        )
-        catalog = ArchiveCatalog(connection)
-        catalog.record_delete_marker(
-            vault_id=job["vault_id"],
-            path=job["path"],
-            object_key=object_key,
-            provider_version_id=marker_version,
-            created_at=stamp,
-            observed_at=stamp,
-        )
-        cloud_deletion_service.record_archive_completed(
-            connection,
-            job_id=job["id"],
-            vault_id=job["vault_id"],
-            path=job["path"],
-            marker_version_id=marker_version,
-            actor_user_id=job.get("requested_by"),
-            updated_at=stamp,
-        )
-    set_job(
-        job["id"],
-        "completed",
-        message_key="job.cloud_archive_completed",
-    )
-
-
 def process_cloud_purge(job: dict[str, Any]) -> None:
     """Permanently delete a scheduler-claimed cloud-purge group exactly once."""
     ensure_job_active(job["id"], "Cloud purge stopped")
@@ -5527,8 +5397,6 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
             "restoring",
         }:
             process_storage_class(job)
-        elif job["action"] == "cloud-archive" and job["status"] == "queued":
-            process_cloud_archive(job)
         elif job["action"] == "cloud-purge" and job["status"] == "cleaning":
             process_cloud_purge(job)
         else:
@@ -5544,7 +5412,6 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
             "recover": "job.recovery_stopped",
             "free-space": "job.cleanup_stopped",
             "rename": "job.rename_stopped",
-            "cloud-archive": "job.cloud_archive_stopped",
             "cloud-purge": "job.cloud_purge_stopped",
             "storage-class": "job.storage_class_stopped",
         }

@@ -70,6 +70,7 @@ def _prepare_renamed_plain_file(
     old_path: str,
     new_path: str,
     payload: bytes,
+    confirm: bool = True,
 ) -> tuple[Path, Path, str]:
     source = root / "source"
     source.mkdir()
@@ -132,12 +133,13 @@ def _prepare_renamed_plain_file(
             plaintext_sha256=digest,
             matched_archive_version_id=None,
         )
-        catalog.confirm_file_rename(
-            vault_file_id=file_id,
-            new_path=new_path,
-            changed_at="2026-07-21T11:05:00+00:00",
-            vault_id=2,
-        )
+        if confirm:
+            catalog.confirm_file_rename(
+                vault_file_id=file_id,
+                new_path=new_path,
+                changed_at="2026-07-21T11:05:00+00:00",
+                vault_id=2,
+            )
     return source, database_path, file_id
 
 
@@ -310,7 +312,6 @@ class RenameMatchingTests(unittest.TestCase):
 
                 candidates = catalog.list_rename_candidates(vault_id=2)
                 self.assertEqual(len(candidates), 1)
-                self.assertEqual(candidates[0]["decision"], "auto")
                 self.assertEqual(candidates[0]["missing_vault_file_id"], old_id)
                 self.assertEqual(candidates[0]["new_vault_file_id"], new_id)
 
@@ -334,7 +335,7 @@ class RenameMatchingTests(unittest.TestCase):
                 ["reports/old-name.txt", "reports/new-name.txt"],
             )
 
-    def test_unique_but_stale_digest_match_requires_review(self) -> None:
+    def test_unique_but_stale_digest_match_remains_a_new_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "stale-rename.db"
             migrated = run_alembic(database_path)
@@ -376,12 +377,10 @@ class RenameMatchingTests(unittest.TestCase):
 
                 candidates = catalog.list_rename_candidates(vault_id=2)
 
-            self.assertEqual(len(candidates), 1)
-            self.assertEqual(candidates[0]["decision"], "review")
-            self.assertEqual(candidates[0]["missing_vault_file_id"], old_id)
-            self.assertEqual(candidates[0]["new_vault_file_id"], new_id)
+            self.assertEqual(candidates, [])
+            self.assertNotEqual(old_id, new_id)
 
-    def test_same_name_changed_content_is_reviewable_not_automatic(self) -> None:
+    def test_same_name_changed_content_remains_a_new_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "changed-content.db"
             migrated = run_alembic(database_path)
@@ -422,7 +421,6 @@ class RenameMatchingTests(unittest.TestCase):
                 )
 
                 candidates = catalog.list_rename_candidates(vault_id=2)
-                auto = [item for item in candidates if item["decision"] == "auto"]
                 with self.assertRaises(VaultFileNotFound):
                     catalog.confirm_file_rename(
                         vault_file_id=old_id,
@@ -430,23 +428,9 @@ class RenameMatchingTests(unittest.TestCase):
                         changed_at="2026-07-21T11:05:00+00:00",
                         vault_id=2,
                     )
-                confirmed_id = catalog.confirm_file_rename(
-                    vault_file_id=old_id,
-                    new_path="archive/notes.txt",
-                    changed_at="2026-07-21T11:05:00+00:00",
-                    vault_id=2,
-                    allow_digest_mismatch=True,
-                )
-                history = catalog.list_path_history(confirmed_id, vault_id=2)
-
-            self.assertEqual(auto, [])
-            self.assertEqual(len(candidates), 1)
-            self.assertEqual(candidates[0]["decision"], "content_changed")
-            self.assertEqual(confirmed_id, old_id)
-            self.assertEqual(
-                [entry["path"] for entry in history],
-                ["reports/notes.txt", "archive/notes.txt"],
-            )
+                self.assertEqual(catalog.get_file_by_path(2, "archive/notes.txt")["id"], new_id)
+            self.assertEqual(candidates, [])
+            self.assertNotEqual(old_id, new_id)
 
     def test_ambiguous_equal_digest_candidates_are_never_auto_merged(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -493,12 +477,10 @@ class RenameMatchingTests(unittest.TestCase):
                     )
 
                 candidates = catalog.list_rename_candidates(vault_id=2)
-                decisions = {candidate["decision"] for candidate in candidates}
                 before_a = catalog.get_file_by_path(2, "a/one.txt")
                 before_b = catalog.get_file_by_path(2, "b/one.txt")
 
-            self.assertTrue(candidates)
-            self.assertEqual(decisions, {"ambiguous"})
+            self.assertEqual(candidates, [])
             self.assertNotEqual(before_a["id"], before_b["id"])
             self.assertEqual(before_a["id"], missing_ids[0])
 
@@ -531,11 +513,10 @@ class RenameMatchingTests(unittest.TestCase):
                 )
 
                 candidates = catalog.list_rename_candidates(vault_id=2)
-                auto = [c for c in candidates if c["decision"] == "auto"]
                 old_file = catalog.get_file_by_path(2, "reports/old-name.txt")
                 new_file = catalog.get_file_by_path(2, "reports/new-name.txt")
 
-            self.assertEqual(auto, [])
+            self.assertEqual(candidates, [])
             self.assertEqual(old_file["id"], old_id)
             self.assertEqual(new_file["id"], new_id)
             self.assertNotEqual(old_id, new_id)
@@ -942,12 +923,16 @@ class FolderRenameTests(unittest.TestCase):
                         matched_archive_version_id=None,
                     )
 
-                renamed_ids = catalog.confirm_folder_rename(
-                    vault_id=2,
-                    old_prefix="docs",
-                    new_prefix="archive",
-                    changed_at="2026-07-21T11:05:00+00:00",
-                )
+                # A folder move is just a batch of independently safe matches.
+                renamed_ids = [
+                    catalog.confirm_file_rename(
+                        vault_file_id=match["missing_vault_file_id"],
+                        new_path=match["new_path"],
+                        changed_at="2026-07-21T11:05:00+00:00",
+                        vault_id=2,
+                    )
+                    for match in catalog.list_rename_candidates(2)
+                ]
 
                 for old_relative, file_id in ids.items():
                     new_relative = old_relative.replace("docs/", "archive/", 1)
@@ -1942,66 +1927,6 @@ class RenameDestinationProofTests(unittest.TestCase):
             self.assertEqual(
                 deleted_keys,
                 [{"Bucket": "bucket", "Key": old_key, "VersionId": ""}],
-            )
-
-
-class FileHistoryApiTests(unittest.TestCase):
-    def test_file_history_returns_continuous_versions_across_keys(self) -> None:
-        from app.main import file_history
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"history"
-            old_path = "old.txt"
-            new_path = "new.txt"
-            _source, database_path, file_id = _prepare_renamed_plain_file(
-                root,
-                old_path=old_path,
-                new_path=new_path,
-                payload=payload,
-            )
-            digest = _sha256_hex(payload)
-            with SQLiteConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                new_version_id = catalog.record_archive_version(
-                    vault_id=2,
-                    path=new_path,
-                    object_key=f"docs/{new_path}",
-                    provider_version_id="new-s3-version",
-                    size=len(payload),
-                    storage_class="STANDARD",
-                    etag="new-etag",
-                    uploaded_at="2026-07-21T11:10:00+00:00",
-                    observed_at="2026-07-21T11:10:00+00:00",
-                    scan_id="2026-07-21T11:10:00+00:00",
-                    origin="upload",
-                )
-                catalog.mark_version_verified(
-                    new_version_id,
-                    plaintext_sha256=digest,
-                    verified_at="2026-07-21T11:11:00+00:00",
-                )
-
-            database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
-            )
-            with patch("app.database.settings", database_settings):
-                body = file_history(
-                    path=new_path,
-                    vault={"id": 2, "role": "owner", "name": "Docs"},
-                )
-
-            self.assertEqual(body["vault_file_id"], file_id)
-            self.assertEqual(
-                [entry["path"] for entry in body["path_history"]],
-                [old_path, new_path],
-            )
-            keys = [version["object_key"] for version in body["versions"]]
-            self.assertEqual(keys, [f"docs/{new_path}", f"docs/{old_path}"])
-            self.assertEqual(
-                body["versions"][0]["uploaded_at"],
-                "2026-07-21T11:10:00+00:00",
             )
 
 

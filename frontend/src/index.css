@@ -268,90 +268,17 @@
     }
   }
 
-  @keyframes path-history-sheet-in {
+  @keyframes directory-state-sheet-in {
     from { opacity: 0; transform: translateY(2.25rem); }
     to { opacity: 1; transform: translateY(0); }
   }
 
-  @keyframes path-history-sheet-out {
-    from { opacity: 1; transform: translateY(0); }
-    to { opacity: 0; transform: translateY(2.25rem); }
-  }
-
-  @keyframes path-history-content-swap {
-    from { opacity: 0; transform: translateY(0.5rem); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  @keyframes path-history-inline-in {
-    from {
-      grid-template-rows: 0fr;
-      opacity: 0;
-      transform: translateY(0.5rem);
-    }
-    to {
-      grid-template-rows: 1fr;
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  @keyframes path-history-inline-out {
-    from {
-      grid-template-rows: 1fr;
-      opacity: 1;
-      transform: translateY(0);
-    }
-    to {
-      grid-template-rows: 0fr;
-      opacity: 0;
-      transform: translateY(0.5rem);
-    }
-  }
-
-  .path-history-sheet[data-open="true"] {
-    animation: path-history-sheet-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
-  }
-
-  .path-history-sheet[data-open="false"] {
-    pointer-events: none;
-    animation: path-history-sheet-out 180ms ease-in both;
-  }
-
-  .path-history-sheet-content {
-    animation: path-history-content-swap 180ms ease-out both;
-  }
-
-  .path-history-inline-shell {
-    display: grid;
-  }
-
-  .path-history-inline-shell[data-open="true"] {
-    animation: path-history-inline-in 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
-  }
-
-  .path-history-inline-shell[data-open="false"] {
-    pointer-events: none;
-    animation: path-history-inline-out 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
-  }
-
-  .path-history-inline-clip {
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .path-history-inline[data-open="false"] {
-    pointer-events: none;
+  .directory-state-sheet {
+    animation: directory-state-sheet-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .path-history-sheet,
-    .path-history-sheet-content,
-    .path-history-inline {
-      animation-duration: 0.01ms !important;
-    }
-
-    .path-history-inline-shell {
+    .directory-state-sheet {
       animation-duration: 0.01ms !important;
     }
   }

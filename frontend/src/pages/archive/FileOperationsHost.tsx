@@ -21,7 +21,6 @@ import {
   fetchStorageClasses,
   jobsQueryOptions,
   previewCloudDeletion,
-  startCloudArchive,
   startCloudPurge,
   startFreeSpace,
   startRecover,
@@ -125,7 +124,6 @@ export function FileOperationsHost({
     action: RowActionId;
     path: string;
     isDirectory: boolean;
-    explanation?: string;
   } | null>(null);
   const [recover, setRecover] = useState<PendingRecover | null>(null);
   const [recoverStep, setRecoverStep] = useState<
@@ -265,9 +263,6 @@ export function FileOperationsHost({
             pinned: action === "lifecycle-pin",
           });
           break;
-        case "cloud-archive":
-          result = await startCloudArchive({ path, is_directory: isDir, ...extra });
-          break;
         case "cloud-purge":
           result = await startCloudPurge({
             path,
@@ -374,19 +369,6 @@ export function FileOperationsHost({
     [recover, t],
   );
 
-  const beginCloudArchive = useCallback(
-    async (path: string, isDir: boolean) => {
-      const settings = await fetchCloudDeletion();
-      setConfirmAction({
-        action: "cloud-archive",
-        path,
-        isDirectory: isDir,
-        explanation: settings.delete_marker_explanation,
-      });
-    },
-    [],
-  );
-
   const beginCloudPurge = useCallback(
     async (path: string, isDir: boolean) => {
       const [settings, preview] = await Promise.all([
@@ -407,10 +389,6 @@ export function FileOperationsHost({
       try {
         if (action === "recover") {
           await beginRecover(path, isDir);
-          return;
-        }
-        if (action === "cloud-archive") {
-          await beginCloudArchive(path, isDir);
           return;
         }
         if (action === "cloud-purge") {
@@ -452,7 +430,6 @@ export function FileOperationsHost({
       }
     },
     [
-      beginCloudArchive,
       beginCloudPurge,
       beginRecover,
       capabilities,
@@ -542,19 +519,12 @@ export function FileOperationsHost({
   const gatedDemoVersionsPath = DEMO_MODE_ENABLED ? demoVersionsPath : null;
   useEffect(() => {
     if (demoBootstrapped.current) return;
-    if (
-      gatedDemoConfirm?.action === "free-space" ||
-      gatedDemoConfirm?.action === "cloud-archive"
-    ) {
+    if (gatedDemoConfirm?.action === "free-space") {
       demoBootstrapped.current = true;
       setConfirmAction({
         action: gatedDemoConfirm.action as RowActionId,
         path: gatedDemoConfirm.path,
         isDirectory: false,
-        explanation:
-          gatedDemoConfirm.action === "cloud-archive"
-            ? "Delete markers hide the current key."
-            : undefined,
       });
       return;
     }
@@ -597,7 +567,6 @@ export function FileOperationsHost({
         "free-space": endpointForAction("free-space"),
         "storage-class": endpointForAction("storage-class"),
         "lifecycle-pin": endpointForAction("lifecycle-pin"),
-        "cloud-archive": endpointForAction("cloud-archive"),
         "cloud-purge": endpointForAction("cloud-purge"),
       });
     }
@@ -647,30 +616,17 @@ export function FileOperationsHost({
         onOpenChange={(open) => {
           if (!open) setConfirmAction(null);
         }}
-        title={
-          confirmAction?.action === "cloud-archive"
-            ? t("ui.confirm_cloud_archive_title")
-            : t("ui.confirm_free_space_title")
-        }
-        description={
-          confirmAction?.action === "cloud-archive"
-            ? t("ui.confirm_cloud_archive_description", {
-                path: confirmAction.path,
-                explanation: confirmAction.explanation ?? "",
-              })
-            : t("ui.confirm_free_space_description", {
-                path: confirmAction?.path ?? "",
-              })
-        }
+        title={t("ui.confirm_free_space_title")}
+        description={t("ui.confirm_free_space_description", {
+          path: confirmAction?.path ?? "",
+        })}
         confirmLabel={
           confirmAction
             ? actionLabel(confirmAction.action, t)
             : t("ui.confirm_action")
         }
         cancelLabel={t("ui.cancel")}
-        tone={
-          confirmAction?.action === "cloud-archive" ? "default" : "danger"
-        }
+        tone="danger"
         onConfirm={() => {
           if (!confirmAction) return;
           const { action, path, isDirectory: isDir } = confirmAction;

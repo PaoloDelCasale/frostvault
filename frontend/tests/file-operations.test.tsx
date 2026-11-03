@@ -40,27 +40,17 @@ const messages: Record<string, string> = {
   "ui.file_total": "File total",
   "ui.cloud_classes": "{count} cloud classes",
   "ui.more_actions": "More actions",
-  "ui.path_history": "Path History",
-  "ui.path_history_versions": "{count} Archive Versions",
-  "ui.path_history_no_versions": "No Archive Versions",
-  "ui.path_history_loading": "Loading Path History…",
-  "ui.path_history_error": "Unable to load Path History.",
-  "ui.close_path_history": "Close",
   "ui.file_list_placeholder": "File list",
   "ui.row_action_upload": "Upload",
   "ui.row_action_recover": "Recover",
   "ui.row_action_free_space": "Free local space",
-  "ui.row_action_cloud_archive": "Hide in cloud",
   "ui.row_action_cloud_purge": "Purge permanently",
   "ui.row_action_free_space_hint": "Local only; cloud stays.",
-  "ui.row_action_cloud_archive_hint": "Hide current cloud key.",
   "ui.row_action_cloud_purge_hint": "Delete cloud versions; local stays.",
   "ui.action_directory_count": "{action} {count} files",
   "ui.row_actions_title": "Actions for {name}",
   "ui.confirm_free_space_title": "Free local space?",
   "ui.confirm_free_space_description": "Remove the Local Copy of {path}.",
-  "ui.confirm_cloud_archive_title": "Hide in cloud?",
-  "ui.confirm_cloud_archive_description": "{explanation}\n\nHide {path}?",
   "ui.confirm_action": "Confirm",
   "ui.cancel": "Cancel",
   "ui.select_archive_version": "Select Archive Version",
@@ -184,7 +174,6 @@ const browsePayload: FilesResponse = {
         upload: 2,
         recover: 1,
         "free-space": 1,
-        "cloud-archive": 2,
         "cloud-purge": 2,
       },
     },
@@ -342,7 +331,6 @@ describe("File operations — seams 1–10", () => {
         return jsonResponse({
           enabled: true,
           purge_delay_seconds: 60,
-          delete_marker_explanation: "Delete markers hide the current key.",
           generated_phrase: "PURGE-PHRASE",
         });
       }
@@ -630,8 +618,8 @@ describe("File operations — seams 1–10", () => {
     await user.click(moreButtons[0]!);
     const sheet = await screen.findByRole("dialog");
     expect(
-      within(sheet).getByRole("button", { name: /Hide in cloud 2 files/i }),
-    ).toBeInTheDocument();
+      within(sheet).queryByRole("button", { name: /Hide in cloud/i }),
+    ).not.toBeInTheDocument();
     expect(
       within(sheet).getByText("Delete cloud versions; local stays."),
     ).toBeInTheDocument();

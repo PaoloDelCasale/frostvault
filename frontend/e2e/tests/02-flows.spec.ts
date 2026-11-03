@@ -82,17 +82,17 @@ test.describe("archive flows", () => {
     await expect(page).toHaveURL(/state=both/);
   });
 
-  test("flow 4 — open a Vault File and read Path History", async ({
+  test("flow 4 — a file opens actions without rename or path-history controls", async ({
     page,
-  }, testInfo) => {
+  }) => {
     await emergencyPasswordLogin(page);
     await openDirectory(page, "reports");
     await visibleFileButton(page, "readme.txt").click();
-    const suffix = testInfo.project.name === "mobile-375" ? "" : "-inline";
-    await expect(page.getByTestId(`path-history${suffix}`)).toBeVisible();
-    await expect(page.getByTestId(`path-history-timeline${suffix}`)).toContainText(
-      "old-readme.txt",
-    );
+    const actions = page.getByRole("dialog", { name: /readme.txt/ });
+    await expect(actions).toBeVisible();
+    // This seeded file is already local: recovery is correctly unavailable.
+    await expect(actions.getByRole("button", { name: /^change storage class/i })).toBeVisible();
+    await expect(page.getByText(/hide in cloud|confirm.*rename|path history/i)).toHaveCount(0);
   });
 
   test("flow 5 — cancel a destructive confirmation without side effects", async ({
