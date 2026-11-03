@@ -27,9 +27,6 @@
           "name": {
             "type": "string"
           },
-          "rclone_remote": {
-            "type": "string"
-          },
           "root_released_at": {
             "type": [
               "string",
@@ -3200,7 +3197,7 @@
       },
       "VaultSelfServiceCreate": {
         "additionalProperties": false,
-        "description": "Self-service vault creation payload (issues #7, #6, and #150).\n\nLabels are accepted. Adoption adds a\nconstrained ``volume_alias`` + ``relative_path`` pair \u2014 never an absolute\nfilesystem path, S3 identity, or rclone remote.",
+        "description": "Self-service vault creation payload (issues #7, #6, and #150).\n\nLabels are accepted. Adoption adds a\nconstrained ``volume_alias`` + ``relative_path`` pair \u2014 never an absolute\nfilesystem path or S3 identity.",
         "properties": {
           "creation_mode": {
             "default": "empty",

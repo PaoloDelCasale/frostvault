@@ -16,7 +16,6 @@ _PERMANENT_UPLOAD_FAILURE_MARKERS = (
     "did not create the verification copy",
     "accessdenied",
     "invalidaccesskeyid",
-    "rclone configuration not found",
     "without an s3 versionid",
     "bucket versioning is required",
     "not authorized",

@@ -1240,7 +1240,6 @@ export interface components {
             enabled: boolean;
             id: number;
             name: string;
-            rclone_remote?: string;
             root_released_at?: string | null;
             s3_bucket?: string;
             s3_prefix: string;
@@ -2226,7 +2225,7 @@ export interface components {
          *
          *     Labels are accepted. Adoption adds a
          *     constrained ``volume_alias`` + ``relative_path`` pair — never an absolute
-         *     filesystem path, S3 identity, or rclone remote.
+         *     filesystem path or S3 identity.
          */
         VaultSelfServiceCreate: {
             /**

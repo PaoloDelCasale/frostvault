@@ -8,6 +8,8 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
+
 import os
 import tempfile
 import unittest
@@ -57,8 +59,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
         self,
         database_path: Path,
         *,
-        run_rclone,
-        run_rclone_stream,
+        sdk_upload,
+        sdk_read,
         version_id: str,
         content_length: int,
     ) -> None:
@@ -82,7 +84,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 chunks.append(chunk)
                 consume(chunk)
             kwargs["on_chunk"] = capture
-            result = run_rclone_stream(*args, **kwargs)
+            result = sdk_read(*args, **kwargs)
             # Both transport seams model the same provider bytes. Independent
             # wrong-VersionId/mismatch cases are in test_upload_verification.
             provider.version_bytes = b"".join(chunks)
@@ -92,8 +94,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             patch("app.database.settings", database_settings),
             patch("app.storage.settings", worker_settings),
             patch("app.storage.validate_cloud_vault"),
-            patch("app.storage.run_rclone", side_effect=run_rclone),
-            patch("app.storage.run_rclone_stream", side_effect=stream),
+            mock_sdk_upload( side_effect=sdk_upload),
+            mock_sdk_read( side_effect=stream),
             patch("app.storage.s3_client", return_value=provider),
         ):
             process_jobs_once()
@@ -113,7 +115,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             def fake_upload(*args, **kwargs) -> None:
                 command = tuple(str(arg) for arg in args if not callable(arg))
                 uploads.append(command[0] if command else "")
-                if command[:1] == ("copyto",):
+                if command[:1] == ("upload",):
                     local.write_bytes(mutated)
 
             def fake_stream(*args, **kwargs) -> int:
@@ -129,8 +131,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 queue_jobs("report.txt", "upload", 2, 1)
             self._run_worker(
                 database_path,
-                run_rclone=fake_upload,
-                run_rclone_stream=fake_stream,
+                sdk_upload=fake_upload,
+                sdk_read=fake_stream,
                 version_id="s3-a",
                 content_length=len(original),
             )
@@ -138,8 +140,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 _force_retry_due(database_path)
                 self._run_worker(
                     database_path,
-                    run_rclone=fake_upload,
-                    run_rclone_stream=fake_stream,
+                    sdk_upload=fake_upload,
+                    sdk_read=fake_stream,
                     version_id="s3-a",
                     content_length=len(original),
                 )
@@ -162,8 +164,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 _sha256_hex(original),
             )
             self.assertEqual(versions, 1)
-            self.assertEqual(uploads, ["copyto"])
-            self.assertEqual(streams, ["cat"])
+            self.assertEqual(uploads, ["upload"])
+            self.assertEqual(streams, ["read"])
             self.assertIsNone(local_copy["matched_archive_version_id"])
 
     def test_source_change_after_link_verifies_a_then_archives_b(self) -> None:
@@ -200,8 +202,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 queue_jobs("report.txt", "upload", 2, 1)
             self._run_worker(
                 database_path,
-                run_rclone=fake_upload,
-                run_rclone_stream=flaky_then_original,
+                sdk_upload=fake_upload,
+                sdk_read=flaky_then_original,
                 version_id="s3-a",
                 content_length=len(original),
             )
@@ -209,16 +211,16 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             _force_retry_due(database_path)
             self._run_worker(
                 database_path,
-                run_rclone=fake_upload,
-                run_rclone_stream=flaky_then_original,
+                sdk_upload=fake_upload,
+                sdk_read=flaky_then_original,
                 version_id="s3-a",
                 content_length=len(original),
             )
 
             first = _job_row(database_path)
             self.assertEqual(first["status"], "completed")
-            self.assertEqual(uploads, ["copyto"])
-            self.assertEqual(streams, ["cat", "cat"])
+            self.assertEqual(uploads, ["upload"])
+            self.assertEqual(streams, ["read", "read"])
 
             def upload_b(*args, **kwargs) -> None:
                 command = tuple(str(arg) for arg in args if not callable(arg))
@@ -248,8 +250,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
 
             self._run_worker(
                 database_path,
-                run_rclone=upload_b,
-                run_rclone_stream=stream_b,
+                sdk_upload=upload_b,
+                sdk_read=stream_b,
                 version_id="s3-b",
                 content_length=len(mutated),
             )
@@ -278,7 +280,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             self.assertTrue(all(row["integrity"] == "verified" for row in versions))
             self.assertEqual([job["status"] for job in jobs], ["completed", "completed"])
             self.assertEqual(len(file_ids), 1)
-            self.assertEqual(uploads, ["copyto", "copyto"])
+            self.assertEqual(uploads, ["upload", "upload"])
 
     def test_source_change_during_verification_does_not_mark_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -307,8 +309,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 queue_jobs("report.txt", "upload", 2, 1)
             self._run_worker(
                 database_path,
-                run_rclone=fake_upload,
-                run_rclone_stream=mutating_stream,
+                sdk_upload=fake_upload,
+                sdk_read=mutating_stream,
                 version_id="s3-a",
                 content_length=len(original),
             )
@@ -324,7 +326,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 observed["latest_version"]["plaintext_sha256"],
                 _sha256_hex(original),
             )
-            self.assertEqual(uploads, ["copyto"])
+            self.assertEqual(uploads, ["upload"])
             self.assertIsNone(local_copy["matched_archive_version_id"])
 
     def test_source_disappeared_after_link_still_verifies_snapshot(self) -> None:
@@ -357,8 +359,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 queue_jobs("report.txt", "upload", 2, 1)
             self._run_worker(
                 database_path,
-                run_rclone=fake_upload,
-                run_rclone_stream=flaky_stream,
+                sdk_upload=fake_upload,
+                sdk_read=flaky_stream,
                 version_id="s3-a",
                 content_length=len(original),
             )
@@ -366,8 +368,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             _force_retry_due(database_path)
             self._run_worker(
                 database_path,
-                run_rclone=fake_upload,
-                run_rclone_stream=flaky_stream,
+                sdk_upload=fake_upload,
+                sdk_read=flaky_stream,
                 version_id="s3-a",
                 content_length=len(original),
             )
@@ -380,7 +382,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 observed["latest_version"]["plaintext_sha256"],
                 _sha256_hex(original),
             )
-            self.assertEqual(uploads, ["copyto"])
+            self.assertEqual(uploads, ["upload"])
             self.assertFalse(local.exists())
 
     def test_unstable_source_before_link_fails_after_stall_limit(self) -> None:
@@ -393,7 +395,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             uploads: list[str] = []
 
             def fake_upload(*args, **kwargs) -> None:
-                uploads.append("copyto")
+                uploads.append("upload")
 
             def fake_stream(*args, **kwargs) -> int:
                 raise AssertionError("verification must not run before linkage")
@@ -411,8 +413,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 for _ in range(UPLOAD_RETRY_MAX_ATTEMPTS + 1):
                     self._run_worker(
                         database_path,
-                        run_rclone=fake_upload,
-                        run_rclone_stream=fake_stream,
+                        sdk_upload=fake_upload,
+                        sdk_read=fake_stream,
                         version_id="s3-a",
                         content_length=len(payload),
                     )

@@ -10,6 +10,15 @@ from .lifecycle_profiles import LifecycleProfile
 
 RULE_ID_PREFIX = "psa-policy-"
 MAX_BUCKET_LIFECYCLE_RULES = 1000
+ABORT_RULE_ID = "frostvault-abort-incomplete-multipart"
+
+
+def incomplete_upload_rule() -> dict[str, Any]:
+    # Prefix-only: AWS forbids a Tag filter on multipart-abort rules. No expiry
+    # of completed objects, noncurrent versions or delete markers is allowed.
+    return {"ID": ABORT_RULE_ID, "Status": "Enabled",
+            "Filter": {"Prefix": "vaults/"},
+            "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}}
 
 
 class LifecycleRuleLimitExceeded(RuntimeError):
@@ -18,7 +27,7 @@ class LifecycleRuleLimitExceeded(RuntimeError):
 
 def is_application_lifecycle_rule(rule: dict[str, Any]) -> bool:
     rule_id = str(rule.get("ID", ""))
-    return rule_id.startswith(RULE_ID_PREFIX)
+    return rule_id.startswith(RULE_ID_PREFIX) or rule_id == ABORT_RULE_ID
 
 
 def lifecycle_rule_id(policy_id: str) -> str:
@@ -92,7 +101,7 @@ def sync_bucket_lifecycle_rules(
     app_rules: list[dict[str, Any]],
 ) -> None:
     existing_rules = _load_existing_rules(client, bucket)
-    merged_rules = merge_lifecycle_rules(existing_rules, app_rules)
+    merged_rules = merge_lifecycle_rules(existing_rules, [*app_rules, incomplete_upload_rule()])
     enforce_rule_limit(merged_rules)
     client.put_bucket_lifecycle_configuration(
         Bucket=bucket,

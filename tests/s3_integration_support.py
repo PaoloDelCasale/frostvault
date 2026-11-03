@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import textwrap
 from pathlib import Path
 
 from app.catalog import ArchiveCatalog
@@ -60,33 +59,9 @@ def ensure_versioned_bucket(bucket: str) -> None:
         raise RuntimeError(preflight_failure_message(result))
 
 
-def write_plain_rclone_config(
-    path: Path, *, endpoint: str, bucket: str, access_key: str, secret_key: str,
-    remote_name: str = "ci-plain", base_name: str = "ci-s3",
-    upload_cutoff: str | None = None, prefix: str | None = None,
-) -> str:
-    """Bucket-rooted alias; credentials stay in the environment, never config."""
-    del access_key, secret_key, prefix
-    aws = s3_provider().lower() == "aws" or endpoint.lower() == "aws"
-    region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-    extra = f"location_constraint = {region}\nno_check_bucket = true" if aws else f"endpoint = {endpoint.rstrip('/')}\nforce_path_style = true"
-    base = textwrap.dedent(f"""\
-        [{base_name}]
-        type = s3
-        provider = {'AWS' if aws else 'Minio'}
-        env_auth = true
-        region = {region}
-        acl = private
-        """)
-    if upload_cutoff:
-        extra += f"\nupload_cutoff = {upload_cutoff}"
-    path.write_text(base + extra + f"\n\n[{remote_name}]\ntype = alias\nremote = {base_name}:{bucket}\n", encoding="utf-8")
-    return remote_name
-
-
 def prepare_plain_vault(
     root: Path, *, relative_path: str, payload: bytes, bucket: str,
-    prefix: str, rclone_remote: str,
+    prefix: str,
 ) -> tuple[Path, Path]:
     source = root / "source"
     source.mkdir()
@@ -99,9 +74,9 @@ def prepare_plain_vault(
     with SQLiteConnection(str(database_path)) as connection:
         connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
         connection.execute("""
-            INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote)
-            VALUES (2, 'ci', 'CI', %s, %s, %s, %s)
-        """, (str(source), bucket, prefix.strip("/"), rclone_remote))
+            INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix)
+            VALUES (2, 'ci', 'CI', %s, %s, %s)
+        """, (str(source), bucket, prefix.strip("/"),))
         ArchiveCatalog(connection).observe_local_copy(
             vault_id=2, path=relative_path, file_type="regular", size=len(payload),
             mtime_ns=target.stat().st_mtime_ns, observed_at="2026-07-22T12:00:00+00:00",

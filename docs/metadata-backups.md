@@ -195,8 +195,8 @@ and custody columns only when **every** persisted Vault is plain and has no
 sealed secrets. A crypt Vault, including a disabled Vault or tombstone, refuses
 the entire migration before DDL. No row contents or secrets are printed. There
 are no S3 calls, key conversions, object deletions, or automatic data migration.
-Legacy shared crypt remotes are also refused at runtime, even for an old plain
-row. Do not just change a legacy remote to a plaintext alias: old ciphertext
+The SDK transfer upgrade (0052) removes legacy transport aliases; it never
+reinterprets encrypted data. Old ciphertext
 would not become plaintext.
 
 There is no compatibility promise for test Vaults (#362). Recover any wanted

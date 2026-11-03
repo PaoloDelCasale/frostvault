@@ -112,9 +112,8 @@ class CatalogEventsHttpTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                ) VALUES
-                (1, 'alpha', 'Alpha', %s, 'bucket', 'alpha', 'remote'),
+                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES
+                (1, 'alpha', 'Alpha', %s, 'bucket', 'alpha'),
                 (2, 'beta', 'Beta', %s, 'bucket', 'beta', 'remote')
                 """,
                 (str(self.source), str(self.source)),

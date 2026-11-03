@@ -42,7 +42,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
             db_backend="sqlite",
             sqlite_path=str(self.database_path),
             vault_s3_bucket="test-bucket",
-            vault_rclone_remote="test-remote",
+
         )
         for target in ("app.database.settings", "app.services.vaults.settings"):
             patcher = patch(target, self.settings)
@@ -65,7 +65,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         # from the label.
         self.assertEqual(vault["s3_prefix"], f"vaults/{vault['uuid']}/")
         self.assertEqual(vault["s3_bucket"], "test-bucket")
-        self.assertEqual(vault["rclone_remote"], "test-remote")
+        self.assertNotIn("rclone_remote", vault)
         self.assertEqual(
             Path(vault["source_root"]), self.managed_root / vault["uuid"]
         )
@@ -81,7 +81,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
 
     def test_the_service_never_accepts_caller_chosen_storage_identity(self) -> None:
         # Only labels and constrained adoption coordinates are allowed.
-        # Absolute source_root, S3 identity, rclone remote, and crypt secrets
+        # Absolute source_root, S3 identity and crypt secrets
         # are absent from the signature (issue #150 seam 9).
         signature = inspect.signature(vaults_service.create_vault)
         self.assertEqual(
@@ -126,7 +126,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         self.assertEqual(self._vaults(), [])
 
     def test_creation_is_unavailable_without_a_configured_bucket_and_remote(self) -> None:
-        unconfigured = replace(self.settings, vault_s3_bucket="", vault_rclone_remote="")
+        unconfigured = replace(self.settings, vault_s3_bucket="")
         with patch("app.services.vaults.settings", unconfigured):
             with self.assertRaises(vaults_service.VaultProvisioningUnavailable):
                 vaults_service.create_vault("Docs")

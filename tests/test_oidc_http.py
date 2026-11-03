@@ -92,9 +92,8 @@ class OidcHttpTests(unittest.TestCase):
             vault_id = connection.execute(
                 """
                 INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                ) VALUES ('oidc-cache-vault', 'OIDC Cache Vault', '/source', 'bucket',
-                          'oidc-cache', 'remote')
+                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('oidc-cache-vault', 'OIDC Cache Vault', '/source', 'bucket',
+                          'oidc-cache')
                 RETURNING id
                 """
             ).fetchone()["id"]

@@ -8,6 +8,8 @@ Seams under test:
 
 from __future__ import annotations
 
+from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
+
 import hashlib
 import os
 import tempfile
@@ -48,8 +50,7 @@ def _seed_user_vault(connection: SQLiteConnection, source: Path) -> None:
     connection.execute(
         """
         INSERT INTO vaults(
-            id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-        ) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote')
+            id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
         """,
         (str(source),),
     )
@@ -434,7 +435,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
     ) -> list[str]:
         commands: list[str] = []
 
-        def fake_rclone(*args, **kwargs) -> None:
+        def fake_sdk_upload(*args, **kwargs) -> None:
             command = tuple(str(arg) for arg in args if not callable(arg))
             commands.append(command[0] if command else "")
 
@@ -458,8 +459,8 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             with (
                 patch("app.storage.settings", worker_settings),
                 patch("app.storage.validate_cloud_vault"),
-                patch("app.storage.run_rclone", side_effect=fake_rclone),
-                patch("app.storage.run_rclone_stream", side_effect=fake_stream),
+                mock_sdk_upload( side_effect=fake_sdk_upload),
+                mock_sdk_read( side_effect=fake_stream),
                 patch(
                     "app.storage.s3_client",
                     return_value=VersionedS3Stub(
@@ -509,8 +510,8 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
                 jobs = connection.execute(
                     "SELECT status FROM jobs ORDER BY id"
                 ).fetchall()
-            self.assertEqual(commands_a, ["copyto", "cat"])
-            self.assertEqual(commands_b, ["copyto", "cat"])
+            self.assertEqual(commands_a, ["upload", "read"])
+            self.assertEqual(commands_b, ["upload", "read"])
             self.assertEqual(observed["id"], file_id)
             self.assertEqual(observed["latest_version"]["provider_version_id"], "s3-b")
             self.assertEqual(len(versions), 2)
@@ -604,7 +605,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
                     "SELECT status FROM jobs ORDER BY id"
                 ).fetchall()
             self.assertEqual(local.read_bytes(), payload)
-            self.assertEqual(commands, ["cat"])
+            self.assertEqual(commands, ["read"])
             self.assertEqual(len(versions), 1)
             self.assertEqual(versions[0]["integrity"], "verified")
             self.assertEqual([job["status"] for job in jobs], ["failed", "completed"])
@@ -644,7 +645,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
                     ORDER BY version_number
                     """
                 ).fetchall()
-            self.assertEqual(commands, ["copyto", "cat"])
+            self.assertEqual(commands, ["upload", "read"])
             self.assertEqual(len(versions), 2)
             self.assertEqual(versions[0]["provider_version_id"], "s3-mismatch")
             self.assertEqual(versions[0]["integrity"], "mismatch")

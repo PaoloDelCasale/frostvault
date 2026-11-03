@@ -34,7 +34,7 @@ class FilesystemProblemTests(unittest.TestCase):
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
             connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) VALUES (9, 'files', 'Files', %s, 'bucket', 'files', 'remote')",
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (9, 'files', 'Files', %s, 'bucket', 'files')",
                 (str(self.root),),
             )
         self.vault = {"id": 9, "source_root": str(self.root)}

@@ -25,8 +25,7 @@ def _seed_vault(connection: SQLiteConnection, vault_id: int = 2) -> None:
     connection.execute(
         """
         INSERT INTO vaults(
-            id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-        ) VALUES (%s, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+            id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, 'docs', 'Docs', '/source', 'bucket', 'docs')
         """,
         (vault_id,),
     )
@@ -168,9 +167,7 @@ class CatalogScanBatchIdentityTests(unittest.TestCase):
             reference.execute(
                 """
                 INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote
-                ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
                 """
             )
             catalog = ArchiveCatalog(reference)

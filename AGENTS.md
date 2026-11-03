@@ -40,8 +40,7 @@ Docker is not installed; run natively with the SQLite backend instead of `docker
   `set -a && . ./.env && set +a`. If it is missing, recreate it from `.env.local.example`,
   and quote values containing spaces (e.g. `BOOTSTRAP_ADMIN_DISPLAY_NAME="Local Admin"`)
   or `source` will fail.
-- `.env.local.example` uses container-style paths (`/data/...`, `/sources/...`,
-  `/config/rclone/rclone.conf`). For a native run, repoint them at real writable paths under
+- `.env.local.example` uses container-style paths (`/data/...`, `/sources/...`). For a native run, repoint them at real writable paths under
   the repo and create the dirs first, e.g. `SQLITE_PATH=/workspace/data/frostvault.db`
   (set `FROSTVAULT_TEST_SOURCES_ROOT` to relocate the fixed `/sources` layout for
   native/test seams). Vaults are created from the UI; empty Vaults
@@ -84,8 +83,8 @@ Open the Vite URL (default `http://127.0.0.1:5173`). For the production serving
 path without Docker: build `frontend/dist`, then open `http://127.0.0.1:8080`.
 
 ### Non-obvious gotchas
-- AWS/rclone are placeholders locally. Local file cataloging (scan + browse) works without
- them; only upload/recover/free-space actually call AWS. The background cloud scan logs a
- benign `Rclone configuration not found` error locally — this is expected, not a failure.
+- AWS credentials are placeholders locally. Local file cataloging (scan + browse)
+ works without them; cloud transfers, verification and scans require valid S3
+ configuration. Missing credentials/bucket errors are expected with placeholders.
 - With placeholder AWS creds a red UI toast `Policy log reconciliation: The S3 bucket name
  is not configured` can appear; it is the same expected placeholder behavior, not a failure.

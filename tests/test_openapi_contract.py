@@ -129,7 +129,7 @@ class OpenApiResponseContractTests(unittest.TestCase):
     def test_admin_vault_schema_is_a_closed_non_secret_contract(self) -> None:
         vault = app.openapi()["components"]["schemas"]["AdminVault"]
         self.assertFalse(vault["additionalProperties"])
-        self.assertIn("rclone_remote", vault["properties"])
+        self.assertNotIn("rclone_remote", vault["properties"])
         self.assertTrue(
             {
                 "crypt_password_ciphertext",

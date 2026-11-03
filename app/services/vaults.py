@@ -8,7 +8,7 @@ immutable, randomly generated UUID, and the S3 namespace
 (``vaults/<uuid>/``) is derived from that UUID alone. Empty Vaults also
 receive ``/sources/managed/<uuid>``; adoption mode stores any free existing
 directory under a custom Source Volume instead. Callers can never
-choose S3 bucket/prefix/remote: ``name``/``slug`` stay
+choose S3 bucket/prefix: ``name``/``slug`` stay
 human-readable labels, and adoption accepts only a volume alias plus
 volume-relative path — never an arbitrary filesystem path.
 
@@ -49,7 +49,7 @@ class VaultSlugTaken(VaultCreationError):
 
 
 class VaultProvisioningUnavailable(VaultCreationError):
-    """The server has no default S3 bucket/rclone remote configured."""
+    """The server has no default S3 bucket configured."""
 
 
 class VaultAdoptionError(VaultCreationError):
@@ -74,7 +74,6 @@ _VAULT_INVENTORY_FIELDS = (
     "source_root",
     "s3_bucket",
     "s3_prefix",
-    "rclone_remote",
     "enabled",
     "decommission_state",
     "decommissioned_at",
@@ -116,8 +115,7 @@ def create_vault(
         raise InvalidVaultName("creation_mode must be 'empty' or 'adopt'")
 
     default_bucket = settings.vault_s3_bucket.strip()
-    default_remote = settings.vault_rclone_remote.strip()
-    if not default_bucket or not default_remote:
+    if not default_bucket:
         raise VaultProvisioningUnavailable(
             "Vault creation is not configured on this server"
         )
@@ -171,13 +169,12 @@ def create_vault(
             vault = connection.execute(
                 """
                 INSERT INTO vaults(
-                    uuid, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote
+                    uuid, slug, name, source_root, s3_bucket, s3_prefix
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING
                     id, uuid, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote, enabled, decommission_state,
+                    enabled, decommission_state,
                     decommissioned_at, root_released_at
                 """,
                 (
@@ -187,7 +184,6 @@ def create_vault(
                     source_root,
                     default_bucket,
                     s3_prefix,
-                    default_remote,
                 ),
             ).fetchone()
             if not adopting:

@@ -65,8 +65,7 @@ class LifecyclePinTests(unittest.TestCase):
                 "VALUES (1, 'owner', 'Owner', 'x')"
             )
             connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                "VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid', 'remote')"
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid')"
             )
             self.default_policy = create_policy(connection, vault_id=1, name="default")
             set_vault_default_policy(connection, 1, self.default_policy)

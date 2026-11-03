@@ -100,12 +100,9 @@ class BucketPreflightTests(unittest.TestCase):
             "PublicAccessBlockConfiguration": dict.fromkeys(FLAGS, False),
         }))
         with tempfile.TemporaryDirectory() as directory:
-            config = Path(directory) / "rclone.conf"
-            config.write_text("[plain]\ntype = alias\nremote = base:my-archive-bucket\n[base]\ntype = s3\n")
-            job = {"id": 891, "s3_bucket": "my-archive-bucket", "rclone_remote": "plain"}
-            with patch("app.storage.s3_client", return_value=client), patch("app.storage.settings") as settings, patch("app.storage.run_rclone") as transfer:
+            job = {"id": 891, "s3_bucket": "my-archive-bucket"}
+            with patch("app.storage.s3_client", return_value=client), patch("app.storage.settings") as settings, patch("app.storage.upload_s3_file") as transfer:
                 settings.aws_region = "eu-south-1"
-                settings.rclone_config = str(config)
                 for operation in (storage.process_upload, storage.process_rename, storage.process_recover, storage.process_free_space):
                     with self.subTest(operation=operation.__name__), self.assertRaisesRegex(RuntimeError, "Block Public Access"):
                         operation(job)

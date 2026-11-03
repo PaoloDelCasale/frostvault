@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
+
 import hashlib
 import os
 import tempfile
@@ -27,10 +29,8 @@ from app.storage import (
     apply_filesystem_changes,
     cancel_jobs,
     cleanup_abandoned_restore_files,
-    download_with_rclone,
     expected_cloud_key,
     object_key_to_path,
-    parse_rclone_progress,
     process_free_space,
     process_job,
     process_recover,
@@ -152,7 +152,7 @@ class StorageCleanupTests(unittest.TestCase):
         self.assertEqual(object_key_to_path("archive/docs/file.txt", "archive"), "docs/file.txt")
         self.assertEqual(object_key_to_path("archive/docs/file.txt.bin", "archive"), "docs/file.txt.bin")
 
-    def test_local_scan_ignores_all_rclone_recovery_temporaries(self) -> None:
+    def test_local_scan_ignores_all_sdk_recovery_temporaries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source"
@@ -170,9 +170,7 @@ class StorageCleanupTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote')
+                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
                     """,
                     (str(source),),
                 )
@@ -214,9 +212,7 @@ class StorageCleanupTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote')
+                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
                     """,
                     (str(source),),
                 )
@@ -247,9 +243,7 @@ class StorageCleanupTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
                     """
                 )
                 ArchiveCatalog(connection).observe_local_copy(
@@ -289,9 +283,7 @@ class StorageCleanupTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
                     """
                 )
 
@@ -331,7 +323,7 @@ class StorageCleanupTests(unittest.TestCase):
                         "id": 2,
                         "s3_bucket": "bucket",
                         "s3_prefix": "docs",
-                        "rclone_remote": "remote",
+
                     },
                     "2026-07-21T10:00:00+00:00",
                 )
@@ -358,9 +350,7 @@ class StorageCleanupTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
                     """
                 )
 
@@ -397,7 +387,7 @@ class StorageCleanupTests(unittest.TestCase):
                         "id": 2,
                         "s3_bucket": "bucket",
                         "s3_prefix": "docs",
-                        "rclone_remote": "remote",
+
                     },
                     "2026-07-21T10:00:00+00:00",
                 )
@@ -431,9 +421,7 @@ class StorageCleanupTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
                     """
                 )
                 ArchiveCatalog(connection).observe_local_copy(
@@ -476,9 +464,7 @@ class StorageCleanupTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote')
+                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
                     """,
                     (str(source),),
                 )
@@ -503,7 +489,7 @@ class StorageCleanupTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.run_rclone"),
+                    mock_sdk_upload(),
                     patch(
                         "app.storage.s3_client",
                         return_value=SimpleNamespace(
@@ -553,9 +539,7 @@ class StorageCleanupTests(unittest.TestCase):
                 database.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote')
+                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
                     """,
                     (str(source),),
                 )
@@ -595,14 +579,6 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertEqual(deleted_file["local_copy"]["presence"], "missing")
             self.assertIsNone(partial_file)
 
-    def test_rclone_json_stats_expose_real_transferred_bytes(self) -> None:
-        line = (
-            '{"level":"notice","stats":{"bytes":6844416,'
-            '"totalBytes":12582912},"source":"accounting/stats.go:537"}'
-        )
-
-        self.assertEqual(parse_rclone_progress(line), (6_844_416, 12_582_912))
-        self.assertIsNone(parse_rclone_progress("unstructured message"))
 
     def test_cancelled_operations_do_not_start(self) -> None:
         operations = (
@@ -620,21 +596,6 @@ class StorageCleanupTests(unittest.TestCase):
                     with storage.operation_process_lock:
                         storage.cancelled_jobs.discard(job_id)
 
-    def test_cancelling_an_active_transfer_terminates_rclone(self) -> None:
-        job_id = 987655
-        process = SimpleNamespace(
-            poll=lambda: None,
-            terminate=Mock(),
-        )
-        with storage.operation_process_lock:
-            storage.active_operation_processes[job_id] = process
-        try:
-            cancel_jobs([job_id])
-            process.terminate.assert_called_once_with()
-        finally:
-            with storage.operation_process_lock:
-                storage.active_operation_processes.pop(job_id, None)
-                storage.cancelled_jobs.discard(job_id)
 
     def test_bug_001_recover_requires_status_whitelist(self) -> None:
         """[BUG-001][Req: REQ-002] recover dispatcher must whitelist statuses.
@@ -714,10 +675,10 @@ class StorageCleanupTests(unittest.TestCase):
                 f".{incomplete.name}.restore-{restore_token}.tmp"
             )
             abandoned.write_bytes(b"partial")
-            rclone_partial = incomplete.with_name(
+            legacy_partial = incomplete.with_name(
                 f".{incomplete.name}.restore-{restore_token}.tmp.random.partial"
             )
-            rclone_partial.write_bytes(b"partial")
+            legacy_partial.write_bytes(b"partial")
             jobs = [
                 {
                     "id": 10,
@@ -750,7 +711,7 @@ class StorageCleanupTests(unittest.TestCase):
 
             self.assertEqual(summary, {"completed": 0, "requeued": 1, "failed": 1})
             self.assertFalse(abandoned.exists())
-            self.assertFalse(rclone_partial.exists())
+            self.assertFalse(legacy_partial.exists())
             self.assertTrue(complete.exists())
             queued_ids = [
                 params[-1]
@@ -817,9 +778,7 @@ class StorageCleanupTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
                     """
                 )
                 catalog = ArchiveCatalog(connection)
@@ -1144,11 +1103,8 @@ class StorageCleanupTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote
-                ) VALUES (
-                    2, 'docs', 'Docs', %s, 'bucket-test', 'archive', 'remote-test'
-                )
+                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (
+                    2, 'docs', 'Docs', %s, 'bucket-test', 'archive')
                 """,
                 (str(source),),
             )
@@ -1513,7 +1469,7 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertEqual(observed["local_copy"]["presence"], "present")
             self.assertEqual(observed["local_copy"]["size"], len("newer content"))
 
-    def test_recovery_pins_version_id_and_skips_path_only_rclone(self) -> None:
+    def test_recovery_pins_version_id_and_skips_path_only_download(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target, database_path = self.cleanup_fixture(directory)
             payload = target.read_bytes()
@@ -1584,7 +1540,7 @@ class StorageCleanupTests(unittest.TestCase):
                 patch("app.storage.settings", worker_settings),
                 patch("app.storage.validate_cloud_vault"),
                 patch("app.storage.s3_client", return_value=client),
-                patch("app.storage.run_rclone") as run_rclone,
+                patch("app.storage.upload_s3_file") as sdk_upload,
             ):
                 queue_jobs("docs/file.txt", "recover", 2, 1)
                 process_jobs_once()
@@ -1601,7 +1557,7 @@ class StorageCleanupTests(unittest.TestCase):
                 "s3-version-1",
             )
             client.restore_object.assert_not_called()
-            run_rclone.assert_not_called()
+            sdk_upload.assert_not_called()
             self.assertTrue(target.is_file())
             self.assertEqual(target.read_bytes(), payload)
             with patch("app.database.settings", database_settings):
@@ -1624,95 +1580,7 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertFalse((source / "docs" / "file.txt").exists())
             self.assertTrue((restore / "docs" / "file.txt").exists())
 
-    def test_download_restores_atomically_to_original_source(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            source = base / "source"
-            restore = base / "restore"
-            database_path = base / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote')
-                    """,
-                    (str(source),),
-                )
-                ArchiveCatalog(connection).record_archive_version(
-                    vault_id=2,
-                    path="docs/file.txt",
-                    object_key="docs/file.txt",
-                    provider_version_id="version-1",
-                    size=9,
-                    storage_class="STANDARD",
-                    etag="etag",
-                    uploaded_at="2026-07-21T10:00:00+00:00",
-                    observed_at="2026-07-21T10:00:00+00:00",
-                    scan_id="2026-07-21T10:00:00+00:00",
-                )
-            job = {
-                "id": 10,
-                "vault_id": 2,
-                "path": "docs/file.txt",
-                "source_root": str(source),
-                "rclone_remote": "test-plain",
-                "s3_prefix": "docs",
-            }
 
-            def fake_rclone(*args: str, **kwargs) -> None:
-                Path(args[2]).write_text("dal cloud", encoding="utf-8")
-
-            database_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
-            )
-            with (
-                patch("app.storage.run_rclone", side_effect=fake_rclone),
-                patch("app.database.settings", database_settings),
-                patch("app.storage.set_job"),
-            ):
-                download_with_rclone(job)
-
-            target = source / "docs" / "file.txt"
-            self.assertEqual(target.read_text(encoding="utf-8"), "dal cloud")
-            self.assertFalse((restore / "docs" / "file.txt").exists())
-            self.assertEqual(list(target.parent.glob("*.tmp")), [])
-            with SQLiteConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(
-                    2, "docs/file.txt"
-                )
-            self.assertEqual(observed["local_copy"]["presence"], "present")
-
-    def test_failed_download_does_not_leave_a_partial_file(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "source"
-            job = {
-                "id": 10,
-                "vault_id": 2,
-                "path": "docs/file.txt",
-                "source_root": str(source),
-                "rclone_remote": "test-plain",
-                "s3_prefix": "docs",
-            }
-
-            def failing_rclone(*args: str, **kwargs) -> None:
-                Path(args[2]).write_text("parziale", encoding="utf-8")
-                raise RuntimeError("download stopped")
-
-            with (
-                patch("app.storage.run_rclone", side_effect=failing_rclone),
-                patch("app.storage.set_job"),
-            ):
-                with self.assertRaisesRegex(RuntimeError, "download stopped"):
-                    download_with_rclone(job)
-
-            target = source / "docs" / "file.txt"
-            self.assertFalse(target.exists())
-            self.assertEqual(list(target.parent.glob("*.tmp")), [])
 
 
 if __name__ == "__main__":

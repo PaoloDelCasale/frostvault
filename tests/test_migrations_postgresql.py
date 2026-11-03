@@ -69,9 +69,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote
-                ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
                 """
             )
             catalog = ArchiveCatalog(connection)
@@ -107,6 +105,10 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 matched_archive_version_id=None,
             )
         return missing_id
+
+    def test_sdk_migration_preserves_populated_catalog_and_only_cloud_copy(self) -> None:
+        from tests.s3_sdk_migration_contract import assert_sdk_migration
+        assert_sdk_migration(self, run_alembic, self._connection)
 
     def test_plaintext_vaults_populated_roundtrip_and_legacy_refusal(self) -> None:
         from tests.plaintext_vaults_migration_contract import assert_plaintext_migration
@@ -260,8 +262,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                ) VALUES (2, 'state', 'State', '/source', 'bucket', 'state', 'remote')
+                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'state', 'State', '/source', 'bucket', 'state')
                 """
             )
             published = CatalogEventStore(connection).mutate_and_publish(
@@ -518,10 +519,9 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 sa.text(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
+                        id, slug, name, source_root, s3_bucket, s3_prefix
                     ) VALUES (
-                        2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote'
+                        2, 'docs', 'Docs', '/source', 'bucket', 'docs'
                     )
                     """
                 )
@@ -576,11 +576,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote
-                ) VALUES (
-                    2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote'
-                )
+                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (
+                    2, 'docs', 'Docs', '/source', 'bucket', 'docs')
                 """
             )
             catalog = ArchiveCatalog(connection)
@@ -669,9 +666,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             vault_id = connection.execute(
                 """
                 INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                ) VALUES ('notification-vault', 'Notification Vault', '/source',
-                          'bucket', 'notifications', 'remote')
+                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('notification-vault', 'Notification Vault', '/source',
+                          'bucket', 'notifications')
                 RETURNING id
                 """
             ).fetchone()["id"]
@@ -952,9 +948,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote
-                ) VALUES (9, 'claims', 'Claims', '/source', 'bucket', 'claims', 'remote')
+                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (9, 'claims', 'Claims', '/source', 'bucket', 'claims')
                 """
             )
             catalog = ArchiveCatalog(connection)
@@ -1021,10 +1015,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote
-                ) VALUES (10, 'claim-groups', 'Claim Groups', '/source',
-                          'bucket', 'claims', 'remote')
+                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (10, 'claim-groups', 'Claim Groups', '/source',
+                          'bucket', 'claims')
                 """
             )
             catalog = ArchiveCatalog(connection)

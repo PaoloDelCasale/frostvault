@@ -49,7 +49,7 @@ class ManagedEmptyVaultRootTests(unittest.TestCase):
             db_backend="sqlite",
             sqlite_path=str(self.database_path),
             vault_s3_bucket="test-bucket",
-            vault_rclone_remote="test-remote",
+
         )
         for target in ("app.database.settings", "app.services.vaults.settings"):
             patcher = patch(target, self.settings)
@@ -391,8 +391,7 @@ class SourceVolumeInventoryTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                ) VALUES ('family', 'Family', %s, 'b', 'p/', 'r')
+                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('family', 'Family', %s, 'b', 'p/')
                 """,
                 (str(vault_root),),
             )
@@ -478,8 +477,7 @@ class LocalOpsGateTests(unittest.TestCase):
             self.vault_id = connection.execute(
                 """
                 INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                ) VALUES ('family', 'Family', %s, 'b', 'p/', 'r')
+                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('family', 'Family', %s, 'b', 'p/')
                 RETURNING id
                 """,
                 (str(self.vault_root),),

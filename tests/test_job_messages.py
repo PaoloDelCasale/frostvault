@@ -72,8 +72,7 @@ class JobMessagePersistenceTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
                 """
             )
             ArchiveCatalog(connection).observe_local_copy(
@@ -193,8 +192,7 @@ class JobMessageHttpTests(unittest.TestCase):
             vault_id = connection.execute(
                 """
                 INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                ) VALUES ('docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('docs', 'Docs', '/source', 'bucket', 'docs')
                 RETURNING id
                 """
             ).fetchone()["id"]

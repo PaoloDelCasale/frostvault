@@ -15,7 +15,7 @@ class UploadRetryPolicyTests(unittest.TestCase):
     def test_integrity_errors_are_not_retryable(self) -> None:
         for message in (
             "Cloud copy digest does not match local file",
-            "Rclone did not create the verification copy",
+            "S3 did not create the verification copy",
         ):
             with self.subTest(message=message):
                 self.assertEqual(classify_upload_failure(message), "permanent")
@@ -29,7 +29,7 @@ class UploadRetryPolicyTests(unittest.TestCase):
     def test_permission_and_configuration_errors_are_not_retryable(self) -> None:
         for message in (
             "AccessDenied: not authorized",
-            "Rclone configuration not found",
+            "AWS credentials are not configured in the .env file",
             "Upload stored without an S3 VersionId; bucket Versioning is required",
             "InvalidAccessKeyId",
         ):

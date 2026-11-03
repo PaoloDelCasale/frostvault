@@ -2931,7 +2931,7 @@ class ArchiveCatalog:
         return self.connection.execute(
             f"""
             SELECT j.*, v.source_root, v.s3_bucket,
-                   v.s3_prefix, v.rclone_remote,
+                   v.s3_prefix,
                    v.uuid AS vault_uuid, v.name AS vault_name,
                    v.cloud_deletion_enabled, v.decommission_state
             FROM jobs j

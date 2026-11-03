@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -91,8 +93,7 @@ class LifecyclePolicyDatabaseTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                "VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid', 'remote')"
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid')"
             )
 
     def test_folder_override_updates_desired_policy_on_existing_versions(self) -> None:
@@ -152,8 +153,7 @@ class PolicyReconciliationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                "VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid', 'remote')"
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid')"
             )
             policy_id = create_policy(connection, vault_id=1, name="default")
             set_vault_default_policy(connection, 1, policy_id)
@@ -209,16 +209,13 @@ class UploadPolicyTagIntegrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         with SQLiteConnection(str(path)) as connection:
             connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                "VALUES (1, 'docs', 'Docs', %s, 'bucket', 'vaults/uuid', 'remote')",
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', %s, 'bucket', 'vaults/uuid')",
                 (str(source_root),),
             )
             policy_id = create_policy(connection, vault_id=1, name="default")
             set_vault_default_policy(connection, 1, policy_id)
             self.policy_id = policy_id
 
-        config = Path(tmp.name) / "rclone.conf"
-        config.write_text("[remote]\ntype = alias\nremote = base:bucket\n[base]\ntype = s3\n")
         s3 = VersionedS3Stub(
             version_bytes=b"hello",
             head_object=lambda **_: {
@@ -237,9 +234,9 @@ class UploadPolicyTagIntegrationTests(unittest.TestCase):
             }},
         )
 
-        def fake_rclone(*args, **kwargs) -> None:
+        def fake_sdk_upload(*args, **kwargs) -> None:
             command = [str(arg) for arg in args if not callable(arg)]
-            if command[:1] != ["copyto"] or len(command) < 3:
+            if command[:1] != ["upload"] or len(command) < 3:
                 return
             origin, destination = command[1], command[2]
             if ":" in origin and not Path(origin).exists():
@@ -247,19 +244,18 @@ class UploadPolicyTagIntegrationTests(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(b"hello")
 
-        def fake_rclone_stream(*args, **kwargs) -> int:
+        def fake_sdk_read(*args, **kwargs) -> int:
             kwargs["on_chunk"](b"hello")
             return 5
 
         with (
             patch("app.storage.s3_client", return_value=s3),
-            patch("app.storage.run_rclone", side_effect=fake_rclone),
-            patch("app.storage.run_rclone_stream", side_effect=fake_rclone_stream),
+            mock_sdk_upload( side_effect=fake_sdk_upload),
+            mock_sdk_read( side_effect=fake_sdk_read),
             patch("app.storage.settings") as mock_settings,
             patch("app.storage.db", side_effect=lambda: SQLiteConnection(str(path))),
         ):
             mock_settings.aws_region = "eu-south-1"
-            mock_settings.rclone_config = str(config)
             process_upload(
                 {
                     "id": 9,
@@ -268,7 +264,7 @@ class UploadPolicyTagIntegrationTests(unittest.TestCase):
                     "source_root": str(source_root),
                     "s3_bucket": "bucket",
                     "s3_prefix": "vaults/uuid",
-                    "rclone_remote": "remote",
+
                     "total_bytes": 5,
                 }
             )

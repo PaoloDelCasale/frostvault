@@ -586,7 +586,7 @@ class VaultSelfServiceCreate(BaseModel):
 
     Labels are accepted. Adoption adds a
     constrained ``volume_alias`` + ``relative_path`` pair — never an absolute
-    filesystem path, S3 identity, or rclone remote.
+    filesystem path or S3 identity.
     """
 
     model_config = ConfigDict(extra="forbid")

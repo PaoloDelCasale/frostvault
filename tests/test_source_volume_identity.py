@@ -163,8 +163,8 @@ class PersistedSourceIdentityTests(unittest.TestCase):
         with SQLiteConnection(str(self.database_path)) as connection:
             vault_id = connection.execute(
                 """
-                INSERT INTO vaults(slug, name, source_root, s3_bucket, s3_prefix, rclone_remote)
-                VALUES ('family', 'Family', %s, 'b', 'p/', 'r') RETURNING id
+                INSERT INTO vaults(slug, name, source_root, s3_bucket, s3_prefix)
+                VALUES ('family', 'Family', %s, 'b', 'p/') RETURNING id
                 """,
                 (str(self.vault_root),),
             ).fetchone()["id"]

@@ -1,6 +1,8 @@
 """#417: only safe automatic renames may clean up verified cloud content."""
 from __future__ import annotations
 
+from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
+
 import tempfile
 import io
 import unittest
@@ -86,8 +88,8 @@ def _worker(database_path: Path, cloud: _RenameCloud):
         patch("app.storage.settings", SimpleNamespace(operation_concurrency=1, restore_poll_interval=900)),
         patch("app.storage.validate_cloud_vault"),
         patch("app.storage.s3_client", return_value=cloud),
-        patch("app.storage.run_rclone", side_effect=cloud.upload),
-        patch("app.storage.run_rclone_stream", side_effect=lambda *args, **kwargs: (kwargs["on_chunk"](PAYLOAD), len(PAYLOAD))[1]),
+        mock_sdk_upload( side_effect=cloud.upload),
+        mock_sdk_read( side_effect=lambda *args, **kwargs: (kwargs["on_chunk"](PAYLOAD), len(PAYLOAD))[1]),
     ):
         yield
 

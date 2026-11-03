@@ -20,9 +20,13 @@ recover deliberately with the old release before creating a fresh installation.
 Metadata backup ciphertext and `ARCHIVE_MASTER_KEY` remain necessary for metadata
 restore. The unified Recovery Kit belongs to #427, not this removal.
 
-Rclone remains the plaintext upload/read-back transport until #420. Official
-Rclone cannot pin an S3 VersionId; upload verification additionally reuses the
-existing SDK exact-version integrity reader before granting trust or deleting
-anything. This temporary double read favors safety over cost. Rename/recovery
-keep their existing exact-version SDK reads. Verified replacement guards from
-ADR-0001/0016 remain mandatory.
+#420 replaces the transport with managed SDK multipart uploads. S3 validates a
+CRC32 FULL_OBJECT checksum supplied at completion (SHA256 multipart checksums
+would be composite). VersionId is captured from PutObject/CompleteMultipartUpload,
+never inferred from a later HEAD. A single streamed GetObject of that exact
+VersionId is compared to the durable local SHA256 snapshot. Concurrent uploads
+share one bandwidth budget; progress writes are throttled. Cancellation/failure
+cancels the manager and explicitly aborts incomplete multipart uploads, while a
+seven-day prefix-only lifecycle rule catches process crashes. Completed objects
+are not deleted by transport cleanup. Rename/recovery retain exact-version SDK
+reads; verified replacement guards from ADR-0001/0016 remain mandatory.

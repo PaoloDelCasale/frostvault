@@ -53,7 +53,7 @@ class VaultCreationHttpTestCase(unittest.TestCase):
             "sqlite_path": str(self.database_path),
             "cookie_secure": False,
             "vault_s3_bucket": "test-bucket",
-            "vault_rclone_remote": "test-remote",
+
             "frontend_dist_dir": str(write_spa_dist(Path(self._tmp.name))),
         }
         overrides.update(self.settings_overrides)
@@ -230,7 +230,7 @@ class VaultCreationTests(VaultCreationHttpTestCase):
                 "source_root": "/sources/whatever-i-want",
                 "s3_bucket": "attacker-bucket",
                 "s3_prefix": "not/my/prefix",
-                "rclone_remote": "attacker-remote",
+
             },
             headers=headers,
         )
@@ -289,7 +289,7 @@ class VaultCreationTests(VaultCreationHttpTestCase):
 
 
 class UnconfiguredVaultCreationTests(VaultCreationHttpTestCase):
-    settings_overrides = {"vault_s3_bucket": "", "vault_rclone_remote": ""}
+    settings_overrides = {"vault_s3_bucket": ""}
 
     def test_creation_fails_clearly_when_the_server_has_no_default_storage(self) -> None:
         self._login()

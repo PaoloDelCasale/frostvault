@@ -249,6 +249,8 @@ jobs:
       - name: Verify PostgreSQL client tools in image
         run: |
           set -euo pipefail
+          # SDK-only image: no retired transfer binary or Go toolchain.
+          docker run --rm --entrypoint sh "$IMAGE" -c '! command -v rclone && ! command -v go'
           docker run --rm --entrypoint sh "$IMAGE" -c 'pg_dump --version'
           docker run --rm --entrypoint sh "$IMAGE" -c 'pg_restore --version'
           docker run --rm --entrypoint sh "$IMAGE" -c 'createdb --version'
@@ -328,32 +330,6 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install rclone
-        run: |
-          RCLONE_VERSION="$(sed -n 's/^FROM rclone\/rclone:\([^ ]*\) AS rclone$/\1/p' Dockerfile)"
-          if [ -z "${RCLONE_VERSION}" ]; then
-            echo "Could not read rclone pin from Dockerfile" >&2
-            exit 1
-          fi
-          RCLONE_ARCHIVE="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
-          curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/${RCLONE_ARCHIVE}" \
-            -o "/tmp/${RCLONE_ARCHIVE}"
-          curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/SHA256SUMS" \
-            -o /tmp/rclone-SHA256SUMS
-          EXPECTED="$(awk -v name="${RCLONE_ARCHIVE}" '$2 == name { print $1; exit }' /tmp/rclone-SHA256SUMS)"
-          if [ -z "${EXPECTED}" ]; then
-            echo "No SHA256 for ${RCLONE_ARCHIVE} in official SHA256SUMS" >&2
-            exit 1
-          fi
-          echo "${EXPECTED}  /tmp/${RCLONE_ARCHIVE}" | sha256sum --check --strict
-          sudo unzip -qo "/tmp/${RCLONE_ARCHIVE}" -d /tmp
-          sudo cp "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
-          rclone version
-      # MinIO stopped publishing community images: Docker Hub minio/minio is
-      # gone and quay.io/minio/minio now refuses anonymous pulls. moto's S3
-      # server comes from PyPI, supports bucket versioning, exact VersionId
-      # reads and deletes, and runs the same Rclone upload/recovery proofs.
-      # The job keeps its name because release gates require it.
       - name: Start S3-compatible server (moto)
         run: |
           python -m pip install "moto[server]==5.2.3"

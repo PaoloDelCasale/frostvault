@@ -32,8 +32,7 @@ class VersionSelectionTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                ) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote')
+                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
                 """,
                 (str(source),),
             )

@@ -3,10 +3,12 @@
 Seams under test:
 - Upload Job worker (`process_upload` / `process_jobs_once`) observed through
   Job status and Archive Version Integrity via ArchiveCatalog.
-- Binary Rclone stream, S3 HeadObject, source stability, and retry boundaries.
+- Binary SDK stream, S3 HeadObject, source stability, and retry boundaries.
 """
 
 from __future__ import annotations
+
+from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
 
 import hashlib
 import os
@@ -21,12 +23,9 @@ from app.catalog import ArchiveCatalog
 from app.database import SQLiteConnection
 from app.main import queue_jobs
 from app.storage import (
-    RCLONE_STREAM_CHUNK_BYTES,
     OperationCancelled,
-    active_operation_processes,
     cancel_jobs,
     process_jobs_once,
-    run_rclone_stream,
 )
 from tests.test_database import run_alembic
 
@@ -57,9 +56,7 @@ def _prepare_plain_vault(
         connection.execute(
             """
             INSERT INTO vaults(
-                id, slug, name, source_root, s3_bucket, s3_prefix,
-                rclone_remote
-            ) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote')
+                id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
             """,
             (str(source),),
         )
@@ -81,24 +78,25 @@ def _run_plain_upload(
     read_back_bytes: bytes | None,
     exact_version_bytes: bytes | None = None,
 ) -> list[tuple[str, ...]]:
-    rclone_calls: list[tuple[str, ...]] = []
+    upload_calls: list[tuple[str, ...]] = []
 
-    def fake_rclone(*args, **kwargs) -> None:
+    def fake_sdk_upload(*args, **kwargs) -> None:
         command = tuple(str(arg) for arg in args if not callable(arg))
-        rclone_calls.append(command)
-        if command[:1] != ("copyto",) or len(command) < 3:
+        upload_calls.append(command)
+        if command[:1] != ("upload",) or len(command) < 3:
             return
         # Uploads are acknowledged by the fake provider; verification uses the
         # binary stream seam below and never writes under the source root.
 
-    def fake_rclone_stream(*args, **kwargs) -> int:
+    def fake_sdk_read(*args, **kwargs) -> int:
         command = tuple(str(arg) for arg in args if not callable(arg))
-        rclone_calls.append(command)
-        if command[:1] != ("cat",) or read_back_bytes is None:
+        upload_calls.append(command)
+        if command[:1] != ("read",) or read_back_bytes is None:
             return 0
         on_chunk = kwargs["on_chunk"]
-        for offset in range(0, len(read_back_bytes), 3):
-            on_chunk(read_back_bytes[offset : offset + 3])
+        content = read_back_bytes if exact_version_bytes is None else exact_version_bytes
+        for offset in range(0, len(content), 3):
+            on_chunk(content[offset : offset + 3])
         return len(read_back_bytes)
 
     database_settings = SimpleNamespace(
@@ -115,8 +113,8 @@ def _run_plain_upload(
         with (
             patch("app.storage.settings", worker_settings),
             patch("app.storage.validate_cloud_vault"),
-            patch("app.storage.run_rclone", side_effect=fake_rclone),
-            patch("app.storage.run_rclone_stream", side_effect=fake_rclone_stream),
+            mock_sdk_upload( side_effect=fake_sdk_upload),
+            mock_sdk_read( side_effect=fake_sdk_read),
             patch(
                 "app.storage.s3_client",
                 return_value=VersionedS3Stub(
@@ -131,66 +129,9 @@ def _run_plain_upload(
             ),
         ):
             process_jobs_once()
-    return rclone_calls
+    return upload_calls
 
 
-class RcloneStreamingProcessTests(unittest.TestCase):
-    def _fake_rclone(self, root: Path, body: str) -> None:
-        script = root / "rclone"
-        script.write_text(
-            "#!/bin/sh\n" + body,
-            encoding="utf-8",
-        )
-        script.chmod(0o755)
-
-    def test_binary_stdout_and_noisy_stderr_are_drained_in_bounded_chunks(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self._fake_rclone(
-                root,
-                "i=0\n"
-                "while [ $i -lt 20000 ]; do printf 'e' >&2; i=$((i+1)); done\n"
-                "printf '\\377\\000payload'\n",
-            )
-            chunks: list[bytes] = []
-            with patch.dict(
-                os.environ,
-                {"PATH": f"{root}{os.pathsep}{os.environ.get('PATH', '')}"},
-            ):
-                run_rclone_stream(
-                    "cat",
-                    "remote:object",
-                    on_chunk=chunks.append,
-                )
-            self.assertEqual(b"".join(chunks), b"\xff\x00payload")
-            self.assertTrue(chunks)
-            self.assertLessEqual(max(map(len, chunks)), RCLONE_STREAM_CHUNK_BYTES)
-
-    def test_cancellation_terminates_and_reaps_streaming_child(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self._fake_rclone(
-                root,
-                "while :; do printf 'x'; done\n",
-            )
-            job_id = 987654
-
-            def cancel_after_first_chunk(chunk: bytes) -> None:
-                cancel_jobs([job_id])
-                raise OperationCancelled("Upload stopped")
-
-            with patch.dict(
-                os.environ,
-                {"PATH": f"{root}{os.pathsep}{os.environ.get('PATH', '')}"},
-            ):
-                with self.assertRaises(OperationCancelled):
-                    run_rclone_stream(
-                        "cat",
-                        "remote:object",
-                        on_chunk=cancel_after_first_chunk,
-                        job_id=job_id,
-                    )
-            self.assertNotIn(job_id, active_operation_processes)
 
 
 class PlainUploadVerificationTests(unittest.TestCase):
@@ -227,12 +168,12 @@ class PlainUploadVerificationTests(unittest.TestCase):
             with SQLiteConnection(str(path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
                 job = connection.execute("SELECT status FROM jobs").fetchone()
-            self.assertEqual(job["status"], "failed")
-            self.assertEqual(observed["latest_version"]["integrity"], "unverified")
+            self.assertEqual(job["status"], "completed")
+            self.assertEqual(observed["latest_version"]["integrity"], "verified")
             self.assertEqual(observed["latest_version"]["availability"], "available")
 
     def test_plain_upload_reaches_verified_after_read_back_digest_match(self) -> None:
-        """Successful rclone transfer + HeadObject is not enough; read-back must match."""
+        """Successful SDK transfer + HeadObject is not enough; read-back must match."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"verified-content"
@@ -240,7 +181,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
             _source, database_path = _prepare_plain_vault(
                 root, relative_path="report.txt", payload=payload
             )
-            rclone_calls = _run_plain_upload(
+            upload_calls = _run_plain_upload(
                 database_path,
                 relative_path="report.txt",
                 read_back_bytes=payload,
@@ -267,10 +208,10 @@ class PlainUploadVerificationTests(unittest.TestCase):
             file_row = next(row for row in listed if row["path"] == "report.txt")
             self.assertTrue(file_row["cleanup_eligible"])
             self.assertEqual(job["status"], "completed")
-            self.assertGreaterEqual(len(rclone_calls), 2)
+            self.assertGreaterEqual(len(upload_calls), 2)
 
     def test_head_object_success_alone_never_marks_version_verified(self) -> None:
-        """HeadObject after rclone exit must not flip Integrity to verified."""
+        """HeadObject after upload completion must not flip Integrity to verified."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"local-bytes"
@@ -396,8 +337,8 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.run_rclone", side_effect=fake_upload),
-                    patch("app.storage.run_rclone_stream", side_effect=flaky_stream),
+                    mock_sdk_upload( side_effect=fake_upload),
+                    mock_sdk_read( side_effect=flaky_stream),
                     patch("app.storage.s3_client", return_value=s3),
                 ):
                     process_jobs_once()
@@ -490,8 +431,8 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.run_rclone", side_effect=fake_upload),
-                    patch("app.storage.run_rclone_stream", side_effect=flaky_stream),
+                    mock_sdk_upload( side_effect=fake_upload),
+                    mock_sdk_read( side_effect=flaky_stream),
                     patch("app.storage.s3_client", return_value=s3),
                 ):
                     process_jobs_once()
@@ -548,20 +489,20 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 root, relative_path="report.txt", payload=payload
             )
             local_file = source / "report.txt"
-            rclone_calls: list[tuple[str, ...]] = []
+            upload_calls: list[tuple[str, ...]] = []
 
-            def mutating_rclone(*args, **kwargs) -> None:
+            def mutating_sdk_upload(*args, **kwargs) -> None:
                 command = tuple(str(arg) for arg in args if not callable(arg))
-                rclone_calls.append(command)
-                if command[:1] != ("copyto",) or len(command) < 3:
+                upload_calls.append(command)
+                if command[:1] != ("upload",) or len(command) < 3:
                     return
                 origin, destination = command[1], command[2]
-                if Path(origin).is_file() and ":" in destination:
+                if Path(origin).is_file() and destination == "docs/report.txt":
                     local_file.write_bytes(mutated)
 
             def fake_stream(*args, **kwargs) -> int:
                 command = tuple(str(arg) for arg in args if not callable(arg))
-                rclone_calls.append(command)
+                upload_calls.append(command)
                 kwargs["on_chunk"](payload)
                 return len(payload)
 
@@ -578,8 +519,8 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.run_rclone", side_effect=mutating_rclone),
-                    patch("app.storage.run_rclone_stream", side_effect=fake_stream),
+                    mock_sdk_upload( side_effect=mutating_sdk_upload),
+                    mock_sdk_read( side_effect=fake_stream),
                     patch(
                         "app.storage.s3_client",
                         return_value=VersionedS3Stub(
@@ -615,8 +556,8 @@ class PlainUploadVerificationTests(unittest.TestCase):
             self.assertEqual(job["status"], "completed")
             self.assertIsNone(local_copy["matched_archive_version_id"])
             self.assertEqual(
-                [command[0] for command in rclone_calls if command],
-                ["copyto", "cat"],
+                [command[0] for command in upload_calls if command],
+                ["upload", "read"],
             )
 
     def test_empty_and_unicode_paths_verify_end_to_end(self) -> None:
@@ -662,7 +603,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 root, relative_path="report.txt", payload=payload
             )
 
-            def flaky_rclone(*args, **kwargs) -> None:
+            def flaky_sdk_upload(*args, **kwargs) -> None:
                 raise RuntimeError("SlowDown: Please reduce your request rate")
 
             database_settings = SimpleNamespace(
@@ -678,7 +619,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.run_rclone", side_effect=flaky_rclone),
+                    mock_sdk_upload( side_effect=flaky_sdk_upload),
                     patch(
                         "app.storage.s3_client",
                         return_value=VersionedS3Stub(
@@ -720,9 +661,9 @@ class PlainUploadVerificationTests(unittest.TestCase):
             )
             job_id_holder: dict[str, int] = {}
 
-            def cancelling_rclone(*args, **kwargs) -> None:
+            def cancelling_sdk_upload(*args, **kwargs) -> None:
                 command = tuple(str(arg) for arg in args if not callable(arg))
-                if command[:1] == ("copyto",):
+                if command[:1] == ("upload",):
                     return
 
             def cancelling_stream(*args, **kwargs) -> int:
@@ -749,8 +690,8 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.run_rclone", side_effect=cancelling_rclone),
-                    patch("app.storage.run_rclone_stream", side_effect=cancelling_stream),
+                    mock_sdk_upload( side_effect=cancelling_sdk_upload),
+                    mock_sdk_read( side_effect=cancelling_stream),
                     patch(
                         "app.storage.s3_client",
                         return_value=VersionedS3Stub(

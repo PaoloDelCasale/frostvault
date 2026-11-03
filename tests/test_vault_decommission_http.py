@@ -36,10 +36,8 @@ class VaultDecommissionHttpTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote
-                ) VALUES (7, 'archive', 'Exact Archive', %s, 'bucket',
-                          'vaults/archive/', 'remote')
+                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (7, 'archive', 'Exact Archive', %s, 'bucket',
+                          'vaults/archive/')
                 """,
                 (str(self.root),),
             )

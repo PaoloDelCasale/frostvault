@@ -57,7 +57,7 @@ class _AdoptionFixture(unittest.TestCase):
             db_backend="sqlite",
             sqlite_path=str(self.database_path),
             vault_s3_bucket="test-bucket",
-            vault_rclone_remote="test-remote",
+
         )
         for target in (
             "app.database.settings",
@@ -233,12 +233,11 @@ class VaultAdoptionOverlapTests(_AdoptionFixture):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, uuid, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote, enabled
+                    id, uuid, slug, name, source_root, s3_bucket, s3_prefix, enabled
                 )
                 VALUES (
                     1, '11111111-1111-1111-1111-111111111111', 'existing',
-                    'Existing', %s, 'bucket', 'vaults/existing/', 'remote', %s
+                    'Existing', %s, 'bucket', 'vaults/existing/', %s
                 )
                 """,
                 (str(source_root), 1 if enabled else 0),

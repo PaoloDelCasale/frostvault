@@ -5,9 +5,9 @@ Seams under test:
   Job status and Local Copy fingerprint via ArchiveCatalog.
 - Exact-version download adapter (`download_exact_version_plaintext`): must pin
   S3 VersionId; path-only current-object download is forbidden. Crypt recover
-  must address rclone from Archive Version ``object_key``, not solely
+  must address S3 from Archive Version ``object_key``, not solely
   ``job['path']`` (BUG-013 / REQ-025).
-- System boundaries mocked: S3 GetObject/HeadObject and Rclone.
+- System boundaries mocked: S3 GetObject/HeadObject and the SDK.
 
 BUG-012 (REQ-024) uses the same recovery worker seam: catalog absence plus a
 real on-disk destination must fail closed without overwrite.
@@ -122,9 +122,7 @@ def _prepare_cloud_only_version(
         connection.execute(
             """
             INSERT INTO vaults(
-                id, slug, name, source_root, s3_bucket, s3_prefix,
-                rclone_remote
-            ) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote')
+                id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
             """,
             (str(source),),
         )
@@ -206,7 +204,7 @@ def _run_plain_recover(
         write_download = client.download_file.side_effect
 
         def download_with_original_mtime(*args, **kwargs) -> None:
-            # Mirrors rclone restoring the object's stored modification time.
+            # Mirrors an SDK restoring the object's stored modification time.
             write_download(*args, **kwargs)
             filename = kwargs.get("Filename") or args[2]
             os.utime(filename, (downloaded_mtime, downloaded_mtime))
@@ -234,11 +232,11 @@ def _run_plain_recover(
         with (
             patch("app.storage.settings", worker_settings),
             patch("app.storage.validate_cloud_vault"),
-            patch("app.storage.run_rclone") as run_rclone,
+            patch("app.storage.upload_s3_file") as sdk_upload,
             patch("app.storage.s3_client", return_value=client),
         ):
             process_jobs_once()
-            client.run_rclone = run_rclone
+            client.sdk_upload = sdk_upload
     return client
 
 
@@ -449,7 +447,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
                 download_kwargs["ExtraArgs"]["VersionId"],
                 "s3-version-1",
             )
-            client.run_rclone.assert_not_called()
+            client.sdk_upload.assert_not_called()
 
             with SQLiteConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
@@ -473,7 +471,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
         """#409: a recovery starts a full retention window, whatever the mtime.
 
         The Archive Version was verified long ago and the download restores
-        the file's original 2019 modification time, as rclone does. Automatic
+        the file's original 2019 modification time, as S3 metadata may. Automatic
         cleanup must still wait a full retention period from the recovery.
         """
         from app.services.operation_policies import (
@@ -571,8 +569,8 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             self.assertEqual(job["status"], "failed")
             self.assertIn("digest", (job["message"] or "").lower())
 
-    def test_path_only_rclone_download_is_never_used_for_plain_recovery(self) -> None:
-        """Regression: current-key rclone copyto must not recover plain versions."""
+    def test_path_only_current_key_download_is_never_used_for_plain_recovery(self) -> None:
+        """Regression: current-key upload must not recover plain versions."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"archived-plaintext"
@@ -587,7 +585,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
                 relative_path="report.txt",
                 downloaded_bytes=payload,
             )
-            client.run_rclone.assert_not_called()
+            client.sdk_upload.assert_not_called()
             self.assertTrue(
                 client.download_file.called,
                 msg="Recovery must use TransferManager download_file",
@@ -836,7 +834,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
                 patch("app.database.settings", database_settings),
                 patch("app.storage.settings", worker_settings),
                 patch("app.storage.validate_cloud_vault"),
-                patch("app.storage.run_rclone"),
+                patch("app.storage.upload_s3_file"),
                 patch("app.storage.s3_client", return_value=client),
             ):
                 process_jobs_once()

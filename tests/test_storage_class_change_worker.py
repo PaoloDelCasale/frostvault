@@ -42,8 +42,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                ) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs')
                 """
             )
             catalog = ArchiveCatalog(connection)
@@ -99,7 +98,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
             return connection.execute(
                 """
                 SELECT j.*, v.s3_bucket, v.s3_prefix, v.source_root,
-                       v.rclone_remote, v.slug
+                        v.slug
                 FROM jobs j
                 JOIN vaults v ON v.id=j.vault_id
                 WHERE j.id=%s

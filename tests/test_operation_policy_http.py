@@ -29,8 +29,7 @@ class OperationPolicyHttpTests(unittest.TestCase):
         with SQLiteConnection(str(self.path)) as connection:
             self.owner_id = self._user(connection, "owner")
             self.vault_id = connection.execute(
-                "INSERT INTO vaults(slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                "VALUES ('docs', 'Docs', '/source', 'bucket', 'docs', 'remote') RETURNING id"
+                "INSERT INTO vaults(slug, name, source_root, s3_bucket, s3_prefix) VALUES ('docs', 'Docs', '/source', 'bucket', 'docs') RETURNING id"
             ).fetchone()["id"]
         test_settings = replace(
             settings,
