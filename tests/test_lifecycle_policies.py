@@ -217,7 +217,10 @@ class UploadPolicyTagIntegrationTests(unittest.TestCase):
             set_vault_default_policy(connection, 1, policy_id)
             self.policy_id = policy_id
 
+        config = Path(tmp.name) / "rclone.conf"
+        config.write_text("[remote]\ntype = alias\nremote = base:bucket\n[base]\ntype = s3\n")
         s3 = VersionedS3Stub(
+            version_bytes=b"hello",
             head_object=lambda **_: {
                 "VersionId": "ver-123",
                 "ContentLength": 5,
@@ -228,6 +231,10 @@ class UploadPolicyTagIntegrationTests(unittest.TestCase):
             head_bucket=lambda **_: None,
             get_bucket_location=lambda **_: {"LocationConstraint": "eu-south-1"},
             get_bucket_versioning=lambda **_: {"Status": "Enabled"},
+            get_public_access_block=lambda **_: {"PublicAccessBlockConfiguration": {
+                "BlockPublicAcls": True, "IgnorePublicAcls": True,
+                "BlockPublicPolicy": True, "RestrictPublicBuckets": True,
+            }},
         )
 
         def fake_rclone(*args, **kwargs) -> None:
@@ -252,6 +259,7 @@ class UploadPolicyTagIntegrationTests(unittest.TestCase):
             patch("app.storage.db", side_effect=lambda: SQLiteConnection(str(path))),
         ):
             mock_settings.aws_region = "eu-south-1"
+            mock_settings.rclone_config = str(config)
             process_upload(
                 {
                     "id": 9,

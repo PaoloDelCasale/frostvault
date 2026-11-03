@@ -142,6 +142,7 @@ class PlainUploadPrefixedRemoteTests(unittest.TestCase):
                     patch(
                         "app.storage.s3_client",
                         return_value=VersionedS3Stub(
+                            version_bytes=payload,
                             head_object=lambda **kwargs: (
                                 head_keys.append(kwargs["Key"])
                                 or {

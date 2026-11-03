@@ -80,6 +80,7 @@ def _run_plain_upload(
     *,
     relative_path: str,
     read_back_bytes: bytes | None,
+    exact_version_bytes: bytes | None = None,
 ) -> list[tuple[str, ...]]:
     rclone_calls: list[tuple[str, ...]] = []
 
@@ -120,6 +121,7 @@ def _run_plain_upload(
             patch(
                 "app.storage.s3_client",
                 return_value=VersionedS3Stub(
+                    version_bytes=read_back_bytes if exact_version_bytes is None else exact_version_bytes,
                     head_object=lambda **_: {
                         "VersionId": "s3-version-1",
                         "ContentLength": size,
@@ -193,6 +195,31 @@ class RcloneStreamingProcessTests(unittest.TestCase):
 
 
 class PlainUploadVerificationTests(unittest.TestCase):
+    def test_matching_current_key_is_not_proof_of_the_linked_version_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"good"
+            _source, path = _prepare_plain_vault(root, relative_path="report.txt", payload=payload)
+            with SQLiteConnection(str(path)) as connection:
+                catalog = ArchiveCatalog(connection)
+                previous = catalog.record_archive_version(
+                    vault_id=2, path="report.txt", object_key="docs/report.txt",
+                    provider_version_id="previous-only-copy", size=3, storage_class="STANDARD",
+                    etag="old", uploaded_at="2026-07-20", observed_at="2026-07-20", scan_id="old",
+                )
+                catalog.mark_version_verified(previous, plaintext_sha256=_sha256_hex(b"old"), verified_at="2026-07-20")
+            _run_plain_upload(path, relative_path="report.txt", read_back_bytes=payload, exact_version_bytes=b"evil")
+            with SQLiteConnection(str(path)) as connection:
+                catalog = ArchiveCatalog(connection)
+                versions = catalog.list_versions(2, "report.txt")
+                old = next(row for row in versions if row["id"] == previous)
+                current = next(row for row in versions if row["id"] != previous)
+                job = connection.execute("SELECT status FROM jobs").fetchone()
+            self.assertEqual(job["status"], "failed")
+            self.assertEqual(current["integrity"], "mismatch")
+            self.assertEqual(old["integrity"], "verified")
+            self.assertEqual(old["availability"], "available")
+
     def test_plain_upload_reaches_verified_after_read_back_digest_match(self) -> None:
         """Successful rclone transfer + HeadObject is not enough; read-back must match."""
         with tempfile.TemporaryDirectory() as directory:
@@ -345,6 +372,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 restore_poll_interval=900,
             )
             s3 = VersionedS3Stub(
+                version_bytes=payload,
                 head_object=lambda **_: {
                     "VersionId": "one-version",
                     "ContentLength": len(payload),
@@ -438,6 +466,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 restore_poll_interval=900,
             )
             s3 = VersionedS3Stub(
+                version_bytes=original,
                 head_object=lambda **_: {
                     "VersionId": "one-version",
                     "ContentLength": len(original),
@@ -543,6 +572,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                     patch(
                         "app.storage.s3_client",
                         return_value=VersionedS3Stub(
+                            version_bytes=payload,
                             head_object=lambda **_: {
                                 "VersionId": "s3-version-1",
                                 "ContentLength": len(payload),

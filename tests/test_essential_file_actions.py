@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tempfile
+import io
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -41,6 +42,10 @@ class _RenameCloud:
 
     def upload(self, *args, **kwargs):
         self.versions[NEW].add("new-s3-version")
+
+    def get_object(self, *, Bucket, Key, VersionId):
+        assert VersionId in self.versions[Key]
+        return {"Body": io.BytesIO(PAYLOAD)}
 
     def download_file(self, Bucket, Key, Filename, ExtraArgs=None, Callback=None, Config=None):
         assert Key == NEW and ExtraArgs["VersionId"] == "new-s3-version"

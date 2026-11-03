@@ -136,6 +136,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
 
         self.s3.head_version_id = version_id
         self.s3.head_size = len(payload)
+        self.s3.payload = payload
         worker_settings = SimpleNamespace(
             operation_concurrency=1, restore_poll_interval=900
         )

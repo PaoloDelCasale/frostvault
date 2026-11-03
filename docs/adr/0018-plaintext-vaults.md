@@ -20,5 +20,9 @@ recover deliberately with the old release before creating a fresh installation.
 Metadata backup ciphertext and `ARCHIVE_MASTER_KEY` remain necessary for metadata
 restore. The unified Recovery Kit belongs to #427, not this removal.
 
-Rclone remains the plaintext upload/verification transport until #420. Verified
-replacement and exact VersionId guards from ADR-0001/0016 are unchanged.
+Rclone remains the plaintext upload/read-back transport until #420. Official
+Rclone cannot pin an S3 VersionId; upload verification additionally reuses the
+existing SDK exact-version integrity reader before granting trust or deleting
+anything. This temporary double read favors safety over cost. Rename/recovery
+keep their existing exact-version SDK reads. Verified replacement guards from
+ADR-0001/0016 remain mandatory.

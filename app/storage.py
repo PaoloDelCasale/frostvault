@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextvars
 import hashlib
 import json
@@ -3484,7 +3485,7 @@ def _stream_plaintext_for_verification(
     target: dict[str, Any],
     source_size: int,
 ) -> tuple[str, int]:
-    """Hash the exact uploaded VersionId without touching the Vault root."""
+    """Hash Rclone read-back; the caller must also prove the exact VersionId."""
     digest = hashlib.sha256()
     bytes_read = 0
 
@@ -3508,7 +3509,6 @@ def _stream_plaintext_for_verification(
     run_rclone_stream(
         "cat",
         configured_rclone_destination(job, logical_path),
-        f"--s3-version-id={version_id}",
         *rclone_download_perf_args(),
         on_chunk=consume,
         progress_callback=progress,
@@ -3868,7 +3868,16 @@ def process_upload(job: dict[str, Any]) -> None:
             raise RuntimeError(
                 "Cloud verification stream length did not match the Archive Version"
             )
-        if remote_digest != upload_digest:
+        # Rclone's official S3 backend cannot pin a VersionId. Its read-back
+        # alone is therefore never authority to verify (or purge after) the
+        # linked version. Reuse the existing exact-version integrity reader;
+        # keep Rclone transport until #420, including its retry/cancel behavior.
+        exact_matches = remote_digest == upload_digest and _sha256_s3_version(
+            client, bucket=job["s3_bucket"], object_key=target["object_key"],
+            version_id=str(target["provider_version_id"]),
+            check_active=lambda _: ensure_job_active(job["id"], "Upload stopped"),
+        ) == base64.b64encode(bytes.fromhex(upload_digest)).decode("ascii")
+        if not exact_matches:
             verification_failure_reason = "mismatch"
             ensure_job_active(job["id"], "Upload claim was lost")
             with db() as connection:

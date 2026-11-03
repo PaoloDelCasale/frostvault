@@ -70,23 +70,31 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             operation_concurrency=1,
             restore_poll_interval=900,
         )
+        provider = VersionedS3Stub(head_object=lambda **_: {
+            "VersionId": version_id, "ContentLength": content_length,
+            "StorageClass": "STANDARD", "ETag": '"etag"',
+        })
+
+        def stream(*args, **kwargs):
+            consume = kwargs["on_chunk"]
+            chunks = []
+            def capture(chunk):
+                chunks.append(chunk)
+                consume(chunk)
+            kwargs["on_chunk"] = capture
+            result = run_rclone_stream(*args, **kwargs)
+            # Both transport seams model the same provider bytes. Independent
+            # wrong-VersionId/mismatch cases are in test_upload_verification.
+            provider.version_bytes = b"".join(chunks)
+            return result
+
         with (
             patch("app.database.settings", database_settings),
             patch("app.storage.settings", worker_settings),
             patch("app.storage.validate_cloud_vault"),
             patch("app.storage.run_rclone", side_effect=run_rclone),
-            patch("app.storage.run_rclone_stream", side_effect=run_rclone_stream),
-            patch(
-                "app.storage.s3_client",
-                return_value=VersionedS3Stub(
-                    head_object=lambda **_: {
-                        "VersionId": version_id,
-                        "ContentLength": content_length,
-                        "StorageClass": "STANDARD",
-                        "ETag": '"etag"',
-                    }
-                ),
-            ),
+            patch("app.storage.run_rclone_stream", side_effect=stream),
+            patch("app.storage.s3_client", return_value=provider),
         ):
             process_jobs_once()
 

@@ -1,6 +1,6 @@
 """Helpers for S3 integrity CI must not persist secrets in clear text.
 
-Seam: tests.s3_integration_support.write_s3_rclone_config — rclone config
+Seam: tests.s3_integration_support.write_plain_rclone_config — rclone config
 files use env_auth and never embed access/secret keys.
 """
 
@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.s3_integration_support import write_s3_rclone_config
+from tests.s3_integration_support import write_plain_rclone_config
 
 
 class RcloneConfigSecretStorageTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class RcloneConfigSecretStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "rclone.conf"
             secret = "super-secret-integration-key"
-            write_s3_rclone_config(
+            write_plain_rclone_config(
                 path,
                 endpoint="http://127.0.0.1:9000",
                 access_key="minioadmin",

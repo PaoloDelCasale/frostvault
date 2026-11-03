@@ -1,5 +1,7 @@
 """Bucket versioning and all four Block Public Access controls fail closed."""
 import unittest
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -91,6 +93,25 @@ class BucketPreflightTests(unittest.TestCase):
         self.assertFalse(result.ok)
         client.head_bucket.assert_not_called()
         client.get_public_access_block.assert_not_called()
+
+    def test_failed_bpa_prevents_scans_transfers_recovery_and_cleanup(self):
+        from app import storage
+        client = ready_client(get_public_access_block=Mock(return_value={
+            "PublicAccessBlockConfiguration": dict.fromkeys(FLAGS, False),
+        }))
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "rclone.conf"
+            config.write_text("[plain]\ntype = alias\nremote = base:my-archive-bucket\n[base]\ntype = s3\n")
+            job = {"id": 891, "s3_bucket": "my-archive-bucket", "rclone_remote": "plain"}
+            with patch("app.storage.s3_client", return_value=client), patch("app.storage.settings") as settings, patch("app.storage.run_rclone") as transfer:
+                settings.aws_region = "eu-south-1"
+                settings.rclone_config = str(config)
+                for operation in (storage.process_upload, storage.process_rename, storage.process_recover, storage.process_free_space):
+                    with self.subTest(operation=operation.__name__), self.assertRaisesRegex(RuntimeError, "Block Public Access"):
+                        operation(job)
+                with self.assertRaisesRegex(RuntimeError, "Block Public Access"):
+                    storage.scan_cloud(job, "scan")
+                transfer.assert_not_called()
 
     def test_validate_cloud_vault_blocks_bpa_before_any_worker_transfer(self):
         from app.storage import validate_cloud_vault

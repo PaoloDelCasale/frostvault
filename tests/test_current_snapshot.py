@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import tempfile
 import unittest
@@ -76,6 +77,12 @@ class _FakeS3:
         self.deleted: list[tuple[str, str]] = []
         self.head_version_id = "missing"
         self.head_size = 0
+        self.payload = b""
+
+    def get_object(self, *, Bucket, Key, VersionId):
+        assert VersionId == self.head_version_id
+        assert VersionId in self.versions[Key]
+        return {"Body": io.BytesIO(self.payload)}
 
     def head_object(self, **kwargs):
         key = str(kwargs["Key"])
@@ -160,6 +167,7 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
 
         fake_s3.head_version_id = version_id
         fake_s3.head_size = len(payload)
+        fake_s3.payload = payload
         database_settings = SimpleNamespace(
             db_backend="sqlite",
             sqlite_path=str(database_path),
