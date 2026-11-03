@@ -455,9 +455,9 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertEqual(old[0]["availability"], "missing")
             self.assertEqual(new[0]["availability"], "available")
 
-    def test_offline_cache_generation_migration_backfills_existing_sessions(self) -> None:
+    def test_legacy_sessions_upgrade_to_internal_transition_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "offline-cache-generation.db"
+            path = Path(directory) / "session-transition.db"
             baseline = run_alembic(path, "0032_notification_inbox")
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
             with SQLiteConnection(str(path)) as connection:
@@ -490,13 +490,14 @@ class DatabaseMigrationTests(unittest.TestCase):
             with SQLiteConnection(str(path)) as connection:
                 row = connection.execute(
                     """
-                    SELECT offline_cache_generation, offline_cache_nonce
+                    SELECT transition_version, token_hash, csrf_token
                     FROM sessions WHERE id='legacy-cache-session'
                     """
                 ).fetchone()
 
-            self.assertEqual(row["offline_cache_generation"], 1)
-            self.assertGreaterEqual(len(row["offline_cache_nonce"]), 32)
+            self.assertEqual(row["transition_version"], 1)
+            self.assertEqual(row["token_hash"], "legacy-token-hash")
+            self.assertEqual(row["csrf_token"], "legacy-csrf")
 
     def test_lossless_schema_can_downgrade_and_upgrade_again(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -10,7 +10,6 @@ from .config import settings
 
 
 TOKEN_BYTES = 32
-OFFLINE_CACHE_GENERATION_INITIAL = 1
 
 
 class SessionTransitionError(RuntimeError):
@@ -29,37 +28,10 @@ def _parse(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-def _new_offline_cache_nonce() -> str:
-    """Return an unguessable component for one persisted cache generation."""
-    return secrets.token_urlsafe(TOKEN_BYTES)
-
-
 def _session_is_expired(row: dict[str, Any], now: datetime) -> bool:
     return now >= _parse(row["absolute_expires_at"]) or now >= _parse(
         row["idle_expires_at"]
     )
-
-
-def offline_cache_generation(session: dict[str, Any]) -> str:
-    """Format the persisted, monotonic, unguessable Session generation.
-
-    The integer makes every transition orderable within one Session while the
-    random nonce keeps a value impractical to guess.  Both fields are stored on
-    ``sessions`` and are deliberately independent of a token hash, CSRF token,
-    or Vault id: those inputs would recreate a deterministic value after a
-    Vault selection changes from A to B and back to A.
-    """
-    generation = session.get("offline_cache_generation")
-    nonce = session.get("offline_cache_nonce")
-    if (
-        isinstance(generation, bool)
-        or not isinstance(generation, int)
-        or generation < OFFLINE_CACHE_GENERATION_INITIAL
-        or not isinstance(nonce, str)
-        or not nonce
-    ):
-        raise ValueError("A persisted offline cache generation is required")
-    return f"{generation}.{nonce}"
 
 
 def _expire_session_if_needed(
@@ -68,7 +40,7 @@ def _expire_session_if_needed(
     session_id: str,
     now: datetime,
 ) -> bool:
-    """Atomically revoke and rotate an observed-expired Session once.
+    """Atomically revoke an observed-expired Session once.
 
     The expiry predicate is repeated in SQL so a concurrent request that slid
     the idle deadline cannot be invalidated from an older process snapshot.
@@ -76,16 +48,13 @@ def _expire_session_if_needed(
     changed = connection.execute(
         """
         UPDATE sessions
-        SET revoked_at=%s,
-            offline_cache_generation=offline_cache_generation+1,
-            offline_cache_nonce=%s
+        SET revoked_at=%s, transition_version=transition_version+1
         WHERE id=%s AND revoked_at IS NULL
           AND (absolute_expires_at <= %s OR idle_expires_at <= %s)
         RETURNING id
         """,
         (
             now.isoformat(),
-            _new_offline_cache_nonce(),
             session_id,
             now.isoformat(),
             now.isoformat(),
@@ -114,10 +83,9 @@ def create_session(
         """
         INSERT INTO sessions(
             id, user_id, token_hash, auth_method, csrf_token, session_version,
-            offline_cache_generation, offline_cache_nonce,
             created_at, last_seen_at, idle_expires_at, absolute_expires_at,
             reauth_at, ip, user_agent
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             str(uuid.uuid4()),
@@ -126,8 +94,6 @@ def create_session(
             auth_method,
             secrets.token_urlsafe(TOKEN_BYTES),
             user["session_version"],
-            OFFLINE_CACHE_GENERATION_INITIAL,
-            _new_offline_cache_nonce(),
             now.isoformat(),
             now.isoformat(),
             (now + timedelta(seconds=settings.session_idle_seconds)).isoformat(),
@@ -193,8 +159,7 @@ def resolve_session(connection: Any, raw_token: str | None) -> dict[str, Any] | 
         "csrf_token": row["csrf_token"],
         "auth_method": row["auth_method"],
         "reauth_at": row["reauth_at"],
-        "offline_cache_generation": row["offline_cache_generation"],
-        "offline_cache_nonce": row["offline_cache_nonce"],
+        "transition_version": row["transition_version"],
     }
 
 
@@ -249,17 +214,15 @@ def is_reauth_recent(
 
 
 def revoke_session(connection: Any, session_id: str) -> bool:
-    """Revoke a Session and rotate its cache authorization in one SQL update."""
+    """Revoke a Session atomically."""
     changed = connection.execute(
         """
         UPDATE sessions
-        SET revoked_at=%s,
-            offline_cache_generation=offline_cache_generation+1,
-            offline_cache_nonce=%s
+        SET revoked_at=%s, transition_version=transition_version+1
         WHERE id=%s AND revoked_at IS NULL
         RETURNING id
         """,
-        (_now().isoformat(), _new_offline_cache_nonce(), session_id),
+        (_now().isoformat(), session_id),
     ).fetchone()
     if not changed:
         return False
@@ -272,11 +235,7 @@ def rotate_session(
     *,
     reauthenticated: bool = False,
 ) -> str:
-    """Rotate a live Session token and cache authorization atomically.
-
-    OIDC step-up uses ``reauthenticated=True`` so the token, reauthentication
-    timestamp, monotonic generation, and unguessable nonce commit together.
-    """
+    """Rotate a live Session token and optional Reauthentication atomically."""
     raw_token = secrets.token_urlsafe(TOKEN_BYTES)
     now = _now()
     reauth_assignment = ", reauth_at=%s" if reauthenticated else ""
@@ -284,7 +243,6 @@ def rotate_session(
         _hash_token(raw_token),
         now.isoformat(),
         (now + timedelta(seconds=settings.session_idle_seconds)).isoformat(),
-        _new_offline_cache_nonce(),
     ]
     if reauthenticated:
         params.append(now.isoformat())
@@ -295,8 +253,7 @@ def rotate_session(
         SET token_hash=%s,
             last_seen_at=%s,
             idle_expires_at=%s,
-            offline_cache_generation=offline_cache_generation+1,
-            offline_cache_nonce=%s{reauth_assignment}
+            transition_version=transition_version+1{reauth_assignment}
         WHERE id=%s AND revoked_at IS NULL
           AND absolute_expires_at > %s AND idle_expires_at > %s
         RETURNING id
@@ -313,81 +270,29 @@ def set_session_vault(
     session_id: str,
     vault_id: int | None,
     *,
-    expected_generation: int | None = None,
-    expected_nonce: str | None = None,
+    expected_version: int | None = None,
 ) -> dict[str, Any] | None:
-    """Select a Vault and rotate cache authorization in one guarded update.
+    """Select a Vault without overwriting a newer Session transition.
 
-    Supplying the generation snapshot returned by :func:`resolve_session`
-    prevents a stale process from overwriting a newer Vault selection or OIDC
-    token rotation.  The database, not process memory, orders transitions.
+    This internal optimistic lock protects concurrent selections and token
+    rotations. It is not a browser cache capability and is never exposed.
     """
-    if (expected_generation is None) != (expected_nonce is None):
-        raise ValueError("Expected generation and nonce must be supplied together")
     now = _now()
     query = """
         UPDATE sessions
-        SET vault_id=%s,
-            offline_cache_generation=offline_cache_generation+1,
-            offline_cache_nonce=%s
+        SET vault_id=%s, transition_version=transition_version+1
         WHERE id=%s AND revoked_at IS NULL
           AND absolute_expires_at > %s AND idle_expires_at > %s
     """
     params: list[Any] = [
         vault_id,
-        _new_offline_cache_nonce(),
         session_id,
         now.isoformat(),
         now.isoformat(),
     ]
-    if expected_generation is not None:
-        query += " AND offline_cache_generation=%s AND offline_cache_nonce=%s"
-        params.extend((expected_generation, expected_nonce))
-    query += """
-        RETURNING id, vault_id, offline_cache_generation, offline_cache_nonce
-    """
+    if expected_version is not None:
+        query += " AND transition_version=%s"
+        params.append(expected_version)
+    query += " RETURNING id, vault_id, transition_version"
     return connection.execute(query, tuple(params)).fetchone()
 
-
-def current_offline_cache_generation(
-    connection: Any,
-    session_id: str,
-    vault_id: int | None,
-) -> str | None:
-    """Return the persisted generation only for a currently live authorization.
-
-    File-list validation always passes a concrete ``vault_id``. ``/api/me``
-    passes ``None`` only when no active Vault exists; that live-Session value
-    cannot authorize a listing because the listing path always repeats the
-    concrete Vault constraint.
-    """
-    row = connection.execute(
-        """
-        SELECT s.vault_id, s.revoked_at, s.idle_expires_at,
-               s.absolute_expires_at, s.offline_cache_generation,
-               s.offline_cache_nonce,
-               s.session_version AS session_session_version,
-               u.session_version AS user_session_version
-        FROM sessions s
-        JOIN users u ON u.id=s.user_id
-        WHERE s.id=%s
-        """,
-        (session_id,),
-    ).fetchone()
-    if (
-        not row
-        or row["revoked_at"]
-        or row["session_session_version"] != row["user_session_version"]
-    ):
-        return None
-    now = _now()
-    if _session_is_expired(row, now):
-        _expire_session_if_needed(connection, session_id=session_id, now=now)
-        return None
-    if vault_id is not None and row["vault_id"] != vault_id:
-        return None
-    try:
-        return offline_cache_generation(row)
-    except ValueError:
-        # A malformed legacy/migrated row cannot authorize a cache response.
-        return None

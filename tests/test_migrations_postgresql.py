@@ -164,10 +164,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             column["name"]
             for column in sa.inspect(self.engine).get_columns("sessions")
         }
-        self.assertLessEqual(
-            {"offline_cache_generation", "offline_cache_nonce"},
-            session_columns,
-        )
+        self.assertIn("transition_version", session_columns)
+        self.assertTrue({"offline_cache_generation", "offline_cache_nonce"}.isdisjoint(session_columns))
         claim_columns = {
             column["name"] for column in sa.inspect(self.engine).get_columns("jobs")
         }

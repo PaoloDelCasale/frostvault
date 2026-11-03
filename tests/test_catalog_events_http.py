@@ -168,7 +168,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
             csrf_token_for(connection, raw_token)
             session = connection.execute(
                 """
-                SELECT id, offline_cache_generation, offline_cache_nonce
+                SELECT id, transition_version
                 FROM sessions
                 WHERE user_id=%s AND revoked_at IS NULL
                 ORDER BY created_at DESC
@@ -181,8 +181,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
                     connection,
                     session["id"],
                     vault_id,
-                    expected_generation=session["offline_cache_generation"],
-                    expected_nonce=session["offline_cache_nonce"],
+                    expected_version=session["transition_version"],
                 )
         return raw_token
 

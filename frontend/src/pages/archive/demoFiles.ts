@@ -881,7 +881,6 @@ function mePayload(state: DemoState) {
     display_name: "Local Admin",
     session_version: 1,
     csrf_token: "demo",
-    offline_cache_generation: "demo-session-vault-1",
     auth_method: "local",
     locale: state.locale,
     locales: ["en", "it"],

@@ -6,12 +6,6 @@ import { AuthCard } from "@/components/AuthCard";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 import { useTheme } from "@/theme";
-import {
-  AuthTransitionTimeoutError,
-  beginOfflineAuthTransition,
-  reconcileOfflineAuthTransition,
-  withinAuthTransitionTimeout,
-} from "@/pwa/authTransition";
 
 type NoVaultPageProps = {
   onNavigate?: (url: string) => void;
@@ -25,23 +19,19 @@ export function NoVaultPage({ onNavigate = defaultNavigate }: NoVaultPageProps) 
   const { t } = useI18n();
   const { setUserId } = useTheme();
   const [signingOut, setSigningOut] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleSignOut() {
-    // No-Vault still owns a live Session, so it must use the same bounded
-    // transition as the archive sign-out path before navigating away.
     setSigningOut(true);
-    const transition = await beginOfflineAuthTransition();
-    setUserId(null);
+    setError(null);
     try {
-      await withinAuthTransitionTimeout(logout());
-      // A successful logout deliberately leaves the cache barrier closed.
-    } catch (error) {
-      if (!(error instanceof AuthTransitionTimeoutError)) {
-        // A known failure can reopen only after the shared fresh /api/me path.
-        await reconcileOfflineAuthTransition({ transition }).catch(() => undefined);
-      }
+      await logout();
+      setUserId(null);
+      onNavigate("/login");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setSigningOut(false);
     }
-    onNavigate("/login");
   }
 
   return (
@@ -58,6 +48,7 @@ export function NoVaultPage({ onNavigate = defaultNavigate }: NoVaultPageProps) 
             {t("no_vault.title")}
           </h1>
           <p className="mt-2 text-sm text-muted">{t("no_vault.subtitle")}</p>
+          {error ? <p role="alert">{error}</p> : null}
           <div className="mt-6 flex flex-wrap items-center gap-2.5">
             <a
               href="/vaults/new"

@@ -12,10 +12,6 @@ import {
 import { I18nContext, type I18nContextValue } from "@/i18n/context";
 import { translate } from "@/i18n/translate";
 import { LoginPage } from "@/pages/login/LoginPage";
-import {
-  OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE,
-  OFFLINE_FILE_CACHE_REPLY_TIMEOUT_MS,
-} from "@/pwa/offlineFiles";
 import { ThemeProvider } from "@/theme";
 import {
   THEME_ACTIVE_USER_STORAGE_KEY,
@@ -37,22 +33,6 @@ function jsonResponse(data: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
-}
-
-function meResponse(id = 42): Record<string, unknown> {
-  return {
-    id,
-    username: `user-${id}`,
-    display_name: `User ${id}`,
-    active: true,
-    session_version: 1,
-    csrf_token: "csrf-token",
-    offline_cache_generation: `session-${id}-no-vault`,
-    auth_method: "local",
-    locale: "en",
-    locales: ["en", "it"],
-    vault: null,
-  };
 }
 
 describe("LoginPage local sign-in", () => {
@@ -109,8 +89,7 @@ describe("LoginPage local sign-in", () => {
     fetchMock
       .mockResolvedValueOnce(
         jsonResponse({ message_key: "api.signed_in", message: "Signed in" }),
-      )
-      .mockResolvedValueOnce(jsonResponse(meResponse()));
+      );
     renderPage();
 
     fireEvent.change(screen.getByLabelText(en["login.username"]), {
@@ -122,9 +101,7 @@ describe("LoginPage local sign-in", () => {
     fireEvent.click(screen.getByRole("button", { name: en["login.submit"] }));
 
     await waitFor(() => {
-      // Login closes the old cache generation, then obtains fresh /api/me
-      // before navigation can reopen a context for this new Session.
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("/api/login");
@@ -138,59 +115,17 @@ describe("LoginPage local sign-in", () => {
     });
   });
 
-  it("updates the authenticated theme identity before navigating after login", async () => {
-    fetchMock
-      .mockResolvedValueOnce(
-        jsonResponse({ message_key: "api.signed_in", message: "Signed in" }),
-      )
-      .mockResolvedValueOnce(jsonResponse(meResponse(42)));
+  it("clears the active theme on the login screen without removing Owner preferences", () => {
+    localStorage.setItem(THEME_ACTIVE_USER_STORAGE_KEY, "42");
+    localStorage.setItem(themeStorageKey(42), "dark");
     renderPage();
-    window.localStorage.setItem(themeStorageKey(42), "dark");
-    navigate.mockImplementation(() => {
-      expect(window.localStorage.getItem(THEME_ACTIVE_USER_STORAGE_KEY)).toBe("42");
-    });
-
-    fireEvent.change(screen.getByLabelText(en["login.username"]), {
-      target: { value: "admin" },
-    });
-    fireEvent.change(screen.getByLabelText(en["login.password"]), {
-      target: { value: "correct-horse-battery" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: en["login.submit"] }));
-
-    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/"));
-    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/me");
-    expect(window.localStorage.getItem(themeStorageKey(42))).toBe("dark");
+    expect(localStorage.getItem(THEME_ACTIVE_USER_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(themeStorageKey(42))).toBe("dark");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("still navigates without a login error when identity lookup transiently fails", async () => {
-    fetchMock
-      .mockResolvedValueOnce(
-        jsonResponse({ message_key: "api.signed_in", message: "Signed in" }),
-      )
-      .mockResolvedValueOnce(jsonResponse({ detail: "Temporarily unavailable" }, 503));
+  it("navigates directly to OIDC without a Worker handshake", async () => {
     renderPage();
-    window.localStorage.setItem(THEME_ACTIVE_USER_STORAGE_KEY, "previous-user");
-    navigate.mockImplementation(() => {
-      expect(window.localStorage.getItem(THEME_ACTIVE_USER_STORAGE_KEY)).toBeNull();
-    });
-
-    fireEvent.change(screen.getByLabelText(en["login.username"]), {
-      target: { value: "admin" },
-    });
-    fireEvent.change(screen.getByLabelText(en["login.password"]), {
-      target: { value: "correct-horse-battery" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: en["login.submit"] }));
-
-    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/"));
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/me");
-  });
-
-  it("closes the cache barrier and clears the active theme identity before OIDC navigation", async () => {
-    renderPage();
-    window.localStorage.setItem(THEME_ACTIVE_USER_STORAGE_KEY, "42");
     navigate.mockImplementation(() => {
       expect(window.localStorage.getItem(THEME_ACTIVE_USER_STORAGE_KEY)).toBeNull();
     });
@@ -241,31 +176,6 @@ describe("LoginPage local sign-in", () => {
       en["login.local_unavailable"],
     );
     expect(navigate).not.toHaveBeenCalled();
-  });
-
-  it("waits for the bounded OIDC closure attempt before navigating", async () => {
-    vi.useFakeTimers();
-    const worker = { postMessage: vi.fn() };
-    vi.stubGlobal("navigator", {
-      ...navigator,
-      serviceWorker: {
-        controller: worker,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        getRegistration: vi.fn(async () => undefined),
-      },
-    });
-    renderPage();
-    fireEvent.click(screen.getByRole("button", { name: en["login.oidc"] }));
-
-    await Promise.resolve();
-    expect(worker.postMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ type: OFFLINE_FILE_CACHE_BEGIN_TRANSITION_MESSAGE }),
-    );
-    expect(navigate).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(OFFLINE_FILE_CACHE_REPLY_TIMEOUT_MS);
-    expect(navigate).toHaveBeenCalledWith("/auth/oidc/login");
   });
 
   it("changes language via the locale switcher without losing typed input", async () => {

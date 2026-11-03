@@ -7,10 +7,6 @@ import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 import { useTheme } from "@/theme";
-import {
-  beginOfflineAuthTransition,
-  runOfflineAuthMutation,
-} from "@/pwa/authTransition";
 
 type LoginPageProps = {
   /** Navigation after successful local sign-in (defaults to location.assign). */
@@ -26,11 +22,8 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
   const { setUserId } = useTheme();
 
   useEffect(() => {
-    // A login screen has no trusted identity. Never reuse a previous user's
-    // theme or offline listing; a bounded close also tells same-browser tabs
-    // that an expired/replaced Session may no longer use cached file data.
+    // The login screen has no authenticated Owner theme.
     setUserId(null);
-    void beginOfflineAuthTransition();
   }, [setUserId]);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -43,12 +36,7 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
     setError(null);
     setSubmitting(true);
     try {
-      // One coordinator owns close → login mutation → fresh /api/me → Worker
-      // reconciliation. A missing Worker/authority remains network-only.
-      const outcome = await runOfflineAuthMutation(() =>
-        loginWithPassword(username, password),
-      );
-      setUserId(outcome.reconciliation?.me.id ?? null);
+      await loginWithPassword(username, password);
       onNavigate("/");
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
@@ -116,15 +104,8 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
               className="w-full"
               disabled={submitting || redirectingOidc}
               onClick={() => {
-                void (async () => {
-                  setRedirectingOidc(true);
-                  // OIDC does not identify the next user yet. Await the
-                  // bounded local/Worker close before leaving this document;
-                  // a timeout still records local closure and navigates.
-                  await beginOfflineAuthTransition();
-                  setUserId(null);
-                  onNavigate("/auth/oidc/login");
-                })();
+                setRedirectingOidc(true);
+                onNavigate("/auth/oidc/login");
               }}
             >
               {t("login.oidc")}

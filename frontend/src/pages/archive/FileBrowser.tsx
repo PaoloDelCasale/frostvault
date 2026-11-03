@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-quer
 import { ChevronRight, FolderClosed, MoreHorizontal } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { DEMO_MODE_ENABLED, getDemoSearchParam } from "@/demoGate";
+import { getDemoSearchParam } from "@/demoGate";
 import {
   DEFAULT_PAGE_SIZE,
   countActiveJobGroups,
@@ -13,18 +13,8 @@ import {
 import type { FilesResponse } from "@/api/types";
 import { MenuSelect } from "@/components/MenuSelect";
 import { Button } from "@/components/ui/button";
-import {
-  isBrowserOffline,
-  isOfflineCacheContext,
-  loadCachedFilesListing,
-  offlineFileCacheRequestHeaders,
-  saveCachedFilesListing,
-  type OfflineCacheContext,
-  type OfflineFileCacheLease,
-} from "@/pwa/offlineFiles";
 
 import type { VaultCapabilities } from "./actions";
-import { demoRootListing } from "./demoFiles";
 import { FileList } from "./FileList";
 import { FileOperationsHost } from "./FileOperationsHost";
 import {
@@ -46,17 +36,8 @@ type Translate = (key: string, params?: Record<string, string | number>) => stri
 export type FileBrowserProps = {
   t: Translate;
   capabilities: VaultCapabilities;
-  /** Authenticated User identity. Listings are not persisted without it. */
-  userId?: number;
-  /** Current Vault identity, used to isolate file and candidate query caches. */
+  /** Current Vault identity, used to isolate in-memory query caches. */
   vaultId: number;
-  /** Server-issued Session/Vault generation; App supplies it even network-only. */
-  authorizationGeneration?: string;
-  /**
-   * App passes a lease or explicit null. Undefined is retained for isolated
-   * component consumers that exercise the serialization seam without a Worker.
-   */
-  offlineCacheLease?: OfflineFileCacheLease | null;
   vaultName: string;
 };
 
@@ -126,10 +107,7 @@ function writeSearchParams(
 export function FileBrowser({
   t,
   capabilities,
-  userId,
   vaultId,
-  authorizationGeneration,
-  offlineCacheLease,
   vaultName,
 }: FileBrowserProps) {
   const initial = readSearchParams();
@@ -173,20 +151,9 @@ export function FileBrowser({
     }),
     [q, state, storage, directory, page, sortKey, sortOrder],
   );
-  const offlineCacheContext = useMemo<OfflineCacheContext | null>(() => {
-    const context = {
-      userId,
-      vaultId,
-      authorizationGeneration:
-        offlineCacheLease?.context.authorizationGeneration ?? authorizationGeneration,
-    };
-    return isOfflineCacheContext(context) ? context : null;
-  }, [authorizationGeneration, offlineCacheLease, userId, vaultId]);
   const fileQueryKey = [
     "files",
-    offlineCacheContext?.userId ?? "no-user",
-    offlineCacheContext?.vaultId ?? "no-vault",
-    offlineCacheContext?.authorizationGeneration ?? "no-authorization",
+    vaultId,
     query.q ?? "",
     query.state ?? "",
     typeof query.storage === "string" ? query.storage : "",
@@ -196,21 +163,6 @@ export function FileBrowser({
     query.sort ?? "name",
     query.order ?? "asc",
   ] as const;
-  const offlineCacheHeaders = offlineFileCacheRequestHeaders(
-    offlineCacheLease,
-    offlineCacheContext,
-  );
-  const offlineCacheRequestOptions = useMemo<RequestInit | undefined>(
-    () => (offlineCacheHeaders ? { headers: offlineCacheHeaders } : undefined),
-    [offlineCacheHeaders],
-  );
-  // The undefined branch is an isolated component-test seam. The mounted App
-  // always supplies null or a verified lease, so production persistence and
-  // Worker caching remain fail-closed.
-  const canUseOfflineCache =
-    offlineCacheLease === undefined
-      ? Boolean(offlineCacheContext)
-      : Boolean(offlineCacheHeaders);
 
   const queryClient = useQueryClient();
   // Share the jobs cache with FileOperationsHost so the list can poll while
@@ -227,7 +179,7 @@ export function FileBrowser({
   }, [activeJobCount, queryClient]);
 
   const filesQuery = useQuery({
-    ...filesQueryOptions(query, offlineCacheRequestOptions),
+    ...filesQueryOptions(query),
     queryKey: fileQueryKey,
     refetchInterval: (queryState) => {
       // Bounded loading convergence while the durable projection is still
@@ -242,88 +194,7 @@ export function FileBrowser({
     // event-driven updates never flash a false-empty "0 items" table.
     placeholderData: keepPreviousData,
   });
-  const forceOfflineDemo =
-    DEMO_MODE_ENABLED && getDemoSearchParam("offline") === "1";
-
-  useEffect(() => {
-    if (forceOfflineDemo && offlineCacheContext && canUseOfflineCache) {
-      saveCachedFilesListing(
-        offlineCacheContext,
-        query,
-        demoRootListing,
-        undefined,
-        offlineCacheLease ?? undefined,
-      );
-    }
-  }, [
-    forceOfflineDemo,
-    offlineCacheContext,
-    canUseOfflineCache,
-    offlineCacheLease,
-    query,
-  ]);
-
-  useEffect(() => {
-    if (
-      filesQuery.isSuccess &&
-      filesQuery.data &&
-      offlineCacheContext &&
-      canUseOfflineCache
-    ) {
-      saveCachedFilesListing(
-        offlineCacheContext,
-        query,
-        filesQuery.data,
-        undefined,
-        offlineCacheLease ?? undefined,
-      );
-    }
-  }, [
-    filesQuery.isSuccess,
-    filesQuery.data,
-    offlineCacheContext,
-    canUseOfflineCache,
-    offlineCacheLease,
-    query,
-  ]);
-
-  const offlineCached = useMemo(() => {
-    if (!offlineCacheContext || !canUseOfflineCache) return null;
-    if (forceOfflineDemo) {
-      return loadCachedFilesListing(
-        offlineCacheContext,
-        query,
-        undefined,
-        offlineCacheLease ?? undefined,
-      ) ?? {
-        data: demoRootListing,
-        savedAt: new Date().toISOString(),
-      };
-    }
-    if (filesQuery.isSuccess) return null;
-    if (!(filesQuery.isError || isBrowserOffline())) return null;
-    return loadCachedFilesListing(
-      offlineCacheContext,
-      query,
-      undefined,
-      offlineCacheLease ?? undefined,
-    );
-  }, [
-    filesQuery.isSuccess,
-    filesQuery.isError,
-    offlineCacheContext,
-    canUseOfflineCache,
-    offlineCacheLease,
-    query,
-    forceOfflineDemo,
-  ]);
-
-  const displayData: FilesResponse | undefined = forceOfflineDemo
-    ? offlineCached?.data
-    : (filesQuery.data ?? offlineCached?.data);
-  const showingStale = Boolean(
-    forceOfflineDemo || (offlineCached && !filesQuery.data),
-  );
+  const displayData = filesQuery.data;
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -470,8 +341,7 @@ export function FileBrowser({
   const isInitialLoading =
     (!displayData && (filesQuery.isLoading || filesQuery.isPending)) ||
     serverProjectionLoading;
-  const isListingError =
-    !displayData && filesQuery.isError && !isBrowserOffline();
+  const isListingError = !displayData && filesQuery.isError;
   const total = isInitialLoading ? undefined : data?.total;
   const pages =
     total === undefined
@@ -526,24 +396,6 @@ export function FileBrowser({
         vaultId={vaultId}
         t={t}
       />
-      {showingStale ? (
-        <div
-          role="status"
-          data-testid="offline-stale-banner"
-          className="mb-3 rounded-lg border border-amber-soft bg-amber-soft px-3 py-2 text-sm text-ink"
-        >
-          {t("ui.offline_stale_listing")}
-        </div>
-      ) : null}
-      {!displayData && (filesQuery.isError || isBrowserOffline()) ? (
-        <div
-          role="status"
-          data-testid="offline-shell"
-          className="mb-3 rounded-lg border border-line bg-canvas px-3 py-6 text-center text-sm text-muted"
-        >
-          {t("ui.offline_shell")}
-        </div>
-      ) : null}
       <div
         data-testid="file-browser-sticky"
         className="sticky top-0 z-10 border-b border-line bg-surface py-3"
