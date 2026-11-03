@@ -71,7 +71,6 @@ export const defaultCloudDeletion = {
 type HarnessOptions = {
   vaultId?: number;
   vaultName?: string;
-  ownerName?: string;
   onDecommissioned?: () => void;
   fetchImpl?: ApiFetch;
 };
@@ -102,9 +101,6 @@ export function createVaultAccessFetch(
       return typeof byUrl === "function" ? byUrl(init) : byUrl;
     }
 
-    if (url === "/api/audit-events") {
-      return jsonResponse({ events: [] });
-    }
     if (url === "/api/vault/operation-policy") {
       return jsonResponse(defaultPolicy);
     }
@@ -135,7 +131,6 @@ export function renderVaultAccess(
         <VaultAccessPage
           vaultId={options.vaultId ?? 1}
           vaultName={options.vaultName ?? "Test Archive"}
-          ownerName={options.ownerName ?? "Owner"}
           onDecommissioned={options.onDecommissioned}
         />
       </I18nProvider>

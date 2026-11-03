@@ -162,10 +162,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                 & {"bandwidth_limit_kibps", "operating_windows_json"},
                 set(),
             )
-            self.assertEqual(
-                system_setting_columns,
-                {"key", "value", "updated_by", "updated_at"},
-            )
+            self.assertEqual(system_setting_columns, set())
+            self.assertNotIn("worker_errors", table_names)
             # Single owner (#412): no multi-user or UI-managed OIDC tables.
             self.assertEqual(
                 table_names
@@ -720,7 +718,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                     """
                 )
 
-            migrated = run_alembic(path)
+            migrated = run_alembic(path, "0044_single_owner")
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
             with SQLiteConnection(str(path)) as connection:
                 users = connection.execute(

@@ -23,9 +23,11 @@ The artifact **never contains** `ARCHIVE_MASTER_KEY`, bootstrap passwords, or
 OIDC client secrets. A SHA-256 digest of the ciphertext is stored alongside the
 file and in `metadata_backup_runs`.
 
-The configuration snapshot uses the effective system-settings resolver, so it
-includes committed non-secret database overrides and their environment or
-built-in fallbacks. Secret and unknown keys are structurally excluded.
+The configuration snapshot contains allow-listed, non-secret deployment values
+from the environment/defaults. There are no database overrides or mutable
+settings API. Secret and unknown keys are structurally excluded, including
+caller-supplied snapshot fields. Before upgrading through migration `0048`,
+move any required former overrides into the deployment environment.
 
 ## Where artifacts live
 
@@ -58,14 +60,14 @@ misleading successful backup record.
   `METADATA_BACKUP_VERIFY_INTERVAL_SECONDS` (default 7d). Verification restores
   into an isolated temporary database / scratch directory and never mutates the
   live database or production `vaults/` S3 keys.
-- Admin API (global administrators, reauthentication required for runs):
+- Owner API (authenticated Session; manual runs also require CSRF):
   - `GET /api/admin/metadata-backups` — status and recent runs
   - `POST /api/admin/metadata-backups/run` — manual backup
   - `GET /api/admin/metadata-backups/download/{run_id}` — download ciphertext
 
 Failed backups record `metadata_backup_runs.status=failed`, enqueue
-`metadata_backup_failed` notifications for administrators, and emit worker
-errors / metrics.
+`metadata_backup_failed` notifications for the Owner, and surface generic
+internal-error problems / backup metrics.
 
 ## Pre-upgrade gate
 

@@ -9,7 +9,7 @@ Vault root. Recovery, rename, and Local Copy cleanup remain write operations and
 also require write access to the applicable directory.
 
 Symbolic links are rejected: they appear in the catalog as unsupported, are
-blocked from upload and cleanup, and are listed in vault filesystem health.
+blocked from upload and cleanup. Scans never follow them.
 
 ## Container identity
 
@@ -140,12 +140,18 @@ adding root/capabilities. If local scans report permission failures, align
 then recreate the container. Avoid `chmod -R 777`; prefer owner/group write for
 the archive identity only.
 
-## Diagnostics
+## Filesystem problems
 
-`/api/stats` includes a `filesystem` object with effective `uid`/`gid`, root
-read/write/execute checks, and per-path findings (`fs.unreadable_file`,
-`fs.unwritable_directory`, `fs.symlink`). The vault page surfaces the same
-health summary. Findings never trigger automatic `chown` or `chmod`.
+The actual scan and watcher check file readability. Each unreadable file or
+subdirectory creates a deduplicated problem with its relative path in the
+notification center, without a sample limit. An incomplete scan never marks
+unseen Local Copies missing. An inaccessible or unverifiable Vault root blocks
+protection. FrostVault never changes ownership or permissions automatically.
+
+There is no dedicated diagnostics banner or background tree inspection.
+`/api/stats` returns catalog aggregates and a minimal `source_volume` safety
+state; it never resolves or walks an identity-unsafe root. The Source Volume
+inventory API remains available for mount identity and access information.
 
 ## Fixed Source Volume layout
 

@@ -6,7 +6,6 @@ import {
   confirmFolderRename,
   confirmRecoveryCustody,
   downloadAdminMetadataBackup,
-  fetchAdminAuditEvents,
   fetchAdminMetadataBackups,
   estimateAdminStorageCost,
   runAdminMetadataBackup,
@@ -16,7 +15,6 @@ import {
   fetchMe,
   fetchNotifications,
   fetchRenameCandidates,
-  fetchVaultAuditEvents,
   fetchVaults,
   relocateAdminVault,
   requestScan,
@@ -169,24 +167,6 @@ describe("foundation endpoint helpers", () => {
         "notification-csrf",
       );
     }
-  });
-
-  it("fetches the fixed newest audit windows without filter parameters", async () => {
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ events: [{ id: 100 }] }))
-      .mockResolvedValueOnce(jsonResponse({ events: [{ id: 99 }] }));
-
-    await expect(fetchVaultAuditEvents()).resolves.toEqual({
-      events: [{ id: 100 }],
-    });
-    await expect(fetchAdminAuditEvents()).resolves.toEqual({
-      events: [{ id: 99 }],
-    });
-
-    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-      "/api/audit-events",
-      "/api/admin/audit-events",
-    ]);
   });
 
   it("requests a scan through the shared API client", async () => {

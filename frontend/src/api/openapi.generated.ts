@@ -38,26 +38,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/admin/audit-events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Admin Audit Events
-         * @description List all audit events for the Owner.
-         */
-        get: operations["admin_audit_events_api_admin_audit_events_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/admin/cost-estimates/storage": {
         parameters: {
             query?: never;
@@ -126,24 +106,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/admin/settings": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Admin System Settings */
-        get: operations["admin_system_settings_api_admin_settings_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** Update Admin System Settings */
-        patch: operations["update_admin_system_settings_api_admin_settings_patch"];
-        trace?: never;
-    };
     "/api/admin/source-volumes": {
         parameters: {
             query?: never;
@@ -195,43 +157,6 @@ export interface paths {
          * @description Relocate, never rebind, a missing root on its verified Source Volume.
          */
         post: operations["admin_relocate_vault_root_api_admin_vaults__vault_id__relocate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/worker-errors": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Admin Worker Errors */
-        get: operations["admin_worker_errors_api_admin_worker_errors_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/audit-events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Vault Audit Events
-         * @description List the audit events recorded for the selected Vault.
-         */
-        get: operations["vault_audit_events_api_audit_events_get"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1720,62 +1645,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        FilesystemCheck: {
-            code: string;
-            message: string;
-            remediation?: string | null;
-            status: string;
-        } & {
-            [key: string]: unknown;
-        };
-        FilesystemFinding: {
-            code: string;
-            message: string;
-            path: string;
-            /** @description Present when the backend or a scan attaches remediation advice. */
-            remediation?: string | null;
-        } & {
-            [key: string]: unknown;
-        };
-        FilesystemHealth: {
-            /** @description Age of the cached health snapshot in seconds, when known. */
-            cache_age_seconds?: number | null;
-            /** @description ISO-8601 timestamp of the latest completed health computation. */
-            checked_at?: string | null;
-            checks: components["schemas"]["FilesystemCheck"][];
-            /** @description Short failure class when health_status is failed. */
-            error?: string | null;
-            /** @description Finding totals keyed by finding code. */
-            finding_counts?: {
-                [key: string]: number;
-            };
-            /** @description Bounded sample of filesystem findings for the latest health revision. */
-            findings: components["schemas"]["FilesystemFinding"][];
-            /** @description Total findings counted for the latest health revision. */
-            findings_total?: number;
-            /** @description True when findings is a bounded sample of findings_total. */
-            findings_truncated?: boolean;
-            gid: number | null;
-            /** @description checking | current | stale | failed filesystem-health revision state. */
-            health_status?: string;
-            ok: boolean;
-            /** @description Monotonic in-process health revision for this Vault. */
-            revision?: number | null;
-            root?: string;
-            source_volume?: {
-                alias: string | null;
-                cloud_catalog_allowed: boolean;
-                health: string;
-                local_operations_allowed: boolean;
-            } & {
-                [key: string]: unknown;
-            };
-            /** @description True when checks sample or check/finding field values were capped or clipped while building the bounded synopsis. */
-            synopsis_truncated?: boolean;
-            uid: number | null;
-        } & {
-            [key: string]: unknown;
-        };
         /** GlobPreviewRequest */
         GlobPreviewRequest: {
             /** Exclude Globs */
@@ -2235,16 +2104,15 @@ export interface components {
         StatsResponse: {
             active_jobs: number;
             delete_enabled: boolean;
-            filesystem: components["schemas"]["FilesystemHealth"] | null;
             runtime: {
-                filesystem?: {
-                    findings?: components["schemas"]["FilesystemFinding"][];
-                } & {
-                    [key: string]: unknown;
-                };
                 last_error?: string | null;
             } & {
                 [key: string]: unknown;
+            };
+            source_volume: {
+                alias: string | null;
+                health: string;
+                local_operations_allowed: boolean;
             };
             states: {
                 [key: string]: number;
@@ -2344,52 +2212,6 @@ export interface components {
             size_bytes: number;
             storage_class: string;
             tier: string | null;
-        } & {
-            [key: string]: unknown;
-        };
-        SystemSettingItem: {
-            choices?: string[];
-            configured?: boolean;
-            effective_value?: components["schemas"]["SystemSettingValue"];
-            environment_variable: string;
-            key: string;
-            maximum?: number;
-            maximum_length?: number;
-            minimum?: number;
-            minimum_length?: number;
-            mutability: string;
-            restart_required: boolean;
-            source: string;
-        } & {
-            [key: string]: unknown;
-        };
-        /** @description Administration settings endpoints (issues #132–#136). */
-        SystemSettingValue: string | number | boolean | null;
-        SystemSettingsResponse: {
-            groups: {
-                [key: string]: components["schemas"]["SystemSettingItem"][];
-            };
-            revision: number;
-        } & {
-            [key: string]: unknown;
-        };
-        /** SystemSettingsUpdate */
-        SystemSettingsUpdate: {
-            /** Overrides */
-            overrides?: {
-                [key: string]: unknown;
-            };
-            /** Removals */
-            removals?: string[];
-            /** Revision */
-            revision: number;
-        };
-        SystemSettingsUpdatePayload: {
-            overrides: {
-                [key: string]: components["schemas"]["SystemSettingValue"];
-            };
-            removals: string[];
-            revision: number;
         } & {
             [key: string]: unknown;
         };
@@ -2715,26 +2537,6 @@ export interface operations {
             };
         };
     };
-    admin_audit_events_api_admin_audit_events_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-        };
-    };
     admin_storage_cost_estimate_api_admin_cost_estimates_storage_post: {
         parameters: {
             query?: never;
@@ -2852,59 +2654,6 @@ export interface operations {
             };
         };
     };
-    admin_system_settings_api_admin_settings_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SystemSettingsResponse"];
-                };
-            };
-        };
-    };
-    update_admin_system_settings_api_admin_settings_patch: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SystemSettingsUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SystemSettingsResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     admin_source_volumes_api_admin_source_volumes_get: {
         parameters: {
             query?: never;
@@ -2976,46 +2725,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    admin_worker_errors_api_admin_worker_errors_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-        };
-    };
-    vault_audit_events_api_audit_events_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
         };

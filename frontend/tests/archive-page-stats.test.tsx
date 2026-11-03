@@ -20,24 +20,6 @@ const messages: Record<string, string> = {
   "ui.stats_loading": "Loading archive statistics…",
   "ui.stats_error":
     "Unable to load archive statistics. Values will appear when the request succeeds.",
-  "ui.filesystem_needs_attention": "Vault filesystem needs attention",
-  "ui.filesystem_attention_detail":
-    "Symbolic links and permission errors are reported; ownership and modes are never changed automatically.",
-  "ui.filesystem_health_status_checking": "Filesystem health: checking",
-  "ui.filesystem_health_status_current": "Filesystem health: current",
-  "ui.filesystem_health_status_stale": "Filesystem health: stale",
-  "ui.filesystem_health_status_failed": "Filesystem health: failed",
-  "ui.filesystem_health_checking_title": "Checking vault filesystem health",
-  "ui.filesystem_health_checking_detail":
-    "Permission diagnostics are still running. Archive statistics are independent and are not blocked by this check.",
-  "ui.filesystem_health_stale_title": "Refreshing vault filesystem health",
-  "ui.filesystem_health_stale_detail":
-    "Showing the last known diagnostics while a fresh check runs in the background.",
-  "ui.filesystem_health_failed_title": "Vault filesystem health check failed",
-  "ui.filesystem_health_failed_detail":
-    "The health check could not complete. Ownership and modes are never changed automatically; inspect host mounts and permissions.",
-  "ui.filesystem_health_checked_at": "Last checked {when}",
-  "ui.filesystem_health_revision": "Revision {revision}",
   "ui.file_list_placeholder": "File list",
   "ui.local_space": "Local space",
   "ui.cloud_space": "Cloud space",
@@ -72,18 +54,7 @@ const emptyVaultStats: StatsResponse = {
   storage: { local_bytes: 0, cloud_bytes: 0 },
   active_jobs: 0,
   runtime: {},
-  filesystem: {
-    ok: true,
-    uid: 1000,
-    gid: 1000,
-    root: "/sources/new-vault",
-    checks: [],
-    findings: [],
-    health_status: "current",
-    findings_total: 0,
-    finding_counts: {},
-    findings_truncated: false,
-  },
+  source_volume: { alias: "new-vault", health: "ok", local_operations_allowed: true },
   delete_enabled: false,
 };
 
@@ -93,18 +64,7 @@ const liveVaultStats: StatsResponse = {
   storage: { local_bytes: 512, cloud_bytes: 2048 },
   active_jobs: 0,
   runtime: {},
-  filesystem: {
-    ok: true,
-    uid: 1000,
-    gid: 1000,
-    root: "/sources/live",
-    checks: [],
-    findings: [],
-    health_status: "current",
-    findings_total: 0,
-    finding_counts: {},
-    findings_truncated: false,
-  },
+  source_volume: { alias: "live", health: "ok", local_operations_allowed: true },
   delete_enabled: true,
 };
 
@@ -281,23 +241,10 @@ describe("ArchivePage from /api/stats", () => {
     expect(screen.queryByTestId("filesystem-health")).not.toBeInTheDocument();
   });
 
-  it("renders summary metrics while filesystem health is still checking", async () => {
+  it("renders catalog statistics for an absent Source Volume without diagnostic UI", async () => {
     const checkingStats: StatsResponse = {
       ...liveVaultStats,
-      filesystem: {
-        ok: false,
-        uid: 1000,
-        gid: 1000,
-        root: "/sources/live",
-        checks: [],
-        findings: [],
-        health_status: "checking",
-        findings_total: 0,
-        finding_counts: {},
-        findings_truncated: false,
-        revision: 0,
-        checked_at: null,
-      },
+      source_volume: { alias: "live", health: "absent", local_operations_allowed: false },
     };
     fetchMock.mockImplementation(async () => jsonResponse(checkingStats));
 
@@ -308,10 +255,7 @@ describe("ArchivePage from /api/stats", () => {
     });
     expect(screen.getAllByText("512 B").length).toBeGreaterThan(0);
 
-    const health = screen.getByTestId("filesystem-health");
-    expect(health).toHaveAttribute("data-health-status", "checking");
-    expect(health).toHaveAttribute("role", "status");
-    expect(health).toHaveTextContent(/Checking vault filesystem health/i);
+    expect(screen.queryByTestId("filesystem-health")).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 

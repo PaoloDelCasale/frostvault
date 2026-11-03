@@ -129,6 +129,10 @@ class MetadataBackupHttpTests(unittest.TestCase):
             hashlib_sha256(download.content),
             payload["runs"][0]["digest_sha256"],
         )
+        with SQLiteConnection(str(self.database_path)) as connection:
+            actions = connection.execute("SELECT event, detail_json FROM audit_events ORDER BY id").fetchall()
+        self.assertEqual([row["event"] for row in actions], ["metadata_backup_created", "metadata_backup_downloaded"])
+        self.assertIn("operator requested backup", actions[0]["detail_json"])
 
 
 def hashlib_sha256(data: bytes) -> str:

@@ -303,6 +303,11 @@ class VaultAdoptionOverlapTests(_AdoptionFixture):
 class VaultAdoptionScanTests(_AdoptionFixture):
     """Seams 6–7: post-adoption scan catalogs content; failures stay retryable."""
 
+    def _adopt_for_verified_scan(self):
+        created = self._adopt()
+        with SQLiteConnection(str(self.database_path)) as connection:
+            return connection.execute("SELECT * FROM vaults WHERE id=%s", (created["id"],)).fetchone()
+
     def test_successful_adoption_scan_catalogs_existing_regular_file(self) -> None:
         from app.catalog import ArchiveCatalog
         from app.storage import scan_vault
@@ -358,31 +363,133 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         self.assertIn("disk vanished", status.get("last_error") or "")
         self.assertFalse(status.get("scanning"))
 
+    def test_unreadable_file_keeps_healthy_observations_without_missing_or_rename(self) -> None:
+        import os
+        from app.catalog import ArchiveCatalog
+        from app.storage import scan_tree, scan_vault
+
+        vault = self._adopt_for_verified_scan()
+        (self.albums / "old.jpg").write_bytes(b"old")
+        scan_tree(dict(vault), "before")
+        (self.albums / "old.jpg").unlink()
+        (self.albums / "healthy.jpg").write_bytes(b"healthy new content")
+        with SQLiteConnection(str(self.database_path)) as connection:
+            version_id = ArchiveCatalog(connection).record_archive_version(
+                vault_id=vault["id"], path="photo.jpg", object_key="only/photo.jpg",
+                provider_version_id="only-copy", size=10, storage_class="STANDARD",
+                etag="etag", uploaded_at="2026-11-03", observed_at="2026-11-03",
+                scan_id="before",
+            )
+        real_open = os.open
+        def denied(path, *args, **kwargs):
+            if Path(path).name == "photo.jpg":
+                raise PermissionError("denied")
+            return real_open(path, *args, **kwargs)
+        with (
+            patch("app.services.fs_preflight.os.open", side_effect=denied),
+            patch("app.storage.scan_cloud", return_value=0),
+            patch("app.storage.validate_cloud_vault"),
+            patch("app.storage.s3_client"),
+            patch("app.storage.reconcile_pending_policy_tags", return_value={}),
+            patch("app.storage.queue_auto_uploads", return_value=0),
+            patch("app.storage.queue_auto_local_cleanups", return_value=0),
+            patch.object(ArchiveCatalog, "list_rename_candidates") as renames,
+        ):
+            result = scan_vault(dict(vault))
+        renames.assert_not_called()
+        self.assertEqual(result["local"], 1)
+        self.assertEqual(result["local_incomplete"], 1)
+        with SQLiteConnection(str(self.database_path)) as connection:
+            problems = connection.execute("SELECT event, message_params FROM notifications").fetchall()
+            self.assertTrue(any(p["event"] == "file_unreadable" and "photo.jpg" in p["message_params"] for p in problems))
+            self.assertFalse(any(p["event"] == "protection_blocked" for p in problems))
+            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(vault["id"])}
+            self.assertEqual(set(rows), {"photo.jpg", "old.jpg", "healthy.jpg"})
+            self.assertTrue(all(r["local_exists"] for r in rows.values()))
+            self.assertTrue(rows["healthy.jpg"]["upload_eligible"])
+            self.assertEqual(connection.execute("SELECT availability FROM archive_versions WHERE id=%s", (version_id,)).fetchone()["availability"], "available")
+
+    def test_incomplete_scan_cannot_release_relocation_recovery(self) -> None:
+        import os
+        from app.storage import _verified_local_scan
+
+        vault = self._adopt_for_verified_scan()
+        with SQLiteConnection(str(self.database_path)) as connection:
+            connection.execute("UPDATE vaults SET relocation_state='scan_required' WHERE id=%s", (vault["id"],))
+        vault["relocation_state"] = "scan_required"
+        real_open = os.open
+        def denied(path, *args, **kwargs):
+            if Path(path).name == "photo.jpg":
+                raise PermissionError("denied")
+            return real_open(path, *args, **kwargs)
+        with patch("app.services.fs_preflight.os.open", side_effect=denied):
+            *_, complete = _verified_local_scan(vault, "incomplete")
+        self.assertFalse(complete)
+        # A later full-content read can fail even after the initial byte check.
+        with patch("app.storage.hash_stable_regular_file", side_effect=PermissionError("denied")):
+            *_, complete = _verified_local_scan(vault, "hash-incomplete")
+        self.assertFalse(complete)
+        with SQLiteConnection(str(self.database_path)) as connection:
+            self.assertEqual(connection.execute("SELECT relocation_state FROM vaults WHERE id=%s", (vault["id"],)).fetchone()["relocation_state"], "scan_required")
+        *_, complete = _verified_local_scan(vault, "complete")
+        self.assertTrue(complete)
+        with SQLiteConnection(str(self.database_path)) as connection:
+            self.assertEqual(connection.execute("SELECT relocation_state FROM vaults WHERE id=%s", (vault["id"],)).fetchone()["relocation_state"], "ready")
+
+    def test_incomplete_scan_still_holds_and_notifies_cloud_only_conflicts(self) -> None:
+        import hashlib
+        import os
+        from app.catalog import ArchiveCatalog
+        from app.services.operation_policies import OperationPolicy, set_policy
+        from app.storage import scan_tree, scan_vault
+
+        vault = self._adopt_for_verified_scan()
+        scan_tree(dict(vault), "before")
+        with SQLiteConnection(str(self.database_path)) as connection:
+            catalog = ArchiveCatalog(connection)
+            version_id = catalog.record_archive_version(
+                vault_id=vault["id"], path="photo.jpg", object_key="only/photo.jpg",
+                provider_version_id="only-copy", size=10, storage_class="STANDARD",
+                etag="etag", uploaded_at="2026-11-03", observed_at="2026-11-03", scan_id="before",
+            )
+            digest = hashlib.sha256(b"jpeg-bytes").hexdigest()
+            catalog.mark_version_verified(version_id, plaintext_sha256=digest, verified_at="2026-11-03")
+            catalog.set_local_fingerprint(vault_id=vault["id"], path="photo.jpg", plaintext_sha256=digest, matched_archive_version_id=version_id)
+            file_id = connection.execute("SELECT vault_file_id FROM archive_versions WHERE id=%s", (version_id,)).fetchone()["vault_file_id"]
+            catalog.mark_local_copy_missing(file_id, observed_at="2026-11-03")
+            set_policy(connection, vault["id"], OperationPolicy(auto_upload=True, stability_seconds=0))
+        (self.albums / "photo.jpg").write_bytes(b"different content")
+        (self.albums / "denied.jpg").write_bytes(b"unreadable")
+        real_open = os.open
+        def denied(path, *args, **kwargs):
+            if Path(path).name == "denied.jpg":
+                raise PermissionError("denied")
+            return real_open(path, *args, **kwargs)
+        with (
+            patch("app.services.fs_preflight.os.open", side_effect=denied),
+            patch("app.storage.scan_cloud", return_value=0),
+            patch("app.storage.validate_cloud_vault"),
+            patch("app.storage.s3_client") as cloud,
+            patch("app.storage.reconcile_pending_policy_tags", return_value={}),
+        ):
+            result = scan_vault(dict(vault))
+        self.assertEqual(result["local_incomplete"], 1)
+        self.assertEqual(result["auto_uploads"], 0)
+        cloud.return_value.delete_object.assert_not_called()
+        with SQLiteConnection(str(self.database_path)) as connection:
+            self.assertEqual(connection.execute("SELECT availability FROM archive_versions WHERE id=%s", (version_id,)).fetchone()["availability"], "available")
+            events = {r["event"] for r in connection.execute("SELECT event FROM notifications").fetchall()}
+            self.assertLessEqual({"file_unreadable", "cloud_only_conflict"}, events)
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()["n"], 0)
+
     def test_descendant_symlink_findings_do_not_roll_back_adoption(self) -> None:
         from app.catalog import ArchiveCatalog
         from app.storage import scan_tree
 
-        # Simulate a descendant symlink without requiring OS symlink privileges.
         link = self.albums / "alias.jpg"
-        link.write_bytes(b"not-followed")
-        real_is_symlink = Path.is_symlink
-        real_is_file = Path.is_file
-
-        def fake_is_symlink(self: Path) -> bool:
-            if self.resolve() == link.resolve():
-                return True
-            return real_is_symlink(self)
-
-        def fake_is_file(self: Path) -> bool:
-            if self.resolve() == link.resolve():
-                return False
-            return real_is_file(self)
-
+        link.symlink_to(self.albums / "photo.jpg")
         vault = self._adopt()
-        with patch.object(Path, "is_symlink", fake_is_symlink), patch.object(
-            Path, "is_file", fake_is_file
-        ):
-            count = scan_tree(dict(vault), "scan-adopt-1")
+        count = scan_tree(dict(vault), "scan-adopt-1")
         self.assertGreaterEqual(count, 2)
 
         with SQLiteConnection(str(self.database_path)) as connection:

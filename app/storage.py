@@ -25,7 +25,7 @@ import boto3
 from boto3.s3.transfer import TransferConfig
 from watchfiles import Change, awatch
 
-from .config import Settings, is_placeholder, settings
+from .config import is_placeholder, settings, settings_snapshot
 from .owner import owner_user_id
 from .catalog import ArchiveCatalog
 from .database import db
@@ -34,7 +34,6 @@ from .services import vault_relocation
 from .services.catalog_event_hub import publish_committed_event
 from .services.catalog_events import record_catalog_revision
 from .i18n import DEFAULT_LOCALE, format_message_params, translate
-from .system_settings import effective_settings
 from .services.rclone_runtime import (
     decode_object_relative_paths,
     vault_rclone_config,
@@ -99,20 +98,14 @@ from .services.upload_retry import (
     upload_retry_delay_seconds,
 )
 from .services.runtime_status import (
-    _AUDIT_REPORT_KNOWN_KEYS,
-    _RUNTIME_STATUS_LIST_ITEM_BUDGET,
-    _RUNTIME_STATUS_MAPPING_KEY_BUDGET,
-    _RUNTIME_STATUS_MAX_DEPTH,
-    _RUNTIME_STATUS_MAX_STRING_CHARS,
-    _RUNTIME_STATUS_UNKNOWN_KEY_BUDGET,
     runtime_status,
     scan_locks,
     status_lock,
     scan_lock_for_vault,
-    _empty_scan_filesystem_status,
     snapshot_runtime_status_for_stats,
-    _record_scan_finding,
 )
+from .services.fs_preflight import inspect_entry, walk_entries
+from .services.problems import report_problem
 from .services.local_files import (
     hash_stable_regular_file,
     restore_claimed_local_copy,
@@ -121,21 +114,8 @@ from .services.local_files import (
 )
 
 
-_runtime_snapshot = None
-_runtime_snapshot_source = None
-
-
-def _runtime_settings(connection=None):
-    global _runtime_snapshot, _runtime_snapshot_source
-    if not isinstance(settings, Settings):
-        return effective_settings(None, settings_obj=settings)
-    if connection is not None:
-        _runtime_snapshot = effective_settings(connection, settings_obj=settings)
-        _runtime_snapshot_source = settings
-        return _runtime_snapshot
-    if _runtime_snapshot is not None and _runtime_snapshot_source is settings:
-        return _runtime_snapshot
-    return effective_settings(None, settings_obj=settings)
+def _runtime_settings():
+    return settings_snapshot(settings)
 from .services import worker_errors as worker_error_store
 from .services import notifications as notification_service
 from .services import cloud_deletion as cloud_deletion_service
@@ -656,32 +636,28 @@ def _scan_tree(
         if allow_chunk_commits:
             connection.commit()
 
-    for entry in root.rglob("*"):
-        try:
-            if entry.is_symlink():
-                file_type = "symlink"
-                entry_stat = entry.lstat()
-            elif entry.is_file():
-                file_type = "regular"
-                entry_stat = entry.stat()
-            elif entry.exists() and not entry.is_dir():
-                file_type = "other"
-                entry_stat = entry.lstat()
-            else:
-                continue
-        except OSError as exc:
-            try:
-                relative = entry.relative_to(root).as_posix()
-            except ValueError:
-                relative = entry.name
-            _record_scan_finding(
-                vault_id,
-                path=relative,
-                code="fs.unreadable_file",
-                message=f"File is unreadable: {relative} ({exc})",
-            )
-            continue
+    unreadable = False
+
+    def failed(entry: Path, error: OSError) -> None:
+        nonlocal unreadable
+        unreadable = True
+        if scan_journal is not None:
+            scan_journal["incomplete"] = True
+        relative = entry.relative_to(root).as_posix()
+        report_problem(
+            connection, event="file_unreadable", vault_id=vault_id, path=relative,
+        )
+
+    for entry in walk_entries(root, on_error=failed):
         if is_restore_temporary_name(entry.name):
+            continue
+        try:
+            inspected = inspect_entry(entry)
+            if inspected is None:
+                continue
+            file_type, entry_stat = inspected
+        except OSError as exc:
+            failed(entry, exc)
             continue
         relative = entry.relative_to(root).as_posix()
         pending.append(
@@ -696,13 +672,18 @@ def _scan_tree(
         if len(pending) >= LOCAL_SCAN_WRITE_BATCH_SIZE:
             flush()
     flush()
+    if unreadable:
+        # Keep the per-path problems durable even if a later identity check
+        # rejects the scan. Healthy observations may still be protected, but an
+        # incomplete walk cannot authorize missing transitions or recovery.
+        connection.commit()
 
     if _persisted_scan(vault):
         _current_verified_scan_row(connection, vault)
     access = source_layout.vault_local_access(vault["source_root"])
     alias = access.volume_alias
     safe_scan_result = access.local_operations_allowed or access.volume_health == "scan_required"
-    if finalize_missing and safe_scan_result and (
+    if finalize_missing and not unreadable and safe_scan_result and (
         alias is None or source_layout.should_emit_local_copy_removals(alias)
     ):
         ArchiveCatalog(connection).mark_unseen_local_copies_missing(
@@ -715,7 +696,7 @@ def _scan_tree(
             connection.commit()
     completed_alias = (
         alias
-        if safe_scan_result and alias and source_layout.requires_full_local_scan(alias)
+        if not unreadable and safe_scan_result and alias and source_layout.requires_full_local_scan(alias)
         else None
     )
     return count, completed_alias
@@ -820,33 +801,17 @@ def _apply_filesystem_changes(
                 continue
 
             try:
-                if entry.is_symlink():
-                    file_type = "symlink"
-                elif entry.is_file():
-                    file_type = "regular"
-                elif entry.exists() and not entry.is_dir():
-                    file_type = "other"
-                else:
-                    file_type = None
-            except OSError as exc:
-                _record_scan_finding(
-                    int(vault["id"]),
+                inspected = inspect_entry(entry)
+            except FileNotFoundError:
+                inspected = None
+            except OSError:
+                report_problem(
+                    connection, event="file_unreadable", vault_id=int(vault["id"]),
                     path=relative,
-                    code="fs.unreadable_file",
-                    message=f"File is unreadable: {relative} ({exc})",
                 )
                 continue
-            if file_type is not None:
-                try:
-                    entry_stat = entry.stat() if file_type == "regular" else entry.lstat()
-                except OSError as exc:
-                    _record_scan_finding(
-                        int(vault["id"]),
-                        path=relative,
-                        code="fs.unreadable_file",
-                        message=f"File is unreadable: {relative} ({exc})",
-                    )
-                    continue
+            if inspected is not None:
+                file_type, entry_stat = inspected
                 catalog.observe_local_copy(
                     vault_id=vault["id"],
                     path=relative,
@@ -1300,7 +1265,7 @@ def _unfingerprinted_local_rows(vault_id: int) -> list[dict[str, Any]]:
 
 
 def _collect_local_fingerprint_updates(
-    vault: dict[str, Any], root: Path
+    vault: dict[str, Any], root: Path, *, scan_journal: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Hash Local Copies without holding a database write transaction."""
     updates: list[dict[str, Any]] = []
@@ -1310,7 +1275,16 @@ def _collect_local_fingerprint_updates(
             if not local_path.is_file():
                 continue
             digest, stat_result = hash_stable_regular_file(local_path)
-        except (OSError, ValueError, RuntimeError):
+        except OSError:
+            if scan_journal is not None:
+                scan_journal["incomplete"] = True
+            with db() as connection:
+                report_problem(
+                    connection, event="file_unreadable", vault_id=int(vault["id"]),
+                    path=row["path"],
+                )
+            continue
+        except (ValueError, RuntimeError):
             continue
         updates.append(
             {
@@ -1490,7 +1464,7 @@ def _rollback_local_scan_journal(
 
 def _verified_local_scan(
     vault: dict[str, Any], scan_id: str
-) -> tuple[int, dict[str, int], str | None]:
+) -> tuple[int, dict[str, int], str | None, bool]:
     """Walk/hash outside writes, then publish bounded catalog stages.
 
     Local observations are committed in short batches so ordinary SQLite
@@ -1501,7 +1475,11 @@ def _verified_local_scan(
     # Minimal in-memory Vaults are a longstanding unit-test seam. Persisted
     # rows always contain identity columns and always use the staged path.
     if "root_identity" not in vault and "root_identity_version" not in vault:
-        return scan_tree(vault, scan_id), apply_auto_renames(vault), None
+        scan_journal: dict[str, Any] = {}
+        count = scan_tree(vault, scan_id, _scan_journal=scan_journal)
+        complete = not scan_journal.get("incomplete", False)
+        renames = apply_auto_renames(vault, _recognize_renames=complete)
+        return count, renames, None, complete
 
     access = source_layout.vault_local_access(vault["source_root"])
     if not access.local_operations_allowed and access.volume_health != "scan_required":
@@ -1532,13 +1510,14 @@ def _verified_local_scan(
 
         # Hashing happens with no write transaction open. Publishing uses
         # compare-and-swap predicates so watcher replacements win safely.
-        updates = _collect_local_fingerprint_updates(vault, pinned_root)
+        updates = _collect_local_fingerprint_updates(vault, pinned_root, scan_journal=scan_journal)
         _apply_local_fingerprint_updates(vault, scan_id, updates)
 
+        complete = not scan_journal.get("incomplete", False)
         alias = access.volume_alias
         completed_alias = (
             alias
-            if alias and source_layout.requires_full_local_scan(alias)
+            if complete and alias and source_layout.requires_full_local_scan(alias)
             else None
         )
         with db() as connection:
@@ -1546,10 +1525,8 @@ def _verified_local_scan(
             if not _scan_generation_is_current(int(vault["id"]), scan_id):
                 raise _ScanRootMismatch("Local scan was superseded")
             rename_summary = _apply_auto_renames(
-                connection,
-                vault,
-                root=pinned_root,
-                hash_missing=False,
+                connection, vault, root=pinned_root, hash_missing=False,
+                recognize_renames=complete,
             )
             rename_summary["hashed"] = len(updates)
             _current_verified_scan_row(connection, vault)
@@ -1558,7 +1535,7 @@ def _verified_local_scan(
                 final_access.local_operations_allowed
                 or final_access.volume_health == "scan_required"
             )
-            if safe_scan_result and (
+            if complete and safe_scan_result and (
                 final_access.volume_alias is None
                 or source_layout.should_emit_local_copy_removals(
                     final_access.volume_alias
@@ -1578,6 +1555,7 @@ def _verified_local_scan(
                 ).fetchone()["relocation_state"]
                 == "scan_required"
             )
+            was_relocation_scan = was_relocation_scan and complete
             if was_relocation_scan:
                 vault_relocation.complete_relocation_scan(
                     connection, int(vault["id"]), release_runtime=False
@@ -1589,7 +1567,17 @@ def _verified_local_scan(
         if completed_alias:
             source_layout.note_full_local_scan_completed(completed_alias)
         _active_scan_journals.pop(journal_key, None)
-        return count, rename_summary, completed_alias
+        return count, rename_summary, completed_alias, complete
+
+
+def _report_worker_error(component: str, exc: BaseException, vault_id: int) -> None:
+    try:
+        with db() as connection:
+            worker_error_store.record_worker_error(
+                connection, component=component, exc=exc, vault_id=vault_id,
+            )
+    except Exception:
+        pass
 
 
 def _record_scan_component_health(
@@ -1600,13 +1588,20 @@ def _record_scan_component_health(
     error: str | None = None,
     verified: bool = False,
     extra: Mapping[str, Any] | None = None,
+    notify_problem: bool = True,
 ) -> None:
-    """Persist one scan/audit component outcome and mirror it on runtime_status."""
+    """Persist one scan/audit outcome and surface failures without diagnostic UI."""
     from .services.component_health import record_component_health
 
     stamp = now_iso()
     try:
         with db() as connection:
+            if not ok and notify_problem:
+                report_problem(
+                    connection, vault_id=int(vault_id),
+                    event="protection_blocked" if component == "source" else "internal_error",
+                    component=component,
+                )
             record_component_health(
                 connection,
                 vault_id=int(vault_id),
@@ -1673,16 +1668,15 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
             status.update(scanning=True, last_error=None, scan_id=scan_id)
         result: dict[str, int] = {}
         local_scan_identity_valid = True
-        # Reset scan findings synopsis; live preflight still runs via /api/stats.
-        with status_lock:
-            status["filesystem"] = _empty_scan_filesystem_status(ok=True)
         access = source_layout.vault_local_access(vault["source_root"])
         if access.local_operations_allowed or access.volume_health == "scan_required":
             try:
-                count, rename_summary, _completed_alias = _verified_local_scan(
+                count, rename_summary, _completed_alias, complete = _verified_local_scan(
                     vault, scan_id
                 )
                 result["local"] = count
+                if not complete:
+                    result["local_incomplete"] = 1
                 result.update(
                     {f"rename_{key}": value for key, value in rename_summary.items()}
                 )
@@ -1712,15 +1706,21 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 status["last_error"] = f"Source scan: {exc}"
                 result["local"] = -1
                 _record_scan_component_health(
-                    vault_id, "source", ok=False, error=status["last_error"]
+                    vault_id, "source", ok=False, error=status["last_error"],
                 )
             else:
                 _record_scan_component_health(
-                    vault_id, "source", ok=True, verified=True
+                    vault_id, "source", ok=complete, verified=complete,
+                    error=None if complete else "Source scan incomplete: unreadable paths",
+                    notify_problem=complete,
                 )
         else:
             result["local_skipped"] = 1
             result["local"] = 0
+            _record_scan_component_health(
+                vault_id, "source", ok=False,
+                error="Protection blocked: Source Volume unavailable",
+            )
         if local_scan_identity_valid:
             try:
                 result["cloud"] = scan_cloud(vault, scan_id)
@@ -1760,9 +1760,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                             connection,
                             vault_id=int(vault["id"]),
                             requested_by=owner_id,
-                            local_delete_enabled=_runtime_settings(
-                                connection
-                            ).allow_local_delete,
+                            local_delete_enabled=_runtime_settings().allow_local_delete,
                         )
             except Exception as exc:
                 status["last_error"] = f"Policy tag reconciliation: {exc}"
@@ -1814,6 +1812,7 @@ def _apply_auto_renames(
     root: Path,
     requested_by: int | None = None,
     hash_missing: bool = True,
+    recognize_renames: bool = True,
 ) -> dict[str, int]:
     """Apply rename analysis inside the caller-owned transaction.
 
@@ -1821,8 +1820,6 @@ def _apply_auto_renames(
     hashing has already completed outside this transaction and its digests were
     published through compare-and-swap batches.
     """
-    from .audit import audit_log
-
     summary = {"hashed": 0, "confirmed": 0, "queued": 0, "ambiguous": 0}
     confirmed_paths: list[str] = []
     catalog = ArchiveCatalog(connection)
@@ -1852,7 +1849,14 @@ def _apply_auto_renames(
                 if not local_path.is_file():
                     continue
                 digest, stat_result = hash_stable_regular_file(local_path)
-            except (OSError, ValueError, RuntimeError):
+            except OSError:
+                recognize_renames = False
+                report_problem(
+                    connection, event="file_unreadable", vault_id=int(vault["id"]),
+                    path=row["path"],
+                )
+                continue
+            except (ValueError, RuntimeError):
                 continue
             catalog.set_local_fingerprint(
                 vault_id=vault["id"],
@@ -1883,6 +1887,10 @@ def _apply_auto_renames(
     # Hashed content that reappeared at a cloud-only path is decided before
     # renames and uploads: identical → Local Copy, different → held back.
     settle_cloud_only_copies(connection, vault_id=int(vault["id"]))
+    if not recognize_renames:
+        # An unreadable subtree prevents proving a unique rename, but must
+        # never bypass the hold/notification for a cloud-only conflict.
+        return summary
     candidates = catalog.list_rename_candidates(vault_id=vault["id"])
     changed_at = now_iso()
     for candidate in candidates:
@@ -1896,15 +1904,6 @@ def _apply_auto_renames(
                 new_path=candidate["new_path"],
                 changed_at=changed_at,
                 vault_id=vault["id"],
-            )
-            audit_log(
-                "vault_file_renamed",
-                connection=connection,
-                vault_id=vault["id"],
-                vault_file_id=candidate["missing_vault_file_id"],
-                old_path=candidate["missing_path"],
-                new_path=candidate["new_path"],
-                decision="auto",
             )
             confirmed_paths.append(candidate["new_path"])
             summary["confirmed"] += 1
@@ -1932,6 +1931,7 @@ def apply_auto_renames(
     requested_by: int | None = None,
     _connection: Any | None = None,
     _root: Path | None = None,
+    _recognize_renames: bool = True,
 ) -> dict[str, int]:
     """Hash outside writes, then confirm renames atomically."""
     root = _root or Path(vault["source_root"]).resolve()
@@ -1939,10 +1939,13 @@ def apply_auto_renames(
         # Preserve the caller-owned transaction seam used by direct catalog
         # callers and the relocation rollback tests.
         return _apply_auto_renames(
-            _connection, vault, root=root, requested_by=requested_by
+            _connection, vault, root=root, requested_by=requested_by,
+            recognize_renames=_recognize_renames,
         )
     scan_id = now_iso()
-    updates = _collect_local_fingerprint_updates(vault, root)
+    hash_status: dict[str, Any] = {}
+    updates = _collect_local_fingerprint_updates(vault, root, scan_journal=hash_status)
+    _recognize_renames = _recognize_renames and not hash_status.get("incomplete", False)
     _apply_local_fingerprint_updates(vault, scan_id, updates)
     with db() as connection:
         summary = _apply_auto_renames(
@@ -1951,6 +1954,7 @@ def apply_auto_renames(
             root=root,
             requested_by=requested_by,
             hash_missing=False,
+            recognize_renames=_recognize_renames,
         )
     summary["hashed"] = len(updates)
     return summary
@@ -5014,8 +5018,7 @@ def process_recover(job: dict[str, Any]) -> None:
         and target.get("restore_state") != "available"
         and job.get("approved_at") is None
     ):
-        with db() as connection:
-            runtime = _runtime_settings(connection)
+        runtime = _runtime_settings()
         tier = job.get("restore_tier") or runtime.restore_tier or "Bulk"
         days = int(job.get("restore_days") or runtime.restore_days or 3)
         estimate = estimate_restore(
@@ -5452,7 +5455,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
     """Process one queue item after the scheduler has acquired its lease."""
     try:
         with db() as connection:
-            runtime = _runtime_settings(connection)
+            runtime = _runtime_settings()
             claim_token = job.get("claim_token")
             if claim_token:
                 current = ArchiveCatalog(connection).renew_job_claim(
@@ -5729,7 +5732,7 @@ def process_jobs_once(*, wait: bool = True) -> int:
     now = now_iso()
     current = datetime.now(timezone.utc)
     with db() as connection:
-        runtime = _runtime_settings(connection)
+        runtime = _runtime_settings()
         restore_due_before = _restore_due_before(runtime, current=current)
         # Over-fetch candidates so fair interleave can still fill the concurrency
         # budget when one Vault dominates the oldest requested_at values.
@@ -5837,7 +5840,7 @@ def claimable_queue_depth() -> int:
     """Return the actual unleased runnable backlog for the ``queue_depth`` gauge."""
     timestamp = now_iso()
     with db() as connection:
-        runtime = _runtime_settings(connection)
+        runtime = _runtime_settings()
         return ArchiveCatalog(connection).claimable_queue_depth(
             now=timestamp,
             restore_due_before=_restore_due_before(runtime),
@@ -5890,14 +5893,21 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
             source_layout.vault_local_access, vault["source_root"]
         )
         if not access.local_operations_allowed:
+            await asyncio.to_thread(
+                _record_scan_component_health, int(vault["id"]), "source",
+                ok=False, error="Protection blocked: Source Volume unavailable",
+            )
             await asyncio.sleep(5)
             continue
         try:
             root = Path(vault["source_root"]).resolve()
+            if not root.is_dir() or not os.access(root, os.R_OK | os.X_OK):
+                raise PermissionError("Vault root is inaccessible")
         except OSError:
-            await asyncio.sleep(5)
-            continue
-        if not root.is_dir():
+            await asyncio.to_thread(
+                _record_scan_component_health, int(vault["id"]), "source",
+                ok=False, error="Protection blocked: Vault root inaccessible",
+            )
             await asyncio.sleep(5)
             continue
         try:
@@ -5909,7 +5919,7 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
                 force_polling=settings.filesystem_watch_force_polling,
                 poll_delay_ms=runtime.filesystem_watch_poll_ms,
                 recursive=True,
-                ignore_permission_denied=True,
+                ignore_permission_denied=False,
             ):
                 await asyncio.to_thread(apply_filesystem_changes, vault, changes)
         except asyncio.CancelledError:
@@ -5922,6 +5932,13 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
                     {"scanning": False, "last_scan": None, "last_error": None},
                 )
                 status["last_error"] = f"Source watcher: {exc}"
+            if isinstance(exc, OSError):
+                await asyncio.to_thread(
+                    _record_scan_component_health, vault_id, "source",
+                    ok=False, error="Protection blocked: Source watcher cannot read the root",
+                )
+            else:
+                await asyncio.to_thread(_report_worker_error, "source_watcher", exc, vault_id)
             await asyncio.sleep(5)
 
 
@@ -5958,6 +5975,10 @@ async def filesystem_watch_loop() -> None:
                     continue
                 access = source_layout.vault_local_access(vault["source_root"])
                 if not access.local_operations_allowed:
+                    await asyncio.to_thread(
+                        _record_scan_component_health, vault_id, "source",
+                        ok=False, error="Protection blocked: Source Volume unavailable",
+                    )
                     existing = watchers.get(vault_id)
                     if existing is not None:
                         existing[1].cancel()
@@ -6074,7 +6095,7 @@ def _run_scheduled_metadata_backup_once() -> None:
     """Create a scheduled encrypted metadata backup when configured."""
     try:
         with db() as connection:
-            runtime = _runtime_settings(connection)
+            runtime = _runtime_settings()
             if runtime.metadata_backup_interval_seconds <= 0:
                 return
             result = metadata_backup_service.run_metadata_backup(
@@ -6336,7 +6357,7 @@ async def background_loop() -> None:
                     last_backup_verify = current
                 await asyncio.to_thread(_deliver_notifications_once)
             except Exception as exc:
-                # Persist a classified error and alert seam instead of failing silently.
+                # Surface a generic internal-error problem instead of failing silently.
                 try:
                     with db() as connection:
                         worker_error_store.record_worker_error(
@@ -6344,10 +6365,7 @@ async def background_loop() -> None:
                             component="background_loop",
                             exc=exc,
                         )
-                    metrics_service.inc(
-                        "worker_errors_total",
-                        classification=worker_error_store.classify_exception(exc),
-                    )
+                    metrics_service.inc("worker_errors_total")
                 except Exception:
                     # Last-resort: never let error accounting crash the loop.
                     pass

@@ -16,13 +16,10 @@ import { Toast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 
-import { AdminAuditEventsSection } from "./AuditEventsSection";
 import { RelocateVaultDialog } from "./RelocateVaultDialog";
-import { SettingsSection } from "./SettingsSection";
 import { SourceVolumesSection } from "./SourceVolumesSection";
 import { MetadataBackupsSection } from "./MetadataBackupsSection";
 import { StorageCostEstimatesSection } from "./StorageCostEstimatesSection";
-import { WorkerErrorsSection } from "./WorkerErrorsSection";
 
 type NoticeState = {
   open: boolean;
@@ -33,11 +30,7 @@ type NoticeState = {
 /** Sections with their own component; every other admin path lists Vaults. */
 const DEDICATED_SECTION_PATHS = new Set([
   "/admin/storage-cost-estimates",
-  "/admin/audit-events",
-  "/admin/worker-errors",
   "/admin/metadata-backups",
-  "/admin/defaults",
-  "/admin/deployment",
   "/admin/sources",
 ]);
 
@@ -89,12 +82,6 @@ export function AdminPage() {
     );
   }
 
-  const settingsMode = pathname === "/admin/defaults"
-    ? "defaults"
-    : pathname === "/admin/deployment"
-      ? "deployment"
-      : null;
-
   return (
     <div className="min-h-svh bg-canvas text-ink">
       <main
@@ -128,11 +115,7 @@ export function AdminPage() {
               ["admin.section_overview", "/admin"],
               ["admin.section_vaults", "/admin/vaults"],
               ["admin.section_sources", "/admin/sources"],
-              ["admin.section_defaults", "/admin/defaults"],
-              ["admin.section_deployment", "/admin/deployment"],
               ["admin.section_storage_estimates", "/admin/storage-cost-estimates"],
-              ["admin.section_audit_events", "/admin/audit-events"],
-              ["admin.section_worker_errors", "/admin/worker-errors"],
               ["admin.section_metadata_backups", "/admin/metadata-backups"],
             ].map(([labelKey, href]) => (
               <li key={href}>
@@ -150,14 +133,9 @@ export function AdminPage() {
 
         {pathname === "/admin/storage-cost-estimates" ? (
           <StorageCostEstimatesSection />
-        ) : pathname === "/admin/audit-events" ? (
-          <AdminAuditEventsSection />
-        ) : pathname === "/admin/worker-errors" ? (
-          <WorkerErrorsSection />
         ) : pathname === "/admin/metadata-backups" ? (
           <MetadataBackupsSection />
-        ) : settingsMode ? (
-          <SettingsSection mode={settingsMode} />
+
         ) : pathname === "/admin/sources" ? (
           <SourceVolumesSection />
         ) : (

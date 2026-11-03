@@ -937,181 +937,6 @@
         ],
         "type": "object"
       },
-      "FilesystemCheck": {
-        "additionalProperties": true,
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "remediation": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "status",
-          "message"
-        ],
-        "type": "object"
-      },
-      "FilesystemFinding": {
-        "additionalProperties": true,
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "remediation": {
-            "description": "Present when the backend or a scan attaches remediation advice.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "path",
-          "code",
-          "message"
-        ],
-        "type": "object"
-      },
-      "FilesystemHealth": {
-        "additionalProperties": true,
-        "properties": {
-          "cache_age_seconds": {
-            "description": "Age of the cached health snapshot in seconds, when known.",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "checked_at": {
-            "description": "ISO-8601 timestamp of the latest completed health computation.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "checks": {
-            "items": {
-              "$ref": "#/components/schemas/FilesystemCheck"
-            },
-            "type": "array"
-          },
-          "error": {
-            "description": "Short failure class when health_status is failed.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "finding_counts": {
-            "additionalProperties": {
-              "type": "number"
-            },
-            "description": "Finding totals keyed by finding code.",
-            "type": "object"
-          },
-          "findings": {
-            "description": "Bounded sample of filesystem findings for the latest health revision.",
-            "items": {
-              "$ref": "#/components/schemas/FilesystemFinding"
-            },
-            "type": "array"
-          },
-          "findings_total": {
-            "description": "Total findings counted for the latest health revision.",
-            "type": "number"
-          },
-          "findings_truncated": {
-            "description": "True when findings is a bounded sample of findings_total.",
-            "type": "boolean"
-          },
-          "gid": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "health_status": {
-            "description": "checking | current | stale | failed filesystem-health revision state.",
-            "type": "string"
-          },
-          "ok": {
-            "type": "boolean"
-          },
-          "revision": {
-            "description": "Monotonic in-process health revision for this Vault.",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "root": {
-            "type": "string"
-          },
-          "source_volume": {
-            "additionalProperties": true,
-            "properties": {
-              "alias": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "cloud_catalog_allowed": {
-                "type": "boolean"
-              },
-              "health": {
-                "type": "string"
-              },
-              "local_operations_allowed": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "alias",
-              "health",
-              "local_operations_allowed",
-              "cloud_catalog_allowed"
-            ],
-            "type": "object"
-          },
-          "synopsis_truncated": {
-            "description": "True when checks sample or check/finding field values were capped or clipped while building the bounded synopsis.",
-            "type": "boolean"
-          },
-          "uid": {
-            "type": [
-              "number",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "ok",
-          "uid",
-          "gid",
-          "checks",
-          "findings"
-        ],
-        "type": "object"
-      },
       "GlobPreviewRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2633,31 +2458,9 @@
           "delete_enabled": {
             "type": "boolean"
           },
-          "filesystem": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/FilesystemHealth"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "runtime": {
             "additionalProperties": {},
             "properties": {
-              "filesystem": {
-                "additionalProperties": true,
-                "properties": {
-                  "findings": {
-                    "items": {
-                      "$ref": "#/components/schemas/FilesystemFinding"
-                    },
-                    "type": "array"
-                  }
-                },
-                "type": "object"
-              },
               "last_error": {
                 "type": [
                   "string",
@@ -2665,6 +2468,29 @@
                 ]
               }
             },
+            "type": "object"
+          },
+          "source_volume": {
+            "additionalProperties": false,
+            "properties": {
+              "alias": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "health": {
+                "type": "string"
+              },
+              "local_operations_allowed": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "alias",
+              "health",
+              "local_operations_allowed"
+            ],
             "type": "object"
           },
           "states": {
@@ -2695,8 +2521,8 @@
           "storage",
           "active_jobs",
           "runtime",
-          "filesystem",
-          "delete_enabled"
+          "delete_enabled",
+          "source_volume"
         ],
         "type": "object"
       },
@@ -2940,142 +2766,6 @@
           "region",
           "pricing_effective_at",
           "assumptions"
-        ],
-        "type": "object"
-      },
-      "SystemSettingItem": {
-        "additionalProperties": true,
-        "properties": {
-          "choices": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "configured": {
-            "type": "boolean"
-          },
-          "effective_value": {
-            "$ref": "#/components/schemas/SystemSettingValue"
-          },
-          "environment_variable": {
-            "type": "string"
-          },
-          "key": {
-            "type": "string"
-          },
-          "maximum": {
-            "type": "number"
-          },
-          "maximum_length": {
-            "type": "number"
-          },
-          "minimum": {
-            "type": "number"
-          },
-          "minimum_length": {
-            "type": "number"
-          },
-          "mutability": {
-            "type": "string"
-          },
-          "restart_required": {
-            "type": "boolean"
-          },
-          "source": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "key",
-          "environment_variable",
-          "source",
-          "mutability",
-          "restart_required"
-        ],
-        "type": "object"
-      },
-      "SystemSettingValue": {
-        "description": "Administration settings endpoints (issues #132\u2013#136).",
-        "type": [
-          "string",
-          "number",
-          "boolean",
-          "null"
-        ]
-      },
-      "SystemSettingsResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "groups": {
-            "additionalProperties": {
-              "items": {
-                "$ref": "#/components/schemas/SystemSettingItem"
-              },
-              "type": "array"
-            },
-            "type": "object"
-          },
-          "revision": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "revision",
-          "groups"
-        ],
-        "type": "object"
-      },
-      "SystemSettingsUpdate": {
-        "additionalProperties": false,
-        "properties": {
-          "overrides": {
-            "additionalProperties": true,
-            "title": "Overrides",
-            "type": "object"
-          },
-          "removals": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Removals",
-            "type": "array"
-          },
-          "revision": {
-            "minimum": 0.0,
-            "title": "Revision",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "revision"
-        ],
-        "title": "SystemSettingsUpdate",
-        "type": "object"
-      },
-      "SystemSettingsUpdatePayload": {
-        "additionalProperties": true,
-        "properties": {
-          "overrides": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/SystemSettingValue"
-            },
-            "type": "object"
-          },
-          "removals": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "revision": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "revision",
-          "overrides",
-          "removals"
         ],
         "type": "object"
       },
@@ -3967,25 +3657,6 @@
         "summary": "Admin Page"
       }
     },
-    "/api/admin/audit-events": {
-      "get": {
-        "description": "List all audit events for the Owner.",
-        "operationId": "admin_audit_events_api_admin_audit_events_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Admin Audit Events"
-      }
-    },
     "/api/admin/cost-estimates/storage": {
       "post": {
         "operationId": "admin_storage_cost_estimate_api_admin_cost_estimates_storage_post",
@@ -4120,60 +3791,6 @@
         "summary": "Admin Run Metadata Backup"
       }
     },
-    "/api/admin/settings": {
-      "get": {
-        "operationId": "admin_system_settings_api_admin_settings_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SystemSettingsResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Admin System Settings"
-      },
-      "patch": {
-        "operationId": "update_admin_system_settings_api_admin_settings_patch",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SystemSettingsUpdate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SystemSettingsResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Update Admin System Settings"
-      }
-    },
     "/api/admin/source-volumes": {
       "get": {
         "description": "Operator inventory of discovered Source Volumes (issue #148).",
@@ -4259,43 +3876,6 @@
           }
         },
         "summary": "Admin Relocate Vault Root"
-      }
-    },
-    "/api/admin/worker-errors": {
-      "get": {
-        "operationId": "admin_worker_errors_api_admin_worker_errors_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Admin Worker Errors"
-      }
-    },
-    "/api/audit-events": {
-      "get": {
-        "description": "List the audit events recorded for the selected Vault.",
-        "operationId": "vault_audit_events_api_audit_events_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Vault Audit Events"
       }
     },
     "/api/catalog/events": {

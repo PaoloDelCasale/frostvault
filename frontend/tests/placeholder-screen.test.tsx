@@ -83,8 +83,6 @@ describe("App shell screen", () => {
             "ui.cloud_space": "Cloud space",
             "ui.active_operations": "Active operations",
             "ui.archive_statistics": "Archive statistics",
-            "ui.filesystem_needs_attention": "Vault filesystem needs attention",
-            "ui.filesystem_attention_detail": "detail",
             "ui.protected_archive": "Protected archive · {name}",
             "ui.protected_archive_detail": "detail",
             "state.both": "Local and cloud",

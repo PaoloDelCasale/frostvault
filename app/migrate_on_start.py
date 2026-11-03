@@ -19,10 +19,9 @@ from alembic.script import ScriptDirectory
 from alembic.script.revision import RangeNotAncestorError, ResolutionError
 from alembic.util.exc import CommandError
 
-from .config import settings
+from .config import settings, settings_snapshot
 from .database import HEAD_SCHEMA_REVISION, DatabaseSchemaError, db, read_schema_revision
 from .services import metadata_backups
-from .system_settings import effective_settings
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -189,7 +188,7 @@ def _upgrade_existing_with_backup() -> None:
     backup_dir = Path(settings.metadata_backup_dir)
     try:
         with db() as connection:
-            runtime = effective_settings(connection, settings_obj=settings)
+            runtime = settings_snapshot(settings)
             outcome = metadata_backups.run_pre_upgrade_backup_gate(
                 backup_dir=backup_dir,
                 settings_obj=settings,

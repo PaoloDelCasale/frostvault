@@ -32,8 +32,6 @@ _ALLOWED_METRICS = {
     "jobs_failed_total": "counter",
     "jobs_retries_total": "counter",
     "verification_failures_total": "counter",
-    "restore_state_total": "counter",
-    "lifecycle_reconciliations_total": "counter",
     "notification_deliveries_total": "counter",
     "worker_errors_total": "counter",
     "metadata_backups_total": "counter",
@@ -46,18 +44,6 @@ _ALLOWED_METRICS = {
     "jobs_notification_backlog": "gauge",
     "worker_up": "gauge",
     "metadata_backup_last_success_unixtime": "gauge",
-    # Bounded archive-stats / filesystem-health observability (issue #228).
-    "stats_last_duration_seconds": "gauge",
-    "filesystem_health_last_duration_seconds": "gauge",
-    "filesystem_health_findings": "gauge",
-    "filesystem_health_cache_age_seconds": "gauge",
-    "filesystem_health_status": "gauge",
-    # Directory listing / aggregate maintenance (issue #229).
-    "directory_listing_duration_seconds": "gauge",
-    "directory_listing_rows_materialized": "gauge",
-    "directory_aggregate_update_batch_size": "gauge",
-    "directory_aggregate_update_duration_seconds": "gauge",
-    "directory_aggregate_rebuild_status": "gauge",
 }
 
 _lock = threading.Lock()

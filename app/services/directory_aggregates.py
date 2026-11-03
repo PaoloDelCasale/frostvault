@@ -22,14 +22,12 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
-from . import metrics as metrics_service
 from .lifecycle_pins import is_path_pinned, load_lifecycle_pins
 
 
@@ -712,7 +710,6 @@ def flush_directory_aggregates(
     the next flush — required for PostgreSQL READ COMMITTED concurrency.
     """
     tracker = _tracker(connection)
-    started = time.perf_counter()
     # Cutoff freezes the claim set before any rebuild work observes catalog rows.
     cutoff = _now()
 
@@ -790,21 +787,6 @@ def flush_directory_aggregates(
         if not tracker.dirty_directories and not tracker.rebuild_vaults:
             tracker.dirty_file_marks = 0
 
-    duration = time.perf_counter() - started
-    batch_size = file_marks if file_marks else (rebuilt_dirs + full_rebuilds)
-    if batch_size or rebuilt_dirs or full_rebuilds:
-        metrics_service.set_gauge(
-            "directory_aggregate_update_batch_size",
-            float(batch_size),
-        )
-        metrics_service.set_gauge(
-            "directory_aggregate_update_duration_seconds",
-            float(duration),
-        )
-        metrics_service.set_gauge(
-            "directory_aggregate_rebuild_status",
-            1.0 if full_rebuilds else 0.0,
-        )
     return {
         "rebuilt_directories": rebuilt_dirs,
         "full_rebuilds": full_rebuilds,
@@ -826,16 +808,13 @@ def rebuild_vault_directory_aggregates(
     ``dirty_cutoff`` (default: now at rebuild start) are preserved so concurrent
     transactions that mark after the claim remain durable for the next flush.
     """
-    started = time.perf_counter()
     cutoff = dirty_cutoff or _now()
     connection.execute(
         "DELETE FROM directory_aggregates WHERE vault_id=%s",
         (int(vault_id),),
     )
     rolled: dict[str, _DirectoryRollup] = {}
-    max_batch_seen = 0
     for batch in _iter_visible_file_contribution_batches(connection, vault_id):
-        max_batch_seen = max(max_batch_seen, len(batch))
         for contribution in batch:
             for directory in ancestor_directories(contribution.path):
                 rollup = rolled.setdefault(directory, _DirectoryRollup())
@@ -854,16 +833,6 @@ def rebuild_vault_directory_aggregates(
         key for key in tracker.dirty_directories if key[0] != int(vault_id)
     }
     tracker.rebuild_vaults.discard(int(vault_id))
-    duration = time.perf_counter() - started
-    metrics_service.set_gauge(
-        "directory_aggregate_update_duration_seconds",
-        float(duration),
-    )
-    metrics_service.set_gauge("directory_aggregate_rebuild_status", 1.0)
-    metrics_service.set_gauge(
-        "directory_aggregate_update_batch_size",
-        float(max_batch_seen if max_batch_seen else len(rolled)),
-    )
     return len(rolled)
 
 

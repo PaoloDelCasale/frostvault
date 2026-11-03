@@ -156,46 +156,6 @@ describe("capture/demo seams", () => {
     }
   });
 
-  it("provides realistic Vault audit events in the demo", async () => {
-    vi.resetModules();
-    vi.doMock("@/demoGate", () => ({
-      DEMO_MODE_ENABLED: true,
-      getDemoSearchParam: () => null,
-    }));
-    const originalFetch = window.fetch;
-
-    try {
-      const { installDemoFilesFetch } = await import(
-        "@/pages/archive/demoFiles"
-      );
-      installDemoFilesFetch();
-
-      const response = await window.fetch("/api/audit-events");
-      const payload = (await response.json()) as {
-        events: Array<{
-          event: string;
-          actor_user_id: number | null;
-          detail: Record<string, unknown>;
-        }>;
-      };
-      expect(payload.events).toHaveLength(6);
-      expect(payload.events.map((event) => event.event)).toEqual(
-        expect.arrayContaining([
-          "vault_file_renamed",
-          "vault_lifecycle_default_updated",
-          "operation_policy_updated",
-          "catalog_scan_completed",
-        ]),
-      );
-      expect(payload.events.some((event) => event.actor_user_id === null)).toBe(true);
-      expect(payload.events.some((event) => "path" in event.detail)).toBe(true);
-    } finally {
-      window.fetch = originalFetch;
-      vi.doUnmock("@/demoGate");
-      vi.resetModules();
-    }
-  });
-
   it("keeps archive.pdf versions consistent between Path History and Recover", async () => {
     vi.resetModules();
     vi.doMock("@/demoGate", () => ({
