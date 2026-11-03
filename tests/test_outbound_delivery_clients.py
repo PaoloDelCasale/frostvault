@@ -156,7 +156,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
         self.assertIn("To: ops@example.com", smtp.messages[0])
         self.assertNotIn("To: owner@example.com", smtp.messages[0])
 
-    def test_terminal_jobs_keep_existing_email_routing(self) -> None:
+    def test_only_terminal_upload_failure_not_routine_success_uses_email(self) -> None:
         for status in ("completed", "failed"):
             with self.subTest(status=status), patch(
                 "app.storage.db", side_effect=lambda: PostgresConnection(str(self.path))
@@ -168,7 +168,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
                 "JOIN notifications n ON n.id=d.notification_id"
             ).fetchall()
             self.assertEqual([(row["event"], row["channel"]) for row in rows], [("job_failed", "email")])
-            self.assertEqual(len(notifications.list_in_app_notifications(connection, user_id=1)), 2)
+            self.assertEqual(len(notifications.list_in_app_notifications(connection, user_id=1)), 1)
 
     def test_existing_incidents_reach_both_channels_once(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
@@ -209,7 +209,9 @@ class OutboundDeliveryClientTests(unittest.TestCase):
             )
         with patch.object(
             notifications, "settings", replace(self.email_settings, smtp_port=smtp.port)
-        ), patch("app.storage.db", side_effect=lambda: PostgresConnection(str(self.path))):
+        ), patch("app.storage.db", side_effect=lambda: PostgresConnection(str(self.path))), patch(
+            "app.services.protection_notifications.maintain_notifications"
+        ):
             _deliver_notifications_once()
         with PostgresConnection(str(self.path)) as connection:
             delivery = connection.execute(

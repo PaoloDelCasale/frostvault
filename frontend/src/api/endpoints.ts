@@ -49,11 +49,8 @@ import { translate } from "@/i18n/translate";
 
 const DEFAULT_PAGE_SIZE = 100;
 
-/**
- * The notification routes intentionally use the generic JSON response model on
- * the server. Keep the inbox wire types here instead of claiming they are
- * generated OpenAPI schemas (the preferences GET is a Starlette route).
- */
+/** Inbox extension fields stay optional for compatible older/demo payloads.
+ * The canonical current response is also documented in OpenAPI. */
 export type NotificationItem = {
   id: number;
   user_id: number;
@@ -70,6 +67,8 @@ export type NotificationItem = {
   created_at: string;
   read: boolean;
   read_at: string | null;
+  problem_status?: "open" | "resolved" | null;
+  resolved_at?: string | null;
 };
 
 export type NotificationListStatus = "unread" | "read" | "all";
@@ -77,6 +76,8 @@ export type NotificationListStatus = "unread" | "read" | "all";
 export type NotificationsResponse = {
   items: NotificationItem[];
   unread_count: number;
+  open_problem_count?: number;
+  email_configured?: boolean;
   /** True when another bounded page is available via ``before_id``. */
   has_more?: boolean;
 };

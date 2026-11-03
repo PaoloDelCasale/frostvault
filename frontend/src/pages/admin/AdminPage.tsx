@@ -4,6 +4,7 @@ import type { AdminVault } from "@/api";
 import {
   cancelOwnVaultDecommissionCloudPurge,
   fetchAdminVaults,
+  fetchNotifications,
   fetchOwnVaultDecommissionStatus,
   previewOwnVaultDecommission,
   startOwnVaultDecommission,
@@ -37,6 +38,15 @@ const DEDICATED_SECTION_PATHS = new Set([
 export function AdminPage() {
   const { t, ready } = useI18n();
   const pathname = typeof window === "undefined" ? "/admin" : window.location.pathname;
+
+  const [emailConfigured, setEmailConfigured] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchNotifications({ limit: 1 }).then((data) => {
+      if (!cancelled && typeof data.email_configured === "boolean") setEmailConfigured(data.email_configured);
+    }).catch(() => { /* The notification center reports request failures. */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const [vaults, setVaults] = useState<AdminVault[]>([]);
   const [notice, setNotice] = useState<NoticeState>({
@@ -130,6 +140,12 @@ export function AdminPage() {
             ))}
           </ul>
         </nav>
+
+        {emailConfigured === false ? (
+          <p role="status" className="mb-6 rounded-panel border border-line bg-surface p-4" data-testid="email-not-configured">
+            {t("ui.email_not_configured")}
+          </p>
+        ) : null}
 
         {pathname === "/admin/storage-cost-estimates" ? (
           <StorageCostEstimatesSection />

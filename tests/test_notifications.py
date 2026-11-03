@@ -118,11 +118,11 @@ class NotificationDeliveryTests(unittest.TestCase):
     def test_terminal_events_always_reach_the_owner_inbox_without_email(self) -> None:
         with patch.object(notifications, "settings", replace(settings, smtp_host="")):
             with PostgresConnection(str(self.path)) as connection:
-                for status, event in (
-                    ("completed", "job_completed"), ("failed", "job_failed"),
+                for action, status, event in (
+                    ("recover", "completed", "recovery_completed"), ("upload", "failed", "job_failed"),
                 ):
                     connection.execute(
-                        "UPDATE jobs SET status=%s WHERE id=%s", (status, self.job_id)
+                        "UPDATE jobs SET action=%s, status=%s WHERE id=%s", (action, status, self.job_id)
                     )
                     self.assertEqual(
                         notifications.enqueue_job_terminal_notification(
@@ -155,7 +155,7 @@ class NotificationDeliveryTests(unittest.TestCase):
                 )
             notifications.enqueue_notification(
                 connection, user_id=self.user_id, vault_id=self.vault_id,
-                event="job_completed", title="Email only", channels=("email",),
+                event="recovery_completed", title="Email only", channels=("email",),
             )
             listed = notifications.list_in_app_notifications(
                 connection, user_id=self.user_id, limit=1
@@ -201,7 +201,7 @@ class NotificationDeliveryTests(unittest.TestCase):
             for channel in ("webhook", "push"):
                 with self.subTest(channel=channel), self.assertRaises(ValueError):
                     notifications.enqueue_notification(
-                        connection, user_id=self.user_id, event="job_completed",
+                        connection, user_id=self.user_id, event="recovery_completed",
                         title="Unsupported", channels=("in_app", channel),
                     )
             self.assertEqual(connection.execute(
@@ -214,11 +214,11 @@ class NotificationDeliveryTests(unittest.TestCase):
                 connection,
                 user_id=self.user_id,
                 vault_id=self.vault_id,
-                event="job_completed",
+                event="recovery_completed",
                 title="",
                 body="",
-                title_key="notification.job_completed.title",
-                body_key="notification.job_completed.body",
+                title_key="notification.recovery_completed.title",
+                body_key="notification.recovery_completed.body",
                 message_params={"action": "upload", "path": "foto.txt"},
             )
             notifications.enqueue_notification(
@@ -232,12 +232,12 @@ class NotificationDeliveryTests(unittest.TestCase):
             listed = notifications.list_in_app_notifications(
                 connection, user_id=self.user_id, locale="it"
             )
-        keyed = next(item for item in listed if item["event"] == "job_completed")
+        keyed = next(item for item in listed if item["event"] == "recovery_completed")
         historical = next(
             item for item in listed if item["event"] == "upload_verified"
         )
-        self.assertEqual(keyed["title"], "Job completato")
-        self.assertEqual(keyed["body"], "upload: foto.txt")
+        self.assertEqual(keyed["title"], "Recupero completato")
+        self.assertEqual(keyed["body"], "foto.txt è di nuovo sul server.")
         self.assertEqual(historical["title"], "Historical title")
         self.assertEqual(historical["body"], "Historical body")
 
@@ -426,7 +426,7 @@ class NotificationDeliveryTests(unittest.TestCase):
             del job_id
             connection.execute(
                 "INSERT INTO notifications(user_id, event, title, created_at) "
-                "VALUES (%s, 'job_completed', 'Job completed', 'now')",
+                "VALUES (%s, 'recovery_completed', 'Recovery completed', 'now')",
                 (self.user_id,),
             )
             connection.execute("INSERT INTO missing_notification_table(id) VALUES (1)")
@@ -587,7 +587,7 @@ class NotificationReadHttpTests(unittest.TestCase):
                 connection,
                 user_id=self.owner_id,
                 vault_id=self.vault_id,
-                event="job_completed",
+                event="recovery_completed",
                 title="Email only",
                 channels=("email",),
             )
@@ -599,6 +599,22 @@ class NotificationReadHttpTests(unittest.TestCase):
         self.assertEqual(len(response.json()["items"]), 1)
         self.assertEqual(response.json()["unread_count"], 3)
         self.assertNotEqual(response.json()["items"][0]["title"], "Email only")
+
+    def test_problem_and_unread_counters_are_independent_and_email_status_is_safe(self) -> None:
+        with PostgresConnection(str(self.path)) as connection:
+            item = notifications.set_problem(connection, key='test-blocked', event='protection_blocked',
+                                             vault_id=self.vault_id, active=True, params={'component':'cloud'})
+            notifications.mark_notification_read(connection, notification_id=item['id'], user_id=self.owner_id)
+        self._authenticate(self.owner_token, self.owner_csrf)
+        with patch.object(notifications, 'settings', replace(settings, smtp_host='')):
+            response = self.client.get('/api/notifications?limit=1')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data['unread_count'], 0)
+        self.assertEqual(data['open_problem_count'], 1)
+        self.assertFalse(data['email_configured'])
+        self.assertEqual(data['items'][0]['problem_status'], 'open')
+        self.assertNotIn('smtp_password', data)
 
     def test_removed_notification_routes_are_not_exposed(self) -> None:
         self._authenticate(self.owner_token, self.owner_csrf)

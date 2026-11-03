@@ -10,12 +10,12 @@ import hashlib
 from typing import Any
 
 from ..owner import owner_user_id
-from .notifications import enqueue_notification
+from .notifications import set_problem
 
 
 def report_problem(
     connection: Any, *, event: str, vault_id: int | None = None,
-    path: str = "", component: str = "",
+    path: str = "", component: str = "", active: bool = True,
 ) -> dict[str, Any] | None:
     owner_id = owner_user_id(connection)
     if owner_id is None:
@@ -27,20 +27,9 @@ def report_problem(
     # Render them as escapes rather than letting a DB encoding error hide the
     # problem. The identity above still distinguishes the original paths.
     display_path = path.encode("utf-8", errors="backslashreplace").decode("utf-8")
-    notification = enqueue_notification(
-        connection, user_id=owner_id, vault_id=vault_id, event=event,
-        title="", body="", title_key=f"notification.{event}.title",
-        body_key=f"notification.{event}.body",
-        message_params={"path": display_path, "component": component},
-        dedupe_key=f"{event}:{vault_id}:{identity}", channels=("in_app",),
+    return set_problem(
+        connection, vault_id=vault_id, event=event, active=active,
+        key=f"{event}:{vault_id}:{identity}",
+        params={"path": display_path, "component": component},
+        email=event == "protection_blocked",
     )
-    # Reading an earlier occurrence must not hide a later failure of this same
-    # path or worker. Keep one durable entry, but make the problem visible again.
-    if notification["read"]:
-        connection.execute(
-            "UPDATE notifications SET read_at=NULL WHERE id=%s AND user_id=%s",
-            (notification["id"], owner_id),
-        )
-        notification["read"] = False
-        notification["read_at"] = None
-    return notification

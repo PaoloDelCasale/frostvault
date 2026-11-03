@@ -720,15 +720,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 }
             ],
         )
-        self.assertEqual(
-            notifications,
-            [
-                {
-                    "event": "local_cleanup.auto_queued",
-                    "job_id": jobs[0]["id"],
-                }
-            ],
-        )
+        self.assertEqual(notifications, [])  # Cleanup activity belongs only in the summary.
 
 
 if __name__ == "__main__":

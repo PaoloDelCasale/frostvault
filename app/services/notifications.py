@@ -1,7 +1,7 @@
 """Owner notifications with fixed routing and optional deployment-owned SMTP.
 
 Delivery retries are bounded and never mutate the Job that triggered the
-notification. Event content and routing are otherwise unchanged by #414.
+notification. Problems have a current open/resolved state independent of reading.
 """
 from __future__ import annotations
 
@@ -48,6 +48,8 @@ def _localized_notification_text(
     A key can be removed or unavailable in a partially upgraded catalog.  In
     that case the durable title/body is safer than returning the key itself.
     """
+    if row.get("event") == "weekly_summary" and text_field == "body":
+        return render_weekly_summary(_message_params(row), locale=locale)
     key = row.get(key_field)
     fallback = str(row.get(text_field) or "")
     if not key:
@@ -61,6 +63,27 @@ def _localized_notification_text(
         if key not in english_catalog:
             return fallback
     return translate(key, locale=locale, **_message_params(row))
+
+
+def render_weekly_summary(summary: Mapping[str, Any], *, locale: str | None = None) -> str:
+    """Render the same structured summary in either supported language."""
+    states = summary.get("states") or {}
+    counts = " · ".join(f"{translate('state.' + state, locale=locale)}: {count}"
+                        for state, count in states.items())
+    lines = [counts, translate("notification.weekly_summary.metrics", locale=locale,
+             backup=summary.get("last_verified_backup") or "—", problems=summary.get("open_problems", 0),
+             files=summary.get("freed_files", 0), gib=f"{int(summary.get('freed_bytes', 0)) / 1024**3:.2f}",
+             cost=f"{summary.get('monthly_cost_estimate', 0):.2f}", currency=summary.get("currency", "EUR"),
+             blocked=summary.get("cleanup_blocked", 0))]
+    for vault in summary.get("vaults") or []:
+        lines.append(translate("notification.weekly_summary.vault", locale=locale,
+                     vault=vault["vault_id"], scan=vault.get("last_scan") or "—",
+                     audit=vault.get("last_audit") or "—", suspended=vault["suspended"]))
+    for problem in summary.get("problems") or []:
+        lines.append(translate(problem["body_key"], locale=locale,
+                               **parse_message_params(problem.get("message_params"))) if problem.get("body_key") else problem["event"])
+    lines.append(str(summary.get("cost_disclaimer") or ""))
+    return "\n".join(lines)
 
 
 def _row_notification(
@@ -88,6 +111,8 @@ def _row_notification(
         "created_at": row["created_at"],
         "read": row.get("read_at") is not None,
         "read_at": row.get("read_at"),
+        "problem_status": row.get("problem_status"),
+        "resolved_at": row.get("resolved_at"),
     }
 
 
@@ -167,6 +192,8 @@ def enqueue_notification(
     params_json = (
         format_message_params(params) if title_key or body_key or params else None
     )
+    if event == "weekly_summary":
+        body = render_weekly_summary(params)
 
     if dedupe_key is None:
         row = connection.execute(
@@ -258,7 +285,7 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
     """Notify the Owner of terminal Jobs; failures also use optional SMTP."""
     job = connection.execute(
         """
-        SELECT id, vault_id, path, action, status
+        SELECT id, vault_id, path, action, status, origin
         FROM jobs WHERE id=%s
         """,
         (job_id,),
@@ -266,7 +293,10 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
     if not job or job["status"] not in {"completed", "failed"}:
         return 0
     vault_id = int(job["vault_id"])
-    event = "job_completed" if job["status"] == "completed" else "job_failed"
+    recovery = job["action"] == "recover" and job["origin"] != "automatic"
+    if not recovery and not (job["action"] == "upload" and job["status"] == "failed"):
+        return 0
+    event = ("recovery_completed" if job["status"] == "completed" else "recovery_failed") if recovery else "job_failed"
     title_key = f"notification.{event}.title"
     body_key = f"notification.{event}.body"
     params = {"action": str(job["action"]), "path": str(job["path"])}
@@ -277,7 +307,7 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
     for recipient in recipients:
         user_id = int(recipient["user_id"])
         channels = ["in_app"]
-        if event == "job_failed" and smtp_enabled:
+        if smtp_enabled:
             channels.append("email")
         dedupe_key = f"job:{int(job['id'])}:{event}"
         existing = connection.execute(
@@ -301,6 +331,12 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
             dedupe_key=dedupe_key,
             channels=tuple(channels),
         )
+        if event == "job_failed":
+            connection.execute(
+                "UPDATE notifications SET problem_status=COALESCE(problem_status, 'open') "
+                "WHERE user_id=%s AND dedupe_key=%s",
+                (user_id, dedupe_key),
+            )
         if existing is None:
             enqueued += 1
     return enqueued
@@ -378,6 +414,11 @@ def _enqueue_incident_notification(
             message_params=params,
             dedupe_key=dedupe_key,
             channels=tuple(channels),
+        )
+        connection.execute(
+            "UPDATE notifications SET problem_status=COALESCE(problem_status, 'open') "
+            "WHERE user_id=%s AND dedupe_key=%s",
+            (user_id, dedupe_key),
         )
         if existing is None:
             enqueued += 1
@@ -471,6 +512,108 @@ def reconcile_pending_terminal_notifications(
     return recovered
 
 
+def fixed_channels() -> tuple[str, ...]:
+    return ("in_app", "email") if _smtp_config() else ("in_app",)
+
+
+def email_configured() -> bool:
+    """Public status only; never expose addresses or transport credentials."""
+    return _smtp_config() is not None
+
+
+def set_problem(
+    connection: Any, *, key: str, event: str, vault_id: int | None = None,
+    active: bool, params: Mapping[str, Any] | None = None,
+    email: bool = True,
+) -> dict[str, Any] | None:
+    """One current row per problem; notify once per open episode, not per poll.
+
+    Taking the Owner lock serializes reopening and delivery creation. Reading
+    an open problem never resolves it or re-arms email. A recurrence does both.
+    Only safe structured context belongs in params, never exception strings.
+    """
+    recipients = _owner_recipients(connection)
+    if not recipients:
+        return None
+    owner_id = int(recipients[0]["user_id"])
+    connection.execute("SELECT id FROM users WHERE id=%s FOR UPDATE", (owner_id,))
+    previous = connection.execute(
+        "SELECT * FROM notifications WHERE user_id=%s AND dedupe_key=%s",
+        (owner_id, key),
+    ).fetchone()
+    stamp = now_iso()
+    if not active:
+        if previous and previous.get("problem_status") == "open":
+            connection.execute(
+                "UPDATE notifications SET problem_status='resolved', resolved_at=%s, "
+                "read_at=COALESCE(read_at,%s) WHERE id=%s", (stamp, stamp, previous["id"]),
+            )
+        return None
+    context = dict(params or {})
+    item = enqueue_notification(
+        connection, user_id=owner_id, vault_id=vault_id, event=event,
+        title="", title_key=f"notification.{event}.title",
+        body_key=f"notification.{event}.body", message_params=context,
+        dedupe_key=key, channels=fixed_channels() if email else ("in_app",),
+    )
+    reopen = previous and previous.get("problem_status") == "resolved"
+    connection.execute(
+        "UPDATE notifications SET problem_status='open', resolved_at=NULL, "
+        "message_params=%s, body=%s, read_at=CASE WHEN %s THEN NULL ELSE read_at END, "
+        "created_at=CASE WHEN %s THEN %s ELSE created_at END WHERE id=%s",
+        (format_message_params(context), translate(f"notification.{event}.body", **context),
+         bool(reopen), bool(reopen), stamp, item["id"]),
+    )
+    if reopen:
+        connection.execute(
+            "UPDATE notification_deliveries SET status='pending', attempt_count=0, "
+            "next_attempt_at=%s, last_error=NULL, updated_at=%s WHERE notification_id=%s",
+            (stamp, stamp, item["id"]),
+        )
+    return _row_notification(connection.execute("SELECT * FROM notifications WHERE id=%s", (item["id"],)).fetchone())
+
+
+def reconcile_problem_states(connection: Any) -> None:
+    """Refresh catalog/Job-backed problems before counting, listing or emailing.
+
+    No filesystem/S3 operations and no modification of protection evidence.
+    A retry supersedes a terminal failure; a resolved incident is no longer
+    unread even when the Owner never opened the notification center.
+    """
+    connection.execute("""
+        UPDATE notifications n SET problem_status='resolved', resolved_at=%s,
+            read_at=COALESCE(read_at,%s)
+        WHERE n.problem_status='open' AND (
+            (n.event IN ('archive_version_missing', 'cloud_only_conflict') AND EXISTS (
+                SELECT 1 FROM catalog_incidents i
+                WHERE n.dedupe_key='incident:' || i.id::text AND i.status='resolved'
+            )) OR (n.event='job_failed' AND EXISTS (
+                SELECT 1 FROM jobs original WHERE original.id=n.job_id AND (
+                    original.status<>'failed' OR EXISTS (
+                        SELECT 1 FROM jobs latest WHERE latest.vault_file_id=original.vault_file_id
+                          AND latest.action='upload' AND latest.id>original.id
+                    )
+                )
+            )) OR (n.event='file_unreadable' AND (
+                EXISTS (SELECT 1 FROM vault_component_health h WHERE h.vault_id=n.vault_id
+                        AND h.component='source' AND h.last_error IS NULL AND h.last_success_at>n.created_at)
+                OR EXISTS (SELECT 1 FROM file_paths fp JOIN local_copies lc ON lc.vault_file_id=fp.vault_file_id
+                           WHERE fp.vault_id=n.vault_id AND fp.valid_to IS NULL
+                             AND fp.path=(n.message_params::jsonb->>'path') AND lc.observed_at>n.created_at)
+            ))
+        )
+    """, (now_iso(), now_iso()))
+
+
+def count_open_problems(connection: Any, *, user_id: int) -> int:
+    reconcile_problem_states(connection)
+    row = connection.execute(
+        "SELECT count(*) AS total FROM notifications WHERE user_id=%s "
+        "AND COALESCE(in_app_enabled,TRUE)=TRUE AND problem_status='open'", (user_id,),
+    ).fetchone()
+    return int(row["total"] or 0)
+
+
 def _visible_notification_predicate(alias: str = "n") -> str:
     """Return the inbox visibility predicate for a SELECT or UPDATE.
 
@@ -513,6 +656,7 @@ def list_in_app_notifications(
     ``limit`` accepts up to 201 so HTTP handlers can probe ``has_more`` at the
     public maximum page size of 200.
     """
+    reconcile_problem_states(connection)
     clauses = [_visible_notification_predicate()]
     params: list[Any] = [user_id]
 
@@ -543,6 +687,7 @@ def list_in_app_notifications(
 
 
 def count_unread_notifications(connection: Any, *, user_id: int) -> int:
+    reconcile_problem_states(connection)
     row = connection.execute(
         f"""
         SELECT COUNT(*) AS total
@@ -562,6 +707,7 @@ def mark_notification_read(
     user_id: int,
     locale: str | None = None,
 ) -> dict[str, Any] | None:
+    reconcile_problem_states(connection)
     stamp = now_iso()
     update_predicate = _visible_notification_predicate("")
     connection.execute(
@@ -594,6 +740,7 @@ def mark_all_notifications_read(
     in-app visibility predicate are left untouched. Returns the number of
     rows newly stamped plus the authoritative remaining unread count.
     """
+    reconcile_problem_states(connection)
     stamp = now_iso()
     update_predicate = _visible_notification_predicate("")
     result = connection.execute(
@@ -641,6 +788,7 @@ def deliver_pending_notifications(
     max_attempts: int = 3,
 ) -> dict[str, int]:
     """Attempt pending email deliveries without touching Job rows or the inbox."""
+    reconcile_problem_states(connection)
     stamp = now_iso()
     pending = connection.execute(
         """
@@ -649,6 +797,7 @@ def deliver_pending_notifications(
         FROM notification_deliveries d
         JOIN notifications n ON n.id = d.notification_id
         WHERE d.status = 'pending'
+          AND (n.problem_status IS NULL OR n.problem_status='open')
           AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= %s)
         ORDER BY d.id
         """,
@@ -693,7 +842,8 @@ def deliver_pending_notifications(
             else:
                 raise RuntimeError(f"unsupported channel: {row['channel']}")
         except Exception as exc:  # system boundary failure
-            error = str(exc)
+            # Injectable adapters are also untrusted boundaries.
+            error = "smtp delivery failed"
 
         if error is None:
             connection.execute(

@@ -474,10 +474,36 @@ the first login. See [ADR-0017](docs/adr/0017-single-owner.md).
 
 ### Notifications and optional email
 
-The notification center receives the existing events without per-event,
-per-channel or per-Vault preferences. Failed Jobs, missing Archive Versions and
-Cloud-only Conflicts also receive email when SMTP is configured. Completed Jobs
-currently remain inbox-only; the new alert and recovery rules belong to #425.
+The notification center uses fixed rules, with no per-event, per-channel or
+per-Vault preferences. Immediate inbox alerts (and optional email) cover:
+
+- **Protection delayed**, aggregated once per Vault and continuous problem episode:
+  a stable queue with no completed verified upload for about two hours, or any
+  included file continuously unprotected for 24 hours. Large progressing imports
+  do not alert before that ceiling. Files still changing after 24 hours are counted
+  as “not stabilizing”, not as upload errors. Timers survive application restarts.
+- **Terminal upload failure**, after retries are exhausted or a permanent/mismatch
+  failure, not every retry.
+- **Protection blocked**, for an unavailable Source Volume, cloud preflight or
+  configuration/policy failures, or automatic protection suspended for 24 hours.
+- **Missing cloud copy** and **Cloud-only Conflict**.
+- An Owner-requested **recovery completed or failed**, the sole routine completion
+  exception. Successful uploads, verification and individual local cleanups do not
+  create notifications.
+
+Each problem shows its **current open/resolved state**. Reading is not resolution:
+`open_problem_count` and `unread_count` are independent. Resolved problems are
+marked read automatically, and pending email for them is not sent. A recurrence
+reopens the problem and notifies once again.
+
+A **weekly summary** is both an inbox item and optional email (the first runs on
+startup, then at most once every seven days). It includes all five protection
+state counts, per-Vault last successful scan/audit and suspension, the last
+verified metadata backup (or an explicit unknown date), open problems, files and
+space freed and blocked cleanups over the last seven days, and the estimated
+monthly storage cost from bundled AWS list prices, not an AWS bill. No automatic
+restore or external heartbeat is introduced: a missing weekly email can mean
+that the application/server or SMTP is down.
 
 Email is optional and configured only in the deployment environment:
 
@@ -490,12 +516,18 @@ Email is optional and configured only in the deployment environment:
 - `SMTP_USE_TLS` — defaults to `true`: STARTTLS on port 587 (and other ports),
   implicit TLS on port 465. Disable only for a trusted local relay.
 
-Missing or partial configuration disables email, not the inbox. Email delivery
-has bounded retries and does not change Job results or remove notifications.
+Missing or partial configuration disables email, not the inbox. The current
+General-compatible administration surface warns when email is not configured;
+the General page layout is delivered separately. The API exposes only a boolean
+configuration status, never SMTP addresses or credentials. Email delivery has
+three bounded attempts and does not change Job results or remove notifications.
 Environment changes require an application restart. Existing database SMTP
 configuration is discarded by migration `0046_simplify_notifications`; set the
 SMTP environment variables before upgrading if you want email to continue.
-The migration preserves inbox history, email delivery rows, and all file data.
+Migration `0056_notification_problems` adds notification problem state, continuous
+pending-file timers and suspension timestamps, and removes obsolete routine
+completion/cleanup inbox history and its deliveries. It does not change Jobs,
+Local Copies, Archive Version evidence or cloud content.
 
 ### Online responsive site
 

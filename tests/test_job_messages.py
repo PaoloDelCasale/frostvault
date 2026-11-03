@@ -129,11 +129,7 @@ class JobMessagePersistenceTests(unittest.TestCase):
         self.assertEqual(row["message_key"], "job.upload_verified")
         self.assertEqual(row["message"], "Upload verified")
         self.assertEqual(row["message_params"], "{}")
-        self.assertEqual(notification["event"], "job_completed")
-        self.assertTrue(notification["in_app_enabled"])
-        self.assertEqual(
-            notification["dedupe_key"], f"job:{self.job_id}:job_completed"
-        )
+        self.assertIsNone(notification)  # Routine successful uploads are summary-only.
 
     def test_set_job_keeps_terminal_state_when_notification_sql_fails(self) -> None:
         def fail_notification(connection, *, job_id):

@@ -1692,7 +1692,7 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
     }
 
 
-@app.get("/api/notifications", response_model=JsonObjectResponse)
+@app.get("/api/notifications", response_model=response_model("NotificationsResponse"))
 def list_notifications(
     request: Request,
     user: dict[str, Any] = Depends(current_user),
@@ -1723,7 +1723,10 @@ def list_notifications(
         unread_count = notification_service.count_unread_notifications(
             connection, user_id=user["id"]
         )
-    return {"items": items, "unread_count": unread_count, "has_more": has_more}
+        open_problem_count = notification_service.count_open_problems(connection, user_id=user["id"])
+    return {"items": items, "unread_count": unread_count, "has_more": has_more,
+            "open_problem_count": open_problem_count,
+            "email_configured": notification_service.email_configured()}
 
 
 class NotificationReadAction(BaseModel):
@@ -2554,15 +2557,6 @@ def cancel_job_group(
                 outcome="cancelled",
                 path=row["path"],
                 archive_version_id=row["archive_version_id"],
-            )
-            notification_service.enqueue_notification(
-                connection,
-                user_id=int(row["requested_by"]),
-                event="local_cleanup.cancelled",
-                title="Automatic local cleanup cancelled",
-                body=f"The Local Copy cleanup for {row['path']} was cancelled.",
-                vault_id=vault["id"],
-                job_id=int(row["id"]),
             )
     return {
         "message": message,

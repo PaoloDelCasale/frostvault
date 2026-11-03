@@ -84,7 +84,7 @@ describe("foundation endpoint helpers", () => {
           id: 10,
           user_id: 7,
           vault_id: 9,
-          event: "job_completed",
+          event: "recovery_completed",
           title: "Completed",
           body: "archive.txt",
           read: true,

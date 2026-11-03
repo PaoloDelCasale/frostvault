@@ -33,6 +33,12 @@ class WorkerErrorTests(unittest.TestCase):
                 notifications.mark_notification_read(connection, notification_id=english[0]["id"], user_id=1)
                 self.assertEqual(notifications.count_unread_notifications(connection, user_id=1), 0)
                 worker_errors.record_worker_error(connection, component="cloud_scan", exc=RuntimeError("SECRET recurrence"))
+                # Reading does not resolve or re-arm one continuously open problem.
+                self.assertEqual(notifications.count_unread_notifications(connection, user_id=1), 0)
+                self.assertEqual(notifications.count_open_problems(connection, user_id=1), 1)
+                from app.services.problems import report_problem
+                report_problem(connection, event="internal_error", component="cloud_scan", active=False)
+                worker_errors.record_worker_error(connection, component="cloud_scan", exc=RuntimeError("SECRET new episode"))
                 self.assertEqual(notifications.count_unread_notifications(connection, user_id=1), 1)
                 self.assertEqual(len(notifications.list_in_app_notifications(connection, user_id=1)), 1)
 

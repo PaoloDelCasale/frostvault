@@ -442,6 +442,28 @@ def s3_client():
 
 
 def validate_cloud_vault(vault: dict[str, Any]) -> None:
+    # Observability must not change preflight success/failure or transfer safety.
+    try:
+        _validate_cloud_vault(vault)
+    except Exception:
+        _report_cloud_preflight(vault, blocked=True)
+        raise
+    _report_cloud_preflight(vault, blocked=False)
+
+
+def _report_cloud_preflight(vault: dict[str, Any], *, blocked: bool) -> None:
+    try:
+        vault_id = int(vault.get("vault_id") or vault["id"])
+        with db() as connection:
+            notification_service.set_problem(
+                connection, key=f"blocked:{vault_id}:preflight", event="protection_blocked",
+                vault_id=vault_id, active=blocked, params={"component": "cloud_configuration"},
+            )
+    except Exception:
+        pass
+
+
+def _validate_cloud_vault(vault: dict[str, Any]) -> None:
     bucket = vault.get("s3_bucket")
     if not bucket or is_placeholder(
         bucket,
@@ -1427,12 +1449,18 @@ def _record_scan_component_health(
     stamp = now_iso()
     try:
         with db() as connection:
-            if not ok and notify_problem:
-                report_problem(
-                    connection, vault_id=int(vault_id),
-                    event="protection_blocked" if component == "source" else "internal_error",
-                    component=component,
+            if component in {"source", "cloud", "policy"} and (ok or notify_problem):
+                notification_service.set_problem(
+                    connection, key=f"blocked:{vault_id}:{component}",
+                    event="protection_blocked", vault_id=int(vault_id), active=not ok,
+                    params={"component": component},
                 )
+            elif not ok and notify_problem:
+                report_problem(connection, vault_id=int(vault_id),
+                               event="internal_error", component=component)
+            if ok:
+                report_problem(connection, vault_id=int(vault_id), event="internal_error",
+                               component=component, active=False)
             record_component_health(
                 connection,
                 vault_id=int(vault_id),
@@ -3164,6 +3192,9 @@ def _complete_verified_upload(
                     version_id if matches_snapshot else None
                 ),
             )
+            if matches_snapshot:
+                connection.execute("DELETE FROM protection_pending WHERE vault_file_id=%s",
+                                   (job["vault_file_id"],))
     set_job(job["id"], "uploading", message_key="job.purging_previous_snapshot")
     ensure_job_active(job["id"], "Upload claim was lost")
     purge_current_snapshot_superseded(
@@ -3821,8 +3852,6 @@ def record_automatic_cleanup_outcome(
     *,
     event: str,
     outcome: str,
-    title: str,
-    body: str,
 ) -> None:
     if job.get("origin") != "automatic":
         return
@@ -3837,15 +3866,6 @@ def record_automatic_cleanup_outcome(
                 outcome=outcome,
                 path=job["path"],
                 archive_version_id=job.get("archive_version_id"),
-            )
-            notification_service.enqueue_notification(
-                connection,
-                user_id=int(job["requested_by"]),
-                event=event,
-                title=title,
-                body=body,
-                vault_id=job["vault_id"],
-                job_id=job["id"],
             )
     except Exception as exc:
         try:
@@ -3962,8 +3982,6 @@ def process_free_space(job: dict[str, Any]) -> None:
             job,
             event="local_cleanup.completed",
             outcome="success",
-            title="Automatic local cleanup completed",
-            body=f"The Local Copy of {job['path']} was removed; recovery remains available.",
         )
 
 
@@ -4689,8 +4707,6 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                 job,
                 event="local_cleanup.cancelled",
                 outcome="cancelled",
-                title="Automatic local cleanup cancelled",
-                body=f"The Local Copy cleanup for {job['path']} was cancelled.",
             )
     except Exception as exc:
         if _claim_is_lost(int(job["id"])):
@@ -4732,8 +4748,6 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                 job,
                 event="local_cleanup.failed",
                 outcome="failure",
-                title="Automatic local cleanup failed",
-                body=f"The Local Copy cleanup for {job['path']} failed: {message}",
             )
     return True
 
@@ -5230,7 +5244,18 @@ def audit_all_vaults() -> None:
 
 
 def _deliver_notifications_once() -> None:
-    """Best-effort outbound notification delivery pass."""
+    """Best-effort monitoring and delivery, with independent transactions.
+
+    Monitoring faults must not suppress already durable terminal/incident email;
+    network delivery must not hold the Owner's episode-scheduling lock.
+    """
+    try:
+        from .services.protection_notifications import maintain_notifications
+        with db() as connection:
+            maintain_notifications(connection)
+            report_problem(connection, event="internal_error", component="notification_monitor", active=False)
+    except Exception as exc:
+        _report_worker_error("notification_monitor", exc)
     try:
         with db() as connection:
             notification_service.reconcile_pending_terminal_notifications(
@@ -5251,6 +5276,7 @@ def _deliver_notifications_once() -> None:
                 connection,
                 smtp_client=notification_service.production_smtp_client(),
             )
+            report_problem(connection, event="internal_error", component="notification_delivery", active=False)
         for _ in range(int(stats.get("delivered", 0))):
             metrics_service.inc(
                 "notification_deliveries_total",

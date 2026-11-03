@@ -66,14 +66,14 @@ function notificationItem(
     user_id: 7,
     vault_id: 9,
     job_id: 44,
-    event: "job_completed",
+    event: "recovery_completed",
     title: overrides.title ?? `Notification ${id}`,
     body: overrides.body ?? `Body ${id}`,
     title_key: null,
     body_key: null,
     message_params: {},
     in_app_enabled: true,
-    dedupe_key: `job:${id}:job_completed`,
+    dedupe_key: `job:${id}:recovery_completed`,
     created_at: overrides.created_at ?? "2025-01-01T10:00:00Z",
     read,
     read_at: read ? "2025-01-01T10:01:00Z" : null,
@@ -102,6 +102,24 @@ describe("NotificationCenter", () => {
 
   afterEach(() => {
     resetApiClientForTests();
+  });
+
+  it("keeps open problems distinct from unread notifications and displays current resolution", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const history = String(input).includes("status=read");
+      return jsonResponse({ unread_count: 1, open_problem_count: 3, has_more: false,
+        items: [{ ...notificationItem({ id: history ? 2 : 1, read: history }),
+          problem_status: history ? "resolved" : "open" }],
+      });
+    });
+    renderCenter(fetchMock);
+    await user.click(await screen.findByRole("button", { name: "Open notifications (1 unread)" }));
+    expect(await screen.findByTestId("notification-open-problem-count")).toHaveTextContent("3 open problems");
+    expect(screen.getByTestId("notification-problem-status")).toHaveTextContent("Open problem");
+    await user.click(screen.getByRole("button", { name: "Show read" }));
+    expect(await screen.findByText("Resolved problem")).toBeInTheDocument();
+    expect(screen.getByTestId("notification-unread-badge")).toHaveTextContent("1");
   });
 
   it("defaults to unread-only inbox, hides read history, and removes a marked item", async () => {

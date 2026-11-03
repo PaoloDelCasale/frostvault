@@ -136,7 +136,7 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual(job["status"], "completed")
         self.assertEqual(job["terminal_notification_status"], "done")
-        self.assertEqual([row["event"] for row in rows], ["job_completed"])
+        self.assertEqual(rows, [])  # Routine upload success is intentionally silent.
 
 
 if __name__ == "__main__":
