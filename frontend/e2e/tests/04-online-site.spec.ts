@@ -2,6 +2,28 @@ import { expect, test } from "@playwright/test";
 
 import { applySession } from "../helpers/auth";
 
+test("a Vault selection from another client refreshes the online document", async ({ page, context }) => {
+  await applySession(context);
+  await page.goto("/");
+  await expect(page.getByTestId("file-browser")).toBeVisible();
+  const me = await (await page.request.get("/api/me")).json();
+  const vaults = await (await page.request.get("/api/vaults")).json();
+  const other = vaults.items.find((vault: { id: number; name: string }) => vault.id !== me.vault.id);
+  if (!other) throw new Error("This test requires the two seeded Vaults");
+  const select = (vaultId: number) => page.request.post("/api/vaults/select", {
+    headers: { "X-CSRF-Token": me.csrf_token }, data: { vault_id: vaultId },
+  });
+  try {
+    const response = await select(other.id);
+    expect(response.ok()).toBe(true);
+    await expect(page.locator("header h1")).toHaveText(other.name);
+    await expect(page.getByTestId("file-browser")).toBeVisible();
+  } finally {
+    const response = await select(me.vault.id);
+    expect(response.ok()).toBe(true);
+  }
+});
+
 test("an existing PWA installation is retired without clearing Owner preferences", async ({ page, context }) => {
   await applySession(context);
   await page.goto("/");

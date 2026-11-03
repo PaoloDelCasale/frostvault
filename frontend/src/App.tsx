@@ -75,10 +75,16 @@ export default function App() {
   const [sessionChanging, setSessionChanging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const refreshDocument = useCallback(() => {
+    setSessionChanging(true);
+    window.location.reload();
+  }, []);
+
   useCatalogEvents({
     vaultId: me?.vault?.id ?? null,
     queryClient,
     enabled: Boolean(me?.vault?.id) && pathname !== "/login" && !sessionChanging,
+    onSessionChanged: refreshDocument,
   });
 
   const navigate = useCallback((path: string) => {
