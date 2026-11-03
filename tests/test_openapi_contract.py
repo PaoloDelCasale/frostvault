@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # OpenAPI content types (octet-stream / text/event-stream), not JsonObjectResponse.
 RAW_RESPONSE_EXCEPTIONS = {
     "/api/admin/metadata-backups/download/{run_id}",
+    "/api/recovery-kit/download",
     "/api/catalog/events",
 }
 # Backward-compatible alias used by older call sites in this module.
@@ -140,7 +141,9 @@ class OpenApiResponseContractTests(unittest.TestCase):
     def test_no_retired_encryption_or_per_vault_recovery_contracts(self) -> None:
         schema = app.openapi()
         self.assertFalse(any(path.startswith("/api/vault/recovery") for path in schema["paths"]))
-        self.assertFalse(any(name.startswith("Recovery") or name == "EncryptionMode" for name in schema["components"]["schemas"]))
+        self.assertFalse(any(name in {"RecoveryExport", "RecoveryCustody", "EncryptionMode"} for name in schema["components"]["schemas"]))
+        self.assertIn("/api/recovery-kit/download", schema["paths"])
+        self.assertNotIn("/api/admin/vaults/{vault_id}/relocate", schema["paths"])
         for name in ("VaultSelfServiceCreate", "VaultCreateRequest", "VaultCreateResponse", "AdminVault"):
             properties = schema["components"]["schemas"][name]["properties"]
             self.assertFalse(any("encryption" in key or "custody" in key or "recovery_export" in key for key in properties))

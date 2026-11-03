@@ -44,7 +44,10 @@ export {
   previewCloudDeletion,
   previewOperationGlobs,
   previewOwnVaultDecommission,
-  relocateAdminVault,
+  reconnectAdminVault,
+  fetchRecoveryKitStatus,
+  downloadRecoveryKit,
+  acknowledgeRecoveryKit,
   requestScan,
   selectVault,
   startCloudPurge,
@@ -121,8 +124,9 @@ export {
 
 export type {
   AdminVault,
-  AdminVaultRelocatePayload,
-  AdminVaultRelocationResponse,
+  AdminVaultReconnectPayload,
+  AdminVaultReconnectResponse,
+  RecoveryKitStatus,
   AdminVaultsResponse,
   VaultDecommissionBlocker,
   VaultDecommissionCounts,

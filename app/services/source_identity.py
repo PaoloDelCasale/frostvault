@@ -110,6 +110,30 @@ def read_mountinfo_text() -> str:
     return MOUNTINFO_PATH.read_text(encoding="utf-8")
 
 
+def validate_root_mount_boundary(
+    volume: str | Path, root: str | Path, *, text: str | None = None,
+) -> None:
+    """Reject every nested mount intersecting a root, including same-device binds.
+
+    This is metadata-only: never traverse a replacement tree to discover its
+    boundaries. Root acceptance and subsequent local-access checks use it.
+    """
+    volume_text = os.path.normpath(os.path.abspath(os.fspath(volume)))
+    root_text = os.path.normpath(os.path.abspath(os.fspath(root)))
+    try:
+        entries = parse_mountinfo(read_mountinfo_text() if text is None else text)
+    except (OSError, UnicodeError) as exc:
+        raise MountIdentityError("Linux mount metadata is inaccessible") from exc
+    if os.path.commonpath((volume_text, root_text)) != volume_text:
+        raise MountIdentityError("root is outside the Source Volume")
+    for entry in entries:
+        mount = os.path.normpath(entry.mount_point)
+        if mount == volume_text or os.path.commonpath((volume_text, mount)) != volume_text:
+            continue
+        if os.path.commonpath((root_text, mount)) in {root_text, mount}:
+            raise MountIdentityError("nested mounts are unsupported")
+
+
 def fingerprint_for_mount(target: str | Path, *, text: str | None = None) -> str:
     """Return an opaque stable fingerprint for exactly one mount at ``target``.
 

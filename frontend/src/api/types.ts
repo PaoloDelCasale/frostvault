@@ -2,8 +2,8 @@
 import type { components } from "./openapi.generated";
 
 export type AdminVault = components["schemas"]["AdminVault"];
-export type AdminVaultRelocatePayload = components["schemas"]["AdminVaultRelocatePayload"];
-export type AdminVaultRelocationResponse = components["schemas"]["AdminVaultRelocationResponse"];
+export type AdminVaultReconnectPayload = components["schemas"]["AdminVaultReconnectPayload"];
+export type AdminVaultReconnectResponse = components["schemas"]["AdminVaultReconnectResponse"];
 export type AdminVaultsResponse = components["schemas"]["AdminVaultsResponse"];
 export type ApiErrorResponse = components["schemas"]["ApiErrorResponse"];
 export type ArchiveListItem = components["schemas"]["ArchiveListItem"];
@@ -62,6 +62,8 @@ export type ReauthRequest = components["schemas"]["ReauthRequest"];
 export type RecoverApproveAction = components["schemas"]["RecoverApproveAction"];
 export type RecoverEstimateRequest = components["schemas"]["RecoverEstimateRequest"];
 export type RecoverEstimateResponse = components["schemas"]["RecoverEstimateResponse"];
+export type RecoveryKitCustody = components["schemas"]["RecoveryKitCustody"];
+export type RecoveryKitStatus = components["schemas"]["RecoveryKitStatus"];
 export type RestoreEstimate = components["schemas"]["RestoreEstimate"];
 export type ScanResponse = components["schemas"]["ScanResponse"];
 export type SourceDirectoryBrowseResponse = components["schemas"]["SourceDirectoryBrowseResponse"];
@@ -87,7 +89,7 @@ export type VaultDecommissionStartPayload = components["schemas"]["VaultDecommis
 export type VaultDecommissionStatus = components["schemas"]["VaultDecommissionStatus"];
 export type VaultFileListItem = components["schemas"]["VaultFileListItem"];
 export type VaultListItem = components["schemas"]["VaultListItem"];
-export type VaultRelocate = components["schemas"]["VaultRelocate"];
+export type VaultReconnect = components["schemas"]["VaultReconnect"];
 export type VaultSelectRequest = components["schemas"]["VaultSelectRequest"];
 export type VaultSelectResponse = components["schemas"]["VaultSelectResponse"];
 export type VaultSelection = components["schemas"]["VaultSelection"];

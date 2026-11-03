@@ -92,7 +92,7 @@
       ],
       "type": "object"
     },
-    "AdminVaultRelocatePayload": {
+    "AdminVaultReconnectPayload": {
       "additionalProperties": true,
       "properties": {
         "reason": {
@@ -112,13 +112,13 @@
       ],
       "type": "object"
     },
-    "AdminVaultRelocationResponse": {
+    "AdminVaultReconnectResponse": {
       "additionalProperties": true,
       "properties": {
         "full_scan_required": {
           "type": "boolean"
         },
-        "relocation_state": {
+        "reconnect_state": {
           "enum": [
             "scan_required",
             "ready"
@@ -135,10 +135,24 @@
       "required": [
         "vault_id",
         "source_root",
-        "relocation_state",
+        "reconnect_state",
         "full_scan_required"
       ],
       "type": "object"
+    },
+    "RecoveryKitStatus": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["configured", "fingerprint", "custody_acknowledged", "acknowledged_at", "metadata_restore"],
+      "properties": {
+        "configured": {"type": "boolean"},
+        "fingerprint": {"type": ["string", "null"]},
+        "custody_acknowledged": {"type": "boolean"},
+        "acknowledged_at": {"type": ["string", "null"]},
+        "metadata_restore": {"type": ["object", "null"], "required": ["backup_created_at", "updated_files"], "properties": {
+          "backup_created_at": {"type": "string"}, "updated_files": {"type": "integer"}
+        }}
+      }
     },
     "AdminVaultsResponse": {
       "additionalProperties": true,

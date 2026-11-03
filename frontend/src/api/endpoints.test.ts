@@ -11,7 +11,7 @@ import {
   fetchMe,
   fetchNotifications,
   fetchVaults,
-  relocateAdminVault,
+  reconnectAdminVault,
   requestScan,
   selectVault,
   markNotificationRead,
@@ -167,23 +167,23 @@ describe("foundation endpoint helpers", () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/i18n/catalog?locale=en");
   });
 
-  it("admin relocation sends only the constrained same-volume destination and reason", async () => {
+  it("reconnect sends the explicitly selected volume, folder and reason", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         vault_id: 7,
         source_root: "/sources/photos/new-name",
-        relocation_state: "scan_required",
+        reconnect_state: "scan_required",
         full_scan_required: true,
       }),
     );
 
-    await relocateAdminVault(7, {
+    await reconnectAdminVault(7, {
       volume_alias: "photos",
       relative_path: "new-name",
       reason: "operator renamed directory",
     });
 
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/admin/vaults/7/relocate");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/admin/vaults/7/reconnect");
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
       method: "POST",
       body: JSON.stringify({

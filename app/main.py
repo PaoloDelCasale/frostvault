@@ -75,6 +75,7 @@ from .services import audit_events as audit_event_store
 from .services import catalog_incidents as catalog_incident_service
 from .services import health as health_service
 from .services import metadata_backups as metadata_backup_service
+from .services import recovery_kit as recovery_kit_service
 from .services import metrics as metrics_service
 from .services import notifications as notification_service
 from .services.catalog_event_stream import (
@@ -652,8 +653,8 @@ class CloudPurgeRequest(BaseModel):
     generated_phrase: str = Field(min_length=1, max_length=200)
 
 
-class VaultRelocate(BaseModel):
-    """Constrained destination within the Vault's existing Source Volume."""
+class VaultReconnect(BaseModel):
+    """Explicitly accept a Source Volume and directory for an existing Vault."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1767,6 +1768,54 @@ class MetadataBackupRunAction(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
+class RecoveryKitCustody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    fingerprint: str = Field(min_length=24, max_length=24, pattern="^[0-9a-f]+$")
+
+
+@app.get("/api/recovery-kit", response_model=response_model("RecoveryKitStatus"))
+def recovery_kit_status(_: dict[str, Any] = Depends(current_user)):
+    with db() as connection:
+        return recovery_kit_service.kit_status(connection)
+
+
+@app.get("/api/recovery-kit/download", response_class=Response, responses={200: {
+    "description": "Secret-bearing installation Recovery Kit (never cache)",
+    "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
+}})
+def download_recovery_kit(
+    user: dict[str, Any] = Depends(current_user),
+    _reauth: dict[str, Any] = Depends(require_recent_reauth),
+):
+    try:
+        payload = recovery_kit_service.build_recovery_kit()
+    except recovery_kit_service.RecoveryKitUnavailable as exc:
+        raise HTTPException(409, str(exc)) from None
+    with db() as connection:
+        audit_event_store.record_audit_event(connection, event="recovery_kit_downloaded",
+                           actor_user_id=int(user["id"]), outcome="success", visibility="owner")
+    return Response(payload, media_type="application/octet-stream", headers={
+        "Content-Disposition": 'attachment; filename="frostvault-recovery-kit.json"',
+        "Cache-Control": "no-store", "Pragma": "no-cache", "X-Content-Type-Options": "nosniff",
+    })
+
+
+@app.post("/api/recovery-kit/custody", response_model=response_model("RecoveryKitStatus"))
+def acknowledge_recovery_kit(
+    action: RecoveryKitCustody,
+    user: dict[str, Any] = Depends(current_user),
+):
+    with db() as connection:
+        try:
+            recovery_kit_service.acknowledge_custody(connection, action.fingerprint)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        audit_event_store.record_audit_event(connection, event="recovery_kit_custody_acknowledged",
+                           actor_user_id=int(user["id"]), outcome="success", visibility="owner",
+                           fingerprint=action.fingerprint)
+        return recovery_kit_service.kit_status(connection)
+
+
 @app.get("/api/admin/metadata-backups", response_model=JsonObjectResponse)
 def admin_list_metadata_backups(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
@@ -2134,7 +2183,7 @@ def queue_jobs(
         if vault_decommission_service.local_work_suspended(vault_row):
             raise HTTPException(409, "Vault is quiesced for decommission")
         if vault_relocation_service.local_work_suspended(vault_row):
-            raise HTTPException(409, "Local work is suspended pending relocation scan")
+            raise HTTPException(409, "Local work is suspended pending reconnect scan")
         access = vault_local_access(vault_row["source_root"])
         if action in {"upload", "recover", "free-space", "rename"} and not access.local_operations_allowed:
             raise HTTPException(
@@ -2848,48 +2897,44 @@ def admin_vaults(_: dict[str, Any] = Depends(current_user)):
         return {"items": list_vault_inventory(connection)}
 
 
-_VAULT_RELOCATION_ERROR_STATUS: dict[str, tuple[int, str]] = {
+_VAULT_RECONNECT_ERROR_STATUS: dict[str, tuple[int, str]] = {
     "not_found": (404, "Vault not found"),
     "reason_required": (422, "A reason between 3 and 500 characters is required"),
-    "invalid_path": (422, "Relocation destination is invalid"),
-    "not_directory": (422, "Relocation destination is not a directory"),
-    "unsupported_root": (409, "Only custom Source Volume roots can be relocated"),
-    "source_present": (409, "Original Vault root still exists; rebind is forbidden"),
-    "source_inaccessible": (409, "Original Vault root cannot be proven missing"),
-    "different_volume": (409, "Destination must be the same Source Volume"),
-    "volume_unavailable": (409, "Expected Source Volume is unavailable"),
-    "symlink": (409, "Relocation paths cannot contain symbolic links"),
-    "inaccessible": (409, "Relocation destination is inaccessible"),
-    "overlap": (409, "Relocation destination overlaps another Vault"),
+    "invalid_path": (422, "Reconnect destination is invalid"),
+    "not_directory": (422, "Reconnect destination is not a directory"),
+    "volume_unavailable": (409, "Destination Source Volume is unavailable"),
+    "different_volume": (409, "Destination crosses a nested mount"),
+    "symlink": (409, "Reconnect paths cannot contain symbolic links"),
+    "inaccessible": (409, "Reconnect destination is inaccessible"),
+    "overlap": (409, "Reconnect destination overlaps another Vault"),
     "active_jobs": (409, "Vault has active Jobs or a scan"),
-    "identity_ambiguous": (409, "Vault root identity is ambiguous; relocation is unavailable"),
-    "identity_mismatch": (409, "Destination is not the enrolled Vault directory"),
-    "relocation_in_progress": (409, "Vault relocation already requires a full scan"),
-    "decommission_in_progress": (409, "Vault decommission prevents relocation"),
+    "identity_ambiguous": (409, "Source Volume identity is unavailable"),
+    "identity_mismatch": (409, "Destination changed during reconnect"),
+    "decommission_in_progress": (409, "Vault decommission prevents reconnect"),
 }
 
 
-@app.post("/api/admin/vaults/{vault_id}/relocate", response_model=response_model("AdminVaultRelocationResponse"))
-def admin_relocate_vault_root(
+@app.post("/api/admin/vaults/{vault_id}/reconnect", response_model=response_model("AdminVaultReconnectResponse"))
+def admin_reconnect_vault_root(
     vault_id: int,
-    action: VaultRelocate,
+    action: VaultReconnect,
     background_tasks: BackgroundTasks,
     admin: dict[str, Any] = Depends(current_user),
 ):
-    """Relocate, never rebind, a missing root on its verified Source Volume."""
+    """Accept this folder/mount for this Vault only; mandatory cloud/local scan."""
     # Serialize the runtime snapshot, relocation transaction, and scan start.
     # Without this lock a scan can begin after the ``busy`` snapshot but before
     # relocation publishes its persistent suspension state.
     relocation_lock = scan_lock_for_vault(vault_id)
     if not relocation_lock.acquire(blocking=False):
-        status_code, message = _VAULT_RELOCATION_ERROR_STATUS["active_jobs"]
+        status_code, message = _VAULT_RECONNECT_ERROR_STATUS["active_jobs"]
         raise HTTPException(status_code, message)
     try:
         with status_lock:
             busy = bool(runtime_status.get(vault_id, {}).get("scanning"))
         try:
             with db() as connection:
-                vault = vault_relocation_service.relocate_vault_root(
+                vault = vault_relocation_service.reconnect_vault_root(
                     connection,
                     vault_id=vault_id,
                     volume_alias=action.volume_alias,
@@ -2899,10 +2944,15 @@ def admin_relocate_vault_root(
                     runtime_busy=busy,
                 )
         except vault_relocation_service.VaultRelocationError as exc:
-            status_code, message = _VAULT_RELOCATION_ERROR_STATUS.get(
-                exc.reason, (400, "Vault relocation could not be completed")
+            status_code, message = _VAULT_RECONNECT_ERROR_STATUS.get(
+                exc.reason, (400, "Vault reconnect could not be completed")
             )
             raise HTTPException(status_code, message) from exc
+        except Exception:
+            # A failed outer transaction/commit must not leave the in-process
+            # gate stuck when persistent acceptance rolled back.
+            vault_relocation_service.release_relocation_scan_runtime(vault_id)
+            raise
     finally:
         relocation_lock.release()
     # BackgroundTasks registration is non-I/O and cannot partially dispatch.
@@ -2912,7 +2962,7 @@ def admin_relocate_vault_root(
     return {
         "vault_id": vault_id,
         "source_root": vault["source_root"],
-        "relocation_state": vault["relocation_state"],
+        "reconnect_state": vault["relocation_state"],
         "full_scan_required": True,
     }
 

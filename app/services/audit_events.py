@@ -34,6 +34,8 @@ _SENSITIVE_KEYS = frozenset(
         "set_cookie",
         "recovery_secret",
         "recovery_material",
+        "archive_master_key",
+        "master_key",
         "crypt_password",
         "crypt_password2",
         "client_secret",
