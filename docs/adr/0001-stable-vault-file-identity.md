@@ -10,7 +10,10 @@ unifies versions across old and new keys without rewriting immutable history.
 
 Rename synchronization must create and verify content at the new key before
 hiding the old key. Automatic rename detection is safe only for an unambiguous
-plaintext digest match; ambiguous candidates require confirmation.
+plaintext digest match within the scan window. Ambiguous matches are new Vault
+Files: no identity merge or cloud deletion is inferred. There is no manual
+rename confirmation or Path History UI (#417, decision #366 Q8); internal Path
+History remains necessary to reconcile immutable cloud keys safely.
 
 Under Current Snapshot, the old key is purged (every VersionId deleted) rather
 than hidden, so only one recoverable Archive Version remains. See ADR-0016.
