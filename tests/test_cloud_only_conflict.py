@@ -37,6 +37,7 @@ from app.config import settings
 
 from app.main import confirm_cloud_only_replacement, queue_jobs
 from app.services import notifications as notification_service
+from app.services.vault_relocation import enroll_vault_root_identity
 from app.services.email_templates import render_email
 from app.services.operation_policies import (
     OperationPolicy,
@@ -81,6 +82,9 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
                 """,
                 (str(self.source),)
             )
+            # Automatic uploads require the enrolled root that real Vault
+            # creation/startup provides, not just an arbitrary source pathname.
+            enroll_vault_root_identity(connection, 2, str(self.source))
             set_policy(
                 connection,
                 2,
@@ -98,6 +102,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
         self._write(OLD)
         self._scan()
         self._upload(OLD, "s3-old")
+        self.assertEqual(self._upload_jobs()[0]["status"], "completed")
         self.local.unlink()
         with PostgresConnection(str(self.database_path)) as connection:
             file_id = connection.execute(

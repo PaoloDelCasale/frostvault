@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 from watchfiles import Change
 
@@ -41,7 +41,15 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
                 VALUES (2, 'photos', 'Photos', %s, 'test-bucket', 'photos', %s, %s)
             """, (str(self.root), vault_relocation.root_identity(str(self.root)), vault_relocation.ROOT_IDENTITY_VERSION))
             self.vault = dict(connection.execute("SELECT * FROM vaults WHERE id=2").fetchone())
+        outer = self
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return outer.clock.astimezone(tz) if tz else outer.clock.replace(tzinfo=None)
+
         for patcher in (
+            patch("app.services.operation_policies.datetime", Clock),
             patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(self.database))),
             patch("app.storage.settings", SimpleNamespace(operation_concurrency=1, restore_poll_interval=900, allow_local_delete=False)),
             patch("app.storage.source_layout.vault_local_access", side_effect=lambda _: self.access),
@@ -181,6 +189,29 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
             upload.assert_not_called()
         self.assertEqual(self.jobs()[0]["status"], "queued")
 
+    def test_edit_during_preflight_and_hashing_cannot_write_cloud_content(self):
+        self.write()
+        self.advance(300)
+        self.assertEqual(self.queue(), 1)
+        real_hash = storage.hash_stable_regular_file
+
+        def edit_after_hash(source):
+            snapshot = real_hash(source)
+            self.advance(1)
+            self.write(content=b"newer")
+            return snapshot
+
+        with (
+            patch("app.storage.validate_cloud_vault"),
+            patch("app.storage.hash_stable_regular_file", side_effect=edit_after_hash),
+            patch("app.storage.upload_s3_file") as upload,
+            patch("app.storage.s3_client") as cloud,
+        ):
+            storage.process_jobs_once()
+            upload.assert_not_called()
+            cloud.assert_not_called()
+        self.assertEqual(self.jobs()[0]["status"], "queued")
+
     def test_fixed_noise_is_never_automatically_queued(self):
         names = [".DS_Store", "nested/Thumbs.db", "._photo.jpg", "catalog.lock", "db-wal", "db-journal"]
         for name in names:
@@ -294,6 +325,23 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
         self.assertEqual(row, {"integrity": "verified", "availability": "available"})
         self.assertEqual(hold["cloud_only_version_id"], version)
         self.assertEqual(self.jobs(), [])
+
+
+class AutomaticUploadLoopTests(unittest.IsolatedAsyncioTestCase):
+    async def test_idle_watcher_still_gets_timer_ticks_and_failure_does_not_stop_loop(self):
+        import asyncio
+
+        with (
+            patch("app.storage.queue_all_auto_uploads_once", side_effect=[RuntimeError("DB temporarily unavailable"), 1]) as queue,
+            patch("app.storage._report_worker_error") as report,
+            patch("app.storage.asyncio.sleep", new=AsyncMock(side_effect=[None, asyncio.CancelledError])) as sleep,
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await storage.auto_upload_loop()
+        self.assertEqual(queue.call_count, 2)
+        report.assert_called_once()
+        self.assertEqual(sleep.call_count, 2)
+        sleep.assert_called_with(storage.AUTO_UPLOAD_POLL_SECONDS)
 
 
 if __name__ == "__main__":
