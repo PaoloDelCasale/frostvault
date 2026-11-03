@@ -57,7 +57,7 @@ Search remains global across every file in the selected vault.
 
 - Each Vault has one **storage plan** in **Advanced**: Always accessible
   (Standard), Economical instant access (IA30 → GlacierIR90), Tiered archive
-  (recommended: IA30 → GlacierIR90 → DeepArchive365), Early Deep Archive (day 1),
+  (recommended: IA30 → GlacierIR90 → DeepArchive365), Early Deep Archive (day 0),
   or Custom (ordered object-age/class chain). Each explains timing and cost.
   There are no folder assignments, pins or manual per-file class changes.
 - Plans emit only current-version transitions, never expiration or noncurrent

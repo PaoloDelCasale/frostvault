@@ -247,7 +247,8 @@ describe("FileBrowser — cards and table from /api/files", () => {
 
     // Actions: ⋯ on cards; table keeps Upload/Recover inline and the rest in ⋯
     expect(within(cards).getAllByRole("button", { name: "More actions" })).toHaveLength(3);
-    expect(within(table).getAllByRole("button", { name: "More actions" })).toHaveLength(3);
+    // The cloud-only file has only Recover: retired class/pin actions no longer create overflow.
+    expect(within(table).getAllByRole("button", { name: "More actions" })).toHaveLength(2);
     expect(
       within(table).getByTestId("desktop-actions-readme.txt"),
     ).toBeInTheDocument();

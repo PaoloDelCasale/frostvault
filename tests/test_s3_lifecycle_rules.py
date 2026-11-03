@@ -4,7 +4,7 @@ from botocore.exceptions import ClientError
 from app.services.lifecycle_profiles import GUIDED_PROFILES
 from app.services.s3_lifecycle_rules import (
     ABORT_RULE_ID, LifecycleRuleLimitExceeded, build_vault_lifecycle_rule,
-    sync_bucket_lifecycle_rules, incomplete_upload_rule,
+    sync_bucket_lifecycle_rules, incomplete_upload_rule, validate_vault_prefixes,
 )
 
 
@@ -15,7 +15,15 @@ class VaultLifecycleRuleTests(unittest.TestCase):
             self.assertEqual(rule["Filter"], {"Prefix": "vaults/uuid/"})
             self.assertFalse(any("Expiration" in key or "Noncurrent" in key for key in rule))
         with self.assertRaises(ValueError):
-            build_vault_lifecycle_rule("uuid", "vaults/", GUIDED_PROFILES["archive_tiered"])
+            build_vault_lifecycle_rule("uuid", "", GUIDED_PROFILES["archive_tiered"])
+
+    def test_legacy_prefixes_preserved_and_overlapping_namespaces_refused(self):
+        rule = build_vault_lifecycle_rule("uuid", "legacy/docs", GUIDED_PROFILES["archive_tiered"])
+        self.assertEqual(rule["Filter"], {"Prefix": "legacy/docs/"})
+        validate_vault_prefixes(["docs", "docs-other", "vaults/uuid/"])
+        for prefixes in [["docs", "docs/subfolder"], ["docs", "docs/"], ["", "docs"]]:
+            with self.subTest(prefixes=prefixes), self.assertRaises(ValueError):
+                validate_vault_prefixes(prefixes)
 
     def test_sync_preserves_external_rules_replaces_legacy_and_keeps_abort(self):
         client = Mock()

@@ -89,11 +89,11 @@ per-file class changes, expiration or noncurrent-version actions.
 | Always accessible (`standard_only`) | Standard, immediate access without retrieval fees; highest storage cost. |
 | Economical instant access (`economical`) | Standard-IA at day 30, Glacier Instant Retrieval at day 90. Lower storage cost; retrieval fees and 30/90-day minimum billing. |
 | Tiered archive — recommended (`archive_tiered`) | IA30 → GlacierIR90 → DeepArchive365. Progressively cheaper storage; after day 365 restores take hours and have retrieval fees and 180-day minimum billing. |
-| Early Deep Archive (`deep_archive_early`) | Deep Archive at day 1. Lowest storage cost; hours to recover, retrieval fees, 180-day minimum billing even after early replacement/deletion. |
+| Early Deep Archive (`deep_archive_early`) | Deep Archive at day 0 (next lifecycle evaluation). Lowest storage cost; hours to recover, retrieval fees, 180-day minimum billing even after early replacement/deletion. |
 | Custom | Ordered `after N days → class` chain, with transition/retrieval fees and minimum-duration billing. |
 
 Days are object ages since upload, not delays between steps. Standard can go
-directly to Glacier Flexible Retrieval or Deep Archive at day 1; there is no
+directly to Glacier Flexible Retrieval or Deep Archive at day 0; there is no
 absolute 90/180-day minimum from Standard. IA requires age 30. A single chain
 must leave at least 30 days in IA and 90 in Glacier Instant/Flexible Retrieval
 before a subsequent transition. The AWS waterfall is validated (One Zone-IA
@@ -101,7 +101,11 @@ cannot go to Glacier Instant Retrieval; Standard-IA can go to One Zone-IA).
 See [AWS transition constraints](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-transition-general-considerations.html).
 
 The application generates one exact `vaults/<uuid>/` prefix rule per transitioning
-Vault (`frostvault-plan-<uuid>`). No object retagging is necessary. A Standard plan
+Vault (`frostvault-plan-<uuid>`). Existing legacy prefixes are retained exactly
+with the same normalization as the cloud reader/writer, never replaced with an
+invented UUID namespace. Empty/overlapping bucket namespaces stop synchronization
+before any write (including overlap with a Standard Vault). No object retagging
+is necessary. A Standard plan
 removes its transition rule, but does not warm existing cold objects. AWS applies
 transitions asynchronously; old objects can transition shortly after changing a
 plan. Objects below 128 KB do not transition by default. Early replacement can
@@ -123,7 +127,8 @@ metadata backups. A missing default maps to Standard; identical folder policies
 collapse into the Vault default. Retired expiration and noncurrent actions are
 discarded under #418/#421, not translated into deletion. Heterogeneous folder
 plans, pins conflicting with a transitioning default, missing/cross-Vault
-references or invalid chains stop **before DDL**. Resolve assignments deliberately
+references, invalid chains or empty/overlapping namespaces in a transitioning
+bucket stop **before DDL**. Resolve assignments deliberately
 using the previous release before retrying; do not relabel or delete cloud data.
 Pins on an already Standard Vault are safely redundant. Unassigned policies are
 retired metadata only. Legacy cloud tags can remain inert: prefix rules no longer

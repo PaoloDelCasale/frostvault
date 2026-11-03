@@ -1320,7 +1320,7 @@
         "additionalProperties": false,
         "properties": {
           "days": {
-            "minimum": 1.0,
+            "minimum": 0.0,
             "title": "Days",
             "type": "integer"
           },
@@ -4463,7 +4463,7 @@
         "summary": "Own Vault Lifecycle"
       },
       "put": {
-        "operationId": "update_vault_lifecycle_default_api_vault_lifecycle_put",
+        "operationId": "update_vault_storage_plan_api_vault_lifecycle_put",
         "requestBody": {
           "content": {
             "application/json": {
@@ -4496,7 +4496,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Update Vault Lifecycle Default"
+        "summary": "Update Vault Storage Plan"
       }
     },
     "/api/vault/operation-policy": {

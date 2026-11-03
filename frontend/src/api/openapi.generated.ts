@@ -785,8 +785,8 @@ export interface paths {
         };
         /** Own Vault Lifecycle */
         get: operations["own_vault_lifecycle_api_vault_lifecycle_get"];
-        /** Update Vault Lifecycle Default */
-        put: operations["update_vault_lifecycle_default_api_vault_lifecycle_put"];
+        /** Update Vault Storage Plan */
+        put: operations["update_vault_storage_plan_api_vault_lifecycle_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -3312,7 +3312,7 @@ export interface operations {
             };
         };
     };
-    update_vault_lifecycle_default_api_vault_lifecycle_put: {
+    update_vault_storage_plan_api_vault_lifecycle_put: {
         parameters: {
             query?: never;
             header?: never;

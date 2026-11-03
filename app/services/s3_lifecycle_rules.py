@@ -40,8 +40,7 @@ def build_vault_lifecycle_rule(
     validation = validate_lifecycle_profile(profile)
     if not validation.ok:
         raise ValueError("; ".join(validation.errors))
-    if prefix != f"vaults/{vault_uuid}/":
-        raise ValueError("Storage plans require the exact immutable Vault prefix")
+    prefix = vault_object_prefix(prefix)
     rule: dict[str, Any] = {
         "ID": f"{RULE_ID_PREFIX}{vault_uuid}",
         "Status": "Enabled",
@@ -56,6 +55,22 @@ def build_vault_lifecycle_rule(
             for transition in profile.transitions
         ]
     return rule
+
+
+def vault_object_prefix(prefix: str) -> str:
+    # Match the existing storage reader/writer normalization. Preserve legacy
+    # namespaces rather than inventing UUID paths or moving cloud content.
+    normalized = prefix.strip("/")
+    if not normalized:
+        raise ValueError("A storage plan cannot target an empty Vault prefix")
+    return f"{normalized}/"
+
+
+def validate_vault_prefixes(prefixes: list[str]) -> None:
+    normalized = sorted(vault_object_prefix(prefix) for prefix in prefixes)
+    for previous, current in zip(normalized, normalized[1:]):
+        if current.startswith(previous):
+            raise ValueError("Overlapping Vault prefixes cannot safely receive storage plans")
 
 
 def merge_lifecycle_rules(

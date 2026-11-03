@@ -20,6 +20,7 @@ class StoragePlanValidationTests(unittest.TestCase):
 
     def test_standard_can_transition_directly_to_archive_early(self):
         for cls in ["GLACIER_IR", "GLACIER", "DEEP_ARCHIVE"]:
+            self.assertTrue(validate_lifecycle_profile(plan((0, cls))).ok)
             self.assertTrue(validate_lifecycle_profile(plan((1, cls))).ok)
 
     def test_source_residence_boundaries(self):
@@ -34,7 +35,7 @@ class StoragePlanValidationTests(unittest.TestCase):
                 self.assertTrue(validate_lifecycle_profile(plan((start, cls), (start + minimum, target))).ok)
 
     def test_invalid_days_classes_order_and_routes(self):
-        cases = [((0, "DEEP_ARCHIVE"),), ((-1, "GLACIER"),), ((1.5, "GLACIER"),), ((True, "GLACIER"),),
+        cases = [((-1, "GLACIER"),), ((1.5, "GLACIER"),), ((True, "GLACIER"),),
                  ((29, "STANDARD_IA"),), ((29, "ONEZONE_IA"),), ((1, "STANDARD"),), ((1, "UNKNOWN"),),
                  ((30, "STANDARD_IA"), (30, "GLACIER_IR")), ((1, "DEEP_ARCHIVE"), (200, "GLACIER")),
                  ((30, "ONEZONE_IA"), (90, "GLACIER_IR")), ((30, "STANDARD_IA"), (60, "STANDARD_IA"))]

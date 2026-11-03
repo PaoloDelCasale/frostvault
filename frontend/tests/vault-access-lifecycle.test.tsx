@@ -2,7 +2,7 @@ import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { resetApiClientForTests } from "@/api";
-import { validStoragePlan } from "@/pages/vault-access/LifecyclePanel";
+import { validStoragePlan } from "@/pages/vault-access/storagePlan";
 import { createVaultAccessFetch, defaultLifecycle, jsonResponse, loadCatalog, renderVaultAccess } from "./vault-access-harness";
 
 afterEach(() => { cleanup(); resetApiClientForTests(); });
@@ -44,7 +44,7 @@ describe("Vault storage plan in Advanced", () => {
     await user.click(screen.getByRole("option", { name: /^Custom/ }));
     await user.click(screen.getByRole("button", { name: "Add transition" }));
     await user.click(screen.getByRole("button", { name: "Save plan" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("Use increasing positive whole days");
+    expect(screen.getByRole("alert")).toHaveTextContent("Use increasing nonnegative whole days");
     expect(payload).toBeUndefined();
     await user.type(screen.getByLabelText("After N days"), "1");
     await user.click(screen.getByRole("button", { name: "Save plan" }));
@@ -54,6 +54,7 @@ describe("Vault storage plan in Advanced", () => {
 
   it("validates object age, supported waterfall and source residence, not absolute archive minima", () => {
     const valid = (...steps: [number, string][]) => validStoragePlan(steps.map(([days, storage_class]) => ({ days: String(days), storage_class })));
+    expect(valid([0, "DEEP_ARCHIVE"])).toBe(true);
     expect(valid([1, "DEEP_ARCHIVE"])).toBe(true);
     expect(valid([4, "GLACIER_IR"], [93, "DEEP_ARCHIVE"])).toBe(false);
     expect(valid([4, "GLACIER_IR"], [94, "DEEP_ARCHIVE"])).toBe(true);

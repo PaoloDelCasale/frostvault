@@ -548,7 +548,7 @@
   "access.plan_archive_tiered": "Archivio a scalare (consigliato)",
   "access.plan_archive_tiered_help": "Standard-IA al giorno 30, Glacier Instant Retrieval al giorno 90, Deep Archive al giorno 365: archiviazione via via più economica; dal giorno 365 il recupero richiede ore, con costi di recupero e fatturazione minima di 180 giorni.",
   "access.plan_deep_archive_early": "Archivio profondo presto",
-  "access.plan_deep_archive_early_help": "Deep Archive dopo 1 giorno: costo di archiviazione minimo, recupero in ore a pagamento; sostituzioni o eliminazioni prima di 180 giorni comportano comunque la fatturazione minima.",
+  "access.plan_deep_archive_early_help": "Deep Archive al giorno 0 (alla prossima valutazione lifecycle AWS): costo di archiviazione minimo, recupero in ore a pagamento; sostituzioni o eliminazioni prima di 180 giorni comportano comunque la fatturazione minima.",
   "access.plan_custom": "Personalizzato",
   "access.plan_custom_help": "I passaggi ordinati indicano l’età dall’upload, non l’attesa dal passaggio precedente. IA parte dal giorno 30; almeno 30 giorni in IA e 90 in Glacier Instant Retrieval o Glacier Flexible Retrieval prima di una classe più fredda. Si applicano costi di transizione, recupero e fatturazione minima.",
   "access.plan_days": "Dopo N giorni",
@@ -559,6 +559,6 @@
   "access.plan_saved": "Piano di archiviazione salvato.",
   "access.plan_sync_pending": "Piano salvato; la sincronizzazione cloud è in attesa e verrà ritentata durante la riconciliazione.",
   "access.plan_loading": "Caricamento del piano…",
-  "access.plan_invalid": "Usa giorni interi positivi crescenti e classi più fredde. IA richiede il giorno 30 e 30 giorni di permanenza; Glacier Instant/Flexible Retrieval richiede 90 giorni prima di passare a una classe più fredda. Da One Zone-IA non si passa a Glacier Instant Retrieval.",
-  "access.plan_caveats": "AWS applica i passaggi in modo asincrono in base all’età: gli oggetti già vecchi possono cambiare presto. Sotto 128 KB gli oggetti restano nella propria classe per impostazione predefinita. Sostituzioni anticipate possono comportare costi di durata minima. Nessuna scadenza o regola sulle versioni non correnti; un piano più caldo non ripristina contenuto già freddo."
+  "access.plan_invalid": "Usa giorni interi non negativi crescenti e classi più fredde. IA richiede il giorno 30 e 30 giorni di permanenza; Glacier Instant/Flexible Retrieval richiede 90 giorni prima di passare a una classe più fredda. Da One Zone-IA non si passa a Glacier Instant Retrieval.",
+  "access.plan_caveats": "AWS applica i passaggi in modo asincrono in base all’età: gli oggetti già vecchi possono cambiare presto. Sotto 128 KB gli oggetti restano nella propria classe per impostazione predefinita. Sostituzioni anticipate possono comportare costi di durata minima. Nessuna scadenza o regola sulle versioni non correnti; un piano più caldo non ripristina contenuto già freddo. One Zone-IA usa una sola zona di disponibilità."
 }

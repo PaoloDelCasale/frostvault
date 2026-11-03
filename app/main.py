@@ -677,7 +677,7 @@ class VaultDecommissionStart(VaultDecommissionPreview):
 class LifecycleTransitionUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    days: int = Field(strict=True, ge=1)
+    days: int = Field(strict=True, ge=0)
     storage_class: str = Field(min_length=1, max_length=40)
 
 
@@ -3016,15 +3016,7 @@ def _lifecycle_payload(connection: Any, vault: dict[str, Any]) -> dict[str, Any]
     return {
         "profile": profile_to_dict(load_vault_plan(connection, vault["id"])),
         "guided_profiles": {
-            name: {
-                "transitions": [
-                    {
-                        "days": transition.days,
-                        "storage_class": transition.storage_class,
-                    }
-                    for transition in profile.transitions
-                ],
-            }
+            name: profile_to_dict(profile)
             for name, profile in GUIDED_PROFILES.items()
         },
     }
@@ -3037,13 +3029,12 @@ def own_vault_lifecycle(vault: dict[str, Any] = Depends(current_vault)):
 
 
 @app.put("/api/vault/lifecycle", response_model=response_model("LifecycleResponse"))
-def update_vault_lifecycle_default(
+def update_vault_storage_plan(
     action: LifecycleProfileSelection,
     vault: dict[str, Any] = Depends(current_vault),
     user: dict[str, Any] = Depends(current_user),
 ):
     profile, guided_name = _selected_lifecycle_profile(action)
-    validation = validate_lifecycle_profile(profile)
     with db() as connection:
         validation = set_vault_plan(connection, vault["id"], profile)
         sync_pending = False
@@ -3058,7 +3049,7 @@ def update_vault_lifecycle_default(
             sync_pending = True
         payload = _lifecycle_payload(connection, vault)
         audit_log(
-            "vault_lifecycle_default_updated",
+            "vault_storage_plan_updated",
             connection=connection,
             vault_id=vault["id"],
             actor_user_id=user["id"],

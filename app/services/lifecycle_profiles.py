@@ -42,7 +42,7 @@ GUIDED_PROFILES = {
     "standard_only": LifecycleProfile(),
     "economical": LifecycleProfile((LifecycleTransition(30, "STANDARD_IA"), LifecycleTransition(90, "GLACIER_IR"))),
     "archive_tiered": LifecycleProfile((LifecycleTransition(30, "STANDARD_IA"), LifecycleTransition(90, "GLACIER_IR"), LifecycleTransition(365, "DEEP_ARCHIVE"))),
-    "deep_archive_early": LifecycleProfile((LifecycleTransition(1, "DEEP_ARCHIVE"),)),
+    "deep_archive_early": LifecycleProfile((LifecycleTransition(0, "DEEP_ARCHIVE"),)),
 }
 
 
@@ -77,11 +77,11 @@ def profile_from_json(value: str | None) -> LifecycleProfile:
 def validate_lifecycle_profile(profile: LifecycleProfile) -> ProfileValidation:
     errors: list[str] = []
     warnings: list[str] = []
-    previous_days = 0
+    previous_days = -1
     previous_class = "STANDARD"
     for step in profile.transitions:
-        if type(step.days) is not int or step.days < 1:
-            errors.append("Transition days must be positive integers")
+        if type(step.days) is not int or step.days < 0:
+            errors.append("Transition days must be nonnegative integers")
             continue
         if step.storage_class not in SUPPORTED_STORAGE_CLASSES:
             errors.append(f"Unsupported storage class: {step.storage_class}")

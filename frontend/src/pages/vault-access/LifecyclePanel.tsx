@@ -8,39 +8,15 @@ import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 
-const CLASSES = ["STANDARD_IA", "ONEZONE_IA", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE"];
-const TARGETS: Record<string, string[]> = {
-  STANDARD: CLASSES,
-  STANDARD_IA: ["ONEZONE_IA", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE"],
-  ONEZONE_IA: ["GLACIER", "DEEP_ARCHIVE"],
-  GLACIER_IR: ["GLACIER", "DEEP_ARCHIVE"],
-  GLACIER: ["DEEP_ARCHIVE"],
-  DEEP_ARCHIVE: [],
-};
-const RESIDENCE: Record<string, number> = { STANDARD_IA: 30, ONEZONE_IA: 30, GLACIER_IR: 90, GLACIER: 90 };
-const PRESETS = ["standard_only", "economical", "archive_tiered", "deep_archive_early"];
-type Rule = { days: string; storage_class: string };
+import { LIFECYCLE_CLASSES, validStoragePlan, type DraftTransition } from "./storagePlan";
 
-export function validStoragePlan(rules: Rule[]): boolean {
-  let previousDays = 0;
-  let previousClass = "STANDARD";
-  for (const rule of rules) {
-    const days = Number(rule.days);
-    if (!/^\d+$/.test(rule.days) || !Number.isSafeInteger(days) || days < 1 || days <= previousDays) return false;
-    if (!TARGETS[previousClass].includes(rule.storage_class)) return false;
-    if (["STANDARD_IA", "ONEZONE_IA"].includes(rule.storage_class) && days < 30) return false;
-    if (days - previousDays < (RESIDENCE[previousClass] ?? 0)) return false;
-    previousDays = days;
-    previousClass = rule.storage_class;
-  }
-  return true;
-}
+const PRESETS = ["standard_only", "economical", "archive_tiered", "deep_archive_early"];
 
 export function LifecyclePanel({ onNotice }: { onNotice: (message: string, error?: boolean) => void }) {
   const { t, ready } = useI18n();
   const [data, setData] = useState<LifecycleResponse | null>(null);
   const [selection, setSelection] = useState("archive_tiered");
-  const [rules, setRules] = useState<Rule[]>([]);
+  const [rules, setRules] = useState<DraftTransition[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -83,24 +59,31 @@ export function LifecyclePanel({ onNotice }: { onNotice: (message: string, error
         {data ? <div className="mt-4 grid gap-4">
           <FormField label={t("access.plan_label")} htmlFor="vault-storage-plan" labelAsText>
             <MenuSelect id="vault-storage-plan" label={t("access.plan_label")} value={selection} disabled={busy}
-              onValueChange={(value) => { setSelection(value); setError(""); }}
+              onValueChange={(value) => {
+                setSelection(value);
+                setError("");
+                const preset = data.guided_profiles[value];
+                if (preset) {
+                  setRules(preset.transitions.map((rule) => ({ days: String(rule.days), storage_class: rule.storage_class })));
+                }
+              }}
               options={[...PRESETS, "custom"].map((name) => ({ value: name, label: t(`access.plan_${name}`), description: t(`access.plan_${name}_help`) }))} />
           </FormField>
           <p className="text-sm text-muted">{t(`access.plan_${selection}_help`)}</p>
           {selection === "custom" && <div className="grid gap-3" data-testid="storage-plan-editor">
             {rules.map((rule, index) => <div key={index} className="flex flex-wrap items-end gap-2">
               <FormField label={t("access.plan_days")} htmlFor={`plan-days-${index}`}>
-                <FormInput id={`plan-days-${index}`} type="number" min="1" step="1" value={rule.days} disabled={busy}
+                <FormInput id={`plan-days-${index}`} type="number" min="0" step="1" value={rule.days} disabled={busy}
                   onChange={(event) => setRules(rules.map((item, i) => i === index ? { ...item, days: event.target.value } : item))} />
               </FormField>
               <FormField label={t("access.plan_class")} htmlFor={`plan-class-${index}`} labelAsText>
                 <MenuSelect id={`plan-class-${index}`} label={t("access.plan_class")} value={rule.storage_class} disabled={busy}
                   onValueChange={(value) => setRules(rules.map((item, i) => i === index ? { ...item, storage_class: value } : item))}
-                  options={CLASSES.map((value) => ({ value, label: t(`storage.${value}`) }))} />
+                  options={LIFECYCLE_CLASSES.map((value) => ({ value, label: t(`storage.${value}`) }))} />
               </FormField>
               <Button type="button" variant="secondary" disabled={busy} aria-label={t("access.plan_remove")} onClick={() => setRules(rules.filter((_, i) => i !== index))}><Trash2 size={16} /></Button>
             </div>)}
-            <Button type="button" variant="secondary" className="w-fit" disabled={busy || rules.length >= CLASSES.length} onClick={() => setRules([...rules, { days: "", storage_class: "DEEP_ARCHIVE" }])}><Plus size={16} />{t("access.plan_add")}</Button>
+            <Button type="button" variant="secondary" className="w-fit" disabled={busy || rules.length >= LIFECYCLE_CLASSES.length} onClick={() => setRules([...rules, { days: "", storage_class: "DEEP_ARCHIVE" }])}><Plus size={16} />{t("access.plan_add")}</Button>
           </div>}
           <p className="text-sm text-muted">{t("access.plan_caveats")}</p>
           <Button type="button" variant="primary" disabled={busy} className="w-fit" onClick={() => void save()}>{t("access.plan_save")}</Button>

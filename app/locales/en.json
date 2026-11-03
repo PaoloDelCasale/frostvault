@@ -548,7 +548,7 @@
   "access.plan_archive_tiered": "Tiered archive (recommended)",
   "access.plan_archive_tiered_help": "Standard-IA at day 30, Glacier Instant Retrieval at day 90, Deep Archive at day 365: progressively cheaper storage; after day 365 recovery takes hours and has retrieval fees and 180-day minimum billing.",
   "access.plan_deep_archive_early": "Early Deep Archive",
-  "access.plan_deep_archive_early_help": "Deep Archive after 1 day: lowest storage cost, recovery in hours with retrieval fees; replacement or deletion before 180 days still incurs minimum storage charges.",
+  "access.plan_deep_archive_early_help": "Deep Archive at day 0 (next AWS lifecycle evaluation): lowest storage cost, recovery in hours with retrieval fees; replacement or deletion before 180 days still incurs minimum storage charges.",
   "access.plan_custom": "Custom",
   "access.plan_custom_help": "Ordered steps are object ages since upload, not delays between steps. IA starts at day 30; leave at least 30 days in IA and 90 in Glacier Instant Retrieval or Glacier Flexible Retrieval before a colder step. Transition and retrieval fees and minimum billing apply.",
   "access.plan_days": "After N days",
@@ -559,6 +559,6 @@
   "access.plan_saved": "Storage plan saved.",
   "access.plan_sync_pending": "Plan saved; cloud synchronization is pending and will retry during reconciliation.",
   "access.plan_loading": "Loading storage plan…",
-  "access.plan_invalid": "Use increasing positive whole days and colder classes. IA requires day 30 and 30 days residence; Glacier Instant/Flexible Retrieval requires 90 days before a colder step. One Zone-IA cannot transition to Glacier Instant Retrieval.",
-  "access.plan_caveats": "AWS applies transitions asynchronously based on object age; existing older objects may transition soon. Objects below 128 KB stay in their class by default. Early replacement can incur minimum-duration charges. There are no expiration or noncurrent-version rules; a warmer plan does not restore already cold content."
+  "access.plan_invalid": "Use increasing nonnegative whole days and colder classes. IA requires day 30 and 30 days residence; Glacier Instant/Flexible Retrieval requires 90 days before a colder step. One Zone-IA cannot transition to Glacier Instant Retrieval.",
+  "access.plan_caveats": "AWS applies transitions asynchronously based on object age; existing older objects may transition soon. Objects below 128 KB stay in their class by default. Early replacement can incur minimum-duration charges. There are no expiration or noncurrent-version rules; a warmer plan does not restore already cold content. One Zone-IA uses a single Availability Zone."
 }

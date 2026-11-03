@@ -450,7 +450,7 @@ function seedDemoState(): DemoState {
         economical: {
           transitions: [{ days: 30, storage_class: "STANDARD_IA" }, { days: 90, storage_class: "GLACIER_IR" }],
         },
-        deep_archive_early: { transitions: [{ days: 1, storage_class: "DEEP_ARCHIVE" }] },
+        deep_archive_early: { transitions: [{ days: 0, storage_class: "DEEP_ARCHIVE" }] },
         archive_tiered: {
           transitions: [
             { days: 30, storage_class: "STANDARD_IA" },

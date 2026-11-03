@@ -1,7 +1,7 @@
 """Bounded cloud scan transactions and S3 I/O outside DB locks (issue #299).
 
 Seams under test:
-- ``scan_cloud`` — listing/tag reads stay outside write transactions; catalog
+- ``scan_cloud`` — listing reads stay outside write transactions; catalog
   merges commit in ``CLOUD_SCAN_WRITE_BATCH_SIZE`` chunks.
 - Unseen Archive Versions are marked missing only after a complete listing
   with no decoder failures while the scan generation is still current.
@@ -71,7 +71,6 @@ def _run_scan(
     database_path: Path,
     *,
     pages: list[dict],
-    get_object_tagging=None,
     paginate=None,
 ) -> int:
     def default_paginate(**_kwargs):
@@ -81,8 +80,6 @@ def _run_scan(
         get_paginator=lambda _name: SimpleNamespace(
             paginate=paginate or default_paginate
         ),
-        get_object_tagging=get_object_tagging
-        or (lambda **_kwargs: {"TagSet": []}),
     )
     test_settings = SimpleNamespace(
         db_backend="sqlite",
@@ -105,7 +102,7 @@ def _run_scan(
 
 
 class CloudScanLockAndBatchTests(unittest.TestCase):
-    def test_cloud_tag_io_does_not_hold_sqlite_writer_lock(self) -> None:
+    def test_cloud_listing_io_does_not_hold_sqlite_writer_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
@@ -114,17 +111,13 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 _seed_vault(connection)
 
             second_started = threading.Event()
-            release_second_tag = threading.Event()
+            release_listing = threading.Event()
             concurrent_error: list[BaseException] = []
-            tag_calls: list[str] = []
 
-            def get_object_tagging(**kwargs):
-                version_id = str(kwargs.get("VersionId") or "")
-                tag_calls.append(version_id)
-                if version_id == "v2":
-                    second_started.set()
-                    release_second_tag.wait(timeout=5)
-                return {"TagSet": []}
+            def paginate(**_kwargs):
+                second_started.set()
+                release_listing.wait(timeout=5)
+                yield from pages
 
             def concurrent_writer() -> None:
                 second_started.wait(timeout=5)
@@ -141,7 +134,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 except BaseException as exc:
                     concurrent_error.append(exc)
                 finally:
-                    release_second_tag.set()
+                    release_listing.set()
 
             worker = threading.Thread(target=concurrent_writer)
             worker.start()
@@ -157,11 +150,10 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             count = _run_scan(
                 database_path,
                 pages=pages,
-                get_object_tagging=get_object_tagging,
+                paginate=paginate,
             )
             worker.join(timeout=5)
             self.assertEqual(count, 2)
-            self.assertEqual(tag_calls, ["v1", "v2"])
             self.assertEqual(concurrent_error, [])
             with SQLiteConnection(str(database_path)) as connection:
                 name = connection.execute(
@@ -312,7 +304,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 kept = ArchiveCatalog(connection).get_file_by_path(2, "kept.txt")
             self.assertEqual(kept["latest_version"]["availability"], "available")
 
-    def test_version_batches_commit_without_holding_tag_io(self) -> None:
+    def test_version_batches_commit_after_listing_without_tag_reads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
@@ -321,7 +313,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 _seed_vault(connection)
 
             db_contexts: list[str] = []
-            tag_during_db = {"value": False}
+            listing_during_db = {"value": False}
             original_db = None
 
             from app import storage as storage_module
@@ -343,13 +335,10 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             def tracking_db():
                 return _TrackingDb(original_db())
 
-            tag_calls = {"n": 0}
-
-            def get_object_tagging(**_kwargs):
-                tag_calls["n"] += 1
+            def paginate(**_kwargs):
                 if db_contexts and db_contexts[-1] == "enter":
-                    tag_during_db["value"] = True
-                return {"TagSet": []}
+                    listing_during_db["value"] = True
+                yield from pages
 
             pages = [
                 {
@@ -375,9 +364,8 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                     "app.storage.s3_client",
                     return_value=SimpleNamespace(
                         get_paginator=lambda _name: SimpleNamespace(
-                            paginate=lambda **_k: pages
+                            paginate=paginate
                         ),
-                        get_object_tagging=get_object_tagging,
                     ),
                 ),
                 patch("app.storage.db", side_effect=tracking_db),
@@ -392,12 +380,11 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                     "2026-07-21T10:00:00+00:00",
                 )
             self.assertEqual(count, CLOUD_SCAN_WRITE_BATCH_SIZE + 1)
-            self.assertEqual(tag_calls["n"], CLOUD_SCAN_WRITE_BATCH_SIZE + 1)
-            self.assertFalse(tag_during_db["value"])
-            # assignments read + two version batches + unseen-missing write
+            self.assertFalse(listing_during_db["value"])
+            # keeper read + two version batches + unseen-missing write
             self.assertEqual(db_contexts.count("enter"), 4)
 
-    def test_lease_renewal_succeeds_during_tag_io(self) -> None:
+    def test_lease_renewal_succeeds_during_listing_io(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "catalog.db"
             migrated = run_alembic(database_path)
@@ -431,13 +418,13 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 )
 
             started = threading.Event()
-            release_tag = threading.Event()
+            release_listing = threading.Event()
             renewed: list[str] = []
 
-            def get_object_tagging(**_kwargs):
+            def paginate(**_kwargs):
                 started.set()
-                release_tag.wait(timeout=5)
-                return {"TagSet": []}
+                release_listing.wait(timeout=5)
+                yield {"Versions": [_version_item("docs/a.txt", "v1")], "DeleteMarkers": []}
 
             def renew_lease() -> None:
                 started.wait(timeout=5)
@@ -455,7 +442,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                     renewed.append("ok")
                 finally:
                     conn.close()
-                    release_tag.set()
+                    release_listing.set()
 
             worker = threading.Thread(target=renew_lease)
             worker.start()
@@ -467,7 +454,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                         "DeleteMarkers": [],
                     }
                 ],
-                get_object_tagging=get_object_tagging,
+                paginate=paginate,
             )
             worker.join(timeout=5)
             self.assertEqual(renewed, ["ok"])

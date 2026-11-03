@@ -29,7 +29,6 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 
-
 STATUS_READY = "ready"
 STATUS_REBUILD_REQUIRED = "rebuild_required"
 
@@ -1018,12 +1017,7 @@ def _iter_visible_file_contributions(
     return contributions
 
 
-def _contribution_from_row(
-    row: Mapping[str, Any],
-    *,
-    connection: Any | None = None,
-    vault_id: int | None = None,
-) -> _FileContribution | None:
+def _contribution_from_row(row: Mapping[str, Any]) -> _FileContribution | None:
     local_exists = row["local_presence"] in {"present", "unsupported"}
     cloud_exists = row["archive_version_id"] is not None
     if not local_exists and not cloud_exists:

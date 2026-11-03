@@ -47,6 +47,17 @@ def assert_storage_plan_migration(test, run, connect):
                 test.assertEqual(json.loads(vault["storage_plan_json"]), {"transitions": [{"days": 1, "storage_class": "DEEP_ARCHIVE"}]})
                 version = connection.execute("SELECT * FROM archive_versions LIMIT 1").fetchone()
                 test.assertNotIn("desired_policy_id", version)
+                # Legacy prefixes remain real cloud identities, not invented UUID
+                # paths. The migrated plan must actually be synchronizable.
+                from unittest.mock import Mock
+                from app.services.lifecycle_policies import sync_lifecycle_rules_for_bucket
+                client = Mock()
+                client.get_bucket_lifecycle_configuration.return_value = {"Rules": []}
+                sync_lifecycle_rules_for_bucket(connection, client, bucket=vault["s3_bucket"])
+                rules = client.put_bucket_lifecycle_configuration.call_args.kwargs["LifecycleConfiguration"]["Rules"]
+                test.assertEqual(rules[0]["Filter"], {"Prefix": vault["s3_prefix"].strip("/") + "/"})
+                client.delete_object.assert_not_called()
+                client.delete_objects.assert_not_called()
 
 
 def assert_ambiguous_plan_refused(test, run, connect, *, pinned=False):
@@ -55,7 +66,7 @@ def assert_ambiguous_plan_refused(test, run, connect, *, pinned=False):
         policy = legacy_policy(connection)
         connection.execute("UPDATE vaults SET default_lifecycle_policy_id=%s WHERE id=2", (policy,))
         if pinned:
-            connection.execute("INSERT INTO lifecycle_pins(vault_id, path, is_directory, pinned_at) VALUES (2, 'only.txt', 0, '2026-01-01')")
+            connection.execute("INSERT INTO lifecycle_pins(vault_id, path, is_directory, pinned_at) VALUES (2, 'only.txt', %s, '2026-01-01')", (False,))
         else:
             other = legacy_policy(connection, policy="22222222-2222-4222-8222-222222222222", days=2)
             connection.execute("INSERT INTO folder_policy_overrides(vault_id, folder_path, policy_id) VALUES (2, 'docs', %s)", (other,))

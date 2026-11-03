@@ -31,7 +31,10 @@ def _legacy_plan(value):
 def upgrade():
     connection = op.get_bind()
     plans = []
-    for vault in connection.execute(sa.text("SELECT id, default_lifecycle_policy_id FROM vaults")).mappings():
+    namespaces = {}
+    for vault in connection.execute(sa.text(
+        "SELECT id, s3_bucket, s3_prefix, default_lifecycle_policy_id FROM vaults"
+    )).mappings():
         def policy_plan(policy_id):
             if not policy_id:
                 return _legacy_plan(None)
@@ -50,6 +53,21 @@ def upgrade():
         except (ValueError, KeyError, TypeError) as exc:
             raise RuntimeError(f"Vault {vault['id']} has an ambiguous legacy storage plan: {exc}. Resolve its assignments with the previous release before upgrading; no cloud content was changed.") from exc
         plans.append((vault["id"], plan))
+        namespaces.setdefault(vault["s3_bucket"], []).append(
+            (vault["s3_prefix"], bool(json.loads(plan)["transitions"]))
+        )
+
+    from app.services.s3_lifecycle_rules import validate_vault_prefixes
+    for entries in namespaces.values():
+        if any(transitioning for _, transitioning in entries):
+            try:
+                validate_vault_prefixes([prefix for prefix, _ in entries])
+            except ValueError as exc:
+                raise RuntimeError(
+                    "Ambiguous legacy Vault namespaces: resolve empty/overlapping "
+                    "prefixes with the previous release before upgrading; "
+                    "no cloud content was changed."
+                ) from exc
 
     # All legacy Vaults are validated before the first schema/data modification.
     with op.batch_alter_table("vaults") as batch:
@@ -81,7 +99,7 @@ def downgrade():
     op.create_table("lifecycle_pins",
         sa.Column("vault_id", identifier, sa.ForeignKey("vaults.id", ondelete="CASCADE"), nullable=False),
         sa.Column("path", sa.Text(), nullable=False),
-        sa.Column("is_directory", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("is_directory", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("pinned_at", sa.Text(), nullable=False),
         sa.Column("pinned_by", identifier, sa.ForeignKey("users.id", ondelete="SET NULL")),
         sa.PrimaryKeyConstraint("vault_id", "path", name="lifecycle_pins_pk"))
