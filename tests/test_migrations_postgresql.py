@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import threading
 import tempfile
 import unittest
@@ -23,7 +20,6 @@ from app.services.catalog_events import CatalogEventStore
 
 
 from tests.postgres import database_dsn, run_alembic as migrate_fixture
-REPOSITORY_ROOT = Path(__file__).parents[1]
 
 
 class PostgreSQLMigrationTests(unittest.TestCase):

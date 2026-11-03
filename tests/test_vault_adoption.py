@@ -240,7 +240,7 @@ class VaultAdoptionOverlapTests(_AdoptionFixture):
                     'Existing', %s, 'bucket', 'vaults/existing/', %s
                 )
                 """,
-                (str(source_root), 1 if enabled else 0),
+                (str(source_root), enabled),
             )
 
     def test_exact_inside_and_contains_overlap_are_rejected(self) -> None:
@@ -263,7 +263,7 @@ class VaultAdoptionOverlapTests(_AdoptionFixture):
         self.assertEqual(contains.exception.reason, "overlap")
 
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute("UPDATE vaults SET enabled=0 WHERE id=1")
+            connection.execute("UPDATE vaults SET enabled=FALSE WHERE id=1")
         with self.assertRaises(vaults_service.VaultAdoptionError) as disabled:
             self._adopt(name="Disabled", relative_path="albums/2020")
         self.assertEqual(disabled.exception.reason, "overlap")

@@ -90,6 +90,43 @@ class CatalogStatePersistenceTests(unittest.TestCase):
                 0,
             )
 
+    def test_failed_helper_preserves_outer_work_and_connection_usability(self) -> None:
+        def fail(connection):
+            connection.execute("UPDATE vaults SET name='Helper mutation' WHERE id=2")
+            raise RuntimeError("helper failure")
+
+        with PostgresConnection(self.path) as connection:
+            connection.execute("UPDATE vaults SET name='Outer mutation' WHERE id=2")
+            with self.assertRaisesRegex(RuntimeError, "helper failure"):
+                CatalogEventStore(connection).mutate_and_publish(
+                    2, fail, domain="files", scope="root", payload={},
+                )
+            self.assertEqual(connection.execute(
+                "SELECT name FROM vaults WHERE id=2"
+            ).fetchone()["name"], "Outer mutation")
+        with PostgresConnection(self.path) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT name FROM vaults WHERE id=2"
+            ).fetchone()["name"], "Outer mutation")
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) AS n FROM catalog_events"
+            ).fetchone()["n"], 0)
+
+    def test_autocommit_caller_gets_one_atomic_publication(self) -> None:
+        with PostgresConnection(self.path) as connection:
+            connection.autocommit = True
+            CatalogEventStore(connection).mutate_and_publish(
+                2, lambda conn: conn.execute("UPDATE vaults SET name='Autocommit' WHERE id=2"),
+                domain="files", scope="root", payload={},
+            )
+        with PostgresConnection(self.path) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT name FROM vaults WHERE id=2"
+            ).fetchone()["name"], "Autocommit")
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) AS n FROM catalog_events"
+            ).fetchone()["n"], 1)
+
     def test_failed_canonical_mutation_rolls_back_revision_and_event(self) -> None:
         def fail(connection: PostgresConnection) -> None:
             connection.execute("UPDATE vaults SET name='Not durable' WHERE id=2")

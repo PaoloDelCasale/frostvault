@@ -2,12 +2,7 @@ from __future__ import annotations
 
 from tests.postgres import PostgresConnection, database_dsn
 
-import atexit
-import shutil
-import subprocess
-import sys
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace

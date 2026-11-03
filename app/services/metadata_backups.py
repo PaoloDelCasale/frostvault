@@ -12,7 +12,6 @@ import json
 import os
 import subprocess
 import tarfile
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -254,9 +253,11 @@ def _postgres_env(database_dsn: str | None = None) -> dict[str, str]:
         database_dsn if database_dsn is not None else settings.database_dsn
     )
     for key, value in values.items():
-        name = {"dbname": "PGDATABASE", "connect_timeout": "PGCONNECT_TIMEOUT"}.get(
-            key, "PG" + key.upper()
-        )
+        name = {
+            "dbname": "PGDATABASE",
+            "connect_timeout": "PGCONNECT_TIMEOUT",
+            "application_name": "PGAPPNAME",
+        }.get(key, "PG" + key.replace("_", "").upper())
         env[name] = value
     return env
 
