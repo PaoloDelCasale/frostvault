@@ -353,8 +353,7 @@ type DemoLifecycle = {
 
 type DemoPolicy = {
   auto_upload: boolean;
-  auto_local_cleanup: boolean;
-  local_retention_days: number | null;
+  local_release_after_days: 90 | 180 | 365 | 730 | null;
   stability_seconds: number;
   include_globs: string[];
   exclude_globs: string[];
@@ -463,8 +462,7 @@ function seedDemoState(): DemoState {
     },
     policy: {
       auto_upload: true,
-      auto_local_cleanup: false,
-      local_retention_days: 45,
+      local_release_after_days: null,
       stability_seconds: 300,
       include_globs: [],
       exclude_globs: [],
@@ -1019,13 +1017,10 @@ export function installDemoFilesFetch(): void {
         state.policy = {
           ...state.policy,
           auto_upload: Boolean(body.auto_upload ?? state.policy.auto_upload),
-          auto_local_cleanup: Boolean(
-            body.auto_local_cleanup ?? state.policy.auto_local_cleanup,
-          ),
-          local_retention_days:
-            body.local_retention_days === undefined
-              ? state.policy.local_retention_days
-              : (body.local_retention_days as number | null),
+          local_release_after_days:
+            body.local_release_after_days === undefined
+              ? state.policy.local_release_after_days
+              : (body.local_release_after_days as DemoPolicy["local_release_after_days"]),
           include_globs: Array.isArray(body.include_globs)
             ? body.include_globs.map(String)
             : state.policy.include_globs,

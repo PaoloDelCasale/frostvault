@@ -210,8 +210,7 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
     def test_set_policy_round_trips(self) -> None:
         desired = OperationPolicy(
             auto_upload=True,
-            auto_local_cleanup=True,
-            local_retention_days=30,
+            local_release_after_days=90,
             stability_seconds=600,
             include_globs=("**/*.pdf",),
             exclude_globs=("tmp/**",),
@@ -615,7 +614,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
     def test_auto_cleanup_queues_only_matching_versions_past_retention(self) -> None:
         from app.services.operation_policies import queue_auto_local_cleanups
 
-        now = datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
         due_version_id = None
         with PostgresConnection(str(self.path)) as connection:
             catalog = ArchiveCatalog(connection)
@@ -642,7 +641,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                     file_type="regular",
                     size=len(content),
                     mtime_ns=target.stat().st_mtime_ns,
-                    observed_at=now.isoformat(),
+                    observed_at=verified_at,
                 )
                 version_id = catalog.record_archive_version(
                     vault_id=2,
@@ -673,9 +672,9 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 connection,
                 2,
                 OperationPolicy(
-                    auto_local_cleanup=True,
-                    local_retention_days=30,
-                    include_globs=("**/*.txt",),
+                    local_release_after_days=90,
+                    include_globs=("**/*.jpg",),
+                    exclude_globs=("**/*.txt",),
                 ),
             )
 
@@ -683,7 +682,6 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 connection,
                 vault_id=2,
                 requested_by=1,
-                local_delete_enabled=True,
                 now=now,
             )
             jobs = connection.execute(

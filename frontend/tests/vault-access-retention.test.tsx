@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { resetApiClientForTests } from "@/api";
-
 import {
   createVaultAccessFetch,
   defaultPolicy,
@@ -11,49 +10,53 @@ import {
   renderVaultAccess,
 } from "./vault-access-harness";
 
-describe("VaultAccessPage — Local Copy retention (seam 4)", () => {
-  beforeEach(() => {
-    resetApiClientForTests();
-  });
+describe("VaultAccessPage — per-Vault local release", () => {
+  beforeEach(() => resetApiClientForTests());
 
-  it("sends the correct PUT payload for Local Copy retention", async () => {
-    // Ported from tests/test_vault_access_ui.mjs:
-    // "owner can configure automatic Local Copy retention without changing other policy fields"
-    const user = userEvent.setup();
+  function setup(initial: number | null = null) {
     const updates: unknown[] = [];
-    const fetchMock = createVaultAccessFetch({
-      "GET /api/vault/operation-policy": () => jsonResponse(defaultPolicy),
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
+      "GET /api/vault/operation-policy": () => jsonResponse({ ...defaultPolicy, local_release_after_days: initial }),
       "PUT /api/vault/operation-policy": (init) => {
         const body = JSON.parse(String(init?.body ?? "{}"));
         updates.push(body);
         return jsonResponse(body);
       },
-    });
+    }) });
+    return updates;
+  }
 
-    renderVaultAccess({ fetchImpl: fetchMock });
+  it("is off by default, preselects six months, and offers only four periods", async () => {
+    const user = userEvent.setup();
+    const updates = setup();
     await screen.findByText(/local copy retention loaded/i);
+    const toggle = screen.getByLabelText(/free local space automatically/i);
+    const period = screen.getByRole("combobox", { name: /^free local space after/i });
+    expect(toggle).not.toBeChecked();
+    expect(period).toBeDisabled();
+    expect(period).toHaveValue("180");
+    expect(screen.getAllByRole("option").filter((option) => ["90", "180", "365", "730"].includes((option as HTMLOptionElement).value))).toHaveLength(4);
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    await user.click(toggle);
+    await user.click(screen.getByRole("button", { name: /save local copy retention/i }));
+    await waitFor(() => expect(updates).toEqual([{ ...defaultPolicy, local_release_after_days: 180 }]));
+  });
 
-    const days = screen.getByLabelText(/retention after verification/i);
-    expect(screen.getByLabelText(/automatically clean verified local copies/i)).toBeChecked();
-    expect(days).toHaveValue(45);
+  it.each([90, 180, 365, 730])("saves %s days without changing upload rules", async (days) => {
+    const user = userEvent.setup();
+    const updates = setup(180);
+    await screen.findByText(/local copy retention loaded/i);
+    await user.selectOptions(screen.getByRole("combobox", { name: /^free local space after/i }), String(days));
+    await user.click(screen.getByRole("button", { name: /save local copy retention/i }));
+    await waitFor(() => expect(updates).toEqual([{ ...defaultPolicy, local_release_after_days: days }]));
+  });
 
-    await user.clear(days);
-    await user.type(days, "60");
-    await user.click(
-      screen.getByRole("button", { name: /save local copy retention/i }),
-    );
-
-    await waitFor(() => {
-      expect(updates).toEqual([
-        {
-          auto_upload: true,
-          auto_local_cleanup: true,
-          local_retention_days: 60,
-          stability_seconds: 300,
-          include_globs: [],
-          exclude_globs: [],
-        },
-      ]);
-    });
+  it("disables with null, never a separate boolean or free-form period", async () => {
+    const user = userEvent.setup();
+    const updates = setup(730);
+    await screen.findByText(/local copy retention loaded/i);
+    await user.click(screen.getByLabelText(/free local space automatically/i));
+    await user.click(screen.getByRole("button", { name: /save local copy retention/i }));
+    await waitFor(() => expect(updates).toEqual([{ ...defaultPolicy, local_release_after_days: null }]));
   });
 });

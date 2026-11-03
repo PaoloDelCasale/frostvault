@@ -143,9 +143,29 @@ and Cloud-only Conflicts remain held back.
 
 ## Local cleanup safety
 
-- The **Free local space** button appears only when the Local Copy fingerprint
-  matches an available, verified Archive Version and when
-  `ALLOW_LOCAL_DELETE=true`.
+- Each Vault has one optional **Free local space after** rule, off by default:
+  **3 months / 6 months / 1 year / 2 years** (fixed 90/180/365/730 days).
+  Enabling preselects 6 months. It applies to every file, regardless of upload
+  include/exclude filters. Put files that must stay local in a separate Vault
+  with release off. Cold copies can take hours to recover and incur restore costs.
+- Retention starts at the latest actual content observation, cloud content
+  verification, local modification, or explicit recovery time. Old photo imports
+  and recovered files get a full new period without changing their mtime.
+- **Free local space now** remains an explicit, confirmed manual action even
+  with the automatic rule off. Only Protected files are eligible; an absent or
+  untrusted Source Volume, unconfirmed protection, mismatch, changed content or
+  unavailable cloud blocks release. GLACIER and DEEP_ARCHIVE are allowed.
+- Migration 0057 maps **all** old cleanup configurations to **off**, including
+  enabled ones: the removed global environment gate cannot be inferred and old
+  filters had a narrower scope. Pending legacy free-space Jobs are cancelled;
+  request manual actions again, and explicitly enable the new rule if desired.
+  Upgrade refuses interrupted `cleaning` Jobs: reconcile them with the previous
+  release first so hidden rename-claims are never stranded. No file/cloud content
+  or verification evidence is changed. Downgrade also leaves automation off.
+  Remove the retired `ALLOW_LOCAL_DELETE` environment variable; old API fields
+  `auto_local_cleanup`, `local_retention_days` and `local_delete_enabled` are rejected.
+- Release outcomes and blockages are audited and included in the weekly summary,
+  never sent as per-file notifications.
 - Before deleting the server copy, the application checks the exact S3
   `VersionId`, atomically claims the local file, and rehashes it; object
   existence at the same key or a stale local fingerprint is not sufficient.
@@ -452,7 +472,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS`, `SMTP_USE_TLS` (optional; see below) |
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
-| Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RESTORE_*`, `CLOUD_PURGE_DELAY_SECONDS`, `ALLOW_LOCAL_DELETE` |
+| Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RESTORE_*`, `CLOUD_PURGE_DELAY_SECONDS` |
 
 All installation configuration is environment-only and takes effect on process
 restart. There is no mutable settings UI or API. Before upgrading through

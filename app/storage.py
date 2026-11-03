@@ -108,6 +108,8 @@ from .services.job_scheduler import select_fair_jobs
 from .services.operation_policies import (
     get_policy,
     queue_auto_local_cleanups,
+    local_cleanup_is_due,
+    local_release_is_confirmed,
     queue_auto_uploads,
     auto_upload_path_is_included,
     file_is_stable,
@@ -441,14 +443,16 @@ def s3_client():
                         config=Config(retries={"mode": "standard", "max_attempts": 4}))
 
 
-def validate_cloud_vault(vault: dict[str, Any]) -> None:
-    # Observability must not change preflight success/failure or transfer safety.
+def validate_cloud_vault(vault: dict[str, Any], *, notify: bool = True) -> None:
+    # Cleanup blockages belong only to audit/weekly summary, not immediate mail.
     try:
         _validate_cloud_vault(vault)
     except Exception:
-        _report_cloud_preflight(vault, blocked=True)
+        if notify:
+            _report_cloud_preflight(vault, blocked=True)
         raise
-    _report_cloud_preflight(vault, blocked=False)
+    if notify:
+        _report_cloud_preflight(vault, blocked=False)
 
 
 def _report_cloud_preflight(vault: dict[str, Any], *, blocked: bool) -> None:
@@ -1608,7 +1612,6 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                             connection,
                             vault_id=int(vault["id"]),
                             requested_by=owner_id,
-                            local_delete_enabled=_runtime_settings().allow_local_delete,
                         )
             except Exception as exc:
                 status["last_error"] = f"Storage plan synchronization: {exc}"
@@ -3882,13 +3885,22 @@ def record_automatic_cleanup_outcome(
             pass
 
 
-def process_free_space(job: dict[str, Any]) -> None:
-    ensure_job_active(job["id"], "Freeing local space stopped")
-    if not _runtime_settings().allow_local_delete:
-        raise RuntimeError("Freeing local space is disabled")
-    validate_cloud_vault(job)
+def _checked_local_release_target(job: dict[str, Any]) -> dict[str, Any]:
+    """Reauthorize queued automatic work; manual requests never imply automation."""
     with db() as connection:
         target = ArchiveCatalog(connection).get_job_target(job["id"])
+        if not local_release_is_confirmed(
+            connection, int(job["vault_id"]), decommission=job.get("origin") == "decommission"
+        ):
+            raise RuntimeError("Cleanup blocked: local or cloud protection is not confirmed")
+        if target and target["job_origin"] == "automatic":
+            policy = get_policy(connection, int(job["vault_id"]))
+            if policy.local_release_after_days is None or not target["verified_at"] or not local_cleanup_is_due(
+                verified_at=target["verified_at"], retention_days=policy.local_release_after_days,
+                now=datetime.now(timezone.utc), local_mtime_ns=target["local_mtime_ns"],
+                recovered_at=target["local_recovered_at"], content_observed_at=target["content_observed_at"],
+            ):
+                raise OperationCancelled("Automatic local release is disabled or no longer due")
     if (
         not target
         or target["local_presence"] != "present"
@@ -3898,9 +3910,19 @@ def process_free_space(job: dict[str, Any]) -> None:
         or target["matched_archive_version_id"] != target["archive_version_id"]
         or not target["local_sha256"]
         or target["local_sha256"] != target["version_sha256"]
+        or target["cloud_only_version_id"] is not None
+        or target["archive_version_id"] != target["latest_archive_version_id"]
+        or not target["object_key"]
+        or not target["provider_version_id"]
     ):
         raise RuntimeError("The file no longer has verifiable local and cloud copies")
+    return target
 
+
+def process_free_space(job: dict[str, Any]) -> None:
+    ensure_job_active(job["id"], "Freeing local space stopped")
+    target = _checked_local_release_target(job)
+    validate_cloud_vault(job, notify=False)
     set_job(job["id"], "cleaning", message_key="job.verifying_cloud_copy")
     ensure_job_active(job["id"], "Freeing local space claim was lost")
     try:
@@ -3914,10 +3936,13 @@ def process_free_space(job: dict[str, Any]) -> None:
             "Cleanup blocked: unable to verify the S3 copy"
         ) from exc
     if (
-        head.get("ContentLength") is not None
-        and int(head["ContentLength"]) != int(target["cloud_size"])
+        head.get("DeleteMarker")
+        or not head.get("VersionId")
+        or str(head["VersionId"]) != str(target["provider_version_id"])
+        or head.get("ContentLength") is None
+        or int(head["ContentLength"]) != int(target["cloud_size"])
     ):
-        raise RuntimeError("Cleanup blocked: S3 object size no longer matches")
+        raise RuntimeError("Cleanup blocked: exact S3 version or size no longer matches")
     ensure_job_active(job["id"], "Freeing local space stopped")
     local_path = safe_local_entry_path(job["source_root"], job["path"])
     claimed_path = local_path.with_name(
@@ -3936,6 +3961,11 @@ def process_free_space(job: dict[str, Any]) -> None:
         ):
             raise RuntimeError("Local file changed since fingerprinting")
         ensure_job_active(job["id"], "Freeing local space stopped")
+        fresh = _checked_local_release_target(job)
+        if (fresh["archive_version_id"], fresh["version_sha256"], fresh["local_size"], fresh["local_mtime_ns"]) != (
+            target["archive_version_id"], local_digest, claimed_stat.st_size, claimed_stat.st_mtime_ns
+        ):
+            raise RuntimeError("Cleanup blocked: protection changed while claiming the file")
         claimed_path.unlink()
     except Exception as exc:
         if not restore_claimed_local_copy(claimed_path, local_path):
@@ -5515,7 +5545,6 @@ async def background_loop() -> None:
                 await asyncio.to_thread(process_directory_aggregate_maintenance)
                 await asyncio.to_thread(
                     vault_decommission_service.reconcile_all,
-                    local_delete_enabled=runtime.allow_local_delete,
                     purge_delay_seconds=runtime.cloud_purge_delay_seconds,
                 )
                 # Backlog is measured independently from the selected batch: an

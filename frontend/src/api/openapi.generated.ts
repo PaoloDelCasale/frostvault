@@ -1645,22 +1645,17 @@ export interface components {
             unread_count: number;
         };
         OperationPolicy: {
-            auto_local_cleanup: boolean;
             auto_upload: boolean;
             exclude_globs: string[];
             include_globs: string[];
-            local_retention_days: number | null;
+            /** @enum {integer|null} */
+            local_release_after_days: 90 | 180 | 365 | 730 | null;
             stability_seconds: number;
         } & {
             [key: string]: unknown;
         };
         /** OperationPolicyUpdate */
         OperationPolicyUpdate: {
-            /**
-             * Auto Local Cleanup
-             * @default false
-             */
-            auto_local_cleanup: boolean;
             /**
              * Auto Upload
              * @default true
@@ -1670,8 +1665,8 @@ export interface components {
             exclude_globs?: string[];
             /** Include Globs */
             include_globs?: string[];
-            /** Local Retention Days */
-            local_retention_days?: number | null;
+            /** Local Release After Days */
+            local_release_after_days?: (90 | 180 | 365 | 730) | null;
             /**
              * Stability Seconds
              * @default 300

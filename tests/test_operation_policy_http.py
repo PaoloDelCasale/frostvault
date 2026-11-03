@@ -72,6 +72,7 @@ class OperationPolicyHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
         self.assertTrue(body["auto_upload"])
+        self.assertIsNone(body["local_release_after_days"])
         self.assertEqual(body["stability_seconds"], 300)
         self.assertEqual(body["include_globs"], [])
         self.assertEqual(body["exclude_globs"], [])
@@ -83,8 +84,7 @@ class OperationPolicyHttpTests(unittest.TestCase):
             headers=self._headers(),
             json={
                 "auto_upload": True,
-                "auto_local_cleanup": True,
-                "local_retention_days": 30,
+                "local_release_after_days": 90,
                 "stability_seconds": 600,
                 "include_globs": ["**/*.txt"],
                 "exclude_globs": ["tmp/**"],
@@ -94,8 +94,7 @@ class OperationPolicyHttpTests(unittest.TestCase):
         self.assertNotIn("bandwidth_limit_kibps", update.json())
         self.assertNotIn("operating_windows", update.json())
         self.assertTrue(update.json()["auto_upload"])
-        self.assertTrue(update.json()["auto_local_cleanup"])
-        self.assertEqual(update.json()["local_retention_days"], 30)
+        self.assertEqual(update.json()["local_release_after_days"], 90)
         preview = self.client.post(
             "/api/vault/operation-policy/preview-globs",
             headers=self._headers(),
@@ -108,6 +107,20 @@ class OperationPolicyHttpTests(unittest.TestCase):
         self.assertEqual(preview.status_code, 200, preview.text)
         self.assertEqual(preview.json()["included"], ["a.txt"])
         self.assertEqual(preview.json()["excluded"], ["tmp/x.txt", "photo.jpg"])
+
+    def test_local_release_accepts_only_off_or_the_four_periods(self) -> None:
+        self._authenticate(self.owner_id)
+        for period in (None, 90, 180, 365, 730):
+            with self.subTest(period=period):
+                response = self.client.put("/api/vault/operation-policy", headers=self._headers(),
+                                           json={"local_release_after_days": period})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["local_release_after_days"], period)
+        for period in (-1, 0, 1, 30, 91, 181, 366, 731, True, "six months"):
+            with self.subTest(invalid=period):
+                response = self.client.put("/api/vault/operation-policy", headers=self._headers(),
+                                           json={"local_release_after_days": period})
+                self.assertEqual(response.status_code, 422, response.text)
 
     def test_owner_can_request_storage_cost_estimates(self) -> None:
         self._authenticate(self.owner_id)
@@ -122,6 +135,9 @@ class OperationPolicyHttpTests(unittest.TestCase):
     def test_policy_rejects_removed_bandwidth_and_window_fields(self) -> None:
         self._authenticate(self.owner_id)
         for field, value in (
+            ("auto_local_cleanup", True),
+            ("local_retention_days", 90),
+            ("local_delete_enabled", True),
             ("bandwidth_limit_kibps", 256),
             ("operating_windows", [{"weekday": 0, "start": "09:00", "end": "17:00"}]),
         ):

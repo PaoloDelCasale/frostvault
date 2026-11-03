@@ -54,7 +54,7 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
             patch("app.storage.runtime_status", {}),
             patch("app.services.operation_policies.datetime", Clock),
             patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(self.database))),
-            patch("app.storage.settings", SimpleNamespace(operation_concurrency=1, restore_poll_interval=900, allow_local_delete=False)),
+            patch("app.storage.settings", SimpleNamespace(operation_concurrency=1, restore_poll_interval=900)),
             patch("app.storage.source_layout.vault_local_access", side_effect=lambda _: self.access),
             patch("app.storage.now_iso", side_effect=lambda: self.clock.isoformat()),
         ):

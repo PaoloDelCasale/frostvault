@@ -1240,9 +1240,6 @@
     "OperationPolicy": {
       "additionalProperties": true,
       "properties": {
-        "auto_local_cleanup": {
-          "type": "boolean"
-        },
         "auto_upload": {
           "type": "boolean"
         },
@@ -1258,11 +1255,9 @@
           },
           "type": "array"
         },
-        "local_retention_days": {
-          "type": [
-            "number",
-            "null"
-          ]
+        "local_release_after_days": {
+          "enum": [90, 180, 365, 730, null],
+          "type": ["integer", "null"]
         },
         "stability_seconds": {
           "type": "number"
@@ -1270,8 +1265,7 @@
       },
       "required": [
         "auto_upload",
-        "auto_local_cleanup",
-        "local_retention_days",
+        "local_release_after_days",
         "stability_seconds",
         "include_globs",
         "exclude_globs"

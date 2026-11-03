@@ -48,7 +48,6 @@ class VaultDecommissionHttpTests(unittest.TestCase):
             settings,
             database_dsn=database_dsn(str(self.db_path)),
             cookie_secure=False,
-            allow_local_delete=True,
             frontend_dist_dir=str(write_spa_dist(Path(self.tmp.name))),
         )
         for target in (

@@ -34,8 +34,7 @@ export function jsonResponse(data: unknown, status = 200): Response {
 
 export const defaultPolicy = {
   auto_upload: true,
-  auto_local_cleanup: true,
-  local_retention_days: 45,
+  local_release_after_days: null,
   stability_seconds: 300,
   include_globs: [] as string[],
   exclude_globs: [] as string[],

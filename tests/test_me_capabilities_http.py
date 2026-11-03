@@ -51,7 +51,6 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
             settings,
             database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
-            allow_local_delete=True,
             frontend_dist_dir=str(self.dist_dir),
         )
         for target in (
@@ -96,11 +95,12 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         for removed in ("role", "can_operate", "is_vault_owner"):
             self.assertNotIn(removed, vault)
 
-    def test_delete_enabled_false_for_owner_when_local_delete_disabled(self) -> None:
-        """Seam 4: delete_enabled false when allow_local_delete is off, even for owner."""
+    def test_delete_enabled_false_when_source_is_unavailable(self) -> None:
+        """Manual release is available with automation off, never on an absent source."""
+        from types import SimpleNamespace
         with patch(
-            "app.main.settings",
-            replace(self.test_settings, allow_local_delete=False),
+            "app.main.vault_local_access",
+            return_value=SimpleNamespace(local_operations_allowed=False),
         ):
             self._create_vault()
             payload = self._me()
