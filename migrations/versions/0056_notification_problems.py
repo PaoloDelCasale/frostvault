@@ -13,11 +13,12 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("notifications", sa.Column("problem_key", sa.Text(), nullable=True))
     op.add_column("notifications", sa.Column("problem_status", sa.Text(), nullable=True))
     op.add_column("notifications", sa.Column("resolved_at", sa.Text(), nullable=True))
     op.create_check_constraint("notifications_problem_status_ck", "notifications",
                                "problem_status IN ('open', 'resolved')")
+    op.create_index("notifications_open_problems_idx", "notifications", ["user_id"],
+                    postgresql_where=sa.text("problem_status='open'"))
     op.create_table(
         "protection_pending",
         sa.Column("vault_file_id", sa.String(36), sa.ForeignKey("vault_files.id", ondelete="CASCADE"), primary_key=True),
@@ -48,13 +49,12 @@ def upgrade() -> None:
             AND n.event='job_failed' AND j.action NOT IN ('upload','recover')
     """)
     op.execute("""
-        UPDATE notifications SET problem_key=dedupe_key, problem_status='open'
+        UPDATE notifications SET problem_status='open'
         WHERE event IN ('archive_version_missing', 'cloud_only_conflict',
                         'protection_blocked', 'file_unreadable', 'internal_error', 'job_failed')
     """)
     op.execute("""
-        UPDATE notifications SET dedupe_key='blocked:' || vault_id::text || chr(58) || 'source',
-            problem_key='blocked:' || vault_id::text || chr(58) || 'source'
+        UPDATE notifications SET dedupe_key='blocked:' || vault_id::text || chr(58) || 'source'
         WHERE event='protection_blocked' AND message_params::jsonb->>'component'='source'
     """)
 
@@ -62,6 +62,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_column("vault_operation_policies", "suspended_at")
     op.drop_table("protection_pending")
+    op.drop_index("notifications_open_problems_idx", table_name="notifications")
     op.drop_constraint("notifications_problem_status_ck", "notifications", type_="check")
-    for column in ("resolved_at", "problem_status", "problem_key"):
+    for column in ("resolved_at", "problem_status"):
         op.drop_column("notifications", column)

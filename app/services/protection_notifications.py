@@ -6,15 +6,15 @@ content changing repeatedly does not restart the continuous unprotected age.
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
-import time
-
-_last_maintenance = 0.0
 
 from . import notifications as inbox
 from .operation_policies import auto_upload_path_is_included, file_is_stable, get_policy
 from .protection_states import LATEST_JOIN_SQL, PROTECTED_SQL, STATE_SQL, STATES, VISIBLE_SQL
+
+_last_maintenance = 0.0
 
 
 def _time(value: str | None, fallback: datetime) -> datetime:
@@ -74,10 +74,10 @@ def monitor_vault(connection: Any, vault: Mapping[str, Any], *, now: datetime) -
         "SELECT last_error FROM vault_component_health WHERE vault_id=%s AND component='source'",
         (vault_id,),
     ).fetchone()
-    inbox.set_problem(connection, key=f"blocked:{vault_id}:source", event="protection_blocked",
-                      vault_id=vault_id, active=not access.local_operations_allowed or
-                      bool(source_health and source_health['last_error']),
-                      params={"component": "source"})
+    if not access.local_operations_allowed or not (source_health and source_health['last_error']):
+        inbox.set_problem(connection, key=f"blocked:{vault_id}:source", event="protection_blocked",
+                          vault_id=vault_id, active=not access.local_operations_allowed,
+                          params={"component": "source"})
     rows = connection.execute(f"""
         SELECT vf.id, fp.path, lc.mtime_ns, lc.content_observed_at,
                COALESCE(lc.content_observed_at,lc.observed_at,vf.created_at) AS observed_at

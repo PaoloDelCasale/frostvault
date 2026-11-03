@@ -175,6 +175,22 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                 monitor.monitor_vault(c,vault,now=NOW)
             self.assertEqual(inbox.count_open_problems(c,user_id=self.user_id),0)
 
+    def test_partial_unreadable_scan_does_not_invent_global_source_blockage(self):
+        from app.services.component_health import record_component_health
+        with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
+            record_component_health(c,vault_id=self.vault_id,component='source',ok=False,error='Incomplete: unreadable path')
+            vault = c.execute('SELECT * FROM vaults WHERE id=%s',(self.vault_id,)).fetchone()
+            monitor.monitor_vault(c,vault,now=NOW)
+            self.assertEqual(inbox.count_open_problems(c,user_id=self.user_id),0)
+            # But a real root blockage cannot be cleared by a mount-only check.
+            inbox.set_problem(c,key=f'blocked:{self.vault_id}:source',event='protection_blocked',
+                              vault_id=self.vault_id,active=True,params={'component':'source'})
+            monitor.monitor_vault(c,vault,now=NOW)
+            self.assertEqual(inbox.count_open_problems(c,user_id=self.user_id),1)
+            record_component_health(c,vault_id=self.vault_id,component='source',ok=True)
+            monitor.monitor_vault(c,vault,now=NOW)
+            self.assertEqual(inbox.count_open_problems(c,user_id=self.user_id),0)
+
     def test_summary_is_weekly_and_contains_required_persisted_evidence(self):
         with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE), patch.object(inbox,'now_iso',return_value=NOW.isoformat()):
             monitor.maintain_notifications(c,now=NOW)
@@ -233,11 +249,12 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                                                       matched_archive_version_id=version)
             record_component_health(c,vault_id=self.vault_id,component='source',ok=True,at='2026-11-02T10:00:00+00:00')
             record_component_health(c,vault_id=self.vault_id,component='audit',ok=True,at='2026-11-01T10:00:00+00:00')
-            record_backup_run(c,reason='test',backend='postgresql',status='verified',verified_at='2026-11-02T11:00:00+00:00')
+            record_backup_run(c,reason='manual',backend='postgresql',status='verified',verified_at='2026-11-02T11:00:00+00:00')
             for status, age in (('completed',1),('completed',9),('failed',1)):
-                c.execute("INSERT INTO jobs(vault_id,path,action,status,requested_at,updated_at,total_bytes) "
-                          "VALUES (%s,'protected.jpg','free-space',%s,%s,%s,1048576)",
-                          (self.vault_id,status,NOW.isoformat(),(NOW-timedelta(days=age)).isoformat()))
+                c.execute("INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at,total_bytes) "
+                          "VALUES (%s,(SELECT vault_file_id FROM file_paths WHERE vault_id=%s AND path='protected.jpg' "
+                          "AND valid_to IS NULL),'protected.jpg','free-space',%s,%s,%s,1048576)",
+                          (self.vault_id,self.vault_id,status,NOW.isoformat(),(NOW-timedelta(days=age)).isoformat()))
             inbox.set_problem(c,key='safe-worker',event='internal_error',active=True,params={'component':'worker'})
             summary = monitor.weekly_summary(c,now=NOW)
             self.assertEqual(summary['states'],dict.fromkeys(monitor.STATES,1))
@@ -268,9 +285,10 @@ class FixedNotificationPostgresTests(unittest.TestCase):
         result = run_alembic(self.path,'0055_protection_states','downgrade')
         self.assertEqual(result.returncode,0,result.stderr)
         with self.connect() as c:
-            recover = c.execute("INSERT INTO jobs(vault_id,path,action,status,requested_at,updated_at) "
-                                "VALUES (%s,'sole.jpg','recover','completed',%s,%s) RETURNING id",
-                                (self.vault_id,NOW.isoformat(),NOW.isoformat())).fetchone()['id']
+            recover = c.execute("INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at) "
+                                "VALUES (%s,(SELECT vault_file_id FROM file_paths WHERE vault_id=%s AND path='sole.jpg' "
+                                "AND valid_to IS NULL),'sole.jpg','recover','completed',%s,%s) RETURNING id",
+                                (self.vault_id,self.vault_id,NOW.isoformat(),NOW.isoformat())).fetchone()['id']
             for event, job in (('job_completed',self.job_id),('local_cleanup.completed',self.job_id),('job_completed',recover)):
                 inbox.enqueue_notification(c,user_id=self.user_id,vault_id=self.vault_id,job_id=job,event=event,
                                            title='Historical',message_params={'path':'sole.jpg'},channels=('in_app','email'))
@@ -300,6 +318,27 @@ class FixedNotificationPostgresTests(unittest.TestCase):
         with self.connect() as c:
             self.assertEqual(inbox.count_open_problems(c,user_id=self.user_id),0)
             self.assertEqual(inbox.count_unread_notifications(c,user_id=self.user_id),0)
+
+    def test_monitor_fault_does_not_suppress_durable_email_and_next_success_resolves_it(self):
+        from app import storage
+        with self.connect() as c:
+            c.execute("UPDATE jobs SET status='failed' WHERE id=%s",(self.job_id,))
+            inbox.enqueue_job_terminal_notification(c,job_id=self.job_id)
+        smtp = unittest.mock.Mock()
+        with patch('app.storage.db',side_effect=self.connect), patch.object(inbox,'production_smtp_client',return_value=smtp), patch.object(monitor,'maintain_notifications',side_effect=RuntimeError('SECRET monitor context')):
+            storage._deliver_notifications_once()
+        smtp.send.assert_called_once()
+        with self.connect() as c:
+            rows = inbox.list_in_app_notifications(c,user_id=self.user_id)
+            self.assertNotIn('SECRET',str(rows))
+            self.assertEqual(inbox.count_open_problems(c,user_id=self.user_id),2)
+        with patch('app.storage.db',side_effect=self.connect), patch.object(inbox,'production_smtp_client',return_value=smtp), patch.object(monitor,'maintain_notifications'):
+            storage._deliver_notifications_once()
+        with self.connect() as c:
+            self.assertEqual(inbox.count_open_problems(c,user_id=self.user_id),1)
+            note = next(row for row in inbox.list_in_app_notifications(c,user_id=self.user_id) if row['event']=='internal_error')
+            self.assertEqual(note['problem_status'],'resolved')
+            self.assertTrue(note['read'])
 
     def test_delivery_failure_is_redacted_bounded_and_does_not_change_open_problem(self):
         with self.connect() as c:

@@ -5253,6 +5253,7 @@ def _deliver_notifications_once() -> None:
         from .services.protection_notifications import maintain_notifications
         with db() as connection:
             maintain_notifications(connection)
+            report_problem(connection, event="internal_error", component="notification_monitor", active=False)
     except Exception as exc:
         _report_worker_error("notification_monitor", exc)
     try:
@@ -5275,6 +5276,7 @@ def _deliver_notifications_once() -> None:
                 connection,
                 smtp_client=notification_service.production_smtp_client(),
             )
+            report_problem(connection, event="internal_error", component="notification_delivery", active=False)
         for _ in range(int(stats.get("delivered", 0))):
             metrics_service.inc(
                 "notification_deliveries_total",

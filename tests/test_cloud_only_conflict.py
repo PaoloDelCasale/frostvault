@@ -290,7 +290,13 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
         self._write(NEW)
         self._scan()
 
+        with PostgresConnection(str(self.database_path)) as connection:
+            self.assertEqual(notification_service.count_unread_notifications(connection, user_id=1), 1)
         queued = confirm_cloud_only_replacement(PATH, 2, 1)
+        with PostgresConnection(str(self.database_path)) as connection:
+            self.assertEqual(notification_service.count_unread_notifications(connection, user_id=1), 0)
+            self.assertEqual(notification_service.count_open_problems(connection, user_id=1), 0)
+            self.assertEqual(notification_service.list_in_app_notifications(connection, user_id=1)[0]['problem_status'], 'resolved')
         self.assertEqual(queued["item_count"], 1)
         self.assertEqual(
             [row["status"] for row in self._incidents()], ["resolved"]

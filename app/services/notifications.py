@@ -285,7 +285,7 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
     """Notify the Owner of terminal Jobs; failures also use optional SMTP."""
     job = connection.execute(
         """
-        SELECT id, vault_id, vault_file_id, path, action, status, origin
+        SELECT id, vault_id, path, action, status, origin
         FROM jobs WHERE id=%s
         """,
         (job_id,),
@@ -333,9 +333,9 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
         )
         if event == "job_failed":
             connection.execute(
-                "UPDATE notifications SET problem_key=%s, problem_status=COALESCE(problem_status, 'open') "
+                "UPDATE notifications SET problem_status=COALESCE(problem_status, 'open') "
                 "WHERE user_id=%s AND dedupe_key=%s",
-                (f"upload:{job['vault_file_id']}", user_id, dedupe_key),
+                (user_id, dedupe_key),
             )
         if existing is None:
             enqueued += 1
@@ -416,9 +416,9 @@ def _enqueue_incident_notification(
             channels=tuple(channels),
         )
         connection.execute(
-            "UPDATE notifications SET problem_key=%s, problem_status=COALESCE(problem_status, 'open') "
+            "UPDATE notifications SET problem_status=COALESCE(problem_status, 'open') "
             "WHERE user_id=%s AND dedupe_key=%s",
-            (dedupe_key, user_id, dedupe_key),
+            (user_id, dedupe_key),
         )
         if existing is None:
             enqueued += 1
@@ -558,10 +558,10 @@ def set_problem(
     )
     reopen = previous and previous.get("problem_status") == "resolved"
     connection.execute(
-        "UPDATE notifications SET problem_key=%s, problem_status='open', resolved_at=NULL, "
+        "UPDATE notifications SET problem_status='open', resolved_at=NULL, "
         "message_params=%s, body=%s, read_at=CASE WHEN %s THEN NULL ELSE read_at END, "
         "created_at=CASE WHEN %s THEN %s ELSE created_at END WHERE id=%s",
-        (key, format_message_params(context), translate(f"notification.{event}.body", **context),
+        (format_message_params(context), translate(f"notification.{event}.body", **context),
          bool(reopen), bool(reopen), stamp, item["id"]),
     )
     if reopen:
@@ -588,10 +588,12 @@ def reconcile_problem_states(connection: Any) -> None:
                 SELECT 1 FROM catalog_incidents i
                 WHERE n.dedupe_key='incident:' || i.id::text AND i.status='resolved'
             )) OR (n.event='job_failed' AND EXISTS (
-                SELECT 1 FROM jobs original JOIN jobs latest
-                  ON latest.vault_file_id=original.vault_file_id AND latest.action='upload'
-                WHERE original.id=n.job_id AND
-                    (original.status<>'failed' OR latest.id>original.id)
+                SELECT 1 FROM jobs original WHERE original.id=n.job_id AND (
+                    original.status<>'failed' OR EXISTS (
+                        SELECT 1 FROM jobs latest WHERE latest.vault_file_id=original.vault_file_id
+                          AND latest.action='upload' AND latest.id>original.id
+                    )
+                )
             )) OR (n.event='file_unreadable' AND (
                 EXISTS (SELECT 1 FROM vault_component_health h WHERE h.vault_id=n.vault_id
                         AND h.component='source' AND h.last_error IS NULL AND h.last_success_at>n.created_at)
