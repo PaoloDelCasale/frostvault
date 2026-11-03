@@ -14,8 +14,8 @@ Bucket preflight requires versioning and all four bucket Block Public Access
 flags explicitly true. Denial, unsupported APIs and missing state fail closed;
 account-level policy is not proof of the required bucket configuration.
 Migration 0051 refuses encrypted legacy rows before DDL and does not touch S3,
-convert keys or discard legacy secrets. Legacy crypt remotes are also refused,
-not reinterpreted as plaintext. Test Vaults have no compatibility promise (#362):
+convert keys or discard legacy secrets. Legacy ciphertext is not reinterpreted
+as plaintext. Test Vaults have no compatibility promise (#362):
 recover deliberately with the old release before creating a fresh installation.
 Metadata backup ciphertext and `ARCHIVE_MASTER_KEY` remain necessary for metadata
 restore. The unified Recovery Kit belongs to #427, not this removal.
