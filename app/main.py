@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .api_models import JsonObjectResponse, documented_schemas, response_model
 from .branding import PRODUCT_NAME
-from .config import settings, validate_settings
+from .config import settings, settings_snapshot, validate_settings
 from .audit import audit_log
 from .i18n import (
     DEFAULT_LOCALE,
@@ -438,7 +438,7 @@ def current_user(request: Request) -> dict[str, Any]:
 
 
 def _runtime_settings():
-    return settings
+    return settings_snapshot(settings)
 
 
 class ReauthRequired(HTTPException):

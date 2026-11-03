@@ -19,7 +19,7 @@ from alembic.script import ScriptDirectory
 from alembic.script.revision import RangeNotAncestorError, ResolutionError
 from alembic.util.exc import CommandError
 
-from .config import settings
+from .config import settings, settings_snapshot
 from .database import HEAD_SCHEMA_REVISION, DatabaseSchemaError, db, read_schema_revision
 from .services import metadata_backups
 
@@ -188,13 +188,14 @@ def _upgrade_existing_with_backup() -> None:
     backup_dir = Path(settings.metadata_backup_dir)
     try:
         with db() as connection:
+            runtime = settings_snapshot(settings)
             outcome = metadata_backups.run_pre_upgrade_backup_gate(
                 backup_dir=backup_dir,
                 settings_obj=settings,
                 db_backend=settings.db_backend,
                 sqlite_path=settings.sqlite_path,
-                retention=settings.metadata_backup_retention,
-                s3_prefix=settings.metadata_backup_s3_prefix,
+                retention=runtime.metadata_backup_retention,
+                s3_prefix=runtime.metadata_backup_s3_prefix,
                 connection=connection,
             )
     except metadata_backups.PreUpgradeBackupBlockedError as exc:

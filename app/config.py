@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import ipaddress
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
+from typing import Any
 
 _DEFAULT_FRONTEND_DIST = str(
     Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -188,6 +189,21 @@ class Settings:
 
 
 settings = Settings()
+
+
+def settings_snapshot(configured: Settings | Any) -> Settings:
+    """Use deployment values only; complete partial embedded/test configurations.
+
+    Production passes the immutable Settings instance through unchanged. Partial
+    callers retain the same environment/default fallback as before #416, without
+    querying or accepting database overrides.
+    """
+    if isinstance(configured, Settings):
+        return configured
+    return replace(settings, **{
+        field.name: getattr(configured, field.name)
+        for field in fields(Settings) if hasattr(configured, field.name)
+    })
 
 
 def validate_settings() -> None:

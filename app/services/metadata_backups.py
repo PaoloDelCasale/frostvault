@@ -241,11 +241,7 @@ _SNAPSHOT_KEYS = frozenset("""
 """.split())
 
 
-def build_config_snapshot(
-    source: Settings | Any | None = None,
-    *,
-    connection: Any | None = None,
-) -> dict[str, Any]:
+def build_config_snapshot(source: Settings | Any | None = None) -> dict[str, Any]:
     """Return deployment configuration, never database overrides or secrets."""
     cfg = source if source is not None else settings
     return {key: getattr(cfg, key) for key in sorted(_SNAPSHOT_KEYS) if hasattr(cfg, key)}
@@ -811,7 +807,7 @@ def run_metadata_backup(
     backend = (db_backend or settings.db_backend).strip().lower()
     keep = retention if retention is not None else settings.metadata_backup_retention
     if config_snapshot is None:
-        config_snapshot = build_config_snapshot(connection=connection)
+        config_snapshot = build_config_snapshot()
     try:
         artifact = create_metadata_backup(
             reason=reason,
@@ -975,7 +971,7 @@ def run_pre_upgrade_backup_gate(
                 "Configured metadata backup object store is unavailable"
             )
         if config_snapshot is None:
-            config_snapshot = build_config_snapshot(cfg, connection=connection)
+            config_snapshot = build_config_snapshot(cfg)
         result = run_pre_upgrade_backup(
             backup_dir=backup_dir,
             master_key=effective_master_key,

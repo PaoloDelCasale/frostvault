@@ -358,31 +358,51 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         self.assertIn("disk vanished", status.get("last_error") or "")
         self.assertFalse(status.get("scanning"))
 
+    def test_unreadable_file_problem_survives_verified_scan_compensation(self) -> None:
+        import os
+        from app.catalog import ArchiveCatalog
+        from app.storage import scan_tree, scan_vault
+
+        vault = self._adopt()
+        scan_tree(dict(vault), "before")
+        with SQLiteConnection(str(self.database_path)) as connection:
+            version_id = ArchiveCatalog(connection).record_archive_version(
+                vault_id=vault["id"], path="photo.jpg", object_key="only/photo.jpg",
+                provider_version_id="only-copy", size=10, storage_class="STANDARD",
+                etag="etag", uploaded_at="2026-11-03", observed_at="2026-11-03",
+                scan_id="before",
+            )
+        real_open = os.open
+        def denied(path, *args, **kwargs):
+            if Path(path).name == "photo.jpg":
+                raise PermissionError("denied")
+            return real_open(path, *args, **kwargs)
+        with (
+            patch("app.services.fs_preflight.os.open", side_effect=denied),
+            patch("app.storage.scan_cloud", return_value=0),
+            patch("app.storage.validate_cloud_vault"),
+            patch("app.storage.s3_client"),
+            patch("app.storage.reconcile_pending_policy_tags", return_value={}),
+            patch("app.storage.queue_auto_uploads", return_value=0),
+            patch("app.storage.queue_auto_local_cleanups", return_value=0),
+        ):
+            result = scan_vault(dict(vault))
+        self.assertEqual(result["local"], -1)
+        with SQLiteConnection(str(self.database_path)) as connection:
+            problems = connection.execute("SELECT event, message_params FROM notifications").fetchall()
+            self.assertTrue(any(p["event"] == "file_unreadable" and "photo.jpg" in p["message_params"] for p in problems))
+            self.assertFalse(any(p["event"] == "protection_blocked" for p in problems))
+            self.assertEqual(connection.execute("SELECT presence FROM local_copies").fetchone()["presence"], "present")
+            self.assertEqual(connection.execute("SELECT availability FROM archive_versions WHERE id=%s", (version_id,)).fetchone()["availability"], "available")
+
     def test_descendant_symlink_findings_do_not_roll_back_adoption(self) -> None:
         from app.catalog import ArchiveCatalog
         from app.storage import scan_tree
 
-        # Simulate a descendant symlink without requiring OS symlink privileges.
         link = self.albums / "alias.jpg"
-        link.write_bytes(b"not-followed")
-        real_is_symlink = Path.is_symlink
-        real_is_file = Path.is_file
-
-        def fake_is_symlink(self: Path) -> bool:
-            if self.resolve() == link.resolve():
-                return True
-            return real_is_symlink(self)
-
-        def fake_is_file(self: Path) -> bool:
-            if self.resolve() == link.resolve():
-                return False
-            return real_is_file(self)
-
+        link.symlink_to(self.albums / "photo.jpg")
         vault = self._adopt()
-        with patch.object(Path, "is_symlink", fake_is_symlink), patch.object(
-            Path, "is_file", fake_is_file
-        ):
-            count = scan_tree(dict(vault), "scan-adopt-1")
+        count = scan_tree(dict(vault), "scan-adopt-1")
         self.assertGreaterEqual(count, 2)
 
         with SQLiteConnection(str(self.database_path)) as connection:

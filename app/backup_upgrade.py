@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .config import settings
+from .config import settings, settings_snapshot
 from .database import db
 from .services import metadata_backups
 
@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
             result = metadata_backups.run_pre_upgrade_backup(
                 backup_dir=backup_dir,
                 object_store=metadata_backups.default_object_store(),
-                retention=settings.metadata_backup_retention,
+                retention=settings_snapshot(settings).metadata_backup_retention,
                 connection=connection,
             )
     except metadata_backups.BackupError as exc:

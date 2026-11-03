@@ -25,7 +25,7 @@ import boto3
 from boto3.s3.transfer import TransferConfig
 from watchfiles import Change, awatch
 
-from .config import is_placeholder, settings
+from .config import is_placeholder, settings, settings_snapshot
 from .owner import owner_user_id
 from .catalog import ArchiveCatalog
 from .database import db
@@ -104,7 +104,7 @@ from .services.runtime_status import (
     scan_lock_for_vault,
     snapshot_runtime_status_for_stats,
 )
-from .services.fs_preflight import inspect_entry, walk_entries
+from .services.fs_preflight import UnreadablePathsError, inspect_entry, walk_entries
 from .services.problems import report_problem
 from .services.local_files import (
     hash_stable_regular_file,
@@ -114,8 +114,8 @@ from .services.local_files import (
 )
 
 
-def _runtime_settings(connection=None):
-    return settings
+def _runtime_settings():
+    return settings_snapshot(settings)
 from .services import worker_errors as worker_error_store
 from .services import notifications as notification_service
 from .services import cloud_deletion as cloud_deletion_service
@@ -674,7 +674,7 @@ def _scan_tree(
         # Preserve every problem before the caller rolls back partial catalog
         # observations. Never mark unseen copies missing after an incomplete walk.
         connection.commit()
-        raise PermissionError("Source scan incomplete: unreadable paths")
+        raise UnreadablePathsError("Source scan incomplete: unreadable paths")
 
     if _persisted_scan(vault):
         _current_verified_scan_row(connection, vault)
@@ -1580,14 +1580,15 @@ def _record_scan_component_health(
     error: str | None = None,
     verified: bool = False,
     extra: Mapping[str, Any] | None = None,
+    notify_problem: bool = True,
 ) -> None:
-    """Persist one scan/audit component outcome and mirror it on runtime_status."""
+    """Persist one scan/audit outcome and surface failures without diagnostic UI."""
     from .services.component_health import record_component_health
 
     stamp = now_iso()
     try:
         with db() as connection:
-            if not ok:
+            if not ok and notify_problem:
                 report_problem(
                     connection, vault_id=int(vault_id),
                     event="protection_blocked" if component == "source" else "internal_error",
@@ -1695,7 +1696,8 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 status["last_error"] = f"Source scan: {exc}"
                 result["local"] = -1
                 _record_scan_component_health(
-                    vault_id, "source", ok=False, error=status["last_error"]
+                    vault_id, "source", ok=False, error=status["last_error"],
+                    notify_problem=not isinstance(exc, UnreadablePathsError),
                 )
             else:
                 _record_scan_component_health(
@@ -1747,9 +1749,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                             connection,
                             vault_id=int(vault["id"]),
                             requested_by=owner_id,
-                            local_delete_enabled=_runtime_settings(
-                                connection
-                            ).allow_local_delete,
+                            local_delete_enabled=_runtime_settings().allow_local_delete,
                         )
             except Exception as exc:
                 status["last_error"] = f"Policy tag reconciliation: {exc}"
@@ -4996,8 +4996,7 @@ def process_recover(job: dict[str, Any]) -> None:
         and target.get("restore_state") != "available"
         and job.get("approved_at") is None
     ):
-        with db() as connection:
-            runtime = _runtime_settings(connection)
+        runtime = _runtime_settings()
         tier = job.get("restore_tier") or runtime.restore_tier or "Bulk"
         days = int(job.get("restore_days") or runtime.restore_days or 3)
         estimate = estimate_restore(
@@ -5434,7 +5433,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
     """Process one queue item after the scheduler has acquired its lease."""
     try:
         with db() as connection:
-            runtime = _runtime_settings(connection)
+            runtime = _runtime_settings()
             claim_token = job.get("claim_token")
             if claim_token:
                 current = ArchiveCatalog(connection).renew_job_claim(
@@ -5711,7 +5710,7 @@ def process_jobs_once(*, wait: bool = True) -> int:
     now = now_iso()
     current = datetime.now(timezone.utc)
     with db() as connection:
-        runtime = _runtime_settings(connection)
+        runtime = _runtime_settings()
         restore_due_before = _restore_due_before(runtime, current=current)
         # Over-fetch candidates so fair interleave can still fill the concurrency
         # budget when one Vault dominates the oldest requested_at values.
@@ -5819,7 +5818,7 @@ def claimable_queue_depth() -> int:
     """Return the actual unleased runnable backlog for the ``queue_depth`` gauge."""
     timestamp = now_iso()
     with db() as connection:
-        runtime = _runtime_settings(connection)
+        runtime = _runtime_settings()
         return ArchiveCatalog(connection).claimable_queue_depth(
             now=timestamp,
             restore_due_before=_restore_due_before(runtime),
@@ -6074,7 +6073,7 @@ def _run_scheduled_metadata_backup_once() -> None:
     """Create a scheduled encrypted metadata backup when configured."""
     try:
         with db() as connection:
-            runtime = _runtime_settings(connection)
+            runtime = _runtime_settings()
             if runtime.metadata_backup_interval_seconds <= 0:
                 return
             result = metadata_backup_service.run_metadata_backup(
