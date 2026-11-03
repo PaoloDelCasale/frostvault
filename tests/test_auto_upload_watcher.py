@@ -49,6 +49,9 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
                 return outer.clock.astimezone(tz) if tz else outer.clock.replace(tzinfo=None)
 
         for patcher in (
+            # Scan generations are process-local. Do not leak a simulated
+            # future generation into unrelated direct cloud-scan fixtures.
+            patch("app.storage.runtime_status", {}),
             patch("app.services.operation_policies.datetime", Clock),
             patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(self.database))),
             patch("app.storage.settings", SimpleNamespace(operation_concurrency=1, restore_poll_interval=900, allow_local_delete=False)),
@@ -170,12 +173,37 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
         self.assertEqual(self.queue(), 1)
         with self.db() as connection:
             set_policy(connection, 2, OperationPolicy(auto_upload=False))
+        self.assertEqual(storage.claimable_queue_depth(), 0)
         with patch("app.storage.validate_cloud_vault") as preflight, patch("app.storage.upload_s3_file") as upload:
-            storage.process_jobs_once()
+            self.assertEqual(storage.process_jobs_once(), 0)
             preflight.assert_not_called()
             upload.assert_not_called()
         self.assertEqual(self.jobs()[0]["status"], "queued")
         self.assertIsNone(self.jobs()[0]["claim_token"])
+
+    def test_paused_automatic_jobs_do_not_starve_explicit_manual_work(self):
+        self.write()
+        self.advance(300)
+        self.assertEqual(self.queue(), 1)
+        automatic_id = self.jobs()[0]["id"]
+        self.write("manual.jpg")
+        with self.db() as connection:
+            set_policy(connection, 2, OperationPolicy(auto_upload=False))
+            catalog = ArchiveCatalog(connection)
+            manual, _, _ = catalog.queue_jobs(
+                vault_id=2, path="manual.jpg", action="upload", requested_by=1,
+                requested_at=self.clock.isoformat(), group_id="manual", is_directory=False,
+            )
+            candidates = catalog.list_claimable_jobs(
+                now=self.clock.isoformat(), restore_due_before=self.clock.isoformat(), limit=1,
+            )
+            self.assertEqual([row["id"] for row in candidates], manual)
+            self.assertIsNone(catalog.claim_job(
+                job_id=automatic_id, claim_token="paused", claimed_at=self.clock.isoformat(),
+                claim_expires_at=(self.clock + timedelta(minutes=5)).isoformat(),
+                now=self.clock.isoformat(), restore_due_before=self.clock.isoformat(),
+            ))
+        self.assertEqual(storage.claimable_queue_depth(), 1)
 
     def test_edit_after_queue_is_rechecked_before_preflight(self):
         self.write()
@@ -264,6 +292,23 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
         with self.db() as connection:
             row = connection.execute("SELECT size, presence FROM local_copies").fetchone()
         self.assertEqual(row, {"size": 5, "presence": "present"})
+        self.assertEqual(self.jobs(), [])
+
+    def test_root_replaced_during_watcher_batch_rolls_back_observations(self):
+        target = self.write(watch=False)
+        real_inspect = storage.inspect_entry
+
+        def replace_root(entry):
+            observed = real_inspect(entry)
+            self.root.rename(self.base / "original")
+            self.root.mkdir()
+            return observed
+
+        with patch("app.storage.inspect_entry", side_effect=replace_root):
+            with self.assertRaises(RuntimeError):
+                storage.apply_filesystem_changes(self.vault, {(Change.added, str(target))})
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM local_copies").fetchone()["n"], 0)
         self.assertEqual(self.jobs(), [])
 
     def test_lifecycle_and_validation_failures_do_not_block_scan_enqueue(self):

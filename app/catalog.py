@@ -2843,8 +2843,19 @@ class ArchiveCatalog:
         action = f"{prefix}action"
         lease_token = f"{prefix}claim_token"
         lease_expiry = f"{prefix}claim_expires_at"
+        correlated_prefix = prefix or "jobs."
         predicate = f"""
             {runnable_sql}
+            AND (
+                    {prefix}action <> 'upload'
+                 OR {prefix}origin <> 'automatic'
+                 OR {prefix}archive_version_id IS NOT NULL
+                 OR COALESCE((
+                        SELECT upload_policy.auto_upload
+                        FROM vault_operation_policies upload_policy
+                        WHERE upload_policy.vault_id={correlated_prefix}vault_id
+                    ), TRUE)
+            )
             AND (
                     {lease_token} IS NULL
                  OR {lease_expiry} IS NULL

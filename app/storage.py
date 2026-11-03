@@ -744,6 +744,10 @@ def _apply_filesystem_changes(
                     observed_at=now_iso(),
                 )
             changed += 1
+        if "root_identity" in vault:
+            _current_verified_scan_row(connection, vault)
+        if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
+            raise _ScanRootMismatch("Source Volume changed during watcher observation")
         if changed:
             # One revision per watcher batch — never one event per path.
             published = record_catalog_revision(
