@@ -47,7 +47,7 @@ from .backoff import (
     record_success,
 )
 from .breakglass import is_break_glass_allowed
-from .catalog import ArchiveCatalog, VaultFileNotFound
+from .catalog import ArchiveCatalog
 from .database import db, initialize_database
 from .migrate_on_start import ensure_schema_current
 from .services.source_layout import (

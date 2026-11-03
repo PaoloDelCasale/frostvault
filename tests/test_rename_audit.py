@@ -11,14 +11,10 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
-from app import main
 from app.catalog import ArchiveCatalog, VaultFileNotFound
 from app.config import settings
 from app.database import SQLiteConnection
 from app.security import hash_password
-from app.sessions import create_session, csrf_token_for
 from app.storage import apply_auto_renames
 from tests.test_database import run_alembic
 
@@ -64,47 +60,15 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             sqlite_path=str(self.database_path),
             cookie_secure=False,
         )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-            "app.storage.settings",
-        ):
+        for target in ("app.database.settings", "app.storage.settings"):
             patcher = patch(target, self.test_settings)
             patcher.start()
             self.addCleanup(patcher.stop)
 
-        self.client = TestClient(
-            app=main.app, client=("127.0.0.1", 50000), follow_redirects=False
-        )
-
-    def _authenticate(self, *, user_id: int | None = None) -> None:
-        with SQLiteConnection(str(self.database_path)) as connection:
-            raw_token = create_session(
-                connection,
-                user_id=self.owner_id if user_id is None else user_id,
-                auth_method="oidc",
-            )
-            csrf_token = csrf_token_for(connection, raw_token)
-        self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
-        self.client.cookies.set(self.test_settings.csrf_cookie_name, csrf_token)
-
-    def _headers(self) -> dict[str, str]:
-        return {
-            "X-CSRF-Token": self.client.cookies.get(
-                self.test_settings.csrf_cookie_name
-            )
-            or ""
-        }
 
 
-    def _select_vault(self, vault_id: int | None = None) -> None:
-        response = self.client.post(
-            "/api/vaults/select",
-            json={"vault_id": self.vault_id if vault_id is None else vault_id},
-            headers=self._headers(),
-        )
-        self.assertEqual(response.status_code, 200, response.text)
+
+
 
     def _seed_digest_rename(
         self,
@@ -172,23 +136,6 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             return old_id
 
 
-    def _rename_state(self) -> dict[str, list[dict[str, object]]]:
-        with SQLiteConnection(str(self.database_path)) as connection:
-            return {
-                "vault_files": connection.execute(
-                    "SELECT * FROM vault_files ORDER BY id"
-                ).fetchall(),
-                "file_paths": connection.execute(
-                    "SELECT * FROM file_paths ORDER BY id"
-                ).fetchall(),
-                "local_copies": connection.execute(
-                    "SELECT * FROM local_copies ORDER BY vault_file_id"
-                ).fetchall(),
-                "jobs": connection.execute("SELECT * FROM jobs ORDER BY id").fetchall(),
-                "audit_events": connection.execute(
-                    "SELECT * FROM audit_events ORDER BY id"
-                ).fetchall(),
-            }
 
 
     def test_issue_188_two_concurrent_confirms_consume_one_candidate_once(self) -> None:
@@ -198,8 +145,6 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             new_path="concurrent/new.txt",
             with_verified_version=True,
         )
-        self._authenticate()
-        self._select_vault()
 
         start = threading.Barrier(2)
 

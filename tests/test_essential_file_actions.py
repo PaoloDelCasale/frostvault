@@ -197,6 +197,33 @@ class EssentialFileActionTests(unittest.TestCase):
                 self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone()["status"], "completed")
                 self.assertEqual(len([v for v in ArchiveCatalog(connection).list_versions(2, "new/photo.jpg") if v["recoverable"]]), 1)
 
+    def test_archived_or_busy_destination_is_not_consumed_as_a_provisional_file(self):
+        for state in ("archived", "uploading"):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as directory:
+                _source, database_path, _file_id, vault = self._prepare(Path(directory))
+                with SQLiteConnection(str(database_path)) as connection:
+                    catalog = ArchiveCatalog(connection)
+                    destination_id = catalog.get_file_by_path(2, "new/photo.jpg")["id"]
+                    if state == "archived":
+                        catalog.record_archive_version(
+                            vault_id=2, path="new/photo.jpg", object_key=NEW,
+                            provider_version_id="independent-copy", size=len(PAYLOAD),
+                            storage_class="STANDARD", etag="independent",
+                            uploaded_at="2026-07-21", observed_at="2026-07-21", scan_id="test",
+                        )
+                    else:
+                        catalog.queue_jobs(
+                            vault_id=2, path="new/photo.jpg", action="upload", requested_by=1,
+                            requested_at="2026-07-21", group_id="busy-upload", is_directory=False,
+                        )
+                cloud = _RenameCloud(database_path)
+                with _worker(database_path, cloud):
+                    summary = apply_auto_renames(vault)
+                self.assertEqual(summary["confirmed"], 0)
+                self.assertEqual(cloud.deleted, [])
+                with SQLiteConnection(str(database_path)) as connection:
+                    self.assertEqual(ArchiveCatalog(connection).get_file_by_path(2, "new/photo.jpg")["id"], destination_id)
+
     def test_removed_routes_and_contracts_are_not_exposed(self):
         paths = app.openapi()["paths"]
         for path in ("/api/cloud-archive", "/api/rename-candidates", "/api/confirm-rename", "/api/confirm-folder-rename", "/api/file-history"):

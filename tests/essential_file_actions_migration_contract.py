@@ -5,6 +5,14 @@ from app.catalog import ArchiveCatalog
 from tests.notification_migration_contract import seed_legacy_notifications, preserved_state
 
 
+def _state(connection):
+    # PostgreSQL may reorder heap rows after UPDATE; order is not data loss.
+    return {
+        table: sorted(rows, key=lambda row: str(row.get("id", row.get("vault_file_id", ""))))
+        for table, rows in preserved_state(connection).items()
+    }
+
+
 def assert_file_actions_migration(test, run, connect):
     result = run("0045_drop_quotas_windows")
     test.assertEqual(result.returncode, 0, result.stderr)
@@ -22,7 +30,7 @@ def assert_file_actions_migration(test, run, connect):
         )
         for job_id, status in ((10, "queued"), (11, "cleaning"), (12, "completed")):
             connection.execute("INSERT INTO jobs(id, vault_id, vault_file_id, archive_version_id, path, action, status, requested_at, updated_at, claim_token, claimed_at, claim_expires_at) VALUES (%s, 2, %s, %s, 'photo.jpg', 'cloud-archive', %s, '2026-11-03', '2026-11-03', 'legacy-claim', '2026-11-03', '2026-11-04')", (job_id, second_file if job_id == 11 else file_id, version_id, status))
-        before = preserved_state(connection)
+        before = _state(connection)
         markers = connection.execute("SELECT * FROM delete_markers").fetchall()
         for row in before["jobs"]:
             if row["id"] in (10, 11):
@@ -31,5 +39,5 @@ def assert_file_actions_migration(test, run, connect):
         result = run(target, command)
         test.assertEqual(result.returncode, 0, result.stderr)
         with connect() as connection:
-            test.assertEqual(preserved_state(connection), before)
+            test.assertEqual(_state(connection), before)
             test.assertEqual(connection.execute("SELECT * FROM delete_markers").fetchall(), markers)

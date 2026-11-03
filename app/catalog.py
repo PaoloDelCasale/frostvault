@@ -71,10 +71,6 @@ def _within_rename_window(left: Any, right: Any) -> bool:
     return abs(start - end) <= AUTO_RENAME_WINDOW
 
 
-def _path_basename(path: str) -> str:
-    return str(path).rsplit("/", 1)[-1]
-
-
 class ArchiveCatalog:
     """Keep versioned file invariants behind one persistence interface."""
 
@@ -1361,7 +1357,12 @@ class ArchiveCatalog:
                 lc.presence,
                 lc.size,
                 lc.observed_at,
-                lc.plaintext_sha256 AS digest
+                lc.plaintext_sha256 AS digest,
+                EXISTS (SELECT 1 FROM archive_versions av WHERE av.vault_file_id=vf.id) AS has_archive,
+                EXISTS (
+                    SELECT 1 FROM jobs j WHERE j.vault_file_id=vf.id
+                    AND j.status NOT IN ('completed', 'failed', 'cancelled')
+                ) AS has_pending_job
             FROM vault_files vf
             JOIN file_paths fp
               ON fp.vault_file_id=vf.id
@@ -1398,18 +1399,21 @@ class ArchiveCatalog:
                 digest_present[0]["observed_at"],
             ):
                 continue
-            for missing in digest_missing:
-                for present in digest_present:
-                    candidates.append(
-                        {
-                            "missing_vault_file_id": missing["vault_file_id"],
-                            "missing_path": missing["path"],
-                            "new_vault_file_id": present["vault_file_id"],
-                            "new_path": present["path"],
-                            "digest": digest,
-                            "size": present.get("size"),
-                        }
-                    )
+            missing, present = digest_missing[0], digest_present[0]
+            # A previously archived destination is already an independent file;
+            # never retire it or merge away its recoverable content. Active jobs
+            # also make the identity pair unsafe to consume.
+            if present["has_archive"] or present["has_pending_job"] or missing["has_pending_job"]:
+                continue
+            candidates.append(
+                {
+                    "missing_vault_file_id": missing["vault_file_id"],
+                    "missing_path": missing["path"],
+                    "new_vault_file_id": present["vault_file_id"],
+                    "new_path": present["path"],
+                    "digest": digest,
+                }
+            )
         return candidates
 
     def _rename_backend(self) -> str:
@@ -1598,6 +1602,7 @@ class ArchiveCatalog:
         provisional_conditions = [
             *provisional_file_conditions,
             *provisional_path_conditions,
+            "NOT EXISTS (SELECT 1 FROM archive_versions av WHERE av.vault_file_id=provisional.id)",
         ]
         provisional_params = [
             *provisional_file_params,
@@ -1763,9 +1768,8 @@ class ArchiveCatalog:
         )
         if snapshot is None:
             raise VaultFileNotFound()
-        # The endpoint maps VaultFileNotFound to its non-oracular 404 outside
-        # the transaction. Keep this scoped rollback too, so direct catalog
-        # callers cannot accidentally commit a partial candidate consumption.
+        # Keep a scoped rollback so catalog callers cannot accidentally commit
+        # a partial candidate consumption after a failed compare-and-swap.
         self.connection.execute("SAVEPOINT rename_confirmation_cas")
 
         missing_current = (

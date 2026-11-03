@@ -88,8 +88,10 @@ test.describe("archive flows", () => {
     await emergencyPasswordLogin(page);
     await openDirectory(page, "reports");
     await visibleFileButton(page, "readme.txt").click();
-    await expect(page.getByRole("dialog", { name: /readme.txt/ })).toBeVisible();
-    await expect(page.getByRole("button", { name: /^recover$/i })).toBeVisible();
+    const actions = page.getByRole("dialog", { name: /readme.txt/ });
+    await expect(actions).toBeVisible();
+    // This seeded file is already local: recovery is correctly unavailable.
+    await expect(actions.getByRole("button", { name: /^change storage class/i })).toBeVisible();
     await expect(page.getByText(/hide in cloud|confirm.*rename|path history/i)).toHaveCount(0);
   });
 
