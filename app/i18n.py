@@ -32,7 +32,6 @@ CRITICAL_KEYS: frozenset[str] = frozenset(
         "state.last_known",
         "state.previous_snapshot_protected",
         "state.protection_suspended",
-        "state.restoring",
         "action.upload",
         "action.recover",
         "action.free-space",

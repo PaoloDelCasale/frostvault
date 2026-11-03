@@ -51,16 +51,11 @@ const messages: Record<string, string> = {
   "operation.queued": "Waiting",
   "operation.completed": "Completed",
   "operation.generic": "Operation",
-  "state.both": "Local and cloud",
-  "state.local_only": "Local only",
+  "state.protected": "Protected",
+  "state.pending": "Pending",
   "state.cloud_only": "Cloud only",
-  "state.restoring": "Recovery in progress",
-  "state.mixed": "Mixed state",
-  "state.missing": "Unavailable",
-  "state.filter.local_only": "Local only",
-  "state.filter.both": "Local and cloud",
-  "state.filter.cloud_only": "Cloud only",
-  "state.filter.restoring": "Recovery in progress",
+  "state.problem": "Problem",
+  "state.unconfirmed": "Unconfirmed",
   "storage.STANDARD": "Standard",
   "storage.DEEP_ARCHIVE": "Deep Archive",
   "ui.symlink_rejected": "Symbolic link (rejected)",
@@ -100,7 +95,7 @@ const localOnlyFile: FilesResponse = {
       local_exists: 1,
       local_size: 1024,
       cloud_exists: 0,
-      state: "local_only",
+      state: "pending",
       upload_eligible: true,
       recover_eligible: false,
       cleanup_eligible: false,
@@ -123,7 +118,7 @@ const bothFile: FilesResponse = {
       cloud_exists: 1,
       cloud_size: 1024,
       storage_class: "STANDARD",
-      state: "both",
+      state: "protected",
       upload_eligible: false,
       recover_eligible: false,
       cleanup_eligible: true,
@@ -245,7 +240,7 @@ describe("File list auto-refresh (issue #128)", () => {
     renderBrowser();
 
     await waitFor(() => {
-      expect(screen.getAllByText("Local only").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Pending").length).toBeGreaterThan(0);
     });
     expect(filesCalls).toBe(1);
 
@@ -253,7 +248,7 @@ describe("File list auto-refresh (issue #128)", () => {
 
     await waitFor(() => {
       expect(filesCalls).toBeGreaterThanOrEqual(2);
-      expect(screen.getAllByText("Local and cloud").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Protected").length).toBeGreaterThan(0);
     });
   });
 
@@ -289,7 +284,7 @@ describe("File list auto-refresh (issue #128)", () => {
     renderBrowser();
 
     await waitFor(() => {
-      expect(screen.getAllByText("Local only").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Pending").length).toBeGreaterThan(0);
       expect(screen.getAllByTestId("job-progress").length).toBeGreaterThan(0);
     });
 
@@ -300,12 +295,12 @@ describe("File list auto-refresh (issue #128)", () => {
     await waitFor(() => {
       expect(jobsCalls).toBeGreaterThanOrEqual(2);
       expect(filesCalls).toBeGreaterThanOrEqual(2);
-      expect(screen.getAllByText("Local and cloud").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Protected").length).toBeGreaterThan(0);
       expect(screen.queryByTestId("job-progress")).not.toBeInTheDocument();
     });
   });
 
-  it("seam 3: cancel recover keeps restoring badge when catalog still reports restoring (BUG-018)", async () => {
+  it("seam 3: cancel recover preserves Cloud only protection while archive restore remains active (BUG-018)", async () => {
     const restoringFile: FilesResponse = {
       items: [
         {
@@ -316,7 +311,7 @@ describe("File list auto-refresh (issue #128)", () => {
           cloud_exists: 1,
           cloud_size: 2048,
           storage_class: "DEEP_ARCHIVE",
-          state: "restoring",
+          state: "cloud_only",
           restore_state: "restoring",
           upload_eligible: false,
           recover_eligible: false,
@@ -382,7 +377,7 @@ describe("File list auto-refresh (issue #128)", () => {
 
     await waitFor(() => {
       expect(
-        screen.getAllByText("Recovery in progress").length,
+        screen.getAllByText("Cloud only").length,
       ).toBeGreaterThan(0);
       expect(screen.getAllByTestId("job-progress").length).toBeGreaterThan(0);
     });
@@ -392,7 +387,7 @@ describe("File list auto-refresh (issue #128)", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("job-progress")).not.toBeInTheDocument();
       expect(
-        screen.getAllByText("Recovery in progress").length,
+        screen.getAllByText("Cloud only").length,
       ).toBeGreaterThan(0);
       expect(filesCalls).toBeGreaterThanOrEqual(2);
     });

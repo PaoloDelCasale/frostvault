@@ -255,8 +255,8 @@ class DirectoryScaleTests(unittest.TestCase):
                 ("recordings/keep-me.bin", 1),
             ],
         )
-        # Make one cloud_only file for state filtering.
-        self.catalog.record_archive_version(
+        # Only a verified, available snapshot can be Cloud only.
+        cloud_version = self.catalog.record_archive_version(
             vault_id=2,
             path="clips/cloud-only.bin",
             object_key="docs/clips/cloud-only.bin",
@@ -268,6 +268,7 @@ class DirectoryScaleTests(unittest.TestCase):
             observed_at="2026-07-21T10:00:00+00:00",
             scan_id="scan-1",
         )
+        self.connection.execute("UPDATE archive_versions SET integrity='verified' WHERE id=%s", (cloud_version,))
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
 
         search = self.catalog.list_files_page(

@@ -77,9 +77,9 @@ test.describe("archive flows", () => {
     await chooseMenuOption(
       page,
       page.getByTestId("state-filter"),
-      /local and cloud/i,
+      /^protected$/i,
     );
-    await expect(page).toHaveURL(/state=both/);
+    await expect(page).toHaveURL(/state=protected/);
   });
 
   test("flow 4 — a file opens actions without rename or path-history controls", async ({

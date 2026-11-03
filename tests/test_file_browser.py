@@ -265,7 +265,7 @@ class FileBrowserTests(unittest.TestCase):
                     directory="reports",
                     page=1,
                     page_size=100,
-                    vault={"id": 2},
+                    vault={"id": 2, "source_root": "/source"},
                 )
 
             self.assertEqual(result["total"], 1)
