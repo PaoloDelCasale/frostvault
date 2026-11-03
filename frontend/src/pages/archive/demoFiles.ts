@@ -340,7 +340,6 @@ type DemoVault = {
   source_root: string;
   s3_prefix: string;
   enabled: boolean;
-  encryption_mode: string;
 };
 
 type DemoLifecycleProfile = {
@@ -449,7 +448,6 @@ function seedDemoState(): DemoState {
         source_root: "/sources/test",
         s3_prefix: "development/test",
         enabled: true,
-        encryption_mode: "plain",
       },
     ],
     locale: "en",

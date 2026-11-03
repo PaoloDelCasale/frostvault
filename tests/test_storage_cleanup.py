@@ -37,7 +37,6 @@ from app.storage import (
     process_upload,
     process_jobs_once,
     reconcile_interrupted_jobs,
-    rclone_remote_is_crypt,
     remove_local_copies,
     scan_tree,
     scan_cloud,
@@ -148,30 +147,10 @@ class CancelGroupConnection(RecordingConnection):
 
 
 class StorageCleanupTests(unittest.TestCase):
-    def test_cloud_keys_add_bin_only_for_crypt_remotes(self) -> None:
-        self.assertEqual(
-            expected_cloud_key("docs/file.txt", "archive", True),
-            "archive/docs/file.txt.bin",
-        )
-        self.assertEqual(
-            expected_cloud_key("docs/file.txt", "archive", False),
-            "archive/docs/file.txt",
-        )
-        self.assertEqual(
-            object_key_to_path("archive/docs/file.txt.bin", "archive", True),
-            "docs/file.txt",
-        )
-        self.assertIsNone(
-            object_key_to_path("archive/docs/file.txt", "archive", True)
-        )
-        self.assertEqual(
-            object_key_to_path("archive/docs/file.txt", "archive", False),
-            "docs/file.txt",
-        )
-        self.assertEqual(
-            object_key_to_path("archive/docs/file.txt.bin", "archive", False),
-            "docs/file.txt.bin",
-        )
+    def test_cloud_keys_are_readable_without_extension_transformation(self) -> None:
+        self.assertEqual(expected_cloud_key("docs/file.txt", "archive"), "archive/docs/file.txt")
+        self.assertEqual(object_key_to_path("archive/docs/file.txt", "archive"), "docs/file.txt")
+        self.assertEqual(object_key_to_path("archive/docs/file.txt.bin", "archive"), "docs/file.txt.bin")
 
     def test_local_scan_ignores_all_rclone_recovery_temporaries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -342,7 +321,6 @@ class StorageCleanupTests(unittest.TestCase):
             with (
                 patch("app.database.settings", test_settings),
                 patch("app.storage.validate_cloud_vault"),
-                patch("app.storage.rclone_remote_is_crypt", return_value=False),
                 patch(
                     "app.storage.s3_client",
                     return_value=SimpleNamespace(get_paginator=get_paginator),
@@ -412,7 +390,6 @@ class StorageCleanupTests(unittest.TestCase):
             with (
                 patch("app.database.settings", test_settings),
                 patch("app.storage.validate_cloud_vault"),
-                patch("app.storage.rclone_remote_is_crypt", return_value=False),
                 patch("app.storage.s3_client", return_value=client),
             ):
                 scan_cloud(
@@ -526,7 +503,6 @@ class StorageCleanupTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch("app.storage.run_rclone"),
                     patch(
                         "app.storage.s3_client",
@@ -618,20 +594,6 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertEqual(added_file["local_copy"]["presence"], "present")
             self.assertEqual(deleted_file["local_copy"]["presence"], "missing")
             self.assertIsNone(partial_file)
-
-    def test_remote_type_is_read_from_rclone_config(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            config = Path(directory) / "rclone.conf"
-            config.write_text(
-                "[encrypted]\ntype = crypt\n\n[plain]\ntype = alias\n",
-                encoding="utf-8",
-            )
-            with patch(
-                "app.storage.settings",
-                SimpleNamespace(rclone_config=str(config)),
-            ):
-                self.assertTrue(rclone_remote_is_crypt("encrypted"))
-                self.assertFalse(rclone_remote_is_crypt("plain"))
 
     def test_rclone_json_stats_expose_real_transferred_bytes(self) -> None:
         line = (
@@ -1621,7 +1583,6 @@ class StorageCleanupTests(unittest.TestCase):
                 patch("app.database.settings", database_settings),
                 patch("app.storage.settings", worker_settings),
                 patch("app.storage.validate_cloud_vault"),
-                patch("app.storage.rclone_remote_is_crypt", return_value=False),
                 patch("app.storage.s3_client", return_value=client),
                 patch("app.storage.run_rclone") as run_rclone,
             ):
@@ -1698,7 +1659,8 @@ class StorageCleanupTests(unittest.TestCase):
                 "vault_id": 2,
                 "path": "docs/file.txt",
                 "source_root": str(source),
-                "rclone_remote": "test-crypt",
+                "rclone_remote": "test-plain",
+                "s3_prefix": "docs",
             }
 
             def fake_rclone(*args: str, **kwargs) -> None:
@@ -1710,7 +1672,6 @@ class StorageCleanupTests(unittest.TestCase):
             )
             with (
                 patch("app.storage.run_rclone", side_effect=fake_rclone),
-                patch("app.storage.rclone_remote_is_crypt", return_value=True),
                 patch("app.database.settings", database_settings),
                 patch("app.storage.set_job"),
             ):
@@ -1734,7 +1695,8 @@ class StorageCleanupTests(unittest.TestCase):
                 "vault_id": 2,
                 "path": "docs/file.txt",
                 "source_root": str(source),
-                "rclone_remote": "test-crypt",
+                "rclone_remote": "test-plain",
+                "s3_prefix": "docs",
             }
 
             def failing_rclone(*args: str, **kwargs) -> None:
@@ -1743,7 +1705,6 @@ class StorageCleanupTests(unittest.TestCase):
 
             with (
                 patch("app.storage.run_rclone", side_effect=failing_rclone),
-                patch("app.storage.rclone_remote_is_crypt", return_value=True),
                 patch("app.storage.set_job"),
             ):
                 with self.assertRaisesRegex(RuntimeError, "download stopped"):

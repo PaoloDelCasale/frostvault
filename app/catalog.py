@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
 from .services.job_admission import TERMINAL_JOB_STATUSES, lock_vault
-from .services.vault_recovery import require_upload_custody
 from .services.lifecycle_pins import is_path_pinned
 from .services.directory_aggregates import (
     count_child_directories,
@@ -2932,8 +2931,7 @@ class ArchiveCatalog:
         return self.connection.execute(
             f"""
             SELECT j.*, v.source_root, v.s3_bucket,
-                   v.s3_prefix, v.rclone_remote, v.encryption_mode,
-                   v.crypt_password_ciphertext, v.crypt_password2_ciphertext,
+                   v.s3_prefix, v.rclone_remote,
                    v.uuid AS vault_uuid, v.name AS vault_name,
                    v.cloud_deletion_enabled, v.decommission_state
             FROM jobs j
@@ -3407,8 +3405,7 @@ class ArchiveCatalog:
         self.last_skipped_same_class = 0
         vault = self.connection.execute(
             """
-            SELECT decommission_state, encryption_mode,
-                   recovery_custody_confirmed_at
+            SELECT decommission_state
             FROM vaults WHERE id=%s
             """,
             (vault_id,),
@@ -3422,8 +3419,6 @@ class ArchiveCatalog:
             raise ValueError("Vault is quiesced for decommission")
         if origin == "decommission" and lifecycle != "decommissioning":
             raise ValueError("Decommission Jobs require a quiesced Vault")
-        if action == "upload":
-            require_upload_custody(vault)
         clauses = ["vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'"]
         params: list[Any] = [vault_id]
         clauses.append(

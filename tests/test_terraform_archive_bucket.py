@@ -32,6 +32,8 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
             for statement in policy["Statement"]
             for action in statement["Action"]
         }
+        self.assertIn("s3:GetBucketPublicAccessBlock", actions)
+        self.assertNotIn("s3:PutBucketPublicAccessBlock", actions)
         self.assertIn("s3:PutObject", actions)
         self.assertIn("s3:GetObjectVersion", actions)
         self.assertIn("s3:RestoreObject", actions)
@@ -44,6 +46,8 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
         raw = policy_path.read_text(encoding="utf-8")
         self.assertIn("${archive_ci_prefix}/*", raw)
         self.assertIn("s3:DeleteObjectVersion", raw)
+        self.assertIn("s3:GetBucketPublicAccessBlock", raw)
+        self.assertNotIn("s3:PutBucketPublicAccessBlock", raw)
         self.assertNotIn("s3:PutLifecycleConfiguration", raw)
         # No unbounded object ARN.
         self.assertNotIn(

@@ -39,7 +39,6 @@ const defaultVaults = [
     source_root: "/sources/a",
     s3_prefix: "vaults/a/",
     enabled: true,
-    encryption_mode: "plain",
     decommission_state: "active",
   },
   {
@@ -49,7 +48,6 @@ const defaultVaults = [
     source_root: "/sources/b",
     s3_prefix: "vaults/b/",
     enabled: true,
-    encryption_mode: "crypt",
     decommission_state: "active",
   },
 ];

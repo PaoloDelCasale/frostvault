@@ -171,6 +171,28 @@ class VaultCreationTests(VaultCreationHttpTestCase):
         created_dirs = [p.name for p in self.managed_root.iterdir() if p.is_dir()]
         self.assertEqual(created_dirs, [body["uuid"]])
 
+    def test_plaintext_creation_has_no_mode_or_recovery_material_and_needs_no_master_key(self) -> None:
+        self._login()
+        with patch("app.services.vaults.settings", replace(self.settings, archive_master_key="")):
+            response = self._create("Readable")
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(set(response.json()), {"id", "uuid", "slug", "name", "creation_mode"})
+        with SQLiteConnection(str(self.database_path)) as connection:
+            row = connection.execute("SELECT * FROM vaults WHERE id=%s", (response.json()["id"],)).fetchone()
+        self.assertEqual(row["s3_prefix"], f"vaults/{row['uuid']}/")
+        self.assertFalse(any("crypt" in key or "custody" in key for key in row))
+
+    def test_retired_encryption_options_and_recovery_routes_are_not_available(self) -> None:
+        self._login()
+        headers = {"X-CSRF-Token": self._csrf()}
+        for mode in ("plain", "crypt"):
+            response = self.client.post("/api/vaults", json={"name": "Retired", "encryption_mode": mode}, headers=headers)
+            self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(self.client.get("/api/vaults").json()["items"], [])
+        for route in ("confirm", "export"):
+            response = self.client.post(f"/api/vault/recovery/{route}", json={}, headers=headers)
+            self.assertEqual(response.status_code, 404, response.text)
+
     def test_creation_requires_authentication(self) -> None:
         response = self.client.post("/api/vaults", json={"name": "Docs"})
 

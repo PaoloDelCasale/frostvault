@@ -60,10 +60,10 @@ class VaultRelocationTests(unittest.TestCase):
                 """
                 INSERT INTO vaults(
                     id, uuid, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote, encryption_mode
+                    rclone_remote
                 ) VALUES (
                     7, '11111111-1111-1111-1111-111111111111', 'photos',
-                    'Photos', %s, 'bucket', 'vaults/immutable/', 'remote', 'plain'
+                    'Photos', %s, 'bucket', 'vaults/immutable/', 'remote'
                 ) RETURNING *
                 """,
                 (str(self.old),),
@@ -97,7 +97,7 @@ class VaultRelocationTests(unittest.TestCase):
         relocated = self.relocate()
         self.assertEqual(relocated["source_root"], str(self.new.resolve()))
         self.assertEqual(relocated["relocation_state"], "scan_required")
-        for field in ("id", "uuid", "s3_bucket", "s3_prefix", "rclone_remote", "encryption_mode"):
+        for field in ("id", "uuid", "s3_bucket", "s3_prefix", "rclone_remote"):
             self.assertEqual(relocated[field], before[field])
         with SQLiteConnection(str(self.db_path)) as connection:
             event = connection.execute(

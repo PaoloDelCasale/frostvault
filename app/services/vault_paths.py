@@ -1,21 +1,13 @@
 """Logical-path, local-path and cloud-key mapping for Vault Files.
 
 A logical path is Vault-relative and POSIX; the local path is confined to the
-Vault root; the cloud key adds the S3 prefix and, for crypt Vaults, the
-encrypted name or ``.bin`` suffix.  Temporary restore/cleanup/verify names
+Vault root; the cloud key adds only the S3 prefix, preserving readable names.  Temporary restore/cleanup/verify names
 are recognised here so scans and watchers can ignore them.
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path, PurePosixPath
-from typing import Any
-
-from .rclone_runtime import (
-    decode_object_relative_path,
-    encode_object_relative_path,
-)
-
 
 RESTORE_TEMPORARY_RE = re.compile(
     r"\..+\.restore-[0-9a-f]{32}\.tmp(?:\..+\.partial)?"
@@ -87,9 +79,6 @@ def safe_local_entry_path(root_value: str, logical_path: str) -> Path:
     return candidate
 
 
-_UNSET_DECODED_PATH = object()
-
-
 def _cloud_relative_key(key: str, prefix_value: str) -> str | None:
     prefix = f"{prefix_value.strip('/')}/" if prefix_value.strip('/') else ""
     if prefix and not key.startswith(prefix):
@@ -103,33 +92,10 @@ def _cloud_relative_key(key: str, prefix_value: str) -> str | None:
 def object_key_to_path(
     key: str,
     prefix_value: str,
-    is_crypt: bool,
-    *,
-    encrypted_names: bool = False,
-    runtime: Any | None = None,
-    decoded_relative_path: str | None | object = _UNSET_DECODED_PATH,
 ) -> str | None:
     relative = _cloud_relative_key(key, prefix_value)
     if relative is None:
         return None
-    if encrypted_names:
-        if runtime is None:
-            return None
-        if decoded_relative_path is _UNSET_DECODED_PATH:
-            try:
-                relative = decode_object_relative_path(runtime, relative)
-            except RuntimeError:
-                return None
-        elif decoded_relative_path is None:
-            # The batch decoder deliberately makes one bad key unknown rather
-            # than allowing a partial/ambiguous plaintext path into the catalog.
-            return None
-        else:
-            relative = str(decoded_relative_path)
-    elif is_crypt:
-        if not relative.endswith('.bin'):
-            return None
-        relative = relative[:-4]
     if not relative or relative.endswith('/'):
         return None
     try:
@@ -138,21 +104,8 @@ def object_key_to_path(
         return None
 
 
-def expected_cloud_key(
-    logical_path: str,
-    prefix_value: str,
-    is_crypt: bool,
-    *,
-    encrypted_names: bool = False,
-    runtime: Any | None = None,
-) -> str:
+def expected_cloud_key(logical_path: str, prefix_value: str) -> str:
     relative = safe_relative_path(logical_path).as_posix()
-    if encrypted_names:
-        if runtime is None:
-            raise RuntimeError("Filename-encrypted keys require a runtime Rclone config")
-        relative = encode_object_relative_path(runtime, relative)
-    elif is_crypt:
-        relative += ".bin"
     prefix = prefix_value.strip("/")
     return f"{prefix}/{relative}" if prefix else relative
 
@@ -166,7 +119,7 @@ def plain_rclone_destination(
     remote = remote_name.strip().rstrip(":")
     if not remote:
         raise ValueError("Rclone remote name is required")
-    key = expected_cloud_key(logical_path, s3_prefix, is_crypt=False)
+    key = expected_cloud_key(logical_path, s3_prefix)
     return f"{remote}:{key}"
 
 

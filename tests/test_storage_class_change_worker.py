@@ -98,7 +98,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         with SQLiteConnection(str(self.path)) as connection:
             return connection.execute(
                 """
-                SELECT j.*, v.encryption_mode, v.s3_bucket, v.s3_prefix, v.source_root,
+                SELECT j.*, v.s3_bucket, v.s3_prefix, v.source_root,
                        v.rclone_remote, v.slug
                 FROM jobs j
                 JOIN vaults v ON v.id=j.vault_id

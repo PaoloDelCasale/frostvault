@@ -32,9 +32,9 @@ describe("capture/demo seams", () => {
     expect(main).toMatch(
       /if\s*\(\s*DEMO_MODE_ENABLED\s*&&[\s\S]*installDemoFilesFetch\(\)/,
     );
-    expect(app).toMatch(
-      /DEMO_MODE_ENABLED\s*&&[\s\S]*getDemoSearchParam\("demo"\)/,
-    );
+    // The per-Vault recovery screenshot entry was retired with crypt (#419).
+    expect(app).not.toContain("VaultCreateScreenshotFixture");
+    expect(app).not.toContain("getDemoSearchParam");
     expect(browser).toMatch(/getDemoSearchParam\("(?:sheet|history|confirm|target|versions)"\)/);
     expect(operations).toMatch(
       /DEMO_MODE_ENABLED\s*\?\s*demoConfirm\s*:\s*null/,

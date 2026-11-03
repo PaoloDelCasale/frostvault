@@ -137,6 +137,14 @@ class OpenApiResponseContractTests(unittest.TestCase):
             }.isdisjoint(vault["properties"])
         )
 
+    def test_no_retired_encryption_or_per_vault_recovery_contracts(self) -> None:
+        schema = app.openapi()
+        self.assertFalse(any(path.startswith("/api/vault/recovery") for path in schema["paths"]))
+        self.assertFalse(any(name.startswith("Recovery") or name == "EncryptionMode" for name in schema["components"]["schemas"]))
+        for name in ("VaultSelfServiceCreate", "VaultCreateRequest", "VaultCreateResponse", "AdminVault"):
+            properties = schema["components"]["schemas"][name]["properties"]
+            self.assertFalse(any("encryption" in key or "custody" in key or "recovery_export" in key for key in properties))
+
     def test_committed_openapi_document_matches_the_application(self) -> None:
         committed = json.loads(
             (ROOT / "frontend" / "openapi.json").read_text(encoding="utf-8")

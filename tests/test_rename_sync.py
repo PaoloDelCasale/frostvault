@@ -251,7 +251,6 @@ def _rename_worker(
         with (
             patch("app.storage.settings", worker_settings),
             patch("app.storage.validate_cloud_vault"),
-            patch("app.storage.rclone_remote_is_crypt", return_value=False),
             patch("app.storage.run_rclone", side_effect=fake_rclone),
             patch(
                 "app.storage.s3_client",
@@ -670,7 +669,6 @@ class RenameCloudJobTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch("app.storage.run_rclone"),
                     patch(
                         "app.storage.s3_client",
@@ -762,7 +760,6 @@ class RenameCloudJobTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch("app.storage.run_rclone"),
                     patch(
                         "app.storage.s3_client",
@@ -841,7 +838,6 @@ class RenameCloudJobTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch("app.storage.run_rclone", side_effect=cancelling_rclone),
                     patch(
                         "app.storage.s3_client",
@@ -1013,15 +1009,13 @@ class FolderRenameTests(unittest.TestCase):
                     self.assertEqual(history, [old_path, new_path])
 
 
-class CryptRenameTests(unittest.TestCase):
+class PlaintextNamespaceRenameTests(unittest.TestCase):
     def setUp(self) -> None:
         from app import storage
 
         storage.cancelled_jobs.clear()
 
-    def test_crypt_rename_verifies_new_key_before_purging_old_key(self) -> None:
-        from app.services.rclone_runtime import RuntimeRcloneConfig
-
+    def test_readable_rename_verifies_new_key_before_purging_old_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source"
@@ -1029,10 +1023,8 @@ class CryptRenameTests(unittest.TestCase):
             payload = b"secret-rename"
             old_path = "old-secret.txt"
             new_path = "new-secret.txt"
-            old_encrypted = "nq/old-enc"
-            new_encrypted = "nq/new-enc"
-            old_key = f"docs/{old_encrypted}"
-            new_key = f"docs/{new_encrypted}"
+            old_key = f"docs/{old_path}"
+            new_key = f"docs/{new_path}"
             target = source / new_path
             target.write_bytes(payload)
             digest = _sha256_hex(payload)
@@ -1051,13 +1043,9 @@ class CryptRenameTests(unittest.TestCase):
                     """
                     INSERT INTO vaults(
                         id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote, encryption_mode,
-                        crypt_password_ciphertext, crypt_password2_ciphertext,
-                        recovery_custody_confirmed_at
+                        rclone_remote
                     ) VALUES (
-                        2, 'secret', 'Secret', %s, 'bucket', 'docs', 'base',
-                        'crypt', 'cipher-a', 'cipher-b',
-                        '2026-07-21T09:00:00+00:00'
+                        2, 'secret', 'Secret', %s, 'bucket', 'docs', 'plain'
                     )
                     """,
                     (str(source),),
@@ -1075,7 +1063,7 @@ class CryptRenameTests(unittest.TestCase):
                     vault_id=2,
                     path=old_path,
                     object_key=old_key,
-                    provider_version_id="crypt-old",
+                    provider_version_id="plain-old",
                     size=len(payload),
                     storage_class="STANDARD",
                     etag="old",
@@ -1119,19 +1107,8 @@ class CryptRenameTests(unittest.TestCase):
                     vault_id=2,
                 )
 
-            fake_config = RuntimeRcloneConfig(
-                path=root / "fake.rclone.conf",
-                remote_name="vault",
-                config_text="[vault]\ntype = crypt\n",
-                secrets=None,
-            )
-            fake_config.path.write_text(fake_config.config_text, encoding="utf-8")
-
-            @contextmanager
-            def fake_vault_rclone_config(_vault):
-                yield fake_config
-
             rclone_calls: list[tuple[str, ...]] = []
+            download_calls: list[dict[str, str]] = []
 
             def fake_rclone(*args, **kwargs) -> None:
                 command = tuple(str(arg) for arg in args if not callable(arg))
@@ -1159,30 +1136,16 @@ class CryptRenameTests(unittest.TestCase):
                         ),
                     ),
                     patch("app.storage.validate_cloud_vault"),
-                    patch(
-                        "app.storage.vault_rclone_config",
-                        side_effect=fake_vault_rclone_config,
-                    ),
-                    patch(
-                        "app.services.vault_paths.encode_object_relative_path",
-                        side_effect=lambda _runtime, path: (
-                            new_encrypted if path == new_path else old_encrypted
-                        ),
-                    ),
-                    patch(
-                        "app.storage.secrets_for_vault",
-                        return_value=SimpleNamespace(password="p", password2="p2"),
-                    ),
                     patch("app.storage.run_rclone", side_effect=fake_rclone),
                     patch(
                         "app.storage.s3_client",
                         return_value=VersionedS3Stub(
-                            initial_versions={old_key: {"crypt-old"}},
+                            initial_versions={old_key: {"plain-old"}},
                             head_object=lambda **kwargs: {
                                 "VersionId": (
-                                    "crypt-old"
+                                    "plain-old"
                                     if kwargs["Key"] == old_key
-                                    else "crypt-new"
+                                    else "plain-new"
                                 ),
                                 "ContentLength": len(payload),
                                 "StorageClass": "STANDARD",
@@ -1190,9 +1153,13 @@ class CryptRenameTests(unittest.TestCase):
                             },
                             delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
                             or {
-                                "VersionId": "crypt-delete-marker",
+                                "VersionId": "plain-delete-marker",
                                 "DeleteMarker": True,
                             },
+                            download_file=_write_versioned_download(
+                                payload=payload, expected_key=new_key,
+                                expected_version_id="plain-new", calls=download_calls,
+                            ),
                         ),
                     ),
                 ):
@@ -1219,18 +1186,13 @@ class CryptRenameTests(unittest.TestCase):
             by_key = {row["object_key"]: row for row in versions}
             self.assertEqual(by_key[old_key]["integrity"], "verified")
             self.assertEqual(by_key[new_key]["integrity"], "verified")
-            self.assertNotIn(new_path, new_key)
+            self.assertEqual(new_key, f"docs/{new_path}")
             self.assertEqual(deleted, [old_key])
             self.assertEqual(
                 [(row["object_key"], row["provider_version_id"]) for row in markers],
                 [],
             )
-            self.assertTrue(
-                any(
-                    "--s3-version-id=crypt-new" in call for call in rclone_calls
-                ),
-                rclone_calls,
-            )
+            self.assertEqual(download_calls, [{"Bucket": "bucket", "Key": new_key, "VersionId": "plain-new"}])
 
 
 class RenameRestartTests(unittest.TestCase):
@@ -1348,7 +1310,6 @@ class RenameRestartTests(unittest.TestCase):
                         ),
                     ),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch(
                         "app.storage.run_rclone",
                         side_effect=lambda *args, **kwargs: rclone_calls.append(
@@ -1622,7 +1583,6 @@ class RenameDestinationProofTests(unittest.TestCase):
                         ),
                     ),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch("app.storage.run_rclone"),
                     patch(
                         "app.storage.s3_client",

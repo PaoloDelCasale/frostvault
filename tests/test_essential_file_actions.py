@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tempfile
+import io
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -42,6 +43,10 @@ class _RenameCloud:
     def upload(self, *args, **kwargs):
         self.versions[NEW].add("new-s3-version")
 
+    def get_object(self, *, Bucket, Key, VersionId):
+        assert VersionId in self.versions[Key]
+        return {"Body": io.BytesIO(PAYLOAD)}
+
     def download_file(self, Bucket, Key, Filename, ExtraArgs=None, Callback=None, Config=None):
         assert Key == NEW and ExtraArgs["VersionId"] == "new-s3-version"
         self.downloaded.append((Key, ExtraArgs["VersionId"]))
@@ -80,9 +85,6 @@ def _worker(database_path: Path, cloud: _RenameCloud):
         patch("app.database.settings", SimpleNamespace(db_backend="sqlite", sqlite_path=str(database_path))),
         patch("app.storage.settings", SimpleNamespace(operation_concurrency=1, restore_poll_interval=900)),
         patch("app.storage.validate_cloud_vault"),
-        patch("app.storage.vault_encrypts_names", return_value=False),
-        patch("app.storage.vault_encrypts_content", return_value=False),
-        patch("app.storage.rclone_remote_is_crypt", return_value=False),
         patch("app.storage.s3_client", return_value=cloud),
         patch("app.storage.run_rclone", side_effect=cloud.upload),
         patch("app.storage.run_rclone_stream", side_effect=lambda *args, **kwargs: (kwargs["on_chunk"](PAYLOAD), len(PAYLOAD))[1]),

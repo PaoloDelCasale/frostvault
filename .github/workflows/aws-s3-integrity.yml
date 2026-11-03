@@ -84,7 +84,6 @@ jobs:
           python -m app.services.s3_prefix_cleanup_cli \
             --bucket "$TEST_S3_BUCKET" \
             --prefix "$ROOT/ci-runs" \
-            --prefix "$ROOT/ci-crypt" \
             --prefix "$ROOT/cleanup-test" \
             --report-path artifacts/aws-s3-cleanup-report.json
       - name: Upload cleanup report

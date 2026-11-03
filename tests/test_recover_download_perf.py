@@ -4,7 +4,6 @@ Seams under test:
 - ``rclone_download_perf_args`` / ``s3_download_transfer_config`` settings.
 - Plain ``download_exact_version_plaintext`` uses ``download_file`` with a pinned
   VersionId and TransferConfig concurrency.
-- Crypt recover path forwards multi-thread flags into ``run_rclone``.
 """
 
 from __future__ import annotations
@@ -78,7 +77,6 @@ class RecoverDownloadPerfTests(unittest.TestCase):
                 "s3_bucket": "bucket",
                 "s3_prefix": "docs",
                 "rclone_remote": "plain-remote",
-                "encryption_mode": "plain",
             }
             settings = SimpleNamespace(
                 s3_download_max_concurrency=10,
@@ -88,7 +86,6 @@ class RecoverDownloadPerfTests(unittest.TestCase):
             )
             with (
                 patch("app.storage.settings", settings),
-                patch("app.storage.rclone_remote_is_crypt", return_value=False),
                 patch("app.storage.s3_client", return_value=client),
                 patch("app.storage.set_job_progress"),
             ):
@@ -100,49 +97,6 @@ class RecoverDownloadPerfTests(unittest.TestCase):
                 )
             client.download_file.assert_called_once()
             self.assertEqual(temporary.read_bytes(), payload)
-
-    def test_crypt_download_passes_multi_thread_flags(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            temporary = Path(directory) / "out.tmp"
-            captured: list[tuple] = []
-
-            def fake_rclone(*args, **kwargs) -> None:
-                captured.append((args, kwargs))
-                Path(args[2]).write_bytes(b"crypt-bytes")
-
-            job = {
-                "id": 43,
-                "path": "file.txt",
-                "s3_bucket": "bucket",
-                "s3_prefix": "docs",
-                "rclone_remote": "crypt-remote",
-                "encryption_mode": None,
-                "bwlimit": "128k",  # never forwarded to a recovery download
-            }
-            settings = SimpleNamespace(
-                rclone_multi_thread_streams=8,
-                rclone_multi_thread_cutoff_mib=64,
-                job_progress_min_interval_ms=50,
-            )
-            with (
-                patch("app.storage.settings", settings),
-                patch("app.storage.rclone_remote_is_crypt", return_value=True),
-                patch("app.storage.run_rclone", side_effect=fake_rclone),
-            ):
-                download_exact_version_plaintext(
-                    job,
-                    object_key="docs/file.txt.bin",
-                    provider_version_id="crypt-v",
-                    temporary=temporary,
-                )
-            self.assertEqual(len(captured), 1)
-            args, kwargs = captured[0]
-            self.assertEqual(args[0], "copyto")
-            self.assertIn("--s3-version-id=crypt-v", args)
-            self.assertIn("--multi-thread-streams=8", args)
-            self.assertIn("--multi-thread-cutoff=64M", args)
-            self.assertIsNone(kwargs.get("bwlimit"))
-
 
 if __name__ == "__main__":
     unittest.main()

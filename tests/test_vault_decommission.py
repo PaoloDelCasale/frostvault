@@ -420,8 +420,7 @@ class VaultDecommissionTests(unittest.TestCase):
             job = connection.execute(
                 """
                 SELECT j.*, v.source_root, v.s3_bucket, v.s3_prefix,
-                       v.rclone_remote, v.encryption_mode,
-                       v.crypt_password_ciphertext, v.crypt_password2_ciphertext,
+                       v.rclone_remote,
                        v.uuid AS vault_uuid, v.name AS vault_name,
                        v.cloud_deletion_enabled, v.decommission_state
                 FROM jobs j JOIN vaults v ON v.id=j.vault_id
@@ -712,29 +711,6 @@ class VaultDecommissionTests(unittest.TestCase):
         self.assertEqual(cancelled["error_code"], "cloud_purge_cancelled")
         self.assertEqual(job["status"], "cancelled")
         self.assertIsNone(vault["root_released_at"])
-
-    def test_crypt_retain_requires_custody_but_purge_does_not(self) -> None:
-        with SQLiteConnection(str(self.db_path)) as connection:
-            # Existing check requires sealed values for crypt mode.
-            connection.execute(
-                """
-                UPDATE vaults SET encryption_mode='crypt',
-                    crypt_password_ciphertext='sealed-1',
-                    crypt_password2_ciphertext='sealed-2',
-                    cloud_deletion_enabled=TRUE
-                WHERE id=7
-                """
-            )
-        retained = self.preview(cloud="retain")
-        purged = self.preview(cloud="purge")
-        self.assertIn(
-            "recovery_custody_unconfirmed",
-            {item["code"] for item in retained["blockers"]},
-        )
-        self.assertNotIn(
-            "recovery_custody_unconfirmed",
-            {item["code"] for item in purged["blockers"]},
-        )
 
     def test_root_occupation_depends_only_on_root_released_at(self) -> None:
         sources = Path(self.tmp.name) / "sources"

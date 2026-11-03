@@ -35,10 +35,6 @@ import type {
   MeResponse,
   OperationPolicy,
   RecoverEstimateResponse,
-  RecoveryConfirmRequest,
-  RecoveryConfirmResponse,
-  RecoveryExportRequest,
-  RecoveryExportResponse,
   ScanResponse,
   StatsResponse,
   StorageClassesResponse,
@@ -225,24 +221,6 @@ export function selectVault(
   payload: VaultSelectRequest,
 ): Promise<VaultSelectResponse> {
   return apiRequest<VaultSelectResponse>("/api/vaults/select", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function confirmRecoveryCustody(
-  payload: RecoveryConfirmRequest = { acknowledged: true },
-): Promise<RecoveryConfirmResponse> {
-  return apiRequest<RecoveryConfirmResponse>("/api/vault/recovery/confirm", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function exportRecoverySecret(
-  payload: RecoveryExportRequest,
-): Promise<RecoveryExportResponse> {
-  return apiRequest<RecoveryExportResponse>("/api/vault/recovery/export", {
     method: "POST",
     body: JSON.stringify(payload),
   });

@@ -914,40 +914,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/recovery/confirm": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Confirm Vault Recovery Custody */
-        post: operations["confirm_vault_recovery_custody_api_vault_recovery_confirm_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vault/recovery/export": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Reexport Vault Recovery Secret */
-        post: operations["reexport_vault_recovery_secret_api_vault_recovery_export_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/vaults": {
         parameters: {
             query?: never;
@@ -962,9 +928,8 @@ export interface paths {
          * Create Owner Vault
          * @description Create a Vault from the UI, the only way Vaults are created (#412).
          *
-         *     The server generates the storage identity. Crypt vaults also receive a
-         *     one-time recovery export so the owner can confirm custody before uploads
-         *     are admitted. Adoption binds any free directory of a custom Source Volume
+         *     The server generates the plaintext storage identity.
+         *     Adoption binds any free directory of a custom Source Volume
          *     in place and starts an asynchronous local scan.
          */
         post: operations["create_owner_vault_api_vaults_post"];
@@ -1273,7 +1238,6 @@ export interface components {
             decommission_state?: "active" | "decommissioning" | "decommissioned";
             decommissioned_at?: string | null;
             enabled: boolean;
-            encryption_mode?: string;
             id: number;
             name: string;
             rclone_remote?: string;
@@ -1433,8 +1397,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** @enum {string} */
-        EncryptionMode: "plain" | "crypt";
         /** FileAction */
         FileAction: {
             /** Archive Version Id */
@@ -1865,36 +1827,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** RecoveryConfirm */
-        RecoveryConfirm: {
-            /**
-             * Acknowledged
-             * @default true
-             */
-            acknowledged: boolean;
-        };
-        RecoveryConfirmRequest: {
-            acknowledged: boolean;
-        } & {
-            [key: string]: unknown;
-        };
-        RecoveryConfirmResponse: {
-            recovery_custody_confirmed: boolean;
-            recovery_custody_confirmed_at: string;
-            vault_id: number;
-        } & {
-            [key: string]: unknown;
-        };
-        /** RecoveryExportRequest */
-        RecoveryExportRequest: {
-            /** Reason */
-            reason: string;
-        };
-        RecoveryExportResponse: {
-            recovery_export: string;
-        } & {
-            [key: string]: unknown;
-        };
         RestoreEstimate: {
             assumptions?: {
                 [key: string]: unknown;
@@ -2084,25 +2016,17 @@ export interface components {
         };
         VaultCreateRequest: {
             creation_mode?: components["schemas"]["VaultCreationMode"];
-            encryption_mode: components["schemas"]["EncryptionMode"];
             name: string;
             relative_path?: string;
             slug?: string;
             volume_alias?: string;
-        } & {
-            [key: string]: unknown;
         };
         VaultCreateResponse: {
             creation_mode?: components["schemas"]["VaultCreationMode"];
-            encryption_mode: components["schemas"]["EncryptionMode"];
             id: number;
             name: string;
-            recovery_custody_confirmed: boolean;
-            recovery_export?: string;
             slug: string;
             uuid: string;
-        } & {
-            [key: string]: unknown;
         };
         /** @enum {string} */
         VaultCreationMode: "empty" | "adopt";
@@ -2149,13 +2073,6 @@ export interface components {
             local_disposition: "retain" | "remove";
             records?: {
                 [key: string]: string;
-            };
-            recovery_material?: {
-                custody_confirmed: boolean;
-                disposition: string;
-                encryption_mode: string;
-            } & {
-                [key: string]: unknown;
             };
             root_identity_fingerprint?: string | null;
             root_identity_version?: string | null;
@@ -2307,9 +2224,9 @@ export interface components {
          * VaultSelfServiceCreate
          * @description Self-service vault creation payload (issues #7, #6, and #150).
          *
-         *     Labels and encryption_mode are accepted. Adoption adds a
+         *     Labels are accepted. Adoption adds a
          *     constrained ``volume_alias`` + ``relative_path`` pair — never an absolute
-         *     filesystem path, S3 identity, rclone remote, or crypt secret.
+         *     filesystem path, S3 identity, or rclone remote.
          */
         VaultSelfServiceCreate: {
             /**
@@ -2317,11 +2234,6 @@ export interface components {
              * @default empty
              */
             creation_mode: string;
-            /**
-             * Encryption Mode
-             * @default plain
-             */
-            encryption_mode: string;
             /** Name */
             name: string;
             /** Relative Path */
@@ -3868,72 +3780,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GlobPreviewResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    confirm_vault_recovery_custody_api_vault_recovery_confirm_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RecoveryConfirm"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RecoveryConfirmResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reexport_vault_recovery_secret_api_vault_recovery_export_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RecoveryExportRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RecoveryExportResponse"];
                 };
             };
             /** @description Validation Error */

@@ -11,7 +11,6 @@ import {
   type MeResponse,
   type VaultListItem,
 } from "@/api";
-import { DEMO_MODE_ENABLED, getDemoSearchParam } from "@/demoGate";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/theme";
 import { AppShell } from "@/layout/AppShell";
@@ -24,7 +23,6 @@ import { LoginPage } from "@/pages/login/LoginPage";
 import { NoVaultPage } from "@/pages/no-vault/NoVaultPage";
 import { VaultAccessPage } from "@/pages/vault-access";
 import { VaultCreatePage } from "@/pages/vault-create";
-import { VaultCreateScreenshotFixture } from "@/pages/vault-create/VaultCreateScreenshotFixture";
 
 function pathIsVaultAccess(pathname: string): boolean {
   return pathname === "/vault/access" || pathname.startsWith("/vault/access/");
@@ -51,13 +49,6 @@ function capabilitiesFromMe(
           : [],
     currentVaultId: vault?.id,
   };
-}
-
-function isVaultCreateRecoveryDemo(): boolean {
-  return (
-    DEMO_MODE_ENABLED &&
-    getDemoSearchParam("demo") === "vault-create-recovery"
-  );
 }
 
 function currentPathname(): string {
@@ -125,7 +116,6 @@ export default function App() {
     queryClient.clear();
   }
 
-  if (isVaultCreateRecoveryDemo()) return <VaultCreateScreenshotFixture />;
   if (pathname === "/login") return <LoginPage />;
 
   if (!me || sessionChanging) {

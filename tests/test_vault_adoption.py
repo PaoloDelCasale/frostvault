@@ -8,7 +8,7 @@ Seams under test (confirmed):
 5. Exact / inside / contains Vault overlap rejected (incl. concurrent + disabled)
 6. Successful adoption triggers async scan; scan failure leaves retryable Vault
 7. Descendant unsupported/permission findings follow existing health behavior
-8. Plain/crypt, ownership, recovery custody, and auth remain unchanged
+8. Plaintext namespace, ownership and authentication remain constrained
 9. No create request can choose S3 identity, crypt secret, or arbitrary path
 10. en/it API/UI errors and both create modes covered at 375px
 """
@@ -498,36 +498,6 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         self.assertEqual(by_path["photo.jpg"]["local_file_type"], "regular")
         self.assertEqual(by_path["alias.jpg"]["local_file_type"], "symlink")
         self.assertEqual(self._vault_count(), 1)
-
-
-class VaultAdoptionCryptTests(_AdoptionFixture):
-    """Seam 8: crypt adoption preserves sealed secrets."""
-
-    def test_crypt_adoption_seals_secrets_without_moving_content(self) -> None:
-        import base64
-
-        master = base64.urlsafe_b64encode(b"0" * 32).decode("ascii")
-        crypt_settings = replace(
-            self.settings,
-            archive_master_key=master,
-            vault_rclone_base_remote="crypt-base",
-        )
-        for target in (
-            "app.services.vaults.settings",
-            "app.services.vault_crypto.settings",
-        ):
-            patcher = patch(target, crypt_settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-        vault = self._adopt(encryption_mode="crypt", slug="albums-crypt")
-
-        self.assertEqual(vault["encryption_mode"], "crypt")
-        self.assertTrue(vault["crypt_password_ciphertext"])
-        self.assertTrue(vault["crypt_password2_ciphertext"])
-        self.assertEqual(Path(vault["source_root"]), self.albums.resolve())
-        self.assertEqual((self.albums / "photo.jpg").read_bytes(), b"jpeg-bytes")
-        self.assertEqual(vault["s3_prefix"], f"vaults/{vault['uuid']}/")
 
 
 if __name__ == "__main__":

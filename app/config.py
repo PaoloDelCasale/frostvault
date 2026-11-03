@@ -142,12 +142,7 @@ class Settings:
     # bucket/remote assigned to plain vaults.
     vault_s3_bucket: str = os.getenv("VAULT_S3_BUCKET", os.getenv("S3_BUCKET", ""))
     vault_rclone_remote: str = os.getenv("VAULT_RCLONE_REMOTE", "")
-    # Underlying S3 (or compatible) remote that per-vault crypt remotes wrap
-    # at runtime (issue #6). Distinct from VAULT_RCLONE_REMOTE, which may be a
-    # shared legacy crypt/alias remote used by plain vaults.
-    vault_rclone_base_remote: str = os.getenv("VAULT_RCLONE_BASE_REMOTE", "")
-    # Fernet key (url-safe base64-encoded 32 bytes) that seals per-vault crypt
-    # secrets at rest. Required to create or operate crypt vaults.
+    # Fernet key (url-safe base64-encoded 32 bytes) for metadata backups only.
     archive_master_key: str = os.getenv("ARCHIVE_MASTER_KEY", "")
 
     # When true (default), bring the DB schema to HEAD on application start

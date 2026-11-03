@@ -388,7 +388,14 @@ jobs:
               Bucket=bucket,
               VersioningConfiguration={"Status": "Enabled"},
           )
-          print("bucket ready")
+          client.put_public_access_block(
+              Bucket=bucket,
+              PublicAccessBlockConfiguration={
+                  "BlockPublicAcls": True, "IgnorePublicAcls": True,
+                  "BlockPublicPolicy": True, "RestrictPublicBuckets": True,
+              },
+          )
+          print("bucket ready: versioning and all four BPA flags enabled")
           PY
       - name: S3 integrity integration tests
         run: |
@@ -404,7 +411,6 @@ jobs:
           python -m app.services.s3_prefix_cleanup_cli \
             --bucket archive-ci \
             --prefix ci-runs \
-            --prefix ci-crypt \
             --prefix cleanup-test \
             --report-path artifacts/s3-cleanup-report.json
       - name: Upload cleanup report

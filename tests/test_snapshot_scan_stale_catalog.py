@@ -117,7 +117,6 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
         with (
             patch("app.database.settings", settings),
             patch("app.storage.validate_cloud_vault"),
-            patch("app.storage.rclone_remote_is_crypt", return_value=False),
             patch("app.storage.s3_client", return_value=s3),
         ):
             scan_cloud(dict(VAULT), scan_id)

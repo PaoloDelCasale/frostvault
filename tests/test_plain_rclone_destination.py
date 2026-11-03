@@ -93,10 +93,10 @@ class PlainUploadPrefixedRemoteTests(unittest.TestCase):
                     """
                     INSERT INTO vaults(
                         id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote, encryption_mode
+                        rclone_remote
                     ) VALUES (
                         2, 'docs', 'Docs', %s, 'example-bucket', %s,
-                        'frostvault-plain', 'plain'
+                        'frostvault-plain'
                     )
                     """,
                     (str(source), prefix),
@@ -137,12 +137,12 @@ class PlainUploadPrefixedRemoteTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch("app.storage.run_rclone", side_effect=fake_rclone),
                     patch("app.storage.run_rclone_stream", side_effect=fake_rclone_stream),
                     patch(
                         "app.storage.s3_client",
                         return_value=VersionedS3Stub(
+                            version_bytes=payload,
                             head_object=lambda **kwargs: (
                                 head_keys.append(kwargs["Key"])
                                 or {
@@ -201,10 +201,10 @@ class PlainRenamePrefixedRemoteTests(unittest.TestCase):
                     """
                     INSERT INTO vaults(
                         id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote, encryption_mode
+                        rclone_remote
                     ) VALUES (
                         2, 'docs', 'Docs', %s, 'example-bucket', %s,
-                        'frostvault-plain', 'plain'
+                        'frostvault-plain'
                     )
                     """,
                     (str(source), prefix),
@@ -313,7 +313,6 @@ class PlainRenamePrefixedRemoteTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.rclone_remote_is_crypt", return_value=False),
                     patch("app.storage.run_rclone", side_effect=fake_rclone),
                     patch(
                         "app.storage.s3_client",

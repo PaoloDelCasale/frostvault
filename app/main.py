@@ -71,13 +71,6 @@ from .oidc import (
 from .oidc_network import oidc_host_addresses
 from .proxy import parse_networks, resolve_client_ip
 from .security import DUMMY_PASSWORD_HASH, verify_password
-from .services.vault_recovery import (
-    RecoveryCustodyRequired,
-    RecoveryError,
-    build_recovery_export,
-    confirm_recovery_custody,
-    export_recovery_secret,
-)
 from .services import audit_events as audit_event_store
 from .services import catalog_incidents as catalog_incident_service
 from .services import health as health_service
@@ -469,16 +462,6 @@ async def _invalid_logical_path_handler(
     )
 
 
-@app.exception_handler(RecoveryCustodyRequired)
-async def _recovery_custody_handler(
-    _: Request, error: RecoveryCustodyRequired
-) -> JSONResponse:
-    return JSONResponse(
-        {"error": "recovery_custody_required", "detail": str(error)},
-        status_code=409,
-    )
-
-
 def require_recent_reauth(
     request: Request, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
@@ -601,31 +584,18 @@ class VaultSelection(BaseModel):
 class VaultSelfServiceCreate(BaseModel):
     """Self-service vault creation payload (issues #7, #6, and #150).
 
-    Labels and encryption_mode are accepted. Adoption adds a
+    Labels are accepted. Adoption adds a
     constrained ``volume_alias`` + ``relative_path`` pair — never an absolute
-    filesystem path, S3 identity, rclone remote, or crypt secret.
+    filesystem path, S3 identity, or rclone remote.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=120)
     slug: str | None = Field(default=None, min_length=2, max_length=60)
-    encryption_mode: str = Field(default="plain", pattern="^(plain|crypt)$")
     creation_mode: str = Field(default="empty", pattern="^(empty|adopt)$")
     volume_alias: str | None = Field(default=None, min_length=1, max_length=120)
     relative_path: str | None = Field(default=None, max_length=1024)
-
-
-class RecoveryConfirm(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    acknowledged: bool = True
-
-
-class RecoveryExportRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    reason: str = Field(min_length=3, max_length=500)
 
 
 class FileAction(BaseModel):
@@ -1411,16 +1381,14 @@ def create_owner_vault(
 ):
     """Create a Vault from the UI, the only way Vaults are created (#412).
 
-    The server generates the storage identity. Crypt vaults also receive a
-    one-time recovery export so the owner can confirm custody before uploads
-    are admitted. Adoption binds any free directory of a custom Source Volume
+    The server generates the plaintext storage identity.
+    Adoption binds any free directory of a custom Source Volume
     in place and starts an asynchronous local scan.
     """
     try:
         vault = create_vault(
             action.name,
             action.slug,
-            encryption_mode=action.encryption_mode,
             creation_mode=action.creation_mode,
             volume_alias=action.volume_alias,
             relative_path=action.relative_path,
@@ -1436,22 +1404,15 @@ def create_owner_vault(
     except VaultCreationError as exc:
         raise HTTPException(409, str(exc)) from exc
     if action.creation_mode == "adopt":
-        # scan_vault reloads the authoritative row; do not hand a background
-        # task the self-service recovery ciphertexts.
+        # scan_vault reloads the authoritative row.
         background_tasks.add_task(scan_vault, {"id": vault["id"]})
     payload: dict[str, Any] = {
         "id": vault["id"],
         "uuid": vault["uuid"],
         "slug": vault["slug"],
         "name": vault["name"],
-        "encryption_mode": vault["encryption_mode"],
-        "recovery_custody_confirmed": bool(
-            vault.get("recovery_custody_confirmed_at")
-        ),
         "creation_mode": action.creation_mode,
     }
-    if vault["encryption_mode"] == "crypt":
-        payload["recovery_export"] = build_recovery_export(vault)
     return payload
 
 
@@ -1657,59 +1618,6 @@ def cancel_owned_vault_decommission_cloud_purge_by_id(
             )
     except vault_decommission_service.VaultDecommissionError as exc:
         raise _vault_decommission_http_error(exc) from exc
-
-
-@app.post("/api/vault/recovery/confirm", response_model=response_model("RecoveryConfirmResponse"))
-def confirm_vault_recovery_custody(
-    action: RecoveryConfirm,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
-):
-    if not action.acknowledged:
-        raise HTTPException(422, "Recovery custody must be acknowledged")
-    try:
-        with db() as connection:
-            updated = confirm_recovery_custody(connection, vault_id=vault["id"])
-    except RecoveryError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    return {
-        "vault_id": updated["id"],
-        "recovery_custody_confirmed": True,
-        "recovery_custody_confirmed_at": updated["recovery_custody_confirmed_at"],
-    }
-
-
-@app.post("/api/vault/recovery/export", response_model=response_model("RecoveryExportResponse"))
-def reexport_vault_recovery_secret(
-    action: RecoveryExportRequest,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    with db() as connection:
-        row = connection.execute(
-            "SELECT * FROM vaults WHERE id=%s", (vault["id"],)
-        ).fetchone()
-    if not row or row["encryption_mode"] != "crypt":
-        raise HTTPException(422, "Recovery export is only available for crypt vaults")
-    if not row["recovery_custody_confirmed_at"]:
-        # First-time material is returned at creation; after that owners use
-        # confirm + reauth-gated re-export.
-        raise HTTPException(
-            409,
-            "Confirm recovery-secret custody before requesting a re-export",
-        )
-    try:
-        with db() as connection:
-            export = export_recovery_secret(
-                row,
-                actor_id=user["id"],
-                reason=action.reason,
-                connection=connection,
-            )
-    except RecoveryError as exc:
-        raise HTTPException(503, str(exc)) from exc
-    return {"recovery_export": export}
 
 
 @app.post("/api/vaults/select", response_model=response_model("VaultSelectResponse"))

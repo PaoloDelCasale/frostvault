@@ -11,13 +11,3 @@ no_check_bucket = true
 [frostvault-plain]
 type = alias
 remote = frostvault-s3:example-bucket
-
-# Legacy shared crypt example kept for older bootstrap vaults that still use
-# plaintext object names (.bin suffix). Prefer per-vault crypt remotes for new
-# vaults (issue #6).
-# [frostvault-crypt]
-# type = crypt
-# remote = frostvault-s3:example-bucket/vaults/example-vault
-# filename_encryption = off
-# directory_name_encryption = false
-# password = OBSCURED_PASSWORD_GENERATED_BY_RCLONE

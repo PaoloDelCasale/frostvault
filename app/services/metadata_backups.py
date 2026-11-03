@@ -234,7 +234,7 @@ _SNAPSHOT_KEYS = frozenset("""
     restore_days restore_tier restore_high_impact_gib restore_high_impact_eur
     restore_approval_hold_seconds oidc_enabled oidc_issuer oidc_client_id oidc_scopes
     oidc_login_ttl_seconds bootstrap_admin_username bootstrap_admin_display_name
-    vault_s3_bucket vault_rclone_remote vault_rclone_base_remote auto_migrate
+    vault_s3_bucket vault_rclone_remote auto_migrate
     metadata_backup_dir metadata_backup_retention metadata_backup_interval_seconds
     metadata_backup_s3_prefix metadata_backup_verify_interval_seconds frontend_dist_dir
     smtp_host smtp_port smtp_username smtp_from_address smtp_to_address smtp_use_tls

@@ -3,7 +3,7 @@
 FrostVault is a self-hosted web application for cataloging files, archiving
 versioned copies in Amazon S3 storage classes, verifying uploaded content, safely
 freeing local space, and recovering exact versions. It is a personal
-archive with a single owner, isolated vaults, OIDC, encrypted Rclone remotes, and SQLite or PostgreSQL.
+archive with a single owner, isolated plaintext vaults, OIDC, and SQLite or PostgreSQL.
 
 The archive works like a file manager: it shows top-level folders, lets you
 open them, and provides breadcrumbs for navigating back to parent folders.
@@ -93,24 +93,25 @@ Search remains global across every file in the selected vault.
   SHA-256 digest, then atomically replaces the local file. Glacier/Deep Archive
   versions request a restore first (Bulk by default); high-impact restores are
   held for one hour awaiting the Owner's approval before any `RestoreObject`
-  call. An accepted S3 restore request cannot be cancelled. Large plain recovers
-  use parallel S3 range downloads (`S3_DOWNLOAD_*`); crypt recovers use rclone
-  multi-thread streams (`RCLONE_MULTI_THREAD_*`).
+  call. An accepted S3 restore request cannot be cancelled. Large recoveries
+  use parallel S3 range downloads (`S3_DOWNLOAD_*`).
 - The panel requires a username and password.
 
 ## Requirements
 
 - Docker Engine with Docker Compose v2 for the recommended deployment, or
   Python 3.12+ for native development
-- An S3 bucket with versioning enabled and a least-privilege IAM principal
+- An S3 bucket with versioning and all four Block Public Access flags enabled,
+  plus a least-privilege IAM principal (including `s3:GetBucketPublicAccessBlock`)
 - Rclone matching the version pinned in the Dockerfile when running outside the image
 - PostgreSQL 16 for production; SQLite is supported for development and small
   single-node installations
 - An HTTPS reverse proxy for any network-accessible deployment
 
-FrostVault never replaces independent backups. Keep the database, the
-`ARCHIVE_MASTER_KEY`, and per-vault recovery exports in separate secure
-locations.
+FrostVault never replaces independent backups. Keep encrypted metadata backups
+and custody of `ARCHIVE_MASTER_KEY` outside this server. The key protects only
+metadata backups, not Vault content. Any authorized S3 tool can recover Vault
+files; AWS SSE-S3 and HTTPS remain required protections.
 
 ## Setup
 
@@ -231,15 +232,10 @@ instead of trying other credentials available on the computer.
    `BREAK_GLASS_ALLOWED_CIDRS` to accept the Emergency Password from it.
 
 4. Create `config/rclone.conf` from `config/rclone.conf.example`.
-5. Generate a distinct encryption password for each vault:
-
-   ```bash
-   docker run --rm rclone/rclone:$(sed -n 's/^FROM rclone\/rclone:\([^ ]*\) AS rclone$/\1/p' Dockerfile) obscure 'ENCRYPTION-PASSWORD'
-   ```
-
-6. Put the result in the relevant remote's `password` field in `rclone.conf`.
-7. Ensure the bucket, region, and remote names match `VAULT_S3_BUCKET`,
-   `VAULT_RCLONE_REMOTE`, and `VAULT_RCLONE_BASE_REMOTE`.
+5. Ensure the bucket, region, and bucket-rooted plaintext alias match
+   `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION`, and `VAULT_RCLONE_REMOTE`.
+6. Configure `ARCHIVE_MASTER_KEY` for encrypted metadata backups and keep it
+   outside this server; see [metadata backup custody](docs/metadata-backups.md).
 
 Example database creation, run as a PostgreSQL administrator:
 
@@ -274,15 +270,10 @@ If PostgreSQL runs directly on the server or exposes port `5432`, keep
 `PGHOST=host.docker.internal`. Otherwise, connect both containers to the same
 Docker network and set `PGHOST` to the PostgreSQL service name.
 
-With an Rclone remote using `type = crypt` and `filename_encryption = off`, file
-and folder names remain readable in S3 while file contents are encrypted. Rclone
-adds `.bin` to object names, and the panel removes that suffix when displaying
-them. With an unencrypted remote such as `type = alias`, the panel uses the
-original name and does not add or remove `.bin`.
-
-To archive without client-side encryption, point a shared alias at the bucket.
-FrostVault appends each vault's `s3_prefix` (`vaults/<uuid>/`) to every plain
-object path, so one remote can serve many vaults:
+All Vaults store readable object keys `vaults/<uuid>/<relative-path>` and original
+file bytes, without client-side encryption or extension transformation. Point a
+shared plaintext alias at the bucket; FrostVault appends each Vault's immutable
+prefix, so one remote serves many Vaults:
 
 ```ini
 [frostvault-plain]
@@ -290,8 +281,11 @@ type = alias
 remote = frostvault-s3:example-bucket
 ```
 
-Set `VAULT_RCLONE_REMOTE=frostvault-plain` for unencrypted vaults; encrypted
-vaults wrap `VAULT_RCLONE_BASE_REMOTE` with a per-vault crypt remote at runtime.
+Set `VAULT_RCLONE_REMOTE=frostvault-plain`. Non-plaintext or incorrectly rooted
+legacy remotes are refused. Migration `0051_plaintext_vaults` refuses legacy
+encrypted Vaults before any schema change; recover test data using the previous
+release before creating a fresh plaintext installation. It never rewrites or
+deletes S3 objects. See [upgrade notes](docs/metadata-backups.md#plaintext-only-upgrade-0051).
 
 ## Run
 
@@ -459,7 +453,7 @@ shell; the current frontend never registers it. Migration
 `0047_remove_offline_cache` removes the Session cache nonce, preserving existing
 Sessions and their internal concurrency lock. No file or cloud data is changed.
 
-Do not commit `.env`, `config/rclone.conf`, recovery exports, database files, or
+Do not commit `.env`, `config/rclone.conf`, master-key material, database files, or
 cloud credentials.
 
 ## Security

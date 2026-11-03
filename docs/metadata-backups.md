@@ -1,13 +1,14 @@
 # Metadata backups and disaster recovery
 
 Encrypted metadata backups protect the application database once it holds
-identities, vaults, version history, policies, sessions, audit events, and
-encrypted vault keys. Losing that database makes normal recovery and
-authorization unsafe.
+the Owner's Identity, Vaults, Archive Versions, policies, Sessions, audit events
+and pending workflows. Losing that database makes normal in-app recovery and
+authorization unsafe. Vault contents and filenames are plaintext in S3; metadata
+backups remain encrypted.
 
 This document covers scheduled and pre-upgrade backups, restore procedures for
-SQLite and PostgreSQL, restore verification, and separate custody of the
-application master key versus encrypted-vault recovery exports.
+SQLite and PostgreSQL, restore verification, and off-server custody of the
+application master key. There is no per-Vault recovery export or custody gate.
 
 ## What is backed up
 
@@ -157,20 +158,54 @@ before a deliberate manual recovery.
 5. Start the application against the restored database after schema validation
    and confirm the Owner can sign in.
 
-## Master key and recovery-export custody
+## Master key custody and emergency file recovery
 
-Keep these materials in **separate** offline locations:
+Keep `ARCHIVE_MASTER_KEY`, the bucket name and region, and recovery instructions
+outside this server, preferably in an independently hosted password manager.
+The key seals **metadata backup artifacts only**; it is not included in those
+artifacts. AWS access is recovered through the Owner's AWS account. Enable MFA
+and use an IAM policy restricted to the archive bucket. Do not rely on a password
+manager or a copy of the key hosted only on the failed server.
 
-| Material | Role | Must not be stored with |
-| --- | --- | --- |
-| `ARCHIVE_MASTER_KEY` | Seals per-vault crypt secrets and metadata backup artifacts | Database backups, recovery exports, S3 copies of either |
-| Encrypted vault recovery exports | Standalone rclone crypt credentials for one vault | Application master key, live DB dumps |
-| Metadata backup artifacts | Owner, vaults, versions, policies, sessions, audit | Application master key in cleartext |
+A clean installation can restore the Owner, Vaults, Archive Version metadata,
+policies, Sessions/revocations, audit, and pending workflows from a metadata
+backup plus that key. The unified downloadable Recovery Kit and its one custody
+confirmation are future work (#427), not a per-Vault export retained here.
 
-A clean installation can restore the Owner, vaults, Archive Versions metadata,
-policies, sessions/revocations, audit, and pending workflows from a metadata
-backup **plus** the separately custodied master key. Vault content recovery from
-S3 still requires the per-vault recovery material when using crypt vaults.
+If no usable metadata backup exists, any authorized S3 tool can list and download
+original file bytes under `vaults/<uuid>/<relative-path>`, without FrostVault or
+per-Vault secrets. For example, with AWS credentials supplied through your normal
+AWS profile (never embed them in these commands):
+
+```bash
+aws s3 ls s3://BUCKET/vaults/VAULT-UUID/ --recursive --region REGION
+aws s3 cp s3://BUCKET/vaults/VAULT-UUID/ ./recovered/ --recursive --region REGION
+```
+
+This is file-only emergency recovery, not an in-app catalog reconstruction.
+GLACIER/DEEP_ARCHIVE content needs an S3 restore request and completion before
+download. Use `list-object-versions` and the exact `VersionId` if an interrupted
+replacement or historical Delete Marker requires inspection; do not delete any
+versions while diagnosing. A Local Copy deletion never deletes cloud content.
+
+## Plaintext-only upgrade (0051)
+
+Migration `0051_plaintext_vaults` drops `encryption_mode`, per-Vault sealed secrets,
+and custody columns only when **every** persisted Vault is plain and has no
+sealed secrets. A crypt Vault, including a disabled Vault or tombstone, refuses
+the entire migration before DDL. No row contents or secrets are printed. There
+are no S3 calls, key conversions, object deletions, or automatic data migration.
+Legacy shared crypt remotes are also refused at runtime, even for an old plain
+row. Do not just change a legacy remote to a plaintext alias: old ciphertext
+would not become plaintext.
+
+There is no compatibility promise for test Vaults (#362). Recover any wanted
+legacy content with the previous release and its existing recovery material,
+then create a fresh plaintext installation and re-upload deliberately. Retain
+old metadata ciphertext and `ARCHIVE_MASTER_KEY` while they are needed for that
+recovery. This release never deletes or rewrites those artifacts. Downgrade
+recreates empty nullable secret/custody columns with plain mode; it cannot
+recreate retired secrets or enable crypt as a new choice.
 
 ## Configuration reference
 
