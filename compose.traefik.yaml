@@ -35,7 +35,6 @@ services:
       # The entrypoint never chowns vault sources or creates runtime accounts.
       - "${SOURCES_ROOT}:/sources:rw"
       - "./data:/data:rw"
-      - "./config:/config/rclone:ro"
     # Create writable ephemeral directories with the runtime identity because
     # cap_drop: ALL prevents the entrypoint from chowning them at startup.
     tmpfs:

@@ -110,19 +110,6 @@ def expected_cloud_key(logical_path: str, prefix_value: str) -> str:
     return f"{prefix}/{relative}" if prefix else relative
 
 
-def plain_rclone_destination(
-    remote_name: str,
-    s3_prefix: str,
-    logical_path: str,
-) -> str:
-    """Build a bucket-rooted plain Rclone object spec including the vault prefix."""
-    remote = remote_name.strip().rstrip(":")
-    if not remote:
-        raise ValueError("Rclone remote name is required")
-    key = expected_cloud_key(logical_path, s3_prefix)
-    return f"{remote}:{key}"
-
-
 def is_restore_temporary_name(name: str) -> bool:
     return (
         RESTORE_TEMPORARY_RE.fullmatch(name) is not None

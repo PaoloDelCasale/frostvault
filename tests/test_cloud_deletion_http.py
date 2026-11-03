@@ -43,8 +43,7 @@ class CloudDeletionHttpTests(unittest.TestCase):
             self.vault_id = connection.execute(
                 """
                 INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                ) VALUES ('docs', 'Docs Archive', '/source', 'bucket', 'docs', 'remote')
+                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('docs', 'Docs Archive', '/source', 'bucket', 'docs')
                 RETURNING id
                 """
             ).fetchone()["id"]

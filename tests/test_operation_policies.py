@@ -38,8 +38,7 @@ class OperationPolicyDefaultTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                "VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')"
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs')"
             )
 
     def test_missing_row_means_manual_upload_and_no_exclusions(self) -> None:
@@ -185,8 +184,7 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                "VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')"
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs')"
             )
 
     def test_set_policy_round_trips(self) -> None:
@@ -255,8 +253,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 "VALUES (1, 'owner', 'Owner', 'hash')"
             )
             connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                "VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote')",
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')",
                 (str(self.source),),
             )
 

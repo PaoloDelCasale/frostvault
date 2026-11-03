@@ -70,13 +70,16 @@ def _prepare_vault_with_versions(
             VALUES (1, 'owner', 'Owner', 'hash')
             """
         )
+        # The migration test seeds a pre-SDK schema; current fixtures have no
+        # transport identity. Keep the historical column only at that boundary.
+        legacy_column = ", rclone_remote" if revision != "head" else ""
+        legacy_value = ", 'remote'" if revision != "head" else ""
         connection.execute(
-            """
+            f"""
             INSERT INTO vaults(
-                id, slug, name, source_root, s3_bucket, s3_prefix,
-                rclone_remote, cloud_deletion_enabled
+                id, slug, name, source_root, s3_bucket, s3_prefix, cloud_deletion_enabled{legacy_column}
             ) VALUES (
-                2, 'docs', 'Docs Archive', %s, 'bucket', 'docs', 'remote', %s
+                2, 'docs', 'Docs Archive', %s, 'bucket', 'docs', %s{legacy_value}
             )
             """,
             (str(source), cloud_deletion_enabled),
@@ -129,8 +132,7 @@ class CloudDeletionSettingTests(_CloudDeletionTestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                    ) VALUES (1, 'docs', 'Docs', '/src', 'b', 'p', 'r')
+                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/src', 'b', 'p')
                     """
                 )
                 enabled = cloud_deletion.is_cloud_deletion_enabled(connection, 1)
@@ -151,8 +153,7 @@ class CloudDeletionSettingTests(_CloudDeletionTestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                    ) VALUES (1, 'docs', 'Docs', '/src', 'b', 'p', 'r')
+                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/src', 'b', 'p')
                     """
                 )
                 cloud_deletion.set_cloud_deletion_enabled(
@@ -197,10 +198,9 @@ class DeletionPreviewTests(_CloudDeletionTestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote, cloud_deletion_enabled
+                        id, slug, name, source_root, s3_bucket, s3_prefix, cloud_deletion_enabled
                     ) VALUES (
-                        2, 'docs', 'Docs Archive', %s, 'bucket', 'docs', 'remote', TRUE
+                        2, 'docs', 'Docs Archive', %s, 'bucket', 'docs', TRUE
                     )
                     """,
                     (str(source),),
@@ -1028,7 +1028,7 @@ class ClaimLeaseTakeoverTests(_CloudDeletionTestCase):
                 job = connection.execute(
                     """
                     SELECT j.*, v.source_root, v.s3_bucket, v.s3_prefix,
-                           v.rclone_remote,
+
                            v.uuid AS vault_uuid, v.name AS vault_name,
                            v.cloud_deletion_enabled, v.decommission_state
                     FROM jobs j JOIN vaults v ON v.id=j.vault_id

@@ -564,15 +564,11 @@ class NpmAuditBaselineContractTests(unittest.TestCase):
 
 
 class TrivyBaselineContractTests(unittest.TestCase):
-    def test_runtime_security_pins_and_rclone_checksums_stay_coherent(self) -> None:
+    def test_runtime_security_pins_and_sdk_only_image_stay_coherent(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-        pin = re.search(
-            r"^FROM rclone/rclone:(\d+\.\d+\.\d+) AS rclone$",
-            dockerfile,
-            re.MULTILINE,
-        )
-        self.assertIsNotNone(pin, "Dockerfile must pin rclone/rclone:<semver> AS rclone")
+        self.assertNotIn("rclone", dockerfile.lower())
+        self.assertNotIn("FROM golang:", dockerfile)
         self.assertIn("RUN npm run build:ci", dockerfile)
         self.assertRegex(requirements, r"(?m)^msgpack==\d+\.\d+\.\d+\n")
         self.assertRegex(requirements, r"(?m)^setuptools==\d+\.\d+\.\d+\n")
@@ -594,22 +590,6 @@ class TrivyBaselineContractTests(unittest.TestCase):
             )
             self.assertRegex(trivyignore, r"https://\S+")
 
-        for path in (
-            WORKFLOWS / "migrations.yml",
-            WORKFLOWS / "aws-s3-integrity.yml",
-        ):
-            text = path.read_text(encoding="utf-8")
-            with self.subTest(path=path.name):
-                self.assertIn(
-                    "sed -n 's/^FROM rclone\\/rclone:\\([^ ]*\\) AS rclone$/\\1/p' Dockerfile",
-                    text,
-                )
-                self.assertIn("SHA256SUMS", text)
-                self.assertIn("sha256sum --check --strict", text)
-                self.assertIsNone(
-                    re.search(r"RCLONE_VERSION=\d+\.\d+\.\d+", text),
-                    "CI must follow the Dockerfile rclone pin, not a hardcoded version",
-                )
 
 
 class ContainerPublishContractTests(unittest.TestCase):

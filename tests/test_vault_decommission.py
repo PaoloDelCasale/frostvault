@@ -34,7 +34,7 @@ class VaultDecommissionTests(unittest.TestCase):
             db_backend="sqlite",
             sqlite_path=str(self.db_path),
             vault_s3_bucket="bucket",
-            vault_rclone_remote="remote",
+
         )
         for target in (
             "app.database.settings",
@@ -53,10 +53,8 @@ class VaultDecommissionTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote
-                ) VALUES (7, 'archive', 'Archive', %s, 'bucket',
-                          'vaults/archive/', 'remote')
+                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (7, 'archive', 'Archive', %s, 'bucket',
+                          'vaults/archive/')
                 """,
                 (str(self.root),),
             )
@@ -420,7 +418,7 @@ class VaultDecommissionTests(unittest.TestCase):
             job = connection.execute(
                 """
                 SELECT j.*, v.source_root, v.s3_bucket, v.s3_prefix,
-                       v.rclone_remote,
+
                        v.uuid AS vault_uuid, v.name AS vault_name,
                        v.cloud_deletion_enabled, v.decommission_state
                 FROM jobs j JOIN vaults v ON v.id=j.vault_id

@@ -264,13 +264,6 @@ def local_cleanup_is_due(
     return _aware(now) >= reference + timedelta(days=retention_days)
 
 
-def upload_bwlimit_arg(limit_kibps: int | None) -> str | None:
-    """Return the rclone ``--bwlimit`` of the global upload limit, if any."""
-    if not limit_kibps or int(limit_kibps) <= 0:
-        return None
-    return f"{int(limit_kibps)}k"
-
-
 def queue_auto_uploads(
     connection: Any,
     *,

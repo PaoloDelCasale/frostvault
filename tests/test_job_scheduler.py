@@ -87,8 +87,7 @@ class _SchedulerDbMixin:
             )
             for vault_id, slug in ((10, "alpha"), (20, "beta")):
                 connection.execute(
-                    "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                    "VALUES (%s, %s, %s, %s, 'bucket', %s, 'remote')",
+                    "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, %s, %s, %s, 'bucket', %s)",
                     (vault_id, slug, slug, f"/source/{slug}", slug),
                 )
                 catalog = ArchiveCatalog(connection)

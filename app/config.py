@@ -45,7 +45,6 @@ class Settings:
     reauth_window_seconds: int = max(
         60, int(os.getenv("REAUTH_WINDOW_SECONDS", "600"))
     )
-    rclone_config: str = os.getenv("RCLONE_CONFIG", "/config/rclone/rclone.conf")
     aws_region: str = os.getenv("AWS_DEFAULT_REGION", "eu-south-1")
     scan_interval: int = int(os.getenv("SCAN_INTERVAL_SECONDS", "21600"))
     audit_interval: int = int(os.getenv("AUDIT_INTERVAL_SECONDS", str(7 * 24 * 60 * 60)))
@@ -96,7 +95,7 @@ class Settings:
         else max(0, int(os.getenv("BANDWIDTH_LIMIT_KIBPS", "0")))
     )
     # Plain-vault recovery uses boto3 TransferManager parallel range GETs above
-    # the multipart threshold. Crypt recoveries use rclone multi-thread streams.
+    # the multipart threshold.
     s3_download_max_concurrency: int = max(
         1, min(32, int(os.getenv("S3_DOWNLOAD_MAX_CONCURRENCY", "10")))
     )
@@ -105,12 +104,6 @@ class Settings:
     )
     s3_download_multipart_chunksize_mib: int = max(
         5, int(os.getenv("S3_DOWNLOAD_MULTIPART_CHUNKSIZE_MIB", "8"))
-    )
-    rclone_multi_thread_streams: int = max(
-        1, min(32, int(os.getenv("RCLONE_MULTI_THREAD_STREAMS", "8")))
-    )
-    rclone_multi_thread_cutoff_mib: int = max(
-        1, int(os.getenv("RCLONE_MULTI_THREAD_CUTOFF_MIB", "64"))
     )
     # Cap Job progress DB writes during transfers (ms between updates).
     job_progress_min_interval_ms: int = max(
@@ -138,10 +131,8 @@ class Settings:
     # Vault creation (issue #7): the server -- never the caller -- derives
     # every vault's storage namespace from a generated UUID.
     # Local empty-Vault roots use the fixed /sources/managed/<uuid> contract
-    # (issue #148); vault_s3_bucket/vault_rclone_remote are the shared
-    # bucket/remote assigned to plain vaults.
+    # (issue #148); vault_s3_bucket is shared across Vault namespaces.
     vault_s3_bucket: str = os.getenv("VAULT_S3_BUCKET", os.getenv("S3_BUCKET", ""))
-    vault_rclone_remote: str = os.getenv("VAULT_RCLONE_REMOTE", "")
     # Fernet key (url-safe base64-encoded 32 bytes) for metadata backups only.
     archive_master_key: str = os.getenv("ARCHIVE_MASTER_KEY", "")
 

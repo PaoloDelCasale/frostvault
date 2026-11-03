@@ -6,11 +6,13 @@ Seams under test:
   list_versions.
 - Rename Job worker (process_jobs_once) — cloud copy/verify/delete-marker
   observed through Job status, Archive Version integrity/keys, and Delete
-  Markers. System boundaries mocked: Rclone and S3.
+  Markers. System boundaries mocked: managed upload and S3.
 - HTTP file history — continuous versions across old and new keys.
 """
 
 from __future__ import annotations
+
+from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
 
 import hashlib
 import os
@@ -57,9 +59,7 @@ def _seed_vault(connection, *, vault_id: int = 2, source_root: str = "/source") 
     connection.execute(
         """
         INSERT INTO vaults(
-            id, slug, name, source_root, s3_bucket, s3_prefix,
-            rclone_remote
-        ) VALUES (%s, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote')
+            id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, 'docs', 'Docs', %s, 'bucket', 'docs')
         """,
         (vault_id, source_root),
     )
@@ -184,15 +184,15 @@ def _rename_worker(
     old_key: str,
     new_key: str,
 ):
-    rclone_calls: list[tuple[str, ...]] = []
+    upload_calls: list[tuple[str, ...]] = []
     deleted_keys: list[dict[str, str]] = []
     head_calls: list[dict[str, str]] = []
     download_calls: list[dict[str, str]] = []
 
-    def fake_rclone(*args, **kwargs) -> None:
+    def fake_sdk_upload(*args, **kwargs) -> None:
         command = tuple(str(arg) for arg in args if not callable(arg))
-        rclone_calls.append(command)
-        if command[:1] != ("copyto",) or len(command) < 3:
+        upload_calls.append(command)
+        if command[:1] != ("upload",) or len(command) < 3:
             return
         origin, destination = command[1], command[2]
         if ":" in origin and not Path(origin).exists():
@@ -251,7 +251,7 @@ def _rename_worker(
         with (
             patch("app.storage.settings", worker_settings),
             patch("app.storage.validate_cloud_vault"),
-            patch("app.storage.run_rclone", side_effect=fake_rclone),
+            mock_sdk_upload( side_effect=fake_sdk_upload),
             patch(
                 "app.storage.s3_client",
                 return_value=VersionedS3Stub(
@@ -267,7 +267,7 @@ def _rename_worker(
                 ),
             ),
         ):
-            yield rclone_calls, deleted_keys, head_calls, download_calls
+            yield upload_calls, deleted_keys, head_calls, download_calls
 
 
 class RenameMatchingTests(unittest.TestCase):
@@ -556,7 +556,7 @@ class RenameCloudJobTests(unittest.TestCase):
                     payload=payload,
                     old_key=old_key,
                     new_key=new_key,
-                ) as (rclone_calls, deleted_keys, head_calls, download_calls):
+                ) as (upload_calls, deleted_keys, head_calls, download_calls):
                     process_jobs_once()
 
             with SQLiteConnection(str(database_path)) as connection:
@@ -594,7 +594,7 @@ class RenameCloudJobTests(unittest.TestCase):
             )
             self.assertEqual(
                 [call["Key"] for call in head_calls],
-                [new_key, new_key],
+                [new_key, new_key, new_key],
             )
             self.assertEqual(head_calls[1]["VersionId"], "new-s3-version")
             self.assertEqual(
@@ -607,11 +607,11 @@ class RenameCloudJobTests(unittest.TestCase):
                     }
                 ],
             )
-            self.assertTrue(any(call[:1] == ("copyto",) for call in rclone_calls))
+            self.assertTrue(any(call[:1] == ("upload",) for call in upload_calls))
             self.assertFalse(
                 any(
                     str(arg).startswith("--s3-version-id=")
-                    for call in rclone_calls
+                    for call in upload_calls
                     for arg in call
                 )
             )
@@ -669,7 +669,7 @@ class RenameCloudJobTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.run_rclone"),
+                    mock_sdk_upload(),
                     patch(
                         "app.storage.s3_client",
                         return_value=VersionedS3Stub(
@@ -705,7 +705,7 @@ class RenameCloudJobTests(unittest.TestCase):
             self.assertEqual(markers, [])
             self.assertEqual(job["status"], "failed")
             self.assertIn("uncatalogued cloud content", job["message"] or "")
-            self.assertEqual(head_keys, [new_key, new_key])
+            self.assertEqual(head_keys, [new_key, new_key, new_key])
             self.assertEqual(
                 download_calls[0]["VersionId"],
                 "new-s3-version",
@@ -760,7 +760,7 @@ class RenameCloudJobTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.run_rclone"),
+                    mock_sdk_upload(),
                     patch(
                         "app.storage.s3_client",
                         return_value=VersionedS3Stub(
@@ -815,7 +815,7 @@ class RenameCloudJobTests(unittest.TestCase):
             )
             job_id_holder: dict[str, int] = {}
 
-            def cancelling_rclone(*args, **kwargs) -> None:
+            def cancelling_sdk_upload(*args, **kwargs) -> None:
                 cancel_jobs([job_id_holder["id"]])
                 raise OperationCancelled("Rename stopped")
 
@@ -838,7 +838,7 @@ class RenameCloudJobTests(unittest.TestCase):
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.run_rclone", side_effect=cancelling_rclone),
+                    mock_sdk_upload( side_effect=cancelling_sdk_upload),
                     patch(
                         "app.storage.s3_client",
                         return_value=VersionedS3Stub(
@@ -1042,11 +1042,8 @@ class PlaintextNamespaceRenameTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (
-                        2, 'secret', 'Secret', %s, 'bucket', 'docs', 'plain'
-                    )
+                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (
+                        2, 'secret', 'Secret', %s, 'bucket', 'docs')
                     """,
                     (str(source),),
                 )
@@ -1107,13 +1104,13 @@ class PlaintextNamespaceRenameTests(unittest.TestCase):
                     vault_id=2,
                 )
 
-            rclone_calls: list[tuple[str, ...]] = []
+            upload_calls: list[tuple[str, ...]] = []
             download_calls: list[dict[str, str]] = []
 
-            def fake_rclone(*args, **kwargs) -> None:
+            def fake_sdk_upload(*args, **kwargs) -> None:
                 command = tuple(str(arg) for arg in args if not callable(arg))
-                rclone_calls.append(command)
-                if command[:1] != ("copyto",) or len(command) < 3:
+                upload_calls.append(command)
+                if command[:1] != ("upload",) or len(command) < 3:
                     return
                 origin, destination = command[1], command[2]
                 if ":" in origin and not Path(origin).exists():
@@ -1136,7 +1133,7 @@ class PlaintextNamespaceRenameTests(unittest.TestCase):
                         ),
                     ),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.run_rclone", side_effect=fake_rclone),
+                    mock_sdk_upload( side_effect=fake_sdk_upload),
                     patch(
                         "app.storage.s3_client",
                         return_value=VersionedS3Stub(
@@ -1272,7 +1269,7 @@ class RenameRestartTests(unittest.TestCase):
                 sqlite_path=str(database_path),
             )
             deleted: list[str] = []
-            rclone_calls: list[tuple[str, ...]] = []
+            upload_calls: list[tuple[str, ...]] = []
             download_calls: list[dict[str, str]] = []
 
             def fake_head_object(**kwargs):
@@ -1310,9 +1307,8 @@ class RenameRestartTests(unittest.TestCase):
                         ),
                     ),
                     patch("app.storage.validate_cloud_vault"),
-                    patch(
-                        "app.storage.run_rclone",
-                        side_effect=lambda *args, **kwargs: rclone_calls.append(
+                    mock_sdk_upload(
+                        side_effect=lambda *args, **kwargs: upload_calls.append(
                             tuple(str(arg) for arg in args if not callable(arg))
                         ),
                     ),
@@ -1359,7 +1355,7 @@ class RenameRestartTests(unittest.TestCase):
             self.assertEqual(deleted, [old_key])
             self.assertEqual(version_count, 2)
             self.assertEqual(len(versions), 2)
-            self.assertEqual(rclone_calls, [])
+            self.assertEqual(upload_calls, [])
             self.assertEqual(download_calls, [])
             self.assertEqual(
                 [(row["object_key"], row["provider_version_id"]) for row in markers],
@@ -1468,7 +1464,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                     payload=payload,
                     old_key=old_key,
                     new_key=new_key,
-                ) as (rclone_calls, deleted_keys, head_calls, download_calls):
+                ) as (upload_calls, deleted_keys, head_calls, download_calls):
                     process_jobs_once()
 
             with SQLiteConnection(str(database_path)) as connection:
@@ -1490,7 +1486,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                 [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}],
             )
             self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
-            self.assertTrue(any(call[:1] == ("copyto",) for call in rclone_calls))
+            self.assertTrue(any(call[:1] == ("upload",) for call in upload_calls))
             by_provider = {row["provider_version_id"]: row for row in versions}
             self.assertEqual(by_provider["missing-s3-version"]["availability"], "purged")
             self.assertEqual(by_provider["new-s3-version"]["integrity"], "verified")
@@ -1583,7 +1579,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                         ),
                     ),
                     patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.run_rclone"),
+                    mock_sdk_upload(),
                     patch(
                         "app.storage.s3_client",
                         return_value=VersionedS3Stub(
@@ -1664,7 +1660,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                     payload=payload,
                     old_key=old_key,
                     new_key=new_key,
-                ) as (rclone_calls, deleted_keys, head_calls, download_calls):
+                ) as (upload_calls, deleted_keys, head_calls, download_calls):
                     process_jobs_once()
 
             with SQLiteConnection(str(database_path)) as connection:
@@ -1676,7 +1672,7 @@ class RenameDestinationProofTests(unittest.TestCase):
             self.assertEqual(job["status"], "completed")
             self.assertEqual(job["message_key"], "job.rename_verified")
             self.assertEqual(deleted_keys, [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}])
-            self.assertEqual(rclone_calls, [])
+            self.assertEqual(upload_calls, [])
             self.assertEqual(download_calls, [])
             self.assertEqual(job["archive_version_id"], live_id)
             self.assertEqual(
@@ -1721,7 +1717,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                     payload=payload,
                     old_key=old_key,
                     new_key=new_key,
-                ) as (rclone_calls, deleted_keys, _head_calls, download_calls):
+                ) as (upload_calls, deleted_keys, _head_calls, download_calls):
                     process_jobs_once()
 
             with SQLiteConnection(str(database_path)) as connection:
@@ -1738,7 +1734,7 @@ class RenameDestinationProofTests(unittest.TestCase):
             self.assertEqual(job["status"], "completed")
             self.assertEqual(job["message_key"], "job.rename_verified")
             self.assertEqual(deleted_keys, [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}])
-            self.assertTrue(any(call[:1] == ("copyto",) for call in rclone_calls))
+            self.assertTrue(any(call[:1] == ("upload",) for call in upload_calls))
             self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
             by_provider = {row["provider_version_id"]: row for row in versions}
             self.assertEqual(by_provider["new-s3-version"]["integrity"], "verified")
@@ -1783,7 +1779,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                     payload=payload,
                     old_key=old_key,
                     new_key=new_key,
-                ) as (_rclone_calls, deleted_keys, head_calls, download_calls):
+                ) as (_upload_calls, deleted_keys, head_calls, download_calls):
                     process_jobs_once()
 
             with SQLiteConnection(str(database_path)) as connection:
@@ -1872,7 +1868,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                     payload=payload,
                     old_key=old_key,
                     new_key=new_key,
-                ) as (rclone_calls, deleted_keys, _head_calls, download_calls):
+                ) as (upload_calls, deleted_keys, _head_calls, download_calls):
                     process_jobs_once()
 
             with SQLiteConnection(str(database_path)) as connection:
@@ -1888,7 +1884,7 @@ class RenameDestinationProofTests(unittest.TestCase):
             self.assertEqual(job["status"], "completed")
             self.assertEqual(version["integrity"], "verified")
             self.assertEqual(version["plaintext_sha256"], _sha256_hex(payload))
-            self.assertEqual(rclone_calls, [])
+            self.assertEqual(upload_calls, [])
             self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
             self.assertEqual(
                 deleted_keys,

@@ -1,15 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextvars
 import hashlib
-import json
 import os
-import re
-import selectors
 import stat
-import subprocess
 import threading
 import time
 import uuid
@@ -23,6 +18,8 @@ from typing import Any, Callable
 
 import boto3
 from boto3.s3.transfer import TransferConfig
+from botocore.config import Config
+from .services.s3_upload import upload_file
 from watchfiles import Change, awatch
 
 from .config import is_placeholder, settings, settings_snapshot
@@ -34,7 +31,6 @@ from .services import vault_relocation
 from .services.catalog_event_hub import publish_committed_event
 from .services.catalog_events import record_catalog_revision
 from .i18n import DEFAULT_LOCALE, format_message_params, translate
-from .services.rclone_runtime import require_plain_vault_remote
 from .services.s3_preflight import check_bucket_readiness, preflight_failure_message
 from .services.catalog_audit import audit_vault_catalog
 from .services.directory_aggregates import (
@@ -78,7 +74,6 @@ from .services.vault_paths import (
     safe_local_entry_path,
     object_key_to_path,
     expected_cloud_key,
-    plain_rclone_destination,
     is_restore_temporary_name,
 )
 from .services.upload_retry import (
@@ -120,7 +115,6 @@ from .services.operation_policies import (
     get_policy,
     queue_auto_local_cleanups,
     queue_auto_uploads,
-    upload_bwlimit_arg,
 )
 
 
@@ -132,7 +126,6 @@ _active_scan_journals: dict[tuple[int, str], dict[str, Any]] = {}
 operation_process_lock = threading.Lock()
 
 
-active_operation_processes: dict[int, subprocess.Popen[Any]] = {}
 cancelled_jobs: set[int] = set()
 # Long transfers stay on this pool so the worker loop can heartbeat, deliver
 # notifications, and start other Jobs without waiting for the whole batch.
@@ -143,16 +136,6 @@ _operation_lock = threading.Lock()
 _maintenance_executor: ThreadPoolExecutor | None = None
 _maintenance_futures: dict[str, Future[Any]] = {}
 _maintenance_lock = threading.Lock()
-
-# Streaming verification never materializes the remote plaintext.  Keep every
-# read bounded even when Rclone emits a very large object or a noisy diagnostic
-# stream.  The selector loop drains both pipes so a provider error cannot
-# deadlock a child that is still producing stdout.
-RCLONE_STREAM_CHUNK_BYTES = 1024 * 1024
-RCLONE_STDERR_TAIL_BYTES = 16 * 1024
-RCLONE_STDERR_LINE_BYTES = 64 * 1024
-RCLONE_PROCESS_TERMINATION_GRACE_SECONDS = 1.0
-
 
 # Local scans deliberately keep filesystem work outside write transactions.
 # This is small enough to give other SQLite writers frequent admission while
@@ -326,18 +309,9 @@ class _ClaimLeaseHeartbeat:
 
 
 def cancel_jobs(job_ids: list[int]) -> None:
-    """Mark jobs for cancellation and terminate their active Rclone processes."""
-    processes: list[subprocess.Popen[str]] = []
+    """Signal SDK transfers and verification streams to stop at checkpoints."""
     with operation_process_lock:
         cancelled_jobs.update(job_ids)
-        processes = [
-            active_operation_processes[job_id]
-            for job_id in job_ids
-            if job_id in active_operation_processes
-        ]
-    for process in processes:
-        if process.poll() is None:
-            process.terminate()
 
 
 def job_cancelled(job_id: int) -> bool:
@@ -395,25 +369,6 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def job_bwlimit(job: dict[str, Any] | None) -> str | None:
-    """Return the rclone --bwlimit attached to upload Jobs at scheduling."""
-    if not job:
-        return None
-    value = job.get("bwlimit")
-    return str(value) if value else None
-
-
-def rclone_download_perf_args() -> list[str]:
-    """Rclone flags that parallelize single-file downloads above the cutoff."""
-    runtime = _runtime_settings()
-    streams = int(runtime.rclone_multi_thread_streams or 8)
-    cutoff = int(runtime.rclone_multi_thread_cutoff_mib or 64)
-    return [
-        f"--multi-thread-streams={max(1, streams)}",
-        f"--multi-thread-cutoff={max(1, cutoff)}M",
-    ]
-
-
 def s3_download_transfer_config() -> TransferConfig:
     """TransferManager config for plain-vault Archive Version downloads."""
     runtime = _runtime_settings()
@@ -444,11 +399,12 @@ class _ThrottledByteProgress:
         self._min_interval = max(0.05, interval_ms / 1000.0)
 
     def add(self, amount: int) -> None:
-        if amount <= 0:
+        if amount == 0:
             return
         should_report = False
         with self._lock:
-            self.transferred += amount
+            # s3transfer emits negative deltas when a retried part rewinds.
+            self.transferred = max(0, self.transferred + amount)
             now = time.monotonic()
             if now - self._last_report >= self._min_interval:
                 self._last_report = now
@@ -485,12 +441,11 @@ def s3_client():
         "REPLACE-WITH-SECRET-KEY",
     ):
         raise RuntimeError("AWS credentials are not configured in the .env file")
-    return boto3.client("s3", region_name=settings.aws_region)
+    return boto3.client("s3", region_name=settings.aws_region,
+                        config=Config(retries={"mode": "standard", "max_attempts": 4}))
 
 
 def validate_cloud_vault(vault: dict[str, Any]) -> None:
-    if "rclone_remote" in vault:
-        require_plain_vault_remote(vault, settings.rclone_config)
     bucket = vault.get("s3_bucket")
     if not bucket or is_placeholder(
         bucket,
@@ -507,13 +462,6 @@ def validate_cloud_vault(vault: dict[str, Any]) -> None:
         raise RuntimeError(
             "S3 bucket preflight failed: " + preflight_failure_message(result)
         )
-
-
-def configured_rclone_destination(job: dict[str, Any], logical_path: str) -> str:
-    """Object spec for the preflight-validated bucket-rooted plaintext alias."""
-    return plain_rclone_destination(
-        job["rclone_remote"], job["s3_prefix"], logical_path
-    )
 
 
 def _scan_tree(
@@ -1872,353 +1820,6 @@ def apply_auto_renames(
     return summary
 
 
-def _rclone_command(
-    command_args: tuple[str, ...],
-    *,
-    config_path: str | None,
-    bwlimit: str | None,
-) -> list[str]:
-    command = ["rclone", "--config", config_path or settings.rclone_config]
-    if bwlimit:
-        command.extend(["--bwlimit", bwlimit])
-    command.extend(command_args)
-    return command
-
-
-def _sanitize_rclone_diagnostics(value: str) -> str:
-    """Keep subprocess diagnostics useful without echoing config credentials."""
-    redacted = re.sub(
-        r"(?i)(password2?|secret[_-]?access[_-]?key|access[_-]?key[_-]?id|session[_-]?token|authorization)"
-        r"\s*([:=])\s*[^\s,;]+",
-        r"\1\2[REDACTED]",
-        value,
-    )
-    return redacted[-1500:].strip() or "Rclone error"
-
-
-def run_rclone(
-    *args: str | Callable[[int, int | None], None],
-    job_id: int | None = None,
-    config_path: str | None = None,
-    bwlimit: str | None = None,
-) -> None:
-    progress_callback = args[-1] if args and callable(args[-1]) else None
-    command_args = args[:-1] if progress_callback else args
-    command = _rclone_command(
-        tuple(str(arg) for arg in command_args),
-        config_path=config_path,
-        bwlimit=bwlimit,
-    )
-    if progress_callback is None:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=None)
-        if completed.returncode != 0:
-            message = (completed.stderr or completed.stdout or "Rclone error").strip()
-            raise RuntimeError(_sanitize_rclone_diagnostics(message))
-        return
-
-    command.extend(["--stats=500ms", "--use-json-log", "--stats-log-level=NOTICE"])
-    if job_id is not None and job_cancelled(job_id):
-        raise OperationCancelled("Operation stopped")
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-    )
-    if job_id is not None:
-        with operation_process_lock:
-            active_operation_processes[job_id] = process
-            should_terminate = job_id in cancelled_jobs
-        if should_terminate and process.poll() is None:
-            process.terminate()
-    output_tail: list[str] = []
-    try:
-        assert process.stdout is not None
-        for line in process.stdout:
-            clean_line = line.strip().lstrip("\r")
-            if not clean_line:
-                continue
-            output_tail.append(clean_line)
-            output_tail = output_tail[-30:]
-            progress = parse_rclone_progress(clean_line)
-            if progress:
-                progress_callback(*progress)
-        return_code = process.wait()
-    finally:
-        if job_id is not None:
-            with operation_process_lock:
-                if active_operation_processes.get(job_id) is process:
-                    active_operation_processes.pop(job_id, None)
-    if job_id is not None and job_cancelled(job_id):
-        raise OperationCancelled("Operation stopped")
-    if return_code != 0:
-        raise RuntimeError(
-            _sanitize_rclone_diagnostics("\n".join(output_tail))
-            if output_tail
-            else "Rclone error"
-        )
-
-
-def run_rclone_stream(
-    *args: str,
-    on_chunk: Callable[[bytes], None] | None = None,
-    progress_callback: Callable[[int, int | None], None] | None = None,
-    job_id: int | None = None,
-    config_path: str | None = None,
-    bwlimit: str | None = None,
-) -> int:
-    """Run Rclone with binary stdout and consume it without a local artifact.
-
-    Rclone's ``cat`` output is the plaintext boundary for both plain and Crypt
-    remotes.  A selector drains stdout and stderr together, so a noisy provider
-    cannot fill stderr while the verifier is reading content.  The child is
-    terminated, escalated to SIGKILL when necessary, and reaped on every exit
-    path.  ``on_chunk`` therefore receives bounded binary chunks only.
-    """
-    if on_chunk is None:
-        raise ValueError("A binary stdout callback is required")
-    if job_id is not None:
-        ensure_job_active(job_id, "Operation stopped")
-
-    command = _rclone_command(
-        tuple(str(arg) for arg in args),
-        config_path=config_path,
-        bwlimit=bwlimit,
-    )
-    command.extend(["--stats=500ms", "--use-json-log", "--stats-log-level=NOTICE"])
-    process: subprocess.Popen[Any] | None = None
-    selector: selectors.BaseSelector | None = None
-    stdout = None
-    stderr = None
-    stderr_tail = bytearray()
-    stderr_pending = bytearray()
-    bytes_read = 0
-    reported_progress = -1
-    abort_error: BaseException | None = None
-    terminate_at: float | None = None
-    last_claim_check = 0.0
-
-    def request_abort(error: BaseException) -> None:
-        nonlocal abort_error, terminate_at
-        if abort_error is None:
-            abort_error = error
-        if process is not None and process.poll() is None:
-            try:
-                process.terminate()
-            except OSError:
-                pass
-            if terminate_at is None:
-                terminate_at = time.monotonic() + RCLONE_PROCESS_TERMINATION_GRACE_SECONDS
-
-    def cancellation_error() -> BaseException | None:
-        if job_id is None:
-            return None
-        if job_cancelled(job_id):
-            return OperationCancelled("Operation stopped")
-        if _claim_is_lost(job_id):
-            return JobLeaseLost("Operation claim was lost")
-        return None
-
-    def report_progress(value: int, total: int | None) -> None:
-        nonlocal reported_progress
-        if progress_callback is None:
-            return
-        reported_progress = max(reported_progress, int(value))
-        progress_callback(reported_progress, total)
-
-    def consume_stderr_line(line: bytes) -> None:
-        text = line.decode("utf-8", errors="replace").strip().lstrip("\r")
-        if not text:
-            return
-        progress = parse_rclone_progress(text)
-        if progress is not None:
-            report_progress(*progress)
-
-    def consume_stderr(data: bytes) -> None:
-        if data:
-            stderr_tail.extend(data)
-            if len(stderr_tail) > RCLONE_STDERR_TAIL_BYTES:
-                del stderr_tail[:-RCLONE_STDERR_TAIL_BYTES]
-            stderr_pending.extend(data)
-        while True:
-            try:
-                newline = stderr_pending.index(10)
-            except ValueError:
-                break
-            line = bytes(stderr_pending[:newline])
-            del stderr_pending[: newline + 1]
-            consume_stderr_line(line)
-        # A broken or malicious child must not make the line parser unbounded.
-        while len(stderr_pending) > RCLONE_STDERR_LINE_BYTES:
-            line = bytes(stderr_pending[:RCLONE_STDERR_LINE_BYTES])
-            del stderr_pending[:RCLONE_STDERR_LINE_BYTES]
-            consume_stderr_line(line)
-
-    try:
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=False,
-            bufsize=0,
-        )
-        if job_id is not None:
-            with operation_process_lock:
-                active_operation_processes[job_id] = process
-                should_terminate = job_id in cancelled_jobs
-            if should_terminate:
-                request_abort(OperationCancelled("Operation stopped"))
-
-        stdout = process.stdout
-        stderr = process.stderr
-        if stdout is None or stderr is None:
-            raise RuntimeError("Rclone did not expose binary output pipes")
-        selector = selectors.DefaultSelector()
-        selector.register(stdout, selectors.EVENT_READ, "stdout")
-        selector.register(stderr, selectors.EVENT_READ, "stderr")
-        last_claim_check = time.monotonic()
-
-        while selector.get_map():
-            now = time.monotonic()
-            if abort_error is None:
-                current_error = cancellation_error()
-                if current_error is not None:
-                    request_abort(current_error)
-                elif (
-                    job_id is not None
-                    and now - last_claim_check >= max(0.25, JOB_CLAIM_LEASE_SECONDS / 6)
-                ):
-                    try:
-                        ensure_job_active(job_id, "Operation claim was lost")
-                    except BaseException as exc:
-                        request_abort(exc)
-                    last_claim_check = now
-            elif terminate_at is not None and now >= terminate_at and process.poll() is None:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-                terminate_at = None
-
-            events = selector.select(0.1)
-            for key, _ in events:
-                stream = key.fileobj
-                try:
-                    data = os.read(stream.fileno(), RCLONE_STREAM_CHUNK_BYTES)
-                except BlockingIOError:
-                    continue
-                except OSError:
-                    try:
-                        selector.unregister(stream)
-                    except Exception:
-                        pass
-                    request_abort(RuntimeError("Rclone stream read failed"))
-                    continue
-                if not data:
-                    try:
-                        selector.unregister(stream)
-                    except Exception:
-                        pass
-                    continue
-                if key.data == "stderr":
-                    try:
-                        consume_stderr(data)
-                    except BaseException as exc:
-                        request_abort(exc)
-                    continue
-                if abort_error is not None:
-                    continue
-                bytes_read += len(data)
-                try:
-                    on_chunk(data)
-                    report_progress(bytes_read, None)
-                except BaseException as exc:
-                    request_abort(exc)
-
-        if stderr_pending:
-            consume_stderr_line(bytes(stderr_pending))
-        if process.poll() is None:
-            # A child with closed pipes is still not allowed to escape unreaped.
-            request_abort(RuntimeError("Rclone stream ended before the process exited"))
-            try:
-                process.wait(timeout=RCLONE_PROCESS_TERMINATION_GRACE_SECONDS)
-            except subprocess.TimeoutExpired:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-                process.wait()
-        else:
-            process.wait()
-        return_code = int(process.returncode or 0)
-        if abort_error is None:
-            current_error = cancellation_error()
-            if current_error is not None:
-                abort_error = current_error
-        if abort_error is not None:
-            raise abort_error
-        if return_code != 0:
-            message = _sanitize_rclone_diagnostics(
-                stderr_tail.decode("utf-8", errors="replace")
-            )
-            raise RuntimeError(f"Rclone stream failed: {message}")
-        return bytes_read
-    except BaseException as exc:
-        if abort_error is None:
-            abort_error = exc
-        raise
-    finally:
-        if selector is not None:
-            try:
-                selector.close()
-            except Exception:
-                pass
-        if process is not None and process.poll() is None:
-            try:
-                process.terminate()
-            except OSError:
-                pass
-            try:
-                process.wait(timeout=RCLONE_PROCESS_TERMINATION_GRACE_SECONDS)
-            except subprocess.TimeoutExpired:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-                try:
-                    process.wait()
-                except Exception:
-                    pass
-        for stream in (stdout, stderr):
-            if stream is not None:
-                try:
-                    stream.close()
-                except OSError:
-                    pass
-        if job_id is not None and process is not None:
-            with operation_process_lock:
-                if active_operation_processes.get(job_id) is process:
-                    active_operation_processes.pop(job_id, None)
-
-
-def parse_rclone_progress(line: str) -> tuple[int, int | None] | None:
-    """Extract byte counters from Rclone's structured stats log line."""
-    try:
-        record = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(record, dict):
-        return None
-    stats = record.get("stats", record)
-    if not isinstance(stats, dict) or "bytes" not in stats:
-        return None
-    total = stats.get("totalBytes")
-    return int(stats.get("bytes") or 0), int(total) if total is not None else None
-
-
 def _claim_write_succeeded(result: Any) -> bool:
     """Normalize real cursors and lightweight unit-test recording seams."""
     rowcount = getattr(result, "rowcount", None)
@@ -3397,7 +2998,7 @@ def job_progress_callback(
     lock = threading.Lock()
 
     def update(transferred_bytes: int, _: int | None = None) -> None:
-        # Rclone reports absolute transferred counters.
+        # Verification reports absolute read counters.
         value = max(floor, int(transferred_bytes))
         if total_bytes:
             value = min(value, total_bytes)
@@ -3425,48 +3026,6 @@ def job_progress_callback(
     return update
 
 
-def download_with_rclone(job: dict[str, Any]) -> None:
-    ensure_job_active(job["id"], "Recovery stopped")
-    target = safe_local_entry_path(job["source_root"], job["path"])
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.restore-{uuid.uuid4().hex}.tmp")
-    set_job(job["id"], "downloading", message_key="job.downloading")
-    try:
-        run_rclone(
-            "copyto",
-            configured_rclone_destination(job, job["path"]),
-            str(temporary),
-            *rclone_download_perf_args(),
-            job_progress_callback(job),
-            job_id=job["id"],
-        )
-        ensure_job_active(job["id"], "Recovery stopped")
-        if not temporary.is_file():
-            raise RuntimeError("Rclone did not create the recovered file")
-        temporary.replace(target)
-    finally:
-        temporary.unlink(missing_ok=True)
-    stat = target.stat()
-    with db() as connection:
-        recovered_at = now_iso()
-        ArchiveCatalog(connection).observe_local_copy(
-            vault_id=job["vault_id"],
-            path=job["path"],
-            file_type="regular",
-            size=stat.st_size,
-            mtime_ns=stat.st_mtime_ns,
-            observed_at=recovered_at,
-            recovered_at=recovered_at,
-        )
-    set_job_progress(job["id"], int(job.get("total_bytes") or stat.st_size))
-    set_job(
-        job["id"],
-        "completed",
-        message_key="job.recovered_to",
-        message_params={"target": str(target)},
-    )
-
-
 def remove_local_copies(vault: dict[str, Any], logical_path: str) -> list[Path]:
     """Delete the source copy after the caller has verified the cloud copy."""
     target = safe_local_entry_path(vault["source_root"], logical_path)
@@ -3478,44 +3037,45 @@ def remove_local_copies(vault: dict[str, Any], logical_path: str) -> list[Path]:
     return [target]
 
 
+def upload_s3_file(job: dict[str, Any], *, source: Path, key: str) -> dict[str, Any]:
+    reporter = _ThrottledByteProgress(job)
+    limit = _runtime_settings().bandwidth_limit_kibps
+    response = upload_file(
+        s3_client(), source=source, bucket=job["s3_bucket"], key=key,
+        check_active=lambda: ensure_job_active(job["id"], "Upload stopped"),
+        on_progress=reporter.add,
+        max_bandwidth=int(limit) * 1024 if limit else None,
+    )
+    reporter.flush()
+    return response
+
+
 def _stream_plaintext_for_verification(
-    job: dict[str, Any],
-    *,
-    target: dict[str, Any],
-    source_size: int,
+    job: dict[str, Any], *, target: dict[str, Any], source_size: int,
 ) -> tuple[str, int]:
-    """Hash Rclone read-back; the caller must also prove the exact VersionId."""
-    digest = hashlib.sha256()
-    bytes_read = 0
-
-    def consume(chunk: bytes) -> None:
-        nonlocal bytes_read
-        if not isinstance(chunk, (bytes, bytearray, memoryview)):
-            raise RuntimeError("Rclone returned a non-binary verification chunk")
-        bytes_read += len(chunk)
-        digest.update(chunk)
-
-    progress = job_progress_callback(
-        job,
-        minimum_bytes=max(int(job.get("total_bytes") or 0), int(source_size)),
-    )
+    """Hash only the exact VersionId returned by the upload, never current key."""
     version_id = target.get("provider_version_id")
-    logical_path = object_key_to_path(
-        str(target.get("object_key") or ""), job.get("s3_prefix") or "",
-    )
-    if not version_id or logical_path is None:
+    key = target.get("object_key")
+    if not version_id or not key:
         raise RuntimeError("An exact Archive Version is required for verification")
-    run_rclone_stream(
-        "cat",
-        configured_rclone_destination(job, logical_path),
-        *rclone_download_perf_args(),
-        on_chunk=consume,
-        progress_callback=progress,
-        job_id=job["id"],
-        bwlimit=job_bwlimit(job),
-    )
     ensure_job_active(job["id"], "Upload stopped")
-    return digest.hexdigest(), bytes_read
+    response = s3_client().get_object(Bucket=job["s3_bucket"], Key=key, VersionId=version_id)
+    body = response["Body"]
+    digest = hashlib.sha256()
+    size = 0
+    progress = job_progress_callback(job, minimum_bytes=source_size)
+    try:
+        if str(response.get("VersionId") or "") != str(version_id):
+            raise RuntimeError("S3 returned a different verification VersionId")
+        while chunk := body.read(1024 * 1024):
+            ensure_job_active(job["id"], "Upload stopped")
+            digest.update(chunk)
+            size += len(chunk)
+            progress(size)
+    finally:
+        body.close()
+    ensure_job_active(job["id"], "Upload stopped")
+    return digest.hexdigest(), size
 
 
 def _record_verification_failure(reason: str) -> None:
@@ -3782,18 +3342,12 @@ def process_upload(job: dict[str, Any]) -> None:
                 head = _verification_version_head(client, job, target)
             else:
                 set_job(job["id"], "uploading", message_key="job.plain_upload")
-                run_rclone(
-                    "copyto",
-                    str(source),
-                    configured_rclone_destination(job, job["path"]),
-                    job_progress_callback(job),
-                    job_id=job["id"],
-                    bwlimit=job_bwlimit(job),
-                )
-                ensure_job_active(job["id"], "Upload stopped")
                 key = expected_cloud_key(job["path"], job["s3_prefix"])
-                head = client.head_object(Bucket=job["s3_bucket"], Key=key)
-                provider_version_id = head.get("VersionId")
+                response = upload_s3_file(job, source=source, key=key)
+                ensure_job_active(job["id"], "Upload stopped")
+                provider_version_id = response.get("VersionId")
+                head = client.head_object(Bucket=job["s3_bucket"], Key=key,
+                                          VersionId=provider_version_id)
                 if not provider_version_id:
                     raise RuntimeError(
                         "Upload stored without an S3 VersionId; bucket Versioning is required"
@@ -3867,16 +3421,7 @@ def process_upload(job: dict[str, Any]) -> None:
             raise RuntimeError(
                 "Cloud verification stream length did not match the Archive Version"
             )
-        # Rclone's official S3 backend cannot pin a VersionId. Its read-back
-        # alone is therefore never authority to verify (or purge after) the
-        # linked version. Reuse the existing exact-version integrity reader;
-        # keep Rclone transport until #420, including its retry/cancel behavior.
-        exact_matches = _sha256_s3_version(
-            client, bucket=job["s3_bucket"], object_key=target["object_key"],
-            version_id=str(target["provider_version_id"]),
-            check_active=lambda _: ensure_job_active(job["id"], "Upload stopped"),
-        ) == base64.b64encode(bytes.fromhex(upload_digest)).decode("ascii")
-        if not exact_matches:
+        if remote_digest != upload_digest:
             verification_failure_reason = "mismatch"
             ensure_job_active(job["id"], "Upload claim was lost")
             with db() as connection:
@@ -3891,11 +3436,6 @@ def process_upload(job: dict[str, Any]) -> None:
                     checked_at=now_iso(),
                 )
             raise RuntimeError("Cloud copy digest does not match local file")
-        if remote_digest != upload_digest:
-            # A different current object is not a mismatch of the pinned
-            # version. Retain the previous copy and retry/reconcile, without
-            # assigning false Integrity or authorizing cleanup.
-            raise RuntimeError("Current cloud key changed during upload verification")
         _complete_verified_upload(
             job,
             source=source,
@@ -4177,16 +3717,11 @@ def process_rename(job: dict[str, Any]) -> None:
                 )
             set_job(job["id"], "uploading", message_key="job.rename_copying")
             ensure_job_active(job["id"], "Rename claim was lost")
-            run_rclone(
-                "copyto",
-                str(source),
-                configured_rclone_destination(job, job["path"]),
-                job_progress_callback(job),
-                job_id=job["id"],
-            )
+            response = upload_s3_file(job, source=source, key=new_key)
             ensure_job_active(job["id"], "Rename stopped")
-            head = client.head_object(Bucket=job["s3_bucket"], Key=new_key)
-            provider_version_id = head.get("VersionId")
+            provider_version_id = response.get("VersionId")
+            head = client.head_object(Bucket=job["s3_bucket"], Key=new_key,
+                                      VersionId=provider_version_id)
             if not provider_version_id:
                 raise RuntimeError(
                     "Rename stored without an S3 VersionId; bucket Versioning is required"
@@ -5327,7 +4862,6 @@ def process_jobs_once(*, wait: bool = True) -> int:
             restore_due_before=restore_due_before,
             limit=batch_size,
         )
-        upload_bwlimit = upload_bwlimit_arg(runtime.bandwidth_limit_kibps)
         eligible_candidates: list[dict[str, Any]] = []
         seen_purge_groups: set[tuple[int, str]] = set()
         for row in candidates:
@@ -5340,9 +4874,6 @@ def process_jobs_once(*, wait: bool = True) -> int:
                 and vault_decommission_service.local_work_suspended(job)
             ):
                 continue
-            # One optional global limit, for uploads only (#413).
-            if job["action"] == "upload":
-                job["bwlimit"] = upload_bwlimit
             if job["action"] == "cloud-purge":
                 if not job.get("group_id"):
                     continue

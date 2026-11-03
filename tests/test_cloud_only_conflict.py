@@ -9,6 +9,8 @@ becomes a Local Copy again. Only an explicit confirmation replaces the copy.
 
 from __future__ import annotations
 
+from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
+
 import hashlib
 import os
 import tempfile
@@ -73,9 +75,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote
-                ) VALUES (2, 'photos', 'Photos', %s, 'bucket', 'photos', 'remote')
+                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'photos', 'Photos', %s, 'bucket', 'photos')
                 """,
                 (str(self.source),)
             )
@@ -143,8 +143,8 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
         with (
             patch("app.storage.settings", worker_settings),
             patch("app.storage.validate_cloud_vault"),
-            patch("app.storage.run_rclone", return_value=None),
-            patch("app.storage.run_rclone_stream", side_effect=fake_stream),
+            mock_sdk_upload( return_value=None),
+            mock_sdk_read( side_effect=fake_stream),
             patch("app.storage.s3_client", return_value=self.s3),
         ):
             process_jobs_once()

@@ -26,8 +26,7 @@ class SinglePathLookupPlanTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                "VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')"
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs')"
             )
             catalog = ArchiveCatalog(connection)
             for index in range(50):

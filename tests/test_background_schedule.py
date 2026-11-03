@@ -116,8 +116,7 @@ class PersistedAgesTests(unittest.TestCase):
         with SQLiteConnection(str(self.path)) as connection:
             for vault_id in (1, 2):
                 connection.execute(
-                    "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                    "VALUES (%s, %s, %s, '/source', 'bucket', 'p', 'remote')",
+                    "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, %s, %s, '/source', 'bucket', 'p')",
                     (vault_id, f"v{vault_id}", f"V{vault_id}"),
                 )
             connection.execute(
@@ -162,8 +161,7 @@ class PersistedAgesTests(unittest.TestCase):
         with SQLiteConnection(str(self.path)) as connection:
             for vault_id in (1, 2):
                 connection.execute(
-                    "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                    "VALUES (%s, %s, %s, '/source', 'bucket', 'p', 'remote')",
+                    "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, %s, %s, '/source', 'bucket', 'p')",
                     (vault_id, f"v{vault_id}", f"V{vault_id}"),
                 )
             connection.execute(

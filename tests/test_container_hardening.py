@@ -225,7 +225,7 @@ class ContainerHardeningComposeTests(unittest.TestCase):
                 writable = {target for target, mode in normalized if mode != "ro"}
                 self.assertEqual(writable, {"/sources", "/data"})
                 self.assertIn(("/data", "rw"), normalized)
-                self.assertIn(("/config/rclone", "ro"), normalized)
+                self.assertNotIn("/config/rclone", {target for target, _ in normalized})
 
                 tmpfs = service.get("tmpfs") or []
                 tmpfs_by_target = {

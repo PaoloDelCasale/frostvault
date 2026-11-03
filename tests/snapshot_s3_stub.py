@@ -28,7 +28,7 @@ class VersionedS3Stub(SimpleNamespace):
         content = self.version_bytes
         if isinstance(content, dict):
             content = content[(kwargs['Key'], kwargs['VersionId'])]
-        return {'Body': io.BytesIO(content)}
+        return {'Body': io.BytesIO(content), 'VersionId': kwargs['VersionId']}
 
     def list_object_versions(self, **kwargs):
         prefix = kwargs.get('Prefix', '')

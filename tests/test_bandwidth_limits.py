@@ -1,87 +1,28 @@
-"""The one optional upload bandwidth limit (#413, #366 Q3).
-
-Seams under test:
-- ``upload_bwlimit_arg`` formats the global ``BANDWIDTH_LIMIT_KIBPS``.
-- ``process_jobs_once`` attaches it to upload Jobs only; other transfers are
-  never throttled and no per-Vault limit exists.
-- ``run_rclone`` receives ``--bwlimit`` before the command arguments.
-"""
-
-from __future__ import annotations
-
+"""One installation-wide upload cap; recovery is never throttled (#420)."""
+from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from app.database import SQLiteConnection
-from app.services.operation_policies import upload_bwlimit_arg
-from app.storage import process_jobs_once, run_rclone
-from tests.test_job_scheduler import _SchedulerDbMixin
+from app.storage import upload_s3_file, s3_download_transfer_config, _ThrottledByteProgress
 
 
-class UploadBandwidthArgTests(unittest.TestCase):
-    def test_formats_kibps_and_treats_empty_or_zero_as_unlimited(self) -> None:
-        self.assertEqual(upload_bwlimit_arg(256), "256k")
-        self.assertIsNone(upload_bwlimit_arg(None))
-        self.assertIsNone(upload_bwlimit_arg(0))
+class SDKBandwidthTests(unittest.TestCase):
+    def test_limit_is_converted_to_bytes_for_managed_upload_only(self):
+        for limit, expected in ((None, None), (0, None), (512, 512 * 1024)):
+            with self.subTest(limit=limit), patch("app.storage._runtime_settings", return_value=SimpleNamespace(bandwidth_limit_kibps=limit, job_progress_min_interval_ms=500)), patch("app.storage.s3_client"), patch("app.storage.set_job_progress"), patch("app.storage.upload_file", return_value={"VersionId": "v"}) as upload:
+                self.assertEqual(upload_s3_file({"id": 1, "s3_bucket": "bucket"}, source=Path("file"), key="vaults/id/file"), {"VersionId": "v"})
+                self.assertEqual(upload.call_args.kwargs["max_bandwidth"], expected)
+        self.assertIsNone(s3_download_transfer_config().max_bandwidth)
 
-
-class UploadBandwidthSchedulingTests(_SchedulerDbMixin, unittest.TestCase):
-    def _scheduled_bwlimits(self, limit_kibps: int | None) -> dict[str, str | None]:
-        upload_id = self._insert_upload_job(vault_id=10, path="a.txt")
-        with SQLiteConnection(str(self.path)) as connection:
-            connection.execute(
-                "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, "
-                "requested_by, requested_at, updated_at) "
-                "SELECT 20, id, 'a.txt', 'free-space', 'queued', 1, "
-                "'2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00' "
-                "FROM vault_files WHERE vault_id=20 ORDER BY id LIMIT 1"
-            )
-        seen: dict[str, str | None] = {}
-
-        def fake_process(job: dict) -> bool:
-            key = "upload" if int(job["id"]) == upload_id else str(job["action"])
-            seen[key] = job.get("bwlimit")
-            return True
-
-        with (
-            patch("app.storage.settings") as mock_settings,
-            patch("app.storage.db") as mock_db,
-            patch("app.storage.process_job", side_effect=fake_process),
-        ):
-            mock_settings.operation_concurrency = 4
-            mock_settings.bandwidth_limit_kibps = limit_kibps
-            mock_db.side_effect = lambda: SQLiteConnection(str(self.path))
-            process_jobs_once()
-        return seen
-
-    def test_global_limit_throttles_uploads_only(self) -> None:
-        seen = self._scheduled_bwlimits(512)
-        self.assertEqual(seen, {"upload": "512k", "free-space": None})
-
-    def test_no_limit_leaves_uploads_unthrottled(self) -> None:
-        seen = self._scheduled_bwlimits(None)
-        self.assertEqual(seen, {"upload": None, "free-space": None})
-
-
-class RcloneBandwidthTests(unittest.TestCase):
-    def test_run_rclone_inserts_bwlimit_before_command_args(self) -> None:
-        with patch("app.storage.subprocess.run") as run_mock:
-            run_mock.return_value.returncode = 0
-            run_mock.return_value.stderr = ""
-            run_mock.return_value.stdout = ""
-            run_rclone(
-                "copyto",
-                "remote:a",
-                "/tmp/a",
-                bwlimit="512k",
-                config_path="/tmp/rclone.conf",
-            )
-        command = run_mock.call_args.args[0]
-        self.assertEqual(command[0], "rclone")
-        self.assertIn("--bwlimit", command)
-        self.assertEqual(command[command.index("--bwlimit") + 1], "512k")
-        self.assertIn("copyto", command)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_progress_is_throttled_and_retry_rewinds_are_not_double_counted(self):
+        job = {"id": 1, "claim_token": "claim"}
+        with patch("app.storage.set_job_progress") as report, patch("app.storage.time.monotonic", return_value=100):
+            progress = _ThrottledByteProgress(job)
+            progress.add(10)
+            for _ in range(100):
+                progress.add(1)
+            progress.add(-20)
+            self.assertEqual(report.call_count, 1)
+            progress.flush()
+        report.assert_called_with(1, 90, claim_token="claim")

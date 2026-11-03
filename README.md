@@ -22,7 +22,7 @@ Search remains global across every file in the selected vault.
   and `::1`); there is no allow-all value.
 - Reauthentication is required only before downloading the Recovery Kit and
   before deleting from the cloud.
-- Each vault has its own local folder, S3 prefix, and Rclone remote.
+- Each Vault has its own local folder and immutable S3 prefix.
 - Every query and operation includes the vault identifier.
 - Queued or active uploads, recoveries, and local cleanup operations can be
   stopped with the **Stop** button shown next to their progress.
@@ -103,7 +103,6 @@ Search remains global across every file in the selected vault.
   Python 3.12+ for native development
 - An S3 bucket with versioning and all four Block Public Access flags enabled,
   plus a least-privilege IAM principal (including `s3:GetBucketPublicAccessBlock`)
-- Rclone matching the version pinned in the Dockerfile when running outside the image
 - PostgreSQL 16 for production; SQLite is supported for development and small
   single-node installations
 - An HTTPS reverse proxy for any network-accessible deployment
@@ -169,9 +168,7 @@ Local setup:
 4. Use dedicated IAM credentials restricted to the test bucket/prefix, without
    delete permissions when cloud deletion is not being tested. Never use account
    root credentials.
-5. Copy `config/rclone.local.conf.example` to `config/rclone.conf`, enter the
-   same bucket, and generate the obscured Rclone password.
-6. Run the [fresh `./data` preflight](#compose-identity-and-fresh-host-data-directory),
+5. Run the [fresh `./data` preflight](#compose-identity-and-fresh-host-data-directory),
    then pull the published image and start the application (schema migrations
    run automatically on start when `AUTO_MIGRATE=1`, the default):
 
@@ -231,10 +228,8 @@ instead of trying other credentials available on the computer.
    is configured only through these variables. List your LAN in
    `BREAK_GLASS_ALLOWED_CIDRS` to accept the Emergency Password from it.
 
-4. Create `config/rclone.conf` from `config/rclone.conf.example`.
-5. Ensure the bucket, region, and bucket-rooted plaintext alias match
-   `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION`, and `VAULT_RCLONE_REMOTE`.
-6. Configure `ARCHIVE_MASTER_KEY` for encrypted metadata backups and keep it
+4. Set `VAULT_S3_BUCKET` and `AWS_DEFAULT_REGION` to the versioned, private bucket.
+5. Configure `ARCHIVE_MASTER_KEY` for encrypted metadata backups and keep it
    outside this server; see [metadata backup custody](docs/metadata-backups.md).
 
 Example database creation, run as a PostgreSQL administrator:
@@ -271,18 +266,16 @@ If PostgreSQL runs directly on the server or exposes port `5432`, keep
 Docker network and set `PGHOST` to the PostgreSQL service name.
 
 All Vaults store readable object keys `vaults/<uuid>/<relative-path>` and original
-file bytes, without client-side encryption or extension transformation. Point a
-shared plaintext alias at the bucket; FrostVault appends each Vault's immutable
-prefix, so one remote serves many Vaults:
+file bytes, without client-side encryption or extension transformation. Managed
+SDK uploads use multipart transfers, a server-validated CRC32 `FULL_OBJECT`
+checksum, a shared optional upload bandwidth cap, and throttled progress. The
+upload response supplies the VersionId; verification streams that exact version
+and compares SHA-256 with the local upload snapshot. Recovery also pins VersionId.
+Incomplete multipart uploads are aborted on failure/cancellation, with a seven-day
+lifecycle safety net for process interruption. No external transfer binary or
+remote configuration is required.
 
-```ini
-[frostvault-plain]
-type = alias
-remote = frostvault-s3:example-bucket
-```
-
-Set `VAULT_RCLONE_REMOTE=frostvault-plain`. Non-plaintext or incorrectly rooted
-legacy remotes are refused. Migration `0051_plaintext_vaults` refuses legacy
+Migration `0051_plaintext_vaults` refuses legacy
 encrypted Vaults before any schema change; recover test data using the previous
 release before creating a fresh plaintext installation. It never rewrites or
 deletes S3 objects. See [upgrade notes](docs/metadata-backups.md#plaintext-only-upgrade-0051).
@@ -349,7 +342,8 @@ Before indexing a terabyte of data:
    verification completes;
 5. confirm **Free local space** and **Recover** remain unavailable for an
    unverified version;
-6. keep `rclone.conf` and the original password in at least two secure places.
+6. keep the metadata backup master key and AWS access/recovery instructions in
+   secure storage separate from the server.
 
 The local catalog updates automatically when files under the configured source
 are created, modified, renamed, or deleted. Native filesystem watching is the
@@ -392,9 +386,9 @@ must be replaced before the corresponding integration is used. Important groups:
 | Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES` |
 | Frontend | `FRONTEND_DIST_DIR` (Vite build output; required for HTML routes) |
 | Email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS`, `SMTP_USE_TLS` (optional; see below) |
-| Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `VAULT_RCLONE_*`, `RCLONE_CONFIG` |
+| Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
-| Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RCLONE_MULTI_THREAD_*`, `RESTORE_*`, `CLOUD_PURGE_DELAY_SECONDS`, `ALLOW_LOCAL_DELETE` |
+| Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RESTORE_*`, `CLOUD_PURGE_DELAY_SECONDS`, `ALLOW_LOCAL_DELETE` |
 
 All installation configuration is environment-only and takes effect on process
 restart. There is no mutable settings UI or API. Before upgrading through
@@ -453,7 +447,7 @@ shell; the current frontend never registers it. Migration
 `0047_remove_offline_cache` removes the Session cache nonce, preserving existing
 Sessions and their internal concurrency lock. No file or cloud data is changed.
 
-Do not commit `.env`, `config/rclone.conf`, master-key material, database files, or
+Do not commit `.env`, master-key material, database files, or
 cloud credentials.
 
 ## Security
@@ -518,13 +512,13 @@ cd frontend && npm ci && npm run lint && npm run test
 ```
 
 PostgreSQL migration tests require `TEST_POSTGRES_URL`; S3-compatible integrity
-tests require `TEST_S3_ENDPOINT` and Rclone. See [docs/ci.md](docs/ci.md).
+tests require `TEST_S3_ENDPOINT`. See [docs/ci.md](docs/ci.md).
 
 ## Known limits
 
 - FrostVault is a self-hosted single-application deployment, not a managed
   multi-region service.
-- AWS and Rclone operations depend on external service availability and may
+- AWS operations depend on external service availability and may
   incur storage, retrieval, request, and transfer charges.
 - Glacier restore requests cannot be cancelled after S3 accepts them.
 - SQLite does not provide PostgreSQL's production concurrency and operational

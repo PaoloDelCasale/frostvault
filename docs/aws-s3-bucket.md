@@ -26,7 +26,8 @@ name. The policy grants:
 
 - bucket list, location, versioning, Block Public Access read, lifecycle, and tagging
   (`s3:GetBucketPublicAccessBlock` is required at bucket scope)
-- object upload, version read, restore, and tagging
+- object upload, version read, restore, tagging and `s3:AbortMultipartUpload`
+  (required for interrupted/cancelled SDK multipart transfers)
 - delete object/version for the accepted single-identity deletion model
 
 ### Accepted single-identity deletion risk
@@ -108,9 +109,12 @@ noncurrent expiration are not supported: neither `Expiration` nor
 profiles. There is only one recoverable copy per file.
 
 During each vault scan the application rebuilds only its own lifecycle rules
-(`psa-policy-<uuid>` IDs) and merges them with existing bucket rules such as the
-Terraform multipart-abort baseline. Rules filter objects by the `psa:policy-id`
-tag. The sync aborts before
+(`psa-policy-<uuid>` IDs plus `frostvault-abort-incomplete-multipart`) and merges
+them with existing bucket rules such as the Terraform multipart-abort baseline.
+Transition rules filter by `psa:policy-id`. The SDK abort rule instead uses only
+`Prefix: vaults/` and `AbortIncompleteMultipartUpload: DaysAfterInitiation: 7`;
+AWS does not permit a tag filter on this action. It never expires completed
+objects, versions or metadata backups. The sync aborts before
 exceeding the S3 limit of 1,000 lifecycle rules per bucket.
 
 Built-in guided profiles:
@@ -131,6 +135,17 @@ tags, and compares them to the catalog without restoring Glacier content.
 Detected drift updates storage class, applied policy tags, and availability
 (`missing` when a catalogued version is gone from S3).
 
+## SDK transfer upgrade (0052)
+
+Migration `0052_s3_sdk` removes only the retired transport alias column. It makes
+no S3 calls, changes no cloud key/VersionId, and preserves catalog trust, Jobs and
+metadata backups. Remove obsolete remote/config and multi-thread environment
+variables and the former config bind mount when deploying. AWS credentials,
+region, versioning and BPA remain required. Downgrade recreates an empty legacy
+alias column, requiring deliberate operator configuration before old uploads.
+SDK retries use botocore standard mode in addition to the existing eight-attempt
+Job retry policy. Verify `s3:AbortMultipartUpload` permission before deployment.
+
 ## Upgrades
 
 - **Terraform changes**: run `terraform plan` in a maintenance window; bucket
@@ -139,8 +154,11 @@ Detected drift updates storage class, applied policy tags, and availability
   any BPA flag blocks operations. Existing application IAM identities need the
   new `s3:GetBucketPublicAccessBlock` permission before deployment. Review/apply
   bucket flags yourself; the application only reads them.
-- **Lifecycle rules**: the Terraform module only manages the multipart-abort
-  baseline. Application-managed profiles enforce the 1,000-rule bucket limit.
+- **Lifecycle rules**: the Terraform module manages its multipart-abort baseline.
+  The application also ensures its own seven-day `vaults/` abort rule during
+  lifecycle synchronization, including when there are no transition profiles.
+  External rules are preserved; the combined configuration enforces the
+  1,000-rule bucket limit.
   Migration `0050_current_snapshot_only` makes no S3 calls; existing
   application-owned expiration rules are removed on the next successful
   lifecycle synchronization. Before using an upgraded test bucket, confirm

@@ -109,7 +109,8 @@ def _verification_version_head(
     expected_version = str(target.get("provider_version_id") or "")
     if not object_key or not expected_version:
         raise RuntimeError("Upload verification target has no exact S3 VersionId")
-    head = client.head_object(Bucket=job["s3_bucket"], Key=object_key)
+    head = client.head_object(Bucket=job["s3_bucket"], Key=object_key,
+                              VersionId=expected_version)
     observed_version = head.get("VersionId")
     if not observed_version:
         raise RuntimeError("Upload verification found no S3 VersionId")

@@ -32,26 +32,6 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install rclone
-        run: |
-          RCLONE_VERSION="$(sed -n 's/^FROM rclone\/rclone:\([^ ]*\) AS rclone$/\1/p' Dockerfile)"
-          if [ -z "${RCLONE_VERSION}" ]; then
-            echo "Could not read rclone pin from Dockerfile" >&2
-            exit 1
-          fi
-          RCLONE_ARCHIVE="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
-          curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/${RCLONE_ARCHIVE}" \
-            -o "/tmp/${RCLONE_ARCHIVE}"
-          curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/SHA256SUMS" \
-            -o /tmp/rclone-SHA256SUMS
-          EXPECTED="$(awk -v name="${RCLONE_ARCHIVE}" '$2 == name { print $1; exit }' /tmp/rclone-SHA256SUMS)"
-          if [ -z "${EXPECTED}" ]; then
-            echo "No SHA256 for ${RCLONE_ARCHIVE} in official SHA256SUMS" >&2
-            exit 1
-          fi
-          echo "${EXPECTED}  /tmp/${RCLONE_ARCHIVE}" | sha256sum --check --strict
-          sudo unzip -qo "/tmp/${RCLONE_ARCHIVE}" -d /tmp
-          sudo cp "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
         with:
@@ -61,7 +41,7 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - name: Prove digests against the dedicated AWS test namespace
         env:
-          # Point boto3/rclone at real AWS (no custom endpoint).
+          # Point boto3 at real AWS (no custom endpoint).
           AWS_ACCESS_KEY_ID: ${{ env.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ env.AWS_SECRET_ACCESS_KEY }}
           AWS_SESSION_TOKEN: ${{ env.AWS_SESSION_TOKEN }}

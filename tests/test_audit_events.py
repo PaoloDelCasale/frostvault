@@ -34,11 +34,9 @@ class AuditEventPersistenceTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO vaults(
-                    name, slug, source_root, s3_bucket, s3_prefix,
-                    rclone_remote, enabled
+                    name, slug, source_root, s3_bucket, s3_prefix, enabled
                 )
-                VALUES ('Archive', 'archive', '/sources/a', 'bucket', 'vaults/a/',
-                        'remote', TRUE)
+                VALUES ('Archive', 'archive', '/sources/a', 'bucket', 'vaults/a/', TRUE)
                 """
             )
             self.vault_id = connection.execute(

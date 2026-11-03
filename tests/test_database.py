@@ -335,9 +335,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                        id, slug, name, source_root, s3_bucket, s3_prefix
+                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
                     """
                 )
                 catalog = ArchiveCatalog(connection)
@@ -367,9 +366,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'photos', 'Photos', '/source', 'bucket', 'photos', 'remote')
+                        id, slug, name, source_root, s3_bucket, s3_prefix
+                    ) VALUES (2, 'photos', 'Photos', '/source', 'bucket', 'photos')
                     """
                 )
                 catalog = ArchiveCatalog(connection)
@@ -411,9 +409,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                        id, slug, name, source_root, s3_bucket, s3_prefix
+                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
                     """
                 )
                 catalog = ArchiveCatalog(connection)
@@ -554,9 +551,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
+                        id, slug, name, source_root, s3_bucket, s3_prefix
+                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
                     """
                 )
                 catalog = ArchiveCatalog(connection)

@@ -90,11 +90,10 @@ def _seed(paths: dict[str, Path]) -> dict:
         primary_id = connection.execute(
             """
             INSERT INTO vaults(
-                slug, name, source_root, s3_bucket, s3_prefix, rclone_remote,
+                slug, name, source_root, s3_bucket, s3_prefix,
                 cloud_deletion_enabled
             ) VALUES (
-                'family', 'Family Archive', %s, 'e2e-bucket', 'family',
-                'e2e-remote', TRUE
+                'family', 'Family Archive', %s, 'e2e-bucket', 'family', TRUE
             ) RETURNING id
             """,
             (str(paths["source_primary"]),),
@@ -102,11 +101,9 @@ def _seed(paths: dict[str, Path]) -> dict:
         secondary_id = connection.execute(
             """
             INSERT INTO vaults(
-                slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-            ) VALUES (
+                slug, name, source_root, s3_bucket, s3_prefix) VALUES (
                 'secondary', 'Secondary Archive', %s, 'e2e-bucket',
-                'secondary', 'e2e-remote'
-            ) RETURNING id
+                'secondary') RETURNING id
             """,
             (str(paths["source_secondary"]),),
         ).fetchone()["id"]

@@ -31,9 +31,7 @@ def _seed_vault(
     connection.execute(
         """
         INSERT INTO vaults(
-            id, slug, name, source_root, s3_bucket, s3_prefix,
-            rclone_remote
-        ) VALUES (%s, %s, %s, '/source', 'bucket', %s, 'remote')
+            id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, %s, %s, '/source', 'bucket', %s)
         """,
         (vault_id, vault_slug, vault_name, vault_slug),
     )

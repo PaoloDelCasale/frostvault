@@ -3,10 +3,8 @@
 !.env.example
 !.env.local.example
 .env.local
-config/rclone.conf
-config/rclone.*.conf
-!config/rclone.conf.example
-!config/rclone.local.conf.example
+# Also protect retired/local operator configuration from accidental commits.
+config/*.conf
 data/*.db
 data/*.db-*
 *.sqlite

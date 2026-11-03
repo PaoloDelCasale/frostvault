@@ -75,6 +75,21 @@ class LifecycleRuleLimitTests(unittest.TestCase):
 
 
 class SyncBucketLifecycleRulesTests(unittest.TestCase):
+    def test_abort_rule_exists_without_profiles_and_is_idempotent(self) -> None:
+        from app.services.s3_lifecycle_rules import incomplete_upload_rule
+        client = Mock()
+        client.get_bucket_lifecycle_configuration.return_value = {
+            "Rules": [incomplete_upload_rule(), {"ID": "external", "Status": "Enabled", "Filter": {}}]
+        }
+        sync_bucket_lifecycle_rules(client, bucket="bucket", app_rules=[])
+        rules = client.put_bucket_lifecycle_configuration.call_args.kwargs["LifecycleConfiguration"]["Rules"]
+        self.assertEqual(len(rules), 2)
+        rule = rules[-1]
+        self.assertEqual(rule["Filter"], {"Prefix": "vaults/"})
+        self.assertEqual(rule["AbortIncompleteMultipartUpload"], {"DaysAfterInitiation": 7})
+        self.assertNotIn("Expiration", rule)
+        self.assertNotIn("NoncurrentVersionExpiration", rule)
+
     def test_sync_merges_application_rules_and_puts_configuration(self) -> None:
         client = Mock()
         client.get_bucket_lifecycle_configuration.return_value = {
@@ -101,7 +116,7 @@ class SyncBucketLifecycleRulesTests(unittest.TestCase):
         rules = client.put_bucket_lifecycle_configuration.call_args.kwargs[
             "LifecycleConfiguration"
         ]["Rules"]
-        self.assertEqual(len(rules), 2)
+        self.assertEqual(len(rules), 3)
         self.assertEqual(rules[1]["Filter"]["Tag"]["Value"], policy_id)
 
 
@@ -121,8 +136,7 @@ class LifecyclePolicyProfileDatabaseTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                "VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid', 'remote')"
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid')"
             )
             self.policy_id = create_policy(connection, vault_id=1, name="default")
         self.set_policy_profile = set_policy_profile

@@ -1,7 +1,7 @@
-"""Recovery download throughput knobs (parallel S3 / rclone multi-thread).
+"""Recovery download throughput knobs (parallel S3).
 
 Seams under test:
-- ``rclone_download_perf_args`` / ``s3_download_transfer_config`` settings.
+- ``current_key_download_perf_args`` / ``s3_download_transfer_config`` settings.
 - Plain ``download_exact_version_plaintext`` uses ``download_file`` with a pinned
   VersionId and TransferConfig concurrency.
 """
@@ -16,23 +16,11 @@ from unittest.mock import Mock, patch
 
 from app.storage import (
     download_exact_version_plaintext,
-    rclone_download_perf_args,
     s3_download_transfer_config,
 )
 
 
 class RecoverDownloadPerfTests(unittest.TestCase):
-    def test_rclone_download_perf_args_use_settings(self) -> None:
-        settings = SimpleNamespace(
-            rclone_multi_thread_streams=12,
-            rclone_multi_thread_cutoff_mib=32,
-        )
-        with patch("app.storage.settings", settings):
-            args = rclone_download_perf_args()
-        self.assertEqual(
-            args,
-            ["--multi-thread-streams=12", "--multi-thread-cutoff=32M"],
-        )
 
     def test_s3_transfer_config_uses_settings_and_is_never_throttled(self) -> None:
         settings = SimpleNamespace(
@@ -76,7 +64,7 @@ class RecoverDownloadPerfTests(unittest.TestCase):
                 "path": "file.txt",
                 "s3_bucket": "bucket",
                 "s3_prefix": "docs",
-                "rclone_remote": "plain-remote",
+
             }
             settings = SimpleNamespace(
                 s3_download_max_concurrency=10,

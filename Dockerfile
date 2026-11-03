@@ -5,22 +5,6 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build:ci
 
-FROM rclone/rclone:1.75.2 AS rclone
-
-# The official rclone 1.75.2 binary is built with Go 1.27.2, which carries
-# CVE-2026-111943 (crypto/x509, fixed in Go 1.27.3). Rebuild the same tag with a
-# patched toolchain; the version is read from the pinned official binary above so
-# the pin stays the single source of truth. Drop this stage and copy from
-# `rclone` directly once upstream ships a release built with Go >=1.27.3.
-FROM golang:1.27.3-bookworm AS rclone-build
-COPY --from=rclone /usr/local/bin/rclone /tmp/rclone-official
-RUN set -eux; \
-    version="$(/tmp/rclone-official version | sed -n '1s/^rclone v//p')"; \
-    test -n "${version}"; \
-    CGO_ENABLED=0 GOBIN=/usr/local/bin go install -trimpath \
-        -ldflags "-s -w -X github.com/rclone/rclone/fs.Version=v${version}" \
-        "github.com/rclone/rclone@v${version}"
-
 FROM python:3.14-slim
 
 LABEL org.opencontainers.image.title="FrostVault" \
@@ -68,8 +52,6 @@ RUN set -eux; \
     fi; \
     useradd --system --uid 99 --gid 100 \
         --home-dir /app --shell /usr/sbin/nologin --no-create-home archive
-
-COPY --from=rclone-build /usr/local/bin/rclone /usr/local/bin/rclone
 
 WORKDIR /app
 COPY requirements.txt .

@@ -25,8 +25,7 @@ class CatalogAuditTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         with SQLiteConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                "VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid', 'remote')"
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid')"
             )
             policy = create_policy(connection, vault_id=1, name="default")
             set_vault_default_policy(connection, 1, policy)

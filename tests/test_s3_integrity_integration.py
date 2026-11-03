@@ -1,6 +1,6 @@
 """Live plaintext upload/verification/recovery proofs, run only in PR CI.
 
-Uses real Rclone and an S3-compatible server with versioning and bucket BPA.
+Uses the real SDK and an S3-compatible server with versioning and bucket BPA.
 No mocking of the preflight or transfers. AWS CI buckets are pre-provisioned.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ from app.services.s3_prefix_cleanup import cleanup_prefix_versions
 from app.storage import process_jobs_once, s3_client
 from tests.s3_integration_support import (
     ensure_versioned_bucket, namespaced_prefix, prepare_plain_vault,
-    require_s3_env, write_plain_rclone_config,
+    require_s3_env,
 )
 
 
@@ -41,23 +41,17 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
         report = cleanup_prefix_versions(s3_client(), bucket=self.bucket, prefix=self.prefix)
         self.assertTrue(report.ok, "Test namespace cleanup failed")
 
-    def _roundtrip(self, relative_path, payload, upload_cutoff=None):
+    def _roundtrip(self, relative_path, payload):
         digest = hashlib.sha256(payload).hexdigest()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = root / "rclone.conf"
-            remote = write_plain_rclone_config(
-                config, endpoint=self.endpoint, bucket=self.bucket,
-                access_key=self.env["AWS_ACCESS_KEY_ID"], secret_key=self.env["AWS_SECRET_ACCESS_KEY"],
-                upload_cutoff=upload_cutoff,
-            )
             source, database_path = prepare_plain_vault(
                 root, relative_path=relative_path, payload=payload, bucket=self.bucket,
-                prefix=self.prefix, rclone_remote=remote,
+                prefix=self.prefix,
             )
             database_settings = SimpleNamespace(db_backend="sqlite", sqlite_path=str(database_path))
             worker_settings = SimpleNamespace(
-                aws_region=self.env["AWS_DEFAULT_REGION"], rclone_config=str(config),
+                aws_region=self.env["AWS_DEFAULT_REGION"],
                 operation_concurrency=1, restore_poll_interval=900,
             )
             with patch("app.database.settings", database_settings), patch("app.storage.settings", worker_settings):
@@ -94,4 +88,4 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
         self._roundtrip("café/文档.txt", "unicodé-bytes".encode())
 
     def test_multipart_cutoff_upload_and_recovery(self):
-        self._roundtrip("multipart/blob.bin", b"m" * 4096, "1Ki")
+        self._roundtrip("multipart/blob.bin", b"m" * (9 * 1024 * 1024))

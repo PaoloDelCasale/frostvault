@@ -59,12 +59,9 @@ class VaultRelocationTests(unittest.TestCase):
             self.vault = connection.execute(
                 """
                 INSERT INTO vaults(
-                    id, uuid, slug, name, source_root, s3_bucket, s3_prefix,
-                    rclone_remote
-                ) VALUES (
+                    id, uuid, slug, name, source_root, s3_bucket, s3_prefix) VALUES (
                     7, '11111111-1111-1111-1111-111111111111', 'photos',
-                    'Photos', %s, 'bucket', 'vaults/immutable/', 'remote'
-                ) RETURNING *
+                    'Photos', %s, 'bucket', 'vaults/immutable/') RETURNING *
                 """,
                 (str(self.old),),
             ).fetchone()
@@ -97,7 +94,7 @@ class VaultRelocationTests(unittest.TestCase):
         relocated = self.relocate()
         self.assertEqual(relocated["source_root"], str(self.new.resolve()))
         self.assertEqual(relocated["relocation_state"], "scan_required")
-        for field in ("id", "uuid", "s3_bucket", "s3_prefix", "rclone_remote"):
+        for field in ("id", "uuid", "s3_bucket", "s3_prefix"):
             self.assertEqual(relocated[field], before[field])
         with SQLiteConnection(str(self.db_path)) as connection:
             event = connection.execute(
@@ -149,8 +146,7 @@ class VaultRelocationTests(unittest.TestCase):
         overlap.mkdir()
         with SQLiteConnection(str(self.db_path)) as connection:
             connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) "
-                "VALUES (8, 'other', 'Other', %s, 'b', 'vaults/other/', 'r')",
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (8, 'other', 'Other', %s, 'b', 'vaults/other/')",
                 (str(overlap),),
             )
         self.assertEqual(self.reason(), "overlap")

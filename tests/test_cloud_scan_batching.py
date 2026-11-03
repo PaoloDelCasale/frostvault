@@ -44,8 +44,7 @@ def _seed_vault(connection: SQLiteConnection, *, source_root: str = "/source") -
     connection.execute(
         """
         INSERT INTO vaults(
-            id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-        ) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs', 'remote')
+            id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
         """,
         (source_root,),
     )
@@ -99,7 +98,7 @@ def _run_scan(
                 "id": 2,
                 "s3_bucket": "bucket",
                 "s3_prefix": "docs",
-                "rclone_remote": "remote",
+
             },
             "2026-07-21T10:00:00+00:00",
         )
@@ -388,7 +387,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                         "id": 2,
                         "s3_bucket": "bucket",
                         "s3_prefix": "docs",
-                        "rclone_remote": "remote",
+
                     },
                     "2026-07-21T10:00:00+00:00",
                 )

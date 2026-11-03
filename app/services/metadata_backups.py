@@ -224,17 +224,16 @@ def _fernet(master_key: str) -> Fernet:
 _SNAPSHOT_KEYS = frozenset("""
     db_backend sqlite_path session_cookie_name csrf_cookie_name
     session_idle_seconds session_absolute_seconds cookie_secure allowed_hosts
-    trusted_proxies reauth_window_seconds break_glass_allowed_cidrs rclone_config
+    trusted_proxies reauth_window_seconds break_glass_allowed_cidrs
     aws_region scan_interval audit_interval filesystem_watch_enabled
     filesystem_watch_force_polling filesystem_watch_debounce_ms filesystem_watch_poll_ms
     queue_poll_interval operation_concurrency cloud_purge_delay_seconds allow_local_delete
     bandwidth_limit_kibps s3_download_max_concurrency s3_download_multipart_threshold_mib
-    s3_download_multipart_chunksize_mib rclone_multi_thread_streams
-    rclone_multi_thread_cutoff_mib job_progress_min_interval_ms restore_poll_interval
+    s3_download_multipart_chunksize_mib job_progress_min_interval_ms restore_poll_interval
     restore_days restore_tier restore_high_impact_gib restore_high_impact_eur
     restore_approval_hold_seconds oidc_enabled oidc_issuer oidc_client_id oidc_scopes
     oidc_login_ttl_seconds bootstrap_admin_username bootstrap_admin_display_name
-    vault_s3_bucket vault_rclone_remote auto_migrate
+    vault_s3_bucket auto_migrate
     metadata_backup_dir metadata_backup_retention metadata_backup_interval_seconds
     metadata_backup_s3_prefix metadata_backup_verify_interval_seconds frontend_dist_dir
     smtp_host smtp_port smtp_username smtp_from_address smtp_to_address smtp_use_tls
