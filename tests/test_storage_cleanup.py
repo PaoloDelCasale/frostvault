@@ -1057,7 +1057,6 @@ class StorageCleanupTests(unittest.TestCase):
             patch("app.storage.validate_cloud_vault"),
             patch("app.storage.db", return_value=database),
             patch("app.storage.s3_client"),
-            patch("app.storage.reconcile_pending_policy_tags", return_value=0),
             patch("app.storage.sync_lifecycle_rules_for_bucket", return_value=0),
             patch("app.storage.queue_auto_uploads", return_value=2),
             patch(

@@ -91,7 +91,7 @@ test.describe("archive flows", () => {
     const actions = page.getByRole("dialog", { name: /readme.txt/ });
     await expect(actions).toBeVisible();
     // This seeded file is already local: recovery is correctly unavailable.
-    await expect(actions.getByRole("button", { name: /^change storage class/i })).toBeVisible();
+    await expect(actions.getByRole("button", { name: /^change storage class/i })).toHaveCount(0);
     await expect(page.getByText(/hide in cloud|confirm.*rename|path history/i)).toHaveCount(0);
   });
 

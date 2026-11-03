@@ -127,7 +127,6 @@ class FilesystemProblemTests(unittest.TestCase):
             patch("app.storage._validate_enrolled_scan_root"),
             patch("app.services.fs_preflight.os.access", return_value=False),
             patch("app.storage.scan_cloud", return_value=0),
-            patch("app.storage.reconcile_pending_policy_tags", return_value={}),
         ):
             result = storage.scan_vault(self.vault)
         self.assertEqual(result["local"], -1)

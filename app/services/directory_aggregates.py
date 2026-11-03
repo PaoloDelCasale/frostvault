@@ -28,7 +28,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
-from .lifecycle_pins import is_path_pinned, load_lifecycle_pins
 
 
 STATUS_READY = "ready"
@@ -70,7 +69,6 @@ _ACTION_COLUMNS = {
     "recover": "action_recover",
     "free-space": "action_free_space",
     "cloud-purge": "action_cloud_purge",
-    "storage-class": "action_storage_class",
 }
 
 
@@ -858,9 +856,7 @@ class _FileContribution:
     upload_eligible: bool
     recover_eligible: bool
     cleanup_eligible: bool
-    storage_class_eligible: bool
     has_cloud: bool
-    lifecycle_pinned: bool
     storage_class: str | None
 
 
@@ -875,7 +871,6 @@ class _DirectoryRollup:
         default_factory=lambda: {key: 0 for key in _ACTION_COLUMNS}
     )
     storage_classes: dict[str, int] = field(default_factory=dict)
-    pinned_count: int = 0
 
     def add(self, contribution: _FileContribution) -> None:
         self.item_count += 1
@@ -893,10 +888,6 @@ class _DirectoryRollup:
             self.action_counts["free-space"] += 1
         if contribution.has_cloud:
             self.action_counts["cloud-purge"] += 1
-        if contribution.storage_class_eligible:
-            self.action_counts["storage-class"] += 1
-        if contribution.lifecycle_pinned:
-            self.pinned_count += 1
         if contribution.storage_class:
             key = str(contribution.storage_class)
             self.storage_classes[key] = self.storage_classes.get(key, 0) + 1
@@ -979,7 +970,6 @@ def _iter_visible_file_contribution_batches(
     size = int(batch_size or REBUILD_CONTRIBUTION_BATCH_SIZE)
     if size <= 0:
         size = REBUILD_CONTRIBUTION_BATCH_SIZE
-    pins = load_lifecycle_pins(connection, vault_id)
     keyset_path = ""
     while True:
         sql, extra_params = _visible_file_select_sql(
@@ -995,7 +985,7 @@ def _iter_visible_file_contribution_batches(
             return
         batch: list[_FileContribution] = []
         for row in rows:
-            contribution = _contribution_from_row(row, pins=pins)
+            contribution = _contribution_from_row(row)
             if contribution is not None:
                 batch.append(contribution)
         # Advance keyset even when a page had only invisible rows so we cannot
@@ -1031,7 +1021,6 @@ def _iter_visible_file_contributions(
 def _contribution_from_row(
     row: Mapping[str, Any],
     *,
-    pins: tuple[tuple[str, bool], ...] | None = None,
     connection: Any | None = None,
     vault_id: int | None = None,
 ) -> _FileContribution | None:
@@ -1069,20 +1058,7 @@ def _contribution_from_row(
         and row["local_sha256"] == row["version_sha256"]
     )
     has_cloud = bool(cloud_exists or state in {"both", "cloud_only", "restoring"})
-    storage_class_eligible = (
-        cloud_exists
-        and row["availability"] == "available"
-        and row["restore_state"] != "restoring"
-    )
     path = str(row["path"])
-    if pins is not None:
-        lifecycle_pinned = _pinned_with_loaded(pins, path)
-    else:
-        lifecycle_pinned = bool(
-            connection is not None
-            and vault_id is not None
-            and is_path_pinned(connection, vault_id, path)
-        )
     return _FileContribution(
         path=path,
         state=state,
@@ -1092,46 +1068,9 @@ def _contribution_from_row(
         upload_eligible=upload_eligible,
         recover_eligible=recover_eligible,
         cleanup_eligible=cleanup_eligible,
-        storage_class_eligible=storage_class_eligible,
         has_cloud=has_cloud,
-        lifecycle_pinned=lifecycle_pinned,
         storage_class=row["storage_class"] if cloud_exists else None,
     )
-
-
-def _pinned_with_loaded(pins: tuple[tuple[str, bool], ...], path: str) -> bool:
-    normalized = path.strip().strip("/")
-    for pin_path, is_directory in pins:
-        if is_directory:
-            if normalized == pin_path or normalized.startswith(f"{pin_path}/"):
-                return True
-        elif normalized == pin_path:
-            return True
-    return False
-
-
-def _pin_match_sql(
-    pins: tuple[tuple[str, bool], ...],
-) -> tuple[str, list[Any]]:
-    """SQL CASE expression counting lifecycle-pinned paths (bounded pin list)."""
-    if not pins:
-        return "0", []
-    clauses: list[str] = []
-    params: list[Any] = []
-    for pin_path, is_directory in pins:
-        normalized = str(pin_path).strip().strip("/")
-        if not normalized:
-            continue
-        if is_directory:
-            escaped = _escape_like(normalized)
-            clauses.append("(fp.path = %s OR fp.path LIKE %s ESCAPE '\\')")
-            params.extend([normalized, f"{escaped}/%"])
-        else:
-            clauses.append("fp.path = %s")
-            params.append(normalized)
-    if not clauses:
-        return "0", []
-    return f"CASE WHEN ({' OR '.join(clauses)}) THEN 1 ELSE 0 END", params
 
 
 def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
@@ -1139,8 +1078,6 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
     directory = (directory or "").strip().strip("/")
     if not directory:
         return
-    pins = load_lifecycle_pins(connection, vault_id)
-    pin_expr, pin_params = _pin_match_sql(pins)
     escaped = _escape_like(directory)
     # Classification mirrors _contribution_from_row / list_file_rows exactly.
     summary = connection.execute(
@@ -1157,9 +1094,7 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
             COALESCE(SUM(classified.upload_eligible), 0) AS action_upload,
             COALESCE(SUM(classified.recover_eligible), 0) AS action_recover,
             COALESCE(SUM(classified.cleanup_eligible), 0) AS action_free_space,
-            COALESCE(SUM(classified.has_cloud), 0) AS action_cloud_purge,
-            COALESCE(SUM(classified.storage_class_eligible), 0) AS action_storage_class,
-            COALESCE(SUM(classified.lifecycle_pinned), 0) AS pinned_count
+            COALESCE(SUM(classified.has_cloud), 0) AS action_cloud_purge
         FROM (
             SELECT
                 CASE
@@ -1245,17 +1180,7 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
                 CASE
                     WHEN av.id IS NOT NULL THEN 1
                     ELSE 0
-                END AS has_cloud,
-                CASE
-                    WHEN av.id IS NOT NULL
-                     AND av.availability = 'available'
-                     AND (
-                        av.restore_state IS NULL
-                        OR av.restore_state <> 'restoring'
-                     ) THEN 1
-                    ELSE 0
-                END AS storage_class_eligible,
-                {pin_expr} AS lifecycle_pinned
+                END AS has_cloud
             FROM vault_files vf
             JOIN file_paths fp
               ON fp.vault_file_id = vf.id AND fp.valid_to IS NULL
@@ -1278,7 +1203,7 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
               )
         ) AS classified
         """,
-        (*pin_params, int(vault_id), f"{escaped}/%"),
+        (int(vault_id), f"{escaped}/%"),
     ).fetchone()
     item_count = int(summary["item_count"] or 0) if summary else 0
     if item_count <= 0:
@@ -1340,10 +1265,8 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
             "recover": int(summary["action_recover"] or 0),
             "free-space": int(summary["action_free_space"] or 0),
             "cloud-purge": int(summary["action_cloud_purge"] or 0),
-            "storage-class": int(summary["action_storage_class"] or 0),
         },
         storage_classes=storage_classes,
-        pinned_count=int(summary["pinned_count"] or 0),
     )
     _upsert_rollup(connection, vault_id, directory, rollup)
 
@@ -1368,14 +1291,12 @@ def _upsert_rollup(
             item_count, total_size, local_size, cloud_size,
             state_local_only, state_cloud_only, state_both, state_restoring,
             action_upload, action_recover, action_free_space,
-            action_cloud_purge, action_storage_class,
-            pinned_count, storage_class_counts, updated_at
+            action_cloud_purge, storage_class_counts, updated_at
         ) VALUES (
             %s, %s, %s, %s,
             %s, %s, %s, %s,
             %s, %s, %s, %s,
             %s, %s, %s,
-            %s, %s,
             %s, %s, %s
         )
         ON CONFLICT(vault_id, path) DO UPDATE SET
@@ -1393,8 +1314,6 @@ def _upsert_rollup(
             action_recover=excluded.action_recover,
             action_free_space=excluded.action_free_space,
             action_cloud_purge=excluded.action_cloud_purge,
-            action_storage_class=excluded.action_storage_class,
-            pinned_count=excluded.pinned_count,
             storage_class_counts=excluded.storage_class_counts,
             updated_at=excluded.updated_at
         """,
@@ -1415,8 +1334,6 @@ def _upsert_rollup(
             int(rollup.action_counts.get("recover", 0)),
             int(rollup.action_counts.get("free-space", 0)),
             int(rollup.action_counts.get("cloud-purge", 0)),
-            int(rollup.action_counts.get("storage-class", 0)),
-            int(rollup.pinned_count),
             storage_json,
             _now(),
         ),
@@ -1442,7 +1359,6 @@ def directory_row_to_item(row: Mapping[str, Any]) -> dict[str, Any]:
         str(name) for name, count in storage_map.items() if int(count or 0) > 0
     )
     item_count = int(row["item_count"] or 0)
-    pinned_count = int(row.get("pinned_count") or 0)
     return {
         "type": "directory",
         "name": row["name"],
@@ -1460,10 +1376,7 @@ def directory_row_to_item(row: Mapping[str, Any]) -> dict[str, Any]:
             "recover": int(row["action_recover"] or 0),
             "free-space": int(row["action_free_space"] or 0),
             "cloud-purge": int(row["action_cloud_purge"] or 0),
-            "storage-class": int(row["action_storage_class"] or 0),
         },
-        "lifecycle_pinned": pinned_count == item_count and pinned_count > 0,
-        "lifecycle_pinned_partial": pinned_count > 0 and pinned_count < item_count,
     }
 
 

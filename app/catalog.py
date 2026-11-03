@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
 from .services.job_admission import TERMINAL_JOB_STATUSES, lock_vault
-from .services.lifecycle_pins import is_path_pinned
 from .services.directory_aggregates import (
     count_child_directories,
     ensure_directory_aggregates,
@@ -659,8 +658,6 @@ class ArchiveCatalog:
         observed_at: str,
         scan_id: str,
         origin: str = "discovered",
-        desired_policy_id: str | None = None,
-        applied_policy_id: str | None = None,
     ) -> str:
         # Resolve existing Archive Version BEFORE minting a Vault File so a
         # cloud scan of a renamed file's old key cannot orphan a new identity.
@@ -681,21 +678,13 @@ class ArchiveCatalog:
                 else "unknown"
             )
             if storage_class and storage_class != existing["storage_class"]:
-                if (
-                    desired_policy_id
-                    and applied_policy_id
-                    and desired_policy_id == applied_policy_id
-                ):
-                    source = "policy"
-                elif source != "manual":
+                if source != "manual":
                     source = "discovered"
             source_assignment = ", storage_class_source=%s" if source_supported else ""
             update_params = [scan_id, storage_class, etag]
             if source_supported:
                 update_params.append(source)
-            update_params.extend(
-                [desired_policy_id, applied_policy_id, existing["id"]]
-            )
+            update_params.append(existing["id"])
             self.connection.execute(
                 f"""
                 UPDATE archive_versions
@@ -703,9 +692,7 @@ class ArchiveCatalog:
                     availability_checked_at=%s,
                     storage_class=%s,
                     etag=%s
-                    {source_assignment},
-                    desired_policy_id=COALESCE(%s, desired_policy_id),
-                    applied_policy_id=COALESCE(%s, applied_policy_id)
+                    {source_assignment}
                 WHERE id=%s
                 """,
                 update_params,
@@ -748,8 +735,6 @@ class ArchiveCatalog:
             observed_at,
             origin,
             scan_id,
-            desired_policy_id,
-            applied_policy_id,
         ]
         if source_supported:
             insert_params.append(
@@ -767,12 +752,11 @@ class ArchiveCatalog:
                 provider_checksums, plaintext_sha256, uploaded_at,
                 discovered_at, origin, integrity, verified_at,
                 availability, availability_checked_at, restore_state,
-                restore_expiry, restore_checked_at, desired_policy_id,
-                applied_policy_id{source_insert_column}
+                restore_expiry, restore_checked_at{source_insert_column}
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 NULL, NULL, %s, %s, %s, 'unverified', NULL,
-                'available', %s, NULL, NULL, NULL, %s, %s{source_insert_value}
+                'available', %s, NULL, NULL, NULL{source_insert_value}
             )
             """,
             insert_params,
@@ -2354,14 +2338,6 @@ class ArchiveCatalog:
                 and row["local_sha256"] is not None
                 and row["local_sha256"] == row["version_sha256"]
             )
-            lifecycle_pinned = is_path_pinned(
-                self.connection, vault_id, row["path"]
-            )
-            storage_class_eligible = (
-                cloud_exists
-                and row["availability"] == "available"
-                and row["restore_state"] != "restoring"
-            )
             result.append(
                 {
                     "path": row["path"],
@@ -2380,8 +2356,6 @@ class ArchiveCatalog:
                     "recover_eligible": recover_eligible,
                     "recoverable_version_count": recoverable_count,
                     "cleanup_eligible": cleanup_eligible,
-                    "lifecycle_pinned": lifecycle_pinned,
-                    "storage_class_eligible": storage_class_eligible,
                 }
             )
         return result
@@ -2628,14 +2602,6 @@ class ArchiveCatalog:
                 and row["local_sha256"] is not None
                 and row["local_sha256"] == row["version_sha256"]
             )
-            lifecycle_pinned = is_path_pinned(
-                self.connection, vault_id, row["path"]
-            )
-            storage_class_eligible = (
-                cloud_exists
-                and row["availability"] == "available"
-                and row["restore_state"] != "restoring"
-            )
             if name_from_path:
                 name = row["path"]
             else:
@@ -2660,8 +2626,6 @@ class ArchiveCatalog:
                     "recover_eligible": recover_eligible,
                     "recoverable_version_count": recoverable_count,
                     "cleanup_eligible": cleanup_eligible,
-                    "lifecycle_pinned": lifecycle_pinned,
-                    "storage_class_eligible": storage_class_eligible,
                 }
             )
         return items

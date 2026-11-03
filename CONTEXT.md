@@ -10,6 +10,11 @@ of each Vault File.
 An isolated archive owned by the Owner as one policy and storage namespace.
 _Avoid_: Bucket, folder, account
 
+**Storage Plan**:
+The one Vault-wide schedule of progressively colder cloud storage classes,
+chosen for access time and cost without expiring cloud content.
+_Avoid_: Folder policy, Lifecycle pin, Retention profile
+
 **Source Volume**:
 An operator-provided local filesystem whose directory tree contains Vault roots;
 the Owner may choose any directory under it as a new Vault root. FrostVault persists a markerless opaque identity for each

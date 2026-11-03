@@ -486,12 +486,6 @@
           "item_count": {
             "type": "number"
           },
-          "lifecycle_pinned": {
-            "type": "boolean"
-          },
-          "lifecycle_pinned_partial": {
-            "type": "boolean"
-          },
           "local_size": {
             "type": "number"
           },
@@ -1204,139 +1198,9 @@
         "title": "JsonObjectResponse",
         "type": "object"
       },
-      "LifecycleDefaultUpdate": {
-        "additionalProperties": false,
-        "properties": {
-          "guided_profile": {
-            "anyOf": [
-              {
-                "maxLength": 80,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Guided Profile"
-          },
-          "name": {
-            "default": "Vault default",
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "profile": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/LifecycleProfileUpdate"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "title": "LifecycleDefaultUpdate",
-        "type": "object"
-      },
-      "LifecycleFolderOverride": {
-        "additionalProperties": true,
-        "properties": {
-          "folder_path": {
-            "type": "string"
-          },
-          "policy_id": {
-            "type": [
-              "number",
-              "string"
-            ]
-          }
-        },
-        "required": [
-          "folder_path",
-          "policy_id"
-        ],
-        "type": "object"
-      },
-      "LifecycleFolderOverrideDelete": {
-        "additionalProperties": false,
-        "properties": {
-          "folder_path": {
-            "maxLength": 500,
-            "minLength": 1,
-            "title": "Folder Path",
-            "type": "string"
-          }
-        },
-        "required": [
-          "folder_path"
-        ],
-        "title": "LifecycleFolderOverrideDelete",
-        "type": "object"
-      },
-      "LifecycleFolderOverrideUpdate": {
-        "additionalProperties": false,
-        "properties": {
-          "folder_path": {
-            "maxLength": 500,
-            "minLength": 1,
-            "title": "Folder Path",
-            "type": "string"
-          },
-          "guided_profile": {
-            "anyOf": [
-              {
-                "maxLength": 80,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Guided Profile"
-          },
-          "name": {
-            "anyOf": [
-              {
-                "maxLength": 120,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Name"
-          },
-          "profile": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/LifecycleProfileUpdate"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "folder_path"
-        ],
-        "title": "LifecycleFolderOverrideUpdate",
-        "type": "object"
-      },
       "LifecycleGuidedProfile": {
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
-          "noncurrent_transitions": {
-            "items": {
-              "$ref": "#/components/schemas/LifecycleTransition"
-            },
-            "type": "array"
-          },
           "transitions": {
             "items": {
               "$ref": "#/components/schemas/LifecycleTransition"
@@ -1344,63 +1208,14 @@
             "type": "array"
           }
         },
-        "type": "object"
-      },
-      "LifecyclePinRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "is_directory": {
-            "default": false,
-            "title": "Is Directory",
-            "type": "boolean"
-          },
-          "path": {
-            "maxLength": 1024,
-            "title": "Path",
-            "type": "string"
-          },
-          "pinned": {
-            "title": "Pinned",
-            "type": "boolean"
-          }
-        },
         "required": [
-          "path",
-          "pinned"
-        ],
-        "title": "LifecyclePinRequest",
-        "type": "object"
-      },
-      "LifecyclePolicy": {
-        "additionalProperties": true,
-        "properties": {
-          "id": {
-            "type": [
-              "number",
-              "string"
-            ]
-          },
-          "name": {
-            "type": "string"
-          },
-          "profile": {
-            "$ref": "#/components/schemas/LifecycleProfile"
-          }
-        },
-        "required": [
-          "id"
+          "transitions"
         ],
         "type": "object"
       },
       "LifecycleProfile": {
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
-          "noncurrent_transitions": {
-            "items": {
-              "$ref": "#/components/schemas/LifecycleTransition"
-            },
-            "type": "array"
-          },
           "transitions": {
             "items": {
               "$ref": "#/components/schemas/LifecycleTransition"
@@ -1409,49 +1224,43 @@
           }
         },
         "required": [
-          "transitions",
-          "noncurrent_transitions"
+          "transitions"
         ],
         "type": "object"
       },
       "LifecycleProfileSelection": {
-        "anyOf": [
-          {
-            "additionalProperties": true,
-            "properties": {
-              "guided_profile": {
+        "additionalProperties": false,
+        "properties": {
+          "guided_profile": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
                 "type": "string"
+              },
+              {
+                "type": "null"
               }
-            },
-            "required": [
-              "guided_profile"
             ],
-            "type": "object"
+            "title": "Guided Profile"
           },
-          {
-            "additionalProperties": true,
-            "properties": {
-              "profile": {
-                "$ref": "#/components/schemas/LifecycleProfile"
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LifecycleProfileUpdate"
+              },
+              {
+                "type": "null"
               }
-            },
-            "required": [
-              "profile"
-            ],
-            "type": "object"
+            ]
           }
-        ]
+        },
+        "title": "LifecycleProfileSelection",
+        "type": "object"
       },
       "LifecycleProfileUpdate": {
         "additionalProperties": false,
         "properties": {
-          "noncurrent_transitions": {
-            "items": {
-              "$ref": "#/components/schemas/LifecycleTransitionUpdate"
-            },
-            "title": "Noncurrent Transitions",
-            "type": "array"
-          },
           "transitions": {
             "items": {
               "$ref": "#/components/schemas/LifecycleTransitionUpdate"
@@ -1466,30 +1275,17 @@
       "LifecycleResponse": {
         "additionalProperties": true,
         "properties": {
-          "default_policy_id": {
-            "type": [
-              "number",
-              "string",
-              "null"
-            ]
-          },
-          "folder_overrides": {
-            "items": {
-              "$ref": "#/components/schemas/LifecycleFolderOverride"
-            },
-            "type": "array"
-          },
           "guided_profiles": {
             "additionalProperties": {
               "$ref": "#/components/schemas/LifecycleGuidedProfile"
             },
             "type": "object"
           },
-          "policies": {
-            "items": {
-              "$ref": "#/components/schemas/LifecyclePolicy"
-            },
-            "type": "array"
+          "profile": {
+            "$ref": "#/components/schemas/LifecycleProfile"
+          },
+          "sync_pending": {
+            "type": "boolean"
           },
           "warnings": {
             "items": {
@@ -1499,9 +1295,7 @@
           }
         },
         "required": [
-          "default_policy_id",
-          "folder_overrides",
-          "policies",
+          "profile",
           "guided_profiles"
         ],
         "type": "object"
@@ -1526,6 +1320,7 @@
         "additionalProperties": false,
         "properties": {
           "days": {
+            "minimum": 1.0,
             "title": "Days",
             "type": "integer"
           },
@@ -2238,154 +2033,6 @@
         ],
         "type": "object"
       },
-      "StorageClassChangeRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "archive_version_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Archive Version Id"
-          },
-          "is_directory": {
-            "default": false,
-            "title": "Is Directory",
-            "type": "boolean"
-          },
-          "path": {
-            "default": "",
-            "maxLength": 1024,
-            "title": "Path",
-            "type": "string"
-          },
-          "pin_after": {
-            "default": false,
-            "title": "Pin After",
-            "type": "boolean"
-          },
-          "restore_days": {
-            "anyOf": [
-              {
-                "maximum": 30.0,
-                "minimum": 1.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Restore Days"
-          },
-          "restore_tier": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Restore Tier"
-          },
-          "target_storage_class": {
-            "maxLength": 32,
-            "minLength": 1,
-            "title": "Target Storage Class",
-            "type": "string"
-          },
-          "whole_vault": {
-            "default": false,
-            "title": "Whole Vault",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "target_storage_class"
-        ],
-        "title": "StorageClassChangeRequest",
-        "type": "object"
-      },
-      "StorageClassOptionItem": {
-        "additionalProperties": true,
-        "properties": {
-          "availability_zones": {
-            "type": "string"
-          },
-          "currency": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "min_duration_days": {
-            "type": "number"
-          },
-          "requires_restore": {
-            "type": "boolean"
-          },
-          "restore_hours_bulk": {
-            "type": "number"
-          },
-          "restore_hours_standard": {
-            "type": "number"
-          },
-          "restore_rate_eur_per_gib_bulk": {
-            "type": "number"
-          },
-          "restore_rate_eur_per_gib_standard": {
-            "type": "number"
-          },
-          "retrieval": {
-            "type": "string"
-          },
-          "retrieval_rate_eur_per_gib": {
-            "type": "number"
-          },
-          "storage_rate_eur_per_gib_month": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "id",
-          "currency",
-          "storage_rate_eur_per_gib_month",
-          "retrieval",
-          "min_duration_days",
-          "requires_restore",
-          "availability_zones"
-        ],
-        "type": "object"
-      },
-      "StorageClassesResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "assumptions": {
-            "additionalProperties": {},
-            "type": "object"
-          },
-          "currency": {
-            "type": "string"
-          },
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/StorageClassOptionItem"
-            },
-            "type": "array"
-          },
-          "pricing_effective_at": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "type": "object"
-      },
       "StorageEstimateRequest": {
         "additionalProperties": false,
         "description": "Monthly storage estimate for an explicit size or a Vault's cloud data.",
@@ -3035,9 +2682,6 @@
               "null"
             ]
           },
-          "lifecycle_pinned": {
-            "type": "boolean"
-          },
           "local_exists": {
             "type": [
               "number",
@@ -3088,9 +2732,6 @@
               "string",
               "null"
             ]
-          },
-          "storage_class_eligible": {
-            "type": "boolean"
           },
           "type": {
             "const": "file",
@@ -4059,44 +3700,6 @@
         "summary": "Cancel Job"
       }
     },
-    "/api/lifecycle-pin": {
-      "put": {
-        "operationId": "update_lifecycle_pin_api_lifecycle_pin_put",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LifecyclePinRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorResponse"
-                }
-              }
-            },
-            "description": "The logical path is empty, absolute, or traverses outside the Vault"
-          }
-        },
-        "summary": "Update Lifecycle Pin"
-      }
-    },
     "/api/locale": {
       "put": {
         "operationId": "update_locale_api_locale_put",
@@ -4599,62 +4202,6 @@
         "summary": "Stats"
       }
     },
-    "/api/storage-class": {
-      "post": {
-        "operationId": "change_storage_class_api_storage_class_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StorageClassChangeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorResponse"
-                }
-              }
-            },
-            "description": "The logical path is empty, absolute, or traverses outside the Vault"
-          }
-        },
-        "summary": "Change Storage Class"
-      }
-    },
-    "/api/storage-classes": {
-      "get": {
-        "operationId": "get_storage_classes_api_storage_classes_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StorageClassesResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get Storage Classes"
-      }
-    },
     "/api/upload": {
       "post": {
         "operationId": "upload_api_upload_post",
@@ -4914,16 +4461,14 @@
           }
         },
         "summary": "Own Vault Lifecycle"
-      }
-    },
-    "/api/vault/lifecycle/default": {
+      },
       "put": {
-        "operationId": "update_vault_lifecycle_default_api_vault_lifecycle_default_put",
+        "operationId": "update_vault_lifecycle_default_api_vault_lifecycle_put",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/LifecycleDefaultUpdate"
+                "$ref": "#/components/schemas/LifecycleProfileSelection"
               }
             }
           },
@@ -4952,80 +4497,6 @@
           }
         },
         "summary": "Update Vault Lifecycle Default"
-      }
-    },
-    "/api/vault/lifecycle/folder-overrides": {
-      "delete": {
-        "operationId": "delete_vault_lifecycle_folder_override_api_vault_lifecycle_folder_overrides_delete",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LifecycleFolderOverrideDelete"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LifecycleResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Delete Vault Lifecycle Folder Override"
-      },
-      "put": {
-        "operationId": "upsert_vault_lifecycle_folder_override_api_vault_lifecycle_folder_overrides_put",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LifecycleFolderOverrideUpdate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LifecycleResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Upsert Vault Lifecycle Folder Override"
       }
     },
     "/api/vault/operation-policy": {

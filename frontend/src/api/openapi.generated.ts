@@ -391,23 +391,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/lifecycle-pin": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Update Lifecycle Pin */
-        put: operations["update_lifecycle_pin_api_lifecycle_pin_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/locale": {
         parameters: {
             query?: never;
@@ -670,40 +653,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/storage-class": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Change Storage Class */
-        post: operations["change_storage_class_api_storage_class_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/storage-classes": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Storage Classes */
-        get: operations["get_storage_classes_api_storage_classes_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/upload": {
         parameters: {
             query?: never;
@@ -836,44 +785,10 @@ export interface paths {
         };
         /** Own Vault Lifecycle */
         get: operations["own_vault_lifecycle_api_vault_lifecycle_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vault/lifecycle/default": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
         /** Update Vault Lifecycle Default */
-        put: operations["update_vault_lifecycle_default_api_vault_lifecycle_default_put"];
+        put: operations["update_vault_lifecycle_default_api_vault_lifecycle_put"];
         post?: never;
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vault/lifecycle/folder-overrides": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Upsert Vault Lifecycle Folder Override */
-        put: operations["upsert_vault_lifecycle_folder_override_api_vault_lifecycle_folder_overrides_put"];
-        post?: never;
-        /** Delete Vault Lifecycle Folder Override */
-        delete: operations["delete_vault_lifecycle_folder_override_api_vault_lifecycle_folder_overrides_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1379,8 +1294,6 @@ export interface components {
             };
             cloud_size?: number;
             item_count: number;
-            lifecycle_pinned?: boolean;
-            lifecycle_pinned_partial?: boolean;
             local_size?: number;
             name: string;
             path: string;
@@ -1591,92 +1504,29 @@ export interface components {
         JsonObjectResponse: {
             [key: string]: unknown;
         };
-        /** LifecycleDefaultUpdate */
-        LifecycleDefaultUpdate: {
-            /** Guided Profile */
-            guided_profile?: string | null;
-            /**
-             * Name
-             * @default Vault default
-             */
-            name: string;
-            profile?: components["schemas"]["LifecycleProfileUpdate"] | null;
-        };
-        LifecycleFolderOverride: {
-            folder_path: string;
-            policy_id: number | string;
-        } & {
-            [key: string]: unknown;
-        };
-        /** LifecycleFolderOverrideDelete */
-        LifecycleFolderOverrideDelete: {
-            /** Folder Path */
-            folder_path: string;
-        };
-        /** LifecycleFolderOverrideUpdate */
-        LifecycleFolderOverrideUpdate: {
-            /** Folder Path */
-            folder_path: string;
-            /** Guided Profile */
-            guided_profile?: string | null;
-            /** Name */
-            name?: string | null;
-            profile?: components["schemas"]["LifecycleProfileUpdate"] | null;
-        };
         LifecycleGuidedProfile: {
-            noncurrent_transitions?: components["schemas"]["LifecycleTransition"][];
-            transitions?: components["schemas"]["LifecycleTransition"][];
-        } & {
-            [key: string]: unknown;
-        };
-        /** LifecyclePinRequest */
-        LifecyclePinRequest: {
-            /**
-             * Is Directory
-             * @default false
-             */
-            is_directory: boolean;
-            /** Path */
-            path: string;
-            /** Pinned */
-            pinned: boolean;
-        };
-        LifecyclePolicy: {
-            id: number | string;
-            name?: string;
-            profile?: components["schemas"]["LifecycleProfile"];
-        } & {
-            [key: string]: unknown;
+            transitions: components["schemas"]["LifecycleTransition"][];
         };
         LifecycleProfile: {
-            noncurrent_transitions: components["schemas"]["LifecycleTransition"][];
             transitions: components["schemas"]["LifecycleTransition"][];
-        } & {
-            [key: string]: unknown;
         };
-        LifecycleProfileSelection: ({
-            guided_profile: string;
-        } & {
-            [key: string]: unknown;
-        }) | ({
-            profile: components["schemas"]["LifecycleProfile"];
-        } & {
-            [key: string]: unknown;
-        });
+        /** LifecycleProfileSelection */
+        LifecycleProfileSelection: {
+            /** Guided Profile */
+            guided_profile?: string | null;
+            profile?: components["schemas"]["LifecycleProfileUpdate"] | null;
+        };
         /** LifecycleProfileUpdate */
         LifecycleProfileUpdate: {
-            /** Noncurrent Transitions */
-            noncurrent_transitions?: components["schemas"]["LifecycleTransitionUpdate"][];
             /** Transitions */
             transitions?: components["schemas"]["LifecycleTransitionUpdate"][];
         };
         LifecycleResponse: {
-            default_policy_id: number | string | null;
-            folder_overrides: components["schemas"]["LifecycleFolderOverride"][];
             guided_profiles: {
                 [key: string]: components["schemas"]["LifecycleGuidedProfile"];
             };
-            policies: components["schemas"]["LifecyclePolicy"][];
+            profile: components["schemas"]["LifecycleProfile"];
+            sync_pending?: boolean;
             warnings?: string[];
         } & {
             [key: string]: unknown;
@@ -1911,63 +1761,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** StorageClassChangeRequest */
-        StorageClassChangeRequest: {
-            /** Archive Version Id */
-            archive_version_id?: string | null;
-            /**
-             * Is Directory
-             * @default false
-             */
-            is_directory: boolean;
-            /**
-             * Path
-             * @default
-             */
-            path: string;
-            /**
-             * Pin After
-             * @default false
-             */
-            pin_after: boolean;
-            /** Restore Days */
-            restore_days?: number | null;
-            /** Restore Tier */
-            restore_tier?: string | null;
-            /** Target Storage Class */
-            target_storage_class: string;
-            /**
-             * Whole Vault
-             * @default false
-             */
-            whole_vault: boolean;
-        };
-        StorageClassOptionItem: {
-            availability_zones: string;
-            currency: string;
-            id: string;
-            min_duration_days: number;
-            requires_restore: boolean;
-            restore_hours_bulk?: number;
-            restore_hours_standard?: number;
-            restore_rate_eur_per_gib_bulk?: number;
-            restore_rate_eur_per_gib_standard?: number;
-            retrieval: string;
-            retrieval_rate_eur_per_gib?: number;
-            storage_rate_eur_per_gib_month: number;
-        } & {
-            [key: string]: unknown;
-        };
-        StorageClassesResponse: {
-            assumptions?: {
-                [key: string]: unknown;
-            };
-            currency?: string;
-            items: components["schemas"]["StorageClassOptionItem"][];
-            pricing_effective_at?: string;
-        } & {
-            [key: string]: unknown;
-        };
         /**
          * StorageEstimateRequest
          * @description Monthly storage estimate for an explicit size or a Vault's cloud data.
@@ -2163,7 +1956,6 @@ export interface components {
             cloud_exists?: number | boolean;
             cloud_size?: number | null;
             integrity?: string | null;
-            lifecycle_pinned?: boolean;
             local_exists?: number | boolean;
             local_file_type?: string | null;
             local_size?: number | null;
@@ -2175,7 +1967,6 @@ export interface components {
             restore_state?: string | null;
             state: string;
             storage_class?: string | null;
-            storage_class_eligible?: boolean;
             /** @constant */
             type: "file";
             upload_eligible?: boolean;
@@ -2868,39 +2659,6 @@ export interface operations {
             };
         };
     };
-    update_lifecycle_pin_api_lifecycle_pin_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LifecyclePinRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
     update_locale_api_locale_put: {
         parameters: {
             query?: never;
@@ -3309,59 +3067,6 @@ export interface operations {
             };
         };
     };
-    change_storage_class_api_storage_class_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["StorageClassChangeRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    get_storage_classes_api_storage_classes_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StorageClassesResponse"];
-                };
-            };
-        };
-    };
     upload_api_upload_post: {
         parameters: {
             query?: never;
@@ -3607,7 +3312,7 @@ export interface operations {
             };
         };
     };
-    update_vault_lifecycle_default_api_vault_lifecycle_default_put: {
+    update_vault_lifecycle_default_api_vault_lifecycle_put: {
         parameters: {
             query?: never;
             header?: never;
@@ -3616,73 +3321,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["LifecycleDefaultUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LifecycleResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    upsert_vault_lifecycle_folder_override_api_vault_lifecycle_folder_overrides_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LifecycleFolderOverrideUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LifecycleResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_vault_lifecycle_folder_override_api_vault_lifecycle_folder_overrides_delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LifecycleFolderOverrideDelete"];
+                "application/json": components["schemas"]["LifecycleProfileSelection"];
             };
         };
         responses: {

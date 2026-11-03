@@ -77,62 +77,66 @@ Anyone with authorized object-read credentials can read photos and names: use
 MFA and a bucket-scoped IAM policy. No real bucket configuration is changed by
 an application migration or preflight.
 
-## Lifecycle policy tagging
+## Vault storage plans
 
-Archive Versions carry immutable policy UUIDs in the database (`desired_policy_id`
-and `applied_policy_id`) and on the matching S3 object version via the
-`psa:policy-id` tag.
+The Owner chooses one plan in **Vault settings → Advanced** (GET/PUT
+`/api/vault/lifecycle`). `vaults.storage_plan_json` stores only an ordered chain
+of current-version transitions. There are no folder assignments, pins, manual
+per-file class changes, expiration or noncurrent-version actions.
 
-- **Vault default** — `vaults.default_lifecycle_policy_id` applies when no folder
-  override matches the logical path.
-- **Folder overrides** — `folder_policy_overrides` map a folder prefix to a policy
-  UUID; the longest matching prefix wins.
-- **Upload** — after a successful upload the application tags the new object
-  version and records both policy columns.
-- **Cloud scan** — reads existing object tags, recomputes the desired policy from
-  current assignments, and records drift when `desired_policy_id !=
-  applied_policy_id`.
-- **Reconciliation** — each vault scan retries pending tags in batches so policy
-  changes remain safe across restarts.
+| Plan | Timeline and cost |
+| --- | --- |
+| Always accessible (`standard_only`) | Standard, immediate access without retrieval fees; highest storage cost. |
+| Economical instant access (`economical`) | Standard-IA at day 30, Glacier Instant Retrieval at day 90. Lower storage cost; retrieval fees and 30/90-day minimum billing. |
+| Tiered archive — recommended (`archive_tiered`) | IA30 → GlacierIR90 → DeepArchive365. Progressively cheaper storage; after day 365 restores take hours and have retrieval fees and 180-day minimum billing. |
+| Early Deep Archive (`deep_archive_early`) | Deep Archive at day 1. Lowest storage cost; hours to recover, retrieval fees, 180-day minimum billing even after early replacement/deletion. |
+| Custom | Ordered `after N days → class` chain, with transition/retrieval fees and minimum-duration billing. |
 
-Policy identities are UUIDs only; mutable display names live in
-`lifecycle_policies.name` and are never written to S3 tags.
+Days are object ages since upload, not delays between steps. Standard can go
+directly to Glacier Flexible Retrieval or Deep Archive at day 1; there is no
+absolute 90/180-day minimum from Standard. IA requires age 30. A single chain
+must leave at least 30 days in IA and 90 in Glacier Instant/Flexible Retrieval
+before a subsequent transition. The AWS waterfall is validated (One Zone-IA
+cannot go to Glacier Instant Retrieval; Standard-IA can go to One Zone-IA).
+See [AWS transition constraints](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-transition-general-considerations.html).
 
-### Guided profiles and S3 lifecycle rules
+The application generates one exact `vaults/<uuid>/` prefix rule per transitioning
+Vault (`frostvault-plan-<uuid>`). No object retagging is necessary. A Standard plan
+removes its transition rule, but does not warm existing cold objects. AWS applies
+transitions asynchronously; old objects can transition shortly after changing a
+plan. Objects below 128 KB do not transition by default. Early replacement can
+incur minimum-duration fees. Changing a plan never copies or deletes content.
 
-Each `lifecycle_policies.profile_json` stores a guided transition profile.
-Validation enforces supported storage classes, strictly increasing transition
-days, and AWS minimum durations. Glacier-family transitions also return cost
-warnings about retrieval and minimum storage-duration billing. Current and
-noncurrent expiration are not supported: neither `Expiration` nor
-`NoncurrentVersionExpiration` can be emitted, including from legacy stored
-profiles. There is only one recoverable copy per file.
+Save attempts bucket synchronization immediately; failure reports `sync_pending`
+and preserves the plan for retry at the next scan. Each sync replaces all
+application rules, including legacy `psa-policy-*` rules, while preserving external
+rules and `frostvault-abort-incomplete-multipart` (prefix `vaults/`, abort after
+7 days). Only unfinished multipart uploads are aborted, never completed content.
+The combined configuration is checked against the 1,000-rule limit. Review
+external expiration rules yourself: FrostVault deliberately does not own them.
 
-During each vault scan the application rebuilds only its own lifecycle rules
-(`psa-policy-<uuid>` IDs plus `frostvault-abort-incomplete-multipart`) and merges
-them with existing bucket rules such as the Terraform multipart-abort baseline.
-Transition rules filter by `psa:policy-id`. The SDK abort rule instead uses only
-`Prefix: vaults/` and `AbortIncompleteMultipartUpload: DaysAfterInitiation: 7`;
-AWS does not permit a tag filter on this action. It never expires completed
-objects, versions or metadata backups. The sync aborts before
-exceeding the S3 limit of 1,000 lifecycle rules per bucket.
+### Storage-plan upgrade (0053)
 
-Built-in guided profiles:
-
-- `standard_only` — no transitions
-- `ia_after_30` — Standard → Standard-IA after 30 days
-- `archive_tiered` — Standard-IA at 30 days, Glacier Instant Retrieval at 90
-  days, Deep Archive at 365 days
-
-Vault owners configure these from **Manage access → Lifecycle policy**. Mutations
-require recent reauthentication and are audited.
+Migration `0053_vault_storage_plans` performs no S3 calls or content deletion and
+preserves catalog identities, integrity/availability, Jobs, notifications and
+metadata backups. A missing default maps to Standard; identical folder policies
+collapse into the Vault default. Retired expiration and noncurrent actions are
+discarded under #418/#421, not translated into deletion. Heterogeneous folder
+plans, pins conflicting with a transitioning default, missing/cross-Vault
+references or invalid chains stop **before DDL**. Resolve assignments deliberately
+using the previous release before retrying; do not relabel or delete cloud data.
+Pins on an already Standard Vault are safely redundant. Unassigned policies are
+retired metadata only. Legacy cloud tags can remain inert: prefix rules no longer
+use or rewrite them. The next successful sync replaces old application rules;
+confirm it succeeded before using an upgraded bucket. Downgrade recreates only
+an equivalent single default, never historical folder/pin/expiration promises.
 
 ## Weekly catalog audit
 
 `AUDIT_INTERVAL_SECONDS` (default one week) drives `audit_all_vaults()` in the
-background loop. Each run lists object versions and delete markers, reads policy
-tags, and compares them to the catalog without restoring Glacier content.
-Detected drift updates storage class, applied policy tags, and availability
+background loop. Each run lists object versions and delete markers and compares
+them to the catalog without restoring Glacier content or reading policy tags.
+Detected drift updates storage class and availability
 (`missing` when a catalogued version is gone from S3).
 
 ## SDK transfer upgrade (0052)
@@ -172,7 +176,7 @@ Job retry policy. Verify `s3:AbortMultipartUpload` permission before deployment.
   and legacy copies without a verified available keeper remain fail-closed;
   storage may temporarily include those extra bytes. There is no recovery history.
 - **Storage classes** (Standard, IA, Glacier tiers) affect retrieval cost and
-  minimum retention; guided profiles will surface estimates before apply.
+  minimum-duration billing; each plan explains timing and cost before saving.
 - **Restore requests** from Glacier tiers incur per-GB and per-request charges.
 - FrostVault estimates storage and restore costs from AWS list prices bundled
   per region (`app/services/aws_list_prices.json`, selected by

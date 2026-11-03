@@ -17,9 +17,6 @@ export type RowActionId =
   | "upload"
   | "recover"
   | "free-space"
-  | "storage-class"
-  | "lifecycle-pin"
-  | "lifecycle-unpin"
   | "cloud-purge";
 
 export type RowAction = {
@@ -29,26 +26,22 @@ export type RowAction = {
   tone: "danger" | "default";
 };
 
-export type RowActionCategory = "copies" | "storage" | "deletion";
+export type RowActionCategory = "copies" | "deletion";
 
 export const ROW_ACTION_CATEGORY: Record<RowActionId, RowActionCategory> = {
   upload: "copies",
   recover: "copies",
   "free-space": "copies",
-  "storage-class": "storage",
-  "lifecycle-pin": "storage",
-  "lifecycle-unpin": "storage",
   "cloud-purge": "deletion",
 };
 
 export const ROW_ACTION_CATEGORY_LABEL_KEYS: Record<RowActionCategory, string> =
   {
     copies: "ui.row_action_category_copies",
-    storage: "ui.row_action_category_storage",
     deletion: "ui.row_action_category_deletion",
   };
 
-const CATEGORY_ORDER: RowActionCategory[] = ["copies", "storage", "deletion"];
+const CATEGORY_ORDER: RowActionCategory[] = ["copies", "deletion"];
 
 const PRIMARY_ROW_ACTION_IDS = new Set<RowActionId>(["upload", "recover"]);
 
@@ -82,32 +75,8 @@ export function groupRowActions(
 
 const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
-const MANUAL_STORAGE_CLASSES = [
-  "STANDARD",
-  "STANDARD_IA",
-  "ONEZONE_IA",
-  "GLACIER_IR",
-  "GLACIER",
-  "DEEP_ARCHIVE",
-] as const;
-
-export type ManualStorageClass = (typeof MANUAL_STORAGE_CLASSES)[number];
-
-export const STORAGE_CLASS_OPTIONS: ManualStorageClass[] = [
-  ...MANUAL_STORAGE_CLASSES,
-];
-
-export const COLD_STORAGE_CLASSES = new Set<string>([
-  "GLACIER_IR",
-  "GLACIER",
-  "DEEP_ARCHIVE",
-]);
-
 /** Map a row action to the POST/PUT path that starts it. */
 export function endpointForAction(action: RowActionId): string {
-  if (action === "lifecycle-pin" || action === "lifecycle-unpin") {
-    return "/api/lifecycle-pin";
-  }
   return `/api/${action}`;
 }
 
@@ -146,14 +115,6 @@ function directoryCloudDeletionCount(item: ArchiveListItem): number {
   return 0;
 }
 
-function directoryStorageClassCount(item: ArchiveListItem): number {
-  if (!isDirectory(item)) return 0;
-  const available = item.available_actions || {};
-  const counted = available["storage-class"];
-  if (typeof counted === "number" && counted > 0) return counted;
-  return directoryCloudDeletionCount(item);
-}
-
 /**
  * Actions offered for a Vault File / directory, gated by /api/me capabilities
  * and the same eligibility rules as the legacy archive action renderer.
@@ -188,27 +149,6 @@ export function availableActions(
         tone: "default",
       });
     }
-    const storageCount = directoryStorageClassCount(item);
-    if (storageCount > 0) {
-      actions.push({
-        id: "storage-class",
-        count: storageCount,
-        tone: "default",
-      });
-      if (item.lifecycle_pinned) {
-        actions.push({
-          id: "lifecycle-unpin",
-          count: storageCount,
-          tone: "default",
-        });
-      } else {
-        actions.push({
-          id: "lifecycle-pin",
-          count: storageCount,
-          tone: "default",
-        });
-      }
-    }
   } else {
     if (item.upload_eligible) {
       actions.push({ id: "upload", count: 1, tone: "default" });
@@ -218,14 +158,6 @@ export function availableActions(
     }
     if (item.cleanup_eligible && caps.delete_enabled) {
       actions.push({ id: "free-space", count: 1, tone: "default" });
-    }
-    if (fileHasCloudContent(item) && item.restore_state !== "restoring") {
-      actions.push({ id: "storage-class", count: 1, tone: "default" });
-      actions.push({
-        id: item.lifecycle_pinned ? "lifecycle-unpin" : "lifecycle-pin",
-        count: 1,
-        tone: "default",
-      });
     }
   }
 
@@ -249,9 +181,6 @@ const ROW_ACTION_LABEL_KEYS: Record<RowActionId, string> = {
   upload: "ui.row_action_upload",
   recover: "ui.row_action_recover",
   "free-space": "ui.row_action_free_space",
-  "storage-class": "ui.row_action_storage_class",
-  "lifecycle-pin": "ui.row_action_lifecycle_pin",
-  "lifecycle-unpin": "ui.row_action_lifecycle_unpin",
   "cloud-purge": "ui.row_action_cloud_purge",
 };
 
@@ -259,9 +188,6 @@ const ROW_ACTION_HINT_KEYS: Record<RowActionId, string> = {
   upload: "ui.row_action_upload_hint",
   recover: "ui.row_action_recover_hint",
   "free-space": "ui.row_action_free_space_hint",
-  "storage-class": "ui.row_action_storage_class_hint",
-  "lifecycle-pin": "ui.row_action_lifecycle_pin_hint",
-  "lifecycle-unpin": "ui.row_action_lifecycle_unpin_hint",
   "cloud-purge": "ui.row_action_cloud_purge_hint",
 };
 

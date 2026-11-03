@@ -107,7 +107,7 @@ describe("capture/demo seams", () => {
     }
   });
 
-  it("persists lifecycle overrides inside the demo response", async () => {
+  it("persists the single Vault storage plan inside the demo response", async () => {
     vi.resetModules();
     vi.doMock("@/demoGate", () => ({
       DEMO_MODE_ENABLED: true,
@@ -122,30 +122,25 @@ describe("capture/demo seams", () => {
       installDemoFilesFetch();
 
       const response = await window.fetch(
-        "/api/vault/lifecycle/folder-overrides",
+        "/api/vault/lifecycle",
         {
           method: "PUT",
           body: JSON.stringify({
-            folder_path: "test",
             guided_profile: "archive_tiered",
           }),
         },
       );
       expect(response.ok).toBe(true);
       const lifecycle = (await response.json()) as {
-        folder_overrides: Array<{ folder_path: string; policy_id: string }>;
+        profile: { transitions: Array<{ days: number; storage_class: string }> };
         guided_profiles: Record<string, unknown>;
       };
       expect(lifecycle.guided_profiles.archive_tiered).toBeTruthy();
-      expect(lifecycle.folder_overrides).toEqual([
-        { folder_path: "test", policy_id: "demo-folder:test" },
-      ]);
+      expect(lifecycle.profile.transitions).toHaveLength(3);
 
       const reloaded = await window.fetch("/api/vault/lifecycle");
       await expect(reloaded.json()).resolves.toMatchObject({
-        folder_overrides: [
-          { folder_path: "test", policy_id: "demo-folder:test" },
-        ],
+        profile: lifecycle.profile,
       });
     } finally {
       window.fetch = originalFetch;

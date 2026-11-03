@@ -183,10 +183,9 @@ npm run test:e2e
 VITE_ALLOW_DEMO=1 npm run build
 node scripts/capture-file-browser-screenshots.mjs
 node scripts/capture-file-operations-screenshots.mjs
-node scripts/capture-storage-class-screenshots.mjs
 
-# Other 375px capture scripts use mocked/seeded API routes and need no demo flag:
-# capture-vault-access-375.mjs, screenshot-auth-pages.mjs
+# Authentication captures use mocked/seeded API routes and need no demo flag:
+# screenshot-auth-pages.mjs
 
 # S3-compatible integrity (the CI job still named "MinIO"): start a local
 # S3 server on :9000, then create the versioned bucket

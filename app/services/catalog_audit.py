@@ -1,7 +1,7 @@
 """Weekly catalog audit against S3 object versions.
 
 Compares Archive Versions and delete markers with ``list_object_versions``
-metadata (storage class and policy tags) without restoring Glacier content.
+metadata (storage class and availability) without restoring Glacier content.
 """
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from .catalog_incidents import (
     resolve_archive_version_incidents,
 )
 from .directory_aggregates import invalidate_for_archive_version_ids
-from .s3_object_tags import read_version_policy_tag
 from .job_admission import TERMINAL_JOB_STATUSES
 
 
@@ -68,8 +67,8 @@ def audit_vault_catalog(
 ) -> dict[str, int]:
     """Audit one vault's catalog against live S3 version metadata.
 
-    Updates storage class, applied policy tags, and availability from the
-    listing and ``get_object_tagging`` only. Never calls restore or GetObject.
+    Updates storage class and availability from the listing only.
+    Never calls restore or GetObject.
     Incomplete listings raise before any availability mutation so they cannot
     open false missing-archive incidents.
     """
@@ -78,8 +77,8 @@ def audit_vault_catalog(
     catalog_versions = connection.execute(
         """
         SELECT av.id, av.vault_id, av.vault_file_id, av.object_key,
-               av.provider_version_id, av.storage_class, av.desired_policy_id,
-               av.applied_policy_id, av.availability, av.discovered_at,
+               av.provider_version_id, av.storage_class,
+               av.availability, av.discovered_at,
                fp.path
         FROM archive_versions av
         LEFT JOIN file_paths fp
@@ -104,7 +103,6 @@ def audit_vault_catalog(
         "missing_in_cloud": 0,
         "missing_in_catalog": 0,
         "storage_class_drift": 0,
-        "policy_tag_drift": 0,
         "missing_delete_markers": 0,
         "command_ok": 1,
         "healthy": 1,
@@ -112,8 +110,7 @@ def audit_vault_catalog(
         "incidents_resolved": 0,
     }
 
-    # Aggregate-affecting mutations only (availability / storage_class). Policy
-    # tag drift updates applied_policy_id which is not part of the projection.
+    # Aggregate-affecting mutations only (availability / storage_class).
     dirty_version_ids: list[str] = []
     missing_rows: list[dict[str, Any]] = []
     restored_ids: list[str] = []
@@ -142,7 +139,7 @@ def audit_vault_catalog(
         became_available = False
         if storage_class != (row["storage_class"] or "STANDARD"):
             report["storage_class_drift"] += 1
-            source = "policy" if row.get("desired_policy_id") else "discovered"
+            source = "discovered"
             connection.execute(
                 """
                 UPDATE archive_versions
@@ -164,28 +161,6 @@ def audit_vault_catalog(
             became_available = True
         if became_available:
             restored_ids.append(str(row["id"]))
-
-        try:
-            applied = read_version_policy_tag(
-                client,
-                bucket=vault["s3_bucket"],
-                key=row["object_key"],
-                version_id=row["provider_version_id"],
-            )
-        except Exception:
-            applied = row["applied_policy_id"]
-        if applied != row["applied_policy_id"]:
-            report["policy_tag_drift"] += 1
-            connection.execute(
-                "UPDATE archive_versions SET applied_policy_id=%s WHERE id=%s",
-                (applied, row["id"]),
-            )
-        elif (
-            row["desired_policy_id"]
-            and row["applied_policy_id"]
-            and row["desired_policy_id"] != row["applied_policy_id"]
-        ):
-            report["policy_tag_drift"] += 1
 
     for key in cloud_versions:
         if key not in seen:

@@ -29,9 +29,17 @@ Identical content simply becomes the Local Copy again.
 
 Recovery offers the current verified content, never a version picker. S3
 VersionIds and Archive Version IDs are internal pins, not a history interface.
-Lifecycle profiles cannot emit current or noncurrent expiration; legacy profile
-expiration fields are ignored. Existing application-owned bucket rules are
-replaced on lifecycle synchronization, not during the schema migration.
+Each Vault has one Storage Plan (#421): only current-version transitions,
+never expiration or noncurrent actions. Legacy expiration/noncurrent fields are
+discarded during migration 0053, not exposed by the runtime. Identical effective
+folder policies collapse; conflicting assignments/pins stop before DDL rather
+than inventing a schedule. Missing defaults map to Standard. Catalog content and
+trust are unchanged. Existing application-owned bucket rules are replaced with
+exact Vault-prefix rules on lifecycle synchronization, not during migration;
+external rules and the seven-day multipart abort are preserved. No retagging or
+cloud deletion is required. Standard does not warm already cold content. The
+internal verified class-copy worker remains for #429, without a public per-file
+class-change action.
 
 The owner accepts that mistaken SMB overwrites, corruption or ransomware can
 replace the only good cloud copy after verification. Verification proves equality

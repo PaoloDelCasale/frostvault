@@ -1,268 +1,80 @@
-import { screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
-
+import { afterEach, describe, expect, it } from "vitest";
 import { resetApiClientForTests } from "@/api";
+import { validStoragePlan } from "@/pages/vault-access/LifecyclePanel";
+import { createVaultAccessFetch, defaultLifecycle, jsonResponse, loadCatalog, renderVaultAccess } from "./vault-access-harness";
 
-import {
-  createVaultAccessFetch,
-  defaultLifecycle,
-  jsonResponse,
-  loadCatalog,
-  renderVaultAccess,
-} from "./vault-access-harness";
+afterEach(() => { cleanup(); resetApiClientForTests(); });
 
-describe("VaultAccessPage — lifecycle (seam 7)", () => {
-  beforeEach(() => {
-    resetApiClientForTests();
-  });
-
-  it("setting the default and adding, editing and deleting a folder override call the right endpoints", async () => {
+describe("Vault storage plan in Advanced", () => {
+  it("offers four explained presets plus custom and saves one whole-Vault plan", async () => {
     const user = userEvent.setup();
-    let state = {
-      ...defaultLifecycle,
-      folder_overrides: [] as { folder_path: string; policy_id: number | string }[],
-      policies: [
-        { id: 1, name: "ia_after_30", profile: { transitions: [{ days: 30, storage_class: "STANDARD_IA" }] } },
-        { id: 2, name: "archive_tiered", profile: { transitions: [{ days: 30, storage_class: "STANDARD_IA" }, { days: 90, storage_class: "GLACIER" }] } },
-      ],
-      default_policy_id: null as number | null,
-    };
-    const calls: { method: string; url: string; body?: unknown }[] = [];
-
-    const fetchMock = createVaultAccessFetch({
-      "GET /api/vault/lifecycle": () => jsonResponse(state),
-      "PUT /api/vault/lifecycle/default": (init) => {
-        const body = JSON.parse(String(init?.body ?? "{}"));
-        calls.push({ method: "PUT", url: "/api/vault/lifecycle/default", body });
-        state = {
-          ...state,
-          default_policy_id: 1,
-          policies: state.policies,
-        };
-        return jsonResponse(state);
-      },
-      "PUT /api/vault/lifecycle/folder-overrides": (init) => {
-        const body = JSON.parse(String(init?.body ?? "{}")) as {
-          folder_path: string;
-          guided_profile: string;
-        };
-        calls.push({
-          method: "PUT",
-          url: "/api/vault/lifecycle/folder-overrides",
-          body,
-        });
-        state = {
-          ...state,
-          folder_overrides: [
-            ...state.folder_overrides.filter(
-              (item) => item.folder_path !== body.folder_path,
-            ),
-            { folder_path: body.folder_path, policy_id: 2 },
-          ],
-        };
-        return jsonResponse(state);
-      },
-      "DELETE /api/vault/lifecycle/folder-overrides": (init) => {
-        const body = JSON.parse(String(init?.body ?? "{}")) as {
-          folder_path: string;
-        };
-        calls.push({
-          method: "DELETE",
-          url: "/api/vault/lifecycle/folder-overrides",
-          body,
-        });
-        state = {
-          ...state,
-          folder_overrides: state.folder_overrides.filter(
-            (item) => item.folder_path !== body.folder_path,
-          ),
-        };
-        return jsonResponse(state);
+    let payload: unknown;
+    const fetchImpl = createVaultAccessFetch({
+      "PUT /api/vault/lifecycle": (init) => {
+        payload = JSON.parse(String(init?.body));
+        return jsonResponse({ ...defaultLifecycle, profile: defaultLifecycle.guided_profiles.economical });
       },
     });
-
-    renderVaultAccess({ fetchImpl: fetchMock });
-    await screen.findByText(/lifecycle policy loaded/i);
-    const lifecyclePanel = document.querySelector('[data-panel="lifecycle"]');
-    expect(lifecyclePanel?.querySelector("select")).toBeNull();
-    expect(lifecyclePanel?.querySelector('input[type="checkbox"]')).toBeNull();
-
-    const defaultProfileMenu = screen.getByRole("combobox", { name: /vault default profile/i });
-    await user.click(screen.getByText("Vault default profile", { exact: true }));
-    expect(defaultProfileMenu).toHaveAttribute("aria-expanded", "false");
-
-    await user.click(defaultProfileMenu);
-    await user.click(screen.getByRole("option", { name: /infrequent access/i }));
-    await user.click(
-      screen.getByRole("button", { name: /save default profile/i }),
-    );
-    await waitFor(() => {
-      expect(calls).toContainEqual({
-        method: "PUT",
-        url: "/api/vault/lifecycle/default",
-        body: { guided_profile: "ia_after_30" },
-      });
-    });
-
-    await user.type(screen.getByLabelText(/folder path/i), "photos/2024");
-    await user.click(screen.getByRole("combobox", { name: /^profile$/i }));
-    await user.click(screen.getByRole("option", { name: /tiered archive/i }));
-    await user.click(
-      screen.getByRole("button", { name: /add or update override/i }),
-    );
-    await waitFor(() => {
-      expect(screen.getByText("photos/2024")).toBeInTheDocument();
-    });
-    expect(calls).toContainEqual({
-      method: "PUT",
-      url: "/api/vault/lifecycle/folder-overrides",
-      body: { folder_path: "photos/2024", guided_profile: "archive_tiered" },
-    });
-
-    // Edit same path with a different profile (upsert)
-    await user.type(screen.getByLabelText(/folder path/i), "photos/2024");
-    await user.click(screen.getByRole("combobox", { name: /^profile$/i }));
-    await user.click(screen.getByRole("option", { name: /infrequent access/i }));
-    await user.click(
-      screen.getByRole("button", { name: /add or update override/i }),
-    );
-    await waitFor(() => {
-      expect(
-        calls.filter(
-          (call) => call.url === "/api/vault/lifecycle/folder-overrides" && call.method === "PUT",
-        ).length,
-      ).toBe(2);
-    });
-
-    await user.click(screen.getByRole("button", { name: /^remove$/i }));
-    await waitFor(() => {
-      expect(screen.queryByText("photos/2024")).not.toBeInTheDocument();
-    });
-    expect(calls).toContainEqual({
-      method: "DELETE",
-      url: "/api/vault/lifecycle/folder-overrides",
-      body: { folder_path: "photos/2024" },
-    });
+    renderVaultAccess({ fetchImpl });
+    await user.click(await screen.findByText("Advanced", { exact: true }));
+    await user.click(await screen.findByRole("combobox", { name: "Storage plan" }));
+    expect(screen.getAllByRole("option")).toHaveLength(5);
+    await user.click(screen.getByRole("option", { name: /Economical instant access/ }));
+    expect(screen.getByText(/Standard-IA at day 30, Glacier Instant Retrieval at day 90:/, { selector: "p" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save plan" }));
+    await waitFor(() => expect(payload).toEqual({ guided_profile: "economical" }));
+    expect(screen.queryByLabelText(/folder path/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/noncurrent transitions/i)).not.toBeInTheDocument();
   });
 
-  it("prefills guided rules, blocks invalid absolute days/depth/minima, warns for cold classes, and saves exact custom rules", async () => {
+  it("saves custom early Deep Archive and displays a pending sync honestly", async () => {
     const user = userEvent.setup();
-    const calls: unknown[] = [];
-    const fetchMock = createVaultAccessFetch({
-      "GET /api/vault/lifecycle": () => jsonResponse(defaultLifecycle),
-      "PUT /api/vault/lifecycle/default": (init) => {
-        const body = JSON.parse(String(init?.body ?? "{}"));
-        calls.push(body);
-        return jsonResponse({
-          ...defaultLifecycle,
-          default_policy_id: "custom-default",
-          policies: [
-            { id: "custom-default", name: "Vault default", profile: body.profile },
-          ],
-          warnings: ["cold warning"],
-        });
+    let payload: unknown;
+    const fetchImpl = createVaultAccessFetch({
+      "PUT /api/vault/lifecycle": (init) => {
+        payload = JSON.parse(String(init?.body));
+        return jsonResponse({ ...defaultLifecycle, profile: { transitions: [{ days: 1, storage_class: "DEEP_ARCHIVE" }] }, sync_pending: true });
       },
     });
-
-    renderVaultAccess({ fetchImpl: fetchMock });
-    await screen.findByText(/lifecycle policy loaded/i);
-    await user.click(screen.getByRole("combobox", { name: /vault default profile/i }));
-    await user.click(screen.getByRole("option", { name: /tiered archive/i }));
-    await user.click(screen.getAllByRole("button", { name: /customize/i })[0]);
-
-    const dayInputs = screen.getAllByLabelText(/move after/i);
-    expect(dayInputs).toHaveLength(2);
-    expect(dayInputs[0]).toHaveValue(30);
-    expect(dayInputs[1]).toHaveValue(90);
-    expect(screen.getByText(/cold storage can add retrieval charges/i)).toBeInTheDocument();
-
-    await user.clear(dayInputs[1]);
-    await user.type(dayInputs[1], "20");
-    await user.click(screen.getAllByRole("combobox", { name: /move to/i })[1]);
-    await user.click(screen.getByRole("option", { name: /one zone-ia/i }));
-    await user.click(screen.getByRole("button", { name: /save custom rules/i }));
-    expect(screen.getByText(/same-band classes are not allowed/i)).toBeInTheDocument();
-    expect(screen.getByText(/onezone_ia requires at least 30 days/i)).toBeInTheDocument();
-    expect(calls).toEqual([]);
-
-    await user.clear(dayInputs[1]);
-    await user.type(dayInputs[1], "180");
-    await user.click(screen.getAllByRole("combobox", { name: /move to/i })[1]);
-    await user.click(screen.getByRole("option", { name: /glacier deep archive/i }));
-    await user.click(
-      screen.getByRole("switch", { name: /separate journey for previous versions/i }),
-    );
-    await user.type(
-      screen.getAllByLabelText(/move after/i)[2],
-      "180",
-    );
-    await user.click(screen.getAllByRole("combobox", { name: /move to/i })[2]);
-    await user.click(screen.getByRole("option", { name: /glacier deep archive/i }));
-    await user.click(screen.getByRole("button", { name: /save custom rules/i }));
-    await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0]).toEqual({
-      profile: {
-        transitions: [
-          { days: 30, storage_class: "STANDARD_IA" },
-          { days: 180, storage_class: "DEEP_ARCHIVE" },
-        ],
-        noncurrent_transitions: [
-          { days: 180, storage_class: "DEEP_ARCHIVE" },
-        ],
-      },
-    });
-    expect(screen.getByRole("combobox", { name: /vault default profile/i })).toHaveTextContent(/custom rules/i);
+    renderVaultAccess({ fetchImpl });
+    await user.click(await screen.findByText("Advanced", { exact: true }));
+    await user.click(await screen.findByRole("combobox", { name: "Storage plan" }));
+    await user.click(screen.getByRole("option", { name: /^Custom/ }));
+    await user.click(screen.getByRole("button", { name: "Add transition" }));
+    await user.click(screen.getByRole("button", { name: "Save plan" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Use increasing positive whole days");
+    expect(payload).toBeUndefined();
+    await user.type(screen.getByLabelText("After N days"), "1");
+    await user.click(screen.getByRole("button", { name: "Save plan" }));
+    await waitFor(() => expect(payload).toEqual({ profile: { transitions: [{ days: 1, storage_class: "DEEP_ARCHIVE" }] } }));
+    expect(await screen.findByText(/Plan saved; cloud synchronization is pending/)).toBeInTheDocument();
   });
 
-  it("saves a custom folder ladder and renders it in the override list", async () => {
-    const user = userEvent.setup();
-    let requestBody: Record<string, unknown> | null = null;
-    const fetchMock = createVaultAccessFetch({
-      "GET /api/vault/lifecycle": () => jsonResponse(defaultLifecycle),
-      "PUT /api/vault/lifecycle/folder-overrides": (init) => {
-        requestBody = JSON.parse(String(init?.body ?? "{}"));
-        const profile = (requestBody as { profile: unknown }).profile;
-        return jsonResponse({
-          ...defaultLifecycle,
-          folder_overrides: [{ folder_path: "photos/2024", policy_id: "folder-custom" }],
-          policies: [{ id: "folder-custom", name: "Folder photos/2024", profile }],
-        });
-      },
-    });
-
-    renderVaultAccess({ fetchImpl: fetchMock });
-    await screen.findByText(/lifecycle policy loaded/i);
-    await user.type(screen.getByLabelText(/folder path/i), "photos/2024");
-    await user.click(screen.getAllByRole("button", { name: /customize/i })[1]);
-    await user.click(screen.getByRole("button", { name: /save custom rules/i }));
-    await waitFor(() => expect(requestBody).not.toBeNull());
-    expect(requestBody).toMatchObject({
-      folder_path: "photos/2024",
-      profile: {
-        transitions: [
-          { days: 30, storage_class: "STANDARD_IA" },
-          { days: 90, storage_class: "GLACIER" },
-        ],
-      },
-    });
-    expect(await screen.findByText("photos/2024")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /edit rules/i })).toBeInTheDocument();
+  it("validates object age, supported waterfall and source residence, not absolute archive minima", () => {
+    const valid = (...steps: [number, string][]) => validStoragePlan(steps.map(([days, storage_class]) => ({ days: String(days), storage_class })));
+    expect(valid([1, "DEEP_ARCHIVE"])).toBe(true);
+    expect(valid([4, "GLACIER_IR"], [93, "DEEP_ARCHIVE"])).toBe(false);
+    expect(valid([4, "GLACIER_IR"], [94, "DEEP_ARCHIVE"])).toBe(true);
+    expect(valid([29, "STANDARD_IA"])).toBe(false);
+    expect(valid([30, "STANDARD_IA"], [59, "GLACIER_IR"])).toBe(false);
+    expect(valid([30, "STANDARD_IA"], [60, "GLACIER_IR"])).toBe(true);
+    expect(valid([30, "STANDARD_IA"], [60, "ONEZONE_IA"])).toBe(true);
+    expect(valid([30, "ONEZONE_IA"], [90, "GLACIER_IR"])).toBe(false);
+    expect(valid([1, "DEEP_ARCHIVE"], [200, "GLACIER"])).toBe(false);
+    expect(valid([1.5, "GLACIER"])).toBe(false);
   });
 
-  it("has complete English and Italian lifecycle editor catalogs", () => {
-    for (const locale of ["en", "it"] as const) {
-      const catalog = loadCatalog(locale);
-      for (const key of [
-        "access.lifecycle_customize",
-        "access.lifecycle_rule_days",
-        "access.lifecycle_error_days_absolute",
-        "access.lifecycle_error_depth",
-        "access.lifecycle_error_minimum",
-        "access.lifecycle_cold_warning",
-      ]) {
-        expect(catalog[key]).toBeTruthy();
+  it("has timing and cost explanations in both languages and no retired UI strings", () => {
+    for (const locale of ["it", "en"] as const) {
+      const messages = loadCatalog(locale);
+      for (const name of ["standard_only", "economical", "archive_tiered", "deep_archive_early", "custom"]) {
+        expect(messages[`access.plan_${name}`]).toBeTruthy();
+        expect(messages[`access.plan_${name}_help`]).toBeTruthy();
       }
+      expect(messages["access.plan_caveats"]).toContain("128 KB");
+      expect(Object.keys(messages).some((key) => /lifecycle_pin|lifecycle_override|noncurrent_rules|storage_class_confirm/.test(key))).toBe(false);
     }
   });
 });

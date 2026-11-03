@@ -18,15 +18,12 @@ import {
   estimateRecover,
   fetchCloudDeletion,
   fetchFileVersions,
-  fetchStorageClasses,
   jobsQueryOptions,
   previewCloudDeletion,
   startCloudPurge,
   startFreeSpace,
   startRecover,
-  startStorageClass,
   startUpload,
-  updateLifecyclePin,
 } from "@/api";
 import { DEMO_MODE_ENABLED } from "@/demoGate";
 import type {
@@ -49,18 +46,12 @@ import {
   groupRowActions,
   ROW_ACTION_CATEGORY_LABEL_KEYS,
   isDestructiveAction,
-  type ManualStorageClass,
   type RowActionId,
   type VaultCapabilities,
 } from "./actions";
 import { CloudPurgeDialog } from "./CloudPurgeDialog";
 import { isDirectory } from "./fileLabels";
 import { RecoverConfirmDialog } from "./RecoverConfirmDialog";
-import { StorageClassDialog } from "./StorageClassDialog";
-import {
-  sourceNeedsRestoreForClassChange,
-  type StorageClassOption,
-} from "./storageClassOptions";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
@@ -126,52 +117,6 @@ export function FileOperationsHost({
     settings: CloudDeletionSettings;
     preview: CloudDeletionPreview;
   } | null>(null);
-  const [storageClassTarget, setStorageClassTarget] = useState<{
-    path: string;
-    isDirectory: boolean;
-    wholeVault?: boolean;
-    count: number;
-    totalBytes: number;
-    currentClass?: string | null;
-    restoreState?: string | null;
-  } | null>(null);
-  const storageClassesQuery = useQuery({
-    queryKey: ["storage-classes"],
-    queryFn: fetchStorageClasses,
-    enabled: Boolean(storageClassTarget),
-    staleTime: 60_000,
-  });
-  const classOptions: StorageClassOption[] = useMemo(
-    () =>
-      (storageClassesQuery.data?.items ?? []).map((item) => ({
-        ...item,
-      })),
-    [storageClassesQuery.data?.items],
-  );
-  const restoreEstimate = useMemo(() => {
-    if (!storageClassTarget) return null;
-    if (
-      !sourceNeedsRestoreForClassChange({
-        currentClass: storageClassTarget.currentClass,
-        restoreState: storageClassTarget.restoreState,
-      })
-    ) {
-      return null;
-    }
-    const current = (storageClassTarget.currentClass || "").toUpperCase();
-    const option = classOptions.find((item) => item.id === current);
-    if (!option) return null;
-    const gib = storageClassTarget.totalBytes / 1024 ** 3;
-    return {
-      hours: option.restore_hours_bulk ?? 0,
-      costEur: gib * (option.restore_rate_eur_per_gib_bulk ?? 0),
-    };
-  }, [storageClassTarget, classOptions]);
-  const [pinAction, setPinAction] = useState<{
-    path: string;
-    isDirectory: boolean;
-    pinned: boolean;
-  } | null>(null);
   const [cancelBusyId, setCancelBusyId] = useState<string | null>(null);
   const [approveBusyId, setApproveBusyId] = useState<string | null>(null);
   const [accelerateBusyId, setAccelerateBusyId] = useState<string | null>(null);
@@ -232,27 +177,6 @@ export function FileOperationsHost({
           break;
         case "free-space":
           result = await startFreeSpace({ path, is_directory: isDir, ...extra });
-          break;
-        case "storage-class":
-          result = await startStorageClass({
-            path,
-            is_directory: isDir,
-            whole_vault: Boolean(extra?.whole_vault),
-            target_storage_class: String(extra?.target_storage_class ?? ""),
-            archive_version_id:
-              typeof extra?.archive_version_id === "string"
-                ? extra.archive_version_id
-                : undefined,
-            pin_after: Boolean(extra?.pin_after),
-          });
-          break;
-        case "lifecycle-pin":
-        case "lifecycle-unpin":
-          result = await updateLifecyclePin({
-            path,
-            is_directory: isDir,
-            pinned: action === "lifecycle-pin",
-          });
           break;
         case "cloud-purge":
           result = await startCloudPurge({
@@ -335,31 +259,6 @@ export function FileOperationsHost({
           await beginCloudPurge(path, isDir);
           return;
         }
-        if (action === "storage-class") {
-          const actions = availableActions(item, capabilities);
-          const storageAction = actions.find((entry) => entry.id === "storage-class");
-          setStorageClassTarget({
-            path,
-            isDirectory: isDir,
-            count: storageAction?.count ?? 1,
-            totalBytes: Number(
-              isDir
-                ? item.cloud_size || item.total_size || 0
-                : item.cloud_size || item.local_size || 0,
-            ),
-            currentClass: item.storage_class,
-            restoreState: isDir ? null : item.restore_state,
-          });
-          return;
-        }
-        if (action === "lifecycle-pin" || action === "lifecycle-unpin") {
-          setPinAction({
-            path,
-            isDirectory: isDir,
-            pinned: action === "lifecycle-pin",
-          });
-          return;
-        }
         if (isDestructiveAction(action)) {
           setConfirmAction({ action, path, isDirectory: isDir });
           return;
@@ -372,7 +271,6 @@ export function FileOperationsHost({
     [
       beginCloudPurge,
       beginRecover,
-      capabilities,
       dispatchAction,
       itemsByPath,
       onSheetPathChange,
@@ -467,29 +365,6 @@ export function FileOperationsHost({
       });
       return;
     }
-    if (gatedDemoConfirm?.action === "storage-class") {
-      demoBootstrapped.current = true;
-      setStorageClassTarget({
-        path: gatedDemoConfirm.path,
-        isDirectory: false,
-        count: 1,
-        totalBytes: 2048,
-        currentClass: "STANDARD",
-      });
-      return;
-    }
-    if (
-      gatedDemoConfirm?.action === "lifecycle-pin" ||
-      gatedDemoConfirm?.action === "lifecycle-unpin"
-    ) {
-      demoBootstrapped.current = true;
-      setPinAction({
-        path: gatedDemoConfirm.path,
-        isDirectory: false,
-        pinned: gatedDemoConfirm.action === "lifecycle-pin",
-      });
-      return;
-    }
   }, [gatedDemoConfirm]);
 
   // Expose endpoint mapping for tests via data attribute on host.
@@ -500,8 +375,6 @@ export function FileOperationsHost({
         upload: endpointForAction("upload"),
         recover: endpointForAction("recover"),
         "free-space": endpointForAction("free-space"),
-        "storage-class": endpointForAction("storage-class"),
-        "lifecycle-pin": endpointForAction("lifecycle-pin"),
         "cloud-purge": endpointForAction("cloud-purge"),
       });
     }
@@ -567,65 +440,6 @@ export function FileOperationsHost({
           const { action, path, isDirectory: isDir } = confirmAction;
           setConfirmAction(null);
           void dispatchAction(action, path, isDir).catch(showError);
-        }}
-      />
-
-      <StorageClassDialog
-        open={Boolean(storageClassTarget)}
-        onOpenChange={(open) => {
-          if (!open) setStorageClassTarget(null);
-        }}
-        path={storageClassTarget?.path ?? ""}
-        count={storageClassTarget?.count ?? 1}
-        totalBytes={storageClassTarget?.totalBytes ?? 0}
-        currentClass={storageClassTarget?.currentClass}
-        restoreState={storageClassTarget?.restoreState}
-        classOptions={classOptions}
-        restoreEstimate={restoreEstimate}
-        t={t}
-        onConfirm={(target: ManualStorageClass, options) => {
-          if (!storageClassTarget) return;
-          const pending = storageClassTarget;
-          setStorageClassTarget(null);
-          void dispatchAction("storage-class", pending.path, pending.isDirectory, {
-            target_storage_class: target,
-            whole_vault: pending.wholeVault,
-            pin_after: options.pinAfter,
-          }).catch(showError);
-        }}
-      />
-
-      <ConfirmDialog
-        open={Boolean(pinAction)}
-        onOpenChange={(open) => {
-          if (!open) setPinAction(null);
-        }}
-        title={
-          pinAction?.pinned
-            ? t("ui.lifecycle_pin_confirm_title")
-            : t("ui.lifecycle_unpin_confirm_title")
-        }
-        description={
-          pinAction?.pinned
-            ? t("ui.lifecycle_pin_confirm_body")
-            : t("ui.lifecycle_unpin_confirm_body")
-        }
-        confirmLabel={
-          pinAction?.pinned
-            ? t("ui.row_action_lifecycle_pin")
-            : t("ui.row_action_lifecycle_unpin")
-        }
-        cancelLabel={t("ui.cancel")}
-        tone="default"
-        onConfirm={() => {
-          if (!pinAction) return;
-          const pending = pinAction;
-          setPinAction(null);
-          void dispatchAction(
-            pending.pinned ? "lifecycle-pin" : "lifecycle-unpin",
-            pending.path,
-            pending.isDirectory,
-          ).catch(showError);
         }}
       />
 

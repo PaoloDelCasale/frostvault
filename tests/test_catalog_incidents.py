@@ -24,7 +24,6 @@ from app.services.component_health import (
     record_component_health,
     runtime_fields_from_health,
 )
-from app.services.lifecycle_policies import create_policy, set_vault_default_policy
 from tests.test_database import run_alembic
 
 
@@ -48,8 +47,6 @@ class CatalogIncidentTests(unittest.TestCase):
                     id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid')
                 """
             )
-            policy = create_policy(connection, vault_id=1, name="default")
-            set_vault_default_policy(connection, 1, policy)
             catalog = ArchiveCatalog(connection)
             self.version_id = catalog.record_archive_version(
                 vault_id=1,
@@ -62,8 +59,6 @@ class CatalogIncidentTests(unittest.TestCase):
                 uploaded_at="2026-01-01T00:00:00+00:00",
                 observed_at="2026-01-01T00:00:00+00:00",
                 scan_id="2026-01-01T00:00:00+00:00",
-                desired_policy_id=policy,
-                applied_policy_id=policy,
             )
             catalog.mark_version_verified(
                 self.version_id,

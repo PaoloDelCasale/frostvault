@@ -5,10 +5,10 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
-from .lifecycle_policies import POLICY_TAG_KEY
 from .lifecycle_profiles import LifecycleProfile
 
-RULE_ID_PREFIX = "psa-policy-"
+RULE_ID_PREFIX = "frostvault-plan-"
+LEGACY_RULE_ID_PREFIX = "psa-policy-"
 MAX_BUCKET_LIFECYCLE_RULES = 1000
 ABORT_RULE_ID = "frostvault-abort-incomplete-multipart"
 
@@ -27,21 +27,25 @@ class LifecycleRuleLimitExceeded(RuntimeError):
 
 def is_application_lifecycle_rule(rule: dict[str, Any]) -> bool:
     rule_id = str(rule.get("ID", ""))
-    return rule_id.startswith(RULE_ID_PREFIX) or rule_id == ABORT_RULE_ID
+    return rule_id.startswith((RULE_ID_PREFIX, LEGACY_RULE_ID_PREFIX)) or rule_id == ABORT_RULE_ID
 
 
-def lifecycle_rule_id(policy_id: str) -> str:
-    return f"{RULE_ID_PREFIX}{policy_id}"
-
-
-def build_policy_lifecycle_rule(
-    policy_id: str,
+def build_vault_lifecycle_rule(
+    vault_uuid: str,
+    prefix: str,
     profile: LifecycleProfile,
 ) -> dict[str, Any]:
+    from .lifecycle_profiles import validate_lifecycle_profile
+
+    validation = validate_lifecycle_profile(profile)
+    if not validation.ok:
+        raise ValueError("; ".join(validation.errors))
+    if prefix != f"vaults/{vault_uuid}/":
+        raise ValueError("Storage plans require the exact immutable Vault prefix")
     rule: dict[str, Any] = {
-        "ID": lifecycle_rule_id(policy_id),
+        "ID": f"{RULE_ID_PREFIX}{vault_uuid}",
         "Status": "Enabled",
-        "Filter": {"Tag": {"Key": POLICY_TAG_KEY, "Value": policy_id}},
+        "Filter": {"Prefix": prefix},
     }
     if profile.transitions:
         rule["Transitions"] = [
@@ -50,14 +54,6 @@ def build_policy_lifecycle_rule(
                 "StorageClass": transition.storage_class,
             }
             for transition in profile.transitions
-        ]
-    if profile.noncurrent_transitions:
-        rule["NoncurrentVersionTransitions"] = [
-            {
-                "NoncurrentDays": transition.days,
-                "StorageClass": transition.storage_class,
-            }
-            for transition in profile.noncurrent_transitions
         ]
     return rule
 
@@ -107,14 +103,3 @@ def sync_bucket_lifecycle_rules(
         Bucket=bucket,
         LifecycleConfiguration={"Rules": merged_rules},
     )
-
-
-def build_rules_for_policies(
-    policies: list[tuple[str, LifecycleProfile]],
-) -> list[dict[str, Any]]:
-    return [
-        build_policy_lifecycle_rule(policy_id, profile)
-        for policy_id, profile in policies
-        if profile.transitions
-        or profile.noncurrent_transitions
-    ]

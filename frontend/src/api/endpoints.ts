@@ -37,7 +37,6 @@ import type {
   RecoverEstimateResponse,
   ScanResponse,
   StatsResponse,
-  StorageClassesResponse,
   StorageEstimateRequest,
   StorageEstimateResponse,
   VaultCreateRequest,
@@ -281,30 +280,9 @@ export function updateLifecycleDefault(
 ): Promise<LifecycleResponse> {
   const payload =
     typeof selection === "string" ? { guided_profile: selection } : selection;
-  return apiRequest<LifecycleResponse>("/api/vault/lifecycle/default", {
+  return apiRequest<LifecycleResponse>("/api/vault/lifecycle", {
     method: "PUT",
     body: JSON.stringify(payload),
-  });
-}
-
-export function upsertLifecycleFolderOverride(
-  folderPath: string,
-  selection: string | LifecycleProfileSelection,
-): Promise<LifecycleResponse> {
-  const payload =
-    typeof selection === "string" ? { guided_profile: selection } : selection;
-  return apiRequest<LifecycleResponse>("/api/vault/lifecycle/folder-overrides", {
-    method: "PUT",
-    body: JSON.stringify({ folder_path: folderPath, ...payload }),
-  });
-}
-
-export function deleteLifecycleFolderOverride(
-  folderPath: string,
-): Promise<LifecycleResponse> {
-  return apiRequest<LifecycleResponse>("/api/vault/lifecycle/folder-overrides", {
-    method: "DELETE",
-    body: JSON.stringify({ folder_path: folderPath }),
   });
 }
 
@@ -526,37 +504,6 @@ export function startFreeSpace(
 ): Promise<FileOperationResponse> {
   return apiRequest<FileOperationResponse>("/api/free-space", {
     method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function startStorageClass(payload: {
-  path: string;
-  is_directory?: boolean;
-  whole_vault?: boolean;
-  target_storage_class: string;
-  archive_version_id?: string | null;
-  restore_tier?: string;
-  restore_days?: number;
-  pin_after?: boolean;
-}): Promise<FileOperationResponse> {
-  return apiRequest<FileOperationResponse>("/api/storage-class", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function fetchStorageClasses(): Promise<StorageClassesResponse> {
-  return apiRequest<StorageClassesResponse>("/api/storage-classes");
-}
-
-export function updateLifecyclePin(payload: {
-  path: string;
-  is_directory?: boolean;
-  pinned: boolean;
-}): Promise<{ message?: string; pinned: boolean; path: string }> {
-  return apiRequest("/api/lifecycle-pin", {
-    method: "PUT",
     body: JSON.stringify(payload),
   });
 }

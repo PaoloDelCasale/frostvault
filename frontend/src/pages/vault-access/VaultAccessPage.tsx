@@ -109,7 +109,10 @@ export function VaultAccessPage({
         <>
       <RetentionPanel onNotice={show} />
       <OperationPolicyPanel onNotice={show} />
-      <LifecyclePanel onNotice={show} />
+      <details className="min-w-0">
+        <summary className="cursor-pointer py-3 font-semibold">{t("access.advanced")}</summary>
+        <LifecyclePanel onNotice={show} />
+      </details>
       <CloudDeletionPanel onNotice={show} />
 
       <section data-panel="decommission">

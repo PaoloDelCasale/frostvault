@@ -366,12 +366,6 @@
         "item_count": {
           "type": "number"
         },
-        "lifecycle_pinned": {
-          "type": "boolean"
-        },
-        "lifecycle_pinned_partial": {
-          "type": "boolean"
-        },
         "local_size": {
           "type": "number"
         },
@@ -947,34 +941,9 @@
       ],
       "type": "object"
     },
-    "LifecycleFolderOverride": {
-      "additionalProperties": true,
-      "properties": {
-        "folder_path": {
-          "type": "string"
-        },
-        "policy_id": {
-          "type": [
-            "number",
-            "string"
-          ]
-        }
-      },
-      "required": [
-        "folder_path",
-        "policy_id"
-      ],
-      "type": "object"
-    },
     "LifecycleGuidedProfile": {
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
-        "noncurrent_transitions": {
-          "items": {
-            "$ref": "#/components/schemas/LifecycleTransition"
-          },
-          "type": "array"
-        },
         "transitions": {
           "items": {
             "$ref": "#/components/schemas/LifecycleTransition"
@@ -982,38 +951,14 @@
           "type": "array"
         }
       },
-      "type": "object"
-    },
-    "LifecyclePolicy": {
-      "additionalProperties": true,
-      "properties": {
-        "id": {
-          "type": [
-            "number",
-            "string"
-          ]
-        },
-        "name": {
-          "type": "string"
-        },
-        "profile": {
-          "$ref": "#/components/schemas/LifecycleProfile"
-        }
-      },
+      "type": "object",
       "required": [
-        "id"
-      ],
-      "type": "object"
+        "transitions"
+      ]
     },
     "LifecycleProfile": {
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
-        "noncurrent_transitions": {
-          "items": {
-            "$ref": "#/components/schemas/LifecycleTransition"
-          },
-          "type": "array"
-        },
         "transitions": {
           "items": {
             "$ref": "#/components/schemas/LifecycleTransition"
@@ -1022,8 +967,7 @@
         }
       },
       "required": [
-        "transitions",
-        "noncurrent_transitions"
+        "transitions"
       ],
       "type": "object"
     },
@@ -1058,42 +1002,27 @@
     "LifecycleResponse": {
       "additionalProperties": true,
       "properties": {
-        "default_policy_id": {
-          "type": [
-            "number",
-            "string",
-            "null"
-          ]
-        },
-        "folder_overrides": {
-          "items": {
-            "$ref": "#/components/schemas/LifecycleFolderOverride"
-          },
-          "type": "array"
-        },
         "guided_profiles": {
           "additionalProperties": {
             "$ref": "#/components/schemas/LifecycleGuidedProfile"
           },
           "type": "object"
         },
-        "policies": {
-          "items": {
-            "$ref": "#/components/schemas/LifecyclePolicy"
-          },
-          "type": "array"
-        },
         "warnings": {
           "items": {
             "type": "string"
           },
           "type": "array"
+        },
+        "profile": {
+          "$ref": "#/components/schemas/LifecycleProfile"
+        },
+        "sync_pending": {
+          "type": "boolean"
         }
       },
       "required": [
-        "default_policy_id",
-        "folder_overrides",
-        "policies",
+        "profile",
         "guided_profiles"
       ],
       "type": "object"
@@ -1625,82 +1554,6 @@
       ],
       "type": "object"
     },
-    "StorageClassOptionItem": {
-      "additionalProperties": true,
-      "properties": {
-        "availability_zones": {
-          "type": "string"
-        },
-        "currency": {
-          "type": "string"
-        },
-        "id": {
-          "type": "string"
-        },
-        "min_duration_days": {
-          "type": "number"
-        },
-        "requires_restore": {
-          "type": "boolean"
-        },
-        "restore_hours_bulk": {
-          "type": "number"
-        },
-        "restore_hours_standard": {
-          "type": "number"
-        },
-        "restore_rate_eur_per_gib_bulk": {
-          "type": "number"
-        },
-        "restore_rate_eur_per_gib_standard": {
-          "type": "number"
-        },
-        "retrieval": {
-          "type": "string"
-        },
-        "retrieval_rate_eur_per_gib": {
-          "type": "number"
-        },
-        "storage_rate_eur_per_gib_month": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "id",
-        "currency",
-        "storage_rate_eur_per_gib_month",
-        "retrieval",
-        "min_duration_days",
-        "requires_restore",
-        "availability_zones"
-      ],
-      "type": "object"
-    },
-    "StorageClassesResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "assumptions": {
-          "additionalProperties": {},
-          "type": "object"
-        },
-        "currency": {
-          "type": "string"
-        },
-        "items": {
-          "items": {
-            "$ref": "#/components/schemas/StorageClassOptionItem"
-          },
-          "type": "array"
-        },
-        "pricing_effective_at": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "items"
-      ],
-      "type": "object"
-    },
     "StorageEstimateResponse": {
       "additionalProperties": true,
       "properties": {
@@ -2203,9 +2056,6 @@
             "null"
           ]
         },
-        "lifecycle_pinned": {
-          "type": "boolean"
-        },
         "local_exists": {
           "type": [
             "number",
@@ -2256,9 +2106,6 @@
             "string",
             "null"
           ]
-        },
-        "storage_class_eligible": {
-          "type": "boolean"
         },
         "type": {
           "const": "file",
