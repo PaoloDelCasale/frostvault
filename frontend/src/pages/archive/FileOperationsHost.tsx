@@ -88,8 +88,7 @@ export type FileOperationsHostProps = {
 
 type PendingRecover = {
   path: string;
-  isDirectory: boolean;
-  version: ArchiveVersionItem | null;
+  version: ArchiveVersionItem;
   estimate: RecoverEstimateResponse | null;
   estimateError: string | null;
   defaults: { restore_tier: string; restore_days: number };
@@ -121,9 +120,6 @@ export function FileOperationsHost({
     isDirectory: boolean;
   } | null>(null);
   const [recover, setRecover] = useState<PendingRecover | null>(null);
-  const [recoverStep, setRecoverStep] = useState<
-    "confirm" | null
-  >(null);
   const [purge, setPurge] = useState<{
     path: string;
     isDirectory: boolean;
@@ -291,35 +287,24 @@ export function FileOperationsHost({
         restore_tier: versions.default_restore_tier,
         restore_days: versions.default_restore_days,
       };
-      {
-        const version = recoverable[0]!;
-        let estimate: RecoverEstimateResponse | null = null;
-        let estimateError: string | null = null;
-        try {
-          estimate = await estimateRecover({
-            path,
-            archive_version_id: version.id,
-            restore_tier: defaults.restore_tier,
-            restore_days: defaults.restore_days,
-          });
-        } catch (error) {
-          estimateError =
-            error instanceof Error
-              ? error.message
-              : t("ui.recover_estimate_failed");
-          if (!estimateError) estimateError = t("ui.recover_estimate_failed");
-        }
-        setRecover({
+      const version = recoverable[0]!;
+      let estimate: RecoverEstimateResponse | null = null;
+      let estimateError: string | null = null;
+      try {
+        estimate = await estimateRecover({
           path,
-          isDirectory: false,
-          version,
-          estimate,
-          estimateError,
-          defaults,
+          archive_version_id: version.id,
+          restore_tier: defaults.restore_tier,
+          restore_days: defaults.restore_days,
         });
-        setRecoverStep("confirm");
-        return;
+      } catch (error) {
+        estimateError =
+          error instanceof Error
+            ? error.message
+            : t("ui.recover_estimate_failed");
+        if (!estimateError) estimateError = t("ui.recover_estimate_failed");
       }
+      setRecover({ path, version, estimate, estimateError, defaults });
     },
     [dispatchAction, t],
   );
@@ -645,12 +630,9 @@ export function FileOperationsHost({
       />
 
       <RecoverConfirmDialog
-        open={recoverStep === "confirm" && Boolean(recover?.version)}
+        open={Boolean(recover)}
         onOpenChange={(open) => {
-          if (!open) {
-            setRecover(null);
-            setRecoverStep(null);
-          }
+          if (!open) setRecover(null);
         }}
         path={recover?.path ?? ""}
         version={recover?.version ?? null}
@@ -664,7 +646,6 @@ export function FileOperationsHost({
           const estimate = recover.estimate;
           const path = recover.path;
           setRecover(null);
-          setRecoverStep(null);
           void dispatchAction("recover", path, false, {
             archive_version_id: version.id,
             restore_tier:
