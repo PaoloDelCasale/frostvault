@@ -78,6 +78,7 @@ class ArchiveCatalog:
         self.last_listing_rows_materialized = 0
         self._storage_class_source_supported: bool | None = None
         self._cloud_only_hold_supported: bool | None = None
+        self._content_observation_supported: bool | None = None
 
     def _supports_storage_class_source(self) -> bool:
         """Keep migration-time catalog writes compatible with pre-0040 schemas."""
@@ -95,6 +96,20 @@ class ArchiveCatalog:
         ).fetchone()["present"])
         self._storage_class_source_supported = present
         return present
+
+    def _supports_content_observation(self) -> bool:
+        """Historical migration fixtures can still write pre-0054 catalogs."""
+        if self._content_observation_supported is None:
+            self._content_observation_supported = bool(self.connection.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema=current_schema() AND table_name='local_copies'
+                      AND column_name='content_observed_at'
+                ) AS present
+                """
+            ).fetchone()["present"])
+        return self._content_observation_supported
 
     def _supports_cloud_only_hold(self) -> bool:
         """Keep migration-time catalog writes compatible with pre-0043 schemas."""
@@ -244,16 +259,10 @@ class ArchiveCatalog:
             if hold
             else ""
         )
-        self.connection.execute(
-            f"""
-            INSERT INTO local_copies(
-                vault_file_id, presence, file_type, size, mtime_ns,
-                plaintext_sha256, matched_archive_version_id,
-                last_seen_at, observed_at, content_observed_at{hold_column}
-            ) VALUES (
-                %s, %s, %s, %s, %s, NULL, NULL, %s, %s, %s{hold_value}
-            )
-            ON CONFLICT(vault_file_id) DO UPDATE SET{hold_update}
+        stability = self._supports_content_observation()
+        stability_column = ", content_observed_at" if stability else ""
+        stability_value = ", %s" if stability else ""
+        stability_update = """
                 content_observed_at=CASE
                     WHEN (local_copies.presence, local_copies.file_type,
                           local_copies.size, local_copies.mtime_ns)
@@ -263,7 +272,17 @@ class ArchiveCatalog:
                     THEN excluded.observed_at
                     ELSE COALESCE(local_copies.content_observed_at,
                                   local_copies.observed_at, excluded.observed_at)
-                END,
+                END,""" if stability else ""
+        self.connection.execute(
+            f"""
+            INSERT INTO local_copies(
+                vault_file_id, presence, file_type, size, mtime_ns,
+                plaintext_sha256, matched_archive_version_id,
+                last_seen_at, observed_at{stability_column}{hold_column}
+            ) VALUES (
+                %s, %s, %s, %s, %s, NULL, NULL, %s, %s{stability_value}{hold_value}
+            )
+            ON CONFLICT(vault_file_id) DO UPDATE SET{hold_update}{stability_update}
                 presence=excluded.presence,
                 file_type=excluded.file_type,
                 size=excluded.size,
@@ -311,7 +330,7 @@ class ArchiveCatalog:
                 mtime_ns,
                 last_seen_at,
                 observed_at,
-                observed_at,
+                *((observed_at,) if stability else ()),
                 *((presence,) if hold else ()),
                 *((file_id,) if hold and hold_from_recovery else ()),
             ),
@@ -502,7 +521,7 @@ class ArchiveCatalog:
                     WHEN (local_copies.presence, local_copies.file_type,
                           local_copies.size, local_copies.mtime_ns)
                          IS DISTINCT FROM
-                         (SELECT s.presence, s.file_type, s.size, s.mtime_ns FROM s
+                         (SELECT ROW(s.presence, s.file_type, s.size, s.mtime_ns) FROM s
                           WHERE s.vault_file_id=local_copies.vault_file_id)
                     THEN (SELECT s.observed_at FROM s
                           WHERE s.vault_file_id=local_copies.vault_file_id)

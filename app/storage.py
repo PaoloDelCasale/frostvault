@@ -722,7 +722,9 @@ def _apply_filesystem_changes(
                 # Even a same-size write with a restored mtime restarts the
                 # window. Persist the event, not an in-memory debounce timer.
                 connection.execute(
-                    "UPDATE local_copies SET content_observed_at=%s WHERE vault_file_id=%s",
+                    """UPDATE local_copies SET content_observed_at=%s,
+                           plaintext_sha256=NULL, matched_archive_version_id=NULL
+                       WHERE vault_file_id=%s""",
                     (event_id, file_id),
                 )
                 changed += 1
@@ -1139,7 +1141,10 @@ def _apply_local_fingerprint_updates(
                 result = connection.execute(
                     """
                     UPDATE local_copies
-                    SET size=%s,
+                    SET content_observed_at=CASE
+                            WHEN (size, mtime_ns) IS DISTINCT FROM (%s::bigint, %s::bigint)
+                            THEN %s ELSE content_observed_at END,
+                        size=%s,
                         mtime_ns=%s,
                         plaintext_sha256=%s,
                         matched_archive_version_id=NULL,
@@ -1153,6 +1158,9 @@ def _apply_local_fingerprint_updates(
                       AND (mtime_ns=%s OR (mtime_ns IS NULL AND %s IS NULL))
                     """,
                     (
+                        update["size"],
+                        update["mtime_ns"],
+                        update["observed_at"],
                         update["size"],
                         update["mtime_ns"],
                         update["digest"],
@@ -1389,7 +1397,7 @@ def _verified_local_scan(
         return count, rename_summary, completed_alias, complete
 
 
-def _report_worker_error(component: str, exc: BaseException, vault_id: int) -> None:
+def _report_worker_error(component: str, exc: BaseException, vault_id: int | None = None) -> None:
     try:
         with db() as connection:
             worker_error_store.record_worker_error(
@@ -3175,6 +3183,8 @@ def _automatic_upload_ready(job: dict[str, Any]) -> bool:
             return False
         source = safe_local_path(job["source_root"], job["path"])
         stat_result = source.stat()
+        if not stat.S_ISREG(stat_result.st_mode):
+            return False
         if (stat_result.st_size, stat_result.st_mtime_ns) != (
             target["local_size"], target["local_mtime_ns"]
         ):
@@ -3227,6 +3237,11 @@ def process_upload(job: dict[str, Any]) -> None:
             set_job(job["id"], "uploading", message_key="job.hashing_local_file")
             local_plaintext_sha256, source_stat = hash_stable_regular_file(source)
             ensure_job_active(job["id"], "Upload claim was lost")
+            # Preflight and hashing can take time. A watcher edit in between
+            # must earn a fresh stability window before the first cloud write.
+            if job.get("origin") == "automatic" and not _automatic_upload_ready(job):
+                set_job(job["id"], "queued", "Automatic upload waits for stable content")
+                return
 
         version_id: str
         target: dict[str, Any]

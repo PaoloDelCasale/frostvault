@@ -116,6 +116,41 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
         self.advance(1)
         self.assertEqual(self.queue(), 1)
 
+    def test_same_size_edit_invalidates_previously_verified_fingerprint(self):
+        self.write(content=b"first")
+        with self.db() as connection:
+            catalog = ArchiveCatalog(connection)
+            version = catalog.record_archive_version(
+                vault_id=2, path="photo.jpg", object_key="photos/photo.jpg",
+                provider_version_id="previous", size=5, storage_class="STANDARD", etag="etag",
+                uploaded_at=self.clock.isoformat(), observed_at=self.clock.isoformat(), scan_id="first",
+            )
+            digest = hashlib.sha256(b"first").hexdigest()
+            catalog.mark_version_verified(version, plaintext_sha256=digest, verified_at=self.clock.isoformat())
+            catalog.set_local_fingerprint(vault_id=2, path="photo.jpg", plaintext_sha256=digest, matched_archive_version_id=version)
+        self.advance(300)
+        self.assertEqual(self.queue(), 0)
+        self.write(content=b"other")
+        self.assertEqual(self.queue(), 0)
+        self.advance(300)
+        self.assertEqual(self.queue(), 1)
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT integrity, availability FROM archive_versions").fetchone(),
+                             {"integrity": "verified", "availability": "available"})
+
+    def test_disabled_or_relocation_suspended_vault_preserves_catalog(self):
+        self.write()
+        self.advance(300)
+        with self.db() as connection:
+            connection.execute("UPDATE vaults SET enabled=FALSE WHERE id=2")
+        self.assertEqual(self.queue(), 0)
+        with self.db() as connection:
+            connection.execute("UPDATE vaults SET enabled=TRUE, relocation_state='scan_required' WHERE id=2")
+        self.assertEqual(self.queue(), 0)
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT presence FROM local_copies").fetchone()["presence"], "present")
+        self.assertEqual(self.jobs(), [])
+
     def test_paused_vault_and_queued_automatic_job_wait_for_resume(self):
         self.write()
         with self.db() as connection:
