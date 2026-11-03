@@ -149,7 +149,6 @@ export default function App() {
         vaultId={accessVault.id}
         vaultName={accessVault.name}
         decommissionState={me.decommission_vault?.decommission_state ?? "active"}
-        ownerName={me.display_name || me.username}
         onBack={() => navigate("/")}
         onDecommissioned={() => navigate("/")}
       />

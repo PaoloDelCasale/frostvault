@@ -4,7 +4,6 @@ import type { ReactNode } from "react";
 import { statsQueryOptions } from "@/api";
 import { Panel } from "@/components/Panel";
 
-import { FilesystemHealthBanner } from "./FilesystemHealthBanner";
 import { SafetyFooter } from "./SafetyFooter";
 import { StatsSummary, type StatsSummaryStatus } from "./StatsSummary";
 
@@ -58,7 +57,6 @@ export function ArchivePage({
       </header>
 
       <StatsSummary stats={stats} status={summaryStatus} t={t} />
-      <FilesystemHealthBanner filesystem={stats?.filesystem} t={t} />
 
       <Panel className="min-w-0">
         <div data-testid="archive-file-list" className="min-w-0 min-h-[12rem] px-4 pb-4">

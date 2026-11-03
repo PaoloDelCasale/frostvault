@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 import secrets
-import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -27,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .api_models import JsonObjectResponse, documented_schemas, response_model
 from .branding import PRODUCT_NAME
-from .config import Settings, settings, validate_settings
+from .config import settings, validate_settings
 from .audit import audit_log
 from .i18n import (
     DEFAULT_LOCALE,
@@ -85,18 +84,9 @@ from .services import health as health_service
 from .services import metadata_backups as metadata_backup_service
 from .services import metrics as metrics_service
 from .services import notifications as notification_service
-from .services import worker_errors as worker_error_store
 from .services.catalog_event_stream import (
     coalesced_catchup_signal,
     iter_catalog_event_sse,
-)
-from .system_settings import (
-    InvalidSystemSetting,
-    StaleSystemSettings,
-    apply_system_settings,
-    effective_settings,
-    effective_system_setting,
-    system_settings_response,
 )
 from .services.restore_estimates import (
     SUPPORTED_RESTORE_TIERS,
@@ -153,7 +143,6 @@ from .sessions import (
     rotate_session,
     set_session_vault,
 )
-from .services.fs_preflight import build_stats_filesystem_payload
 from .services.storage_classes import (
     cold_class_warning,
     list_storage_class_options,
@@ -449,10 +438,7 @@ def current_user(request: Request) -> dict[str, Any]:
 
 
 def _runtime_settings():
-    if not isinstance(settings, Settings):
-        return effective_settings(None, settings_obj=settings)
-    with db() as connection:
-        return effective_settings(connection, settings_obj=settings)
+    return settings
 
 
 class ReauthRequired(HTTPException):
@@ -483,26 +469,6 @@ async def _invalid_logical_path_handler(
     )
 
 
-@app.exception_handler(InvalidSystemSetting)
-async def _invalid_system_setting_handler(
-    _: Request, error: InvalidSystemSetting
-) -> JSONResponse:
-    return JSONResponse({"detail": str(error)}, status_code=422)
-
-
-@app.exception_handler(StaleSystemSettings)
-async def _stale_system_settings_handler(
-    _: Request, error: StaleSystemSettings
-) -> JSONResponse:
-    return JSONResponse(
-        {
-            "error": "stale_system_settings",
-            "current_revision": error.current_revision,
-        },
-        status_code=409,
-    )
-
-
 @app.exception_handler(RecoveryCustodyRequired)
 async def _recovery_custody_handler(
     _: Request, error: RecoveryCustodyRequired
@@ -517,12 +483,7 @@ def require_recent_reauth(
     request: Request, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
     session = request.state.session
-    with db() as connection:
-        reauth_window_seconds = effective_system_setting(
-            connection,
-            "reauth_window_seconds",
-            settings_obj=settings,
-        )
+    reauth_window_seconds = settings.reauth_window_seconds
     if not is_reauth_recent(
         session.get("reauth_at"),
         now=datetime.now(timezone.utc),
@@ -790,14 +751,6 @@ class VaultDecommissionStart(VaultDecommissionPreview):
     confirmation: str = Field(min_length=1, max_length=120)
     reason: str = Field(min_length=3, max_length=500)
     preview_fingerprint: str = Field(min_length=64, max_length=64)
-
-
-class SystemSettingsUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    revision: int = Field(ge=0)
-    overrides: dict[str, Any] = Field(default_factory=dict)
-    removals: list[str] = Field(default_factory=list)
 
 
 class LifecycleTransitionUpdate(BaseModel):
@@ -1838,7 +1791,6 @@ def list_files(
 ):
     """List Vault Files for the authenticated Owner's selected Vault."""
     directory = normalize_directory(directory, api=True)
-    started = time.perf_counter()
     with db() as connection:
         catalog = ArchiveCatalog(connection)
         listing = catalog.list_files_page(
@@ -1851,16 +1803,6 @@ def list_files(
         )
         items = listing["items"]
         total = listing["total"]
-        rows_materialized = int(catalog.last_listing_rows_materialized)
-
-    metrics_service.set_gauge(
-        "directory_listing_duration_seconds",
-        float(time.perf_counter() - started),
-    )
-    metrics_service.set_gauge(
-        "directory_listing_rows_materialized",
-        float(rows_materialized),
-    )
 
     return {
         "items": items,
@@ -1933,15 +1875,6 @@ def confirm_rename(
         except VaultFileNotFound as exc:
             # Do not reveal whether a supplied ID is foreign, retired, or absent.
             raise HTTPException(404, "Vault File not found") from exc
-        audit_log(
-            "vault_file_renamed",
-            connection=connection,
-            vault_id=vault["id"],
-            vault_file_id=confirmed_file_id,
-            new_path=new_path,
-            decision="confirmed",
-            actor_id=user["id"],
-        )
     try:
         queued = queue_jobs(new_path, "rename", vault["id"], user["id"])
     except HTTPException as exc:
@@ -1986,16 +1919,6 @@ def confirm_folder_rename(
             )
         except VaultFileNotFound as exc:
             raise HTTPException(404, "Vault File not found") from exc
-        audit_log(
-            "vault_folder_renamed",
-            connection=connection,
-            vault_id=vault["id"],
-            old_prefix=old_prefix,
-            new_prefix=new_prefix,
-            file_count=len(renamed_ids),
-            decision="confirmed",
-            actor_id=user["id"],
-        )
     try:
         queued = queue_jobs(
             new_prefix, "rename", vault["id"], user["id"], is_directory=True
@@ -2016,7 +1939,6 @@ def confirm_folder_rename(
 
 @app.get("/api/stats", response_model=response_model("StatsResponse"))
 def stats(vault: dict[str, Any] = Depends(current_vault)):
-    started = time.perf_counter()
     source_root = vault.get("source_root") or ""
     # Reconcile Source Volume identity before anything can preflight or walk the
     # configured Vault tree. Catalog summaries remain available when local work
@@ -2033,9 +1955,6 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
         persisted_health = runtime_fields_from_health(
             load_vault_health(connection, int(vault["id"]))
         )
-    allowed_bases = [str(get_sources_root())]
-    # Identity-unsafe / missing volumes fail closed: no resolve, no walk.
-    preflight_allowed = access.volume_health in {"ok", "read_only", "scan_required"}
     # Consistent bounded snapshot under the producer lock, then release before
     # any merge/response work. Never dict(runtime_status[...]) unlocked while
     # storage mutates filesystem under status_lock.
@@ -2049,85 +1968,16 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
             if error:
                 runtime["last_error"] = error
                 break
-    scan_filesystem = runtime.get("filesystem") or {}
-    # Prefer the producer synopsis (totals/counts + bounded sample). Merge inputs
-    # come from the already-bounded copy so the request path never re-walks the
-    # legacy collection.
-    scan_findings = scan_filesystem.get("findings") or []
-    scan_finding_counts = scan_filesystem.get("finding_counts")
-    raw_scan_total = scan_filesystem.get("findings_total")
-    try:
-        scan_findings_total = (
-            int(raw_scan_total) if raw_scan_total is not None else None
-        )
-    except (TypeError, ValueError):
-        scan_findings_total = None
-    # Filesystem health is a cached/background revision with a bounded synopsis.
-    # The request path must not os.walk the Vault root or serialize unbounded
-    # findings; single-flight recomputation runs off-thread.
-    filesystem_payload = build_stats_filesystem_payload(
-        vault_id=int(vault["id"]),
-        source_root=str(source_root),
-        allowed_bases=allowed_bases,
-        volume_alias=access.volume_alias,
-        volume_health=access.volume_health,
-        local_operations_allowed=access.local_operations_allowed,
-        cloud_catalog_allowed=access.cloud_catalog_allowed,
-        preflight_allowed=preflight_allowed,
-        scan_findings=scan_findings,
-        scan_finding_counts=scan_finding_counts
-        if isinstance(scan_finding_counts, dict)
-        else None,
-        scan_findings_total=scan_findings_total,
-    )
-    metrics_service.set_gauge(
-        "stats_last_duration_seconds",
-        max(0.0, time.perf_counter() - started),
-    )
     return {
         **summary,
         "runtime": runtime,
-        "filesystem": filesystem_payload,
+        "source_volume": {
+            "alias": access.volume_alias,
+            "health": access.volume_health,
+            "local_operations_allowed": access.local_operations_allowed,
+        },
         "delete_enabled": _runtime_settings().allow_local_delete,
     }
-
-
-@app.get("/api/audit-events", response_model=JsonObjectResponse)
-def vault_audit_events(vault: dict[str, Any] = Depends(current_vault)):
-    """List the audit events recorded for the selected Vault."""
-    with db() as connection:
-        events = audit_event_store.list_vault_audit_events(connection, vault["id"])
-    return {"events": events}
-
-
-@app.get("/api/admin/audit-events", response_model=JsonObjectResponse)
-def admin_audit_events(_: dict[str, Any] = Depends(current_user)):
-    """List all audit events for the Owner."""
-    with db() as connection:
-        events = audit_event_store.list_admin_audit_events(connection)
-    return {"events": events}
-
-
-@app.get("/api/admin/settings", response_model=response_model("SystemSettingsResponse"))
-def admin_system_settings(_: dict[str, Any] = Depends(current_user)):
-    with db() as connection:
-        return system_settings_response(connection, settings_obj=settings)
-
-
-@app.patch("/api/admin/settings", response_model=response_model("SystemSettingsResponse"))
-def update_admin_system_settings(
-    action: SystemSettingsUpdate,
-    user: dict[str, Any] = Depends(current_user),
-) -> dict[str, Any]:
-    with db() as connection:
-        return apply_system_settings(
-            connection,
-            expected_revision=action.revision,
-            overrides=action.overrides,
-            removals=action.removals,
-            updated_by=user["id"],
-            settings_obj=settings,
-        )
 
 
 @app.get("/api/notifications", response_model=JsonObjectResponse)
@@ -2201,13 +2051,6 @@ def mark_all_notifications_read(
         )
 
 
-@app.get("/api/admin/worker-errors", response_model=JsonObjectResponse)
-def admin_worker_errors(_: dict[str, Any] = Depends(current_user)):
-    with db() as connection:
-        items = worker_error_store.list_worker_errors(connection)
-    return {"items": items}
-
-
 class MetadataBackupRunAction(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
@@ -2236,26 +2079,7 @@ def admin_run_metadata_backup(
                 s3_prefix=_runtime_settings().metadata_backup_s3_prefix,
             )
         except metadata_backup_service.BackupError as exc:
-            audit_event_store.record_audit_event(
-                connection,
-                event="metadata_backup_failed",
-                actor_user_id=admin["id"],
-                outcome="failure",
-                visibility="admin",
-                reason=action.reason,
-                error=str(exc),
-            )
             raise HTTPException(500, str(exc)) from exc
-        audit_event_store.record_audit_event(
-            connection,
-            event="metadata_backup_created",
-            actor_user_id=admin["id"],
-            outcome="success",
-            visibility="admin",
-            reason=action.reason,
-            digest_sha256=result["digest_sha256"],
-            s3_key=result.get("s3_key"),
-        )
     return result
 
 

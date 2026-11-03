@@ -683,181 +683,6 @@
       ],
       "type": "object"
     },
-    "FilesystemCheck": {
-      "additionalProperties": true,
-      "properties": {
-        "code": {
-          "type": "string"
-        },
-        "message": {
-          "type": "string"
-        },
-        "remediation": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "status": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "code",
-        "status",
-        "message"
-      ],
-      "type": "object"
-    },
-    "FilesystemFinding": {
-      "additionalProperties": true,
-      "properties": {
-        "code": {
-          "type": "string"
-        },
-        "message": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        },
-        "remediation": {
-          "description": "Present when the backend or a scan attaches remediation advice.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "path",
-        "code",
-        "message"
-      ],
-      "type": "object"
-    },
-    "FilesystemHealth": {
-      "additionalProperties": true,
-      "properties": {
-        "checks": {
-          "items": {
-            "$ref": "#/components/schemas/FilesystemCheck"
-          },
-          "type": "array"
-        },
-        "findings": {
-          "items": {
-            "$ref": "#/components/schemas/FilesystemFinding"
-          },
-          "type": "array",
-          "description": "Bounded sample of filesystem findings for the latest health revision."
-        },
-        "gid": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "ok": {
-          "type": "boolean"
-        },
-        "root": {
-          "type": "string"
-        },
-        "source_volume": {
-          "additionalProperties": true,
-          "properties": {
-            "alias": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "cloud_catalog_allowed": {
-              "type": "boolean"
-            },
-            "health": {
-              "type": "string"
-            },
-            "local_operations_allowed": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "alias",
-            "health",
-            "local_operations_allowed",
-            "cloud_catalog_allowed"
-          ],
-          "type": "object"
-        },
-        "uid": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "health_status": {
-          "type": "string",
-          "description": "checking | current | stale | failed filesystem-health revision state."
-        },
-        "revision": {
-          "type": [
-            "number",
-            "null"
-          ],
-          "description": "Monotonic in-process health revision for this Vault."
-        },
-        "checked_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "ISO-8601 timestamp of the latest completed health computation."
-        },
-        "findings_total": {
-          "type": "number",
-          "description": "Total findings counted for the latest health revision."
-        },
-        "finding_counts": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "number"
-          },
-          "description": "Finding totals keyed by finding code."
-        },
-        "findings_truncated": {
-          "type": "boolean",
-          "description": "True when findings is a bounded sample of findings_total."
-        },
-        "synopsis_truncated": {
-          "type": "boolean",
-          "description": "True when checks sample or check/finding field values were capped or clipped while building the bounded synopsis."
-        },
-        "cache_age_seconds": {
-          "type": [
-            "number",
-            "null"
-          ],
-          "description": "Age of the cached health snapshot in seconds, when known."
-        },
-        "error": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Short failure class when health_status is failed."
-        }
-      },
-      "required": [
-        "ok",
-        "uid",
-        "gid",
-        "checks",
-        "findings"
-      ],
-      "type": "object"
-    },
     "GlobPreviewResponse": {
       "additionalProperties": true,
       "properties": {
@@ -1901,31 +1726,9 @@
         "delete_enabled": {
           "type": "boolean"
         },
-        "filesystem": {
-          "anyOf": [
-            {
-              "$ref": "#/components/schemas/FilesystemHealth"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "runtime": {
           "additionalProperties": {},
           "properties": {
-            "filesystem": {
-              "additionalProperties": true,
-              "properties": {
-                "findings": {
-                  "items": {
-                    "$ref": "#/components/schemas/FilesystemFinding"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
-            },
             "last_error": {
               "type": [
                 "string",
@@ -1956,6 +1759,29 @@
             "cloud_bytes"
           ],
           "type": "object"
+        },
+        "source_volume": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "alias": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "health": {
+              "type": "string"
+            },
+            "local_operations_allowed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "alias",
+            "health",
+            "local_operations_allowed"
+          ]
         }
       },
       "required": [
@@ -1963,8 +1789,8 @@
         "storage",
         "active_jobs",
         "runtime",
-        "filesystem",
-        "delete_enabled"
+        "delete_enabled",
+        "source_volume"
       ],
       "type": "object"
     },
@@ -2097,115 +1923,6 @@
         "region",
         "pricing_effective_at",
         "assumptions"
-      ],
-      "type": "object"
-    },
-    "SystemSettingItem": {
-      "additionalProperties": true,
-      "properties": {
-        "choices": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "configured": {
-          "type": "boolean"
-        },
-        "effective_value": {
-          "$ref": "#/components/schemas/SystemSettingValue"
-        },
-        "environment_variable": {
-          "type": "string"
-        },
-        "key": {
-          "type": "string"
-        },
-        "maximum": {
-          "type": "number"
-        },
-        "maximum_length": {
-          "type": "number"
-        },
-        "minimum": {
-          "type": "number"
-        },
-        "minimum_length": {
-          "type": "number"
-        },
-        "mutability": {
-          "type": "string"
-        },
-        "restart_required": {
-          "type": "boolean"
-        },
-        "source": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "key",
-        "environment_variable",
-        "source",
-        "mutability",
-        "restart_required"
-      ],
-      "type": "object"
-    },
-    "SystemSettingValue": {
-      "description": "Administration settings endpoints (issues #132–#136).",
-      "type": [
-        "string",
-        "number",
-        "boolean",
-        "null"
-      ]
-    },
-    "SystemSettingsResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "groups": {
-          "additionalProperties": {
-            "items": {
-              "$ref": "#/components/schemas/SystemSettingItem"
-            },
-            "type": "array"
-          },
-          "type": "object"
-        },
-        "revision": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "revision",
-        "groups"
-      ],
-      "type": "object"
-    },
-    "SystemSettingsUpdatePayload": {
-      "additionalProperties": true,
-      "properties": {
-        "overrides": {
-          "additionalProperties": {
-            "$ref": "#/components/schemas/SystemSettingValue"
-          },
-          "type": "object"
-        },
-        "removals": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "revision": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "revision",
-        "overrides",
-        "removals"
       ],
       "type": "object"
     },

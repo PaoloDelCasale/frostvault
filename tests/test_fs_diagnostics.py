@@ -1,378 +1,169 @@
-"""Symlink rejection and permission-error reporting (issue #9).
-
-Seams:
-- app.storage.safe_local_path / safe_local_entry_path (operation refusal)
-- app.storage.scan_tree (catalog + diagnostics; never silent skip)
-- /api/stats filesystem (vault health visible to operators)
-"""
+"""Filesystem problems come from the actual scan/watcher, never a sampled banner."""
 from __future__ import annotations
 
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
+from watchfiles import Change
+
+from app import storage
 from app.catalog import ArchiveCatalog
+from app.config import settings
 from app.database import SQLiteConnection
-from app.main import stats
 from app.services import source_layout
-from app.services.fs_preflight import (
-    ensure_vault_filesystem_health,
-    reset_filesystem_health_cache_for_tests,
-)
-from app.storage import (
-    runtime_status,
-    safe_local_entry_path,
-    safe_local_path,
-    scan_tree,
-)
+from app.services.fs_preflight import inspect_entry
 from tests.test_database import run_alembic
 
 
-class SymlinkPathRejectionTests(unittest.TestCase):
-    def test_safe_local_path_rejects_final_symlink_without_following(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            real = root / "real.txt"
-            real.write_text("payload", encoding="utf-8")
-            link = root / "alias.txt"
-            link.symlink_to(real)
-            with self.assertRaisesRegex(ValueError, r"(?i)symbolic link"):
-                safe_local_path(str(root), "alias.txt")
-
-    def test_safe_local_entry_path_rejects_symlink_for_cleanup(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            real = root / "real.txt"
-            real.write_text("payload", encoding="utf-8")
-            link = root / "alias.txt"
-            link.symlink_to(real)
-            with self.assertRaisesRegex(ValueError, r"(?i)symbolic link"):
-                safe_local_entry_path(str(root), "alias.txt")
-
-
-class ScanSymlinkAndPermissionTests(unittest.TestCase):
-    def test_scan_catalogues_symlink_as_unsupported_not_regular(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path = Path(directory) / "catalog.db"
-            source = Path(directory) / "sources"
-            source.mkdir()
-            (source / "ok.txt").write_text("hi", encoding="utf-8")
-            (source / "link.txt").symlink_to(source / "ok.txt")
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (9, 'fs', 'FS', %s, 'bucket', 'fs', 'remote')
-                    """,
-                    (str(source),),
-                )
-            test_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
+class FilesystemProblemTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        self.root = base / "sources" / "managed" / "vault"
+        self.root.mkdir(parents=True)
+        source_layout.override_sources_root(base / "sources")
+        self.addCleanup(source_layout.reset_sources_root_override)
+        self.path = base / "catalog.db"
+        result = run_alembic(self.path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with SQLiteConnection(str(self.path)) as connection:
+            connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
+            connection.execute(
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote) VALUES (9, 'files', 'Files', %s, 'bucket', 'files', 'remote')",
+                (str(self.root),),
             )
-            with patch("app.database.settings", test_settings):
-                count = scan_tree(
-                    {"id": 9, "source_root": str(source)},
-                    "scan-1",
-                )
-            self.assertEqual(count, 2)
-            with SQLiteConnection(str(database_path)) as connection:
-                rows = ArchiveCatalog(connection).list_file_rows(9)
-            by_path = {row["path"]: row for row in rows}
-            self.assertEqual(by_path["ok.txt"]["local_file_type"], "regular")
-            self.assertTrue(by_path["ok.txt"]["upload_eligible"])
-            self.assertEqual(by_path["link.txt"]["local_file_type"], "symlink")
-            self.assertFalse(by_path["link.txt"]["upload_eligible"])
-            self.assertFalse(by_path["link.txt"]["cleanup_eligible"])
+        self.vault = {"id": 9, "source_root": str(self.root)}
+        self.cfg = replace(settings, db_backend="sqlite", sqlite_path=str(self.path))
+        self.patch = patch("app.database.settings", self.cfg)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        storage.runtime_status.pop(9, None)
 
-    def test_unreadable_file_during_scan_is_recorded_not_skipped(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path = Path(directory) / "catalog.db"
-            source = Path(directory) / "sources"
-            source.mkdir()
-            secret = source / "secret.bin"
-            secret.write_bytes(b"x")
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (10, 'perm', 'Perm', %s, 'bucket', 'perm', 'remote')
-                    """,
-                    (str(source),),
-                )
-            vault = {"id": 10, "source_root": str(source)}
-            runtime_status.pop(10, None)
-            test_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
-            )
-            original_stat = Path.stat
-            original_lstat = Path.lstat
+    def problems(self):
+        with SQLiteConnection(str(self.path)) as connection:
+            return connection.execute("SELECT event, message_params FROM notifications ORDER BY id").fetchall()
 
-            def guarded_stat(self, *args, **kwargs):
-                if self.name == "secret.bin":
-                    raise PermissionError("denied")
-                return original_stat(self, *args, **kwargs)
+    def test_symlink_is_catalogued_as_unsupported_and_never_followed(self):
+        (self.root / "ok.txt").write_text("hello")
+        (self.root / "link.txt").symlink_to(self.root / "ok.txt")
+        self.assertEqual(storage.scan_tree(self.vault, "scan"), 2)
+        with SQLiteConnection(str(self.path)) as connection:
+            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(9)}
+        self.assertTrue(rows["ok.txt"]["upload_eligible"])
+        self.assertFalse(rows["link.txt"]["upload_eligible"])
+        self.assertFalse(rows["link.txt"]["cleanup_eligible"])
+        for helper in (storage.safe_local_path, storage.safe_local_entry_path):
+            with self.assertRaisesRegex(ValueError, "(?i)symbolic link"):
+                helper(str(self.root), "link.txt")
+        self.assertEqual(self.problems(), [])
 
-            def guarded_lstat(self, *args, **kwargs):
-                if self.name == "secret.bin":
-                    raise PermissionError("denied")
-                return original_lstat(self, *args, **kwargs)
+    def test_every_unreadable_file_is_reported_beyond_old_sample_limit(self):
+        import json
+        for number in range(40):
+            (self.root / f"{number}.bin").write_bytes(b"data")
+        storage.scan_tree(self.vault, "before")
+        real_open = os.open
 
-            with (
-                patch("app.database.settings", test_settings),
-                patch.object(Path, "stat", guarded_stat),
-                patch.object(Path, "lstat", guarded_lstat),
-            ):
-                scan_tree(vault, "scan-perm")
-            status = runtime_status.get(10) or {}
-            findings = status.get("filesystem", {}).get("findings") or []
-            codes = {item["code"] for item in findings}
-            self.assertIn("fs.unreadable_file", codes)
-            paths = {item["path"] for item in findings}
-            self.assertIn("secret.bin", paths)
+        def denied(path, *args, **kwargs):
+            if str(path).endswith(".bin"):
+                raise PermissionError("sensitive exception text must not be stored")
+            return real_open(path, *args, **kwargs)
 
+        with patch("app.services.fs_preflight.os.open", side_effect=denied):
+            for scan in ("denied-1", "denied-2"):
+                with self.assertRaises(PermissionError):
+                    storage.scan_tree(self.vault, scan)
+        problems = self.problems()
+        self.assertEqual(len(problems), 40)  # all paths, deduplicated across scans
+        self.assertEqual({json.loads(p["message_params"])["path"] for p in problems}, {f"{n}.bin" for n in range(40)})
+        self.assertTrue(all(p["event"] == "file_unreadable" for p in problems))
+        self.assertNotIn("sensitive exception", str(problems))
+        with SQLiteConnection(str(self.path)) as connection:
+            copies = connection.execute("SELECT presence FROM local_copies").fetchall()
+        self.assertEqual(len(copies), 40)
+        self.assertTrue(all(row["presence"] == "present" for row in copies))
 
-class VaultFilesystemHealthStatsTests(unittest.TestCase):
-    def setUp(self) -> None:
-        reset_filesystem_health_cache_for_tests()
+    def test_stat_failure_is_not_silently_skipped(self):
+        (self.root / "stat.bin").write_bytes(b"x")
+        original = Path.lstat
+        def denied(path, *args, **kwargs):
+            if path.name == "stat.bin":
+                raise PermissionError("denied")
+            return original(path, *args, **kwargs)
+        with patch.object(Path, "lstat", denied):
+            with self.assertRaises(PermissionError):
+                storage.scan_tree(self.vault, "scan")
+        self.assertIn("stat.bin", str(self.problems()))
 
-    def tearDown(self) -> None:
-        reset_filesystem_health_cache_for_tests()
+    def test_inaccessible_subtree_is_reported_and_never_marks_copies_missing(self):
+        (self.root / "old.txt").write_text("data")
+        storage.scan_tree(self.vault, "before")
+        def inaccessible(root, *, followlinks, onerror):
+            onerror(PermissionError(13, "denied", str(self.root / "private")))
+            return iter(())
+        with patch("app.services.fs_preflight.os.walk", side_effect=inaccessible):
+            with self.assertRaises(PermissionError):
+                storage.scan_tree(self.vault, "incomplete")
+        self.assertIn("private", str(self.problems()))
+        with SQLiteConnection(str(self.path)) as connection:
+            self.assertEqual(connection.execute("SELECT presence FROM local_copies").fetchone()["presence"], "present")
 
-    def test_stats_include_filesystem_preflight_for_vault(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            self.addCleanup(source_layout.reset_sources_root_override)
-            source_layout.override_sources_root(directory)
-            database_path = Path(directory) / "catalog.db"
-            source = Path(directory) / "sources"
-            source.mkdir()
-            (source / "a.txt").write_text("a", encoding="utf-8")
-            (source / "b.txt").symlink_to(source / "a.txt")
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (11, 'health', 'Health', %s, 'bucket', 'h', 'remote')
-                    """,
-                    (str(source),),
-                )
-            vault = {
-                "id": 11,
-                "source_root": str(source),
-            }
-            test_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
-                allow_local_delete=True,
-            )
-            from app import main as main_module
+    def test_watcher_checks_content_readability_not_just_stat(self):
+        target = self.root / "watch.bin"
+        target.write_bytes(b"x")
+        real_open = os.open
+        def denied(path, *args, **kwargs):
+            if Path(path) == target:
+                raise PermissionError("denied")
+            return real_open(path, *args, **kwargs)
+        with patch("app.services.fs_preflight.os.open", side_effect=denied):
+            self.assertEqual(storage.apply_filesystem_changes(self.vault, {(Change.modified, str(target))}), 0)
+        self.assertIn("watch.bin", str(self.problems()))
 
-            # Warm the health revision synchronously so the stats payload
-            # exposes the bounded synopsis without waiting on a background thread.
-            ensure_vault_filesystem_health(
-                11,
-                source_root=str(source),
-                allowed_bases=[directory],
-                preflight_allowed=True,
-                spawn=False,
-            )
-            with (
-                patch("app.main.settings", test_settings),
-                patch("app.database.settings", test_settings),
-                patch.object(
-                    main_module,
-                    "vault_local_access",
-                    return_value=SimpleNamespace(
-                        local_operations_allowed=True,
-                        cloud_catalog_allowed=True,
-                        volume_alias="photos",
-                        volume_health="ok",
-                    ),
-                ),
-            ):
-                payload = stats(vault=vault)
-            filesystem = payload["filesystem"]
-            self.assertIn("states", payload)
-            self.assertIn("storage", payload)
-            self.assertFalse(filesystem["ok"])
-            self.assertEqual(filesystem["uid"], os.geteuid())
-            self.assertEqual(filesystem["health_status"], "current")
-            self.assertGreaterEqual(filesystem["findings_total"], 1)
-            finding_codes = {f["code"] for f in filesystem["findings"]}
-            self.assertIn("fs.symlink", finding_codes)
-            self.assertIn("fs.symlink", filesystem["finding_counts"])
+    def test_root_inaccessible_becomes_protection_blocked(self):
+        with (
+            patch("app.storage._validate_enrolled_scan_root"),
+            patch("app.services.fs_preflight.os.access", return_value=False),
+            patch("app.storage.scan_cloud", return_value=0),
+            patch("app.storage.reconcile_pending_policy_tags", return_value={}),
+        ):
+            result = storage.scan_vault(self.vault)
+        self.assertEqual(result["local"], -1)
+        self.assertIn("protection_blocked", {p["event"] for p in self.problems()})
 
-    def test_stats_retains_preflight_diagnostics_for_safe_degraded_volume(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            self.addCleanup(source_layout.reset_sources_root_override)
-            source_layout.override_sources_root(directory)
-            database_path = Path(directory) / "catalog.db"
-            source = Path(directory) / "sources"
-            source.mkdir()
-            (source / "a.txt").write_text("a", encoding="utf-8")
-            (source / "b.txt").symlink_to(source / "a.txt")
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (12, 'degraded', 'Degraded', %s, 'bucket', 'd', 'remote')
-                    """,
-                    (str(source),),
-                )
-            vault = {"id": 12, "source_root": str(source)}
-            test_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
-                allow_local_delete=True,
-            )
-            from app import main as main_module
-            from app.services import fs_preflight as fs_preflight_module
+    def test_hash_read_failure_also_reports_the_exact_path(self):
+        target = self.root / "hash.bin"
+        target.write_bytes(b"data")
+        storage.scan_tree(self.vault, "scan")
+        with patch("app.storage.hash_stable_regular_file", side_effect=PermissionError("denied")):
+            self.assertEqual(storage._collect_local_fingerprint_updates(self.vault, self.root), [])
+        self.assertIn("hash.bin", str(self.problems()))
 
-            for health in ("read_only", "scan_required"):
-                with self.subTest(health=health):
-                    reset_filesystem_health_cache_for_tests()
-                    access = SimpleNamespace(
-                        local_operations_allowed=False,
-                        cloud_catalog_allowed=True,
-                        volume_alias="photos",
-                        volume_health=health,
-                    )
-                    with (
-                        patch("app.main.settings", test_settings),
-                        patch("app.database.settings", test_settings),
-                        patch.object(main_module, "vault_local_access", return_value=access),
-                        patch.object(
-                            fs_preflight_module,
-                            "check_vault_filesystem",
-                            wraps=fs_preflight_module.check_vault_filesystem,
-                        ) as preflight,
-                    ):
-                        # Degraded-but-safe volumes may still preflight; compute
-                        # the revision inline for a deterministic assertion.
-                        ensure_vault_filesystem_health(
-                            12,
-                            source_root=str(source),
-                            allowed_bases=[directory],
-                            preflight_allowed=True,
-                            walker=preflight,
-                            spawn=False,
-                        )
-                        payload = stats(vault=vault)
-                    preflight.assert_called()
-                    filesystem = payload["filesystem"]
-                    self.assertIn("states", payload)
-                    self.assertIn("storage", payload)
-                    self.assertFalse(filesystem["ok"])
-                    self.assertEqual(filesystem["source_volume"]["health"], health)
-                    self.assertEqual(filesystem["health_status"], "current")
-                    self.assertIn(
-                        "fs.symlink",
-                        {finding["code"] for finding in filesystem["findings"]},
-                    )
+    def test_identity_unsafe_volume_never_starts_a_readability_walk(self):
+        from app.services.source_layout import VaultLocalAccess
+        with (
+            patch("app.storage.source_layout.vault_local_access", return_value=VaultLocalAccess(False, True, "photos", "replaced")),
+            patch("app.storage.walk_entries", side_effect=AssertionError("unsafe walk")),
+            patch("app.storage.inspect_entry", side_effect=AssertionError("unsafe read")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Source Volume"):
+                storage.scan_tree(self.vault, "blocked")
+            with self.assertRaisesRegex(RuntimeError, "Source Volume"):
+                storage.apply_filesystem_changes(self.vault, {(Change.modified, str(self.root / "photo.jpg"))})
 
-    def test_stats_gates_preflight_for_unavailable_or_identity_unsafe_volume(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            self.addCleanup(source_layout.reset_sources_root_override)
-            source_layout.override_sources_root(directory)
-            database_path = Path(directory) / "catalog.db"
-            source = Path(directory) / "sources"
-            source.mkdir()
-            (source / "nested").mkdir()
-            (source / "nested" / "content.txt").write_text("content", encoding="utf-8")
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with SQLiteConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (12, 'blocked', 'Blocked', %s, 'bucket', 'b', 'remote')
-                    """,
-                    (str(source),),
-                )
-            vault = {"id": 12, "source_root": str(source)}
-            test_settings = SimpleNamespace(
-                db_backend="sqlite",
-                sqlite_path=str(database_path),
-                allow_local_delete=True,
-            )
-            from app import main as main_module
-            from app.services import fs_preflight as fs_preflight_module
-
-            for health in (
-                "replaced",
-                "identity_ambiguous",
-                "identity_unsupported",
-                "absent",
-                "mount_lost",
-                "inaccessible",
-            ):
-                with self.subTest(health=health):
-                    reset_filesystem_health_cache_for_tests()
-                    access = SimpleNamespace(
-                        local_operations_allowed=False,
-                        cloud_catalog_allowed=True,
-                        volume_alias="photos",
-                        volume_health=health,
-                    )
-                    original_resolve = Path.resolve
-                    original_realpath = os.path.realpath
-
-                    def guarded_resolve(path: Path, *args, **kwargs):
-                        if str(path).startswith(str(source)):
-                            raise AssertionError(
-                                f"resolved blocked Source Volume path: {path}"
-                            )
-                        return original_resolve(path, *args, **kwargs)
-
-                    def guarded_realpath(path, *args, **kwargs):
-                        if str(path).startswith(str(source)):
-                            raise AssertionError(
-                                f"realpath called for blocked Source Volume: {path}"
-                            )
-                        return original_realpath(path, *args, **kwargs)
-
-                    with (
-                        patch("app.main.settings", test_settings),
-                        patch("app.database.settings", test_settings),
-                        patch.object(main_module, "vault_local_access", return_value=access),
-                        patch.object(Path, "resolve", guarded_resolve),
-                        patch("os.path.realpath", side_effect=guarded_realpath),
-                        patch.object(
-                            fs_preflight_module, "check_vault_filesystem"
-                        ) as preflight,
-                    ):
-                        payload = stats(vault=vault)
-                    preflight.assert_not_called()
-                    filesystem = payload["filesystem"]
-                    self.assertIn("states", payload)
-                    self.assertIn("storage", payload)
-                    self.assertFalse(filesystem["ok"])
-                    self.assertEqual(filesystem["source_volume"]["health"], health)
-                    self.assertEqual(filesystem["findings"], [])
-                    self.assertEqual(filesystem["health_status"], "current")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_substituted_symlink_cannot_be_opened(self):
+        target = self.root / "race.bin"
+        target.write_bytes(b"x")
+        real_open = os.open
+        def swapped(path, *args, **kwargs):
+            target.unlink()
+            target.symlink_to(self.path)
+            return real_open(path, *args, **kwargs)
+        with patch("app.services.fs_preflight.os.open", side_effect=swapped):
+            with self.assertRaises(OSError):
+                inspect_entry(target)

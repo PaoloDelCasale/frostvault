@@ -1,6 +1,6 @@
-"""Append-only audit event store (issue #16).
+"""Append-only log for sensitive or destructive actions (no browsing API).
 
-Framework-agnostic persistence for security and operational audit events.
+Framework-agnostic persistence for security and destructive action records.
 Every record is immutable: there is no update or delete API. Sensitive
 payload keys are redacted before the detail JSON is stored and before the
 structured log line is emitted.
@@ -155,39 +155,3 @@ def record_audit_event(
             **detail,
         )
     return recorded
-
-
-def list_vault_audit_events(
-    connection: Any,
-    vault_id: int,
-    *,
-    limit: int = 100,
-) -> list[dict[str, Any]]:
-    """Return the Vault-scoped audit rows the Owner may see, newest first."""
-    rows = connection.execute(
-        """
-        SELECT * FROM audit_events
-        WHERE vault_id=%s AND visibility IN ('vault', 'owner')
-        ORDER BY id DESC
-        LIMIT %s
-        """,
-        (vault_id, max(1, min(limit, 500))),
-    ).fetchall()
-    return [_row_to_event(row) for row in rows]
-
-
-def list_admin_audit_events(
-    connection: Any,
-    *,
-    limit: int = 100,
-) -> list[dict[str, Any]]:
-    """Return all audit events for the Owner, newest first."""
-    rows = connection.execute(
-        """
-        SELECT * FROM audit_events
-        ORDER BY id DESC
-        LIMIT %s
-        """,
-        (max(1, min(limit, 500)),),
-    ).fetchall()
-    return [_row_to_event(row) for row in rows]

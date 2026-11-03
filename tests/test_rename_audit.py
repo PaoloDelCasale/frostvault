@@ -1,18 +1,4 @@
-"""Durable audit for Path History rename confirmations (BUG-009 / issue #19).
-
-Selected TDD seam:
-- ``POST /api/confirm-rename`` and ``POST /api/confirm-folder-rename`` —
-  public Path History mutation surfaces already used by the UI, observed
-  through ``GET /api/audit-events`` (operators' durable audit view).
-- ``apply_auto_renames`` — scan-time auto-confirm path, observed through
-  ``list_vault_audit_events`` on the same vault.
-
-Reason: reproduces the externally observable defect (rename mutations leave
-no ``audit_events`` row), uses the real ``audit_log`` persistence contract
-without mocking away the missing ``connection``, and remains valid if
-``audit_log`` internals are refactored so long as durable events appear.
-Avoids the audit's source-regex assertions on ``main.py``.
-"""
+"""Rename safety/validation contracts; routine renames are no longer logged (#416)."""
 from __future__ import annotations
 
 import hashlib
@@ -32,7 +18,6 @@ from app.catalog import ArchiveCatalog, VaultFileNotFound
 from app.config import settings
 from app.database import SQLiteConnection
 from app.security import hash_password
-from app.services import audit_events
 from app.sessions import create_session, csrf_token_for
 from app.storage import apply_auto_renames
 from tests.test_database import run_alembic
@@ -240,13 +225,8 @@ class RenameAuditPersistenceTests(unittest.TestCase):
                 ).fetchall(),
             }
 
-    def test_bug_009_rename_audit_persists_to_audit_events(self) -> None:
-        """[BUG-009][Req: REQ-021] File rename must durable-audit.
-
-        Desired: confirm rename passes ``connection`` into ``audit_log`` so
-        ``audit_events`` (and ``GET /api/audit-events``) receive the row.
-        Current: connection omitted → log-only.
-        """
+    def test_routine_rename_does_not_create_action_log_entries(self) -> None:
+        """#416: renames still work, but routine activity is not audit-logged."""
         old_id = self._seed_digest_rename(
             old_path="reports/old-name.txt",
             new_path="reports/new-name.txt",
@@ -261,14 +241,10 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         )
         self.assertIn(confirm.status_code, {200, 202}, confirm.text)
 
-        events = self.client.get("/api/audit-events")
-        self.assertEqual(events.status_code, 200, events.text)
-        names = {item["event"] for item in events.json()["events"]}
-        self.assertIn(
-            "vault_file_renamed",
-            names,
-            "confirm_rename must persist a durable vault_file_renamed audit event",
-        )
+        with SQLiteConnection(str(self.database_path)) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) AS n FROM audit_events WHERE event='vault_file_renamed'"
+            ).fetchone()["n"], 0)
 
     def test_issue_198_invalid_paths_have_one_stable_validation_contract(self) -> None:
         old_id = self._seed_digest_rename(
@@ -436,7 +412,7 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         self.assertEqual(self._rename_state(), before)
 
     def test_issue_188_two_concurrent_confirms_consume_one_candidate_once(self) -> None:
-        """Two API confirmations yield one mutation, audit event, and Rename Job."""
+        """Two API confirmations yield one mutation and Rename Job, without routine logs."""
         old_id = self._seed_digest_rename(
             old_path="concurrent/old.txt",
             new_path="concurrent/new.txt",
@@ -512,7 +488,7 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         )
         self.assertEqual(retired, 1)
         self.assertEqual(copies, 1)
-        self.assertEqual(len(audits), 1)
+        self.assertEqual(len(audits), 0)
         self.assertEqual(len(jobs), 1)
 
     def test_issue_188_scan_state_change_wins_before_confirmation_claim(self) -> None:
@@ -626,8 +602,7 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         self.assertEqual(audits, 0)
         self.assertEqual(jobs, 0)
 
-    def test_bug_009_folder_rename_audit_persists_to_audit_events(self) -> None:
-        """[BUG-009][Req: REQ-021] Folder rename must durable-audit."""
+    def test_routine_folder_rename_does_not_create_action_log_entries(self) -> None:
         folder_old = self._seed_digest_rename(
             old_path="docs/a.txt",
             new_path="archive/a.txt",
@@ -644,17 +619,12 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         self.assertIn(folder_confirm.status_code, {200, 202}, folder_confirm.text)
         self.assertIn(folder_old, folder_confirm.json()["renamed_ids"])
 
-        folder_events = self.client.get("/api/audit-events")
-        self.assertEqual(folder_events.status_code, 200, folder_events.text)
-        folder_names = {item["event"] for item in folder_events.json()["events"]}
-        self.assertIn(
-            "vault_folder_renamed",
-            folder_names,
-            "confirm_folder_rename must persist a durable vault_folder_renamed audit event",
-        )
+        with SQLiteConnection(str(self.database_path)) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) AS n FROM audit_events WHERE event='vault_folder_renamed'"
+            ).fetchone()["n"], 0)
 
-    def test_bug_009_auto_rename_audit_persists_to_audit_events(self) -> None:
-        """[BUG-009] Auto-confirm renames must also durable-audit."""
+    def test_routine_auto_rename_does_not_create_action_log_entries(self) -> None:
         old_path = "auto/old.txt"
         new_path = "auto/new.txt"
         payload = b"content-a"
@@ -705,13 +675,9 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         self.assertGreaterEqual(summary["confirmed"], 1)
 
         with SQLiteConnection(str(self.database_path)) as connection:
-            events = audit_events.list_vault_audit_events(connection, self.vault_id)
-        renamed = [row for row in events if row["event"] == "vault_file_renamed"]
-        self.assertTrue(
-            renamed,
-            "apply_auto_renames must persist a durable vault_file_renamed audit event",
-        )
-        self.assertEqual(renamed[0]["detail"].get("decision"), "auto")
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) AS n FROM audit_events WHERE event='vault_file_renamed'"
+            ).fetchone()["n"], 0)
 
 
 if __name__ == "__main__":

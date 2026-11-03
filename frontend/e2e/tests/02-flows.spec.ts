@@ -181,17 +181,15 @@ test.describe("archive flows", () => {
       sections.getByRole("link", { name: /users and identities|utenti e identità/i }),
     ).toHaveCount(0);
 
-    await sections
-      .getByRole("link", { name: /^defaults$|^valori predefiniti$/i })
-      .click();
-    await expect(page).toHaveURL(/\/admin\/defaults/);
-    await expect(page.getByRole("heading", { name: /runtime-managed defaults|valori predefiniti gestiti a runtime/i })).toBeVisible();
-
-    await sections
-      .getByRole("link", { name: /deployment configuration|configurazione del deployment/i })
-      .click();
-    await expect(page).toHaveURL(/\/admin\/deployment/);
-    await expect(page.getByRole("heading", { name: /deployment configuration|configurazione del deployment/i })).toBeVisible();
+    for (const route of ["defaults", "deployment", "audit-events", "worker-errors"]) {
+      await expect(sections.locator(`a[href="/admin/${route}"]`)).toHaveCount(0);
+    }
+    await sections.getByRole("link", { name: /source volumes/i }).click();
+    await expect(page).toHaveURL(/\/admin\/sources/);
+    await expect(page.getByRole("heading", { name: /source volumes/i })).toBeVisible();
+    await sections.getByRole("link", { name: /metadata backups|backup dei metadati/i }).click();
+    await expect(page).toHaveURL(/\/admin\/metadata-backups/);
+    await expect(page.getByRole("heading", { name: /metadata backups|backup dei metadati/i }).first()).toBeVisible();
   });
 
   test("flow 11 — sign out", async ({ page }) => {

@@ -30,7 +30,8 @@ ADR-0005. Requests from outside those networks are refused with `403`.
 **Reauthentication** is required only before downloading the Recovery Kit and
 before deleting from the cloud (cloud archive/purge, accelerating a purge, and
 a Vault Decommission, whose dispositions can delete cloud history). Other
-mutations, including settings, need only a valid Session and CSRF token.
+mutations need only a valid Session and CSRF token. Installation settings are
+environment-only (ADR-0009 as superseded by #416).
 
 **Vault roots.** Source Areas are gone. The Owner may choose any directory under
 a Source Volume as a new Vault root; the Source Volume Identity, the fixed

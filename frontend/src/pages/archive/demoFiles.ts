@@ -355,19 +355,6 @@ type DemoNotification = {
   read_at: string | null;
 };
 
-type DemoAuditEvent = {
-  id: number;
-  created_at: string;
-  event: string;
-  outcome: string;
-  actor_user_id: number | null;
-  vault_id: number | null;
-  job_id: number | null;
-  correlation_id: string | null;
-  visibility: string;
-  detail: Record<string, unknown>;
-};
-
 type DemoVault = {
   id: number;
   name: string;
@@ -566,99 +553,6 @@ function demoPathIsIncluded(
     return false;
   }
   return true;
-}
-
-function demoAuditEvents(): DemoAuditEvent[] {
-  const daysAgo = (days: number, hour: number) => {
-    const date = new Date();
-    date.setDate(date.getDate() - days);
-    date.setHours(hour, 15, 0, 0);
-    return date.toISOString();
-  };
-  return [
-    {
-      id: 107,
-      created_at: daysAgo(0, 10),
-      event: "vault_file_renamed",
-      outcome: "success",
-      actor_user_id: 2,
-      vault_id: 1,
-      job_id: null,
-      correlation_id: "demo-rename-107",
-      visibility: "vault",
-      detail: {
-        vault_file_id: "file-archive-pdf",
-        old_path: "incoming/archive-draft.pdf",
-        new_path: "documents/archive.pdf",
-      },
-    },
-    {
-      id: 106,
-      created_at: daysAgo(1, 16),
-      event: "vault_lifecycle_default_updated",
-      outcome: "updated",
-      actor_user_id: 1,
-      vault_id: 1,
-      job_id: null,
-      correlation_id: "demo-lifecycle-106",
-      visibility: "vault",
-      detail: { guided_profile: "archive_tiered" },
-    },
-    {
-      id: 105,
-      created_at: daysAgo(2, 9),
-      event: "operation_policy_updated",
-      outcome: "success",
-      actor_user_id: 1,
-      vault_id: 1,
-      job_id: null,
-      correlation_id: null,
-      visibility: "vault",
-      detail: {
-        include_globs: ["documents/**", "photos/**"],
-        exclude_globs: ["**/*.tmp"],
-      },
-    },
-    {
-      id: 104,
-      created_at: daysAgo(4, 14),
-      event: "storage_class_change_started",
-      outcome: "queued",
-      actor_user_id: 2,
-      vault_id: 1,
-      job_id: 42,
-      correlation_id: "demo-storage-104",
-      visibility: "vault",
-      detail: {
-        path: "photos/2024",
-        target_storage_class: "DEEP_ARCHIVE",
-      },
-    },
-    {
-      id: 102,
-      created_at: daysAgo(12, 8),
-      event: "cloud_deletion.archive_requested",
-      outcome: "requested",
-      actor_user_id: 1,
-      vault_id: 1,
-      job_id: 38,
-      correlation_id: "demo-archive-102",
-      visibility: "vault",
-      detail: { path: "reports/obsolete.csv", mode: "delete_marker" },
-    },
-    {
-      id: 101,
-      created_at: daysAgo(20, 3),
-      event: "catalog_scan_completed",
-      outcome: "completed",
-      actor_user_id: null,
-      vault_id: 1,
-      job_id: 31,
-      correlation_id: null,
-      visibility: "vault",
-      detail: { discovered: 148, changed: 6, missing: 1 },
-    },
-  ];
 }
 
 function json(data: unknown, status = 200): Response {
@@ -920,7 +814,7 @@ function statsPayload(state: DemoState, screenshotJobs: boolean) {
     storage: { local_bytes: localBytes, cloud_bytes: cloudBytes },
     active_jobs: screenshotJobs ? 1 : state.jobs.filter((job) => job.status !== "completed").length,
     runtime: {},
-    filesystem: null,
+    source_volume: { alias: "demo", health: "ok", local_operations_allowed: true },
     delete_enabled: true,
   };
 }
@@ -1348,10 +1242,6 @@ export function installDemoFilesFetch(): void {
       return json({ included, excluded });
     }
 
-    if (path === "/api/audit-events") {
-      return json({ events: demoAuditEvents() });
-    }
-
     if (path === "/api/admin/vaults" && method === "GET") {
       return json({ items: state.vaults });
     }
@@ -1385,34 +1275,6 @@ export function installDemoFilesFetch(): void {
           },
         ],
       });
-    }
-
-    if (path === "/api/admin/settings") {
-      return json({
-        revision: 1,
-        groups: {
-          security: [],
-          oidc: [],
-          operations: [
-            {
-              key: "scan_interval",
-              environment_variable: "SCAN_INTERVAL_SECONDS",
-              source: "environment_default",
-              mutability: "runtime_managed",
-              restart_required: false,
-              effective_value: 1800,
-              minimum: 30,
-              maximum: 86400,
-            },
-          ],
-          restore: [],
-          vault_defaults: [],
-        },
-      });
-    }
-
-    if (path === "/api/admin/audit-events" || path === "/api/admin/worker-errors") {
-      return json({ items: [] });
     }
 
     if (path === "/api/admin/metadata-backups") {

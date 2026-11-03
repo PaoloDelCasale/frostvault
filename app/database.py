@@ -16,7 +16,7 @@ from .services.rclone_runtime import cleanup_runtime_configs
 
 
 INTEGRITY_ERRORS = (UniqueViolation, sqlite3.IntegrityError)
-HEAD_SCHEMA_REVISION = "0047_remove_offline_cache"
+HEAD_SCHEMA_REVISION = "0048_essential_administration"
 _logger = logging.getLogger(__name__)
 
 

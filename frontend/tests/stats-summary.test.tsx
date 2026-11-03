@@ -27,18 +27,7 @@ const realisticStats: StatsResponse = {
   storage: { local_bytes: 1536, cloud_bytes: 1099511627776 },
   active_jobs: 2,
   runtime: {},
-  filesystem: {
-    ok: true,
-    uid: 1000,
-    gid: 1000,
-    root: "/sources/test",
-    checks: [],
-    findings: [],
-    health_status: "current",
-    findings_total: 0,
-    finding_counts: {},
-    findings_truncated: false,
-  },
+  source_volume: { alias: "test", health: "ok", local_operations_allowed: true },
   delete_enabled: false,
 };
 
@@ -47,16 +36,7 @@ const emptyVaultStats: StatsResponse = {
   storage: { local_bytes: 0, cloud_bytes: 0 },
   active_jobs: 0,
   runtime: {},
-  filesystem: {
-    ok: true,
-    uid: 1000,
-    gid: 1000,
-    root: "/sources/empty",
-    checks: [],
-    findings: [],
-    health_status: "current",
-    findings_total: 0,
-  },
+  source_volume: { alias: "empty", health: "ok", local_operations_allowed: true },
   delete_enabled: false,
 };
 

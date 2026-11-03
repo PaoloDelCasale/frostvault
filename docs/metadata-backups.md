@@ -23,9 +23,11 @@ The artifact **never contains** `ARCHIVE_MASTER_KEY`, bootstrap passwords, or
 OIDC client secrets. A SHA-256 digest of the ciphertext is stored alongside the
 file and in `metadata_backup_runs`.
 
-The configuration snapshot uses the effective system-settings resolver, so it
-includes committed non-secret database overrides and their environment or
-built-in fallbacks. Secret and unknown keys are structurally excluded.
+The configuration snapshot contains allow-listed, non-secret deployment values
+from the environment/defaults. There are no database overrides or mutable
+settings API. Secret and unknown keys are structurally excluded, including
+caller-supplied snapshot fields. Before upgrading through migration `0048`,
+move any required former overrides into the deployment environment.
 
 ## Where artifacts live
 

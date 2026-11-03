@@ -19,7 +19,6 @@ from app.catalog import ArchiveCatalog, VaultFileNotFound
 from app.config import settings
 from app.services import notifications
 from app.services.catalog_events import CatalogEventStore
-from app.system_settings import resolve_system_settings, set_system_setting
 
 
 POSTGRES_URL = os.getenv("TEST_POSTGRES_URL", "")
@@ -165,6 +164,11 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 self.assertEqual(normalized_state(connection), before)
                 assert_session_schema(self, connection, upgraded=command == "upgrade")
 
+    def test_administration_cut_preserves_sessions_jobs_and_only_cloud_copy(self) -> None:
+        from tests.essential_administration_migration_contract import assert_administration_migration
+        assert_administration_migration(self, run_alembic, self._connection)
+        self.assertTrue({"system_settings", "worker_errors"}.isdisjoint(sa.inspect(self.engine).get_table_names()))
+
     def test_fresh_database_upgrades_and_rolls_back_losslessly(self) -> None:
         upgraded = run_alembic()
         self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
@@ -172,18 +176,12 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             column["name"]
             for column in sa.inspect(self.engine).get_columns("vault_operation_policies")
         }
-        system_setting_columns = {
-            column["name"]
-            for column in sa.inspect(self.engine).get_columns("system_settings")
-        }
         self.assertEqual(
             policy_columns & {"bandwidth_limit_kibps", "operating_windows_json"},
             set(),
         )
-        self.assertEqual(
-            system_setting_columns,
-            {"key", "value", "updated_by", "updated_at"},
-        )
+        self.assertNotIn("system_settings", sa.inspect(self.engine).get_table_names())
+        self.assertNotIn("worker_errors", sa.inspect(self.engine).get_table_names())
         session_columns = {
             column["name"]
             for column in sa.inspect(self.engine).get_columns("sessions")
@@ -235,31 +233,6 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         inspector = sa.inspect(self.engine)
         self.assertNotIn("filesystem_health_snapshots", inspector.get_table_names())
         self.assertNotIn("filesystem_health_findings", inspector.get_table_names())
-        connect_url = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
-        with psycopg.connect(connect_url, row_factory=dict_row) as connection:
-            admin_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('settings-admin', 'Settings Admin', 'hash')
-                RETURNING id
-                """
-            ).fetchone()["id"]
-            set_system_setting(
-                connection,
-                key="restore_tier",
-                value="Standard",
-                updated_by=admin_id,
-            )
-            resolved = resolve_system_settings(
-                connection,
-                settings_obj=settings,
-                environ={},
-            )
-        self.assertEqual(resolved["restore_tier"].value, "Standard")
-        self.assertEqual(
-            resolved["restore_tier"].source,
-            "database_override",
-        )
 
         downgraded = run_alembic("0001_current_schema", command="downgrade")
         self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
@@ -789,7 +762,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 )
             )
 
-        migrated = run_alembic()
+        migrated = run_alembic("0044_single_owner")
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with self.engine.connect() as connection:
             users = connection.execute(

@@ -48,7 +48,8 @@ Search remains global across every file in the selected vault.
   without an upload.
 - New vaults can use an empty managed root or adopt any existing directory
   under a Source Volume that does not overlap another vault root.
-- The Administration hub manages safe runtime defaults and deployment settings.
+- Administration retains Vault, Source Volume and metadata backup operations;
+  all installation settings come only from the deployment environment.
 
 ## Archive lifecycle and cloud deletion
 
@@ -392,15 +393,20 @@ must be replaced before the corresponding integration is used. Important groups:
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
 | Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RCLONE_MULTI_THREAD_*`, `RESTORE_*`, `CLOUD_PURGE_DELAY_SECONDS`, `ALLOW_LOCAL_DELETE` |
 
-Database settings and credentials, paths and mount roots, master/storage
-credentials, proxy/host/cookie trust, bootstrap values, automatic migration,
-and the frontend distribution path are deployment-only. They cannot be edited
-at runtime because they define process and deployment trust boundaries.
-The **Administration** page exposes a structurally redacted deployment inventory
-and lets the Owner apply or reset bounded runtime defaults. The equivalent API
-is `GET /api/admin/settings` plus revision-checked `PATCH /api/admin/settings`; stale writes are rejected. See
-[ADR-0009](docs/adr/0009-effective-system-configuration.md) for the exhaustive
-classification and precedence model.
+All installation configuration is environment-only and takes effect on process
+restart. There is no mutable settings UI or API. Before upgrading through
+migration `0048_essential_administration`, move any required database overrides
+into deployment environment variables; the migration discards those overrides.
+See [ADR-0009](docs/adr/0009-effective-system-configuration.md).
+
+There is no audit or worker-error page. Sensitive/destructive actions (including
+cloud deletion, recovery-material downloads and root relocation) retain an
+append-only, redacted action log. Worker errors appear as internal-error
+problems in the notification center. The real scan/watcher reports every
+unreadable path there; inaccessible roots block protection. No background
+diagnostic walker or filesystem banner runs. `/metrics` retains process-local
+Job, queue, worker, verification, notification delivery and backup signals,
+without per-file labels or filesystem/listing performance diagnostics.
 
 OIDC is configured only through the `OIDC_*` variables and binds the Owner on
 the first login. See [ADR-0017](docs/adr/0017-single-owner.md).
@@ -419,7 +425,7 @@ Email is optional and configured only in the deployment environment:
   inferred from the Owner's login address.
 - `SMTP_PORT` — defaults to `587`; valid range `1–65535`.
 - `SMTP_USERNAME`, `SMTP_PASSWORD` — optional authentication. The password is
-  never exposed by the settings API or stored in the database.
+  never exposed by an API or stored in the database.
 - `SMTP_USE_TLS` — defaults to `true`: STARTTLS on port 587 (and other ports),
   implicit TLS on port 465. Disable only for a trusted local relay.
 
@@ -455,7 +461,7 @@ cloud credentials.
   an empty `BREAK_GLASS_ALLOWED_CIDRS` value is loopback-only, never allow-all.
 - Grant only the documented S3 actions and prefixes. Do not grant account-root
   credentials or broad bucket deletion rights.
-- Keep versioning enabled, test restores, and review audit events.
+- Keep versioning enabled, test restores, and review problems in the notification center.
 - Report vulnerabilities according to [SECURITY.md](SECURITY.md).
 
 ## Development and tests

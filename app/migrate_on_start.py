@@ -22,7 +22,6 @@ from alembic.util.exc import CommandError
 from .config import settings
 from .database import HEAD_SCHEMA_REVISION, DatabaseSchemaError, db, read_schema_revision
 from .services import metadata_backups
-from .system_settings import effective_settings
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -189,14 +188,13 @@ def _upgrade_existing_with_backup() -> None:
     backup_dir = Path(settings.metadata_backup_dir)
     try:
         with db() as connection:
-            runtime = effective_settings(connection, settings_obj=settings)
             outcome = metadata_backups.run_pre_upgrade_backup_gate(
                 backup_dir=backup_dir,
                 settings_obj=settings,
                 db_backend=settings.db_backend,
                 sqlite_path=settings.sqlite_path,
-                retention=runtime.metadata_backup_retention,
-                s3_prefix=runtime.metadata_backup_s3_prefix,
+                retention=settings.metadata_backup_retention,
+                s3_prefix=settings.metadata_backup_s3_prefix,
                 connection=connection,
             )
     except metadata_backups.PreUpgradeBackupBlockedError as exc:

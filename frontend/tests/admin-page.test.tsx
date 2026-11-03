@@ -108,7 +108,7 @@ async function renderAdmin() {
       </I18nProvider>
     </ApiQueryProvider>,
   );
-  await screen.findByRole("heading", { name: /vaults and settings/i });
+  await screen.findByRole("heading", { name: /vaults and sources/i });
   return { requests };
 }
 
@@ -132,11 +132,7 @@ describe("AdminPage — single owner (#412)", () => {
       ["Overview", "/admin"],
       ["Vaults", "/admin/vaults"],
       ["Source Volumes", "/admin/sources"],
-      ["Defaults", "/admin/defaults"],
-      ["Deployment configuration", "/admin/deployment"],
       ["Storage cost estimates", "/admin/storage-cost-estimates"],
-      ["Audit events", "/admin/audit-events"],
-      ["Worker errors", "/admin/worker-errors"],
       ["Metadata backups", "/admin/metadata-backups"],
     ];
     const links = within(navigation).getAllByRole("link");

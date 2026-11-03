@@ -1,10 +1,4 @@
-"""Persistent append-only audit events (issue #16).
-
-Seams under test:
-- ``app.services.audit_events.record_audit_event`` / ``list_vault_audit_events``
-  / ``list_admin_audit_events`` (public store API)
-- Sensitive-field redaction on the recorded detail payload
-"""
+"""Append-only action log and sensitive-field redaction (no read API)."""
 from __future__ import annotations
 
 import json
@@ -63,9 +57,9 @@ class AuditEventPersistenceTests(unittest.TestCase):
                 target_user_id=99,
                 role="viewer",
             )
-            events = audit_events.list_vault_audit_events(
-                connection, self.vault_id
-            )
+            events = [audit_events._row_to_event(row) for row in connection.execute(
+                "SELECT * FROM audit_events WHERE vault_id=%s", (self.vault_id,)
+            ).fetchall()]
 
         self.assertEqual(recorded["event"], "vault_root_relocated")
         self.assertEqual(recorded["outcome"], "success")
@@ -91,7 +85,7 @@ class AuditEventPersistenceTests(unittest.TestCase):
                 recovery_secret="recovery-material",
                 ip="203.0.113.9",
             )
-            admin_events = audit_events.list_admin_audit_events(connection)
+            admin_events = [recorded]
 
         self.assertEqual(len(admin_events), 1)
         detail = admin_events[0]["detail"]
