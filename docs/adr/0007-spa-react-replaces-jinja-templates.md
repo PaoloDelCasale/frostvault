@@ -50,5 +50,7 @@ Jinja entirely at cut-over (#71).
   names.
 - Legacy Node `vm`-sandbox UI tests are replaced by Vitest suites; Playwright
   covers mobile and desktop flows.
-- PWA installability remains layered on the SPA shell until its removal in #415.
+- The responsive SPA is network-only (#415): no installable manifest, registered
+  service worker or persisted file listings. Existing PWA installations are
+  retired through cleanup and the self-unregistering legacy `/sw.js` URL.
   Notifications use the inbox and optional deployment-owned SMTP (#414).

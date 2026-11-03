@@ -7,11 +7,11 @@ import { I18nProvider } from "@/i18n";
 import { ThemeProvider } from "@/theme";
 import { installDemoFilesFetch } from "@/pages/archive/demoFiles";
 import { ReauthPasswordGate } from "@/pages/archive/ReauthPasswordGate";
-import { registerFrostVaultServiceWorker } from "@/pwa";
+import { retireOfflineCache } from "./retireOfflineCache";
 import App from "./App";
 import "./index.css";
 
-registerFrostVaultServiceWorker();
+void retireOfflineCache();
 
 const demoMode = getDemoSearchParam("demo");
 if (DEMO_MODE_ENABLED && demoMode !== "off") {

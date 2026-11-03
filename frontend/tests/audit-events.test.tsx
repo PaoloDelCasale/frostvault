@@ -153,7 +153,6 @@ describe("AdminPage audit route", () => {
           display_name: "Ada Lovelace",
           session_version: 1,
           csrf_token: "csrf",
-          offline_cache_generation: "audit-session-vault-1",
           auth_method: "local",
           locale: "en",
           locales: ["en", "it"],

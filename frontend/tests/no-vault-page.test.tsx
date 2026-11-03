@@ -94,15 +94,10 @@ describe("NoVaultPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("closes local file data before POST /api/logout then navigates to sign-in", async () => {
-    const staleCacheKey = "frostvault.files.cache.v3:prior-session";
-    localStorage.setItem(staleCacheKey, "prior-user-listing");
-    fetchMock.mockImplementationOnce(() => {
-      expect(localStorage.getItem(staleCacheKey)).toBeNull();
-      return Promise.resolve(
-        jsonResponse({ message_key: "api.signed_out", message: "Signed out" }),
-      );
-    });
+  it("posts logout with CSRF then clears the theme and navigates to sign-in", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ message_key: "api.signed_out", message: "Signed out" }),
+    );
     renderPage("en");
     window.localStorage.setItem(THEME_ACTIVE_USER_STORAGE_KEY, "42");
     navigate.mockImplementation(() => {
@@ -121,5 +116,14 @@ describe("NoVaultPage", () => {
     await waitFor(() => {
       expect(navigate).toHaveBeenCalledWith("/login");
     });
+  });
+
+  it("reports a failed logout instead of pretending the Session was revoked", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: "Unavailable" }, 503));
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: en["ui.sign_out"] }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Unavailable");
+    expect(navigate).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: en["ui.sign_out"] })).toBeEnabled();
   });
 });

@@ -90,7 +90,7 @@ The 6 September 2026 production audit (`56ee35d`) reported three `dev:true` advi
 
 | Package | Introduced by | Was | Now | Exposure |
 | --- | --- | --- | --- | --- |
-| brace-expansion | `eslint-plugin-react` → minimatch 3; `vite-plugin-pwa` → workbox-build → filelist/glob; `typescript-eslint`; `shadcn` → ts-morph | 1.1.16, 2.1.2, 5.0.8 | 1.1.18, 2.1.4, 5.0.9 | build |
+| brace-expansion | `eslint-plugin-react` → minimatch 3; `typescript-eslint`; `shadcn` → ts-morph | 1.1.16, 2.1.2, 5.0.8 | 1.1.18, 2.1.4, 5.0.9 | build |
 | nanoid | `shadcn` → postcss | 3.3.16 | 3.3.18 | build |
 | qs | `shadcn` → MCP SDK → express/body-parser | 6.15.3 | 6.16.0 | build |
 
@@ -184,7 +184,6 @@ npm run test:e2e
 VITE_ALLOW_DEMO=1 npm run build
 node scripts/capture-file-browser-screenshots.mjs
 node scripts/capture-file-operations-screenshots.mjs
-node scripts/capture-pwa-offline-screenshot.mjs
 node scripts/capture-storage-class-screenshots.mjs
 
 # Other 375px capture scripts use mocked/seeded API routes and need no demo flag:

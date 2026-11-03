@@ -8,6 +8,7 @@ from typing import Any
 
 from app.database import SQLiteConnection
 from app.sessions import (
+    SessionTransitionError,
     create_session,
     csrf_token_for,
     resolve_session,
@@ -174,6 +175,60 @@ class SessionStoreTests(unittest.TestCase):
             rotated = resolve_session(connection, new_token)
         self.assertIsNotNone(rotated)
         self.assertEqual(rotated["id"], session_id)
+
+    def test_stale_selection_cannot_overwrite_a_newer_transition(self) -> None:
+        token = self._new_session()
+        with self._connect() as connection:
+            original = resolve_session(connection, token)
+            selected = set_session_vault(
+                connection, original["id"], None,
+                expected_version=original["transition_version"],
+            )
+            self.assertIsNotNone(selected)
+            # Even an A -> B -> A choice must not recreate old authority.
+            self.assertIsNone(set_session_vault(
+                connection, original["id"], None,
+                expected_version=original["transition_version"],
+            ))
+            rotated_token = rotate_session(connection, original["id"], reauthenticated=True)
+            self.assertIsNone(set_session_vault(
+                connection, original["id"], None,
+                expected_version=selected["transition_version"],
+            ))
+            current = resolve_session(connection, rotated_token)
+            self.assertIsNotNone(current["reauth_at"])
+            self.assertTrue(revoke_session(connection, original["id"]))
+            self.assertFalse(revoke_session(connection, original["id"]))
+            self.assertIsNone(set_session_vault(
+                connection, original["id"], None,
+                expected_version=current["transition_version"],
+            ))
+            with self.assertRaises(SessionTransitionError):
+                rotate_session(connection, original["id"])
+
+    def test_expiry_cannot_be_undone_by_selection_or_rotation(self) -> None:
+        token = self._new_session()
+        with self._connect() as connection:
+            session = resolve_session(connection, token)
+            connection.execute(
+                "UPDATE sessions SET idle_expires_at=%s WHERE id=%s",
+                (_past_iso(), session["id"]),
+            )
+            self.assertIsNone(set_session_vault(
+                connection, session["id"], None,
+                expected_version=session["transition_version"],
+            ))
+            with self.assertRaises(SessionTransitionError):
+                rotate_session(connection, session["id"])
+            self.assertIsNone(resolve_session(connection, token))
+            first_version = connection.execute(
+                "SELECT transition_version FROM sessions WHERE id=%s", (session["id"],),
+            ).fetchone()["transition_version"]
+            self.assertIsNone(resolve_session(connection, token))
+            second_version = connection.execute(
+                "SELECT transition_version FROM sessions WHERE id=%s", (session["id"],),
+            ).fetchone()["transition_version"]
+            self.assertEqual(second_version, first_version)
 
     def test_selected_vault_persists_across_resolves(self) -> None:
         with self._connect() as connection:

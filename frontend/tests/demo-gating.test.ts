@@ -35,8 +35,7 @@ describe("capture/demo seams", () => {
     expect(app).toMatch(
       /DEMO_MODE_ENABLED\s*&&[\s\S]*getDemoSearchParam\("demo"\)/,
     );
-    expect(browser).toMatch(/getDemoSearchParam\("(?:sheet|history|confirm|target|versions|offline)"\)/);
-    expect(browser).toMatch(/DEMO_MODE_ENABLED\s*&&\s*getDemoSearchParam\("offline"\)/);
+    expect(browser).toMatch(/getDemoSearchParam\("(?:sheet|history|confirm|target|versions)"\)/);
     expect(operations).toMatch(
       /DEMO_MODE_ENABLED\s*\?\s*demoConfirm\s*:\s*null/,
     );

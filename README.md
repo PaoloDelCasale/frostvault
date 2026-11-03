@@ -430,11 +430,19 @@ configuration is discarded by migration `0046_simplify_notifications`; set the
 SMTP environment variables before upgrading if you want email to continue.
 The migration preserves inbox history, email delivery rows, and all file data.
 
-### Progressive Web App
+### Online responsive site
 
-The SPA remains an installable PWA (`vite-plugin-pwa`) with an offline shell
-and a cached last file listing. Installability requires HTTPS (localhost is
-exempt). Removal of this offline functionality belongs to #415.
+Use the responsive site on desktop or phone to check status, resolve problems
+and launch recoveries. A network connection is required: FrostVault does not
+install a PWA, register a service worker, or persist file listings in the browser.
+Authenticated API responses are `no-store`.
+
+When upgrading from a PWA release, the site removes its old browser caches and
+registration without clearing theme preferences. `/sw.js` remains only as an
+unregistering retirement script so existing installations stop serving the old
+shell; the current frontend never registers it. Migration
+`0047_remove_offline_cache` removes the Session cache nonce, preserving existing
+Sessions and their internal concurrency lock. No file or cloud data is changed.
 
 Do not commit `.env`, `config/rclone.conf`, recovery exports, database files, or
 cloud credentials.

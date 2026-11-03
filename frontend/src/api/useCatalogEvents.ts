@@ -17,6 +17,8 @@ export type UseCatalogEventsOptions = {
   vaultId: number | null | undefined;
   queryClient: QueryClient;
   enabled?: boolean;
+  /** Refresh the document when another tab changes this Session's Vault/auth. */
+  onSessionChanged?: () => void;
   createSource?: CatalogEventSourceFactory;
   fetchRevision?: typeof fetchCatalogRevision;
   /** Test seam: override timers. */
@@ -68,6 +70,7 @@ export function useCatalogEvents({
   vaultId,
   queryClient,
   enabled = true,
+  onSessionChanged,
   createSource,
   fetchRevision = fetchCatalogRevision,
   schedule = (callback, ms) => window.setTimeout(callback, ms),
@@ -97,9 +100,21 @@ export function useCatalogEvents({
       }
     };
 
+    const sessionChanged = () => {
+      if (closed) return;
+      closed = true;
+      clearReconnect();
+      source?.close();
+      source = null;
+      onSessionChanged?.();
+    };
+
     const applySignal = (signal: CatalogRevisionSignal) => {
       if (closed || activeVaultRef.current !== vaultId) return;
-      if (signal.vault_id !== vaultId) return;
+      if (signal.vault_id !== vaultId) {
+        sessionChanged();
+        return;
+      }
       if (!signal.has_gap && signal.revision <= lastRevisionRef.current) return;
       lastRevisionRef.current = Math.max(lastRevisionRef.current, signal.revision);
       invalidateForSignal(queryClient, signal);
@@ -113,7 +128,11 @@ export function useCatalogEvents({
         lastRevisionRef.current,
         {
           onHello: (hello) => {
-            if (closed || hello.vault_id !== vaultId) return;
+            if (closed) return;
+            if (hello.vault_id !== vaultId) {
+              sessionChanged();
+              return;
+            }
             // Catch-up catalog frames update the watermark. Hello only proves
             // the stream is authorized for this Vault.
             reconnectAttemptRef.current = 0;
@@ -125,10 +144,12 @@ export function useCatalogEvents({
           onError: (error) => {
             if (
               error.error === "vault_switched" ||
-              error.error === "vault_access_revoked"
+              error.error === "vault_access_revoked" ||
+              error.error === "session_revoked" ||
+              error.error === "session_expired" ||
+              error.error === "session_version_mismatch"
             ) {
-              source?.close();
-              source = null;
+              sessionChanged();
               return;
             }
             scheduleReconnect();
@@ -162,6 +183,11 @@ export function useCatalogEvents({
       if (closed || activeVaultRef.current !== vaultId) return;
       void fetchRevision(lastRevisionRef.current)
         .then((signal) => {
+          if (closed || activeVaultRef.current !== vaultId) return;
+          if (signal.vault_id !== vaultId) {
+            sessionChanged();
+            return;
+          }
           if (!signal.changed && !signal.has_gap) {
             if (signal.revision > lastRevisionRef.current) {
               lastRevisionRef.current = signal.revision;
@@ -205,6 +231,7 @@ export function useCatalogEvents({
     createSource,
     enabled,
     fetchRevision,
+    onSessionChanged,
     queryClient,
     schedule,
     vaultId,

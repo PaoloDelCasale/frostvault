@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 
 import { createAppQueryClient } from "@/api";
@@ -17,11 +17,6 @@ type AppShellProps = {
   t?: (key: string, params?: Record<string, unknown>) => string;
   /** Shared app client; optional for isolated shell stories and tests. */
   queryClient?: QueryClient;
-  /**
-   * Keep the document shell mounted while fresh authentication authority is
-   * being resolved, but do not render capabilities from the previous Session.
-   */
-  authReconciliationPending?: boolean;
   children: ReactNode;
 };
 
@@ -30,16 +25,10 @@ export function AppShell({
   handlers,
   t,
   queryClient: providedQueryClient,
-  authReconciliationPending = false,
   children,
 }: AppShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  useEffect(() => {
-    if (authReconciliationPending) {
-      setDrawerOpen(false);
-    }
-  }, [authReconciliationPending]);
   const fallbackQueryClient = useMemo(() => createAppQueryClient(), []);
   const queryClient = providedQueryClient ?? fallbackQueryClient;
   const skipToMainLabel = shellLabel(
@@ -57,7 +46,6 @@ export function AppShell({
     "ui.vault_navigation",
     "Vault navigation",
   );
-  const loadingLabel = shellLabel(t, "ui.loading", "Loading…");
 
   const accountHandlers = handlers
     ? {
@@ -92,12 +80,11 @@ export function AppShell({
               FrostVault
             </p>
             <h1 className="truncate text-xl font-bold tracking-tight md:text-2xl">
-              {authReconciliationPending ? loadingLabel : capabilities.vaultName}
+              {capabilities.vaultName}
             </h1>
           </div>
 
-          {!authReconciliationPending ? (
-            <div className="flex shrink-0 flex-nowrap items-center gap-2">
+          <div className="flex shrink-0 flex-nowrap items-center gap-2">
               <nav
                 aria-label={vaultNavigationLabel}
                 className="hidden md:flex md:flex-nowrap md:items-center md:gap-2"
@@ -144,8 +131,7 @@ export function AppShell({
                   }
                 />
               </div>
-            </div>
-          ) : null}
+          </div>
         </div>
       </header>
 

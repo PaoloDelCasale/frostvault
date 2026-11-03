@@ -1,5 +1,4 @@
 import type { AuthMethod } from "./types";
-import { startOidcReauthenticationTransition } from "@/pwa/authTransition";
 
 const CSRF_COOKIE_NAME = "frostvault_csrf";
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -207,12 +206,7 @@ async function stepUpReauthentication(
   const authMethod = config.getAuthMethod?.();
   if (authMethod === "oidc") {
     const returnTo = encodeURIComponent(currentReturnTo());
-    // OIDC rotates the Session after the provider callback. The shared
-    // coordinator closes this document first; App reconciles fresh /api/me
-    // authority when the callback returns to the SPA.
-    await startOidcReauthenticationTransition(() => {
-      navigateTo(`/auth/oidc/reauth?return_to=${returnTo}`);
-    });
+    navigateTo(`/auth/oidc/reauth?return_to=${returnTo}`);
     throw new ReauthenticationRedirectError();
   }
 

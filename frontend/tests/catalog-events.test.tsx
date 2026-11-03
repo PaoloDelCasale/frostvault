@@ -31,6 +31,7 @@ function Harness({
   schedule,
   cancelSchedule,
   onReady,
+  onSessionChanged,
 }: {
   vaultId: number | null;
   createSource?: CatalogEventSourceFactory;
@@ -41,6 +42,7 @@ function Harness({
   schedule?: (callback: () => void, ms: number) => number;
   cancelSchedule?: (id: number) => void;
   onReady?: (client: QueryClient) => void;
+  onSessionChanged?: () => void;
 }) {
   const queryClient = useQueryClient();
   useEffect(() => {
@@ -53,6 +55,7 @@ function Harness({
     fetchRevision,
     schedule,
     cancelSchedule,
+    onSessionChanged,
   });
   return null;
 }
@@ -282,6 +285,54 @@ describe("useCatalogEvents", () => {
     await waitFor(() => expect(fetchRevision).toHaveBeenCalled());
     await waitFor(() => expect(invalidateSpy).toHaveBeenCalled());
     expect(timers.every((timer) => timer.ms >= 1_000)).toBe(true);
+  });
+
+  it.each([
+    "vault_switched", "vault_access_revoked", "session_revoked",
+    "session_expired", "session_version_mismatch",
+  ])("refreshes the online document on a durable %s event", async (error) => {
+    const client = createQueryClient();
+    const onSessionChanged = vi.fn();
+    const listeners = new Map<string, MessageListener>();
+    const close = vi.fn();
+    const createSource: CatalogEventSourceFactory = () => ({
+      close, onerror: null,
+      addEventListener: (type, listener) => { listeners.set(type, listener); },
+    });
+    renderWithClient(client, <Harness vaultId={1} createSource={createSource} onSessionChanged={onSessionChanged} />);
+    await waitFor(() => expect(listeners.has("error")).toBe(true));
+    listeners.get("error")!({ data: JSON.stringify({ error, vault_id: 1 }) } as MessageEvent<string>);
+    expect(close).toHaveBeenCalled();
+    expect(onSessionChanged).toHaveBeenCalledOnce();
+    // Duplicate/in-flight signals must not restart work for the old Vault.
+    listeners.get("error")!({ data: JSON.stringify({ error, vault_id: 1 }) } as MessageEvent<string>);
+    expect(onSessionChanged).toHaveBeenCalledOnce();
+  });
+
+  it("reconciles a Vault switch discovered on focus even with no changed catalog rows", async () => {
+    const client = createQueryClient();
+    const onSessionChanged = vi.fn();
+    const createSource: CatalogEventSourceFactory = () => ({ close: vi.fn(), onerror: null, addEventListener: vi.fn() });
+    const fetchRevision = vi.fn(async (): Promise<CatalogRevisionSignal> => ({
+      vault_id: 2, revision: 0, domains: [], has_gap: false, changed: false,
+    }));
+    renderWithClient(client, <Harness vaultId={1} createSource={createSource} fetchRevision={fetchRevision} onSessionChanged={onSessionChanged} />);
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(onSessionChanged).toHaveBeenCalledOnce());
+  });
+
+  it("refreshes when a reconnected stream belongs to a different Vault", async () => {
+    const client = createQueryClient();
+    const onSessionChanged = vi.fn();
+    const listeners = new Map<string, MessageListener>();
+    const createSource: CatalogEventSourceFactory = () => ({
+      close: vi.fn(), onerror: null,
+      addEventListener: (type, listener) => { listeners.set(type, listener); },
+    });
+    renderWithClient(client, <Harness vaultId={1} createSource={createSource} onSessionChanged={onSessionChanged} />);
+    await waitFor(() => expect(listeners.has("hello")).toBe(true));
+    listeners.get("hello")!({ data: JSON.stringify({ vault_id: 2, revision: 0 }) } as MessageEvent<string>);
+    expect(onSessionChanged).toHaveBeenCalledOnce();
   });
 
   it("openCatalogEventSource wires hello/catalog/error listeners", () => {

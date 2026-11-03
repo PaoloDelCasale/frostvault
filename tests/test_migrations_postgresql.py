@@ -120,9 +120,9 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             seed_legacy_notifications(connection)
             before = preserved_state(connection)
         for revision, command in (
-            ("head", "upgrade"),
+            ("0046_simplify_notifications", "upgrade"),
             ("0045_drop_quotas_windows", "downgrade"),
-            ("head", "upgrade"),
+            ("0046_simplify_notifications", "upgrade"),
         ):
             result = run_alembic(revision, command)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -140,6 +140,30 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                         self.assertEqual(connection.execute(
                             f"SELECT COUNT(*) AS total FROM {table}"
                         ).fetchone()["total"], 0)
+
+    def test_offline_removal_preserves_sessions_and_the_only_cloud_copy(self) -> None:
+        from tests.notification_migration_contract import seed_legacy_notifications
+        from tests.offline_removal_migration_contract import normalized_state, assert_session_schema
+
+        baseline = run_alembic("0045_drop_quotas_windows")
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        with self._connection() as connection:
+            seed_legacy_notifications(connection)
+            connection.execute("UPDATE sessions SET offline_cache_generation=7")
+        baseline = run_alembic("0046_simplify_notifications")
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        with self._connection() as connection:
+            before = normalized_state(connection)
+        for revision, command in (
+            ("0047_remove_offline_cache", "upgrade"),
+            ("0046_simplify_notifications", "downgrade"),
+            ("0047_remove_offline_cache", "upgrade"),
+        ):
+            result = run_alembic(revision, command)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with self._connection() as connection:
+                self.assertEqual(normalized_state(connection), before)
+                assert_session_schema(self, connection, upgraded=command == "upgrade")
 
     def test_fresh_database_upgrades_and_rolls_back_losslessly(self) -> None:
         upgraded = run_alembic()
@@ -164,10 +188,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             column["name"]
             for column in sa.inspect(self.engine).get_columns("sessions")
         }
-        self.assertLessEqual(
-            {"offline_cache_generation", "offline_cache_nonce"},
-            session_columns,
-        )
+        self.assertIn("transition_version", session_columns)
+        self.assertTrue({"offline_cache_generation", "offline_cache_nonce"}.isdisjoint(session_columns))
         claim_columns = {
             column["name"] for column in sa.inspect(self.engine).get_columns("jobs")
         }

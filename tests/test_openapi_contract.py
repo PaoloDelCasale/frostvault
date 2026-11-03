@@ -118,29 +118,13 @@ class OpenApiResponseContractTests(unittest.TestCase):
         self.assertNotIn("price_book_id", estimate["properties"])
         self.assertIn("pricing_effective_at", estimate["required"])
 
-    def test_files_documents_offline_cache_authorization_headers_and_conflict(self) -> None:
-        operation = app.openapi()["paths"]["/api/files"]["get"]
-        authorization = next(
-            parameter
-            for parameter in operation["parameters"]
-            if parameter["in"] == "header"
-            and parameter["name"] == "X-FrostVault-Offline-Cache-Authorization"
-        )
-        self.assertFalse(authorization["required"])
-        self.assertIn("GET /api/me", authorization["description"])
-
-        success_headers = operation["responses"]["200"]["headers"]
-        self.assertIn("X-FrostVault-Offline-Cache-Authorization", success_headers)
-        self.assertIn("Vary", success_headers)
-        conflict = operation["responses"]["409"]
-        self.assertIn("stale", conflict["description"])
-        self.assertEqual(
-            conflict["headers"]["Cache-Control"]["schema"]["enum"], ["no-store"]
-        )
-        detail = conflict["content"]["application/json"]["schema"]["properties"][
-            "detail"
-        ]
-        self.assertEqual(detail["enum"], ["Offline cache authorization changed"])
+    def test_files_and_me_have_no_offline_cache_protocol(self) -> None:
+        schema = app.openapi()
+        operation = schema["paths"]["/api/files"]["get"]
+        self.assertTrue(all(parameter["in"] == "query" for parameter in operation["parameters"]))
+        self.assertNotIn("409", operation["responses"])
+        self.assertNotIn("headers", operation["responses"]["200"])
+        self.assertNotIn("offline_cache_generation", schema["components"]["schemas"]["MeResponse"]["properties"])
 
     def test_admin_vault_schema_is_a_closed_non_secret_contract(self) -> None:
         vault = app.openapi()["components"]["schemas"]["AdminVault"]

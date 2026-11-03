@@ -252,19 +252,15 @@ class OidcHttpTests(unittest.TestCase):
             datetime(2020, 1, 1, tzinfo=timezone.utc),
         )
 
-    def test_oidc_step_up_rotates_persisted_cache_authorization(self) -> None:
+    def test_oidc_step_up_rotates_token_without_offline_cache_authorization(self) -> None:
         self._sign_in()
         self._add_vault()
         before = self.client.get("/api/me")
         self.assertEqual(before.status_code, 200, before.text)
-        before_generation = before.json()["offline_cache_generation"]
+        old_token = self.client.cookies.get(self.cookie_name)
+        self.assertNotIn("offline_cache_generation", before.json())
 
-        allowed = self.client.get(
-            "/api/files",
-            headers={
-                main.OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER: before_generation
-            },
-        )
+        allowed = self.client.get("/api/files")
         self.assertEqual(allowed.status_code, 200, allowed.text)
 
         self._use_oidc_client()
@@ -283,16 +279,15 @@ class OidcHttpTests(unittest.TestCase):
 
         after = self.client.get("/api/me")
         self.assertEqual(after.status_code, 200, after.text)
-        after_generation = after.json()["offline_cache_generation"]
-        self.assertTrue(before_generation != after_generation)
+        self.assertNotIn("offline_cache_generation", after.json())
+        allowed = self.client.get("/api/files")
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+        self.assertEqual(allowed.headers["cache-control"], "no-store")
 
         stale = self.client.get(
-            "/api/files",
-            headers={
-                main.OFFLINE_FILE_CACHE_AUTHORIZATION_HEADER: before_generation
-            },
+            "/api/files", headers={"Cookie": f"{self.cookie_name}={old_token}"},
         )
-        self.assertEqual(stale.status_code, 409, stale.text)
+        self.assertEqual(stale.status_code, 401, stale.text)
 
     def test_bug_011_foreign_identity_does_not_replace_the_owner_session(self) -> None:
         """[BUG-011][Req: REQ-023] a foreign Identity never replaces the Session.
