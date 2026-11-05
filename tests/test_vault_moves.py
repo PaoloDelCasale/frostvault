@@ -186,6 +186,22 @@ class VaultMoveTests(unittest.TestCase):
         with PostgresConnection(str(self.path)) as c:
             self.assertEqual(c.execute('SELECT count(*) AS n FROM archive_versions').fetchone()['n'],1)
 
+    def test_misassociated_discovered_copy_cannot_replace_another_vault_file(self):
+        self.schedule()
+        def wrong_catalog_owner():
+            with PostgresConnection(str(self.path)) as c:
+                ArchiveCatalog(c).record_archive_version(vault_id=1,path='other.txt',object_key='docs/report.txt',
+                    provider_version_id=self.provider.current,size=12,storage_class='DEEP_ARCHIVE',etag='copy',
+                    uploaded_at=storage.now_iso(),observed_at=storage.now_iso(),scan_id='stale-scan',origin='discovered')
+        self.provider.after_copy=wrong_catalog_owner
+        self.run_job()
+        self.assertEqual(self.state()['status'],'failed')
+        self.assertIn('another Vault File',self.state()['message'])
+        self.assertEqual(self.provider.deleted,[])
+        with PostgresConnection(str(self.path)) as c:
+            source=c.execute('SELECT availability FROM archive_versions WHERE id=%s',(self.version_id,)).fetchone()
+            self.assertEqual(source['availability'],'available')
+
     def test_revoked_source_verification_after_admission_cannot_be_moved(self):
         self.schedule()
         with PostgresConnection(str(self.path)) as c:

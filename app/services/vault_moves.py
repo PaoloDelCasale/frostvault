@@ -281,6 +281,9 @@ def process(job: dict[str, Any], move: dict[str, Any]) -> None:
                 object_key=move["object_key"], provider_version_id=destination, size=move["size"],
                 storage_class=target, etag=etag, uploaded_at=stamp, observed_at=stamp,
                 scan_id=stamp, origin="upload")
+            owner = connection.execute("SELECT vault_file_id FROM archive_versions WHERE id=%s", (new_id,)).fetchone()
+            if not owner or owner["vault_file_id"] != job["vault_file_id"]:
+                raise MoveBlocked("Destination belongs to another Vault File; source retained")
             catalog.mark_version_verified(new_id, plaintext_sha256=move["sha256"], verified_at=stamp)
             # Same bytes, same release clock; a class move is not a new local edit.
             connection.execute("UPDATE archive_versions SET verified_at=(SELECT verified_at FROM archive_versions WHERE id=%s) WHERE id=%s",
