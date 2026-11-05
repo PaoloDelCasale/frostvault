@@ -91,13 +91,13 @@ class IdentityDiagnosticI18nTests(unittest.TestCase):
                 (Path("app/locales") / f"{locale}.json").read_text(encoding="utf-8")
             )
             labels = {
-                messages["admin.sources_health_absent"],
-                messages["admin.sources_health_inaccessible"],
-                messages["admin.sources_health_replaced"],
+                messages["general.sources_health_absent"],
+                messages["general.sources_health_inaccessible"],
+                messages["general.sources_health_replaced"],
             }
             self.assertEqual(len(labels), 3)
             for health in ("absent", "inaccessible", "replaced"):
-                self.assertTrue(messages[f"admin.sources_diagnostic_{health}"].strip())
+                self.assertTrue(messages[f"general.sources_diagnostic_{health}"].strip())
 
 
 class PersistedSourceIdentityTests(unittest.TestCase):

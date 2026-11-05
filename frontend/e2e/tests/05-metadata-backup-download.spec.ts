@@ -41,7 +41,7 @@ async function mockMetadataBackupApis(
   page: Page,
   downloadBody: string,
 ): Promise<void> {
-  await page.route("**/api/admin/metadata-backups/download/10", async (route) => {
+  await page.route("**/api/general/metadata-backups/download/10", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/octet-stream",
@@ -52,7 +52,7 @@ async function mockMetadataBackupApis(
       body: downloadBody,
     });
   });
-  await page.route("**/api/admin/metadata-backups", async (route) => {
+  await page.route("**/api/general/metadata-backups", async (route) => {
     if (route.request().method() !== "GET") {
       await route.fallback();
       return;
@@ -73,7 +73,8 @@ test.describe("metadata backup download checksum", () => {
     await applySession(context);
     await mockMetadataBackupApis(page, ARTIFACT_BODY);
 
-    await page.goto("/admin/metadata-backups");
+    await page.goto("/general");
+    await page.locator("summary").filter({ hasText: /^metadata backups$/i }).click();
     await expect(
       page.getByRole("heading", {
         name: /metadata backups|backup dei metadati/i,
@@ -104,7 +105,8 @@ test.describe("metadata backup download checksum", () => {
     await applySession(context);
     await mockMetadataBackupApis(page, "corrupted metadata backup");
 
-    await page.goto("/admin/metadata-backups");
+    await page.goto("/general");
+    await page.locator("summary").filter({ hasText: /^metadata backups$/i }).click();
     await expect(
       page.getByRole("heading", {
         name: /metadata backups|backup dei metadati/i,

@@ -21,6 +21,7 @@ import {
 import { Dialog } from "@/components/Dialog";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { problemLink } from "@/lib/problemLink";
 
 export type NotificationTranslator = (
   key: string,
@@ -97,7 +98,7 @@ function NotificationRow({
 }) {
   const title = notificationContent(item.title);
   const body = notificationContent(item.body);
-  const unread = !item.read;
+  const unread = !item.read && item.problem_status !== "resolved";
   return (
     <li
       className={cn(
@@ -119,7 +120,7 @@ function NotificationRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-2">
           <h3 className="min-w-0 flex-1 break-words text-sm font-bold leading-snug text-ink">
-            {title}
+            {item.vault_id || item.event === "weekly_summary" ? <a className="underline" href={problemLink(item.vault_id, item.message_params)}>{title}</a> : title}
           </h3>
           <time
             className="shrink-0 pt-0.5 text-xs text-muted"

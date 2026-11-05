@@ -473,16 +473,18 @@ _OPERATIONAL_VAULT = "v.enabled=TRUE AND v.decommission_state='active'"
 
 
 def current_vault(
-    request: Request, user: dict[str, Any] = Depends(current_user)
+    request: Request, user: dict[str, Any] = Depends(current_user),
+    vault_id: int | None = Query(default=None, ge=1),
 ) -> dict[str, Any]:
-    """Resolve the Session's selected operational Vault.
+    """Resolve an explicitly pinned Vault, or the Session's home Vault.
 
     Every Vault belongs to the single owner (#412); the selection only picks
     which one the UI is looking at.
     """
     del user  # authentication gate only
     session = request.state.session
-    requested_id = session.get("vault_id")
+    explicit = isinstance(vault_id, int)
+    requested_id = vault_id if explicit else session.get("vault_id")
     with db() as connection:
         vault = None
         if requested_id:
@@ -490,6 +492,8 @@ def current_vault(
                 f"SELECT v.* FROM vaults v WHERE v.id=%s AND {_OPERATIONAL_VAULT}",
                 (requested_id,),
             ).fetchone()
+        if not vault and explicit:
+            raise HTTPException(404, "Protected Vault not found")
         if not vault:
             vault = connection.execute(
                 f"""
@@ -500,7 +504,7 @@ def current_vault(
             ).fetchone()
         if not vault:
             raise HTTPException(403, "No vault exists yet")
-        if session.get("vault_id") != vault["id"]:
+        if not explicit and session.get("vault_id") != vault["id"]:
             updated = set_session_vault(
                 connection,
                 session["id"],
@@ -566,6 +570,7 @@ class CloudOnlyReplacementAction(BaseModel):
 
 class RecoverEstimateRequest(BaseModel):
     path: str
+    is_directory: bool = False
     archive_version_id: str | None = None
     restore_tier: str | None = None
     restore_days: int | None = Field(default=None, ge=1, le=30)
@@ -1135,16 +1140,6 @@ def index():
     return _spa_index_response()
 
 
-@app.get("/vault/access")
-def vault_access_page():
-    return _spa_index_response()
-
-
-@app.get("/admin")
-def admin_page():
-    return _spa_index_response()
-
-
 @app.get("/api/me", response_model=response_model("MeResponse"))
 def me(request: Request, response: Response, user: dict[str, Any] = Depends(current_user)):
     csrf_token = request.state.session["csrf_token"]
@@ -1423,6 +1418,62 @@ def list_files(
     }
 
 
+@app.get("/api/files/detail", response_model=response_model("ArchiveListItem"), responses=LOGICAL_PATH_ERROR_RESPONSES)
+def file_detail(path: str, vault: dict[str, Any] = Depends(current_vault)):
+    path = safe_relative_path(path).as_posix()
+    with db() as connection:
+        access = vault_local_access(vault.get("source_root") or "")
+        unconfirmed, _ = _protection_observation(connection, vault, access)
+        catalog = ArchiveCatalog(connection, protection_unconfirmed=unconfirmed)
+        rows = connection.execute(catalog._file_row_select_sql([
+            "vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'", "fp.path=%s",
+        ]), (vault["id"], path)).fetchall()
+        items = catalog._materialize_file_items(vault["id"], rows, name_from_path=True)
+        if not items:
+            raise HTTPException(404, "Vault File not found")
+        return items[0]
+
+
+@app.get("/api/files/search", response_model=response_model("FilesResponse"))
+def search_all_files(
+    q: str = "", state: str = "", page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=10, le=500),
+    _: dict[str, Any] = Depends(current_user),
+):
+    """Search name/path across all protected Vaults, independent of Session choice."""
+    with db() as connection:
+        vaults = connection.execute(f"SELECT v.* FROM vaults v WHERE {_OPERATIONAL_VAULT}").fetchall()
+        scoped = []
+        for vault in vaults:
+            access = vault_local_access(vault.get("source_root") or "")
+            unconfirmed, _suspended = _protection_observation(connection, vault, access)
+            scoped.append({**vault, "unconfirmed": unconfirmed})
+        return ArchiveCatalog(connection).search_protected_vaults(
+            scoped, search=q, state=state, page=page, page_size=page_size,
+        )
+
+
+@app.get("/api/general", response_model=response_model("GeneralOverview"))
+def general_overview(user: dict[str, Any] = Depends(current_user)):
+    from .services.essential_interface import overview
+    with db() as connection:
+        return overview(connection, user_id=user["id"])
+
+
+@app.get("/api/problems", response_model=response_model("NotificationsResponse"))
+def open_problems(request: Request, page: int = Query(1, ge=1),
+                  user: dict[str, Any] = Depends(current_user)):
+    with db() as connection:
+        notification_service.reconcile_problem_states(connection)
+        rows = connection.execute(
+            "SELECT * FROM notifications WHERE user_id=%s AND in_app_enabled=TRUE "
+            "AND problem_status='open' ORDER BY id DESC LIMIT 100 OFFSET %s",
+            (user["id"], (page - 1) * 100),
+        ).fetchall()
+        return {"items": [notification_service._row_notification(row, locale=_request_locale(request)) for row in rows],
+                "open_problem_count": notification_service.count_open_problems(connection, user_id=user["id"])}
+
+
 @app.get("/api/stats", response_model=response_model("StatsResponse"))
 def stats(vault: dict[str, Any] = Depends(current_vault)):
     source_root = vault.get("source_root") or ""
@@ -1594,16 +1645,16 @@ def acknowledge_recovery_kit(
         return recovery_kit_service.kit_status(connection)
 
 
-@app.get("/api/admin/metadata-backups", response_model=JsonObjectResponse)
-def admin_list_metadata_backups(_: dict[str, Any] = Depends(current_user)):
+@app.get("/api/general/metadata-backups", response_model=JsonObjectResponse)
+def list_metadata_backups(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         status = metadata_backup_service.backup_status(connection)
         runs = metadata_backup_service.list_backup_artifacts(connection)
     return {"status": status, "runs": runs}
 
 
-@app.post("/api/admin/metadata-backups/run", response_model=JsonObjectResponse)
-def admin_run_metadata_backup(
+@app.post("/api/general/metadata-backups/run", response_model=JsonObjectResponse)
+def run_metadata_backup(
     action: MetadataBackupRunAction,
     admin: dict[str, Any] = Depends(current_user),
 ):
@@ -1633,7 +1684,7 @@ def admin_run_metadata_backup(
 
 
 @app.get(
-    "/api/admin/metadata-backups/download/{run_id}",
+    "/api/general/metadata-backups/download/{run_id}",
     response_class=Response,
     responses={
         200: {
@@ -1642,7 +1693,7 @@ def admin_run_metadata_backup(
         }
     },
 )
-def admin_download_metadata_backup(
+def download_metadata_backup(
     run_id: int,
     admin: dict[str, Any] = Depends(current_user),
 ):
@@ -2169,6 +2220,29 @@ def recover_estimate(
     vault: dict[str, Any] = Depends(current_vault),
 ):
     logical_path = safe_relative_path(action.path).as_posix()
+    if action.is_directory:
+        from .services.protection_states import LATEST_JOIN_SQL
+        prefix = logical_path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
+        with db() as connection:
+            classes = connection.execute(
+                f"SELECT av.storage_class, sum(av.size) AS bytes FROM vault_files vf "
+                f"JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL "
+                f"LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id {LATEST_JOIN_SQL} "
+                "WHERE vf.vault_id=%s AND vf.status='active' AND fp.path LIKE %s ESCAPE '\\' "
+                "AND av.integrity='verified' AND av.availability='available' "
+                "AND (lc.presence IS NULL OR lc.presence='absent') GROUP BY av.storage_class",
+                (vault["id"], prefix),
+            ).fetchall()
+        tier = action.restore_tier or "Bulk"
+        if tier not in {"Bulk", "Standard"}:
+            raise HTTPException(422, "Choose Standard or Bulk")
+        estimates = [estimate_restore_cost(list_prices(settings.aws_region), size_bytes=int(row["bytes"]),
+                     storage_class=row["storage_class"], tier=tier, days=action.restore_days or settings.restore_days)
+                     for row in classes if storage_class_requires_restore(row["storage_class"])]
+        return {"requires_restore": bool(estimates), "high_impact": False,
+                "estimate": {"tier": tier, "days": action.restore_days or settings.restore_days,
+                             "estimated_cost_eur": sum(item.estimated_cost_eur for item in estimates),
+                             "estimated_hours": "; ".join(str(item.estimated_hours) for item in estimates)} if estimates else None}
     with db() as connection:
         versions = ArchiveCatalog(connection).list_versions(vault["id"], logical_path)
     selected = next((row for row in versions if row["recoverable"]), None)
@@ -2559,8 +2633,8 @@ def cloud_purge(
     }
 
 
-@app.get("/api/admin/source-volumes", response_model=response_model("SourceVolumeInventoryResponse"))
-def admin_source_volumes(user: dict[str, Any] = Depends(current_user)):
+@app.get("/api/general/source-volumes", response_model=response_model("SourceVolumeInventoryResponse"))
+def general_source_volumes(user: dict[str, Any] = Depends(current_user)):
     """Operator inventory of discovered Source Volumes (issue #148)."""
     return {"items": source_volume_inventory()}
 
@@ -2602,8 +2676,8 @@ def browse_source_volume(
         raise _source_directory_http_error(exc) from exc
 
 
-@app.get("/api/admin/vaults", response_model=response_model("AdminVaultsResponse"))
-def admin_vaults(_: dict[str, Any] = Depends(current_user)):
+@app.get("/api/general/vaults", response_model=response_model("GeneralVaultsResponse"))
+def general_vaults(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         return {"items": list_vault_inventory(connection)}
 
@@ -2625,12 +2699,12 @@ _VAULT_RECONNECT_ERROR_STATUS: dict[str, tuple[int, str]] = {
 }
 
 
-@app.post("/api/admin/vaults/{vault_id}/reconnect", response_model=response_model("AdminVaultReconnectResponse"))
-def admin_reconnect_vault_root(
+@app.post("/api/vaults/{vault_id}/reconnect", response_model=response_model("GeneralVaultReconnectResponse"))
+def reconnect_vault_root(
     vault_id: int,
     action: VaultReconnect,
     background_tasks: BackgroundTasks,
-    admin: dict[str, Any] = Depends(current_user),
+    owner: dict[str, Any] = Depends(current_user),
 ):
     """Accept this folder/mount for this Vault only; mandatory cloud/local scan."""
     # Serialize the runtime snapshot, relocation transaction, and scan start.
@@ -2650,7 +2724,7 @@ def admin_reconnect_vault_root(
                     vault_id=vault_id,
                     volume_alias=action.volume_alias,
                     relative_path=action.relative_path,
-                    actor_user_id=int(admin["id"]),
+                    actor_user_id=int(owner["id"]),
                     reason=action.reason,
                     runtime_busy=busy,
                 )
@@ -2733,10 +2807,10 @@ def preview_vault_operation_globs(
 
 
 @app.post(
-    "/api/admin/cost-estimates/storage",
+    "/api/general/cost-estimates/storage",
     response_model=response_model("StorageEstimateResponse"),
 )
-def admin_storage_cost_estimate(
+def storage_cost_estimate(
     action: StorageEstimateRequest,
     _: dict[str, Any] = Depends(current_user),
 ):
@@ -2947,7 +3021,7 @@ def _spa_dist_file_response(full_path: str) -> FileResponse | None:
 def spa_fallback(full_path: str):
     """SPA client-route fallback; never intercepts API, auth, or static assets."""
     head = full_path.split("/", 1)[0]
-    if head in _SPA_FALLBACK_EXCLUDED_PREFIXES:
+    if head in _SPA_FALLBACK_EXCLUDED_PREFIXES or head == "admin" or full_path.startswith("vault/access"):
         raise HTTPException(status_code=404, detail="Not Found")
     built = _spa_dist_file_response(full_path)
     if built is not None:

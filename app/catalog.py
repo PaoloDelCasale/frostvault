@@ -2252,6 +2252,7 @@ class ArchiveCatalog:
                 av.etag,
                 av.plaintext_sha256,
                 av.uploaded_at,
+                av.verified_at,
                 av.integrity,
                 av.availability,
                 av.restore_state,
@@ -2360,6 +2361,42 @@ class ArchiveCatalog:
             # ready | loading | stale — listing never blocks on full rebuild.
             "aggregate_status": aggregate_status,
         }
+
+    def search_protected_vaults(
+        self, vaults: list[dict[str, Any]], *, search: str, state: str,
+        page: int, page_size: int,
+    ) -> dict[str, Any]:
+        """SQL-bounded cross-Vault search; never change Session selection.
+
+        Each branch uses that Vault's current source observation. Filtering before
+        LIMIT and COUNT prevents false Cloud-only matches on unavailable mounts.
+        Only the requested page is materialized, including duplicate paths.
+        """
+        branches, params = [], []
+        for vault in vaults:
+            catalog = ArchiveCatalog(self.connection, protection_unconfirmed=vault["unconfirmed"])
+            clauses, values = catalog._direct_child_file_clauses(
+                vault["id"], directory="", state=state, search=search or "%",
+            )
+            sql = catalog._file_row_select_sql(clauses)
+            branches.append(f"SELECT scoped.*, %s::bigint AS vault_id, %s::text AS vault_name FROM ({sql}) scoped")
+            params.extend([vault["id"], vault["name"], *values])
+        if not branches:
+            return {"items": [], "total": 0, "page": page, "mode": "search", "directory": "", "aggregate_status": "ready"}
+        union = " UNION ALL ".join(branches)
+        total = self.connection.execute(f"SELECT count(*) AS total FROM ({union}) matches", params).fetchone()["total"]
+        rows = self.connection.execute(
+            f"SELECT * FROM ({union}) matches ORDER BY lower(path), path, vault_id LIMIT %s OFFSET %s",
+            [*params, page_size, (page - 1) * page_size],
+        ).fetchall()
+        by_id = {vault["id"]: vault for vault in vaults}
+        items = []
+        for row in rows:
+            vault = by_id[row["vault_id"]]
+            catalog = ArchiveCatalog(self.connection, protection_unconfirmed=vault["unconfirmed"])
+            for item in catalog._materialize_file_items(vault["id"], [row], name_from_path=True):
+                items.append({**item, "vault_id": vault["id"], "vault_name": vault["name"]})
+        return {"items": items, "total": total, "page": page, "mode": "search", "directory": "", "aggregate_status": "ready"}
 
     def _browse_directory_page(
         self,
@@ -2471,6 +2508,7 @@ class ArchiveCatalog:
                 lc.presence AS local_presence,
                 lc.file_type AS local_file_type,
                 lc.size AS local_size,
+                lc.mtime_ns AS local_mtime_ns,
                 lc.plaintext_sha256 AS local_sha256,
                 lc.matched_archive_version_id,
                 lc.cloud_only_version_id,
@@ -2537,6 +2575,8 @@ class ArchiveCatalog:
                     "path": row["path"],
                     "local_exists": int(local_exists),
                     "local_size": row["local_size"],
+                    "modified_at": (datetime.fromtimestamp(int(row["local_mtime_ns"]) / 1e9, timezone.utc).isoformat()
+                                    if row.get("local_mtime_ns") else None),
                     "local_file_type": row["local_file_type"],
                     "cloud_exists": int(cloud_exists),
                     "cloud_size": row["cloud_size"],
@@ -2546,6 +2586,7 @@ class ArchiveCatalog:
                     "restore_state": row["restore_state"],
                     "restore_expiry": row["restore_expiry"],
                     **protection,
+                    "cloud_only_conflict": bool(row.get("cloud_only_version_id")),
                     "upload_eligible": upload_eligible and not self.protection_unconfirmed,
                     "recover_eligible": recover_eligible,
                     "recoverable_version_count": recoverable_count,

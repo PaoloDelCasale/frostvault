@@ -2,7 +2,7 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { resetApiClientForTests } from "@/api";
-import { createVaultAccessFetch, jsonResponse, loadCatalog, renderVaultAccess } from "./vault-access-harness";
+import { createVaultAccessFetch, jsonResponse, loadCatalog, renderVaultAccess } from "./vault-settings-harness";
 
 const estimate = { target_class: "DEEP_ARCHIVE", eligible_count: 2, total_bytes: 4096,
   skipped: { pending_work: 1, already_equal_or_colder: 3, explicit_restore_required: 1 }, minimum_days: 180,

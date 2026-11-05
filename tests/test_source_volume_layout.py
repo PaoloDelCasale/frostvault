@@ -606,7 +606,7 @@ class AdminSourceVolumeInventoryHttpTests(unittest.TestCase):
         self.client.cookies.set(self.settings.session_cookie_name, token)
 
     def test_admin_can_list_source_volumes(self) -> None:
-        response = self.client.get("/api/admin/source-volumes")
+        response = self.client.get("/api/general/source-volumes")
         self.assertEqual(response.status_code, 200, response.text)
         items = response.json()["items"]
         self.assertEqual(len(items), 1)

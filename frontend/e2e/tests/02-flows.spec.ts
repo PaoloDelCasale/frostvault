@@ -1,214 +1,118 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+import { emergencyPasswordLogin, openAccountMenu, openMobileDrawer } from "../helpers/auth";
 
-import {
-  emergencyPasswordLogin,
-  openAccountMenu,
-  openMobileDrawer,
-} from "../helpers/auth";
-
-function visibleFileButton(page: Page, name: string) {
-  return page
-    .locator(
-      `[data-testid="file-list-cards"] button[aria-label="${name}"], [data-testid="file-list-table"] button:has-text("${name}")`,
-    )
-    .locator("visible=true")
-    .first();
+async function nav(page: Page, name: string | RegExp) {
+  await openMobileDrawer(page);
+  const dialog = page.getByRole("dialog");
+  const navigation = await dialog.isVisible() ? dialog.getByRole("navigation") : page.getByRole("navigation", { name: /vault navigation/i });
+  await navigation.getByRole("button", { name }).click();
 }
+const visible = (page: Page, name: string | RegExp) => page.getByRole("button", { name }).locator("visible=true").first();
 
-async function openDirectory(page: Page, name: string) {
-  const target = visibleFileButton(page, name);
-  await expect(target).toBeVisible();
-  const mobileCard = (await target.getAttribute("data-testid"))?.startsWith(
-    "mobile-file-card-trigger-",
-  );
-  await target.click(mobileCard ? { position: { x: 20, y: 20 } } : undefined);
-}
-
-async function vaultSelect(page: Page) {
-  const drawer = page.getByRole("dialog");
-  if (await drawer.isVisible()) {
-    return drawer.getByLabel(/^vault$/i);
-  }
-  return page.getByLabel(/^vault$/i).locator("visible=true").first();
-}
-
-async function chooseMenuOption(
-  page: Page,
-  trigger: Locator,
-  name: string | RegExp,
-) {
-  await trigger.click();
-  await page.getByRole("option", { name }).click();
-}
-
-async function languageSelect(page: Page) {
-  await openAccountMenu(page);
-  return page
-    .getByRole("dialog", { name: /^account$/i })
-    .getByLabel(/^language$|^lingua$/i);
-}
-
-test.describe("archive flows", () => {
-  test("flow 2 — navigate directories, breadcrumbs, root, browser back", async ({
-    page,
-  }) => {
+test.describe("essential Owner flows (#365 D1–D17)", () => {
+  test("folder navigation, breadcrumbs and browser Back", async ({ page }) => {
     await emergencyPasswordLogin(page);
-    await openDirectory(page, "reports");
+    await visible(page, "📁 reports").click();
     await expect(page).toHaveURL(/directory=reports/);
-    await expect(page.getByText("readme.txt").locator("visible=true").first()).toBeVisible();
-
-    const breadcrumbs = page.getByTestId("breadcrumbs");
-    await expect(breadcrumbs).toBeVisible();
-    await breadcrumbs.locator('button[data-directory=""]:visible').click();
+    await expect(visible(page, "readme.txt")).toBeVisible();
+    await page.getByTestId("breadcrumbs").locator('button[data-directory=""]').click();
     await expect(page).not.toHaveURL(/directory=reports/);
-    await expect(page.getByText("reports").locator("visible=true").first()).toBeVisible();
-
-    await openDirectory(page, "reports");
-    await page.goBack();
-    await expect(page).not.toHaveURL(/directory=reports/);
+    await page.goBack(); await expect(page).toHaveURL(/directory=reports/);
   });
 
-  test("flow 3 — search and state filter update the URL", async ({ page }) => {
-    await emergencyPasswordLogin(page);
-    await page.getByTestId("file-search").fill("readme");
-    await expect(page).toHaveURL(/q=readme/, { timeout: 5_000 });
-    await expect(page.getByText("readme.txt").locator("visible=true").first()).toBeVisible();
-
-    await chooseMenuOption(
-      page,
-      page.getByTestId("state-filter"),
-      /^protected$/i,
-    );
-    await expect(page).toHaveURL(/state=protected/);
+  test("last-used folder opens at its root, with protected folders and filters in the menu", async ({ page }) => {
+    const credentials = await emergencyPasswordLogin(page);
+    await nav(page, "Secondary Archive");
+    await expect(page.getByRole("heading", { name: "Secondary Archive", exact: true })).toBeVisible();
+    await visible(page, "📁 photos").click();
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Secondary Archive", exact: true })).toBeVisible();
+    await expect(visible(page, "hello.txt")).toBeVisible();
+    await page.goto(`/?vault_id=${credentials.vaults.primary.id}`);
   });
 
-  test("flow 4 — a file opens actions without rename or path-history controls", async ({
-    page,
-  }) => {
-    await emergencyPasswordLogin(page);
-    await openDirectory(page, "reports");
-    await visibleFileButton(page, "readme.txt").click();
-    const actions = page.getByRole("dialog", { name: /readme.txt/ });
-    await expect(actions).toBeVisible();
-    // This seeded file is already local: recovery is correctly unavailable.
-    await expect(actions.getByRole("button", { name: /^change storage class/i })).toHaveCount(0);
-    await expect(page.getByText(/hide in cloud|confirm.*rename|path history/i)).toHaveCount(0);
+  test("global Cloud-only name/path search retains duplicate paths and the correct Vault during recovery", async ({ page }) => {
+    const credentials = await emergencyPasswordLogin(page);
+    await page.getByTestId("file-search").fill("photos/cold");
+    await page.getByTestId("state-filter").selectOption("cloud_only");
+    await expect(visible(page, "Family Archive / photos/cold.jpg")).toBeVisible();
+    await expect(visible(page, "Secondary Archive / photos/cold.jpg")).toBeVisible();
+    await visible(page, "Secondary Archive / photos/cold.jpg").click();
+    await expect(page).toHaveURL(new RegExp(`vault_id=${credentials.vaults.secondary.id}`));
+    await expect(page.locator('[data-highlighted="true"]:visible')).toHaveCount(1);
+    const details = page.getByRole("dialog", { name: /details.*secondary archive.*cold.jpg/i });
+    await expect(details).toBeVisible();
+    await details.getByRole("button", { name: /^recover$/i }).click();
+    const recovery = page.getByRole("dialog", { name: /^recover$/i });
+    await expect(recovery.getByRole("combobox")).toHaveValue("Bulk");
+    await expect(recovery).toContainText(/returns to: secondary archive/i);
+    await expect(recovery).toContainText(/automatic release is off/i);
+    await recovery.getByRole("combobox").selectOption("Standard");
+    await expect(recovery.getByRole("combobox")).toHaveValue("Standard");
+    const request = page.waitForRequest((req) => req.method() === "POST" && new URL(req.url()).pathname === "/api/recover");
+    await recovery.getByRole("button", { name: /^recover$/i }).click();
+    const sent = await request;
+    expect(new URL(sent.url()).searchParams.get("vault_id")).toBe(String(credentials.vaults.secondary.id));
+    expect(sent.postDataJSON()).toMatchObject({ path: "photos/cold.jpg", restore_tier: "Standard" });
+    await expect(recovery).toBeHidden();
   });
 
-  test("flow 5 — cancel a destructive confirmation without side effects", async ({
-    page,
-  }, testInfo) => {
-    await emergencyPasswordLogin(page);
-    // These are real API preconditions, not an exemption from source safety.
-    const statsResponse = await page.request.get("/api/stats");
-    expect(statsResponse.ok()).toBe(true);
-    expect((await statsResponse.json()).source_volume.local_operations_allowed).toBe(true);
-    const filesResponse = await page.request.get("/api/files");
-    expect(filesResponse.ok()).toBe(true);
-    const note = (await filesResponse.json()).items.find((item: { path: string }) => item.path === "note.txt");
-    expect(note?.state).toBe("protected");
-    expect(note?.cleanup_eligible).toBe(true);
-    if (testInfo.project.name === "mobile-375") {
-      await page
-        .locator('[data-testid="more-actions-note.txt"]')
-        .locator("visible=true")
-        .click();
-      await page
-        .getByRole("button", { name: /free local space|libera spazio/i })
-        .click();
-    } else {
-      await page.getByTestId("more-actions-desktop-note.txt").click();
-      await page.getByRole("menuitem", { name: /free local space/i }).click();
-    }
-
-    const dialog = page.getByRole("alertdialog");
-    await expect(dialog).toBeVisible();
-    await dialog.getByRole("button", { name: /cancel|annulla/i }).click();
-    await expect(dialog).toBeHidden();
-    await expect(page.getByText("note.txt").locator("visible=true").first()).toBeVisible();
+  test("problem link opens the folder, highlights the row and offers an explicit remedy", async ({ page }) => {
+    const credentials = await emergencyPasswordLogin(page);
+    await page.goto(`/?vault_id=${credentials.vaults.primary.id}&directory=incoming&file=incoming%2Fconflict.jpg`);
+    const details = page.getByRole("dialog", { name: /details.*conflict.jpg/i });
+    await expect(details).toContainText(/rename the new file outside frostvault/i);
+    await expect(page.locator('[data-highlighted="true"]:visible')).toHaveCount(1);
+    await details.getByRole("button", { name: /replace the cloud copy/i }).click();
+    const confirm = page.getByRole("alertdialog");
+    await expect(confirm).toContainText(/only recoverable cloud copy/i);
+    const response = page.waitForResponse((res) => res.request().method() === "POST" && new URL(res.url()).pathname === "/api/files/cloud-only-conflict/replace");
+    await confirm.getByRole("button", { name: /replace the cloud copy/i }).click();
+    expect((await response).status()).toBe(202);
   });
 
-  test("flow 6 — switch vault from the drawer/nav", async ({ page }, testInfo) => {
+  test("release is deliberate; folder gear uses fixed periods and collapsed Advanced", async ({ page }) => {
     await emergencyPasswordLogin(page);
-    if (testInfo.project.name === "mobile-375") {
-      await openMobileDrawer(page);
-    }
-    const select = await vaultSelect(page);
-    await expect(select).toBeVisible();
-    await chooseMenuOption(page, select, "Secondary Archive");
-    await expect(page.getByRole("heading", { name: /secondary archive/i })).toBeVisible();
-    await expect(page.getByText("hello.txt").locator("visible=true").first()).toBeVisible();
+    await page.getByRole("checkbox", { name: /select family archive \/ note.txt/i }).locator("visible=true").check();
+    await page.getByRole("button", { name: /free space now/i }).click();
+    const confirm = page.getByRole("alertdialog"); await expect(confirm).toBeVisible();
+    await confirm.getByRole("button", { name: /cancel/i }).click();
+    await page.getByRole("button", { name: /folder settings/i }).click();
+    const release = page.locator('[data-panel="retention"]');
+    await release.getByRole("checkbox").check();
+    await release.getByRole("combobox").selectOption("180");
+    await release.getByRole("button", { name: /save local copy retention/i }).click();
+    await expect(page.getByRole("status").filter({ hasText: /enabled/i })).toBeVisible();
+    await expect(page.locator('[data-panel="lifecycle"]')).toBeHidden();
+    // Leave the shared fixture's automatic release off for the other scenarios.
+    await release.getByRole("checkbox").uncheck();
+    await release.getByRole("button", { name: /save local copy retention/i }).click();
   });
 
-  test("flow 7 — switch locale to Italian", async ({ page }) => {
-    await emergencyPasswordLogin(page);
-    const language = await languageSelect(page);
-    await language.selectOption("it");
-    await expect(page.getByTestId("file-search")).toHaveAttribute(
-      "placeholder",
-      /cerca per nome/i,
-    );
+  test("General exposes email warning, kit fingerprint/custody and protected-folder creation", async ({ page }) => {
+    await emergencyPasswordLogin(page); await nav(page, /^general$/i);
+    await expect(page.getByTestId("email-not-configured")).toBeVisible();
+    await expect(page.getByText(/last verified metadata backup/i)).toBeVisible();
+    await expect(page.getByText(/fingerprint/i)).toBeVisible();
+    const download = page.waitForEvent("download");
+    await page.getByRole("button", { name: /download.*recovery kit/i }).click();
+    expect((await download).suggestedFilename()).toContain("recovery-kit");
+    await page.getByRole("button", { name: /i have stored|custod|saved.*outside/i }).click();
+    await expect(page.getByRole("status").filter({ hasText: /custody|stored|acknowledged/i })).toBeVisible();
+    await page.getByRole("link", { name: /protect a folder/i }).click();
+    await page.getByLabel(/^vault name/i).fill(`ZZ Essential ${Date.now()}`);
+    await page.locator("form").getByRole("button", { name: /create vault/i }).click();
+    await expect(page.getByTestId("file-browser")).toBeVisible();
+    await expect(page.getByRole("heading", { name: /^ZZ Essential/ })).toBeVisible();
   });
 
-  test("flow 8 — owner reaches /vault/access without Vault quotas", async ({
-    page,
-  }, testInfo) => {
-    await emergencyPasswordLogin(page);
-    if (testInfo.project.name === "mobile-375") {
-      await openMobileDrawer(page);
-      await page
-        .getByRole("dialog")
-        .getByRole("button", { name: /vault settings|impostazioni del vault/i })
-        .click();
-    } else {
-      await page
-        .getByRole("navigation", { name: /vault navigation/i })
-        .getByRole("button", { name: /vault settings|impostazioni del vault/i })
-        .click();
-    }
-    await expect(page).toHaveURL(/\/vault\/access/);
-    await expect(page.locator('[data-panel="retention"]')).toBeVisible();
-    await expect(page.locator('[data-panel="quotas"]')).toHaveCount(0);
-  });
-
-  test("flow 9 — owner opens Administration and its sections", async ({
-    page,
-  }) => {
-    await emergencyPasswordLogin(page);
-    await openAccountMenu(page);
-    await page
-      .getByRole("dialog", { name: /^account$/i })
-      .getByRole("button", { name: /administration|amministrazione/i })
-      .click();
-    await expect(page).toHaveURL(/\/admin/);
-    await expect(page.getByText("Family Archive").first()).toBeVisible();
-
-    const sections = page.getByRole("navigation", {
-      name: /administration sections|sezioni di amministrazione/i,
-    });
-    await expect(
-      sections.getByRole("link", { name: /users and identities|utenti e identità/i }),
-    ).toHaveCount(0);
-
-    for (const route of ["defaults", "deployment", "audit-events", "worker-errors"]) {
-      await expect(sections.locator(`a[href="/admin/${route}"]`)).toHaveCount(0);
-    }
-    await sections.getByRole("link", { name: /source volumes/i }).click();
-    await expect(page).toHaveURL(/\/admin\/sources/);
-    await expect(page.getByRole("heading", { name: /source volumes/i })).toBeVisible();
-    await sections.getByRole("link", { name: /metadata backups|backup dei metadati/i }).click();
-    await expect(page).toHaveURL(/\/admin\/metadata-backups/);
-    await expect(page.getByRole("heading", { name: /metadata backups|backup dei metadati/i }).first()).toBeVisible();
-  });
-
-  test("flow 11 — sign out", async ({ page }) => {
-    await emergencyPasswordLogin(page);
-    await openAccountMenu(page);
-    await page
-      .getByRole("dialog", { name: /^account$/i })
-      .getByRole("button", { name: /^sign out$|^esci$/i })
-      .click();
+  test("language and sign out remain in Owner preferences", async ({ page }) => {
+    await emergencyPasswordLogin(page); await openAccountMenu(page);
+    const account = page.getByRole("dialog", { name: /^account$/i });
+    await account.getByRole("combobox", { name: /^language$/i }).selectOption("it");
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("file-search")).toHaveAttribute("placeholder", /cerca per nome/i);
+    await openAccountMenu(page); await page.getByRole("button", { name: /^esci$/i }).click();
     await expect(page).toHaveURL(/\/login/);
-    await expect(page.getByLabel(/username/i)).toBeVisible();
   });
 });

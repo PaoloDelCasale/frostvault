@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
-import { RecoveryKitSection } from "@/pages/admin/RecoveryKitSection";
+import { RecoveryKitSection } from "@/pages/general/RecoveryKitSection";
 
 const messages = JSON.parse(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../app/locales/en.json"), "utf8"));
 function json(data: unknown, status = 200) { return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } }); }

@@ -21,148 +21,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/admin": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Admin Page */
-        get: operations["admin_page_admin_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/cost-estimates/storage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Admin Storage Cost Estimate */
-        post: operations["admin_storage_cost_estimate_api_admin_cost_estimates_storage_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/metadata-backups": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Admin List Metadata Backups */
-        get: operations["admin_list_metadata_backups_api_admin_metadata_backups_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/metadata-backups/download/{run_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Admin Download Metadata Backup */
-        get: operations["admin_download_metadata_backup_api_admin_metadata_backups_download__run_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/metadata-backups/run": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Admin Run Metadata Backup */
-        post: operations["admin_run_metadata_backup_api_admin_metadata_backups_run_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/source-volumes": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Admin Source Volumes
-         * @description Operator inventory of discovered Source Volumes (issue #148).
-         */
-        get: operations["admin_source_volumes_api_admin_source_volumes_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/vaults": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Admin Vaults */
-        get: operations["admin_vaults_api_admin_vaults_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/admin/vaults/{vault_id}/reconnect": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Admin Reconnect Vault Root
-         * @description Accept this folder/mount for this Vault only; mandatory cloud/local scan.
-         */
-        post: operations["admin_reconnect_vault_root_api_admin_vaults__vault_id__reconnect_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/catalog/events": {
         parameters: {
             query?: never;
@@ -303,6 +161,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/files/detail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** File Detail */
+        get: operations["file_detail_api_files_detail_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search All Files
+         * @description Search name/path across all protected Vaults, independent of Session choice.
+         */
+        get: operations["search_all_files_api_files_search_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/files/versions": {
         parameters: {
             query?: never;
@@ -331,6 +226,128 @@ export interface paths {
         put?: never;
         /** Free Space */
         post: operations["free_space_api_free_space_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/general": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** General Overview */
+        get: operations["general_overview_api_general_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/general/cost-estimates/storage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Storage Cost Estimate */
+        post: operations["storage_cost_estimate_api_general_cost_estimates_storage_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/general/metadata-backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Metadata Backups */
+        get: operations["list_metadata_backups_api_general_metadata_backups_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/general/metadata-backups/download/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Metadata Backup */
+        get: operations["download_metadata_backup_api_general_metadata_backups_download__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/general/metadata-backups/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Metadata Backup */
+        post: operations["run_metadata_backup_api_general_metadata_backups_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/general/source-volumes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * General Source Volumes
+         * @description Operator inventory of discovered Source Volumes (issue #148).
+         */
+        get: operations["general_source_volumes_api_general_source_volumes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/general/vaults": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** General Vaults */
+        get: operations["general_vaults_api_general_vaults_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -514,6 +531,23 @@ export interface paths {
          *     visibility checks as single-item mark-read.
          */
         post: operations["mark_all_notifications_read_api_notifications_read_all_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/problems": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Open Problems */
+        get: operations["open_problems_api_problems_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -851,6 +885,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/vaults/{vault_id}/reconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reconnect Vault Root
+         * @description Accept this folder/mount for this Vault only; mandatory cloud/local scan.
+         */
+        post: operations["reconnect_vault_root_api_vaults__vault_id__reconnect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/vaults/{vault_id}/stop-protection": {
         parameters: {
             query?: never;
@@ -1037,23 +1091,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/vault/access": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Vault Access Page */
-        get: operations["vault_access_page_vault_access_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/vaults/new": {
         parameters: {
             query?: never;
@@ -1095,41 +1132,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        AdminVault: {
-            /** @enum {string} */
-            decommission_state?: "active" | "decommissioning" | "decommissioned";
-            decommissioned_at?: string | null;
-            enabled: boolean;
-            id: number;
-            name: string;
-            root_released_at?: string | null;
-            s3_bucket?: string;
-            s3_prefix: string;
-            slug: string;
-            source_root: string;
-            uuid?: string;
-        };
-        AdminVaultReconnectPayload: {
-            reason: string;
-            relative_path: string;
-            volume_alias: string;
-        } & {
-            [key: string]: unknown;
-        };
-        AdminVaultReconnectResponse: {
-            full_scan_required: boolean;
-            /** @enum {string} */
-            reconnect_state: "scan_required" | "ready";
-            source_root: string;
-            vault_id: number;
-        } & {
-            [key: string]: unknown;
-        };
-        AdminVaultsResponse: {
-            items: components["schemas"]["AdminVault"][];
-        } & {
-            [key: string]: unknown;
-        };
         ApiErrorResponse: {
             detail: string;
             message: string;
@@ -1324,6 +1326,59 @@ export interface components {
             page: number;
             protection_suspended?: boolean;
             total: number;
+        } & {
+            [key: string]: unknown;
+        };
+        GeneralOverview: {
+            currency?: string;
+            email_configured?: boolean;
+            last_verified_backup?: string | null;
+            month?: string;
+            monthly_estimate?: number;
+            open_problem_count?: number;
+            previous_month_delta?: number | null;
+            pricing_effective_at?: string;
+            vaults?: {
+                decommission_state: string;
+                id: number;
+                monthly_estimate: number;
+                name: string;
+                open_problem_count: number;
+                slug: string;
+            }[];
+        };
+        GeneralVault: {
+            /** @enum {string} */
+            decommission_state?: "active" | "decommissioning" | "decommissioned";
+            decommissioned_at?: string | null;
+            enabled: boolean;
+            id: number;
+            name: string;
+            root_released_at?: string | null;
+            s3_bucket?: string;
+            s3_prefix: string;
+            slug: string;
+            source_root: string;
+            uuid?: string;
+        };
+        GeneralVaultReconnectPayload: {
+            reason: string;
+            relative_path: string;
+            volume_alias: string;
+        } & {
+            [key: string]: unknown;
+        };
+        GeneralVaultReconnectResponse: {
+            full_scan_required: boolean;
+            /** @enum {string} */
+            reconnect_state: "scan_required" | "ready";
+            source_root: string;
+            vault_id: number;
+        } & {
+            [key: string]: unknown;
+        };
+        GeneralVaultsResponse: {
+            items: components["schemas"]["GeneralVault"][];
         } & {
             [key: string]: unknown;
         };
@@ -1623,6 +1678,11 @@ export interface components {
         RecoverEstimateRequest: {
             /** Archive Version Id */
             archive_version_id?: string | null;
+            /**
+             * Is Directory
+             * @default false
+             */
+            is_directory: boolean;
             /** Path */
             path: string;
             /** Restore Days */
@@ -1845,6 +1905,7 @@ export interface components {
             availability?: string | null;
             cleanup_eligible?: boolean;
             cloud_exists?: number | boolean;
+            cloud_only_conflict?: boolean;
             cloud_size?: number | null;
             integrity?: string | null;
             last_known_at?: string | null;
@@ -1852,6 +1913,7 @@ export interface components {
             local_exists?: number | boolean;
             local_file_type?: string | null;
             local_size?: number | null;
+            modified_at?: string | null;
             name: string;
             path: string;
             previous_snapshot_protected?: boolean;
@@ -1864,6 +1926,8 @@ export interface components {
             /** @constant */
             type: "file";
             upload_eligible?: boolean;
+            vault_id?: number;
+            vault_name?: string;
         } & {
             [key: string]: unknown;
         };
@@ -1996,223 +2060,12 @@ export interface operations {
             };
         };
     };
-    admin_page_admin_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    admin_storage_cost_estimate_api_admin_cost_estimates_storage_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["StorageEstimateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StorageEstimateResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    admin_list_metadata_backups_api_admin_metadata_backups_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-        };
-    };
-    admin_download_metadata_backup_api_admin_metadata_backups_download__run_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                run_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Raw metadata backup artifact */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/octet-stream": string;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    admin_run_metadata_backup_api_admin_metadata_backups_run_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MetadataBackupRunAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    admin_source_volumes_api_admin_source_volumes_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SourceVolumeInventoryResponse"];
-                };
-            };
-        };
-    };
-    admin_vaults_api_admin_vaults_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AdminVaultsResponse"];
-                };
-            };
-        };
-    };
-    admin_reconnect_vault_root_api_admin_vaults__vault_id__reconnect_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultReconnect"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AdminVaultReconnectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     catalog_events_stream_api_catalog_events_get: {
         parameters: {
             query?: {
                 after_revision?: number;
                 subscribe?: boolean;
+                vault_id?: number | null;
             };
             header?: {
                 "Last-Event-ID"?: string | null;
@@ -2246,6 +2099,7 @@ export interface operations {
         parameters: {
             query?: {
                 after_revision?: number;
+                vault_id?: number | null;
             };
             header?: never;
             path?: never;
@@ -2295,7 +2149,9 @@ export interface operations {
     };
     preview_cloud_deletion_api_cloud_deletion_preview_post: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2328,7 +2184,9 @@ export interface operations {
     };
     cloud_purge_api_cloud_purge_post: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2367,6 +2225,7 @@ export interface operations {
                 directory?: string;
                 page?: number;
                 page_size?: number;
+                vault_id?: number | null;
             };
             header?: never;
             path?: never;
@@ -2396,7 +2255,9 @@ export interface operations {
     };
     replace_cloud_only_copy_api_files_cloud_only_conflict_replace_post: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2427,10 +2288,77 @@ export interface operations {
             };
         };
     };
+    file_detail_api_files_detail_get: {
+        parameters: {
+            query: {
+                path: string;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArchiveListItem"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    search_all_files_api_files_search_get: {
+        parameters: {
+            query?: {
+                q?: string;
+                state?: string;
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     file_versions_api_files_versions_get: {
         parameters: {
             query: {
                 path: string;
+                vault_id?: number | null;
             };
             header?: never;
             path?: never;
@@ -2460,7 +2388,9 @@ export interface operations {
     };
     free_space_api_free_space_post: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2487,6 +2417,183 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    general_overview_api_general_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeneralOverview"];
+                };
+            };
+        };
+    };
+    storage_cost_estimate_api_general_cost_estimates_storage_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StorageEstimateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StorageEstimateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_metadata_backups_api_general_metadata_backups_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+        };
+    };
+    download_metadata_backup_api_general_metadata_backups_download__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Raw metadata backup artifact */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_metadata_backup_api_general_metadata_backups_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MetadataBackupRunAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    general_source_volumes_api_general_source_volumes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceVolumeInventoryResponse"];
+                };
+            };
+        };
+    };
+    general_vaults_api_general_vaults_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeneralVaultsResponse"];
                 };
             };
         };
@@ -2524,7 +2631,9 @@ export interface operations {
     };
     jobs_api_jobs_get: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2540,11 +2649,22 @@ export interface operations {
                     "application/json": components["schemas"]["JobsResponse"];
                 };
             };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     cancel_job_api_jobs_cancel_post: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2767,6 +2887,37 @@ export interface operations {
             };
         };
     };
+    open_problems_api_problems_get: {
+        parameters: {
+            query?: {
+                page?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     reauth_api_reauth_post: {
         parameters: {
             query?: never;
@@ -2802,7 +2953,9 @@ export interface operations {
     };
     recover_api_recover_post: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2835,7 +2988,9 @@ export interface operations {
     };
     approve_recover_api_recover_approve_post: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2868,7 +3023,9 @@ export interface operations {
     };
     recover_estimate_api_recover_estimate_post: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2985,7 +3142,9 @@ export interface operations {
     };
     start_scan_api_scan_post: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2999,6 +3158,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScanResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3038,7 +3206,9 @@ export interface operations {
     };
     stats_api_stats_get: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3054,11 +3224,22 @@ export interface operations {
                     "application/json": components["schemas"]["StatsResponse"];
                 };
             };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     upload_api_upload_post: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3091,7 +3272,9 @@ export interface operations {
     };
     cancel_upload_api_upload_cancel_post: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3124,7 +3307,9 @@ export interface operations {
     };
     own_vault_lifecycle_api_vault_lifecycle_get: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3140,11 +3325,22 @@ export interface operations {
                     "application/json": components["schemas"]["LifecycleResponse"];
                 };
             };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     update_vault_storage_plan_api_vault_lifecycle_put: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3177,7 +3373,9 @@ export interface operations {
     };
     preview_vault_move_api_vault_move_get: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3193,11 +3391,22 @@ export interface operations {
                     "application/json": components["schemas"]["VaultMovePreview"];
                 };
             };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     move_vault_api_vault_move_post: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3230,7 +3439,9 @@ export interface operations {
     };
     own_vault_operation_policy_api_vault_operation_policy_get: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3246,11 +3457,22 @@ export interface operations {
                     "application/json": components["schemas"]["OperationPolicy"];
                 };
             };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     update_vault_operation_policy_api_vault_operation_policy_put: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3283,7 +3505,9 @@ export interface operations {
     };
     preview_vault_operation_globs_api_vault_operation_policy_preview_globs_post: {
         parameters: {
-            query?: never;
+            query?: {
+                vault_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3387,6 +3611,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VaultSelectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reconnect_vault_root_api_vaults__vault_id__reconnect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VaultReconnect"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeneralVaultReconnectResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3698,26 +3957,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-        };
-    };
-    vault_access_page_vault_access_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
                 };
             };
         };

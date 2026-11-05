@@ -17,11 +17,11 @@ describe("Reconnect and installation kit English/Italian contract", () => {
       expect(itMessages[key], key).toBeTruthy();
       expect(itMessages[key]).not.toBe(en[key]);
     }
-    expect(Object.keys(en).some((key) => key.startsWith("admin.relocation") || key === "admin.relocate_vault")).toBe(false);
+    expect(Object.keys(en).some((key) => key.startsWith("general.relocation") || key === "general.relocate_vault")).toBe(false);
   });
   it("explains full scan, conflicts, non-catalog custody and restore warning", () => {
-    expect(en["admin.reconnect_scan_warning"]).toMatch(/full scan.*conflicts/i);
-    expect(itMessages["admin.reconnect_scan_warning"]).toMatch(/scansione completa.*conflitti/i);
+    expect(en["general.reconnect_scan_warning"]).toMatch(/full scan.*conflicts/i);
+    expect(itMessages["general.reconnect_scan_warning"]).toMatch(/scansione completa.*conflitti/i);
     expect(en["recovery_kit.help"]).toMatch(/no catalog/i);
     expect(en["recovery_kit.restore_warning"]).toContain("{date}");
     expect(en["recovery_kit.restore_warning"]).toContain("{count}");

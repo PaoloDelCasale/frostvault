@@ -4,7 +4,7 @@ import {
   ApiError,
   browseSourceVolume,
   createVault,
-  fetchAdminSourceVolumes,
+  fetchGeneralSourceVolumes,
   selectVault,
 } from "@/api";
 import type {
@@ -46,7 +46,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
   useEffect(() => {
     let cancelled = false;
     // Any free directory of a healthy, writable Source Volume can be adopted.
-    void fetchAdminSourceVolumes()
+    void fetchGeneralSourceVolumes()
       .then((response) => {
         if (cancelled) return;
         const usable = response.items
@@ -98,7 +98,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
 
       const vault = await createVault(payload);
       await selectVault({ vault_id: vault.id });
-      navigateTo("/", onNavigate);
+      navigateTo(`/?vault_id=${vault.id}`, onNavigate);
     } catch (err) {
       const message =
         err instanceof ApiError

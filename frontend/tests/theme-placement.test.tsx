@@ -41,8 +41,7 @@ const shellCapabilities: ShellCapabilities = {
 
 const shellHandlers: ShellNavHandlers = {
   onNewVault: vi.fn(),
-  onManageAccess: vi.fn(),
-  onAdministration: vi.fn(),
+  onGeneral: vi.fn(),
   onSignOut: vi.fn(),
   onLocaleChange: vi.fn(),
   onVaultChange: vi.fn(),

@@ -50,8 +50,21 @@ Search remains global across every file in the selected vault.
   without an upload.
 - New vaults can use an empty managed root or adopt any existing directory
   under a Source Volume that does not overlap another vault root.
-- Administration retains Vault, Source Volume and metadata backup operations;
-  all installation settings come only from the deployment environment.
+- The file browser is home: a sidebar lists protected folders, All / Cloud only /
+  Pending / Problems filters and **General**. Home reopens the last-used Vault at
+  its root; search matches name/path across all protected folders and preserves
+  Vault identity even for identical paths. Folder rows show protection counts.
+- Selection offers only **Recover**, **Free space now** and single-file **Details**.
+  Cloud internals and deliberate seven-day cloud deletion live only in Details.
+  Cold recovery offers Normal (Standard) / Economical (Bulk, default), an estimate,
+  return path and local-retention explanation. There are no previews.
+- Each folder's gear panel contains automatic protection, fixed release periods,
+  collapsed Advanced Storage Plan / Move now and Stop Protection. **General**
+  contains optional email status, the installation Recovery Kit/fingerprint/custody,
+  last verified backup, per-Vault storage estimates, folder creation and reconnect.
+  There are no administration or Manage access pages. Installation settings remain
+  deployment-owned. API clients should pin `vault_id` on every scoped request;
+  an invalid explicit identity fails closed rather than using Session selection.
 
 ## Automatic protection
 
@@ -570,15 +583,18 @@ Email is optional and configured only in the deployment environment:
 - `SMTP_HOST`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS` — all three must be
   non-empty to enable delivery. The recipient is explicitly configured, not
   inferred from the Owner's login address.
+- `APP_PUBLIC_URL` — optional canonical application URL (for example
+  `https://frostvault.example.com`), without credentials/query/fragment. Enables
+  email links to the file's folder, highlighted row and problem Details. Without
+  it email still works but has no absolute application link.
 - `SMTP_PORT` — defaults to `587`; valid range `1–65535`.
 - `SMTP_USERNAME`, `SMTP_PASSWORD` — optional authentication. The password is
   never exposed by an API or stored in the database.
 - `SMTP_USE_TLS` — defaults to `true`: STARTTLS on port 587 (and other ports),
   implicit TLS on port 465. Disable only for a trusted local relay.
 
-Missing or partial configuration disables email, not the inbox. The current
-General-compatible administration surface warns when email is not configured;
-the General page layout is delivered separately. The API exposes only a boolean
+Missing or partial configuration disables email, not the inbox. The General
+page warns when email is not configured. The API exposes only a boolean
 configuration status, never SMTP addresses or credentials. Email delivery has
 three bounded attempts and does not change Job results or remove notifications.
 Environment changes require an application restart. Existing database SMTP

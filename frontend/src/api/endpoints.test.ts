@@ -2,16 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { configureApiClient, resetApiClientForTests } from "./client";
 import {
-  downloadAdminMetadataBackup,
-  fetchAdminMetadataBackups,
-  estimateAdminStorageCost,
-  runAdminMetadataBackup,
+  downloadGeneralMetadataBackup,
+  fetchGeneralMetadataBackups,
+  estimateGeneralStorageCost,
+  runGeneralMetadataBackup,
   createVault,
   fetchI18nCatalog,
   fetchMe,
   fetchNotifications,
   fetchVaults,
-  reconnectAdminVault,
+  reconnectGeneralVault,
   requestScan,
   selectVault,
   markNotificationRead,
@@ -177,13 +177,13 @@ describe("foundation endpoint helpers", () => {
       }),
     );
 
-    await reconnectAdminVault(7, {
+    await reconnectGeneralVault(7, {
       volume_alias: "photos",
       relative_path: "new-name",
       reason: "operator renamed directory",
     });
 
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/admin/vaults/7/reconnect");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/vaults/7/reconnect");
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
       method: "POST",
       body: JSON.stringify({
@@ -239,7 +239,7 @@ describe("foundation endpoint helpers", () => {
         }),
       );
 
-    const listed = await fetchAdminMetadataBackups();
+    const listed = await fetchGeneralMetadataBackups();
     expect(listed.runs[0]).toEqual({
       id: 4,
       created_at: run.created_at,
@@ -257,7 +257,7 @@ describe("foundation endpoint helpers", () => {
     expect(listed.runs[0]).not.toHaveProperty("local_path");
     expect(listed.status.last_run).not.toHaveProperty("local_path");
 
-    const result = await runAdminMetadataBackup();
+    const result = await runGeneralMetadataBackup();
     expect(result).not.toHaveProperty("path");
     expect(result).not.toHaveProperty("local_path");
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
@@ -281,12 +281,12 @@ describe("foundation endpoint helpers", () => {
       }),
     );
 
-    const artifact = await downloadAdminMetadataBackup(9);
+    const artifact = await downloadGeneralMetadataBackup(9);
     expect(artifact.filename).toBe("metadata backup.bak.enc");
     expect(artifact.checksumSha256).toBe(checksum);
     expect(await artifact.blob.text()).toBe("ciphertext");
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "/api/admin/metadata-backups/download/9",
+      "/api/general/metadata-backups/download/9",
     );
     expect(
       new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("X-CSRF-Token"),
@@ -311,7 +311,7 @@ describe("foundation endpoint helpers", () => {
     );
 
     await expect(
-      estimateAdminStorageCost({
+      estimateGeneralStorageCost({
         vault_id: 3,
         storage_class: "DEEP_ARCHIVE",
       }),
@@ -321,7 +321,7 @@ describe("foundation endpoint helpers", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/admin/cost-estimates/storage",
+      "/api/general/cost-estimates/storage",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({

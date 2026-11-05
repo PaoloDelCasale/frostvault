@@ -1,19 +1,19 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { SourceVolumesSection } from "@/pages/admin/SourceVolumesSection";
+import { SourceVolumesSection } from "@/pages/general/SourceVolumesSection";
 
 const messages: Record<string, string> = {
-  "admin.sources_heading": "Source Volumes",
-  "admin.sources_subtitle": "Volumes",
-  "admin.sources_access": "Access",
-  "admin.sources_vault_count": "Vaults",
-  "admin.sources_health_absent": "Absent",
-  "admin.sources_health_inaccessible": "Inaccessible",
-  "admin.sources_health_replaced": "Replaced",
-  "admin.sources_diagnostic_absent": "The expected mount is absent.",
-  "admin.sources_diagnostic_inaccessible": "The mount is present but inaccessible.",
-  "admin.sources_diagnostic_replaced": "A different Source Volume is mounted.",
+  "general.sources_heading": "Source Volumes",
+  "general.sources_subtitle": "Volumes",
+  "general.sources_access": "Access",
+  "general.sources_vault_count": "Vaults",
+  "general.sources_health_absent": "Absent",
+  "general.sources_health_inaccessible": "Inaccessible",
+  "general.sources_health_replaced": "Replaced",
+  "general.sources_diagnostic_absent": "The expected mount is absent.",
+  "general.sources_diagnostic_inaccessible": "The mount is present but inaccessible.",
+  "general.sources_diagnostic_replaced": "A different Source Volume is mounted.",
 };
 
 vi.mock("@/i18n/useI18n", () => ({
@@ -24,7 +24,7 @@ vi.mock("@/api", async () => {
   const actual = await vi.importActual<typeof import("@/api")>("@/api");
   return {
     ...actual,
-    fetchAdminSourceVolumes: vi.fn(async () => ({
+    fetchGeneralSourceVolumes: vi.fn(async () => ({
       items: [
         { alias: "absent", path: "/sources/absent", access: "none", health: "absent", vault_count: 1, diagnostic: null },
         { alias: "locked", path: "/sources/locked", access: "ro", health: "inaccessible", vault_count: 0, diagnostic: null },
