@@ -26,10 +26,13 @@ export function RecoverSelection({ targets, onClose, onDone, t }: { targets: Tar
     if (!previews || busy) return;
     setBusy(true); setError("");
     try {
-      for (const { target } of previews) {
+      for (const { target, estimate } of previews) {
         const key = `${target.vaultId}:${target.item.path}`;
         if (completed.has(key)) continue;
-        await vaultApi(target.vaultId).action("recover", { path: target.item.path, is_directory: target.item.type === "directory", restore_tier: tier });
+        await vaultApi(target.vaultId).action("recover", { path: target.item.path, is_directory: target.item.type === "directory", restore_tier: tier,
+          ...(estimate.archive_version_id ? { archive_version_id: estimate.archive_version_id } : {}),
+          ...(estimate.estimate?.days ? { restore_days: estimate.estimate.days } : {}),
+        });
         completed.add(key); setCompleted(new Set(completed));
       }
       onDone();

@@ -56,7 +56,7 @@ export default function App() {
       onLocaleChange: (next) => { void setLocale(next); },
       onSignOut: () => { void (async () => { setLeaving(true); await client.cancelQueries(); client.clear(); setUserId(null); try { await logout(); go("/login"); } catch (cause) { setError(String(cause)); setLeaving(false); } })(); },
     }}>
-    {pathname === "/vaults/new" ? <VaultCreatePage displayName={me.display_name} onNavigate={go} />
+    {pathname === "/vaults/new" ? <VaultCreatePage displayName={me.display_name} onNavigate={go} embedded />
       : pathname === "/general" || (!chosen && !requested) ? <GeneralPage overview={overview.data} onRefresh={refresh} />
       : pathname === "/problems" ? <ProblemsPage />
       : chosen ? <FileBrowser key={`${chosen.id}:${locale}`} t={t} vaultId={chosen.id} vaultName={chosen.name} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} problemCount={overview.data?.vaults.find((vault) => vault.id === chosen.id)?.open_problem_count ?? 0} onRefresh={refresh} />

@@ -32,7 +32,8 @@ describe("essential file browser", () => {
   it("searches all protected Vaults with the Cloud-only filter and retains result identity", async () => {
     const calls = setup([{ ...file, vault_id: 2, vault_name: "Second" }], "?q=photo&state=cloud_only");
     await screen.findAllByText("Second / 2026/photo.jpg");
-    expect(calls[0]).toContain("/api/files/search?"); expect(calls[0]).toContain("state=cloud_only"); expect(calls[0]).not.toContain("vault_id");
+    const search = calls.find((url) => url.startsWith("/api/files/search?"));
+    expect(search).toContain("state=cloud_only"); expect(search).not.toContain("vault_id");
     const user = userEvent.setup();
     await user.click(screen.getAllByRole("checkbox")[0]);
     await user.click(screen.getByRole("button", { name: "essential.details" }));

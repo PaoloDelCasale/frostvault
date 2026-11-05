@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { fetchVaultMove, startVaultMove, type VaultMovePreview } from "@/api";
 import { MenuSelect } from "@/components/MenuSelect";
+import { ActiveOperations } from "@/components/ActiveOperations";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 
@@ -61,5 +62,6 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
       <Button type="button" variant="primary" disabled={busy || !acknowledged || !estimate?.eligible_count} className="w-fit" onClick={() => void move()}>{t("move.start")}</Button>
     </> : preview ? <p className="text-sm text-muted">{t("move.unavailable")}</p> : !error && <p role="status">{t("ui.loading")}</p>}
     {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+    <ActiveOperations vaultId={vaultId} t={t} moves />
   </section>;
 }

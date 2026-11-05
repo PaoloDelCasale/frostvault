@@ -1956,7 +1956,10 @@
         "additionalProperties": true,
         "properties": {
           "archive_version_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "estimate": {
             "anyOf": [

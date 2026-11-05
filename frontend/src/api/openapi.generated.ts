@@ -1697,7 +1697,7 @@ export interface components {
             restore_tier?: string | null;
         };
         RecoverEstimateResponse: {
-            archive_version_id: string;
+            archive_version_id: string | null;
             estimate: components["schemas"]["RestoreEstimate"] | null;
             high_impact: boolean;
             path: string;

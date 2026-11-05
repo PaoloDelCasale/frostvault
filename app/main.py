@@ -2222,16 +2222,20 @@ def recover_estimate(
 ):
     logical_path = safe_relative_path(action.path).as_posix()
     if action.is_directory:
-        from .services.protection_states import LATEST_JOIN_SQL
+        recoverable_join = """LEFT JOIN archive_versions av ON av.id=(
+            SELECT recoverable.id FROM archive_versions recoverable
+            WHERE recoverable.vault_file_id=vf.id AND recoverable.integrity='verified'
+              AND recoverable.availability='available' ORDER BY recoverable.version_number DESC LIMIT 1
+        )"""
         prefix = logical_path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
         with db() as connection:
             classes = connection.execute(
                 f"SELECT av.storage_class, sum(av.size) AS bytes FROM vault_files vf "
                 f"JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL "
-                f"LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id {LATEST_JOIN_SQL} "
+                f"LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id {recoverable_join} "
                 "WHERE vf.vault_id=%s AND vf.status='active' AND fp.path LIKE %s ESCAPE '\\' "
                 "AND av.integrity='verified' AND av.availability='available' "
-                "AND (lc.presence IS NULL OR lc.presence='absent') GROUP BY av.storage_class",
+                "AND (lc.presence IS NULL OR lc.presence='missing') GROUP BY av.storage_class",
                 (vault["id"], prefix),
             ).fetchall()
         tier = action.restore_tier or "Bulk"
@@ -2240,10 +2244,16 @@ def recover_estimate(
         estimates = [estimate_restore_cost(list_prices(settings.aws_region), size_bytes=int(row["bytes"]),
                      storage_class=row["storage_class"], tier=tier, days=action.restore_days or settings.restore_days)
                      for row in classes if storage_class_requires_restore(row["storage_class"])]
-        return {"requires_restore": bool(estimates), "high_impact": False,
+        total_cost = sum(item.estimated_cost_eur for item in estimates)
+        high_impact = bool(estimates) and is_high_impact_restore(
+            size_bytes=sum(int(row["bytes"]) for row in classes), estimated_cost_eur=total_cost,
+            size_threshold_gib=settings.restore_high_impact_gib, cost_threshold_eur=settings.restore_high_impact_eur,
+        )
+        return {"path": logical_path, "archive_version_id": None,
+                "requires_restore": bool(estimates), "restore_object_irreversible": bool(estimates), "high_impact": high_impact,
                 "estimate": {"tier": tier, "days": action.restore_days or settings.restore_days,
-                             "estimated_cost_eur": sum(item.estimated_cost_eur for item in estimates),
-                             "estimated_hours": "; ".join(str(item.estimated_hours) for item in estimates)} if estimates else None}
+                             "estimated_cost_eur": total_cost,
+                             "estimated_hours": max((item.estimated_hours or 0 for item in estimates), default=0)} if estimates else None}
     with db() as connection:
         versions = ArchiveCatalog(connection).list_versions(vault["id"], logical_path)
     selected = next((row for row in versions if row["recoverable"]), None)

@@ -59,9 +59,24 @@ class EssentialInterfaceTests(unittest.TestCase):
         self.assertIn("directory=photos", path)
         self.assertIn("file=photos%2Fa", path)
         self.assertEqual(notification_url("https://example.test", 2, {"path": "photo.jpg"}), "https://example.test/?vault_id=2&directory=&file=photo.jpg")
-        self.assertIsNone(notification_url("https://secret@example.test", 2, {}))
+        self.assertIsNone(notification_url("https://userinfo@example.com", 2, {}))
         self.assertIsNone(notification_url("javascript:alert(1)", 2, {}))
         self.assertEqual(notification_path(None, {}), "/general")
+
+    def test_recursive_cold_recovery_estimate_has_numeric_time_and_no_version_picker(self):
+        connection = Mock()
+        connection.execute.return_value.fetchall.return_value = [
+            {"storage_class": "DEEP_ARCHIVE", "bytes": 1024**3},
+            {"storage_class": "STANDARD", "bytes": 12},
+        ]
+        with patch.object(main, "db", lambda: self.connection(connection)):
+            preview = main.recover_estimate(main.RecoverEstimateRequest(path="photos", is_directory=True, restore_tier="Bulk"), {"id": 2})
+        self.assertTrue(preview["requires_restore"])
+        self.assertIsNone(preview["archive_version_id"])
+        self.assertIsInstance(preview["estimate"]["estimated_hours"], (float, int))
+        self.assertEqual(preview["estimate"]["tier"], "Bulk")
+        self.assertEqual(connection.execute.call_args.args[1], (2, "photos/%"))
+        self.assertTrue(all(call.args[0].startswith("SELECT") for call in connection.execute.call_args_list))
 
     def test_explicit_live_stream_keeps_owner_revocation_gate_but_not_shared_selection(self):
         from app.services import catalog_event_stream as stream

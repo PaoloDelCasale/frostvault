@@ -57,9 +57,24 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     await expect(recovery).toBeHidden();
   });
 
+  test("folder recovery estimates cold descendants with Bulk default before deliberate confirmation", async ({ page }) => {
+    await emergencyPasswordLogin(page);
+    await page.getByRole("checkbox", { name: /select family archive \/ photos$/i }).locator("visible=true").check();
+    await page.getByRole("button", { name: /^recover$/i }).click();
+    const recovery = page.getByRole("dialog", { name: /^recover$/i });
+    await expect(recovery.getByRole("combobox")).toHaveValue("Bulk");
+    await expect(recovery).toContainText(/returns to: family archive \/ photos/i);
+    await expect(recovery).toContainText(/estimated.*EUR/i);
+    await recovery.getByRole("button", { name: /^cancel$/i }).click();
+    await expect(recovery).toBeHidden();
+  });
+
   test("problem link opens the folder, highlights the row and offers an explicit remedy", async ({ page }) => {
     const credentials = await emergencyPasswordLogin(page);
-    await page.goto(`/?vault_id=${credentials.vaults.primary.id}&directory=incoming&file=incoming%2Fconflict.jpg`);
+    await page.getByRole("banner").getByRole("button", { name: /\d+ problems/i }).click();
+    const problem = page.locator("article").filter({ hasText: "Conflict with a file kept only in the cloud" });
+    await problem.getByRole("link", { name: /open problem and remedy/i }).click();
+    await expect(page).toHaveURL(new RegExp(`vault_id=${credentials.vaults.primary.id}`));
     const details = page.getByRole("dialog", { name: /details.*conflict.jpg/i });
     await expect(details).toContainText(/rename the new file outside frostvault/i);
     await expect(page.locator('[data-highlighted="true"]:visible')).toHaveCount(1);

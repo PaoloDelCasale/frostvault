@@ -6,6 +6,7 @@ import { vaultApi } from "@/api/vault";
 import { Badge } from "@/components/Badge";
 import { itemStateBadge } from "./protectionLabel";
 import { Button } from "@/components/ui/button";
+import { ActiveOperations } from "@/components/ActiveOperations";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { VaultSettingsPanel } from "@/pages/vault-settings/VaultSettingsPanel";
 import { FileDetails } from "./FileDetails";
@@ -84,7 +85,7 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
       } else setDetails(target);
     }}>{item.type === "directory" ? "📁 " : ""}{global ? `${target.vaultName} / ${item.path}` : item.name}</button>;
     if (column === 1) return item.type === "directory" ? <span className="text-sm">{Object.entries(item.state_counts ?? {}).filter(([, count]) => count > 0).map(([status, count]) => `${count} ${t(`state.${status}`)}`).join(" · ") || "—"}</span> : <Badge {...itemStateBadge(item, t)} />;
-    if (column === 2) return formatBytes(item.type === "directory" ? item.total_size : Number(item.local_size ?? item.cloud_size ?? 0));
+    if (column === 2) return formatBytes(item.type === "directory" ? item.total_size : Number((item.local_exists ? item.local_size : item.cloud_size) ?? 0));
     if (column === 3) return typeof item.modified_at === "string" ? new Date(item.modified_at).toLocaleString() : "—";
     return item.type === "file" && item.state === "cloud_only" ? t(item.storage_class === "DEEP_ARCHIVE" ? "essential.ready_deep" : item.storage_class === "GLACIER" ? "essential.ready_glacier" : "essential.ready_now") : "—";
   };
@@ -93,7 +94,7 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
   return <section className="grid min-w-0 gap-4" data-testid="file-browser">
     <div className="flex items-center justify-between gap-3"><h1 className="min-w-0 break-words text-2xl font-bold">{vaultName}</h1><Button variant="secondary" aria-expanded={settings} onClick={() => setSettings(!settings)}>{t("essential.settings")}</Button></div>
     {problemCount > 0 && <p role="status" className="rounded border border-line p-3"><a className="underline" href="/problems">{t("essential.folder_problems", { count: problemCount })}</a></p>}
-    {query.data?.protection_suspended && <p role="status" className="rounded border border-line p-3">{t("state.protection_suspended")} <button className="min-h-11 underline" onClick={() => setSettings(true)}>{t("essential.settings")}</button></p>}
+    {query.data?.protection_suspended && <p role="status" className="rounded border border-line p-3">{t("state.protection_suspended")} <button className="min-h-11 underline" onClick={() => setSettings(true)}>{t("essential.review_protection")}</button></p>}
     {settings && <VaultSettingsPanel key={vaultId} vaultId={vaultId} vaultName={vaultName} onStopped={() => window.location.assign("/general")} />}
     <label className="block"><span className="sr-only">{t("essential.search")}</span><input type="search" className="min-h-11 w-full min-w-0 rounded border border-input bg-surface px-3" data-testid="file-search" placeholder={t("essential.search")} value={input} onChange={(event) => setInput(event.target.value)} /></label>
     <label className="flex flex-wrap items-center gap-2">{t("ui.filter_by_state")}<select className="min-h-11 rounded border border-input bg-surface px-3" data-testid="state-filter" value={state} onChange={(event) => update({ state: event.target.value, page: "", file: "" })}>{[["", "essential.all"], ["cloud_only", "state.cloud_only"], ["pending", "state.pending"], ["problem", "state.problem"]].map(([value, key]) => <option key={value} value={value}>{t(key)}</option>)}</select></label>
@@ -110,6 +111,7 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
     <ul className="grid gap-3 md:hidden" data-testid="file-list-cards">{rows.map((target) => <li key={`${target.vaultId}:${target.item.path}`} data-highlighted={target.item.path === focusPath || undefined} className={`min-w-0 rounded-panel border border-line p-3 ${target.item.path === focusPath ? "bg-green-soft" : "bg-surface"}`}><label className="flex min-h-11 items-center gap-3"><input className="size-5" type="checkbox" aria-label={`${t("essential.select")} ${target.vaultName} / ${target.item.path}`} checked={checked(target)} onChange={() => toggle(target)} /><span className="text-sm">{t("essential.select")}</span></label>{cell(target, 0)}<dl className="grid gap-2">{columns.slice(1).map((key, index) => <div key={key}><dt className="text-xs text-muted">{t(key)}</dt><dd>{cell(target, index + 1)}</dd></div>)}</dl></li>)}</ul>
     {query.data?.items.length === 0 && query.data.aggregate_status !== "loading" && <p data-testid="file-list-empty">{t("ui.empty_no_matches")}</p>}
     <div className="flex flex-wrap items-center justify-between gap-2"><p data-testid="page-label">{query.data?.total ?? "—"} · {page}</p><div className="flex gap-2"><Button variant="secondary" disabled={page === 1 || query.isFetching} onClick={() => update({ page: String(page - 1), file: "" })}>{t("ui.previous")}</Button><Button variant="secondary" disabled={query.isFetching || page * 100 >= (query.data?.total ?? 0)} onClick={() => update({ page: String(page + 1), file: "" })}>{t("ui.next")}</Button></div></div>
+    <ActiveOperations vaultId={vaultId} t={t} />
     {message && <p role="alert">{message}</p>}
     {effectiveDetails && <FileDetails key={`${effectiveDetails.vaultId}:${effectiveDetails.item.path}`} target={effectiveDetails} onClose={() => { setDetails(null); if (focusPath) update({ file: "" }); }} onRecover={() => { setRecover([effectiveDetails]); setDetails(null); if (focusPath) update({ file: "" }); }} onRefresh={refresh} t={t} />}
     {recover && <RecoverSelection targets={recover} onClose={() => setRecover(null)} onDone={() => { setRecover(null); refresh(); }} t={t} />}

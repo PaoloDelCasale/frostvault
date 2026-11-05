@@ -14,7 +14,7 @@ describe("essential recovery", () => {
       const url = String(input); const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
       if (init?.method === "POST") bodies.push({ url, body });
       if (url.startsWith("/api/vault/operation-policy")) return jsonResponse({ local_release_after_days: 180 });
-      if (url.startsWith("/api/recover/estimate")) return jsonResponse({ requires_restore: true, estimate: { estimated_cost_eur: 1, estimated_hours: "12–48", tier: body.restore_tier } });
+      if (url.startsWith("/api/recover/estimate")) return jsonResponse({ archive_version_id: "exact-snapshot", requires_restore: true, estimate: { estimated_cost_eur: 1, estimated_hours: 48, tier: body.restore_tier, days: 3 } });
       return jsonResponse({});
     }) });
     const done = vi.fn(); render(<RecoverSelection targets={[target]} t={t} onClose={vi.fn()} onDone={done} />);
@@ -25,9 +25,9 @@ describe("essential recovery", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "ui.row_action_recover" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "ui.row_action_recover" }));
     await waitFor(() => expect(done).toHaveBeenCalled());
-    expect(bodies.at(-1)).toEqual({ url: "/api/recover?vault_id=2", body: { path: "same.jpg", is_directory: false, restore_tier: "Standard" } });
+    expect(bodies.at(-1)).toEqual({ url: "/api/recover?vault_id=2", body: { path: "same.jpg", is_directory: false, restore_tier: "Standard", archive_version_id: "exact-snapshot", restore_days: 3 } });
   });
-  it("hides cold tier choices for immediate recovery and blocks submission if estimates fail", async () => {
+  it("hides cold tier choices for immediate recovery", async () => {
     configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: false }) : jsonResponse({ local_release_after_days: null })) });
     render(<RecoverSelection targets={[target]} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
     await screen.findByText("essential.ready_now"); expect(screen.queryByRole("combobox")).not.toBeInTheDocument();

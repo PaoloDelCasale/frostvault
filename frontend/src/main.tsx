@@ -9,9 +9,9 @@ import { retireOfflineCache } from "./retireOfflineCache";
 import App from "./App";
 import "./index.css";
 
-void retireOfflineCache();
-
-createRoot(document.getElementById("root")!).render(
+// Finish one-way legacy cleanup before mounting. In particular a visible
+// online UI must not race a still-running unregister against a browser upgrade.
+void retireOfflineCache().finally(() => createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ApiQueryProvider>
       <I18nProvider>
@@ -23,4 +23,4 @@ createRoot(document.getElementById("root")!).render(
       </I18nProvider>
     </ApiQueryProvider>
   </StrictMode>,
-);
+));
