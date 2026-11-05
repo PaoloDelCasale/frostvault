@@ -40,6 +40,8 @@ def eligibility(row: dict[str, Any], target: str) -> str | None:
     current = (row.get("storage_class") or "STANDARD").upper()
     if row.get("busy"):
         return "pending_work"
+    if row.get("cloud_check_failed"):
+        return "cloud_check_unavailable"
     if (row.get("integrity") != "verified" or row.get("availability") != "available"
             or not row.get("plaintext_sha256") or row.get("size") is None
             or not row.get("provider_version_id") or row["provider_version_id"] == "null"):
@@ -65,6 +67,34 @@ def candidates(connection: Any, vault_id: int) -> list[dict[str, Any]]:
     """, (vault_id,)).fetchall()
 
 
+def refresh_cold_sources(vault: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    """Observe an explicit external/recovery restore, never request one.
+
+    Restore availability is temporary and listing does not expose it. A cached
+    flag alone must neither admit expired restores nor hide a manually restored
+    exact source, including when a Local Copy is already present.
+    """
+    from .. import storage as worker
+
+    client = None
+    for row in rows:
+        if row.get("storage_class") != "GLACIER" or eligibility({**row,"restore_state":"available"}, "DEEP_ARCHIVE"):
+            continue
+        try:
+            if not str(row.get("object_key") or "").startswith(vault["s3_prefix"].rstrip("/") + "/"):
+                raise MoveBlocked("Source key is outside this Vault")
+            if client is None:
+                client = worker.s3_client()
+            head = client.head_object(Bucket=vault["s3_bucket"], Key=row["object_key"], VersionId=row["provider_version_id"])
+            if (str(head.get("VersionId")) != row["provider_version_id"] or head.get("DeleteMarker")
+                    or head.get("ContentLength") != row["size"]):
+                raise MoveBlocked("Exact cold source identity changed")
+            row["storage_class"] = head.get("StorageClass") or "STANDARD"
+            row["restore_state"] = restore_header_state(head.get("Restore"))[0]
+        except Exception:
+            row["cloud_check_failed"] = True
+
+
 def estimate(rows: list[dict[str, Any]], target: str) -> dict[str, Any]:
     eligible = [r for r in rows if eligibility(r, target) is None]
     skipped = Counter(reason for r in rows if (reason := eligibility(r, target)))
@@ -86,9 +116,12 @@ def estimate(rows: list[dict[str, Any]], target: str) -> dict[str, Any]:
 def preview(connection: Any, vault_id: int) -> dict[str, Any]:
     vault = lock_vault(connection, vault_id)
     require_ready(vault)
+    plan = load_vault_plan(connection, vault_id)
     rows = candidates(connection, vault_id)
+    if any(step.storage_class == "DEEP_ARCHIVE" for step in plan.transitions):
+        refresh_cold_sources(vault, rows)
     return {"vault_id": vault_id, "targets": [estimate(rows, step.storage_class)
-                        for step in load_vault_plan(connection, vault_id).transitions]}
+                        for step in plan.transitions]}
 
 
 def schedule(connection: Any, *, vault_id: int, target: str, user_id: int,
@@ -100,6 +133,8 @@ def schedule(connection: Any, *, vault_id: int, target: str, user_id: int,
     if target not in {step.storage_class for step in load_vault_plan(connection, vault_id).transitions}:
         raise MoveBlocked("Choose a colder class on this Vault's saved Storage Plan")
     rows = candidates(connection, vault_id)
+    if target == "DEEP_ARCHIVE":
+        refresh_cold_sources(vault, rows)
     result = estimate(rows, target)
     group_id = str(uuid.uuid4())
     ids = []

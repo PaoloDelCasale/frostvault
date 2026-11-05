@@ -58,6 +58,29 @@ class ExactCopyTests(unittest.TestCase):
         self.move = dict(object_key="vault/photo", source_version_id="source",token="intent",size=3)
         self.checksum = base64.b64encode(hashlib.sha256(b"abc").digest()).decode()
 
+    def test_explicit_external_cold_restore_is_observed_without_requesting_one(self):
+        row=dict(storage_class='GLACIER',busy=False,integrity='verified',availability='available',
+                 plaintext_sha256='a'*64,size=3,provider_version_id='source',object_key='vault/photo',restore_state='not_requested')
+        self.client.head_object.return_value={'VersionId':'source','ContentLength':3,'StorageClass':'GLACIER',
+                                             'Restore':'ongoing-request="false", expiry-date="Fri, 06 Nov 2026 12:00:00 GMT"'}
+        with patch('app.storage.s3_client',return_value=self.client):
+            moves.refresh_cold_sources({'s3_bucket':'bucket','s3_prefix':'vault/'},[row])
+        self.assertIsNone(moves.eligibility(row,'DEEP_ARCHIVE'))
+        self.assertEqual(self.client.head_object.call_args.kwargs['VersionId'],'source')
+        self.client.restore_object.assert_not_called()
+
+    def test_expired_or_unprovable_cold_restore_is_not_admitted_from_cached_flag(self):
+        row=dict(storage_class='GLACIER',busy=False,integrity='verified',availability='available',
+                 plaintext_sha256='a'*64,size=3,provider_version_id='source',object_key='vault/photo',restore_state='available')
+        self.client.head_object.return_value={'VersionId':'source','ContentLength':3,'StorageClass':'GLACIER'}
+        with patch('app.storage.s3_client',return_value=self.client):
+            moves.refresh_cold_sources({'s3_bucket':'bucket','s3_prefix':'vault/'},[row])
+            self.assertEqual(moves.eligibility(row,'DEEP_ARCHIVE'),'explicit_restore_required')
+            self.client.head_object.side_effect=RuntimeError('provider unavailable')
+            moves.refresh_cold_sources({'s3_bucket':'bucket','s3_prefix':'vault/'},[row])
+            self.assertEqual(moves.eligibility(row,'DEEP_ARCHIVE'),'cloud_check_unavailable')
+        self.client.restore_object.assert_not_called()
+
     def test_small_copy_preserves_metadata_tags_and_exact_source_with_provenance(self):
         self.client.copy_object.return_value = {"VersionId":"dest"}
         result = s3_copy._copy_storage_class_version(self.client,bucket="bucket",object_key="vault/photo",

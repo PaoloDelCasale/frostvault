@@ -82,7 +82,7 @@ class VaultMoveTests(unittest.TestCase):
             yield
 
     def schedule(self, target="DEEP_ARCHIVE"):
-        with PostgresConnection(str(self.path)) as c:
+        with self.worker(), PostgresConnection(str(self.path)) as c:
             result=moves.schedule(c,vault_id=1,target=target,user_id=1,acknowledged=True,timestamp=storage.now_iso())
         self.job_id=result["job_ids"][0]
         return result
@@ -322,7 +322,7 @@ class VaultMoveTests(unittest.TestCase):
 
     def test_explicitly_restored_glacier_moves_only_to_deep_archive(self):
         with PostgresConnection(str(self.path)) as c:
-            c.execute("UPDATE archive_versions SET storage_class='GLACIER',restore_state='available' WHERE id=%s",(self.version_id,))
+            c.execute("UPDATE archive_versions SET storage_class='GLACIER',restore_state='not_requested' WHERE id=%s",(self.version_id,))
         self.provider.versions["s3-v1"].update(StorageClass="GLACIER",Restore='ongoing-request="false", expiry-date="Fri, 06 Nov 2026 12:00:00 GMT"')
         self.schedule()
         self.run_job()

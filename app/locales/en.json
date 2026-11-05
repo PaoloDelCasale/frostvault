@@ -10,6 +10,7 @@
   "move.start": "Move now in background",
   "move.queued": "{count} move Jobs queued. Follow progress or cancel pending work in Operations; cancellation retains copies and does not undo a completed move.",
   "move.unavailable": "No eligible copies for a colder class. Standard has no move action; otherwise verify copies, finish pending work or explicitly restore cold sources first.",
+  "move.skip_cloud_check_unavailable": "{count} skipped: the exact cold source could not be checked with the provider.",
   "move.skip_pending_work": "{count} skipped: pending work (including delayed cloud deletion).",
   "move.skip_unverified_or_unavailable": "{count} skipped: current cloud copy not verified or available.",
   "move.skip_already_equal_or_colder": "{count} skipped: already equal or colder, or unsupported transition.",

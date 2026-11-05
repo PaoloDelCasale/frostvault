@@ -7,6 +7,9 @@ Mixed classes are filtered per exact Current Snapshot; equal/colder, unverified,
 unavailable, busy and unrestored cold sources are reported as skipped. Standard
 has no target. GLACIER sources need an explicitly restored exact VersionId before
 copying to DEEP_ARCHIVE; this action never requests RestoreObject or warms content.
+Preview/admission observe the exact cold source's HEAD, recognizing an explicit
+external restore even with a Local Copy present, rather than trusting a cached
+restore flag or treating expired/unreachable restores as eligible.
 
 ## Consequences
 
