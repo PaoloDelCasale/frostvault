@@ -38,8 +38,9 @@ trust are unchanged. Existing application-owned bucket rules are replaced with
 exact Vault-prefix rules on lifecycle synchronization, not during migration;
 external rules and the seven-day multipart abort are preserved. No retagging or
 cloud deletion is required. Standard does not warm already cold content. The
-internal verified class-copy worker remains for #429, without a public per-file
-class-change action.
+legacy internal class-copy worker remains without a public per-file class-change
+action. Vault-wide Move now (#429) uses immutable verified replacement and a
+durable provenance ledger, not the legacy mutable placement update; see ADR-0021.
 
 The owner accepts that mistaken SMB overwrites, corruption or ransomware can
 replace the only good cloud copy after verification. Verification proves equality

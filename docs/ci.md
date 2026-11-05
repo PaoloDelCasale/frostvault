@@ -144,57 +144,34 @@ these constraints.
 
 ## Local commands
 
+Follow [AGENTS.md](../AGENTS.md) and [epic #410](https://github.com/PaoloDelCasale/frostvault/issues/410):
+run only targeted modules locally, open a draft PR early, and obtain full
+Python/migration/S3/frontend/Playwright/build evidence from PR CI. Do not repeat
+the full workflows locally. Missing `TEST_POSTGRES_URL` is an error for database
+tests, **not skipped PostgreSQL coverage**. Database development, when explicitly
+needed, requires a disposable PostgreSQL 16 instance as documented in AGENTS.md;
+never point tests at a production service.
+
 ```bash
-# Unit suite (same as PR job without Postgres service — PG tests skip)
-.venv/bin/python -m unittest discover -s tests -v
+# From the repository root: use the project's Python 3.12 virtual environment.
+.venv/bin/python -m pip install -r requirements.txt
+# Choose only the module(s) relevant to the change; this example needs no DB/S3.
+.venv/bin/python -m unittest tests.test_s3_upload -v
 
-# PostgreSQL-only suite (requires TEST_POSTGRES_URL)
-.venv/bin/python -m unittest \
-  tests.test_migrations_postgresql.PostgreSQLMigrationTests -v
-
-# Export OpenAPI without a running server (from the repository root)
+# When the API changes, export without starting a server, then regenerate types.
 .venv/bin/python scripts/export_openapi.py frontend/openapi.json
-
-# Frontend SPA, generated API artifacts, and strict environment typechecks (from frontend/)
+cd frontend
 npm ci
 npm run generate:api
-git diff --exit-code -- openapi.json src/api/openapi.generated.ts src/api/types.ts
-npm run typecheck
-npm run lint
-npm run test
-npm run build
-# npm audit gate (same reports the security workflow uploads as artifacts)
-mkdir -p ../artifacts
-npm audit --json > ../artifacts/npm-audit.json || true
-npm audit --omit=dev --json > ../artifacts/npm-audit-prod.json || true
-node scripts/npm-audit-gate.mjs \
-  --full ../artifacts/npm-audit.json \
-  --prod ../artifacts/npm-audit-prod.json \
-  --exceptions ../.github/npm-audit-exceptions.json
-# Add --baseline-full <audit-of-base-lockfile.json> to mimic the pull-request mode.
-# Generated artifacts are committed; CI fails if the schema or TypeScript drifts.
-# `npm run lint` includes e2e/; `npm run typecheck` covers browser, Node, Vitest, and Playwright projects.
-
-# Playwright e2e (requires a built frontend/dist and Chromium)
-npx playwright install chromium
-npm run test:e2e
-
-# Capture-only archive screenshots (375px; demo seams require explicit opt-in)
-VITE_ALLOW_DEMO=1 npm run build
-node scripts/capture-file-browser-screenshots.mjs
-node scripts/capture-file-operations-screenshots.mjs
-
-# Authentication captures use mocked/seeded API routes and need no demo flag:
-# screenshot-auth-pages.mjs
-
-# S3-compatible integrity (the CI job still named "MinIO"): start a local
-# S3 server on :9000, then create the versioned bucket
-# as the workflow does.
-.venv/bin/pip install "moto[server]==5.2.3"
-.venv/bin/moto_server -H 127.0.0.1 -p 9000 &
-export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
-export AWS_DEFAULT_REGION=us-east-1
-export AWS_ENDPOINT_URL=http://127.0.0.1:9000
-export TEST_S3_ENDPOINT=http://127.0.0.1:9000 TEST_S3_BUCKET=archive-ci
-.venv/bin/python -m unittest tests.test_s3_integrity_integration -v
+git diff -- openapi.json src/api/openapi.generated.ts src/api/types.ts
+# A targeted frontend example, not the full Vitest suite:
+npx vitest run src/api/vault.test.ts
 ```
+
+Push and inspect `gh pr checks <pr>`; diagnose failed jobs with
+`gh run view <run-id> --log-failed`. Require SUCCESS for every applicable check
+on the exact final HEAD, not an earlier commit, a skipped job or a local subset.
+The S3 job's historical MinIO name refers to moto, not live AWS/Glacier proof.
+The essential shell has no demo fetch shim or fake archive screenshot mode:
+PR CI exercises disposable browser fixtures at 375px and 1280px. Authentication-only
+captures remain in `screenshot-auth-pages.mjs`.

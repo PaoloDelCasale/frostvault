@@ -13,7 +13,7 @@ reconstruction:
 ## Keep one Recovery Kit outside the server
 
 Download the installation-wide **Recovery Kit** from the recovery panel in the
-current administration/General area (`GET /api/recovery-kit/download`). Recent
+General page (`GET /api/recovery-kit/download`). Recent
 Owner reauthentication is mandatory. The attachment is secret-bearing and
 `no-store`; the action is audited without its contents. It contains:
 
@@ -62,9 +62,9 @@ internal-error problems/metrics.
   `verification_mode=pg_restore_list`, not a proven full restore. No production
   catalog or `vaults/` S3 objects are modified.
 - The weekly protection summary includes the last verified backup date.
-- Authenticated API: `GET /api/admin/metadata-backups`,
-  `POST /api/admin/metadata-backups/run` (CSRF),
-  `GET /api/admin/metadata-backups/download/{run_id}` (ciphertext only).
+- Authenticated API: `GET /api/general/metadata-backups`,
+  `POST /api/general/metadata-backups/run` (CSRF),
+  `GET /api/general/metadata-backups/download/{run_id}` (ciphertext only).
 
 ### Upgrade gate
 
@@ -146,9 +146,13 @@ the private scratch directory. The downloaded kit includes these steps offline.
 
    This also invalidates restored local/mount observations and cancels stale
    nonterminal Jobs without filesystem/S3 operations: request wanted work again
-   after reconnect. Every active Vault stays suspended until explicitly
-   reconnected, even if an old inode happens to match. Retained decommission
-   state remains quiesced and must be reviewed deliberately. Do not start workers
+   after reconnect. Unfinished deletion targets are retired too, so cancelled
+   consent cannot block later protection; already deleted evidence is retained.
+   Every active Vault stays suspended until explicitly reconnected, even if an
+   old inode happens to match. Stopped folders stay
+   stopped; cancelled deletion requests never resume protection. Retained cloud
+   content from stopped folders is recovered with the manual S3 route below.
+   Do not start workers
    against the restored catalog before this step.
 6. Configure AWS, OIDC environment and `BOOTSTRAP_ADMIN_*` securely. Start the
    app and sign in. The current Emergency Password is reapplied at startup and

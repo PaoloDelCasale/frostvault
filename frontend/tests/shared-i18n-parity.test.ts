@@ -61,18 +61,6 @@ const MULTILINE_JSX_TEXT =
 
 const T_KEY_CALL = /\bt\(\s*["']([^"']+)["']/g;
 
-/**
- * Login copy changed for issue #159 and is served by the screenshot demo.
- * Keep these required even though the demo catalog intentionally omits most
- * of the full English catalog.
- */
-const ISSUE_159_LOGIN_KEYS = [
-  "login.subtitle",
-  "login.admin_recovery",
-  "login.local_unavailable",
-  "login.oidc",
-] as const;
-
 function findHardcodedStrings(source: string): string[] {
   const found: string[] = [];
   for (const pattern of [SAME_LINE_JSX_TEXT, MULTILINE_JSX_TEXT]) {
@@ -132,27 +120,11 @@ describe("shared component i18n coverage parity", () => {
     expect(missing).toEqual([]);
   });
 
-  it("keeps demo English messages synchronized with the relevant en.json subset", async () => {
-    const [enRaw, demoRaw] = await Promise.all([
-      readFile(path.join(localesDir, "en.json"), "utf8"),
-      readFile(path.join(frontendRoot, "public", "demo-en-catalog.json"), "utf8"),
-    ]);
-    const en = JSON.parse(enRaw) as Record<string, string>;
-    const demo = JSON.parse(demoRaw) as Record<string, string>;
-
-    // The demo catalog is intentionally a subset: every included entry must
-    // match English, but the full catalog need not be copied into the demo.
-    const demoMismatches = Object.entries(demo).flatMap(([key, value]) => {
-      if (!(key in en)) return [`${key}: missing from en.json`];
-      return en[key] === value ? [] : [`${key}: value differs from en.json`];
-    });
-    const requiredLoginMismatches = ISSUE_159_LOGIN_KEYS.flatMap((key) => {
-      if (!(key in en)) return [`${key}: missing from en.json`];
-      if (!(key in demo)) return [`${key}: missing from demo-en-catalog.json`];
-      return en[key] === demo[key] ? [] : [`${key}: value differs from en.json`];
-    });
-
-    expect(Object.keys(demo)).not.toHaveLength(0);
-    expect([...demoMismatches, ...requiredLoginMismatches]).toEqual([]);
+  it("removes superseded shell catalogs in both languages together", async () => {
+    for (const locale of ["en", "it"]) {
+      const messages = JSON.parse(await readFile(path.join(localesDir, `${locale}.json`), "utf8")) as Record<string, string>;
+      expect(Object.keys(messages).some((key) => key.startsWith("admin.") || key.startsWith("access.") || ["ui.manage_access", "ui.administration"].includes(key))).toBe(false);
+      for (const key of ["essential.general", "essential.search", "essential.bulk", "essential.details"]) expect(messages[key]).toBeTruthy();
+    }
   });
 });

@@ -88,7 +88,7 @@ class FileBrowserTests(unittest.TestCase):
                 "upload": 1,
                 "recover": 1,
                 "free-space": 1,
-                "cloud-purge": 2,
+                "cloud-purge": 1,
 
             },
         )

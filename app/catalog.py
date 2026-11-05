@@ -83,6 +83,7 @@ class ArchiveCatalog:
         self._storage_class_source_supported: bool | None = None
         self._cloud_only_hold_supported: bool | None = None
         self._content_observation_supported: bool | None = None
+        self._delayed_deletion_supported: bool | None = None
 
     def _supports_storage_class_source(self) -> bool:
         """Keep migration-time catalog writes compatible with pre-0040 schemas."""
@@ -131,6 +132,28 @@ class ArchiveCatalog:
         ).fetchone()["present"])
         self._cloud_only_hold_supported = present
         return present
+
+    def _cancel_reappeared_deletions(self, vault_id: int, file_ids: list[str], at: str) -> None:
+        """A reappearance permanently revokes pending consent, even if removed again.
+
+        Observation already owns the Vault lock. Cancel the entire selection,
+        never leave a partially authorized delayed request behind.
+        """
+        if self._delayed_deletion_supported is None:
+            self._delayed_deletion_supported = bool(self.connection.execute("""
+                SELECT EXISTS (SELECT 1 FROM information_schema.tables
+                WHERE table_schema=current_schema() AND table_name='protection_stops') AS present
+            """).fetchone()["present"])
+        if not self._delayed_deletion_supported or not file_ids:
+            return
+        from .services.cloud_deletion import cancel_cloud_deletion
+        placeholders = ','.join('%s' for _ in file_ids)
+        groups = self.connection.execute(f"""SELECT DISTINCT group_id FROM jobs
+            WHERE vault_id=%s AND vault_file_id IN ({placeholders})
+              AND action='cloud-purge' AND status='pending_delay'""", (vault_id, *file_ids)).fetchall()
+        for row in groups:
+            cancel_cloud_deletion(self.connection, vault_id=vault_id, group_id=row["group_id"],
+                                  actor_user_id=None, cancelled_at=at)
 
     def _mark_path_aggregates_dirty(self, vault_id: int, path: str | None) -> None:
         mark_path_dirty(self.connection, vault_id, path)
@@ -344,6 +367,7 @@ class ArchiveCatalog:
                 "UPDATE local_copies SET recovered_at=%s WHERE vault_file_id=%s",
                 (recovered_at, file_id),
             )
+        self._cancel_reappeared_deletions(vault_id, [file_id], observed_at)
         self._mark_path_aggregates_dirty(vault_id, path)
         return file_id
 
@@ -663,6 +687,7 @@ class ArchiveCatalog:
             """,
             params,
         )
+        self._cancel_reappeared_deletions(vault_id, list(file_ids.values()), observed_at)
         mark_paths_dirty(self.connection, vault_id, paths)
         return file_ids
 
@@ -2227,6 +2252,7 @@ class ArchiveCatalog:
                 av.etag,
                 av.plaintext_sha256,
                 av.uploaded_at,
+                av.verified_at,
                 av.integrity,
                 av.availability,
                 av.restore_state,
@@ -2335,6 +2361,42 @@ class ArchiveCatalog:
             # ready | loading | stale — listing never blocks on full rebuild.
             "aggregate_status": aggregate_status,
         }
+
+    def search_protected_vaults(
+        self, vaults: list[dict[str, Any]], *, search: str, state: str,
+        page: int, page_size: int,
+    ) -> dict[str, Any]:
+        """SQL-bounded cross-Vault search; never change Session selection.
+
+        Each branch uses that Vault's current source observation. Filtering before
+        LIMIT and COUNT prevents false Cloud-only matches on unavailable mounts.
+        Only the requested page is materialized, including duplicate paths.
+        """
+        branches, params = [], []
+        for vault in vaults:
+            catalog = ArchiveCatalog(self.connection, protection_unconfirmed=vault["unconfirmed"])
+            clauses, values = catalog._direct_child_file_clauses(
+                vault["id"], directory="", state=state, search=search or "%",
+            )
+            sql = catalog._file_row_select_sql(clauses)
+            branches.append(f"SELECT scoped.*, %s::bigint AS vault_id, %s::text AS vault_name FROM ({sql}) scoped")
+            params.extend([vault["id"], vault["name"], *values])
+        if not branches:
+            return {"items": [], "total": 0, "page": page, "mode": "search", "directory": "", "aggregate_status": "ready"}
+        union = " UNION ALL ".join(branches)
+        total = self.connection.execute(f"SELECT count(*) AS total FROM ({union}) matches", params).fetchone()["total"]
+        rows = self.connection.execute(
+            f"SELECT * FROM ({union}) matches ORDER BY lower(path), path, vault_id LIMIT %s OFFSET %s",
+            [*params, page_size, (page - 1) * page_size],
+        ).fetchall()
+        by_id = {vault["id"]: vault for vault in vaults}
+        items = []
+        for row in rows:
+            vault = by_id[row["vault_id"]]
+            catalog = ArchiveCatalog(self.connection, protection_unconfirmed=vault["unconfirmed"])
+            for item in catalog._materialize_file_items(vault["id"], [row], name_from_path=True):
+                items.append({**item, "vault_id": vault["id"], "vault_name": vault["name"]})
+        return {"items": items, "total": total, "page": page, "mode": "search", "directory": "", "aggregate_status": "ready"}
 
     def _browse_directory_page(
         self,
@@ -2446,6 +2508,7 @@ class ArchiveCatalog:
                 lc.presence AS local_presence,
                 lc.file_type AS local_file_type,
                 lc.size AS local_size,
+                lc.mtime_ns AS local_mtime_ns,
                 lc.plaintext_sha256 AS local_sha256,
                 lc.matched_archive_version_id,
                 lc.cloud_only_version_id,
@@ -2512,6 +2575,8 @@ class ArchiveCatalog:
                     "path": row["path"],
                     "local_exists": int(local_exists),
                     "local_size": row["local_size"],
+                    "modified_at": (datetime.fromtimestamp(int(row["local_mtime_ns"]) / 1e9, timezone.utc).isoformat()
+                                    if row.get("local_mtime_ns") else None),
                     "local_file_type": row["local_file_type"],
                     "cloud_exists": int(cloud_exists),
                     "cloud_size": row["cloud_size"],
@@ -2521,6 +2586,7 @@ class ArchiveCatalog:
                     "restore_state": row["restore_state"],
                     "restore_expiry": row["restore_expiry"],
                     **protection,
+                    "cloud_only_conflict": bool(row.get("cloud_only_version_id")),
                     "upload_eligible": upload_eligible and not self.protection_unconfirmed,
                     "recover_eligible": recover_eligible,
                     "recoverable_version_count": recoverable_count,
@@ -2762,15 +2828,15 @@ class ArchiveCatalog:
             SELECT j.*, v.source_root, v.s3_bucket,
                    v.s3_prefix,
                    v.uuid AS vault_uuid, v.name AS vault_name,
-                   v.cloud_deletion_enabled, v.decommission_state
+                   v.decommission_state
             FROM jobs j
             JOIN vaults v ON v.id=j.vault_id
             WHERE v.relocation_state='ready'
               AND (
                     (v.enabled=TRUE AND v.decommission_state='active'
-                     AND j.origin<>'decommission')
+                     AND j.origin IN ('manual','automatic'))
                  OR (v.decommission_state='decommissioning'
-                     AND j.origin='decommission')
+                     AND j.origin='stop-protection' AND j.action='cloud-purge')
               )
               AND ({predicate})
             ORDER BY j.requested_at ASC, j.id ASC
@@ -3075,9 +3141,9 @@ class ArchiveCatalog:
             WHERE v.relocation_state='ready'
               AND (
                     (v.enabled=TRUE AND v.decommission_state='active'
-                     AND j.origin<>'decommission')
+                     AND j.origin IN ('manual','automatic'))
                  OR (v.decommission_state='decommissioning'
-                     AND j.origin='decommission')
+                     AND j.origin='stop-protection' AND j.action='cloud-purge')
               )
               AND ({predicate})
             """,
@@ -3163,28 +3229,10 @@ class ArchiveCatalog:
         # the candidate read and inserts.
         # Every manual upload/recovery/free-space admission therefore observes
         # one serialized Vault state.
-        lock_vault(
-            self.connection,
-            vault_id,
-            allow_decommission=origin == "decommission",
-        )
+        lock_vault(self.connection, vault_id)
         self.last_skipped_same_class = 0
-        vault = self.connection.execute(
-            """
-            SELECT decommission_state
-            FROM vaults WHERE id=%s
-            """,
-            (vault_id,),
-        ).fetchone()
-        if vault is None:
-            raise ValueError(f"Vault {vault_id} not found")
-        lifecycle = str(vault.get("decommission_state") or "active")
-        if lifecycle != "active" and not (
-            lifecycle == "decommissioning" and origin == "decommission"
-        ):
-            raise ValueError("Vault is quiesced for decommission")
-        if origin == "decommission" and lifecycle != "decommissioning":
-            raise ValueError("Decommission Jobs require a quiesced Vault")
+        if origin not in {"manual", "automatic"}:
+            raise ValueError("Unsupported Job origin")
         clauses = ["vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'"]
         params: list[Any] = [vault_id]
         clauses.append(

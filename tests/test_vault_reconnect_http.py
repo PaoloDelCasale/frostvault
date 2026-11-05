@@ -45,9 +45,9 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
     def test_reconnect_needs_session_csrf_but_not_recent_reauthentication(self):
         client, headers = self.client_for(stale=True)
         payload = {"volume_alias": "photos", "relative_path": "new", "reason": "restore"}
-        self.assertEqual(client.post("/api/admin/vaults/7/reconnect", json=payload, headers=headers).status_code, 404)
-        self.assertEqual(client.post("/api/admin/vaults/7/reconnect", json=payload).status_code, 403)
-        self.assertEqual(client.post("/api/admin/vaults/7/relocate", json=payload, headers=headers).status_code, 404)
+        self.assertEqual(client.post("/api/vaults/7/reconnect", json=payload, headers=headers).status_code, 404)
+        self.assertEqual(client.post("/api/vaults/7/reconnect", json=payload).status_code, 403)
+        self.assertEqual(client.post("/api/vaults/7/relocate", json=payload, headers=headers).status_code, 404)
 
     def test_kit_requires_authentication_and_recent_reauthentication(self):
         anonymous = TestClient(app)

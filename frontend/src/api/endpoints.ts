@@ -6,14 +6,12 @@ import {
 } from "./client";
 import type { ApiDownload } from "./client";
 import type {
-  AdminVaultReconnectPayload,
-  AdminVaultReconnectResponse,
+  GeneralVaultReconnectPayload,
+  GeneralVaultReconnectResponse,
   RecoveryKitStatus,
-  AdminVaultsResponse,
-  VaultDecommissionPreview,
-  VaultDecommissionSelection,
-  VaultDecommissionStartPayload,
-  VaultDecommissionStatus,
+  StopProtectionPayload,
+  StopProtectionStatus,
+  GeneralVaultsResponse,
   SourceVolumeInventoryResponse,
   SourceDirectoryBrowseResponse,
   CloudDeletionPreview,
@@ -45,8 +43,19 @@ import type {
   VaultSelectRequest,
   VaultSelectResponse,
   VaultsResponse,
+  VaultMoveRequest,
+  VaultMovePreview,
+  VaultMoveResponse,
 } from "./types";
 import { translate } from "@/i18n/translate";
+
+export function fetchVaultMove(vaultId?: number): Promise<VaultMovePreview> {
+  return apiRequest<VaultMovePreview>(scoped("/api/vault/move", vaultId));
+}
+
+export function startVaultMove(payload: VaultMoveRequest): Promise<VaultMoveResponse> {
+  return apiRequest<VaultMoveResponse>(scoped("/api/vault/move", payload.vault_id), { method: "POST", body: JSON.stringify(payload) });
+}
 
 const DEFAULT_PAGE_SIZE = 100;
 
@@ -246,14 +255,18 @@ export function updateLocale(locale: string): Promise<LocaleUpdateResponse> {
   });
 }
 
-export function fetchOperationPolicy(): Promise<OperationPolicy> {
-  return apiRequest<OperationPolicy>("/api/vault/operation-policy");
+function scoped(path: string, vaultId?: number): string {
+  return vaultId === undefined ? path : `${path}?vault_id=${vaultId}`;
+}
+
+export function fetchOperationPolicy(vaultId?: number): Promise<OperationPolicy> {
+  return apiRequest<OperationPolicy>(scoped("/api/vault/operation-policy", vaultId));
 }
 
 export function updateOperationPolicy(
-  policy: Partial<OperationPolicy>,
+  policy: Partial<OperationPolicy>, vaultId?: number,
 ): Promise<OperationPolicy> {
-  return apiRequest<OperationPolicy>("/api/vault/operation-policy", {
+  return apiRequest<OperationPolicy>(scoped("/api/vault/operation-policy", vaultId), {
     method: "PUT",
     body: JSON.stringify(policy),
   });
@@ -273,32 +286,23 @@ export function previewOperationGlobs(payload: {
   );
 }
 
-export function fetchLifecycle(): Promise<LifecycleResponse> {
-  return apiRequest<LifecycleResponse>("/api/vault/lifecycle");
+export function fetchLifecycle(vaultId?: number): Promise<LifecycleResponse> {
+  return apiRequest<LifecycleResponse>(scoped("/api/vault/lifecycle", vaultId));
 }
 
 export function updateLifecycleDefault(
-  selection: string | LifecycleProfileSelection,
+  selection: string | LifecycleProfileSelection, vaultId?: number,
 ): Promise<LifecycleResponse> {
   const payload =
     typeof selection === "string" ? { guided_profile: selection } : selection;
-  return apiRequest<LifecycleResponse>("/api/vault/lifecycle", {
+  return apiRequest<LifecycleResponse>(scoped("/api/vault/lifecycle", vaultId), {
     method: "PUT",
     body: JSON.stringify(payload),
   });
 }
 
 export function fetchCloudDeletion(): Promise<CloudDeletionSettings> {
-  return apiRequest<CloudDeletionSettings>("/api/vault/cloud-deletion");
-}
-
-export function updateCloudDeletion(
-  enabled: boolean,
-): Promise<CloudDeletionSettings> {
-  return apiRequest<CloudDeletionSettings>("/api/vault/cloud-deletion", {
-    method: "PUT",
-    body: JSON.stringify({ enabled }),
-  });
+  return apiRequest<CloudDeletionSettings>("/api/cloud-deletion");
 }
 
 /** List the authenticated user's visible in-app notifications and unread count. */
@@ -343,9 +347,9 @@ export function markAllNotificationsRead(): Promise<MarkAllNotificationsReadResp
   );
 }
 
-export function fetchAdminMetadataBackups(): Promise<MetadataBackupsResponse> {
+export function fetchGeneralMetadataBackups(): Promise<MetadataBackupsResponse> {
   return apiRequest<MetadataBackupsResponseWire>(
-    "/api/admin/metadata-backups",
+    "/api/general/metadata-backups",
   ).then((response) => ({
     status: {
       ...response.status,
@@ -357,11 +361,11 @@ export function fetchAdminMetadataBackups(): Promise<MetadataBackupsResponse> {
   }));
 }
 
-export function runAdminMetadataBackup(
+export function runGeneralMetadataBackup(
   payload: MetadataBackupRunAction = { reason: "operator requested backup" },
 ): Promise<MetadataBackupRunResult> {
   return apiRequest<MetadataBackupRunResultWire>(
-    "/api/admin/metadata-backups/run",
+    "/api/general/metadata-backups/run",
     {
       method: "POST",
       body: JSON.stringify(payload),
@@ -369,23 +373,23 @@ export function runAdminMetadataBackup(
   ).then(safeMetadataBackupResult);
 }
 
-export function downloadAdminMetadataBackup(
+export function downloadGeneralMetadataBackup(
   runId: number,
 ): Promise<MetadataBackupDownload> {
   if (!Number.isSafeInteger(runId) || runId < 1) {
     return Promise.reject(new TypeError("Metadata backup run ID must be positive"));
   }
   return apiDownload(
-    `/api/admin/metadata-backups/download/${encodeURIComponent(String(runId))}`,
+    `/api/general/metadata-backups/download/${encodeURIComponent(String(runId))}`,
     {},
     `metadata-backup-${runId}.bak.enc`,
   );
 }
 
-export function estimateAdminStorageCost(
+export function estimateGeneralStorageCost(
   payload: StorageEstimateRequest,
 ): Promise<StorageEstimateResponse> {
-  return apiRequest<StorageEstimateResponse>("/api/admin/cost-estimates/storage", {
+  return apiRequest<StorageEstimateResponse>("/api/general/cost-estimates/storage", {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -405,55 +409,32 @@ export function acknowledgeRecoveryKit(fingerprint: string): Promise<RecoveryKit
   });
 }
 
-export function fetchAdminVaults(): Promise<AdminVaultsResponse> {
-  return apiRequest<AdminVaultsResponse>("/api/admin/vaults");
+export function fetchGeneralVaults(): Promise<GeneralVaultsResponse> {
+  return apiRequest<GeneralVaultsResponse>("/api/general/vaults");
 }
 
-export function reconnectAdminVault(
+export function reconnectGeneralVault(
   vaultId: number,
-  payload: AdminVaultReconnectPayload,
-): Promise<AdminVaultReconnectResponse> {
-  return apiRequest<AdminVaultReconnectResponse>(
-    `/api/admin/vaults/${vaultId}/reconnect`,
+  payload: GeneralVaultReconnectPayload,
+): Promise<GeneralVaultReconnectResponse> {
+  return apiRequest<GeneralVaultReconnectResponse>(
+    `/api/vaults/${vaultId}/reconnect`,
     { method: "POST", body: JSON.stringify(payload) },
   );
 }
 
-export function previewOwnVaultDecommission(
-  vaultId: number,
-  payload: VaultDecommissionSelection,
-): Promise<VaultDecommissionPreview> {
-  return apiRequest<VaultDecommissionPreview>(
-    `/api/vaults/${vaultId}/decommission/preview`,
-    { method: "POST", body: JSON.stringify(payload) },
-  );
+export function fetchStopProtection(vaultId: number): Promise<StopProtectionStatus> {
+  return apiRequest<StopProtectionStatus>(`/api/vaults/${vaultId}/stop-protection`);
 }
 
-export function startOwnVaultDecommission(
-  vaultId: number,
-  payload: VaultDecommissionStartPayload,
-): Promise<VaultDecommissionStatus> {
-  return apiRequest<VaultDecommissionStatus>(`/api/vaults/${vaultId}/decommission`, {
-    method: "POST",
-    body: JSON.stringify(payload),
+export function stopProtection(vaultId: number, payload: StopProtectionPayload): Promise<StopProtectionStatus> {
+  return apiRequest<StopProtectionStatus>(`/api/vaults/${vaultId}/stop-protection`, {
+    method: "POST", body: JSON.stringify(payload),
   });
 }
 
-export function fetchOwnVaultDecommissionStatus(
-  vaultId: number,
-): Promise<VaultDecommissionStatus> {
-  return apiRequest<VaultDecommissionStatus>(
-    `/api/vaults/${vaultId}/decommission/status`,
-  );
-}
-
-export function cancelOwnVaultDecommissionCloudPurge(
-  vaultId: number,
-): Promise<VaultDecommissionStatus> {
-  return apiRequest<VaultDecommissionStatus>(
-    `/api/vaults/${vaultId}/decommission/cloud-purge/cancel`,
-    { method: "POST", body: "{}" },
-  );
+export function cancelStoppedFolderDeletion(vaultId: number): Promise<StopProtectionStatus> {
+  return apiRequest<StopProtectionStatus>(`/api/vaults/${vaultId}/stop-protection/cancel-deletion`, { method: "POST", body: "{}" });
 }
 
 export function requestScan(): Promise<ScanResponse> {
@@ -543,15 +524,6 @@ export function startCloudPurge(
   });
 }
 
-export function accelerateCloudPurge(
-  groupId: string,
-): Promise<FileOperationResponse> {
-  return apiRequest<FileOperationResponse>("/api/cloud-purge/accelerate", {
-    method: "POST",
-    body: JSON.stringify({ group_id: groupId }),
-  });
-}
-
 export function cancelJob(
   payload: JobCancelPayload,
 ): Promise<JobCancelResponse> {
@@ -578,8 +550,8 @@ export function logout(): Promise<{ message: string; message_key: string }> {
   });
 }
 
-export function fetchAdminSourceVolumes(): Promise<SourceVolumeInventoryResponse> {
-  return apiRequest<SourceVolumeInventoryResponse>("/api/admin/source-volumes");
+export function fetchGeneralSourceVolumes(): Promise<SourceVolumeInventoryResponse> {
+  return apiRequest<SourceVolumeInventoryResponse>("/api/general/source-volumes");
 }
 
 export function browseSourceVolume(

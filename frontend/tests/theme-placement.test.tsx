@@ -16,7 +16,6 @@ import { translate } from "@/i18n/translate";
 import { AppShell } from "@/layout/AppShell";
 import type { ShellCapabilities, ShellNavHandlers } from "@/layout/types";
 import { LoginPage } from "@/pages/login/LoginPage";
-import { NoVaultPage } from "@/pages/no-vault/NoVaultPage";
 import { VaultCreatePage } from "@/pages/vault-create";
 import { ThemeProvider } from "@/theme";
 
@@ -41,8 +40,7 @@ const shellCapabilities: ShellCapabilities = {
 
 const shellHandlers: ShellNavHandlers = {
   onNewVault: vi.fn(),
-  onManageAccess: vi.fn(),
-  onAdministration: vi.fn(),
+  onGeneral: vi.fn(),
   onSignOut: vi.fn(),
   onLocaleChange: vi.fn(),
   onVaultChange: vi.fn(),
@@ -222,16 +220,6 @@ describe("theme control placement (#223 / #224)", () => {
     expect(
       screen.queryByRole("button", { name: catalog["ui.open_account_menu"] }),
     ).not.toBeInTheDocument();
-  });
-
-  it("moves Appearance out of the no-Vault page body into preferences", async () => {
-    const { catalog, user } = renderWithProviders(<NoVaultPage />);
-
-    expect(screen.queryByTestId("theme-control")).not.toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: catalog["ui.open_preferences"] }),
-    );
-    expect(await screen.findAllByTestId("theme-control")).toHaveLength(1);
   });
 
   it("moves Appearance out of the Vault creation page body into preferences", async () => {

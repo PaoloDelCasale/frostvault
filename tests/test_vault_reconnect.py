@@ -160,7 +160,7 @@ class VaultReconnectTests(unittest.TestCase):
         with self.assertRaises(vault_relocation.VaultRelocationError) as error: self.reconnect()
         self.assertEqual(error.exception.reason, "overlap")
 
-    def test_active_job_and_decommission_block_reconnect(self):
+    def test_active_job_and_stopped_protection_block_reconnect(self):
         with PostgresConnection(str(self.db_path)) as connection:
             file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
             connection.execute("INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at) VALUES (7,%s,'a','upload','queued','now','now')", (file_id,))
@@ -170,7 +170,7 @@ class VaultReconnectTests(unittest.TestCase):
             connection.execute("UPDATE jobs SET status='completed'")
             connection.execute("UPDATE vaults SET decommission_state='decommissioning' WHERE id=7")
         with self.assertRaises(vault_relocation.VaultRelocationError) as error: self.reconnect()
-        self.assertEqual(error.exception.reason, "decommission_in_progress")
+        self.assertEqual(error.exception.reason, "protection_stopped")
 
     def test_handoff_failure_rolls_back_root_and_acceptance(self):
         def fail(): raise RuntimeError("handoff failed")
@@ -183,7 +183,7 @@ class VaultReconnectTests(unittest.TestCase):
 
     def test_scan_lock_serializes_reconnect_handoff(self):
         from fastapi import BackgroundTasks
-        from app.main import VaultReconnect, admin_reconnect_vault_root
+        from app.main import VaultReconnect, reconnect_vault_root
         from app.storage import scan_vault
         entered, proceed = threading.Event(), threading.Event()
         original = vault_relocation.reconnect_vault_root
@@ -193,7 +193,7 @@ class VaultReconnectTests(unittest.TestCase):
             return original(connection, **kwargs)
         def invoke():
             try:
-                outcome.append(admin_reconnect_vault_root(7, VaultReconnect(volume_alias="photos", relative_path="new", reason="restore"), BackgroundTasks(), {"id": 1}))
+                outcome.append(reconnect_vault_root(7, VaultReconnect(volume_alias="photos", relative_path="new", reason="restore"), BackgroundTasks(), {"id": 1}))
             except BaseException as exc: outcome.append(exc)
         with patch("app.main.vault_relocation_service.reconnect_vault_root", side_effect=delayed):
             thread = threading.Thread(target=invoke); thread.start()

@@ -40,12 +40,15 @@ Archive Versions and destroy them.
 
 Mitigations built into the application:
 
-- vault cloud-deletion setting defaults to **off**
-- permanent purge requires owner/admin reauthentication, vault-name or generated
-  phrase confirmation, a typed reason, and a cancellable delay (default 24 hours)
-- operators and viewers cannot approve or execute permanent purge
-- every request, cancellation, partial failure, and completion is audited and
-  notified
+- only Cloud-only files can be explicitly deleted; files present on the server,
+  unobservable sources and pending file work block the entire selection
+- the Owner types the exact Vault name and a reason, with recent reauthentication
+- every request has a fixed **seven-day cancellable delay**, never accelerated
+- exact VersionIds are captured once; reappearance or changed cloud content
+  revokes consent instead of broadening the targets
+- every request, cancellation, partial failure and completion is audited
+- Stop Protection retains every Local Copy and uses exactly the same cloud gates;
+  the cloud-keep choice performs no provider deletion calls
 
 Prefer a dedicated deletion role and stricter IAM boundaries when your threat
 model requires separating ordinary archive work from permanent purge.

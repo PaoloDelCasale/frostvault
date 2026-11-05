@@ -78,10 +78,9 @@ def _seed(paths: dict[str, Path]) -> dict:
         primary_id = connection.execute(
             """
             INSERT INTO vaults(
-                slug, name, source_root, s3_bucket, s3_prefix,
-                cloud_deletion_enabled
+                slug, name, source_root, s3_bucket, s3_prefix
             ) VALUES (
-                'family', 'Family Archive', %s, 'e2e-bucket', 'family', TRUE
+                'family', 'Family Archive', %s, 'e2e-bucket', 'family'
             ) RETURNING id
             """,
             (str(paths["source_primary"]),),
@@ -165,6 +164,27 @@ def _seed(paths: dict[str, Path]) -> dict:
             mtime_ns=1_700_000_000_200_000_000,
             observed_at="2026-07-03T10:00:00+00:00",
         )
+
+        # Real catalog/API fixtures for the essential interface. S3 transfer
+        # execution is covered by the separate MinIO CI job, not this UI server.
+        for vault_id, prefix in ((primary_id, 'family'), (secondary_id, 'secondary')):
+            version = catalog.record_archive_version(
+                vault_id=vault_id, path='photos/cold.jpg', object_key=f'{prefix}/photos/cold.jpg',
+                provider_version_id=f'cold-{vault_id}', size=2048, storage_class='DEEP_ARCHIVE',
+                etag='cold', uploaded_at='2026-07-01T10:00:00Z', observed_at='2026-07-01T10:00:00Z', scan_id='seed')
+            catalog.mark_version_verified(version, plaintext_sha256='a'*64, verified_at='2026-07-01T10:00:00Z')
+        conflict_path = paths['source_primary'] / 'incoming' / 'conflict.jpg'
+        conflict_path.parent.mkdir(exist_ok=True)
+        conflict_path.write_bytes(b'new different local bytes')
+        held = catalog.record_archive_version(
+            vault_id=primary_id, path='incoming/conflict.jpg', object_key='family/incoming/conflict.jpg',
+            provider_version_id='held-only-copy', size=12, storage_class='STANDARD', etag='held',
+            uploaded_at='2026-07-01T10:00:00Z', observed_at='2026-07-01T10:00:00Z', scan_id='seed')
+        catalog.mark_version_verified(held, plaintext_sha256='b'*64, verified_at='2026-07-01T10:00:00Z')
+        conflict_file = catalog.observe_local_copy(vault_id=primary_id, path='incoming/conflict.jpg', file_type='regular', size=conflict_path.stat().st_size, mtime_ns=conflict_path.stat().st_mtime_ns, observed_at='2026-07-01T11:00:00Z')
+        connection.execute('UPDATE local_copies SET cloud_only_version_id=%s,plaintext_sha256=%s WHERE vault_file_id=%s', (held, hashlib.sha256(conflict_path.read_bytes()).hexdigest(), conflict_file))
+        from app.services.notifications import set_problem
+        set_problem(connection, key='conflict-e2e', event='cloud_only_conflict', vault_id=primary_id, active=True, params={'path':'incoming/conflict.jpg'})
 
         # UI flows use fixed cloud evidence, not a live S3 provider. Suspend
         # automatic admission explicitly; suspension must not revoke protection
@@ -264,6 +284,29 @@ def _native_fixture_runtime():
         yield
 
 
+def _legacy_worker_fixture(application):
+    """Serve the old Worker from the CI server, not Playwright's page routes.
+
+    Chromium fetches a Worker's entry script outside page interception. Serving
+    the production retirement script here can unregister before `ready` resolves.
+    Only this disposable E2E app recognizes the exact fixture query string.
+    """
+    async def fixture(scope, receive, send):
+        if (scope["type"] == "http" and scope["method"] == "GET"
+                and scope["path"] == "/sw.js" and scope.get("query_string") == b"legacy-test"):
+            from starlette.responses import Response
+            response = Response(
+                '// legacy-worker-fixture\n'
+                'self.addEventListener("install", e => e.waitUntil(self.skipWaiting()));'
+                'self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));',
+                media_type="application/javascript", headers={"Cache-Control": "no-store"},
+            )
+            await response(scope, receive, send)
+        else:
+            await application(scope, receive, send)
+    return fixture
+
+
 def main() -> None:
     paths = _ensure_runtime()
     _apply_env(paths)
@@ -279,7 +322,8 @@ def main() -> None:
     host = os.environ.get("E2E_HOST", "127.0.0.1")
     port = int(os.environ.get("E2E_PORT", "8080"))
     with _native_fixture_runtime():
-        uvicorn.run("app.main:app", host=host, port=port, log_level="warning")
+        from app.main import app
+        uvicorn.run(_legacy_worker_fixture(app), host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":

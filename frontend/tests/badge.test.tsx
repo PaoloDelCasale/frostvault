@@ -8,7 +8,6 @@ const STATES: BadgeState[] = [
   "local_only",
   "cloud_only",
   "restoring",
-  "mixed",
   "missing",
   "unsupported",
 ];

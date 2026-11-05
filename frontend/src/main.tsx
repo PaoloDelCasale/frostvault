@@ -2,23 +2,16 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { ApiQueryProvider } from "@/api";
-import { DEMO_MODE_ENABLED, getDemoSearchParam } from "@/demoGate";
 import { I18nProvider } from "@/i18n";
 import { ThemeProvider } from "@/theme";
-import { installDemoFilesFetch } from "@/pages/archive/demoFiles";
 import { ReauthPasswordGate } from "@/pages/archive/ReauthPasswordGate";
 import { retireOfflineCache } from "./retireOfflineCache";
 import App from "./App";
 import "./index.css";
 
-void retireOfflineCache();
-
-const demoMode = getDemoSearchParam("demo");
-if (DEMO_MODE_ENABLED && demoMode !== "off") {
-  installDemoFilesFetch();
-}
-
-createRoot(document.getElementById("root")!).render(
+// Finish one-way legacy cleanup before mounting. In particular a visible
+// online UI must not race a still-running unregister against a browser upgrade.
+void retireOfflineCache().finally(() => createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ApiQueryProvider>
       <I18nProvider>
@@ -30,4 +23,4 @@ createRoot(document.getElementById("root")!).render(
       </I18nProvider>
     </ApiQueryProvider>
   </StrictMode>,
-);
+));

@@ -793,7 +793,8 @@ def deliver_pending_notifications(
     pending = connection.execute(
         """
         SELECT d.*, n.event AS n_event, n.title AS n_title, n.body AS n_body,
-               n.user_id AS n_user_id, n.vault_id AS n_vault_id, n.job_id AS n_job_id
+               n.user_id AS n_user_id, n.vault_id AS n_vault_id, n.job_id AS n_job_id,
+               n.message_params AS n_message_params
         FROM notification_deliveries d
         JOIN notifications n ON n.id = d.notification_id
         WHERE d.status = 'pending'
@@ -823,6 +824,11 @@ def deliver_pending_notifications(
                     body=row["n_body"],
                     vault_id=row["n_vault_id"],
                 )
+                from .notification_links import notification_url
+                params = _message_params({"message_params": row.get("n_message_params")})
+                link = notification_url(getattr(settings, "app_public_url", ""), row["n_vault_id"], params)
+                if link:
+                    rendered["body"] += "\n" + link + "\n"
                 to_address = smtp_config["to_address"]
                 smtp_client.send(
                     {

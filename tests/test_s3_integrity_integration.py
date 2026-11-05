@@ -21,6 +21,8 @@ from app.catalog import ArchiveCatalog
 from app.main import queue_jobs
 from app.services.s3_prefix_cleanup import cleanup_prefix_versions
 from app.storage import process_jobs_once, s3_client
+from app.services import vault_moves
+from app.services.lifecycle_profiles import guided_profile, profile_to_json
 from tests.s3_integration_support import (
     ensure_versioned_bucket, namespaced_prefix, prepare_plain_vault,
     require_s3_env,
@@ -43,7 +45,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
         report = cleanup_prefix_versions(s3_client(), bucket=self.bucket, prefix=self.prefix)
         self.assertTrue(report.ok, "Test namespace cleanup failed")
 
-    def _roundtrip(self, relative_path, payload):
+    def _roundtrip(self, relative_path, payload, *, move=False, multipart_move=False):
         digest = hashlib.sha256(payload).hexdigest()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -71,6 +73,35 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                     head = s3_client().head_object(Bucket=self.bucket, Key=version["object_key"], VersionId=version["provider_version_id"])
                     self.assertEqual(head["VersionId"], version["provider_version_id"])
                     local = source / relative_path
+                if move:
+                    from contextlib import ExitStack
+                    with PostgresConnection(str(database_path)) as connection:
+                        connection.execute("UPDATE vaults SET storage_plan_json=%s WHERE id=2",
+                            (profile_to_json(guided_profile('economical')),))
+                        scheduled = vault_moves.schedule(connection,vault_id=2,target='STANDARD_IA',
+                            user_id=1,acknowledged=True,timestamp='2026-11-05T12:00:00+00:00')
+                    with ExitStack() as stack:
+                        if multipart_move:
+                            # Real multipart provider calls with CI-sized data;
+                            # production still has the actual 5 GiB cutoff.
+                            for name in ('app.services.s3_copy.S3_SINGLE_COPY_MAX_BYTES',
+                                         'app.services.vault_moves.S3_SINGLE_COPY_MAX_BYTES'):
+                                stack.enter_context(patch(name,8*1024*1024))
+                            stack.enter_context(patch('app.services.s3_copy.S3_MULTIPART_COPY_PART_BYTES',5*1024*1024))
+                        process_jobs_once()
+                    with PostgresConnection(str(database_path)) as connection:
+                        moved=connection.execute('SELECT status,message,archive_version_id FROM jobs WHERE id=%s',
+                                                 (scheduled['job_ids'][0],)).fetchone()
+                        self.assertEqual(moved['status'],'completed',moved['message'])
+                        self.assertNotEqual(moved['archive_version_id'],version['id'])
+                        old=connection.execute('SELECT availability,provider_version_id FROM archive_versions WHERE id=%s',
+                                               (version['id'],)).fetchone()
+                        self.assertEqual(old['availability'],'purged')
+                        listed=s3_client().list_object_versions(Bucket=self.bucket,Prefix=version['object_key'])
+                        self.assertEqual(len(listed.get('Versions',[])),1)
+                        self.assertNotEqual(listed['Versions'][0]['VersionId'],old['provider_version_id'])
+                with PostgresConnection(str(database_path)) as connection:
+                    catalog = ArchiveCatalog(connection)
                     local.unlink()
                     catalog.mark_local_copy_missing(observed["id"], observed_at="2026-07-22T12:30:00+00:00")
                 queue_jobs(relative_path, "recover", 2, 1)
@@ -91,3 +122,9 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
 
     def test_multipart_cutoff_upload_and_recovery(self):
         self._roundtrip("multipart/blob.bin", b"m" * (9 * 1024 * 1024))
+
+    def test_vault_wide_copy_verified_replacement_and_recovery(self):
+        self._roundtrip('moves/photo.bin',b'copy-integrity-payload',move=True)
+
+    def test_multipart_vault_move_verified_replacement_and_recovery(self):
+        self._roundtrip('moves/multipart.bin',b'm'*(9*1024*1024),move=True,multipart_move=True)

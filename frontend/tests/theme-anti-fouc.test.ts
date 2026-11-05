@@ -168,7 +168,6 @@ describe("dark theme first paint", () => {
     expect(css).toContain('[data-theme="dark"]');
     expect(css).toContain("color-scheme: dark");
     expect(css).toContain("--state-both-bg");
-    expect(css).toContain("--state-mixed-bg");
     expect(css).toContain("--storage-glacier-border");
     expect(css).toContain("--toast-success-bg");
     expect(css).toContain("--overlay");
