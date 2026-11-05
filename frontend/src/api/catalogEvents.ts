@@ -23,8 +23,9 @@ const DEFAULT_DOMAINS: CatalogInvalidationDomains[] = [
   "stats",
 ];
 
-export function catalogEventsUrl(afterRevision = 0): string {
+export function catalogEventsUrl(afterRevision = 0, vaultId?: number): string {
   const params = new URLSearchParams();
+  if (vaultId !== undefined) params.set("vault_id", String(vaultId));
   if (afterRevision > 0) {
     params.set("after_revision", String(afterRevision));
   }
@@ -32,8 +33,9 @@ export function catalogEventsUrl(afterRevision = 0): string {
   return query ? `/api/catalog/events?${query}` : "/api/catalog/events";
 }
 
-export function catalogRevisionUrl(afterRevision = 0): string {
+export function catalogRevisionUrl(afterRevision = 0, vaultId?: number): string {
   const params = new URLSearchParams();
+  if (vaultId !== undefined) params.set("vault_id", String(vaultId));
   if (afterRevision > 0) {
     params.set("after_revision", String(afterRevision));
   }
@@ -46,8 +48,9 @@ export function catalogRevisionUrl(afterRevision = 0): string {
 export async function fetchCatalogRevision(
   afterRevision = 0,
   init?: RequestInit,
+  vaultId?: number,
 ): Promise<CatalogRevisionSignal> {
-  const response = await fetch(catalogRevisionUrl(afterRevision), {
+  const response = await fetch(catalogRevisionUrl(afterRevision, vaultId), {
     credentials: "same-origin",
     ...init,
   });
@@ -158,8 +161,9 @@ export function openCatalogEventSource(
   afterRevision: number,
   handlers: CatalogEventHandlers,
   createSource: CatalogEventSourceFactory = defaultEventSourceFactory,
+  vaultId?: number,
 ): CatalogEventSource {
-  const source = createSource(catalogEventsUrl(afterRevision));
+  const source = createSource(catalogEventsUrl(afterRevision, vaultId));
   let closed = false;
 
   source.addEventListener("hello", (event) => {

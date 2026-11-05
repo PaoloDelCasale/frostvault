@@ -19,7 +19,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
     const [item, versions, jobs] = await Promise.all([api.details(target.item.path), api.versions(target.item.path), api.jobs()]);
     return { item, versions, jobs };
   } });
-  const item = data.data?.item;
+  const item = data.data?.item.type === "file" ? data.data.item : undefined;
   const version = (data.data?.versions as FileVersionsResponse | undefined)?.items[0];
   async function perform(fn: () => Promise<unknown>) {
     if (busy) return;
@@ -35,9 +35,9 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
         {data.isPending && <p role="status">{t("ui.loading")}</p>}{data.error && <p role="alert">{String(data.error)}</p>}
         {item && <>
           <p>{t("essential.protection")}: {t(`state.${item.state}`)}</p><p>{t("essential.copy_location", { local: t(item.local_exists ? "essential.on_server" : "essential.not_on_server"), cloud: t(item.cloud_exists ? "essential.in_cloud" : "essential.not_in_cloud") })}</p>
-          <dl className="grid gap-2"><div><dt>{t("essential.last_verified")}</dt><dd>{version?.verified_at ? String(version.verified_at) : "—"}</dd></div><div><dt>{t("essential.cloud_class")}</dt><dd>{version?.storage_class ?? item.storage_class ?? "—"}</dd></div><div><dt>VersionId</dt><dd className="break-all">{version?.provider_version_id ? String(version.provider_version_id) : "—"}</dd></div><div><dt>{t("essential.integrity")}</dt><dd>{version?.integrity ?? item.integrity ?? "—"}</dd></div></dl>
+          <dl className="grid gap-2"><div><dt>{t("essential.last_verified")}</dt><dd>{version?.verified_at ? String(version.verified_at) : "—"}</dd></div><div><dt>{t("essential.cloud_class")}</dt><dd>{version?.storage_class ?? item.storage_class ?? "—"}</dd></div><div><dt>{t("essential.version_id")}</dt><dd className="break-all">{version?.provider_version_id ? String(version.provider_version_id) : "—"}</dd></div><div><dt>{t("essential.integrity")}</dt><dd>{version?.integrity ?? item.integrity ?? "—"}</dd></div></dl>
           {item.state === "problem" && <section className="grid gap-3 rounded border border-line p-3"><h2 className="font-bold">{t("essential.open_problem")}</h2><p>{t(item.cloud_only_conflict ? "essential.conflict_help" : "essential.problem_help")}</p>
-            {item.cloud_only_conflict ? <Button disabled={busy} variant="danger" onClick={() => setReplace(true)}>{t("essential.replace_cloud")}</Button> : item.upload_eligible ? <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload", { path: item.path }))}>{t("essential.retry")}</Button> : null}
+            {Boolean(item.cloud_only_conflict) ? <Button disabled={busy} variant="danger" onClick={() => setReplace(true)}>{t("essential.replace_cloud")}</Button> : item.upload_eligible ? <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload", { path: item.path }))}>{t("essential.retry")}</Button> : null}
           </section>}
           {item.recover_eligible && <Button disabled={busy} onClick={onRecover}>{t("ui.row_action_recover")}</Button>}
           {pending.map((job) => <div key={job.id}><p>{t("essential.deletion_pending")}</p><Button disabled={busy} variant="secondary" onClick={() => void perform(() => api.post("/api/jobs/cancel", { group_id: job.id, action: "cloud-purge" }))}>{t("essential.cancel_deletion")}</Button></div>)}

@@ -1965,6 +1965,7 @@ async def catalog_events_stream(
             resume_after=resume_after,
             subscribe=subscribe,
             is_disconnected=request.is_disconnected,
+            explicit_vault="vault_id" in request.query_params,
         ):
             yield chunk
 

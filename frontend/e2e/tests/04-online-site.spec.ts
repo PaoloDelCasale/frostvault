@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import { applySession } from "../helpers/auth";
 
-test("a Vault selection from another client refreshes the online document", async ({ page, context }) => {
+test("another client's Session selection cannot redirect this browser's pinned Vault",  async ({ page, context }) => {
   await applySession(context);
   await page.goto("/");
   await expect(page.getByTestId("file-browser")).toBeVisible();
@@ -16,7 +16,8 @@ test("a Vault selection from another client refreshes the online document", asyn
   try {
     const response = await select(other.id);
     expect(response.ok()).toBe(true);
-    await expect(page.locator("header h1")).toHaveText(other.name);
+    await page.reload();
+    await expect(page.getByRole("heading", { level: 1, name: me.vault.name, exact: true })).toBeVisible();
     await expect(page.getByTestId("file-browser")).toBeVisible();
   } finally {
     const response = await select(me.vault.id);

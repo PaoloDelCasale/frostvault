@@ -1140,13 +1140,19 @@ export interface components {
         };
         ArchiveListItem: components["schemas"]["VaultFileListItem"] | components["schemas"]["DirectoryListItem"];
         ArchiveVersionItem: {
+            availability?: string | null;
             created_at?: string | null;
             id: string;
+            integrity?: string | null;
             object_key?: string | null;
+            provider_version_id?: string | null;
             recoverable: boolean;
+            restore_expiry?: string | null;
+            restore_state?: string | null;
             size?: number | null;
             storage_class?: string | null;
             storage_class_source?: string | null;
+            verified_at?: string | null;
             version_number: number;
         } & {
             [key: string]: unknown;

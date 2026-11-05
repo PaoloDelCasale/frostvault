@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/api/client";
-import type { ArchiveListItem, FilesResponse } from "@/api/types";
+import type { FilesResponse } from "@/api/types";
 import { vaultApi } from "@/api/vault";
 import { Badge } from "@/components/Badge";
 import { itemStateBadge } from "./protectionLabel";
@@ -93,12 +93,13 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
   return <section className="grid min-w-0 gap-4" data-testid="file-browser">
     <div className="flex items-center justify-between gap-3"><h1 className="min-w-0 break-words text-2xl font-bold">{vaultName}</h1><Button variant="secondary" aria-expanded={settings} onClick={() => setSettings(!settings)}>{t("essential.settings")}</Button></div>
     {problemCount > 0 && <p role="status" className="rounded border border-line p-3"><a className="underline" href="/problems">{t("essential.folder_problems", { count: problemCount })}</a></p>}
+    {query.data?.protection_suspended && <p role="status" className="rounded border border-line p-3">{t("state.protection_suspended")} <button className="min-h-11 underline" onClick={() => setSettings(true)}>{t("essential.settings")}</button></p>}
     {settings && <VaultSettingsPanel key={vaultId} vaultId={vaultId} vaultName={vaultName} onStopped={() => window.location.assign("/general")} />}
     <label className="block"><span className="sr-only">{t("essential.search")}</span><input type="search" className="min-h-11 w-full min-w-0 rounded border border-input bg-surface px-3" data-testid="file-search" placeholder={t("essential.search")} value={input} onChange={(event) => setInput(event.target.value)} /></label>
     <label className="flex flex-wrap items-center gap-2">{t("ui.filter_by_state")}<select className="min-h-11 rounded border border-input bg-surface px-3" data-testid="state-filter" value={state} onChange={(event) => update({ state: event.target.value, page: "", file: "" })}>{[["", "essential.all"], ["cloud_only", "state.cloud_only"], ["pending", "state.pending"], ["problem", "state.problem"]].map(([value, key]) => <option key={value} value={value}>{t(key)}</option>)}</select></label>
     {!global && <nav aria-label={t("ui.breadcrumb_archive")} data-testid="breadcrumbs" className="flex min-w-0 flex-wrap items-center gap-2"><button className="min-h-11 font-bold underline" data-directory="" onClick={() => openFolder("")}>{t("ui.breadcrumb_archive")}</button>{directory.split("/").filter(Boolean).map((part, index, parts) => <button key={index} data-directory={parts.slice(0, index + 1).join("/")} className="min-h-11 break-all underline" onClick={() => openFolder(parts.slice(0, index + 1).join("/"))}>/ {part}</button>)}</nav>}
     {global && <p>{t("essential.global_results")}</p>}
-    {query.isPending && <p role="status" data-testid="file-list-loading">{t("ui.file_list_loading")}</p>}{query.error && <p role="alert">{String(query.error)}</p>}
+    {query.isPending && <p role="status" data-testid="file-list-loading">{t("ui.file_list_loading")}</p>}{query.error && <div role="alert" data-testid="file-list-error"><p>{t("ui.file_list_error")}</p><Button variant="secondary" onClick={() => void query.refetch()}>{t("ui.file_list_retry")}</Button></div>}
     {query.data?.aggregate_status === "loading" && <p role="status">{t("ui.file_list_loading")}</p>}
     <div className="flex flex-wrap gap-2 rounded border border-line p-2" aria-label={t("essential.selection")}>
       <Button disabled={!selected.length || busy || selected.some((row) => !eligible(row, "recover"))} onClick={() => setRecover([...selected])}>{t("ui.row_action_recover")}</Button>

@@ -35,6 +35,12 @@
       "ArchiveVersionItem": {
         "additionalProperties": {},
         "properties": {
+          "availability": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "created_at": {
             "type": [
               "string",
@@ -44,7 +50,19 @@
           "id": {
             "type": "string"
           },
+          "integrity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "object_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_version_id": {
             "type": [
               "string",
               "null"
@@ -52,6 +70,18 @@
           },
           "recoverable": {
             "type": "boolean"
+          },
+          "restore_expiry": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restore_state": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "size": {
             "type": [
@@ -66,6 +96,12 @@
             ]
           },
           "storage_class_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verified_at": {
             "type": [
               "string",
               "null"

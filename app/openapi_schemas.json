@@ -474,6 +474,42 @@
         },
         "version_number": {
           "type": "number"
+        },
+        "verified_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider_version_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "integrity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "availability": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "restore_state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "restore_expiry": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

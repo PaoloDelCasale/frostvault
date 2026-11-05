@@ -522,5 +522,6 @@
   "general.sources_diagnostic_read_only": "The expected Source Volume is read-only. Restore a direct read-write mount.",
   "general.sources_diagnostic_mount_lost": "The Source Volume mount was lost. Restore the expected direct mount.",
   "general.sources_diagnostic_scan_required": "The expected Source Volume returned. Run a full local scan before local operations resume.",
-  "general.sources_diagnostic_unavailable": "Local Source Volume access is unavailable."
+  "general.sources_diagnostic_unavailable": "Local Source Volume access is unavailable.",
+  "essential.version_id": "VersionId"
 }

@@ -63,6 +63,21 @@ class EssentialInterfaceTests(unittest.TestCase):
         self.assertIsNone(notification_url("javascript:alert(1)", 2, {}))
         self.assertEqual(notification_path(None, {}), "/general")
 
+    def test_explicit_live_stream_keeps_owner_revocation_gate_but_not_shared_selection(self):
+        from app.services import catalog_event_stream as stream
+        auth = {"session_vault_id": 1, "revoked_at": None, "idle_expires_at": "2099-01-01T00:00:00+00:00",
+                "absolute_expires_at": "2099-01-01T00:00:00+00:00", "session_session_version": 1,
+                "user_session_version": 1, "vault_available": 1}
+        connection = Mock()
+        connection.execute.return_value.fetchone.side_effect = [auth, {"revision": 0, "retained_from_revision": 1}]
+        with patch.object(stream, "db", lambda: self.connection(connection)):
+            tick = stream.stream_tick_snapshot(session_id="s", user_id=1, vault_id=2, after_revision=0, explicit_vault=True)
+        self.assertTrue(tick.ok)
+        connection.execute.return_value.fetchone.side_effect = [{**auth, "revoked_at": "2026-01-01"}]
+        with patch.object(stream, "db", lambda: self.connection(connection)):
+            tick = stream.stream_tick_snapshot(session_id="s", user_id=1, vault_id=2, after_revision=0, explicit_vault=True)
+        self.assertEqual(tick.error, "session_revoked")
+
     def test_search_is_sql_paged_and_missing_volume_cannot_match_cloud_only(self):
         connection = Mock()
         connection.execute.return_value.fetchone.return_value = {"total": 0}

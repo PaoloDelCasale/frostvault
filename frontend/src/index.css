@@ -96,8 +96,6 @@
   --state-cloud-fg: #24568f;
   --state-restoring-bg: var(--amber-soft);
   --state-restoring-fg: #775400;
-  --state-mixed-bg: var(--violet-soft);
-  --state-mixed-fg: #593a8a;
   --state-unsupported-bg: #e9eeee;
   --state-unsupported-fg: #4b5b51;
   --state-missing-bg: #eeeeee;
@@ -163,8 +161,6 @@
   --state-cloud-fg: #9dd3f5;
   --state-restoring-bg: #574313;
   --state-restoring-fg: #f4d278;
-  --state-mixed-bg: #3f3157;
-  --state-mixed-fg: #d6bbf7;
   --state-unsupported-bg: #303d36;
   --state-unsupported-fg: #bfcec3;
   --state-missing-bg: #303a35;

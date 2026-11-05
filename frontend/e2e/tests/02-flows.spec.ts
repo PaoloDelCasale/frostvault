@@ -93,7 +93,7 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     await emergencyPasswordLogin(page); await nav(page, /^general$/i);
     await expect(page.getByTestId("email-not-configured")).toBeVisible();
     await expect(page.getByText(/last verified metadata backup/i)).toBeVisible();
-    await expect(page.getByText(/fingerprint/i)).toBeVisible();
+    await expect(page.getByText(/^current kit fingerprint/i)).toBeVisible();
     const download = page.waitForEvent("download");
     await page.getByRole("button", { name: /download.*recovery kit/i }).click();
     expect((await download).suggestedFilename()).toContain("recovery-kit");

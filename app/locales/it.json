@@ -522,5 +522,6 @@
   "general.sources_diagnostic_read_only": "Il Source Volume atteso è in sola lettura. Ripristina un mount diretto in lettura e scrittura.",
   "general.sources_diagnostic_mount_lost": "Il mount del Source Volume è stato perso. Ripristina il mount diretto atteso.",
   "general.sources_diagnostic_scan_required": "Il Source Volume atteso è tornato. Esegui una scansione locale completa prima di riprendere le operazioni locali.",
-  "general.sources_diagnostic_unavailable": "L'accesso locale al Source Volume non è disponibile."
+  "general.sources_diagnostic_unavailable": "L'accesso locale al Source Volume non è disponibile.",
+  "essential.version_id": "VersionId"
 }

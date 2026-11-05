@@ -12,11 +12,14 @@ import { apiQueryKeys } from "./query";
 
 const INITIAL_RECONNECT_MS = 1_000;
 const MAX_RECONNECT_MS = 30_000;
+const scheduleReconnectTimer = (callback: () => void, ms: number) => window.setTimeout(callback, ms);
+const cancelReconnectTimer = (id: number) => window.clearTimeout(id);
 
 export type UseCatalogEventsOptions = {
   vaultId: number | null | undefined;
   queryClient: QueryClient;
   enabled?: boolean;
+  explicitVault?: boolean;
   /** Refresh the document when another tab changes this Session's Vault/auth. */
   onSessionChanged?: () => void;
   createSource?: CatalogEventSourceFactory;
@@ -29,6 +32,7 @@ export type UseCatalogEventsOptions = {
 function invalidateForSignal(
   queryClient: QueryClient,
   signal: CatalogRevisionSignal,
+  essentialShell = false,
 ): void {
   const domains = normalizeDomains(signal.domains);
   const tasks: Array<Promise<unknown>> = [];
@@ -48,6 +52,11 @@ function invalidateForSignal(
       }),
     );
   }
+  if (essentialShell && (domains.includes("files") || signal.has_gap)) {
+    for (const prefix of ["general", "details", "file-detail", "problems", "notifications"]) {
+      tasks.push(queryClient.invalidateQueries({ queryKey: [prefix], refetchType: "active" }));
+    }
+  }
   void Promise.all(tasks);
 }
 
@@ -62,11 +71,12 @@ export function useCatalogEvents({
   vaultId,
   queryClient,
   enabled = true,
+  explicitVault = false,
   onSessionChanged,
   createSource,
   fetchRevision = fetchCatalogRevision,
-  schedule = (callback, ms) => window.setTimeout(callback, ms),
-  cancelSchedule = (id) => window.clearTimeout(id),
+  schedule = scheduleReconnectTimer,
+  cancelSchedule = cancelReconnectTimer,
 }: UseCatalogEventsOptions): void {
   const lastRevisionRef = useRef(0);
   const reconnectAttemptRef = useRef(0);
@@ -109,7 +119,7 @@ export function useCatalogEvents({
       }
       if (!signal.has_gap && signal.revision <= lastRevisionRef.current) return;
       lastRevisionRef.current = Math.max(lastRevisionRef.current, signal.revision);
-      invalidateForSignal(queryClient, signal);
+      invalidateForSignal(queryClient, signal, explicitVault);
     };
 
     const connect = () => {
@@ -153,6 +163,7 @@ export function useCatalogEvents({
           },
         },
         createSource,
+        explicitVault ? vaultId : undefined,
       );
     };
 
@@ -173,7 +184,8 @@ export function useCatalogEvents({
 
     const catchUp = () => {
       if (closed || activeVaultRef.current !== vaultId) return;
-      void fetchRevision(lastRevisionRef.current)
+      const snapshot = explicitVault ? fetchRevision(lastRevisionRef.current, undefined, vaultId) : fetchRevision(lastRevisionRef.current);
+      void snapshot
         .then((signal) => {
           if (closed || activeVaultRef.current !== vaultId) return;
           if (signal.vault_id !== vaultId) {
@@ -222,6 +234,7 @@ export function useCatalogEvents({
     cancelSchedule,
     createSource,
     enabled,
+    explicitVault,
     fetchRevision,
     onSessionChanged,
     queryClient,

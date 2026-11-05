@@ -41,7 +41,8 @@ export default function App() {
     if (!me || !chosen) return;
     try { localStorage.setItem(`frostvault.home.${me.id}`, String(chosen.id)); } catch { /* Storage is optional. */ }
   }, [me, chosen]);
-  useCatalogEvents({ vaultId: me?.vault?.id ?? null, queryClient: client, enabled: Boolean(me?.vault) && !leaving, onSessionChanged: () => window.location.reload() });
+  const refreshDocument = useCallback(() => window.location.reload(), []);
+  useCatalogEvents({ vaultId: chosen?.id ?? null, explicitVault: true, queryClient: client, enabled: Boolean(chosen) && !leaving, onSessionChanged: refreshDocument });
   if (pathname === "/login") return <LoginPage />;
   if (!me || leaving) return <p role={error ? "alert" : "status"} className="p-6">{error || t("ui.loading")}</p>;
   const go = (url: string) => window.location.assign(url);
