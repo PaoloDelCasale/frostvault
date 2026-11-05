@@ -82,7 +82,7 @@ describe("apiRequest Reauthentication", () => {
     );
 
     await expect(
-      apiRequest("/api/admin/metadata-backups", { method: "POST", body: "{}" }),
+      apiRequest("/api/general/metadata-backups", { method: "POST", body: "{}" }),
     ).rejects.toBeInstanceOf(ReauthenticationRedirectError);
 
     expect(navigate).toHaveBeenCalledWith(
@@ -101,19 +101,19 @@ describe("apiRequest Reauthentication", () => {
       .mockResolvedValueOnce(jsonResponse({ message_key: "api.reauthenticated" }))
       .mockResolvedValueOnce(jsonResponse({ items: ["ok"] }));
 
-    const result = await apiRequest<{ items: string[] }>("/api/admin/metadata-backups", {
+    const result = await apiRequest<{ items: string[] }>("/api/general/metadata-backups", {
       method: "POST",
       body: JSON.stringify({ display_name: "Ada" }),
     });
 
     expect(result).toEqual({ items: ["ok"] });
     expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/admin/metadata-backups");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/general/metadata-backups");
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/reauth");
     expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(
       JSON.stringify({ password: "correct horse battery staple" }),
     );
-    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/admin/metadata-backups");
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/general/metadata-backups");
     expect(fetchMock.mock.calls[2]?.[1]?.body).toBe(
       JSON.stringify({ display_name: "Ada" }),
     );
@@ -145,11 +145,11 @@ describe("apiRequest Reauthentication", () => {
     });
 
     const requests = Promise.all([
-      apiRequest<{ url: string }>("/api/admin/first", {
+      apiRequest<{ url: string }>("/api/general/first", {
         method: "POST",
         body: "{}",
       }),
-      apiRequest<{ url: string }>("/api/admin/second", {
+      apiRequest<{ url: string }>("/api/general/second", {
         method: "POST",
         body: "{}",
       }),
@@ -158,25 +158,25 @@ describe("apiRequest Reauthentication", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(requestPassword).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-      "/api/admin/first",
-      "/api/admin/second",
+      "/api/general/first",
+      "/api/general/second",
     ]);
 
     resolvePassword!("correct horse battery staple");
 
     await expect(requests).resolves.toEqual([
-      { url: "/api/admin/first" },
-      { url: "/api/admin/second" },
+      { url: "/api/general/first" },
+      { url: "/api/general/second" },
     ]);
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-      "/api/admin/first",
-      "/api/admin/second",
+      "/api/general/first",
+      "/api/general/second",
       "/api/reauth",
-      "/api/admin/first",
-      "/api/admin/second",
+      "/api/general/first",
+      "/api/general/second",
     ]);
-    expect(requestCounts.get("/api/admin/first")).toBe(2);
-    expect(requestCounts.get("/api/admin/second")).toBe(2);
+    expect(requestCounts.get("/api/general/first")).toBe(2);
+    expect(requestCounts.get("/api/general/second")).toBe(2);
   });
 
   it("uses one completed local reauthentication for a delayed 403 in the original request cohort", async () => {
@@ -196,7 +196,7 @@ describe("apiRequest Reauthentication", () => {
       const count = (requestCounts.get(url) ?? 0) + 1;
       requestCounts.set(url, count);
       if (url === "/api/reauth") return Promise.resolve(jsonResponse({ ok: true }));
-      if (url === "/api/admin/second" && count === 1) {
+      if (url === "/api/general/second" && count === 1) {
         return delayedSecondResponse;
       }
       if (count === 1) {
@@ -205,26 +205,26 @@ describe("apiRequest Reauthentication", () => {
       return Promise.resolve(jsonResponse({ url }));
     });
 
-    const first = apiRequest<{ url: string }>("/api/admin/first", {
+    const first = apiRequest<{ url: string }>("/api/general/first", {
       method: "POST",
       body: "{}",
     });
-    const second = apiRequest<{ url: string }>("/api/admin/second", {
+    const second = apiRequest<{ url: string }>("/api/general/second", {
       method: "POST",
       body: "{}",
     });
 
-    await expect(first).resolves.toEqual({ url: "/api/admin/first" });
+    await expect(first).resolves.toEqual({ url: "/api/general/first" });
     expect(requestPassword).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(1);
 
     resolveSecondResponse!(jsonResponse({ error: "reauth_required" }, 403));
 
-    await expect(second).resolves.toEqual({ url: "/api/admin/second" });
+    await expect(second).resolves.toEqual({ url: "/api/general/second" });
     expect(requestPassword).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(1);
-    expect(requestCounts.get("/api/admin/first")).toBe(2);
-    expect(requestCounts.get("/api/admin/second")).toBe(2);
+    expect(requestCounts.get("/api/general/first")).toBe(2);
+    expect(requestCounts.get("/api/general/second")).toBe(2);
   });
 
   it("shares a throttled outcome with a delayed 403 and lets a later request retry", async () => {
@@ -252,7 +252,7 @@ describe("apiRequest Reauthentication", () => {
             : jsonResponse({ ok: true }),
         );
       }
-      if (url === "/api/admin/second" && count === 1) {
+      if (url === "/api/general/second" && count === 1) {
         return delayedSecondResponse;
       }
       if (count === 1) {
@@ -261,7 +261,7 @@ describe("apiRequest Reauthentication", () => {
       return Promise.resolve(jsonResponse({ url }));
     });
 
-    const firstFailure = apiRequest("/api/admin/first", {
+    const firstFailure = apiRequest("/api/general/first", {
       method: "POST",
       body: "{}",
     }).then(
@@ -270,7 +270,7 @@ describe("apiRequest Reauthentication", () => {
       },
       (error: unknown) => error,
     );
-    const secondFailure = apiRequest("/api/admin/second", {
+    const secondFailure = apiRequest("/api/general/second", {
       method: "POST",
       body: "{}",
     }).then(
@@ -293,18 +293,18 @@ describe("apiRequest Reauthentication", () => {
     await expect(secondFailure).resolves.toBe(firstError);
     expect(requestPassword).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(1);
-    expect(requestCounts.get("/api/admin/first")).toBe(1);
-    expect(requestCounts.get("/api/admin/second")).toBe(1);
+    expect(requestCounts.get("/api/general/first")).toBe(1);
+    expect(requestCounts.get("/api/general/second")).toBe(1);
 
     await expect(
-      apiRequest<{ url: string }>("/api/admin/retry", {
+      apiRequest<{ url: string }>("/api/general/retry", {
         method: "POST",
         body: "{}",
       }),
-    ).resolves.toEqual({ url: "/api/admin/retry" });
+    ).resolves.toEqual({ url: "/api/general/retry" });
     expect(requestPassword).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(2);
-    expect(requestCounts.get("/api/admin/retry")).toBe(2);
+    expect(requestCounts.get("/api/general/retry")).toBe(2);
   });
 
   it("rejects all concurrent callers after a throttled reauthentication and permits a later retry", async () => {
@@ -333,8 +333,8 @@ describe("apiRequest Reauthentication", () => {
     });
 
     const failures = await Promise.allSettled([
-      apiRequest("/api/admin/first", { method: "POST", body: "{}" }),
-      apiRequest("/api/admin/second", { method: "POST", body: "{}" }),
+      apiRequest("/api/general/first", { method: "POST", body: "{}" }),
+      apiRequest("/api/general/second", { method: "POST", body: "{}" }),
     ]);
 
     expect(failures).toHaveLength(2);
@@ -354,15 +354,15 @@ describe("apiRequest Reauthentication", () => {
     expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(1);
 
     await expect(
-      apiRequest<{ url: string }>("/api/admin/retry", {
+      apiRequest<{ url: string }>("/api/general/retry", {
         method: "POST",
         body: "{}",
       }),
-    ).resolves.toEqual({ url: "/api/admin/retry" });
+    ).resolves.toEqual({ url: "/api/general/retry" });
 
     expect(requestPassword).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(2);
-    expect(requestCounts.get("/api/admin/retry")).toBe(2);
+    expect(requestCounts.get("/api/general/retry")).toBe(2);
   });
 
   it("replays an authenticated binary download after local reauthentication", async () => {
@@ -401,14 +401,14 @@ describe("apiRequest Reauthentication", () => {
       .mockResolvedValueOnce(jsonResponse({ detail: "Invalid credentials" }, 401));
 
     await expect(
-      apiRequest("/api/admin/metadata-backups", { method: "POST", body: "{}" }),
+      apiRequest("/api/general/metadata-backups", { method: "POST", body: "{}" }),
     ).rejects.toMatchObject({
       message: "Reauthentication failed.",
       messageKey: "ui.reauth_failed",
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-      "/api/admin/metadata-backups",
+      "/api/general/metadata-backups",
       "/api/reauth",
     ]);
   });

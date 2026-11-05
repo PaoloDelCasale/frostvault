@@ -176,7 +176,7 @@ class FrontendSpaHttpTests(unittest.TestCase):
 
     def test_html_routes_serve_spa(self) -> None:
         """Seam 2: login / vaults/new / vault/access / admin serve the SPA."""
-        for path in ("/login", "/vaults/new", "/vault/access", "/admin"):
+        for path in ("/login", "/vaults/new", "/general", "/problems"):
             response = self.client.get(path)
             self.assertEqual(response.status_code, 200, f"{path}: {response.text}")
             self.assertIn("spa-shell", response.text, path)

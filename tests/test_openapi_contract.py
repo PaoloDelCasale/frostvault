@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Binary download and SSE streams are non-JSON success bodies with explicit
 # OpenAPI content types (octet-stream / text/event-stream), not JsonObjectResponse.
 RAW_RESPONSE_EXCEPTIONS = {
-    "/api/admin/metadata-backups/download/{run_id}",
+    "/api/general/metadata-backups/download/{run_id}",
     "/api/recovery-kit/download",
     "/api/catalog/events",
 }
@@ -84,7 +84,7 @@ class OpenApiResponseContractTests(unittest.TestCase):
         self,
     ) -> None:
         paths = app.openapi()["paths"]
-        download = paths["/api/admin/metadata-backups/download/{run_id}"]["get"]
+        download = paths["/api/general/metadata-backups/download/{run_id}"]["get"]
         metrics = paths["/metrics"]["get"]
         catalog_events = paths["/api/catalog/events"]["get"]
         self.assertEqual(
@@ -108,7 +108,7 @@ class OpenApiResponseContractTests(unittest.TestCase):
 
     def test_storage_estimate_response_documents_region_and_pricing_date(self) -> None:
         schema = app.openapi()
-        operation = schema["paths"]["/api/admin/cost-estimates/storage"]["post"]
+        operation = schema["paths"]["/api/general/cost-estimates/storage"]["post"]
         response = operation["responses"]["200"]["content"]["application/json"]["schema"]
         self.assertEqual(
             response,
@@ -128,7 +128,7 @@ class OpenApiResponseContractTests(unittest.TestCase):
         self.assertNotIn("offline_cache_generation", schema["components"]["schemas"]["MeResponse"]["properties"])
 
     def test_admin_vault_schema_is_a_closed_non_secret_contract(self) -> None:
-        vault = app.openapi()["components"]["schemas"]["AdminVault"]
+        vault = app.openapi()["components"]["schemas"]["GeneralVault"]
         self.assertFalse(vault["additionalProperties"])
         self.assertNotIn("rclone_remote", vault["properties"])
         self.assertTrue(
@@ -143,8 +143,8 @@ class OpenApiResponseContractTests(unittest.TestCase):
         self.assertFalse(any(path.startswith("/api/vault/recovery") for path in schema["paths"]))
         self.assertFalse(any(name in {"RecoveryExport", "RecoveryCustody", "EncryptionMode"} for name in schema["components"]["schemas"]))
         self.assertIn("/api/recovery-kit/download", schema["paths"])
-        self.assertNotIn("/api/admin/vaults/{vault_id}/relocate", schema["paths"])
-        for name in ("VaultSelfServiceCreate", "VaultCreateRequest", "VaultCreateResponse", "AdminVault"):
+        self.assertNotIn("/api/vaults/{vault_id}/relocate", schema["paths"])
+        for name in ("VaultSelfServiceCreate", "VaultCreateRequest", "VaultCreateResponse", "GeneralVault"):
             properties = schema["components"]["schemas"][name]["properties"]
             self.assertFalse(any("encryption" in key or "custody" in key or "recovery_export" in key for key in properties))
 

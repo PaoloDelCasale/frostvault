@@ -1,668 +1,120 @@
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, FolderClosed, MoreHorizontal } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-
-import { getDemoSearchParam } from "@/demoGate";
-import {
-  DEFAULT_PAGE_SIZE,
-  countActiveJobGroups,
-  filesQueryOptions,
-  filesRefetchIntervalFromJobs,
-  jobsQueryOptions,
-} from "@/api";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiRequest } from "@/api/client";
 import type { FilesResponse } from "@/api/types";
-import { MenuSelect } from "@/components/MenuSelect";
+import { vaultApi } from "@/api/vault";
+import { Badge } from "@/components/Badge";
+import { itemStateBadge } from "./protectionLabel";
 import { Button } from "@/components/ui/button";
-
-import type { VaultCapabilities } from "./actions";
-import { FileList } from "./FileList";
-import { FileOperationsHost } from "./FileOperationsHost";
-import {
-  buildBreadcrumbs,
-  collapseBreadcrumbs,
-  isBreadcrumbEllipsis,
-} from "./fileLabels";
-import {
-  parseFileSortKey,
-  parseFileSortOrder,
-  type FileSortKey,
-  type FileSortOrder,
-} from "./fileSort";
+import { ActiveOperations } from "@/components/ActiveOperations";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { VaultSettingsPanel } from "@/pages/vault-settings/VaultSettingsPanel";
+import { FileDetails } from "./FileDetails";
+import { RecoverSelection, type Target } from "./RecoverSelection";
+import { formatBytes } from "./format";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
-
-export type FileBrowserProps = {
-  t: Translate;
-  capabilities: VaultCapabilities;
-  /** Current Vault identity, used to isolate in-memory query caches. */
-  vaultId: number;
-  vaultName: string;
-};
-
+export type FileBrowserProps = { t: Translate; vaultId: number; vaultName: string; capabilities: { delete_enabled: boolean; cloud_deletion_enabled: boolean }; problemCount?: number; onRefresh?: () => void };
 export const SEARCH_DEBOUNCE_MS = 250;
-
-function readSearchParams(): {
-  directory: string;
-  q: string;
-  state: string;
-  storage: string;
-  page: number;
-  sort: FileSortKey;
-  order: FileSortOrder;
-} {
-  const params = new URLSearchParams(window.location.search);
-  const pageRaw = Number(params.get("page") || "1");
-  return {
-    directory: params.get("directory") || "",
-    q: params.get("q") || "",
-    state: params.get("state") || "",
-    storage: params.get("storage") || "",
-    page: Number.isFinite(pageRaw) && pageRaw >= 1 ? pageRaw : 1,
-    sort: parseFileSortKey(params.get("sort")),
-    order: parseFileSortOrder(params.get("order")),
-  };
-}
-
-function writeSearchParams(
-  next: {
-    directory: string;
-    q: string;
-    state: string;
-    storage: string;
-    page: number;
-    sort: FileSortKey;
-    order: FileSortOrder;
-  },
-  mode: "push" | "replace",
-) {
-  const url = new URL(window.location.href);
-  if (next.directory) url.searchParams.set("directory", next.directory);
-  else url.searchParams.delete("directory");
-  if (next.q) url.searchParams.set("q", next.q);
-  else url.searchParams.delete("q");
-  if (next.state) url.searchParams.set("state", next.state);
-  else url.searchParams.delete("state");
-  if (next.storage) url.searchParams.set("storage", next.storage);
-  else url.searchParams.delete("storage");
-  if (next.page > 1) url.searchParams.set("page", String(next.page));
-  else url.searchParams.delete("page");
-  if (next.sort !== "name") url.searchParams.set("sort", next.sort);
-  else url.searchParams.delete("sort");
-  if (next.order !== "asc") url.searchParams.set("order", next.order);
-  else url.searchParams.delete("order");
-  const href = `${url.pathname}${url.search}${url.hash}`;
-  if (mode === "push") {
-    window.history.pushState({ ...next }, "", href);
-  } else {
-    window.history.replaceState({ ...next }, "", href);
+export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh }: FileBrowserProps) {
+  const [revision, setRevision] = useState(0);
+  const [params, setParams] = useState(() => new URLSearchParams(window.location.search));
+  const [input, setInput] = useState(params.get("q") ?? "");
+  const [selected, setSelected] = useState<Target[]>([]);
+  const [details, setDetails] = useState<Target | null>(null);
+  const [recover, setRecover] = useState<Target[] | null>(null);
+  const [release, setRelease] = useState<Target[] | null>(null);
+  const [settings, setSettings] = useState(params.has("settings"));
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const scope = useMemo(() => vaultApi(vaultId), [vaultId]);
+  const q = params.get("q") ?? "", state = params.get("state") ?? "", directory = params.get("directory") ?? "";
+  const page = Math.max(1, Number(params.get("page")) || 1);
+  const global = Boolean(q);
+  function update(values: Record<string, string>, push = false) {
+    const next = new URLSearchParams(params);
+    for (const [key, value] of Object.entries(values)) { if (value) next.set(key, value); else next.delete(key); }
+    window.history[push ? "pushState" : "replaceState"]({}, "", `/?${next}`);
+    setParams(next); setSelected([]); setDetails(null);
   }
-}
-
-/**
- * Responsive archive listing: sticky search/breadcrumbs, cards below md,
- * table from md up.
- */
-export function FileBrowser({
-  t,
-  capabilities,
-  vaultId,
-  vaultName,
-}: FileBrowserProps) {
-  const initial = readSearchParams();
-  const [directory, setDirectory] = useState(initial.directory);
-  const [qInput, setQInput] = useState(initial.q);
-  const [q, setQ] = useState(initial.q);
-  const [state, setState] = useState(initial.state);
-  const [storage, setStorage] = useState(initial.storage);
-  const [page, setPage] = useState(initial.page);
-  const [sortKey, setSortKey] = useState<FileSortKey>(initial.sort);
-  const [sortOrder, setSortOrder] = useState<FileSortOrder>(initial.order);
-  const [sheetPath, setSheetPath] = useState<string | null>(() => {
-    // Capture helper: ?sheet=<path> opens the actions bottom sheet.
-    return getDemoSearchParam("sheet");
-  });
-  const demoConfirm = getDemoSearchParam("confirm");
-  const demoConfirmTarget = getDemoSearchParam("target") || "readme.txt";
-
-  const query = useMemo(
-    () => ({
-      q,
-      state,
-      storage,
-      directory,
-      page,
-      page_size: DEFAULT_PAGE_SIZE,
-      sort: sortKey,
-      order: sortOrder,
-    }),
-    [q, state, storage, directory, page, sortKey, sortOrder],
-  );
-  const fileQueryKey = [
-    "files",
-    vaultId,
-    query.q ?? "",
-    query.state ?? "",
-    typeof query.storage === "string" ? query.storage : "",
-    query.directory ?? "",
-    query.page ?? 1,
-    query.page_size ?? DEFAULT_PAGE_SIZE,
-    query.sort ?? "name",
-    query.order ?? "asc",
-  ] as const;
-
-  const queryClient = useQueryClient();
-  // Share the jobs cache with FileOperationsHost so the list can poll while
-  // Jobs are active and refresh as soon as active count drops (issue #128).
-  const jobsQuery = useQuery(jobsQueryOptions());
-  const activeJobCount = countActiveJobGroups(jobsQuery.data);
-  const prevActiveJobCount = useRef<number | null>(null);
-  useEffect(() => {
-    const prev = prevActiveJobCount.current;
-    prevActiveJobCount.current = activeJobCount;
-    if (prev !== null && activeJobCount < prev) {
-      void queryClient.invalidateQueries({ queryKey: ["files"] });
-    }
-  }, [activeJobCount, queryClient]);
-
-  const filesQuery = useQuery({
-    ...filesQueryOptions(query),
-    queryKey: fileQueryKey,
-    refetchInterval: (queryState) => {
-      // Bounded loading convergence while the durable projection is still
-      // building after migration/restart. Not idle catalog polling: stops as
-      // soon as aggregate_status leaves "loading". Catalog events also invalidate.
-      if (queryState.state.data?.aggregate_status === "loading") {
-        return 1_500;
-      }
-      return filesRefetchIntervalFromJobs(jobsQuery.data);
-    },
-    // Keep the previous directory page visible during invalidation/refetch so
-    // event-driven updates never flash a false-empty "0 items" table.
-    placeholderData: keepPreviousData,
-  });
-  const displayData = filesQuery.data;
-
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      if (qInput === q) return;
-      setQ(qInput);
-      setPage(1);
-      writeSearchParams(
-        {
-          directory,
-          q: qInput,
-          state,
-          storage,
-          page: 1,
-          sort: sortKey,
-          order: sortOrder,
-        },
-        "replace",
-      );
+      if (input === q) return;
+      const next = new URLSearchParams(window.location.search);
+      if (input) next.set("q", input); else next.delete("q");
+      next.delete("page"); next.delete("file");
+      window.history.replaceState({}, "", `/?${next}`); setParams(next); setSelected([]); setDetails(null);
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [qInput, q, directory, state, storage, sortKey, sortOrder]);
-
+  }, [input, q]);
   useEffect(() => {
-    const onPopState = () => {
-      const next = readSearchParams();
-      setDirectory(next.directory);
-      setQInput(next.q);
-      setQ(next.q);
-      setState(next.state);
-      setStorage(next.storage);
-      setPage(next.page);
-      setSortKey(next.sort);
-      setSortOrder(next.order);
-    };
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
+    const pop = () => { const next = new URLSearchParams(window.location.search); setParams(next); setInput(next.get("q") ?? ""); setSelected([]); setDetails(null); };
+    window.addEventListener("popstate", pop); return () => window.removeEventListener("popstate", pop);
   }, []);
-
-  function navigateDirectory(
-    path: string,
-    historyMode: "push" | "replace" = "push",
-  ) {
-    setDirectory(path);
-    setQInput("");
-    setQ("");
-    setState("");
-    setStorage("");
-    setPage(1);
-    writeSearchParams(
-      {
-        directory: path,
-        q: "",
-        state: "",
-        storage: "",
-        page: 1,
-        sort: sortKey,
-        order: sortOrder,
-      },
-      historyMode,
-    );
+  const query = useQuery({ queryKey: ["files", vaultId, q, state, directory, page, revision], queryFn: () => {
+    const search = new URLSearchParams({ q, state, directory, page: String(page), page_size: "100" });
+    return global ? apiRequest<FilesResponse>(`/api/files/search?${search}`) : scope.files(search);
+  }, refetchInterval: 15_000 });
+  const focusPath = params.get("file");
+  const focus = useQuery({ queryKey: ["file-detail", vaultId, focusPath, revision], queryFn: () => scope.details(focusPath!), enabled: Boolean(focusPath) && !global });
+  const items = [...(query.data?.items ?? [])];
+  if (focus.data && !items.some((item) => item.path === focusPath)) items.unshift(focus.data);
+  const rows = items.map((item): Target => ({ item, vaultId: typeof item.vault_id === "number" ? item.vault_id : vaultId, vaultName: typeof item.vault_name === "string" ? item.vault_name : vaultName }));
+  const effectiveDetails = details ?? (focus.data ? { item: focus.data, vaultId, vaultName } : null);
+  const refresh = () => { setSelected([]); setRevision((value) => value + 1); onRefresh?.(); };
+  function openFolder(path: string) { setInput(""); update({ directory: path, q: "", page: "", file: "" }, true); }
+  function eligible(target: Target, action: "recover" | "free-space") {
+    const item = target.item;
+    return item.type === "directory" ? Boolean(item.available_actions?.[action]) : action === "recover" ? Boolean(item.recover_eligible) : Boolean(item.cleanup_eligible);
   }
-
-  function changeState(nextState: string) {
-    setState(nextState);
-    setPage(1);
-    writeSearchParams(
-      {
-        directory,
-        q,
-        state: nextState,
-        storage,
-        page: 1,
-        sort: sortKey,
-        order: sortOrder,
-      },
-      "replace",
-    );
+  async function free() {
+    if (!release || busy) return;
+    setBusy(true); setMessage("");
+    try { for (const target of release) await vaultApi(target.vaultId).action("free-space", { path: target.item.path, is_directory: target.item.type === "directory" }); setRelease(null); refresh(); }
+    catch (error) { setMessage(String(error)); }
+    finally { setBusy(false); }
   }
-
-  function changeStorage(nextStorage: string) {
-    setStorage(nextStorage);
-    setPage(1);
-    writeSearchParams(
-      {
-        directory,
-        q,
-        state,
-        storage: nextStorage,
-        page: 1,
-        sort: sortKey,
-        order: sortOrder,
-      },
-      "replace",
-    );
-  }
-
-  function changePage(nextPage: number) {
-    setPage(nextPage);
-    writeSearchParams(
-      {
-        directory,
-        q,
-        state,
-        storage,
-        page: nextPage,
-        sort: sortKey,
-        order: sortOrder,
-      },
-      "replace",
-    );
-  }
-
-  function changeSort(nextKey: FileSortKey) {
-    const nextOrder: FileSortOrder =
-      sortKey === nextKey && sortOrder === "asc" ? "desc" : "asc";
-    setSortKey(nextKey);
-    setSortOrder(nextOrder);
-    setPage(1);
-    writeSearchParams(
-      {
-        directory,
-        q,
-        state,
-        storage,
-        page: 1,
-        sort: nextKey,
-        order: nextOrder,
-      },
-      "replace",
-    );
-  }
-
-  const crumbs = buildBreadcrumbs(directory, t("ui.breadcrumb_archive"));
-  const narrowCrumbs = collapseBreadcrumbs(crumbs);
-  const hiddenNarrowCrumbs =
-    crumbs.length > 4 ? crumbs.slice(1, -(4 - 2)) : [];
-  const data = displayData;
-  // Server may return quickly with aggregate_status=loading and empty items
-  // while a background rebuild converges — never treat that as authoritative empty.
-  const serverProjectionLoading =
-    data?.aggregate_status === "loading" && (data.items?.length ?? 0) === 0;
-  const isInitialLoading =
-    (!displayData && (filesQuery.isLoading || filesQuery.isPending)) ||
-    serverProjectionLoading;
-  const isListingError = !displayData && filesQuery.isError;
-  const total = isInitialLoading ? undefined : data?.total;
-  const pages =
-    total === undefined
-      ? null
-      : Math.max(1, Math.ceil(total / DEFAULT_PAGE_SIZE));
-  const unit =
-    data?.mode === "search" ? t("ui.files_found_unit") : t("ui.items_unit");
-  const listingFacets = displayData as
-    | (FilesResponse & {
-        state_counts?: Record<string, number>;
-        storage_counts?: Record<string, number>;
-      })
-    | undefined;
-  const stateCounts = listingFacets?.state_counts;
-  const storageCounts = listingFacets?.storage_counts;
-  const hasFilter = Boolean(q || state || storage);
-  const stateFilterOptions = [
-    { value: "", label: t("ui.all_items") },
-    { value: "pending", label: t("state.pending") },
-    { value: "protected", label: t("state.protected") },
-    { value: "problem", label: t("state.problem") },
-    { value: "unconfirmed", label: t("state.unconfirmed") },
-    { value: "cloud_only", label: t("state.cloud_only") },
-  ].filter(
-    (option) =>
-      !option.value ||
-      option.value === state ||
-      !stateCounts ||
-      (stateCounts[option.value] ?? 0) > 0,
-  );
-  const storageFilterOptions = [
-    { value: "", label: t("ui.all_storage_classes") },
-    { value: "STANDARD", label: t("storage.STANDARD") },
-    { value: "STANDARD_IA", label: t("storage.STANDARD_IA") },
-    { value: "GLACIER_IR", label: t("storage.GLACIER_IR") },
-    { value: "GLACIER", label: t("storage.GLACIER") },
-    { value: "DEEP_ARCHIVE", label: t("storage.DEEP_ARCHIVE") },
-    { value: "none", label: t("ui.storage_none") },
-  ].filter(
-    (option) =>
-      !option.value ||
-      option.value === storage ||
-      !storageCounts ||
-      (storageCounts[option.value] ?? 0) > 0,
-  );
-  const emptyMessage = hasFilter
-    ? t("ui.empty_no_matches")
-    : t("ui.empty_no_files");
-
-  return (
-    <div className="min-w-0" data-testid="file-browser">
-      <div
-        data-testid="file-browser-sticky"
-        className="sticky top-0 z-10 border-b border-line bg-surface py-3"
-      >
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <label className="min-w-0 flex-1">
-            <span className="sr-only">{t("ui.search_placeholder")}</span>
-            <input
-              type="search"
-              value={qInput}
-              onChange={(event) => setQInput(event.target.value)}
-              placeholder={t("ui.search_placeholder")}
-              className="min-h-11 w-full min-w-0 rounded-lg border border-input bg-surface px-3 text-sm text-ink outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-              data-testid="file-search"
-            />
-          </label>
-          <label className="shrink-0">
-            <span className="sr-only">{t("ui.filter_by_state")}</span>
-            <MenuSelect
-              label={t("ui.filter_by_state")}
-              value={state}
-              onValueChange={changeState}
-              data-testid="state-filter"
-              className="w-full sm:w-[16rem]"
-              options={stateFilterOptions}
-            />
-          </label>
-          <label className="shrink-0">
-            <span className="sr-only">{t("ui.filter_by_storage")}</span>
-            <MenuSelect
-              label={t("ui.filter_by_storage")}
-              value={storage}
-              onValueChange={changeStorage}
-              data-testid="storage-filter"
-              className="w-full sm:w-[16rem]"
-              options={storageFilterOptions}
-            />
-          </label>
-        </div>
-
-        <div className="mt-3 flex min-w-0 items-center gap-2 rounded-xl border border-line bg-canvas/45 px-2 py-1.5">
-          <span
-            className="grid size-9 shrink-0 place-items-center rounded-lg bg-green-soft text-green"
-            aria-hidden="true"
-            data-testid="breadcrumb-icon"
-          >
-            <FolderClosed className="size-4" />
-          </span>
-          <nav
-            aria-label={t("ui.breadcrumb_archive")}
-            data-testid="breadcrumbs"
-            className="min-w-0 flex-1 overflow-hidden"
-          >
-            {/* Narrow: root, overflow menu, and the last two segments. */}
-            <ol
-              className="flex min-w-0 items-center text-sm md:hidden"
-              data-testid="breadcrumbs-narrow"
-            >
-              {narrowCrumbs.map((crumb, index) => {
-                if (isBreadcrumbEllipsis(crumb)) {
-                  return (
-                    <li key={`ellipsis-${index}`} className="flex shrink-0 items-center">
-                      <ChevronRight className="size-4 text-muted/70" aria-hidden="true" />
-                      <label className="relative grid size-9 place-items-center rounded-lg text-muted transition-colors duration-150 hover:bg-green-soft/35 hover:text-ink focus-within:bg-green-soft/35 focus-within:text-ink focus-within:ring-2 focus-within:ring-ring/40">
-                        <span className="sr-only">{`${t("ui.breadcrumb_archive")} …`}</span>
-                        <MoreHorizontal className="size-4" aria-hidden="true" />
-                        <select
-                          aria-label={`${t("ui.breadcrumb_archive")} …`}
-                          value=""
-                          className="absolute inset-0 cursor-pointer opacity-0"
-                          onChange={(event) => navigateDirectory(event.target.value)}
-                        >
-                          <option value="" disabled>…</option>
-                          {hiddenNarrowCrumbs.map((hiddenCrumb) => (
-                            <option key={hiddenCrumb.path} value={hiddenCrumb.path}>
-                              {hiddenCrumb.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </li>
-                  );
-                }
-                const current = index === narrowCrumbs.length - 1;
-                return (
-                  <li key={`n-${crumb.path}`} className="flex min-w-0 items-center">
-                    {index > 0 ? (
-                      <ChevronRight className="size-4 shrink-0 text-muted/70" aria-hidden="true" />
-                    ) : null}
-                    {current ? (
-                      <span
-                        data-directory={crumb.path}
-                        aria-current="page"
-                        title={crumb.name}
-                        className="max-w-[8rem] truncate px-2 py-2 font-bold text-ink"
-                      >
-                        {crumb.name}
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        data-directory={crumb.path}
-                        title={crumb.name}
-                        className="max-w-[8rem] truncate rounded-lg px-2 py-2 font-semibold text-muted outline-none transition-colors duration-150 hover:bg-green-soft/35 hover:text-ink focus-visible:bg-green-soft/35 focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-ring/40"
-                        onClick={() => navigateDirectory(crumb.path)}
-                      >
-                        {crumb.name}
-                      </button>
-                    )}
-                  </li>
-                );
-              })}
-            </ol>
-            {/* md+: full trail. */}
-            <ol
-              className="hidden min-w-0 flex-wrap items-center text-sm md:flex"
-              data-testid="breadcrumbs-wide"
-            >
-              {crumbs.map((crumb, index) => {
-                const current = index === crumbs.length - 1;
-                return (
-                  <li key={`w-${crumb.path || "root"}`} className="flex min-w-0 items-center">
-                    {index > 0 ? (
-                      <ChevronRight className="size-4 shrink-0 text-muted/70" aria-hidden="true" />
-                    ) : null}
-                    {current ? (
-                      <span
-                        data-directory={crumb.path}
-                        aria-current="page"
-                        title={crumb.name}
-                        className="max-w-[14rem] truncate px-2 py-2 font-bold text-ink"
-                      >
-                        {crumb.name}
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        data-directory={crumb.path}
-                        title={crumb.name}
-                        className="max-w-[14rem] truncate rounded-lg px-2 py-2 font-semibold text-muted outline-none transition-colors duration-150 hover:bg-green-soft/35 hover:text-ink focus-visible:bg-green-soft/35 focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-ring/40"
-                        onClick={() => navigateDirectory(crumb.path)}
-                      >
-                        {crumb.name}
-                      </button>
-                    )}
-                  </li>
-                );
-              })}
-            </ol>
-          </nav>
-        </div>
-      </div>
-
-      <div className="min-w-0 overflow-x-hidden pt-4">
-        {isInitialLoading ? (
-          <div
-            className="space-y-2"
-            data-testid="file-list-loading"
-            role="status"
-            aria-live="polite"
-            aria-busy="true"
-          >
-            <p className="text-sm text-muted">{t("ui.file_list_loading")}</p>
-            <div className="h-12 animate-pulse rounded-lg bg-canvas" />
-            <div className="h-12 animate-pulse rounded-lg bg-canvas" />
-            <div className="h-12 animate-pulse rounded-lg bg-canvas" />
-          </div>
-        ) : null}
-
-        {isListingError ? (
-          <div
-            role="alert"
-            data-testid="file-list-error"
-            className="rounded-lg border border-line bg-canvas px-3 py-6 text-center"
-          >
-            <p className="text-sm text-muted">{t("ui.file_list_error")}</p>
-            <Button
-              type="button"
-              variant="secondary"
-              className="mt-3"
-              data-testid="file-list-retry"
-              onClick={() => {
-                void filesQuery.refetch();
-              }}
-            >
-              {t("ui.file_list_retry")}
-            </Button>
-          </div>
-        ) : null}
-
-        {data &&
-        data.items.length === 0 &&
-        !isInitialLoading &&
-        data.aggregate_status !== "loading" ? (
-          <p
-            className="py-8 text-center text-sm text-muted"
-            data-testid="file-list-empty"
-            data-empty={hasFilter ? "no-matches" : "no-files"}
-          >
-            {emptyMessage}
-          </p>
-        ) : null}
-
-        {data && data.items.length > 0 && !serverProjectionLoading ? (
-          <FileOperationsHost
-            items={data.items}
-            capabilities={capabilities}
-            vaultName={vaultName}
-            t={t}
-            sheetPath={sheetPath}
-            onSheetPathChange={setSheetPath}
-            demoConfirm={
-              demoConfirm
-                ? { action: demoConfirm, path: demoConfirmTarget }
-                : null
-            }
-          >
-            {({
-              jobsByPath,
-              onOpenActions,
-              onDesktopAction,
-              onCancelJob,
-              onApproveJob,
-              onAcceleratePurge,
-              cancelBusyId,
-              approveBusyId,
-              accelerateBusyId,
-            }) => (
-              <FileList
-                items={data.items}
-                t={t}
-                capabilities={capabilities}
-                sortKey={sortKey}
-                sortOrder={sortOrder}
-                onSort={changeSort}
-                onOpenDirectory={(path) => navigateDirectory(path)}
-                onOpenFile={onOpenActions}
-                onOpenActions={onOpenActions}
-                onDesktopAction={onDesktopAction}
-                jobsByPath={jobsByPath}
-                onCancelJob={onCancelJob}
-                onApproveJob={onApproveJob}
-                onAcceleratePurge={onAcceleratePurge}
-                cancelBusyId={cancelBusyId}
-                approveBusyId={approveBusyId}
-                accelerateBusyId={accelerateBusyId}
-              />
-            )}
-          </FileOperationsHost>
-        ) : null}
-
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-          <p className="text-sm text-muted" data-testid="page-label">
-            {total === undefined || pages === null
-              ? t("ui.file_list_loading")
-              : t("ui.page_label", {
-                  page,
-                  pages,
-                  total: total.toLocaleString("en-US"),
-                  unit,
-                })}
-          </p>
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={page <= 1 || total === undefined}
-              data-testid="page-previous"
-              onClick={() => changePage(page - 1)}
-            >
-              {t("ui.previous")}
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={
-                total === undefined || pages === null || page >= pages
-              }
-              data-testid="page-next"
-              onClick={() => changePage(page + 1)}
-            >
-              {t("ui.next")}
-            </Button>
-          </div>
-        </div>
-      </div>
+  const columns = ["essential.name", "essential.protection", "essential.size", "essential.modified", "essential.ready"];
+  const cell = (target: Target, column: number) => {
+    const item = target.item;
+    if (column === 0) return <button className="min-h-11 max-w-full break-words text-left font-semibold underline" onClick={() => {
+      if (item.type === "directory") openFolder(item.path);
+      else if (global) {
+        const next = new URLSearchParams({ vault_id: String(target.vaultId), directory: item.path.includes("/") ? item.path.slice(0, item.path.lastIndexOf("/")) : "", file: item.path });
+        window.location.assign(`/?${next}`);
+      } else setDetails(target);
+    }}>{item.type === "directory" ? "📁 " : ""}{global ? `${target.vaultName} / ${item.path}` : item.name}</button>;
+    if (column === 1) return item.type === "directory" ? <span className="text-sm">{Object.entries(item.state_counts ?? {}).filter(([, count]) => count > 0).map(([status, count]) => `${count} ${t(`state.${status}`)}`).join(" · ") || "—"}</span> : <Badge {...itemStateBadge(item, t)} />;
+    if (column === 2) return formatBytes(item.type === "directory" ? item.total_size : Number((item.local_exists ? item.local_size : item.cloud_size) ?? 0));
+    if (column === 3) return typeof item.modified_at === "string" ? new Date(item.modified_at).toLocaleString() : "—";
+    return item.type === "file" && item.state === "cloud_only" ? t(item.storage_class === "DEEP_ARCHIVE" ? "essential.ready_deep" : item.storage_class === "GLACIER" ? "essential.ready_glacier" : "essential.ready_now") : "—";
+  };
+  function toggle(target: Target) { setSelected((current) => current.some((row) => row.vaultId === target.vaultId && row.item.path === target.item.path) ? current.filter((row) => row.vaultId !== target.vaultId || row.item.path !== target.item.path) : [...current, target]); }
+  const checked = (target: Target) => selected.some((row) => row.vaultId === target.vaultId && row.item.path === target.item.path);
+  return <section className="grid min-w-0 gap-4" data-testid="file-browser">
+    <div className="flex items-center justify-between gap-3"><h1 className="min-w-0 break-words text-2xl font-bold">{vaultName}</h1><Button variant="secondary" aria-expanded={settings} onClick={() => setSettings(!settings)}>{t("essential.settings")}</Button></div>
+    {problemCount > 0 && <p role="status" className="rounded border border-line p-3"><a className="underline" href="/problems">{t("essential.folder_problems", { count: problemCount })}</a></p>}
+    {query.data?.protection_suspended && <p role="status" className="rounded border border-line p-3">{t("state.protection_suspended")} <button className="min-h-11 underline" onClick={() => setSettings(true)}>{t("essential.review_protection")}</button></p>}
+    {settings && <VaultSettingsPanel key={vaultId} vaultId={vaultId} vaultName={vaultName} onStopped={() => window.location.assign("/general")} />}
+    <label className="block"><span className="sr-only">{t("essential.search")}</span><input type="search" className="min-h-11 w-full min-w-0 rounded border border-input bg-surface px-3" data-testid="file-search" placeholder={t("essential.search")} value={input} onChange={(event) => setInput(event.target.value)} /></label>
+    <label className="flex flex-wrap items-center gap-2">{t("ui.filter_by_state")}<select className="min-h-11 rounded border border-input bg-surface px-3" data-testid="state-filter" value={state} onChange={(event) => update({ state: event.target.value, page: "", file: "" })}>{[["", "essential.all"], ["cloud_only", "state.cloud_only"], ["pending", "state.pending"], ["problem", "state.problem"]].map(([value, key]) => <option key={value} value={value}>{t(key)}</option>)}</select></label>
+    {!global && <nav aria-label={t("ui.breadcrumb_archive")} data-testid="breadcrumbs" className="flex min-w-0 flex-wrap items-center gap-2"><button className="min-h-11 font-bold underline" data-directory="" onClick={() => openFolder("")}>{t("ui.breadcrumb_archive")}</button>{directory.split("/").filter(Boolean).map((part, index, parts) => <button key={index} data-directory={parts.slice(0, index + 1).join("/")} className="min-h-11 break-all underline" onClick={() => openFolder(parts.slice(0, index + 1).join("/"))}>/ {part}</button>)}</nav>}
+    {global && <p>{t("essential.global_results")}</p>}
+    {query.isPending && <p role="status" data-testid="file-list-loading">{t("ui.file_list_loading")}</p>}{query.error && <div role="alert" data-testid="file-list-error"><p>{t("ui.file_list_error")}</p><Button variant="secondary" onClick={() => void query.refetch()}>{t("ui.file_list_retry")}</Button></div>}
+    {query.data?.aggregate_status === "loading" && <p role="status">{t("ui.file_list_loading")}</p>}
+    <div className="flex flex-wrap gap-2 rounded border border-line p-2" aria-label={t("essential.selection")}>
+      <Button disabled={!selected.length || busy || selected.some((row) => !eligible(row, "recover"))} onClick={() => setRecover([...selected])}>{t("ui.row_action_recover")}</Button>
+      <Button variant="secondary" disabled={!selected.length || busy || selected.some((row) => !eligible(row, "free-space"))} onClick={() => setRelease([...selected])}>{t("essential.free_now")}</Button>
+      <Button variant="secondary" disabled={selected.length !== 1 || selected[0]?.item.type !== "file"} onClick={() => setDetails(selected[0] ?? null)}>{t("essential.details")}</Button>
     </div>
-  );
+    <div className="hidden min-w-0 md:block"><table className="w-full table-fixed text-sm" data-testid="file-list-table"><thead><tr><th className="w-12"><span className="sr-only">{t("essential.selection")}</span></th>{columns.map((key) => <th className="px-2 py-3 text-left" key={key}>{t(key)}</th>)}</tr></thead><tbody>{rows.map((target) => <tr key={`${target.vaultId}:${target.item.path}`} data-highlighted={target.item.path === focusPath || undefined} className={target.item.path === focusPath ? "bg-green-soft" : "border-t border-line"}><td><input className="size-5" type="checkbox" aria-label={`${t("essential.select")} ${target.vaultName} / ${target.item.path}`} checked={checked(target)} onChange={() => toggle(target)} /></td>{columns.map((key, index) => <td className="break-words px-2 py-3" key={key}>{cell(target, index)}</td>)}</tr>)}</tbody></table></div>
+    <ul className="grid gap-3 md:hidden" data-testid="file-list-cards">{rows.map((target) => <li key={`${target.vaultId}:${target.item.path}`} data-highlighted={target.item.path === focusPath || undefined} className={`min-w-0 rounded-panel border border-line p-3 ${target.item.path === focusPath ? "bg-green-soft" : "bg-surface"}`}><label className="flex min-h-11 items-center gap-3"><input className="size-5" type="checkbox" aria-label={`${t("essential.select")} ${target.vaultName} / ${target.item.path}`} checked={checked(target)} onChange={() => toggle(target)} /><span className="text-sm">{t("essential.select")}</span></label>{cell(target, 0)}<dl className="grid gap-2">{columns.slice(1).map((key, index) => <div key={key}><dt className="text-xs text-muted">{t(key)}</dt><dd>{cell(target, index + 1)}</dd></div>)}</dl></li>)}</ul>
+    {query.data?.items.length === 0 && query.data.aggregate_status !== "loading" && <p data-testid="file-list-empty">{t("ui.empty_no_matches")}</p>}
+    <div className="flex flex-wrap items-center justify-between gap-2"><p data-testid="page-label">{query.data?.total ?? "—"} · {page}</p><div className="flex gap-2"><Button variant="secondary" disabled={page === 1 || query.isFetching} onClick={() => update({ page: String(page - 1), file: "" })}>{t("ui.previous")}</Button><Button variant="secondary" disabled={query.isFetching || page * 100 >= (query.data?.total ?? 0)} onClick={() => update({ page: String(page + 1), file: "" })}>{t("ui.next")}</Button></div></div>
+    <ActiveOperations vaultId={vaultId} t={t} />
+    {message && <p role="alert">{message}</p>}
+    {effectiveDetails && <FileDetails key={`${effectiveDetails.vaultId}:${effectiveDetails.item.path}`} target={effectiveDetails} onClose={() => { setDetails(null); if (focusPath) update({ file: "" }); }} onRecover={() => { setRecover([effectiveDetails]); setDetails(null); if (focusPath) update({ file: "" }); }} onRefresh={refresh} t={t} />}
+    {recover && <RecoverSelection targets={recover} onClose={() => setRecover(null)} onDone={() => { setRecover(null); refresh(); }} t={t} />}
+    <ConfirmDialog open={Boolean(release)} onOpenChange={(open) => { if (!open && !busy) setRelease(null); }} title={t("ui.confirm_free_space_title")} description={t("ui.confirm_free_space_description", { path: release?.map((row) => `${row.vaultName} / ${row.item.path}`).join(", ") ?? "" })} confirmLabel={busy ? t("ui.loading") : t("essential.free_now")} cancelLabel={t("ui.cancel")} tone="danger" onConfirm={() => void free()} />
+  </section>;
 }

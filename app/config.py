@@ -84,9 +84,6 @@ class Settings:
     restore_approval_hold_seconds: int = max(
         60, int(os.getenv("RESTORE_APPROVAL_HOLD_SECONDS", "3600"))
     )
-    cloud_purge_delay_seconds: int = max(
-        60, int(os.getenv("CLOUD_PURGE_DELAY_SECONDS", str(24 * 60 * 60)))
-    )
     # Optional global upload bandwidth cap in KiB/s (#413). None/0 means
     # unlimited; recoveries and other transfers are never throttled.
     bandwidth_limit_kibps: int | None = (
@@ -165,6 +162,8 @@ class Settings:
     # Optional installation-wide email delivery, owned by the deployment (#414).
     # All three addresses/host inputs are required; without them only the inbox
     # receives events. Credentials are never stored in the database.
+    # Canonical HTTPS application URL for notification deep links (no credentials).
+    app_public_url: str = os.getenv("APP_PUBLIC_URL", "").rstrip("/")
     smtp_host: str = os.getenv("SMTP_HOST", "")
     smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
     smtp_username: str = os.getenv("SMTP_USERNAME", "")

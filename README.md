@@ -50,8 +50,21 @@ Search remains global across every file in the selected vault.
   without an upload.
 - New vaults can use an empty managed root or adopt any existing directory
   under a Source Volume that does not overlap another vault root.
-- Administration retains Vault, Source Volume and metadata backup operations;
-  all installation settings come only from the deployment environment.
+- The file browser is home: a sidebar lists protected folders, All / Cloud only /
+  Pending / Problems filters and **General**. Home reopens the last-used Vault at
+  its root; search matches name/path across all protected folders and preserves
+  Vault identity even for identical paths. Folder rows show protection counts.
+- Selection offers only **Recover**, **Free space now** and single-file **Details**.
+  Cloud internals and deliberate seven-day cloud deletion live only in Details.
+  Cold recovery offers Normal (Standard) / Economical (Bulk, default), an estimate,
+  return path and local-retention explanation. There are no previews.
+- Each folder's gear panel contains automatic protection, fixed release periods,
+  collapsed Advanced Storage Plan / Move now and Stop Protection. **General**
+  contains optional email status, the installation Recovery Kit/fingerprint/custody,
+  last verified backup, per-Vault storage estimates, folder creation and reconnect.
+  There are no administration or Manage access pages. Installation settings remain
+  deployment-owned. API clients should pin `vault_id` on every scoped request;
+  an invalid explicit identity fails closed rather than using Session selection.
 
 ## Automatic protection
 
@@ -125,14 +138,41 @@ and Cloud-only Conflicts remain held back.
   by default. Early replacement can incur minimum-duration charges; cold recovery
   takes hours. A changed plan does not warm existing cold objects or move them
   immediately. See [storage plans and upgrade safety](docs/aws-s3-bucket.md#vault-storage-plans).
+- **Move the entire Vault now**, in the same Advanced panel, queues verified
+  Current Snapshots for a colder class on the saved plan (not Standard). Mixed
+  classes are evaluated per file: equal/colder copies, unverified/missing copies,
+  pending work (including delayed deletion), and cold sources without an explicit
+  exact-version restore are skipped. It never restores automatically or moves
+  warmer. A regional storage/source-retrieval estimate and minimum-duration warning
+  must be acknowledged first; request fees and early-deletion charges are excluded.
+  A copy resets the provider object-age/plan clock. Exact destination checksum
+  verification precedes removal of the exact old source; interruption resumes from
+  a durable ledger without discarding the only verified copy. Follow/cancel Jobs
+  in Operations; cancellation retains copies and does not undo finished movement.
+  Reconnect and Stop Protection require these Jobs to finish or be cancelled.
+  See [copy/restart safety and limitations](docs/adr/0021-vault-wide-colder-moves.md).
 - Lifecycle synchronization preserves external bucket rules and the seven-day
   incomplete-multipart abort rule. Changing a plan never deletes cloud content.
-- **Purge from cloud permanently** deletes every selected Archive Version and
-  Delete Marker after a confirmed, cancellable delay.
-  A recently reauthenticated Owner can skip the remaining delay with
-  **Delete now**.
-- Cloud actions work on files and folders. Permanent folder and vault purges
-  batch S3 deletions while preserving per-item failures for safe retries.
+- **Delete from cloud** is available only for **Cloud-only** files (or folders
+  whose selected files are all Cloud-only). Type the exact Vault name and a
+  reason, with recent Owner reauthentication. A fixed **seven-day cancellable
+  delay** applies; there is no immediate deletion or acceleration. Every exact
+  VersionId is captured once, never expanded to new content during execution.
+  Local reappearance, changed cloud content or an untrusted/unavailable source
+  cancels the request instead of deleting the only cloud copy by mistake.
+- **Stop protecting this folder** always keeps local files. Choose **keep cloud**
+  or the same delayed cloud deletion. A cloud-backed file present on the server
+  blocks the delete choice: choose keep instead. Pending Jobs/scans must finish
+  or be cancelled first. Stop+delete reserves the root until terminal; cancelling
+  means keep cloud, not resume protection. Retained cloud content stays under its
+  original S3 namespace and can be recovered using the Recovery Kit's manual S3
+  instructions; the stopped Vault is a non-operational tombstone.
+- Migration **0059** cancels legacy delayed deletion requests; make new explicit
+  requests if still wanted. Finish legacy decommissions and reconcile interrupted
+  destructive Jobs with the previous release before upgrading. No migration calls
+  S3 or deletes local files. Remove `CLOUD_PURGE_DELAY_SECONDS`; it is no longer
+  configurable. The old enablement toggle, generated phrase and decommission
+  endpoints/UI are removed. A downgrade after Stop Protection is refused.
 - Safe renames are recognized automatically only for unique, identical content
   observed within the scan window. The new cloud key is verified before cleaning
   up the old key (permanently under Current Snapshot). Ambiguous matches stay new
@@ -180,7 +220,8 @@ and Cloud-only Conflicts remain held back.
   held for one hour awaiting the Owner's approval before any `RestoreObject`
   call. An accepted S3 restore request cannot be cancelled. Large recoveries
   use parallel S3 range downloads (`S3_DOWNLOAD_*`).
-- The panel requires a username and password.
+- Sign in with the Owner's configured OIDC provider or, from loopback/allowed
+  LAN, the Emergency Password.
 
 ## Requirements
 
@@ -461,8 +502,8 @@ configured prefix, read, upload, and request object restores. Automatic rename
 cleanup requires `s3:DeleteObjectVersion` to remove the old key's versions
 only after the new key is verified. The same permission removes superseded
 versions after verified uploads; permanent purge uses it too.
-Disabling the manual cloud-deletion setting does not disable verified snapshot
-replacement or automatic rename cleanup.
+The explicit seven-day delay applies to Owner-requested cloud deletion, not
+verified snapshot replacement or automatic rename cleanup.
 
 Use the Terraform baseline in
 [`infra/terraform/archive-bucket/`](infra/terraform/archive-bucket/) or apply
@@ -485,7 +526,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS`, `SMTP_USE_TLS` (optional; see below) |
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
-| Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RESTORE_*`, `CLOUD_PURGE_DELAY_SECONDS` |
+| Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RESTORE_*` |
 
 All installation configuration is environment-only and takes effect on process
 restart. There is no mutable settings UI or API. Before upgrading through
@@ -543,15 +584,18 @@ Email is optional and configured only in the deployment environment:
 - `SMTP_HOST`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS` — all three must be
   non-empty to enable delivery. The recipient is explicitly configured, not
   inferred from the Owner's login address.
+- `APP_PUBLIC_URL` — optional canonical application URL (for example
+  `https://frostvault.example.com`), without credentials/query/fragment. Enables
+  email links to the file's folder, highlighted row and problem Details. Without
+  it email still works but has no absolute application link.
 - `SMTP_PORT` — defaults to `587`; valid range `1–65535`.
 - `SMTP_USERNAME`, `SMTP_PASSWORD` — optional authentication. The password is
   never exposed by an API or stored in the database.
 - `SMTP_USE_TLS` — defaults to `true`: STARTTLS on port 587 (and other ports),
   implicit TLS on port 465. Disable only for a trusted local relay.
 
-Missing or partial configuration disables email, not the inbox. The current
-General-compatible administration surface warns when email is not configured;
-the General page layout is delivered separately. The API exposes only a boolean
+Missing or partial configuration disables email, not the inbox. The General
+page warns when email is not configured. The API exposes only a boolean
 configuration status, never SMTP addresses or credentials. Email delivery has
 three bounded attempts and does not change Job results or remove notifications.
 Environment changes require an application restart. Existing database SMTP

@@ -4,7 +4,7 @@ import {
   ApiError,
   browseSourceVolume,
   createVault,
-  fetchAdminSourceVolumes,
+  fetchGeneralSourceVolumes,
   selectVault,
 } from "@/api";
 import type {
@@ -22,6 +22,7 @@ export type VaultCreatePageProps = {
   displayName: string;
   /** Override navigation (tests inject this via configureApiClient.navigate). */
   onNavigate?: (url: string) => void;
+  embedded?: boolean;
 };
 
 function navigateTo(url: string, onNavigate?: (url: string) => void): void {
@@ -32,7 +33,8 @@ function navigateTo(url: string, onNavigate?: (url: string) => void): void {
   window.location.assign(url);
 }
 
-export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProps) {
+export function VaultCreatePage({ displayName, onNavigate, embedded = false }: VaultCreatePageProps) {
+  const Surface = embedded ? "section" : "main";
   const { t } = useI18n();
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
@@ -46,7 +48,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
   useEffect(() => {
     let cancelled = false;
     // Any free directory of a healthy, writable Source Volume can be adopted.
-    void fetchAdminSourceVolumes()
+    void fetchGeneralSourceVolumes()
       .then((response) => {
         if (cancelled) return;
         const usable = response.items
@@ -98,7 +100,7 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
 
       const vault = await createVault(payload);
       await selectVault({ vault_id: vault.id });
-      navigateTo("/", onNavigate);
+      navigateTo(`/?vault_id=${vault.id}`, onNavigate);
     } catch (err) {
       const message =
         err instanceof ApiError
@@ -113,10 +115,10 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
   }
 
   return (
-    <main className="relative grid min-h-screen place-items-center bg-canvas px-4 py-[30px]">
-      <div className="absolute top-[max(0.75rem,env(safe-area-inset-top))] right-[max(1rem,env(safe-area-inset-right))]">
+    <Surface className={`relative grid place-items-center bg-canvas px-4 py-[30px] ${embedded ? "" : "min-h-screen"}`}>
+      {!embedded && <div className="absolute top-[max(0.75rem,env(safe-area-inset-top))] right-[max(1rem,env(safe-area-inset-right))]">
         <AccountPreferencesMenu />
-      </div>
+      </div>}
       <div className="w-full max-w-[min(440px,100%)]">
         <AuthCard>
           <p className="m-0 mb-1.5 text-[12px] font-extrabold tracking-[0.16em] text-green">
@@ -251,6 +253,6 @@ export function VaultCreatePage({ displayName, onNavigate }: VaultCreatePageProp
         </AuthCard>
       </div>
 
-    </main>
+    </Surface>
   );
 }

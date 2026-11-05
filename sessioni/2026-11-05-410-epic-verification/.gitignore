@@ -1,0 +1,4 @@
+# Public GitHub source snapshots and local scratch; concise evidence is committed.
+*.json
+!evidence.json
+*.log

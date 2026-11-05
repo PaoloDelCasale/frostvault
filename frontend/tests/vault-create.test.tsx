@@ -35,7 +35,7 @@ describe("plaintext Vault creation", () => {
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/api/i18n/catalog")) return Promise.resolve(json({ locale: messages === en ? "en" : "it", locales: ["en", "it"], messages }));
-      if (url === "/api/admin/source-volumes") return Promise.resolve(json({ items: adopt ? [{ alias: "photos", health: "ok", access: "rw" }] : [] }));
+      if (url === "/api/general/source-volumes") return Promise.resolve(json({ items: adopt ? [{ alias: "photos", health: "ok", access: "rw" }] : [] }));
       if (url.startsWith("/api/source-volumes/photos/browse")) return Promise.resolve(json({ volume_alias: "photos", relative_path: "albums", items: [{ name: "2024", relative_path: "albums/2024", navigable: true, selectable: true, occupation: null }] }));
       if (url === "/api/vaults" && init?.method === "POST") return Promise.resolve(fail
         ? json({ message_key: "ui.vault_create.failed", detail: "Slug taken" }, 422)
@@ -59,7 +59,7 @@ describe("plaintext Vault creation", () => {
     await user.type(screen.getByRole("textbox", { name: en["ui.vault_create.name"] }), "Photos");
     await user.type(screen.getByRole("textbox", { name: new RegExp(en["ui.vault_create.slug"], "i") }), "photos");
     await user.click(screen.getByRole("button", { name: en["ui.vault_create.submit"] }));
-    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/"));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/?vault_id=42"));
     expect(payload()).toEqual({ name: "Photos", slug: "photos", creation_mode: "empty" });
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/recovery"))).toBe(false);
   });
@@ -87,7 +87,7 @@ describe("plaintext Vault creation", () => {
     const buttons = await screen.findAllByRole("button", { name: en["ui.source_directory_browser_select"] });
     await user.click(buttons[0]!);
     await user.click(screen.getByRole("button", { name: en["ui.vault_create.submit"] }));
-    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/"));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/?vault_id=42"));
     expect(payload()).toEqual({ name: "Photos", creation_mode: "adopt", volume_alias: "photos", relative_path: "albums/2024" });
   });
 });

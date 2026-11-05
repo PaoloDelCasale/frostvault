@@ -16,7 +16,7 @@ const MENU_KEYS = {
   preferencesDescription: ["ui", "preferences_description"].join("."),
   closePreferences: ["ui", "close_preferences"].join("."),
   newVault: ["ui", "new_vault"].join("."),
-  administration: ["ui", "administration"].join("."),
+  general: "essential.general",
   language: ["ui", "language"].join("."),
   languageEn: ["ui", "language_en"].join("."),
   languageIt: ["ui", "language_it"].join("."),
@@ -34,7 +34,7 @@ const FALLBACK_LABELS = {
     preferencesDescription: "Personal appearance settings for this browser.",
     closePreferences: "Close preferences",
     newVault: "New vault",
-    administration: "Administration",
+    general: "General",
     language: "Language",
     languageEn: "English",
     languageIt: "Italiano",
@@ -50,7 +50,7 @@ const FALLBACK_LABELS = {
     preferencesDescription: "Impostazioni personali di aspetto per questo browser.",
     closePreferences: "Chiudi preferenze",
     newVault: "Nuovo vault",
-    administration: "Amministrazione",
+    general: "Generale",
     language: "Lingua",
     languageEn: "English",
     languageIt: "Italiano",
@@ -73,7 +73,7 @@ function translatedLabel(
 
 export type AccountMenuHandlers = {
   onNewVault?: () => void;
-  onAdministration?: () => void;
+  onGeneral?: () => void;
   onSignOut?: () => void;
   onLocaleChange?: (locale: string) => void;
 };
@@ -84,7 +84,7 @@ type AccountPreferencesMenuProps = {
   locales?: string[];
   /**
    * When provided, the menu becomes the shell secondary surface (New vault,
-   * Administration, Language, Appearance, Sign out). Without handlers the
+   * General, Language, Appearance, Sign out). Without handlers the
    * menu stays appearance-only for no-Vault / create screens.
    */
   handlers?: AccountMenuHandlers;
@@ -147,11 +147,7 @@ export function AccountPreferencesMenu({
     t(MENU_KEYS.newVault),
     fallback.newVault,
   );
-  const administrationLabel = translatedLabel(
-    MENU_KEYS.administration,
-    t(MENU_KEYS.administration),
-    fallback.administration,
-  );
+  const generalLabel = translatedLabel(MENU_KEYS.general, t(MENU_KEYS.general), fallback.general);
   const languageLabel = translatedLabel(
     MENU_KEYS.language,
     t(MENU_KEYS.language),
@@ -216,9 +212,9 @@ export function AccountPreferencesMenu({
                 type="button"
                 variant="secondary"
                 className={actionClass}
-                onClick={() => runAndClose(handlers?.onAdministration)}
+                onClick={() => runAndClose(handlers?.onGeneral)}
               >
-                {administrationLabel}
+                {generalLabel}
               </Button>
 
               <label className="flex min-h-11 flex-col justify-center gap-1 text-sm font-bold text-muted">

@@ -28,8 +28,8 @@ backoff, generic failures, auditing and forwarded-header rules of ADR-0004 and
 ADR-0005. Requests from outside those networks are refused with `403`.
 
 **Reauthentication** is required only before downloading the Recovery Kit and
-before deleting from the cloud (cloud archive/purge, accelerating a purge, and
-a Vault Decommission, whose dispositions can delete cloud history). Other
+before deleting from the cloud, including Stop Protection with cloud deletion
+(ADR-0020). Stop Protection keeping cloud content needs no step-up. Other
 mutations need only a valid Session and CSRF token. Installation settings are
 environment-only (ADR-0009 as superseded by #416).
 

@@ -44,7 +44,7 @@ _ORIGINAL_STORAGE_PATCH_TARGETS = {
     ),
     "relocation_suspended": storage.vault_relocation.local_work_suspended,
     "decommission_suspended": (
-        storage.vault_decommission_service.local_work_suspended
+        storage.protection_stop_service.local_work_suspended
     ),
 }
 
@@ -146,7 +146,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
             ("app.storage.source_layout.vault_local_access", access),
             ("app.storage.source_layout.should_emit_local_copy_removals", True),
             ("app.storage.vault_relocation.local_work_suspended", False),
-            ("app.storage.vault_decommission_service.local_work_suspended", False),
+            ("app.storage.protection_stop_service.local_work_suspended", False),
         ):
             patcher = patch(target, return_value=return_value)
             patcher.start()
@@ -891,7 +891,7 @@ class CatalogEventsPatchCleanupTests(unittest.TestCase):
             _ORIGINAL_STORAGE_PATCH_TARGETS["relocation_suspended"],
         )
         self.assertIs(
-            storage.vault_decommission_service.local_work_suspended,
+            storage.protection_stop_service.local_work_suspended,
             _ORIGINAL_STORAGE_PATCH_TARGETS["decommission_suspended"],
         )
 

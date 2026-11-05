@@ -28,7 +28,7 @@ class EssentialAdministrationTests(unittest.TestCase):
             self.assertNotIn(path, schema["paths"])
             self.assertEqual(client.get(path).status_code, 404)
         self.assertEqual(client.patch("/api/admin/settings", json={}).status_code, 404)
-        for path in ("/api/admin/metadata-backups", "/api/admin/source-volumes"):
+        for path in ("/api/general/metadata-backups", "/api/general/source-volumes"):
             self.assertIn(path, schema["paths"])
             self.assertEqual(client.get(path).status_code, 401)
 
@@ -49,7 +49,7 @@ class EssentialAdministrationTests(unittest.TestCase):
 
     def test_migration_preserves_sessions_jobs_and_the_only_cloud_copy(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "admin.db"
+            path = Path(directory) / "general.db"
             assert_administration_migration(
                 self, lambda target, command="upgrade": run_alembic(path, target, command=command),
                 lambda: PostgresConnection(str(path)),

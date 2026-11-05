@@ -15,7 +15,9 @@ function countedLabel(count: number, baseKey: string, t: Translate): string {
 }
 
 function formatDelay(seconds: number, t: Translate): string {
-  const { value, unit } = pickDurationUnit(seconds);
+  const { value, unit } = seconds >= 86400
+    ? { value: Math.round(seconds / 86400), unit: "days" }
+    : pickDurationUnit(seconds);
   const form = value === 1 ? "one" : "other";
   return t(`ui.duration_${unit}_${form}`, { n: value });
 }
@@ -32,7 +34,6 @@ export type CloudPurgeDialogProps = {
   onConfirm: (payload: {
     reason: string;
     confirmation: string;
-    generated_phrase: string;
   }) => void;
 };
 
@@ -58,15 +59,12 @@ export function CloudPurgeDialog({
     }
   }, [open]);
 
-  const phrase = settings?.generated_phrase ?? "";
-
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!reason.trim() || !confirmation.trim() || !phrase) return;
+    if (!reason.trim() || confirmation !== vaultName || !preview) return;
     onConfirm({
       reason: reason.trim(),
-      confirmation: confirmation.trim(),
-      generated_phrase: phrase,
+      confirmation,
     });
   }
 
@@ -120,14 +118,9 @@ export function CloudPurgeDialog({
             required
             minLength={1}
             data-testid="cloud-purge-confirmation"
-            placeholder={phrase || vaultName}
+            placeholder={vaultName}
           />
         </FormField>
-        {phrase ? (
-          <p className="text-xs text-muted" data-testid="cloud-purge-phrase">
-            {t("ui.cloud_purge_phrase")}: {phrase}
-          </p>
-        ) : null}
         <div className="mt-2 flex flex-wrap justify-end gap-2">
           <Button
             type="button"
@@ -141,7 +134,7 @@ export function CloudPurgeDialog({
             type="submit"
             variant="danger"
             className="min-h-11 min-w-11"
-            disabled={!reason.trim() || !confirmation.trim()}
+            disabled={!preview || !reason.trim() || confirmation !== vaultName}
             data-testid="cloud-purge-submit"
           >
             {t("ui.cloud_purge_submit")}

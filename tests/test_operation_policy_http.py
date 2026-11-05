@@ -139,7 +139,7 @@ class OperationPolicyHttpTests(unittest.TestCase):
     def test_owner_can_request_storage_cost_estimates(self) -> None:
         self._authenticate(self.owner_id)
         response = self.client.post(
-            "/api/admin/cost-estimates/storage",
+            "/api/general/cost-estimates/storage",
             headers=self._headers(),
             json={"size_bytes": 1024, "storage_class": "STANDARD"},
         )
@@ -192,7 +192,7 @@ class OperationPolicyHttpTests(unittest.TestCase):
         regional = replace(main.settings, aws_region="eu-south-1")
         with patch("app.main.settings", regional):
             estimate = self.client.post(
-                "/api/admin/cost-estimates/storage",
+                "/api/general/cost-estimates/storage",
                 headers=self._headers(),
                 json={"vault_id": self.vault_id, "storage_class": "STANDARD"},
             )
@@ -209,19 +209,19 @@ class OperationPolicyHttpTests(unittest.TestCase):
             self._archive_version(connection, "unknown.bin", None)
         self._authenticate(self.owner_id)
         unknown = self.client.post(
-            "/api/admin/cost-estimates/storage",
+            "/api/general/cost-estimates/storage",
             headers=self._headers(),
             json={"vault_id": self.vault_id, "storage_class": "STANDARD"},
         )
         self.assertEqual(unknown.status_code, 409, unknown.text)
         missing = self.client.post(
-            "/api/admin/cost-estimates/storage",
+            "/api/general/cost-estimates/storage",
             headers=self._headers(),
             json={"vault_id": 999, "storage_class": "STANDARD"},
         )
         self.assertEqual(missing.status_code, 404, missing.text)
         ambiguous = self.client.post(
-            "/api/admin/cost-estimates/storage",
+            "/api/general/cost-estimates/storage",
             headers=self._headers(),
             json={"vault_id": self.vault_id, "size_bytes": 1, "storage_class": "STANDARD"},
         )

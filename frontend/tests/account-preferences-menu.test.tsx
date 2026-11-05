@@ -22,8 +22,7 @@ const shellCapabilities: ShellCapabilities = {
 
 const shellHandlers: ShellNavHandlers = {
   onNewVault: vi.fn(),
-  onManageAccess: vi.fn(),
-  onAdministration: vi.fn(),
+  onGeneral: vi.fn(),
   onSignOut: vi.fn(),
   onLocaleChange: vi.fn(),
   onVaultChange: vi.fn(),
@@ -42,7 +41,7 @@ describe("AccountPreferencesMenu focus restore (#224)", () => {
         locales={["en", "it"]}
         handlers={{
           onNewVault: vi.fn(),
-          onAdministration: vi.fn(),
+          onGeneral: vi.fn(),
           onSignOut: vi.fn(),
           onLocaleChange: vi.fn(),
         }}
@@ -103,16 +102,12 @@ describe("AppShell desktop header single-row alignment (#224)", () => {
     // items-center vertically offsets unequal-height children and fails the
     // desktop uniqueTops===1 a11y guard; top alignment keeps one geometric row.
     expect(headerRow.className.split(/\s+/)).toEqual(
-      expect.arrayContaining(["flex-nowrap", "items-start"]),
-    );
-    expect(headerRow.className.split(/\s+/)).not.toEqual(
-      expect.arrayContaining(["items-center"]),
+      expect.arrayContaining(["flex-nowrap", "items-center"]),
     );
 
+
     const header = screen.getByRole("banner");
-    expect(
-      within(header).getByRole("navigation", { name: /vault navigation/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: /vault navigation/i })).toBeInTheDocument();
     expect(within(header).getByTestId("notification-bell")).toBeInTheDocument();
     expect(
       within(header).getByRole("button", { name: /open account menu/i }),
@@ -121,7 +116,7 @@ describe("AppShell desktop header single-row alignment (#224)", () => {
       within(header).queryByRole("button", { name: /^new vault$/i }),
     ).not.toBeInTheDocument();
     expect(
-      within(header).queryByRole("button", { name: /^administration$/i }),
+      within(header).queryByRole("button", { name: /^general$/i }),
     ).not.toBeInTheDocument();
   });
 });

@@ -60,7 +60,7 @@ from .services.source_layout import (
 )
 from .services import source_directories as source_directories_service
 from .services import vault_relocation as vault_relocation_service
-from .services import vault_decommission as vault_decommission_service
+from .services import protection_stop as protection_stop_service
 from .oidc import (
     IdentityRejected,
     OidcError,
@@ -114,6 +114,7 @@ from .services.lifecycle_profiles import (
     validate_lifecycle_profile,
 )
 from .services import cloud_deletion as cloud_deletion_service
+from .services import vault_moves
 from .services.vaults import (
     InvalidVaultName,
     VaultAdoptionError,
@@ -197,12 +198,7 @@ async def lifespan(_: FastAPI):
     vault_relocation_service.reconcile_vault_root_identities()
     cleanup_abandoned_restore_files()
     reconcile_interrupted_jobs()
-    with db() as connection:
-        vault_decommission_service.reconcile_interrupted_jobs(connection)
-    runtime = _runtime_settings()
-    vault_decommission_service.reconcile_all(
-        purge_delay_seconds=runtime.cloud_purge_delay_seconds,
-    )
+    protection_stop_service.reconcile_all()
     tasks = [asyncio.create_task(background_loop()), asyncio.create_task(auto_upload_loop())]
     if settings.filesystem_watch_enabled:
         tasks.append(asyncio.create_task(filesystem_watch_loop()))
@@ -477,16 +473,18 @@ _OPERATIONAL_VAULT = "v.enabled=TRUE AND v.decommission_state='active'"
 
 
 def current_vault(
-    request: Request, user: dict[str, Any] = Depends(current_user)
+    request: Request, user: dict[str, Any] = Depends(current_user),
+    vault_id: int | None = Query(default=None, ge=1),
 ) -> dict[str, Any]:
-    """Resolve the Session's selected operational Vault.
+    """Resolve an explicitly pinned Vault, or the Session's home Vault.
 
     Every Vault belongs to the single owner (#412); the selection only picks
     which one the UI is looking at.
     """
     del user  # authentication gate only
     session = request.state.session
-    requested_id = session.get("vault_id")
+    explicit = isinstance(vault_id, int)
+    requested_id = vault_id if explicit else session.get("vault_id")
     with db() as connection:
         vault = None
         if requested_id:
@@ -494,6 +492,8 @@ def current_vault(
                 f"SELECT v.* FROM vaults v WHERE v.id=%s AND {_OPERATIONAL_VAULT}",
                 (requested_id,),
             ).fetchone()
+        if not vault and explicit:
+            raise HTTPException(404, "Protected Vault not found")
         if not vault:
             vault = connection.execute(
                 f"""
@@ -504,7 +504,7 @@ def current_vault(
             ).fetchone()
         if not vault:
             raise HTTPException(403, "No vault exists yet")
-        if session.get("vault_id") != vault["id"]:
+        if not explicit and session.get("vault_id") != vault["id"]:
             updated = set_session_vault(
                 connection,
                 session["id"],
@@ -517,47 +517,6 @@ def current_vault(
                 # older process overwrite the newer persisted transition.
                 raise HTTPException(409, "Session changed; retry the request")
             session.update(updated)
-    return vault
-
-
-def _vault_for_decommission(vault_id: int) -> dict[str, Any]:
-    with db() as connection:
-        vault = connection.execute(
-            "SELECT * FROM vaults WHERE id=%s", (vault_id,)
-        ).fetchone()
-    if vault is None:
-        raise HTTPException(404, "Vault not found")
-    return vault
-
-
-def decommission_vault(
-    request: Request, user: dict[str, Any] = Depends(current_user)
-) -> dict[str, Any]:
-    """Resolve the selected Vault even after it is quiesced or disabled.
-
-    Normal ``current_vault`` deliberately hides non-operational Vaults.  This
-    narrow seam keeps decommission progress visible while history remains
-    preserved in the tombstone.
-    """
-    del user  # authentication gate only
-    requested_id = request.state.session.get("vault_id")
-    with db() as connection:
-        vault = None
-        if requested_id:
-            vault = connection.execute(
-                "SELECT * FROM vaults WHERE id=%s", (requested_id,)
-            ).fetchone()
-        if vault is None:
-            vault = connection.execute(
-                """
-                SELECT * FROM vaults
-                ORDER BY CASE WHEN decommission_state='decommissioning' THEN 0 ELSE 1 END,
-                         lower(name)
-                LIMIT 1
-                """
-            ).fetchone()
-    if vault is None:
-        raise HTTPException(404, "Vault not found")
     return vault
 
 
@@ -611,6 +570,7 @@ class CloudOnlyReplacementAction(BaseModel):
 
 class RecoverEstimateRequest(BaseModel):
     path: str
+    is_directory: bool = False
     archive_version_id: str | None = None
     restore_tier: str | None = None
     restore_days: int | None = Field(default=None, ge=1, le=30)
@@ -626,12 +586,6 @@ class GroupCancelAction(BaseModel):
 
 class JobCancelAction(GroupCancelAction):
     action: str = Field(min_length=1, max_length=20)
-
-
-class CloudDeletionSettingUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool
 
 
 class CloudDeletionPreviewRequest(BaseModel):
@@ -650,7 +604,6 @@ class CloudPurgeRequest(BaseModel):
     paths: list[str] | None = None
     confirmation: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=500)
-    generated_phrase: str = Field(min_length=1, max_length=200)
 
 
 class VaultReconnect(BaseModel):
@@ -663,17 +616,12 @@ class VaultReconnect(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
-class VaultDecommissionPreview(BaseModel):
+class StopProtectionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    local_disposition: str = Field(pattern="^(retain|remove)$")
-    cloud_disposition: str = Field(pattern="^(retain|purge)$")
-
-
-class VaultDecommissionStart(VaultDecommissionPreview):
+    cloud_disposition: str = Field(pattern="^(keep|delete)$")
     confirmation: str = Field(min_length=1, max_length=120)
-    reason: str = Field(min_length=3, max_length=500)
-    preview_fingerprint: str = Field(min_length=64, max_length=64)
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class LifecycleTransitionUpdate(BaseModel):
@@ -802,17 +750,11 @@ def build_directory_items(
             folder["local_size"] += local_size or 0
             folder["cloud_size"] += cloud_size or 0
             folder["state_counts"][row["state"]] = folder["state_counts"].get(row["state"], 0) + 1
-            # Cloud deletion eligibility mirrors fileHasCloudContent in the SPA:
-            # any Vault File with a non-purged Archive Version under this prefix.
-            has_cloud = bool(
-                row.get("cloud_exists")
-                or row["state"] in {"protected", "cloud_only"}
-            )
             action_flags = {
                 "upload": row.get("upload_eligible", row["state"] == "pending"),
                 "recover": row.get("recover_eligible", row["state"] == "cloud_only"),
                 "free-space": row.get("cleanup_eligible", row["state"] == "protected"),
-                "cloud-purge": has_cloud,
+                "cloud-purge": row["state"] == "cloud_only",
             }
             for action, eligible in action_flags.items():
                 if eligible:
@@ -1198,16 +1140,6 @@ def index():
     return _spa_index_response()
 
 
-@app.get("/vault/access")
-def vault_access_page():
-    return _spa_index_response()
-
-
-@app.get("/admin")
-def admin_page():
-    return _spa_index_response()
-
-
 @app.get("/api/me", response_model=response_model("MeResponse"))
 def me(request: Request, response: Response, user: dict[str, Any] = Depends(current_user)):
     csrf_token = request.state.session["csrf_token"]
@@ -1226,7 +1158,7 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
             "slug": vault["slug"],
             "name": vault["name"],
             "delete_enabled": vault_local_access(vault["source_root"]).local_operations_allowed,
-            "cloud_deletion_enabled": bool(vault.get("cloud_deletion_enabled")),
+            "cloud_deletion_enabled": True,
         }
     else:
         selected_id = request.state.session.get("vault_id")
@@ -1264,7 +1196,7 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
         "locale": _request_locale(request),
         "locales": list(available_locales()),
         "vault": vault_block,
-        "decommission_vault": decommission_vault_block,
+        "stopped_vault": decommission_vault_block,
     }
 
 
@@ -1359,204 +1291,45 @@ def create_owner_vault(
     return payload
 
 
-_VAULT_DECOMMISSION_ERROR_STATUS: dict[str, tuple[int, str]] = {
-    "not_found": (404, "Vault not found"),
-    "not_started": (404, "Vault decommission has not started"),
-    "reason_required": (422, "A reason between 3 and 500 characters is required"),
-    "confirmation_required": (422, "Type the exact Vault name to confirm"),
-    "invalid_disposition": (422, "Invalid decommission disposition"),
-    "owner_required": (403, "Only the primary owner can decommission this Vault"),
-    "stale_preview": (409, "Vault contents changed; request a new preview"),
-    "blocked": (409, "Vault decommission is blocked; review the preview"),
-    "decommission_in_progress": (409, "Vault decommission is already in progress"),
-    "already_decommissioned": (409, "Vault root has already been released"),
-    "state_changed": (409, "Vault lifecycle changed; request a new preview"),
-    "cloud_purge_not_cancellable": (409, "Cloud purge delay is no longer cancellable"),
-}
-
-
-def _vault_decommission_http_error(
-    exc: vault_decommission_service.VaultDecommissionError,
-) -> HTTPException:
-    status_code, message = _VAULT_DECOMMISSION_ERROR_STATUS.get(
-        exc.reason, (409, "Vault decommission could not be completed")
-    )
-    return HTTPException(status_code, message)
-
-
-def _preview_vault_decommission(
-    vault_id: int, action: VaultDecommissionPreview
-) -> dict[str, Any]:
-    with status_lock:
-        scan_active = bool(runtime_status.get(vault_id, {}).get("scanning"))
+@app.get("/api/vaults/{vault_id}/stop-protection", response_model=response_model("StopProtectionStatus"))
+def stop_protection_status(vault_id: int, user: dict[str, Any] = Depends(current_user)):
     try:
         with db() as connection:
-            return vault_decommission_service.build_preview(
-                connection,
-                vault_id=vault_id,
-                local_disposition=action.local_disposition,
-                cloud_disposition=action.cloud_disposition,
-                runtime_scan_active=scan_active,
-            )
-    except vault_decommission_service.VaultDecommissionError as exc:
-        raise _vault_decommission_http_error(exc) from exc
+            return protection_stop_service.status(connection, vault_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
-def _start_vault_decommission(
-    *,
-    vault_id: int,
-    action: VaultDecommissionStart,
-    actor: dict[str, Any],
-) -> dict[str, Any]:
-    runtime = _runtime_settings()
+@app.post("/api/vaults/{vault_id}/stop-protection", status_code=202, response_model=response_model("StopProtectionStatus"))
+def stop_folder_protection(vault_id: int, action: StopProtectionRequest, request: Request,
+                           user: dict[str, Any] = Depends(current_user)):
+    if action.cloud_disposition == "delete":
+        require_recent_reauth(request, user)
     operation_lock = scan_lock_for_vault(vault_id)
     if not operation_lock.acquire(blocking=False):
-        raise HTTPException(409, "A Vault scan is active; request a new preview")
+        raise HTTPException(409, "Wait for the Vault scan to finish")
     try:
-        with status_lock:
-            scan_active = bool(runtime_status.get(vault_id, {}).get("scanning"))
-        if scan_active:
-            raise HTTPException(409, "A Vault scan is active; request a new preview")
-        try:
-            with db() as connection:
-                vault_decommission_service.start_decommission(
-                    connection,
-                    vault_id=vault_id,
-                    actor_user_id=int(actor["id"]),
-                    local_disposition=action.local_disposition,
-                    cloud_disposition=action.cloud_disposition,
-                    confirmation=action.confirmation,
-                    reason=action.reason,
-                    preview_fingerprint=action.preview_fingerprint,
-                    purge_delay_seconds=runtime.cloud_purge_delay_seconds,
-                    runtime_scan_active=False,
-                )
-                result = vault_decommission_service.reconcile_one(
-                    connection,
-                    vault_id=vault_id,
-                    purge_delay_seconds=runtime.cloud_purge_delay_seconds,
-                )
-        except vault_decommission_service.VaultDecommissionError as exc:
-            vault_decommission_service.release_runtime_gate(vault_id)
-            raise _vault_decommission_http_error(exc) from exc
-        except BaseException:
-            # The database context rolled back; do not leave an in-process-only
-            # suspension without its persistent decommission row.
-            vault_decommission_service.release_runtime_gate(vault_id)
-            raise
+        with db() as connection:
+            return protection_stop_service.stop_protection(
+                connection, vault_id=vault_id, actor_user_id=int(user["id"]),
+                cloud_disposition=action.cloud_disposition, confirmation=action.confirmation,
+                reason=action.reason)
+    except cloud_deletion_service.ConfirmationRequired as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     finally:
         operation_lock.release()
-    if result["state"] == "completed":
-        vault_decommission_service.release_runtime_gate(vault_id)
-    return result
 
 
-@app.post("/api/vault/decommission/preview", response_model=response_model("VaultDecommissionPreview"))
-def preview_own_vault_decommission(
-    action: VaultDecommissionPreview,
-    vault: dict[str, Any] = Depends(decommission_vault),
-):
-    return _preview_vault_decommission(int(vault["id"]), action)
-
-
-@app.get("/api/vault/decommission/status", response_model=response_model("VaultDecommissionStatus"))
-def own_vault_decommission_status(
-    vault: dict[str, Any] = Depends(decommission_vault),
-):
+@app.post("/api/vaults/{vault_id}/stop-protection/cancel-deletion", response_model=response_model("StopProtectionStatus"))
+def cancel_stopped_folder_deletion(vault_id: int, user: dict[str, Any] = Depends(current_user)):
     try:
         with db() as connection:
-            return vault_decommission_service.operation_status(
-                connection, vault_id=int(vault["id"])
-            )
-    except vault_decommission_service.VaultDecommissionError as exc:
-        raise _vault_decommission_http_error(exc) from exc
-
-
-@app.post("/api/vault/decommission", status_code=202, response_model=response_model("VaultDecommissionStatus"))
-def start_own_vault_decommission(
-    action: VaultDecommissionStart,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(decommission_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    return _start_vault_decommission(
-        vault_id=int(vault["id"]),
-        action=action,
-        actor=user,
-    )
-
-
-@app.post("/api/vault/decommission/cloud-purge/cancel", response_model=JsonObjectResponse)
-def cancel_own_vault_decommission_cloud_purge(
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(decommission_vault),
-):
-    try:
-        with db() as connection:
-            return vault_decommission_service.cancel_pending_cloud_purge(
-                connection,
-                vault_id=int(vault["id"]),
-                actor_user_id=int(user["id"]),
-            )
-    except vault_decommission_service.VaultDecommissionError as exc:
-        raise _vault_decommission_http_error(exc) from exc
-
-
-@app.post("/api/vaults/{vault_id}/decommission/preview", response_model=response_model("VaultDecommissionPreview"))
-def preview_owned_vault_decommission_by_id(
-    vault_id: int,
-    action: VaultDecommissionPreview,
-    user: dict[str, Any] = Depends(current_user),
-):
-    _vault_for_decommission(vault_id)
-    return _preview_vault_decommission(vault_id, action)
-
-
-@app.get("/api/vaults/{vault_id}/decommission/status", response_model=response_model("VaultDecommissionStatus"))
-def owned_vault_decommission_status_by_id(
-    vault_id: int,
-    user: dict[str, Any] = Depends(current_user),
-):
-    _vault_for_decommission(vault_id)
-    try:
-        with db() as connection:
-            return vault_decommission_service.operation_status(
-                connection, vault_id=vault_id
-            )
-    except vault_decommission_service.VaultDecommissionError as exc:
-        raise _vault_decommission_http_error(exc) from exc
-
-
-@app.post("/api/vaults/{vault_id}/decommission", status_code=202, response_model=response_model("VaultDecommissionStatus"))
-def start_owned_vault_decommission_by_id(
-    vault_id: int,
-    action: VaultDecommissionStart,
-    user: dict[str, Any] = Depends(current_user),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    _vault_for_decommission(vault_id)
-    return _start_vault_decommission(
-        vault_id=vault_id,
-        action=action,
-        actor=user,
-    )
-
-
-@app.post("/api/vaults/{vault_id}/decommission/cloud-purge/cancel", response_model=JsonObjectResponse)
-def cancel_owned_vault_decommission_cloud_purge_by_id(
-    vault_id: int,
-    user: dict[str, Any] = Depends(current_user),
-):
-    _vault_for_decommission(vault_id)
-    try:
-        with db() as connection:
-            return vault_decommission_service.cancel_pending_cloud_purge(
-                connection,
-                vault_id=vault_id,
-                actor_user_id=int(user["id"]),
-            )
-    except vault_decommission_service.VaultDecommissionError as exc:
-        raise _vault_decommission_http_error(exc) from exc
+            return protection_stop_service.cancel_deletion(connection, vault_id=vault_id,
+                                                            actor_user_id=int(user["id"]))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @app.post("/api/vaults/select", response_model=response_model("VaultSelectResponse"))
@@ -1643,6 +1416,62 @@ def list_files(
         "aggregate_status": listing.get("aggregate_status", "ready"),
         "protection_suspended": suspended,
     }
+
+
+@app.get("/api/files/detail", response_model=response_model("ArchiveListItem"), responses=LOGICAL_PATH_ERROR_RESPONSES)
+def file_detail(path: str, vault: dict[str, Any] = Depends(current_vault)):
+    path = safe_relative_path(path).as_posix()
+    with db() as connection:
+        access = vault_local_access(vault.get("source_root") or "")
+        unconfirmed, _ = _protection_observation(connection, vault, access)
+        catalog = ArchiveCatalog(connection, protection_unconfirmed=unconfirmed)
+        rows = connection.execute(catalog._file_row_select_sql([
+            "vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'", "fp.path=%s",
+        ]), (vault["id"], path)).fetchall()
+        items = catalog._materialize_file_items(vault["id"], rows, name_from_path=True)
+        if not items:
+            raise HTTPException(404, "Vault File not found")
+        return items[0]
+
+
+@app.get("/api/files/search", response_model=response_model("FilesResponse"))
+def search_all_files(
+    q: str = "", state: str = "", page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=10, le=500),
+    _: dict[str, Any] = Depends(current_user),
+):
+    """Search name/path across all protected Vaults, independent of Session choice."""
+    with db() as connection:
+        vaults = connection.execute(f"SELECT v.* FROM vaults v WHERE {_OPERATIONAL_VAULT}").fetchall()
+        scoped = []
+        for vault in vaults:
+            access = vault_local_access(vault.get("source_root") or "")
+            unconfirmed, _suspended = _protection_observation(connection, vault, access)
+            scoped.append({**vault, "unconfirmed": unconfirmed})
+        return ArchiveCatalog(connection).search_protected_vaults(
+            scoped, search=q, state=state, page=page, page_size=page_size,
+        )
+
+
+@app.get("/api/general", response_model=response_model("GeneralOverview"))
+def general_overview(user: dict[str, Any] = Depends(current_user)):
+    from .services.essential_interface import overview
+    with db() as connection:
+        return overview(connection, user_id=user["id"])
+
+
+@app.get("/api/problems", response_model=response_model("NotificationsResponse"))
+def open_problems(request: Request, page: int = Query(1, ge=1),
+                  user: dict[str, Any] = Depends(current_user)):
+    with db() as connection:
+        notification_service.reconcile_problem_states(connection)
+        rows = connection.execute(
+            "SELECT * FROM notifications WHERE user_id=%s AND in_app_enabled=TRUE "
+            "AND problem_status='open' ORDER BY id DESC LIMIT 100 OFFSET %s",
+            (user["id"], (page - 1) * 100),
+        ).fetchall()
+        return {"items": [notification_service._row_notification(row, locale=_request_locale(request)) for row in rows],
+                "open_problem_count": notification_service.count_open_problems(connection, user_id=user["id"])}
 
 
 @app.get("/api/stats", response_model=response_model("StatsResponse"))
@@ -1816,16 +1645,16 @@ def acknowledge_recovery_kit(
         return recovery_kit_service.kit_status(connection)
 
 
-@app.get("/api/admin/metadata-backups", response_model=JsonObjectResponse)
-def admin_list_metadata_backups(_: dict[str, Any] = Depends(current_user)):
+@app.get("/api/general/metadata-backups", response_model=JsonObjectResponse)
+def list_metadata_backups(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         status = metadata_backup_service.backup_status(connection)
         runs = metadata_backup_service.list_backup_artifacts(connection)
     return {"status": status, "runs": runs}
 
 
-@app.post("/api/admin/metadata-backups/run", response_model=JsonObjectResponse)
-def admin_run_metadata_backup(
+@app.post("/api/general/metadata-backups/run", response_model=JsonObjectResponse)
+def run_metadata_backup(
     action: MetadataBackupRunAction,
     admin: dict[str, Any] = Depends(current_user),
 ):
@@ -1855,7 +1684,7 @@ def admin_run_metadata_backup(
 
 
 @app.get(
-    "/api/admin/metadata-backups/download/{run_id}",
+    "/api/general/metadata-backups/download/{run_id}",
     response_class=Response,
     responses={
         200: {
@@ -1864,7 +1693,7 @@ def admin_run_metadata_backup(
         }
     },
 )
-def admin_download_metadata_backup(
+def download_metadata_backup(
     run_id: int,
     admin: dict[str, Any] = Depends(current_user),
 ):
@@ -2136,6 +1965,7 @@ async def catalog_events_stream(
             resume_after=resume_after,
             subscribe=subscribe,
             is_disconnected=request.is_disconnected,
+            explicit_vault="vault_id" in request.query_params,
         ):
             yield chunk
 
@@ -2180,8 +2010,8 @@ def queue_jobs(
             ).fetchone()
         if vault_row is None:
             raise HTTPException(404, "Vault not found")
-        if vault_decommission_service.local_work_suspended(vault_row):
-            raise HTTPException(409, "Vault is quiesced for decommission")
+        if protection_stop_service.local_work_suspended(vault_row):
+            raise HTTPException(409, "Vault is no longer protected")
         if vault_relocation_service.local_work_suspended(vault_row):
             raise HTTPException(409, "Local work is suspended pending reconnect scan")
         access = vault_local_access(vault_row["source_root"])
@@ -2391,6 +2221,39 @@ def recover_estimate(
     vault: dict[str, Any] = Depends(current_vault),
 ):
     logical_path = safe_relative_path(action.path).as_posix()
+    if action.is_directory:
+        recoverable_join = """LEFT JOIN archive_versions av ON av.id=(
+            SELECT recoverable.id FROM archive_versions recoverable
+            WHERE recoverable.vault_file_id=vf.id AND recoverable.integrity='verified'
+              AND recoverable.availability='available' ORDER BY recoverable.version_number DESC LIMIT 1
+        )"""
+        prefix = logical_path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
+        with db() as connection:
+            classes = connection.execute(
+                f"SELECT av.storage_class, sum(av.size) AS bytes FROM vault_files vf "
+                f"JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL "
+                f"LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id {recoverable_join} "
+                "WHERE vf.vault_id=%s AND vf.status='active' AND fp.path LIKE %s ESCAPE '\\' "
+                "AND av.integrity='verified' AND av.availability='available' "
+                "AND (lc.presence IS NULL OR lc.presence='missing') GROUP BY av.storage_class",
+                (vault["id"], prefix),
+            ).fetchall()
+        tier = action.restore_tier or "Bulk"
+        if tier not in {"Bulk", "Standard"}:
+            raise HTTPException(422, "Choose Standard or Bulk")
+        estimates = [estimate_restore_cost(list_prices(settings.aws_region), size_bytes=int(row["bytes"]),
+                     storage_class=row["storage_class"], tier=tier, days=action.restore_days or settings.restore_days)
+                     for row in classes if storage_class_requires_restore(row["storage_class"])]
+        total_cost = sum(item.estimated_cost_eur for item in estimates)
+        high_impact = bool(estimates) and is_high_impact_restore(
+            size_bytes=sum(int(row["bytes"]) for row in classes), estimated_cost_eur=total_cost,
+            size_threshold_gib=settings.restore_high_impact_gib, cost_threshold_eur=settings.restore_high_impact_eur,
+        )
+        return {"path": logical_path, "archive_version_id": None,
+                "requires_restore": bool(estimates), "restore_object_irreversible": bool(estimates), "high_impact": high_impact,
+                "estimate": {"tier": tier, "days": action.restore_days or settings.restore_days,
+                             "estimated_cost_eur": total_cost,
+                             "estimated_hours": max((item.estimated_hours or 0 for item in estimates), default=0)} if estimates else None}
     with db() as connection:
         versions = ArchiveCatalog(connection).list_versions(vault["id"], logical_path)
     selected = next((row for row in versions if row["recoverable"]), None)
@@ -2725,42 +2588,9 @@ def _cloud_deletion_paths(action: CloudDeletionPreviewRequest | CloudPurgeReques
     return [action.path]
 
 
-@app.get("/api/vault/cloud-deletion", response_model=response_model("CloudDeletionSettings"))
-def get_cloud_deletion_setting(vault: dict[str, Any] = Depends(current_vault)):
-    with db() as connection:
-        enabled = cloud_deletion_service.is_cloud_deletion_enabled(
-            connection, vault["id"]
-        )
-    return {
-        "enabled": enabled,
-        "purge_delay_seconds": _runtime_settings().cloud_purge_delay_seconds,
-        "generated_phrase": cloud_deletion_service.generate_confirmation_phrase(),
-        "accepted_single_identity_risk": (
-            "This installation may use one IAM identity for ordinary archive "
-            "operations and permanent DeleteObjectVersion calls. Restrict that "
-            "identity, audit every purge, and prefer a dedicated deletion role "
-            "when your threat model requires stricter separation."
-        ),
-    }
-
-
-@app.put("/api/vault/cloud-deletion", response_model=response_model("CloudDeletionSettings"))
-def update_cloud_deletion_setting(
-    action: CloudDeletionSettingUpdate,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
-):
-    try:
-        with db() as connection:
-            enabled = cloud_deletion_service.set_cloud_deletion_enabled(
-                connection,
-                vault_id=vault["id"],
-                enabled=action.enabled,
-                actor_user_id=user["id"],
-            )
-    except cloud_deletion_service.CloudDeletionDisabled as exc:
-        raise HTTPException(409, str(exc)) from exc
-    return {"enabled": enabled}
+@app.get("/api/cloud-deletion", response_model=response_model("CloudDeletionSettings"))
+def cloud_deletion_settings(user: dict[str, Any] = Depends(current_user)):
+    return {"purge_delay_seconds": cloud_deletion_service.DELETION_DELAY_SECONDS}
 
 
 @app.post("/api/cloud-deletion/preview", response_model=response_model("CloudDeletionPreview"))
@@ -2768,13 +2598,13 @@ def preview_cloud_deletion(
     action: CloudDeletionPreviewRequest,
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    with db() as connection:
-        preview = cloud_deletion_service.preview_selection(
-            connection,
-            vault_id=vault["id"],
-            paths=_cloud_deletion_paths(action),
-            is_directory=action.is_directory,
-        )
+    try:
+        with db() as connection:
+            preview = cloud_deletion_service.preview_selection(
+                connection, vault_id=vault["id"], paths=_cloud_deletion_paths(action),
+                is_directory=action.is_directory)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {
         **preview.as_dict(),
     }
@@ -2799,14 +2629,8 @@ def cloud_purge(
                 requested_at=now_iso(),
                 confirmation=action.confirmation,
                 reason=action.reason,
-                generated_phrase=action.generated_phrase,
-                delay_seconds=_runtime_settings().cloud_purge_delay_seconds,
             )
-    except cloud_deletion_service.CloudDeletionDisabled as exc:
-        raise HTTPException(403, str(exc)) from exc
     except cloud_deletion_service.ConfirmationRequired as exc:
-        raise HTTPException(422, str(exc)) from exc
-    except cloud_deletion_service.ReasonRequired as exc:
         raise HTTPException(422, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -2820,36 +2644,8 @@ def cloud_purge(
     }
 
 
-@app.post("/api/cloud-purge/accelerate", status_code=202, response_model=JsonObjectResponse)
-def accelerate_cloud_purge(
-    action: GroupCancelAction,
-    request: Request,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
-    _reauth: dict[str, Any] = Depends(require_recent_reauth),
-):
-    """Skip the cancellable delay and queue permanent purge immediately."""
-    try:
-        with db() as connection:
-            accelerated = cloud_deletion_service.accelerate_cloud_purge(
-                connection,
-                vault_id=vault["id"],
-                group_id=action.group_id,
-                actor_user_id=user["id"],
-                accelerated_at=now_iso(),
-            )
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    return {
-        "group_id": accelerated.group_id,
-        "accelerated_count": accelerated.accelerated_count,
-        "status": "queued",
-        **_api_message(request, "api.cloud_purge_accelerated"),
-    }
-
-
-@app.get("/api/admin/source-volumes", response_model=response_model("SourceVolumeInventoryResponse"))
-def admin_source_volumes(user: dict[str, Any] = Depends(current_user)):
+@app.get("/api/general/source-volumes", response_model=response_model("SourceVolumeInventoryResponse"))
+def general_source_volumes(user: dict[str, Any] = Depends(current_user)):
     """Operator inventory of discovered Source Volumes (issue #148)."""
     return {"items": source_volume_inventory()}
 
@@ -2891,8 +2687,8 @@ def browse_source_volume(
         raise _source_directory_http_error(exc) from exc
 
 
-@app.get("/api/admin/vaults", response_model=response_model("AdminVaultsResponse"))
-def admin_vaults(_: dict[str, Any] = Depends(current_user)):
+@app.get("/api/general/vaults", response_model=response_model("GeneralVaultsResponse"))
+def general_vaults(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         return {"items": list_vault_inventory(connection)}
 
@@ -2910,16 +2706,16 @@ _VAULT_RECONNECT_ERROR_STATUS: dict[str, tuple[int, str]] = {
     "active_jobs": (409, "Vault has active Jobs or a scan"),
     "identity_ambiguous": (409, "Source Volume identity is unavailable"),
     "identity_mismatch": (409, "Destination changed during reconnect"),
-    "decommission_in_progress": (409, "Vault decommission prevents reconnect"),
+    "protection_stopped": (409, "Folder protection has stopped; reconnect is unavailable"),
 }
 
 
-@app.post("/api/admin/vaults/{vault_id}/reconnect", response_model=response_model("AdminVaultReconnectResponse"))
-def admin_reconnect_vault_root(
+@app.post("/api/vaults/{vault_id}/reconnect", response_model=response_model("GeneralVaultReconnectResponse"))
+def reconnect_vault_root(
     vault_id: int,
     action: VaultReconnect,
     background_tasks: BackgroundTasks,
-    admin: dict[str, Any] = Depends(current_user),
+    owner: dict[str, Any] = Depends(current_user),
 ):
     """Accept this folder/mount for this Vault only; mandatory cloud/local scan."""
     # Serialize the runtime snapshot, relocation transaction, and scan start.
@@ -2939,7 +2735,7 @@ def admin_reconnect_vault_root(
                     vault_id=vault_id,
                     volume_alias=action.volume_alias,
                     relative_path=action.relative_path,
-                    actor_user_id=int(admin["id"]),
+                    actor_user_id=int(owner["id"]),
                     reason=action.reason,
                     runtime_busy=busy,
                 )
@@ -2992,7 +2788,7 @@ def update_vault_operation_policy(
         except LookupError as exc:
             reason = str(exc)
             if reason == "vault_quiesced":
-                raise HTTPException(409, "Vault is quiesced for decommission") from exc
+                raise HTTPException(409, "Vault is no longer protected") from exc
             raise HTTPException(404, "Vault not found") from exc
         audit_log(
             "vault_operation_policy_updated",
@@ -3022,10 +2818,10 @@ def preview_vault_operation_globs(
 
 
 @app.post(
-    "/api/admin/cost-estimates/storage",
+    "/api/general/cost-estimates/storage",
     response_model=response_model("StorageEstimateResponse"),
 )
-def admin_storage_cost_estimate(
+def storage_cost_estimate(
     action: StorageEstimateRequest,
     _: dict[str, Any] = Depends(current_user),
 ):
@@ -3080,6 +2876,35 @@ def _lifecycle_payload(connection: Any, vault: dict[str, Any]) -> dict[str, Any]
             for name, profile in GUIDED_PROFILES.items()
         },
     }
+
+
+class VaultMoveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    vault_id: int = Field(gt=0)
+    target_class: str = Field(min_length=1, max_length=40)
+    acknowledge_costs: bool = False
+
+
+@app.get("/api/vault/move", response_model=response_model("VaultMovePreview"))
+def preview_vault_move(vault: dict[str, Any] = Depends(current_vault)):
+    try:
+        with db() as connection:
+            return vault_moves.preview(connection, vault["id"])
+    except vault_moves.MoveBlocked as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/api/vault/move", response_model=response_model("VaultMoveResponse"))
+def move_vault(action: VaultMoveRequest, vault: dict[str, Any] = Depends(current_vault),
+               user: dict[str, Any] = Depends(current_user)):
+    if action.vault_id != vault["id"]:
+        raise HTTPException(409, "Selected Vault changed; refresh the move preview")
+    try:
+        with db() as connection:
+            return vault_moves.schedule(connection, vault_id=vault["id"], target=action.target_class,
+                user_id=user["id"], acknowledged=action.acknowledge_costs, timestamp=now_iso())
+    except vault_moves.MoveBlocked as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @app.get("/api/vault/lifecycle", response_model=response_model("LifecycleResponse"))
@@ -3207,7 +3032,7 @@ def _spa_dist_file_response(full_path: str) -> FileResponse | None:
 def spa_fallback(full_path: str):
     """SPA client-route fallback; never intercepts API, auth, or static assets."""
     head = full_path.split("/", 1)[0]
-    if head in _SPA_FALLBACK_EXCLUDED_PREFIXES:
+    if head in _SPA_FALLBACK_EXCLUDED_PREFIXES or head == "admin" or full_path.startswith("vault/access"):
         raise HTTPException(status_code=404, detail="Not Found")
     built = _spa_dist_file_response(full_path)
     if built is not None:

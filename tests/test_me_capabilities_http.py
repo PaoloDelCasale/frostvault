@@ -107,17 +107,8 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
 
         self.assertFalse(payload["vault"]["delete_enabled"])
 
-    def test_cloud_deletion_enabled_reflects_the_vault_flag(self) -> None:
-        """Seam 5: cloud_deletion_enabled reflects the Vault setting."""
-        vault_id = self._create_vault()
-        self.assertFalse(self._me()["vault"]["cloud_deletion_enabled"])
-
-        with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute(
-                "UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=%s",
-                (vault_id,),
-            )
-
+    def test_cloud_deletion_has_no_enablement_setting(self) -> None:
+        self._create_vault()
         self.assertTrue(self._me()["vault"]["cloud_deletion_enabled"])
 
     def test_owner_without_vault_gets_null_vault_block(self) -> None:

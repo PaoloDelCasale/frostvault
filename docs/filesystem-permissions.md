@@ -209,10 +209,10 @@ Supported deployment notes:
   mounts or provide one direct supported mount. Nested mounts remain
   unsupported regardless of fingerprint strength.
 
-The administration Source Volume inventory retains persisted aliases while a
+The General Source Volume inventory retains persisted aliases while a
 mount is absent and distinguishes **absent**, **inaccessible**, and **replaced**
 health. **Reconnect Folder** is the sole explicit per-Vault acceptance action
-(`POST /api/admin/vaults/{vault_id}/reconnect`, Session + CSRF + reason). Shared
+(`POST /api/vaults/{vault_id}/reconnect`, Session + CSRF + reason). Shared
 inventory may still say replaced while a specifically accepted Vault is healthy;
 other Vaults stay blocked. Missing/ambiguous/unsupported mounts are never accepted.
 The superseded `/relocate` endpoint no longer exists.
