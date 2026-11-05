@@ -42,8 +42,9 @@ class DelayedDeletionMigrationTests(unittest.TestCase):
             self.assertEqual(run_alembic(path,"0058_reconnect_recovery_kit").returncode,0)
             with PostgresConnection(str(path)) as connection:
                 connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (1,'test','Test','/sources/test','bucket','vaults/test/')")
-                connection.execute("""INSERT INTO jobs(vault_id,path,action,status,requested_at,updated_at)
-                    VALUES (1,'photo.jpg','cloud-purge','cleaning','2026-11-05T00:00:00+00:00','2026-11-05T00:00:00+00:00')""")
+                connection.execute("INSERT INTO vault_files(id,vault_id,status,created_at) VALUES ('file',1,'active','2026-11-05T00:00:00+00:00')")
+                connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at)
+                    VALUES (1,'file','photo.jpg','cloud-purge','cleaning','2026-11-05T00:00:00+00:00','2026-11-05T00:00:00+00:00')""")
             result = run_alembic(path)
             self.assertNotEqual(result.returncode,0)
             self.assertIn("Reconcile interrupted cloud deletions",result.stderr)
