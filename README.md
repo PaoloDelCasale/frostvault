@@ -220,7 +220,8 @@ and Cloud-only Conflicts remain held back.
   held for one hour awaiting the Owner's approval before any `RestoreObject`
   call. An accepted S3 restore request cannot be cancelled. Large recoveries
   use parallel S3 range downloads (`S3_DOWNLOAD_*`).
-- The panel requires a username and password.
+- Sign in with the Owner's configured OIDC provider or, from loopback/allowed
+  LAN, the Emergency Password.
 
 ## Requirements
 

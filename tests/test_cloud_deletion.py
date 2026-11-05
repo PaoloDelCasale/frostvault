@@ -1,6 +1,8 @@
 """#428 PostgreSQL regression coverage; runs in PR CI, never a live database."""
 from __future__ import annotations
 
+import hashlib
+import os
 import tempfile
 import threading
 import unittest
@@ -109,6 +111,47 @@ class CloudDeletionTests(unittest.TestCase):
                 claim_token="late", claimed_at=DUE.isoformat(), claim_expires_at=(DUE+timedelta(hours=1)).isoformat(),
                 now=DUE.isoformat(), message="deleting", message_key="job.cloud_purge_deleting"))
             self.assertEqual(connection.execute("SELECT count(*) AS n FROM archive_versions WHERE availability='available'").fetchone()["n"], 2)
+
+    def test_metadata_restore_revokes_item_consent_without_starving_later_uploads(self):
+        from app.services.recovery_kit import record_metadata_restore
+        from app.services.operation_policies import queue_auto_uploads
+
+        with self.connection() as connection:
+            scheduled = self.schedule(connection)
+            items = connection.execute("SELECT id FROM cloud_deletion_items ORDER BY id").fetchall()
+            # Preserve the evidence of a batch completed before the backup.
+            deletion.mark_item_deleted(connection, item_id=items[0]["id"], updated_at=START.isoformat())
+            record_metadata_restore(connection, START.isoformat())
+            self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone()["status"], "cancelled")
+            catalog = ArchiveCatalog(connection)
+            current = connection.execute("SELECT id FROM archive_versions WHERE provider_version_id='photo.jpg-v1'").fetchone()["id"]
+            # Model the completed matching reconnect using this fixture's trusted
+            # digest. Full cloud-first/root reconciliation has its own regressions.
+            local = self.source / "photo.jpg"
+            local.write_bytes(b"photo")
+            os.utime(local, (1, 1))
+            catalog.observe_local_copy(vault_id=1, path="photo.jpg", file_type="regular", size=5,
+                                       mtime_ns=local.stat().st_mtime_ns, observed_at=START.isoformat())
+            catalog.set_local_fingerprint(vault_id=1, path="photo.jpg", plaintext_sha256="a"*64,
+                                          matched_archive_version_id=current)
+            vault_relocation.enroll_vault_root_identity(connection, 1, str(self.source))
+            vault_relocation.complete_relocation_scan(connection, 1)
+            # A later edit must be eligible, not starved by the cancelled request.
+            local.write_bytes(b"edited")
+            os.utime(local, (2, 2))
+            catalog.observe_local_copy(vault_id=1, path="photo.jpg", file_type="regular", size=6,
+                                       mtime_ns=local.stat().st_mtime_ns,
+                                       observed_at=(START+timedelta(minutes=1)).isoformat())
+            catalog.set_local_fingerprint(vault_id=1, path="photo.jpg",
+                                          plaintext_sha256=hashlib.sha256(b"edited").hexdigest(),
+                                          matched_archive_version_id=None)
+            self.assertEqual(queue_auto_uploads(connection, vault_id=1, source_root=str(self.source),
+                                               requested_by=1, now=START+timedelta(minutes=10)), 1)
+            states = [r["status"] for r in connection.execute("SELECT status FROM cloud_deletion_items ORDER BY id").fetchall()]
+            self.assertEqual(states, ["deleted", "skipped"])
+            self.assertEqual(connection.execute("SELECT availability FROM archive_versions WHERE id=%s", (current,)).fetchone()["availability"], "available")
+            job = connection.execute("SELECT status FROM jobs WHERE id=%s", (scheduled.job_ids[0],)).fetchone()
+            self.assertEqual(job["status"], "cancelled")
 
     def test_worker_after_seven_days_deletes_only_captured_exact_version_ids(self):
         with self.connection() as connection:
