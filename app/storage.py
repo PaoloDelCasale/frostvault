@@ -97,6 +97,7 @@ def _runtime_settings():
 from .services import worker_errors as worker_error_store
 from .services import notifications as notification_service
 from .services import cloud_deletion as cloud_deletion_service
+from .services import vault_moves
 from .services import protection_stop as protection_stop_service
 from .services import audit_events as audit_event_store
 from .services.cost_estimates import list_prices
@@ -2641,6 +2642,12 @@ def _reconcile_storage_class_job(
     exact VersionId that still HEADs as the requested class is safe to complete;
     every other interrupted outcome is held for explicit operator recovery.
     """
+    if vault_moves.load(connection, int(job["id"])):
+        return "requeued" if _reconcile_job_transition(
+            connection, job_id=int(job["id"]), status="queued",
+            message="Vault move interrupted; exact-version ledger will resume",
+            timestamp=timestamp,
+        ) else "skipped"
     target = (job.get("target_storage_class") or "").upper()
     version = connection.execute(
         """
@@ -4123,6 +4130,11 @@ def process_free_space(job: dict[str, Any]) -> None:
 
 
 def process_storage_class(job: dict[str, Any]) -> None:
+    with db() as connection:
+        move = vault_moves.load(connection, int(job["id"]))
+    if move:
+        vault_moves.process(job, dict(move))
+        return
     check_active = partial(ensure_job_active, int(job["id"]))
     """Restore if needed, then copy an Archive Version onto a new storage class.
 
@@ -4822,7 +4834,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
         elif job["action"] == "free-space" and job["status"] == "queued":
             process_free_space(job)
         elif job["action"] == "storage-class" and job["status"] in {
-            "queued",
+            "queued", "retrying",
             "restoring",
         }:
             process_storage_class(job)
@@ -4889,6 +4901,16 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                     message_params={"error": message},
                     retry_count=next_attempt,
                 )
+        if job["action"] == "storage-class":
+            with db() as connection:
+                move = vault_moves.load(connection, int(job["id"]))
+            if move and not isinstance(exc, vault_moves.MoveBlocked) and classify_upload_failure(message) == "transient":
+                next_attempt = int(job.get("retry_count") or 0) + 1
+                if next_attempt <= UPLOAD_RETRY_MAX_ATTEMPTS:
+                    return schedule_upload_retry(
+                        job["id"], message_key="job.retrying_transient",
+                        message_params={"error": message}, retry_count=next_attempt,
+                    )
         failed = set_job(job["id"], "failed", message)
         if failed and job["action"] == "free-space":
             record_automatic_cleanup_outcome(

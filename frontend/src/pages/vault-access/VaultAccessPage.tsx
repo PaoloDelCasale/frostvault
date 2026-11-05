@@ -103,7 +103,7 @@ export function VaultAccessPage({
       <OperationPolicyPanel onNotice={show} />
       <details className="min-w-0">
         <summary className="cursor-pointer py-3 font-semibold">{t("access.advanced")}</summary>
-        <LifecyclePanel onNotice={show} />
+        <LifecyclePanel key={vaultId} vaultId={vaultId} onNotice={show} />
       </details>
 
       <section data-panel="stop-protection">

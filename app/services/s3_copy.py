@@ -222,6 +222,47 @@ def _source_object_tagging(
     return urlencode(tags) if tags else None
 
 
+def _multipart_source_checksum(
+    client: Any, *, bucket: str, object_key: str, version_id: str,
+    size: int, expected_sha256: str, check_active: Callable[[str], None],
+) -> str:
+    """Independent SHA256 COMPOSITE proof anchored to the verified full digest.
+
+    AWS supports FULL_OBJECT for CRC algorithms, not multipart SHA256. Compute
+    the expected SHA256-of-part-digests while reading the exact source once;
+    arbitrary stream chunk boundaries must not change multipart boundaries.
+    """
+    part_size = max(S3_MULTIPART_COPY_MIN_PART_BYTES, S3_MULTIPART_COPY_PART_BYTES,
+                    (size + S3_MULTIPART_COPY_MAX_PARTS - 1) // S3_MULTIPART_COPY_MAX_PARTS)
+    response = client.get_object(Bucket=bucket, Key=object_key, VersionId=version_id)
+    body = response["Body"]
+    full, part, composite = hashlib.sha256(), hashlib.sha256(), hashlib.sha256()
+    count = total = in_part = 0
+    try:
+        while chunk := body.read(S3_OBJECT_HASH_CHUNK_BYTES):
+            check_active("Storage class change stopped")
+            full.update(chunk)
+            total += len(chunk)
+            view = memoryview(chunk)
+            while view:
+                length = min(len(view), part_size - in_part)
+                part.update(view[:length])
+                view = view[length:]
+                in_part += length
+                if in_part == part_size:
+                    composite.update(part.digest())
+                    count += 1
+                    part, in_part = hashlib.sha256(), 0
+        if in_part:
+            composite.update(part.digest())
+            count += 1
+    finally:
+        body.close()
+    if total != size or base64.b64encode(full.digest()).decode("ascii") != expected_sha256:
+        raise RuntimeError("Multipart source does not match the verified plaintext digest")
+    return base64.b64encode(composite.digest()).decode("ascii") + f"-{count}"
+
+
 def _multipart_copy_storage_class(
     client: Any,
     *,
@@ -232,6 +273,7 @@ def _multipart_copy_storage_class(
     size_bytes: int,
     source_head: dict[str, Any],
     check_active: Callable[[str], None] | None = None,
+    intent_token: str | None = None,
 ) -> str | None:
     """Copy one exact S3 Version with multipart UploadPartCopy operations."""
     if size_bytes <= S3_SINGLE_COPY_MAX_BYTES:
@@ -258,8 +300,10 @@ def _multipart_copy_storage_class(
         "Key": object_key,
         "StorageClass": target_class,
         "ChecksumAlgorithm": S3_COPY_CHECKSUM_ALGORITHM,
-        "ChecksumType": S3_COPY_CHECKSUM_TYPE,
+        "ChecksumType": "COMPOSITE" if intent_token else S3_COPY_CHECKSUM_TYPE,
     }
+    if intent_token:
+        create_kwargs["Metadata"] = {**(source_head.get("Metadata") or {}), "frostvault-move": intent_token}
     if tagging:
         # UploadPartCopy does not inherit tags from its source Version. The
         # tag set must be supplied when the multipart upload is initiated.
@@ -276,7 +320,7 @@ def _multipart_copy_storage_class(
         "Expires",
         "Metadata",
     ):
-        if source_head.get(field) is not None:
+        if source_head.get(field) is not None and not (field == "Metadata" and intent_token):
             create_kwargs[field] = source_head[field]
 
     upload_id: str | None = None
@@ -332,7 +376,7 @@ def _multipart_copy_storage_class(
             Key=object_key,
             UploadId=upload_id,
             MultipartUpload={"Parts": parts},
-            ChecksumType=S3_COPY_CHECKSUM_TYPE,
+            ChecksumType="COMPOSITE" if intent_token else S3_COPY_CHECKSUM_TYPE,
         )
         # Completion makes the upload no longer abortable.  A missing VersionId
         # is handled by the destination read-back, not by guessing the source.
@@ -363,6 +407,7 @@ def _copy_storage_class_version(
     source_size: int,
     source_head: dict[str, Any],
     check_active: Callable[[str], None] | None = None,
+    intent_token: str | None = None,
 ) -> str | None:
     """Use CopyObject for small objects and exact multipart copy for large ones."""
     if source_size > S3_SINGLE_COPY_MAX_BYTES:
@@ -375,7 +420,16 @@ def _copy_storage_class_version(
             target_class=target_class,
             size_bytes=source_size,
             source_head=source_head,
+            intent_token=intent_token,
         )
+    extra: dict[str, Any] = {}
+    if intent_token:
+        extra["Metadata"] = {**(source_head.get("Metadata") or {}), "frostvault-move": intent_token}
+        for field in ("CacheControl", "ContentDisposition", "ContentEncoding", "ContentLanguage", "ContentType", "Expires"):
+            if source_head.get(field) is not None:
+                extra[field] = source_head[field]
+    if check_active:
+        check_active("Storage class change stopped")
     copy_result = client.copy_object(
         Bucket=bucket,
         Key=object_key,
@@ -385,9 +439,10 @@ def _copy_storage_class_version(
             "VersionId": source_version_id,
         },
         StorageClass=target_class,
-        MetadataDirective="COPY",
+        MetadataDirective="REPLACE" if intent_token else "COPY",
         TaggingDirective="COPY",
         ChecksumAlgorithm=S3_COPY_CHECKSUM_ALGORITHM,
+        **extra,
     )
     return copy_result.get("VersionId")
 
@@ -403,6 +458,7 @@ def _verify_storage_class_destination(
     expected_size: int,
     expected_sha256_checksum: str | None = None,
     check_active: Callable[[str], None] | None = None,
+    expected_composite_checksum: str | None = None,
 ) -> tuple[str, str | None]:
     """Read back the exact destination before publishing catalog state.
 
@@ -443,6 +499,18 @@ def _verify_storage_class_destination(
             "Storage class copy read-back returned the wrong object size"
         )
     destination_checksum = _full_object_sha256_checksum(destination)
+    if expected_composite_checksum and destination.get("ChecksumType") == "COMPOSITE":
+        # Some compatible providers expose a non-AWS composite encoding. Never
+        # accept that metadata: only an independent exact-VersionId full SHA256
+        # readback can substitute for the expected composite. Cold unreadable or
+        # corrupt bytes still fail closed, without requesting a restore.
+        destination_checksum = (
+            expected_sha256_checksum
+            if destination.get("ChecksumSHA256") == expected_composite_checksum
+            else None
+        )
+        # The matching composite is independently anchored to the verified full
+        # source digest, not an ETag or provider-supplied part hash alone.
     if destination_checksum is None:
         destination_checksum = _sha256_s3_version(
             client,

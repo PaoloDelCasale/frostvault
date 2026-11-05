@@ -756,6 +756,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/vault/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Preview Vault Move */
+        get: operations["preview_vault_move_api_vault_move_get"];
+        put?: never;
+        /** Move Vault */
+        post: operations["move_vault_api_vault_move_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/vault/operation-policy": {
         parameters: {
             query?: never;
@@ -1855,6 +1873,41 @@ export interface components {
             slug: string;
         } & {
             [key: string]: unknown;
+        };
+        VaultMoveEstimate: {
+            assumptions: string;
+            eligible_count: number;
+            estimated_monthly_eur: number;
+            estimated_retrieval_eur: number;
+            minimum_days: number;
+            pricing_effective_at: string;
+            region: string;
+            skipped: {
+                [key: string]: number;
+            };
+            target_class: string;
+            total_bytes: number;
+        };
+        VaultMovePreview: {
+            targets: components["schemas"]["VaultMoveEstimate"][];
+            vault_id: number;
+        };
+        /** VaultMoveRequest */
+        VaultMoveRequest: {
+            /**
+             * Acknowledge Costs
+             * @default false
+             */
+            acknowledge_costs: boolean;
+            /** Target Class */
+            target_class: string;
+            /** Vault Id */
+            vault_id: number;
+        };
+        VaultMoveResponse: components["schemas"]["VaultMoveEstimate"] & {
+            group_id: string;
+            item_count: number;
+            job_ids: number[];
         };
         /**
          * VaultReconnect
@@ -3109,6 +3162,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LifecycleResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_vault_move_api_vault_move_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultMovePreview"];
+                };
+            };
+        };
+    };
+    move_vault_api_vault_move_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VaultMoveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultMoveResponse"];
                 };
             };
             /** @description Validation Error */

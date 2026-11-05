@@ -12,7 +12,8 @@ _Avoid_: Bucket, folder, account
 
 **Storage Plan**:
 The one Vault-wide schedule of progressively colder cloud storage classes,
-chosen for access time and cost without expiring cloud content.
+chosen for access time and cost without expiring cloud content. The Owner can
+move eligible Current Snapshots early to a colder class on that same plan.
 _Avoid_: Folder policy, Lifecycle pin, Retention profile
 
 **Source Volume**:

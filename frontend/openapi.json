@@ -2687,6 +2687,130 @@
         ],
         "type": "object"
       },
+      "VaultMoveEstimate": {
+        "properties": {
+          "assumptions": {
+            "type": "string"
+          },
+          "eligible_count": {
+            "type": "integer"
+          },
+          "estimated_monthly_eur": {
+            "type": "number"
+          },
+          "estimated_retrieval_eur": {
+            "type": "number"
+          },
+          "minimum_days": {
+            "type": "integer"
+          },
+          "pricing_effective_at": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "skipped": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "target_class": {
+            "type": "string"
+          },
+          "total_bytes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_class",
+          "eligible_count",
+          "total_bytes",
+          "skipped",
+          "minimum_days",
+          "estimated_monthly_eur",
+          "estimated_retrieval_eur",
+          "pricing_effective_at",
+          "region",
+          "assumptions"
+        ],
+        "type": "object"
+      },
+      "VaultMovePreview": {
+        "properties": {
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/VaultMoveEstimate"
+            },
+            "type": "array"
+          },
+          "vault_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "vault_id",
+          "targets"
+        ],
+        "type": "object"
+      },
+      "VaultMoveRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledge_costs": {
+            "default": false,
+            "title": "Acknowledge Costs",
+            "type": "boolean"
+          },
+          "target_class": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Target Class",
+            "type": "string"
+          },
+          "vault_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Vault Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "vault_id",
+          "target_class"
+        ],
+        "title": "VaultMoveRequest",
+        "type": "object"
+      },
+      "VaultMoveResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/VaultMoveEstimate"
+          },
+          {
+            "properties": {
+              "group_id": {
+                "type": "string"
+              },
+              "item_count": {
+                "type": "integer"
+              },
+              "job_ids": {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "group_id",
+              "job_ids",
+              "item_count"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "VaultReconnect": {
         "additionalProperties": false,
         "description": "Explicitly accept a Source Volume and directory for an existing Vault.",
@@ -4303,6 +4427,60 @@
           }
         },
         "summary": "Update Vault Storage Plan"
+      }
+    },
+    "/api/vault/move": {
+      "get": {
+        "operationId": "preview_vault_move_api_vault_move_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultMovePreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Preview Vault Move"
+      },
+      "post": {
+        "operationId": "move_vault_api_vault_move_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VaultMoveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultMoveResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Move Vault"
       }
     },
     "/api/vault/operation-policy": {

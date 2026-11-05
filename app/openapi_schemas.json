@@ -1,5 +1,36 @@
 {
   "schemas": {
+    "VaultMoveEstimate": {
+      "type": "object",
+      "properties": {
+        "target_class": {"type": "string"},
+        "eligible_count": {"type": "integer"},
+        "total_bytes": {"type": "integer"},
+        "skipped": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "minimum_days": {"type": "integer"},
+        "estimated_monthly_eur": {"type": "number"},
+        "estimated_retrieval_eur": {"type": "number"},
+        "pricing_effective_at": {"type": "string"},
+        "region": {"type": "string"},
+        "assumptions": {"type": "string"}
+      },
+      "required": ["target_class", "eligible_count", "total_bytes", "skipped", "minimum_days", "estimated_monthly_eur", "estimated_retrieval_eur", "pricing_effective_at", "region", "assumptions"]
+    },
+    "VaultMovePreview": {
+      "type": "object",
+      "properties": {"vault_id": {"type": "integer"}, "targets": {"type": "array", "items": {"$ref": "#/components/schemas/VaultMoveEstimate"}}},
+      "required": ["vault_id", "targets"]
+    },
+    "VaultMoveResponse": {
+      "allOf": [
+        {"$ref": "#/components/schemas/VaultMoveEstimate"},
+        {"type": "object", "properties": {
+          "group_id": {"type": "string"},
+          "job_ids": {"type": "array", "items": {"type": "integer"}},
+          "item_count": {"type": "integer"}
+        }, "required": ["group_id", "job_ids", "item_count"]}
+      ]
+    },
     "NotificationsResponse": {
       "type": "object",
       "properties": {

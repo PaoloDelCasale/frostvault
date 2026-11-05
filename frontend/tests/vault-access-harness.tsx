@@ -97,6 +97,9 @@ export function createVaultAccessFetch(
     if (url === "/api/vault/lifecycle") {
       return jsonResponse(defaultLifecycle);
     }
+    if (url === "/api/vault/move") {
+      return jsonResponse({ vault_id: 1, targets: [] });
+    }
     throw new Error(`Unexpected request: ${method} ${url}`);
   });
 }

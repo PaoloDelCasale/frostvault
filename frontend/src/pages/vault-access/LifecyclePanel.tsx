@@ -9,10 +9,11 @@ import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 
 import { LIFECYCLE_CLASSES, validStoragePlan, type DraftTransition } from "./storagePlan";
+import { VaultMovePanel } from "./VaultMovePanel";
 
 const PRESETS = ["standard_only", "economical", "archive_tiered", "deep_archive_early"];
 
-export function LifecyclePanel({ onNotice }: { onNotice: (message: string, error?: boolean) => void }) {
+export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotice: (message: string, error?: boolean) => void }) {
   const { t, ready } = useI18n();
   const [data, setData] = useState<LifecycleResponse | null>(null);
   const [selection, setSelection] = useState("archive_tiered");
@@ -89,6 +90,7 @@ export function LifecyclePanel({ onNotice }: { onNotice: (message: string, error
           <Button type="button" variant="primary" disabled={busy} className="w-fit" onClick={() => void save()}>{t("access.plan_save")}</Button>
         </div> : <p role="status">{t("access.plan_loading")}</p>}
         {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}
+        {data && <VaultMovePanel key={`${vaultId}:${JSON.stringify(data.profile)}`} vaultId={vaultId} onNotice={onNotice} />}
       </Panel>
     </section>
   );

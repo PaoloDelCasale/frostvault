@@ -36,6 +36,8 @@ export {
   fetchI18nCatalog,
   fetchJobs,
   fetchLifecycle,
+  fetchVaultMove,
+  startVaultMove,
   fetchMe,
   fetchNotifications,
   fetchOperationPolicy,
@@ -176,6 +178,10 @@ export type {
   VaultSelectRequest,
   VaultSelectResponse,
   VaultsResponse,
+  VaultMoveEstimate,
+  VaultMovePreview,
+  VaultMoveRequest,
+  VaultMoveResponse,
 } from "./types";
 
 export type {

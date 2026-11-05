@@ -43,8 +43,19 @@ import type {
   VaultSelectRequest,
   VaultSelectResponse,
   VaultsResponse,
+  VaultMoveRequest,
+  VaultMovePreview,
+  VaultMoveResponse,
 } from "./types";
 import { translate } from "@/i18n/translate";
+
+export function fetchVaultMove(): Promise<VaultMovePreview> {
+  return apiRequest<VaultMovePreview>("/api/vault/move");
+}
+
+export function startVaultMove(payload: VaultMoveRequest): Promise<VaultMoveResponse> {
+  return apiRequest<VaultMoveResponse>("/api/vault/move", { method: "POST", body: JSON.stringify(payload) });
+}
 
 const DEFAULT_PAGE_SIZE = 100;
 
