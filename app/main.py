@@ -2620,7 +2620,7 @@ _VAULT_RECONNECT_ERROR_STATUS: dict[str, tuple[int, str]] = {
     "active_jobs": (409, "Vault has active Jobs or a scan"),
     "identity_ambiguous": (409, "Source Volume identity is unavailable"),
     "identity_mismatch": (409, "Destination changed during reconnect"),
-    "decommission_in_progress": (409, "Vault decommission prevents reconnect"),
+    "protection_stopped": (409, "Folder protection has stopped; reconnect is unavailable"),
 }
 
 

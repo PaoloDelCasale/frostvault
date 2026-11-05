@@ -233,6 +233,50 @@ class CloudDeletionTests(unittest.TestCase):
                 requested_at=START.isoformat(),group_id="recovery",is_directory=False)
             self.assertEqual(queued, [])
 
+    def test_directory_selection_escapes_wildcards_and_never_partially_admits_mixed_files(self):
+        with self.connection() as connection:
+            self.add_file(connection, "album_1/photo.jpg")
+            self.add_file(connection, "albumX1/sibling.jpg")
+            selected = self.schedule(connection, paths=["album_1"], is_directory=True)
+            paths = connection.execute("SELECT path FROM jobs WHERE group_id=%s", (selected.group_id,)).fetchall()
+            self.assertEqual([r["path"] for r in paths], ["album_1/photo.jpg"])
+            deletion.cancel_cloud_deletion(connection, vault_id=1, group_id=selected.group_id,
+                actor_user_id=1, cancelled_at=START.isoformat())
+            self.add_file(connection, "album_1/present.jpg")
+            (self.source / "album_1").mkdir()
+            (self.source / "album_1/present.jpg").write_bytes(b"local")
+            with self.assertRaises(deletion.CloudDeletionError):
+                self.schedule(connection, paths=["album_1"], is_directory=True)
+            self.assertEqual(connection.execute("SELECT count(*) AS n FROM jobs WHERE status='pending_delay'").fetchone()["n"], 0)
+
+    def test_reconnect_and_rename_invalidate_pending_deletion_authority(self):
+        from app.services.job_admission import lock_vault
+        with self.connection() as connection:
+            connection.execute("UPDATE vaults SET relocation_state='scan_required'")
+            with self.assertRaises(deletion.CloudDeletionError): self.schedule(connection)
+            connection.execute("UPDATE vaults SET relocation_state='ready'")
+            scheduled = self.schedule(connection)
+            # Rename/catalog reconciliation is not consent for another pathname.
+            lock_vault(connection, 1)
+            connection.execute("UPDATE file_paths SET path='renamed.jpg' WHERE valid_to IS NULL")
+        client = self.execute(scheduled)
+        client.delete_objects.assert_not_called()
+
+    def test_stop_delete_completes_after_delay_then_releases_root(self):
+        with self.connection() as connection:
+            result = protection_stop.stop_protection(connection, vault_id=1, actor_user_id=1,
+                cloud_disposition="delete", confirmation="Photos", reason="stop")
+            job_ids = [r["id"] for r in result["jobs"]]
+            scheduled = SimpleNamespace(job_ids=job_ids)
+        client = self.execute(scheduled)
+        client.delete_objects.assert_called_once()
+        with self.connection() as connection:
+            protection_stop.reconcile_one(connection, 1)
+            status = protection_stop.status(connection, 1)
+            self.assertTrue(status["root_released"])
+            self.assertTrue(status["stopped"])
+            self.assertEqual(connection.execute("SELECT count(*) AS n FROM archive_versions WHERE availability<>'purged'").fetchone()["n"], 0)
+
     def test_cancellation_after_claim_never_claims_to_undo_provider_deletion(self):
         with self.connection() as connection:
             scheduled = self.schedule(connection)

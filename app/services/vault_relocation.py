@@ -236,13 +236,13 @@ def _reconnect_vault_root(
     try:
         lock_vault(connection, vault_id)
     except LookupError as exc:
-        reason = "not_found" if str(exc) == "vault_not_found" else "decommission_in_progress"
+        reason = "not_found" if str(exc) == "vault_not_found" else "protection_stopped"
         raise VaultRelocationError(reason) from exc
     vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
     if vault.get("decommission_state", "active") != "active" or vault.get("root_released_at"):
         raise VaultRelocationError(
-            "decommission_in_progress",
-            "A decommissioned or decommissioning Vault cannot be reconnected",
+            "protection_stopped",
+            "A folder whose protection has stopped cannot be reconnected",
         )
     if runtime_busy or _active_jobs(connection, vault_id):
         raise VaultRelocationError("active_jobs", "Vault has active Jobs or a scan")

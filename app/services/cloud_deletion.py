@@ -135,7 +135,24 @@ def require_local_absence(vault: dict[str, Any], paths: list[str]) -> None:
 
 def _selected_files(connection: Any, *, vault_id: int, paths: list[str],
                     is_directory: bool, whole_vault: bool = False) -> list[dict[str, Any]]:
-    rows = connection.execute("""
+    params: list[Any] = [vault_id]
+    if whole_vault:
+        selection = "av.id IS NOT NULL"
+    else:
+        if not paths or any(not p or PurePosixPath(p).is_absolute() or ".." in PurePosixPath(p).parts
+                            or str(PurePosixPath(p)) != p for p in paths):
+            raise CloudDeletionError("Select valid relative file paths")
+        clauses = []
+        for path in paths:
+            if is_directory:
+                escaped = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                clauses.append("(fp.path=%s OR fp.path LIKE %s ESCAPE '\\')")
+                params.extend((path, escaped + "/%"))
+            else:
+                clauses.append("fp.path=%s")
+                params.append(path)
+        selection = "(" + " OR ".join(clauses) + ")"
+    return connection.execute(f"""
         SELECT vf.id AS vault_file_id, fp.path, lc.presence,
                lc.cloud_only_version_id, av.id AS archive_version_id,
                av.integrity, av.availability
@@ -146,16 +163,9 @@ def _selected_files(connection: Any, *, vault_id: int, paths: list[str],
             SELECT latest.id FROM archive_versions latest
             WHERE latest.vault_file_id=vf.id AND latest.availability<>'purged'
             ORDER BY latest.version_number DESC LIMIT 1)
-        WHERE vf.vault_id=%s
+        WHERE vf.vault_id=%s AND {selection}
         ORDER BY fp.path, vf.id
-    """, (vault_id,)).fetchall()
-    if whole_vault:
-        return [r for r in rows if r["archive_version_id"] is not None]
-    if not paths or any(not p or PurePosixPath(p).is_absolute() or ".." in PurePosixPath(p).parts
-                        or str(PurePosixPath(p)) != p for p in paths):
-        raise CloudDeletionError("Select valid relative file paths")
-    return [r for r in rows if any(r["path"] == p or (
-        is_directory and str(r["path"] or "").startswith(p + "/")) for p in paths)]
+    """, params).fetchall()
 
 
 def _versions(connection: Any, file_id: str) -> list[dict[str, Any]]:
@@ -218,6 +228,8 @@ def schedule_cloud_purge(connection: Any, *, vault_id: int, paths: list[str],
     vault = lock_vault(connection, vault_id)
     if vault["decommission_state"] != "active" or vault.get("root_released_at"):
         raise CloudDeletionError("Folder protection has already stopped")
+    if origin not in {"manual", "stop-protection"}:
+        raise CloudDeletionError("Unsupported deletion origin")
     if confirmation != vault["name"]:
         raise ConfirmationRequired("Type the exact Vault name to confirm")
     if not (reason or "").strip() or len(reason) > 500:
@@ -305,6 +317,15 @@ def validate_execution(connection: Any, *, vault_id: int, group_id: str, at: str
     try:
         if not active or vault.get("root_released_at"):
             raise CloudDeletionError("Deletion authority is no longer active")
+        if vault["decommission_state"] == "active":
+            if not vault["enabled"] or any(r["origin"] != "manual" for r in active):
+                raise CloudDeletionError("Deletion authority is no longer active")
+        else:
+            stop = connection.execute("""SELECT group_id FROM protection_stops
+                WHERE vault_id=%s AND cloud_disposition='delete'""", (vault_id,)).fetchone()
+            if (vault["decommission_state"] != "decommissioning" or not stop
+                    or stop["group_id"] != group_id or any(r["origin"] != "stop-protection" for r in active)):
+                raise CloudDeletionError("Stopped folder deletion authority changed")
         for row in active:
             earliest = datetime.fromisoformat(row["requested_at"]) + timedelta(seconds=DELETION_DELAY_SECONDS)
             if (not row["pending_until"] or datetime.fromisoformat(at) < earliest

@@ -2793,7 +2793,7 @@ class ArchiveCatalog:
             WHERE v.relocation_state='ready'
               AND (
                     (v.enabled=TRUE AND v.decommission_state='active'
-                     AND j.origin<>'stop-protection')
+                     AND j.origin IN ('manual','automatic'))
                  OR (v.decommission_state='decommissioning'
                      AND j.origin='stop-protection' AND j.action='cloud-purge')
               )
@@ -3100,7 +3100,7 @@ class ArchiveCatalog:
             WHERE v.relocation_state='ready'
               AND (
                     (v.enabled=TRUE AND v.decommission_state='active'
-                     AND j.origin<>'stop-protection')
+                     AND j.origin IN ('manual','automatic'))
                  OR (v.decommission_state='decommissioning'
                      AND j.origin='stop-protection' AND j.action='cloud-purge')
               )

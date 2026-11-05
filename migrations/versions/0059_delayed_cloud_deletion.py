@@ -15,6 +15,7 @@ depends_on = None
 def upgrade() -> None:
     bind = op.get_bind()
     if bind.execute(sa.text("""SELECT 1 FROM vault_decommissions WHERE state<>'completed'
+        UNION ALL SELECT 1 FROM vaults WHERE decommission_state='decommissioning'
         UNION ALL SELECT 1 FROM jobs WHERE action='cloud-purge'
           AND status NOT IN ('pending_delay','completed','failed','cancelled') LIMIT 1""")).first():
         raise RuntimeError("Reconcile interrupted cloud deletions and finish legacy decommissions before upgrading")
