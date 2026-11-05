@@ -75,6 +75,7 @@ describe("vendored shadcn CSS retains the design system without the CLI", () => 
     const license = read(`${vendor}/LICENSE.md`);
     expect(createHash("sha256").update(license).digest("hex")).toBe(licenseHash);
     expect(license).toContain("Copyright (c) 2023 shadcn");
+    expect(read("public/licenses/shadcn.txt")).toBe(license);
     const provenance = read(`${vendor}/README.md`);
     expect(provenance).toContain("shadcn@4.22.1/dist/tailwind.css");
     expect(provenance).toContain("daaf156ee00ed91cc7e6bdd937c1b4973152d141");

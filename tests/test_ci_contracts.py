@@ -88,6 +88,7 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertTrue(any("npm run lint" in block for block in lint_runs))
         self.assertTrue(any("npm run test" in block for block in lint_runs))
         self.assertTrue(any("npm run build:ci" in block for block in build_runs))
+        self.assertTrue(any("cmp src/vendor/shadcn/LICENSE.md dist/licenses/shadcn.txt" in block for block in build_runs))
         self.assertFalse(any("node --test" in block for block in lint_runs))
         self.assertFalse(
             any("tsc -b && vite build" in block for block in build_runs)

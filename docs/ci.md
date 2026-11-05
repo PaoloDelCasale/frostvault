@@ -102,7 +102,9 @@ weaken either the strict or baseline gate:
 - Remove only the installed **shadcn CLI**, not the vendored UI components or
   design system. Its exact `4.22.1` stylesheet is imported locally from
   `frontend/src/vendor/shadcn/tailwind.css`, with npm integrity, upstream commit,
-  SHA-256 and the original MIT notice documented alongside it. This removes
+  SHA-256 and the original MIT notice documented alongside it. An identical
+  public license ships at `/licenses/shadcn.txt`; the production-build job
+  compares the emitted notice to the source license. This removes
   deepmerge (no patched upstream release) and ts-morph from the dependency graph.
   [ADR 0008](adr/0008-tailwind-shadcn-design-system.md) and the
   [vendoring guide](../frontend/src/vendor/shadcn/README.md) describe updates and

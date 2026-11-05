@@ -23,6 +23,9 @@ See [issue #405](https://github.com/PaoloDelCasale/frostvault/issues/405) and
   omits the license file; adjacent `LICENSE.md` is copied verbatim from the
   [upstream repository at the same commit](https://github.com/shadcn-ui/ui/blob/daaf156ee00ed91cc7e6bdd937c1b4973152d141/LICENSE.md).
   Its SHA-256 is `1564074e13439397221ffd522e2e504d56561994a23d371aa5e3ad43e4f5423f`.
+  The identical notice in `frontend/public/licenses/shadcn.txt` ships with Vite's
+  production output at `/licenses/shadcn.txt`, so the deployed stylesheet is
+  distributed with its license too. Tests keep the two notices identical.
 
 ## Contributor workflow
 
@@ -34,7 +37,7 @@ review the generated source and dependencies, and bring in only what is needed.
 
 To refresh this stylesheet, obtain an explicitly reviewed upstream release,
 verify npm integrity and the matching Git source, preserve the complete MIT
-notice, replace the stylesheet as a unit, and update this provenance and the
+notice (both source and public distribution copy), replace the stylesheet as a unit, and update this provenance and the
 vendoring regression hashes together. No network downloads occur in tests.
 Run the targeted dependency/style tests, clean full/runtime audits and strict
 audit gate, then obtain build/browser/full test evidence from PR CI.
