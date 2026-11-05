@@ -235,7 +235,9 @@ jobs:
         run: npm ci
       - name: Frontend SPA build
         working-directory: frontend
-        run: npm run build:ci
+        run: |
+          npm run build:ci
+          cmp src/vendor/shadcn/LICENSE.md dist/licenses/shadcn.txt
 
   production-image-postgres-backup:
     name: Production image PostgreSQL backup
