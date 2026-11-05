@@ -422,7 +422,7 @@ class AuditGatesDoNotBlockUnrelatedMergesTests(unittest.TestCase):
 
 
 class NpmAuditBaselineContractTests(unittest.TestCase):
-    """Issue #308: patched npm lockfile copies plus a dated exception process."""
+    """Issues #308/#405: patched remaining copies and retired toolchain findings."""
 
     def test_frontend_overrides_floor_patched_advisory_lines(self) -> None:
         package = json.loads((ROOT / "frontend" / "package.json").read_text(encoding="utf-8"))
@@ -441,10 +441,15 @@ class NpmAuditBaselineContractTests(unittest.TestCase):
             "qs@6": (6, 16, 0),
             "undici@7": (7, 29, 1),
         }
+        # The CLI-only packages left the graph in #405; unused overrides are
+        # not required. Keep floors for any override that is retained/re-added,
+        # and verify all remaining copies independently below.
+        for name in ("brace-expansion@1", "brace-expansion@2", "brace-expansion@5", "nanoid@3"):
+            self.assertIn(name, overrides)
         for name, floor in floors.items():
-            with self.subTest(override=name):
-                self.assertIn(name, overrides)
-                self.assertGreaterEqual(_override_floor(overrides[name]), floor, name)
+            if name in overrides:
+                with self.subTest(override=name):
+                    self.assertGreaterEqual(_override_floor(overrides[name]), floor, name)
         self.assertNotIn("qs", overrides)
 
     def test_lockfile_copies_are_at_or_above_advisory_floors(self) -> None:
@@ -467,11 +472,12 @@ class NpmAuditBaselineContractTests(unittest.TestCase):
             name = path.rsplit("node_modules/", 1)[-1]
             if name in found and pkg.get("version"):
                 found[name].append((path, pkg["version"]))
-        for name, copies in found.items():
-            # glob left the dependency graph with Workbox (#415). Retain its
-            # advisory floor below if a future toolchain brings it back.
-            if name != "glob":
-                self.assertTrue(copies, f"expected lockfile copies of {name}")
+        # glob left with Workbox (#415); body-parser, fast-uri, ip-address and
+        # qs left with the shadcn CLI (#405). Do not require absent packages to
+        # return merely to test them. Floors below still cover every copy if
+        # any future dependency reintroduces them.
+        for name in ("brace-expansion", "nanoid", "undici"):
+            self.assertTrue(found[name], f"expected lockfile copies of {name}")
 
         for path, version in found["brace-expansion"]:
             major, minor, patch = _semver(version)
@@ -529,7 +535,32 @@ class NpmAuditBaselineContractTests(unittest.TestCase):
             with self.subTest(path=path, version=version):
                 self.assertGreaterEqual((major, minor, patch), (6, 16, 0), path)
 
-    def test_npm_audit_exceptions_are_dated_and_currently_unused(self) -> None:
+    def test_issue_405_vulnerable_graph_and_exceptions_are_gone(self) -> None:
+        package = json.loads((ROOT / "frontend" / "package.json").read_text(encoding="utf-8"))
+        lock = json.loads((ROOT / "frontend" / "package-lock.json").read_text(encoding="utf-8"))
+        self.assertNotIn("shadcn", package["devDependencies"])
+        self.assertNotIn("shadcn", lock["packages"][""]["devDependencies"])
+        removed = {"shadcn", "@shadcn/registry", "deepmerge", "ts-morph", "@ts-morph/common"}
+        minimatch_versions = set()
+        for path, pkg in lock["packages"].items():
+            name = path.rsplit("node_modules/", 1)[-1]
+            self.assertNotIn(name, removed, path)
+            if name == "minimatch":
+                version = _semver(pkg["version"])
+                minimatch_versions.add(version[0])
+                # GHSA-g3hv-75wg-m249 affects >=7 <11.0.1, not 3/5.
+                self.assertTrue(version[0] < 7 or version >= (11, 0, 1), path)
+        self.assertTrue({3, 5, 11}.issubset(minimatch_versions))
+        overrides = package["overrides"]
+        self.assertNotIn("minimatch", overrides)
+        self.assertEqual([key for key in overrides if key.startswith("minimatch")], ["minimatch@10"])
+        self.assertGreaterEqual(_override_floor(overrides["minimatch@10"]), (11, 0, 1))
+        self.assertEqual(_override_floor(overrides["minimatch@10"])[0], 11)
+        exceptions = json.loads((ROOT / ".github" / "npm-audit-exceptions.json").read_text(encoding="utf-8"))
+        retired = {"GHSA-gcqx-w48m-w2h4", "GHSA-g3hv-75wg-m249"}
+        self.assertFalse(retired.intersection(entry["id"] for entry in exceptions["exceptions"]))
+
+    def test_npm_audit_exceptions_are_dated(self) -> None:
         payload = json.loads(
             (ROOT / ".github" / "npm-audit-exceptions.json").read_text(encoding="utf-8")
         )

@@ -93,6 +93,56 @@ The 6 September 2026 production audit (`56ee35d`) reported three `dev:true` advi
 | nanoid | `shadcn` → postcss | 3.3.16 | 3.3.18 | build |
 | qs | `shadcn` → MCP SDK → express/body-parser | 6.15.3 | 6.16.0 | build |
 
+### Issue #405: retire the deepmerge/minimatch exceptions
+
+The full and runtime-only audits are clean after the targeted #405 cleanup;
+`.github/npm-audit-exceptions.json` has no remaining exceptions. This does not
+weaken either the strict or baseline gate:
+
+- Remove only the installed **shadcn CLI**, not the vendored UI components or
+  design system. Its exact `4.22.1` stylesheet is imported locally from
+  `frontend/src/vendor/shadcn/tailwind.css`, with npm integrity, upstream commit,
+  SHA-256 and the original MIT notice documented alongside it. This removes
+  deepmerge (no patched upstream release) and ts-morph from the dependency graph.
+  [ADR 0008](adr/0008-tailwind-shadcn-design-system.md) and the
+  [vendoring guide](../frontend/src/vendor/shadcn/README.md) describe updates and
+  explicit, disposable CLI use for contributors.
+- Override **only `minimatch@10`** to `^11.0.4`. The current advisory affects
+  `>=7 <11.0.1`; safe minimatch 3/5 consumers keep their existing callable API
+  and versions. Do not apply a blanket minimatch override. The remaining 10.x
+  consumer is typescript-eslint's estree parser; its actual CommonJS named
+  `minimatch(filePath, pattern, { dot: true })` seam is compatible with 11.x.
+  Both support this project's Node range (`^20.19.0 || >=22.12.0`). This is an
+  explicitly tested cross-major exception, not a claim that every 10.x consumer
+  is compatible. Revisit/remove it when typescript-eslint adopts a patched
+  release natively.
+- Remove unused CLI-only overrides, retain patched floors for every remaining
+  copy, and leave unrelated dependencies unchanged. Structural tests do not
+  require removed packages to reappear just to test their floors.
+
+Deterministic regressions in `tests/test_ci_contracts.py` cover the installed
+lockfile graph, scoped override and retired advisory IDs. The targeted
+`frontend/tests/npm-toolchain.test.ts` exercises the **real parser project
+service** allowDefaultProject path (dotfiles, braces, nested paths and negative
+matches), consumer-resolved CommonJS APIs, exact CSS/license hashes, provenance
+and application import wiring. Tests never fetch packages. Full build/browser
+verification remains in PR CI.
+
+To reproduce the strict audit proof (no `--baseline-full`), save reports in your
+session folder and run:
+
+```bash
+cd frontend
+npm ci
+npm audit --json > ../sessioni/<session>/audit-full.json
+npm audit --omit=dev --json > ../sessioni/<session>/audit-runtime.json
+node scripts/npm-audit-gate.mjs \
+  --full ../sessioni/<session>/audit-full.json \
+  --prod ../sessioni/<session>/audit-runtime.json \
+  --exceptions ../.github/npm-audit-exceptions.json
+npx vitest run tests/npm-toolchain.test.ts
+```
+
 ### Why pull requests only fail on new findings
 
 Advisories are published independently of our changes. With a strict gate, a new
