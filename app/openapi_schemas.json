@@ -3,69 +3,236 @@
     "VaultMoveEstimate": {
       "type": "object",
       "properties": {
-        "target_class": {"type": "string"},
-        "eligible_count": {"type": "integer"},
-        "total_bytes": {"type": "integer"},
-        "skipped": {"type": "object", "additionalProperties": {"type": "integer"}},
-        "minimum_days": {"type": "integer"},
-        "estimated_monthly_eur": {"type": "number"},
-        "estimated_retrieval_eur": {"type": "number"},
-        "pricing_effective_at": {"type": "string"},
-        "region": {"type": "string"},
-        "assumptions": {"type": "string"}
+        "target_class": {
+          "type": "string"
+        },
+        "eligible_count": {
+          "type": "integer"
+        },
+        "total_bytes": {
+          "type": "integer"
+        },
+        "skipped": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "minimum_days": {
+          "type": "integer"
+        },
+        "estimated_monthly_eur": {
+          "type": "number"
+        },
+        "estimated_retrieval_eur": {
+          "type": "number"
+        },
+        "pricing_effective_at": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "assumptions": {
+          "type": "string"
+        }
       },
-      "required": ["target_class", "eligible_count", "total_bytes", "skipped", "minimum_days", "estimated_monthly_eur", "estimated_retrieval_eur", "pricing_effective_at", "region", "assumptions"]
+      "required": [
+        "target_class",
+        "eligible_count",
+        "total_bytes",
+        "skipped",
+        "minimum_days",
+        "estimated_monthly_eur",
+        "estimated_retrieval_eur",
+        "pricing_effective_at",
+        "region",
+        "assumptions"
+      ]
     },
     "VaultMovePreview": {
       "type": "object",
-      "properties": {"vault_id": {"type": "integer"}, "targets": {"type": "array", "items": {"$ref": "#/components/schemas/VaultMoveEstimate"}}},
-      "required": ["vault_id", "targets"]
+      "properties": {
+        "vault_id": {
+          "type": "integer"
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/VaultMoveEstimate"
+          }
+        }
+      },
+      "required": [
+        "vault_id",
+        "targets"
+      ]
     },
     "VaultMoveResponse": {
       "allOf": [
-        {"$ref": "#/components/schemas/VaultMoveEstimate"},
-        {"type": "object", "properties": {
-          "group_id": {"type": "string"},
-          "job_ids": {"type": "array", "items": {"type": "integer"}},
-          "item_count": {"type": "integer"}
-        }, "required": ["group_id", "job_ids", "item_count"]}
+        {
+          "$ref": "#/components/schemas/VaultMoveEstimate"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "group_id": {
+              "type": "string"
+            },
+            "job_ids": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            },
+            "item_count": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "group_id",
+            "job_ids",
+            "item_count"
+          ]
+        }
       ]
     },
     "NotificationsResponse": {
       "type": "object",
       "properties": {
-        "items": {"type": "array", "items": {"$ref": "#/components/schemas/NotificationItem"}},
-        "unread_count": {"type": "integer"},
-        "open_problem_count": {"type": "integer"},
-        "email_configured": {"type": "boolean"},
-        "has_more": {"type": "boolean"}
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/NotificationItem"
+          }
+        },
+        "unread_count": {
+          "type": "integer"
+        },
+        "open_problem_count": {
+          "type": "integer"
+        },
+        "email_configured": {
+          "type": "boolean"
+        },
+        "has_more": {
+          "type": "boolean"
+        }
       },
-      "required": ["items", "unread_count", "open_problem_count", "email_configured", "has_more"]
+      "required": [
+        "items",
+        "unread_count",
+        "open_problem_count",
+        "email_configured",
+        "has_more"
+      ]
     },
     "NotificationItem": {
       "type": "object",
       "properties": {
-        "id": {"type": "integer"},
-        "user_id": {"type": "integer"},
-        "vault_id": {"type": ["integer", "null"]},
-        "job_id": {"type": ["integer", "null"]},
-        "event": {"type": "string"},
-        "title": {"type": "string"},
-        "body": {"type": "string"},
-        "title_key": {"type": ["string", "null"]},
-        "body_key": {"type": ["string", "null"]},
-        "message_params": {"type": "object", "additionalProperties": true},
-        "in_app_enabled": {"type": "boolean"},
-        "dedupe_key": {"type": ["string", "null"]},
-        "created_at": {"type": "string"},
-        "read": {"type": "boolean"},
-        "read_at": {"type": ["string", "null"]},
-        "problem_status": {"type": ["string", "null"], "enum": ["open", "resolved", null]},
-        "resolved_at": {"type": ["string", "null"]}
+        "id": {
+          "type": "integer"
+        },
+        "user_id": {
+          "type": "integer"
+        },
+        "vault_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "job_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "event": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "title_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message_params": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "in_app_enabled": {
+          "type": "boolean"
+        },
+        "dedupe_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "read": {
+          "type": "boolean"
+        },
+        "read_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "problem_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "open",
+            "resolved",
+            null
+          ]
+        },
+        "resolved_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       },
-      "required": ["id", "user_id", "vault_id", "job_id", "event", "title", "body", "title_key", "body_key", "message_params", "in_app_enabled", "dedupe_key", "created_at", "read", "read_at", "problem_status", "resolved_at"]
+      "required": [
+        "id",
+        "user_id",
+        "vault_id",
+        "job_id",
+        "event",
+        "title",
+        "body",
+        "title_key",
+        "body_key",
+        "message_params",
+        "in_app_enabled",
+        "dedupe_key",
+        "created_at",
+        "read",
+        "read_at",
+        "problem_status",
+        "resolved_at"
+      ]
     },
-    "AdminVault": {
+    "GeneralVault": {
       "additionalProperties": false,
       "properties": {
         "decommission_state": {
@@ -123,7 +290,7 @@
       ],
       "type": "object"
     },
-    "AdminVaultReconnectPayload": {
+    "GeneralVaultReconnectPayload": {
       "additionalProperties": true,
       "properties": {
         "reason": {
@@ -143,7 +310,7 @@
       ],
       "type": "object"
     },
-    "AdminVaultReconnectResponse": {
+    "GeneralVaultReconnectResponse": {
       "additionalProperties": true,
       "properties": {
         "full_scan_required": {
@@ -174,23 +341,58 @@
     "RecoveryKitStatus": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["configured", "fingerprint", "custody_acknowledged", "acknowledged_at", "metadata_restore"],
+      "required": [
+        "configured",
+        "fingerprint",
+        "custody_acknowledged",
+        "acknowledged_at",
+        "metadata_restore"
+      ],
       "properties": {
-        "configured": {"type": "boolean"},
-        "fingerprint": {"type": ["string", "null"]},
-        "custody_acknowledged": {"type": "boolean"},
-        "acknowledged_at": {"type": ["string", "null"]},
-        "metadata_restore": {"type": ["object", "null"], "required": ["backup_created_at", "updated_files"], "properties": {
-          "backup_created_at": {"type": "string"}, "updated_files": {"type": "integer"}
-        }}
+        "configured": {
+          "type": "boolean"
+        },
+        "fingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "custody_acknowledged": {
+          "type": "boolean"
+        },
+        "acknowledged_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata_restore": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "backup_created_at",
+            "updated_files"
+          ],
+          "properties": {
+            "backup_created_at": {
+              "type": "string"
+            },
+            "updated_files": {
+              "type": "integer"
+            }
+          }
+        }
       }
     },
-    "AdminVaultsResponse": {
+    "GeneralVaultsResponse": {
       "additionalProperties": true,
       "properties": {
         "items": {
           "items": {
-            "$ref": "#/components/schemas/AdminVault"
+            "$ref": "#/components/schemas/GeneralVault"
           },
           "type": "array"
         }
@@ -272,6 +474,42 @@
         },
         "version_number": {
           "type": "number"
+        },
+        "verified_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider_version_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "integrity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "availability": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "restore_state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "restore_expiry": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -421,8 +659,18 @@
       "additionalProperties": true,
       "description": "Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed.",
       "properties": {
-        "last_known_states": { "type": "object", "additionalProperties": { "type": "number" } },
-        "last_known_at": { "type": ["string", "null"] },
+        "last_known_states": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "last_known_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "available_actions": {
           "additionalProperties": {
             "type": "number"
@@ -648,7 +896,9 @@
     "FilesResponse": {
       "additionalProperties": true,
       "properties": {
-        "protection_suspended": { "type": "boolean" },
+        "protection_suspended": {
+          "type": "boolean"
+        },
         "aggregate_status": {
           "description": "Directory aggregate readiness for this listing: ready, loading (no projection yet), or stale (showing prior projection while rebuild/dirty work converges).",
           "enum": [
@@ -1251,8 +1501,17 @@
           "type": "array"
         },
         "local_release_after_days": {
-          "enum": [90, 180, 365, 730, null],
-          "type": ["integer", "null"]
+          "enum": [
+            90,
+            180,
+            365,
+            730,
+            null
+          ],
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "stability_seconds": {
           "type": "number"
@@ -1271,7 +1530,10 @@
       "additionalProperties": true,
       "properties": {
         "archive_version_id": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "estimate": {
           "anyOf": [
@@ -1506,9 +1768,21 @@
     "StatsResponse": {
       "additionalProperties": true,
       "properties": {
-        "protection_suspended": { "type": "boolean" },
-        "protection_state": { "type": ["string", "null"] },
-        "last_known_states": { "type": "object", "additionalProperties": { "type": "number" } },
+        "protection_suspended": {
+          "type": "boolean"
+        },
+        "protection_state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_known_states": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
         "active_jobs": {
           "type": "number"
         },
@@ -1701,9 +1975,18 @@
       "additionalProperties": true,
       "description": "Vault File protection observation: pending, protected, problem, unconfirmed or cloud_only. Restore progress is independent.",
       "properties": {
-        "last_known_state": { "type": "string" },
-        "last_known_at": { "type": ["string", "null"] },
-        "previous_snapshot_protected": { "type": "boolean" },
+        "last_known_state": {
+          "type": "string"
+        },
+        "last_known_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "previous_snapshot_protected": {
+          "type": "boolean"
+        },
         "availability": {
           "type": [
             "string",
@@ -1787,6 +2070,21 @@
           "type": "string"
         },
         "upload_eligible": {
+          "type": "boolean"
+        },
+        "modified_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vault_id": {
+          "type": "integer"
+        },
+        "vault_name": {
+          "type": "string"
+        },
+        "cloud_only_conflict": {
           "type": "boolean"
         }
       },
@@ -1994,6 +2292,76 @@
         "pending_until",
         "jobs"
       ]
+    },
+    "GeneralOverview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "vaults": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "slug": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "decommission_state": {
+                "type": "string"
+              },
+              "monthly_estimate": {
+                "type": "number"
+              },
+              "open_problem_count": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "slug",
+              "name",
+              "decommission_state",
+              "monthly_estimate",
+              "open_problem_count"
+            ]
+          }
+        },
+        "open_problem_count": {
+          "type": "number"
+        },
+        "monthly_estimate": {
+          "type": "number"
+        },
+        "month": {
+          "type": "string"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "pricing_effective_at": {
+          "type": "string"
+        },
+        "previous_month_delta": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "email_configured": {
+          "type": "boolean"
+        },
+        "last_verified_backup": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
     }
   }
 }

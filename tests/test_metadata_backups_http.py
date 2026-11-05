@@ -1,9 +1,9 @@
 """Admin HTTP controls for encrypted metadata backups (issue #15).
 
 Seams under test:
-- ``GET /api/admin/metadata-backups`` — status + recent runs
-- ``POST /api/admin/metadata-backups/run`` — manual backup
-- ``GET /api/admin/metadata-backups/download/{run_id}`` — download artifact
+- ``GET /api/general/metadata-backups`` — status + recent runs
+- ``POST /api/general/metadata-backups/run`` — manual backup
+- ``GET /api/general/metadata-backups/download/{run_id}`` — download artifact
 """
 from __future__ import annotations
 
@@ -98,13 +98,13 @@ class MetadataBackupHttpTests(unittest.TestCase):
         self.client.headers["X-CSRF-Token"] = csrf_token
 
     def test_backups_require_authentication(self) -> None:
-        listed = self.client.get("/api/admin/metadata-backups")
+        listed = self.client.get("/api/general/metadata-backups")
         self.assertEqual(listed.status_code, 401, listed.text)
 
     def test_owner_can_run_list_and_download_backup(self) -> None:
         self._authenticate(self.admin_id)
         ran = self.client.post(
-            "/api/admin/metadata-backups/run",
+            "/api/general/metadata-backups/run",
             json={"reason": "operator requested backup"},
         )
         self.assertEqual(ran.status_code, 200, ran.text)
@@ -113,14 +113,14 @@ class MetadataBackupHttpTests(unittest.TestCase):
         self.assertEqual(body["reason"], "manual")
         self.assertTrue(any(key.startswith("system/backups/") for key in self.store.objects))
 
-        listed = self.client.get("/api/admin/metadata-backups")
+        listed = self.client.get("/api/general/metadata-backups")
         self.assertEqual(listed.status_code, 200, listed.text)
         payload = listed.json()
         self.assertEqual(payload["status"]["last_status"], "succeeded")
         self.assertEqual(len(payload["runs"]), 1)
         run_id = payload["runs"][0]["id"]
 
-        download = self.client.get(f"/api/admin/metadata-backups/download/{run_id}")
+        download = self.client.get(f"/api/general/metadata-backups/download/{run_id}")
         self.assertEqual(download.status_code, 200, download.text)
         self.assertEqual(
             download.headers.get("content-type"),

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ArchiveListItem } from "@/api/types";
 import { Badge } from "@/components/Badge";
-import { itemStateBadge } from "@/pages/archive/fileLabels";
+import { itemStateBadge } from "@/pages/archive/protectionLabel";
 
 const translations: Record<string, string> = {
   "state.pending": "In attesa", "state.protected": "Protetto",

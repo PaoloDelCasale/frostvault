@@ -89,11 +89,11 @@ describe("ReauthPasswordGate", () => {
     renderGate();
 
     const requests = Promise.all([
-      apiRequest<{ url: string }>("/api/admin/first", {
+      apiRequest<{ url: string }>("/api/general/first", {
         method: "POST",
         body: "{}",
       }),
-      apiRequest<{ url: string }>("/api/admin/second", {
+      apiRequest<{ url: string }>("/api/general/second", {
         method: "POST",
         body: "{}",
       }),
@@ -101,8 +101,8 @@ describe("ReauthPasswordGate", () => {
 
     const passwordInput = await screen.findByTestId("reauth-password-input");
     await waitFor(() => {
-      expect(requestCounts.get("/api/admin/first")).toBe(1);
-      expect(requestCounts.get("/api/admin/second")).toBe(1);
+      expect(requestCounts.get("/api/general/first")).toBe(1);
+      expect(requestCounts.get("/api/general/second")).toBe(1);
     });
     fireEvent.change(passwordInput, { target: { value: "recent-password" } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
@@ -112,12 +112,12 @@ describe("ReauthPasswordGate", () => {
     resolveReauthentication!(jsonResponse({ ok: true }));
 
     await expect(requests).resolves.toEqual([
-      { url: "/api/admin/first" },
-      { url: "/api/admin/second" },
+      { url: "/api/general/first" },
+      { url: "/api/general/second" },
     ]);
     expect(reauthCalls(fetchMock)).toHaveLength(1);
-    expect(requestCounts.get("/api/admin/first")).toBe(2);
-    expect(requestCounts.get("/api/admin/second")).toBe(2);
+    expect(requestCounts.get("/api/general/first")).toBe(2);
+    expect(requestCounts.get("/api/general/second")).toBe(2);
   });
 
   it("rejects every waiting API caller when the password dialog is cancelled", async () => {
@@ -127,8 +127,8 @@ describe("ReauthPasswordGate", () => {
     renderGate();
 
     const requests = Promise.allSettled([
-      apiRequest("/api/admin/first", { method: "POST", body: "{}" }),
-      apiRequest("/api/admin/second", { method: "POST", body: "{}" }),
+      apiRequest("/api/general/first", { method: "POST", body: "{}" }),
+      apiRequest("/api/general/second", { method: "POST", body: "{}" }),
     ]);
 
     await screen.findByTestId("reauth-password-input");
@@ -158,8 +158,8 @@ describe("ReauthPasswordGate", () => {
     const view = renderGate();
 
     const requests = Promise.allSettled([
-      apiRequest("/api/admin/first", { method: "POST", body: "{}" }),
-      apiRequest("/api/admin/second", { method: "POST", body: "{}" }),
+      apiRequest("/api/general/first", { method: "POST", body: "{}" }),
+      apiRequest("/api/general/second", { method: "POST", body: "{}" }),
     ]);
 
     await screen.findByTestId("reauth-password-input");
@@ -204,7 +204,7 @@ describe("ReauthPasswordGate", () => {
     });
     renderGate();
 
-    const failedRequest = apiRequest("/api/admin/first", {
+    const failedRequest = apiRequest("/api/general/first", {
       method: "POST",
       body: "{}",
     });
@@ -218,7 +218,7 @@ describe("ReauthPasswordGate", () => {
     });
     expect(reauthCalls(fetchMock)).toHaveLength(1);
 
-    const retry = apiRequest<{ url: string }>("/api/admin/retry", {
+    const retry = apiRequest<{ url: string }>("/api/general/retry", {
       method: "POST",
       body: "{}",
     });
@@ -226,9 +226,9 @@ describe("ReauthPasswordGate", () => {
     fireEvent.change(retryPasswordInput, { target: { value: "recent-password" } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
-    await expect(retry).resolves.toEqual({ url: "/api/admin/retry" });
+    await expect(retry).resolves.toEqual({ url: "/api/general/retry" });
     expect(reauthCalls(fetchMock)).toHaveLength(2);
-    expect(requestCounts.get("/api/admin/first")).toBe(1);
-    expect(requestCounts.get("/api/admin/retry")).toBe(2);
+    expect(requestCounts.get("/api/general/first")).toBe(1);
+    expect(requestCounts.get("/api/general/retry")).toBe(2);
   });
 });

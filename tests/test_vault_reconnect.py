@@ -183,7 +183,7 @@ class VaultReconnectTests(unittest.TestCase):
 
     def test_scan_lock_serializes_reconnect_handoff(self):
         from fastapi import BackgroundTasks
-        from app.main import VaultReconnect, admin_reconnect_vault_root
+        from app.main import VaultReconnect, reconnect_vault_root
         from app.storage import scan_vault
         entered, proceed = threading.Event(), threading.Event()
         original = vault_relocation.reconnect_vault_root
@@ -193,7 +193,7 @@ class VaultReconnectTests(unittest.TestCase):
             return original(connection, **kwargs)
         def invoke():
             try:
-                outcome.append(admin_reconnect_vault_root(7, VaultReconnect(volume_alias="photos", relative_path="new", reason="restore"), BackgroundTasks(), {"id": 1}))
+                outcome.append(reconnect_vault_root(7, VaultReconnect(volume_alias="photos", relative_path="new", reason="restore"), BackgroundTasks(), {"id": 1}))
             except BaseException as exc: outcome.append(exc)
         with patch("app.main.vault_relocation_service.reconnect_vault_root", side_effect=delayed):
             thread = threading.Thread(target=invoke); thread.start()

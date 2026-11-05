@@ -254,6 +254,7 @@ def stream_tick_snapshot(
     after_revision: int,
     max_events: int = MAX_CATCHUP_EVENTS,
     now: datetime | None = None,
+    explicit_vault: bool = False,
 ) -> StreamTickSnapshot:
     """Authorize the stream and observe the journal on **one** short connection.
 
@@ -322,7 +323,7 @@ def stream_tick_snapshot(
             if row["session_vault_id"] is not None
             else None
         )
-        if session_vault_id is None or session_vault_id != vault_id:
+        if not explicit_vault and (session_vault_id is None or session_vault_id != vault_id):
             return StreamTickSnapshot(
                 ok=False,
                 error="vault_switched",
@@ -423,6 +424,7 @@ async def iter_catalog_event_sse(
     durable_poll_seconds: float = DURABLE_POLL_SECONDS,
     use_hub: bool = True,
     max_events: int = MAX_CATCHUP_EVENTS,
+    explicit_vault: bool = False,
 ) -> AsyncIterator[str]:
     """Yield SSE frames for one authorized catalog subscription.
 
@@ -442,6 +444,7 @@ async def iter_catalog_event_sse(
             vault_id=vault_id,
             after_revision=resume_after,
             max_events=max_events,
+            explicit_vault=explicit_vault,
         )
         if not initial.ok:
             code = initial.error or "session_revoked"
@@ -522,6 +525,7 @@ async def iter_catalog_event_sse(
                 vault_id=vault_id,
                 after_revision=last_seen,
                 max_events=max_events,
+                explicit_vault=explicit_vault,
             )
             if not tick.ok:
                 code = tick.error or "session_revoked"

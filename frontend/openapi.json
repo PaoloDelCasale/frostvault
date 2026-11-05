@@ -1,127 +1,6 @@
 {
   "components": {
     "schemas": {
-      "AdminVault": {
-        "additionalProperties": false,
-        "properties": {
-          "decommission_state": {
-            "enum": [
-              "active",
-              "decommissioning",
-              "decommissioned"
-            ],
-            "type": "string"
-          },
-          "decommissioned_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "enabled": {
-            "type": "boolean"
-          },
-          "id": {
-            "type": "number"
-          },
-          "name": {
-            "type": "string"
-          },
-          "root_released_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "s3_bucket": {
-            "type": "string"
-          },
-          "s3_prefix": {
-            "type": "string"
-          },
-          "slug": {
-            "type": "string"
-          },
-          "source_root": {
-            "type": "string"
-          },
-          "uuid": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "slug",
-          "name",
-          "source_root",
-          "s3_prefix",
-          "enabled"
-        ],
-        "type": "object"
-      },
-      "AdminVaultReconnectPayload": {
-        "additionalProperties": true,
-        "properties": {
-          "reason": {
-            "type": "string"
-          },
-          "relative_path": {
-            "type": "string"
-          },
-          "volume_alias": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "volume_alias",
-          "relative_path",
-          "reason"
-        ],
-        "type": "object"
-      },
-      "AdminVaultReconnectResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "full_scan_required": {
-            "type": "boolean"
-          },
-          "reconnect_state": {
-            "enum": [
-              "scan_required",
-              "ready"
-            ],
-            "type": "string"
-          },
-          "source_root": {
-            "type": "string"
-          },
-          "vault_id": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "vault_id",
-          "source_root",
-          "reconnect_state",
-          "full_scan_required"
-        ],
-        "type": "object"
-      },
-      "AdminVaultsResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/AdminVault"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "type": "object"
-      },
       "ApiErrorResponse": {
         "additionalProperties": false,
         "properties": {
@@ -156,6 +35,12 @@
       "ArchiveVersionItem": {
         "additionalProperties": {},
         "properties": {
+          "availability": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "created_at": {
             "type": [
               "string",
@@ -165,7 +50,19 @@
           "id": {
             "type": "string"
           },
+          "integrity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "object_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_version_id": {
             "type": [
               "string",
               "null"
@@ -173,6 +70,18 @@
           },
           "recoverable": {
             "type": "boolean"
+          },
+          "restore_expiry": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restore_state": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "size": {
             "type": [
@@ -187,6 +96,12 @@
             ]
           },
           "storage_class_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verified_at": {
             "type": [
               "string",
               "null"
@@ -768,6 +683,197 @@
           "page",
           "directory",
           "mode"
+        ],
+        "type": "object"
+      },
+      "GeneralOverview": {
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "type": "string"
+          },
+          "email_configured": {
+            "type": "boolean"
+          },
+          "last_verified_backup": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "month": {
+            "type": "string"
+          },
+          "monthly_estimate": {
+            "type": "number"
+          },
+          "open_problem_count": {
+            "type": "number"
+          },
+          "previous_month_delta": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "pricing_effective_at": {
+            "type": "string"
+          },
+          "vaults": {
+            "items": {
+              "properties": {
+                "decommission_state": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "integer"
+                },
+                "monthly_estimate": {
+                  "type": "number"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "open_problem_count": {
+                  "type": "integer"
+                },
+                "slug": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "slug",
+                "name",
+                "decommission_state",
+                "monthly_estimate",
+                "open_problem_count"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "GeneralVault": {
+        "additionalProperties": false,
+        "properties": {
+          "decommission_state": {
+            "enum": [
+              "active",
+              "decommissioning",
+              "decommissioned"
+            ],
+            "type": "string"
+          },
+          "decommissioned_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "root_released_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "s3_bucket": {
+            "type": "string"
+          },
+          "s3_prefix": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "source_root": {
+            "type": "string"
+          },
+          "uuid": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "name",
+          "source_root",
+          "s3_prefix",
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "GeneralVaultReconnectPayload": {
+        "additionalProperties": true,
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "volume_alias": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "volume_alias",
+          "relative_path",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "GeneralVaultReconnectResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "full_scan_required": {
+            "type": "boolean"
+          },
+          "reconnect_state": {
+            "enum": [
+              "scan_required",
+              "ready"
+            ],
+            "type": "string"
+          },
+          "source_root": {
+            "type": "string"
+          },
+          "vault_id": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "vault_id",
+          "source_root",
+          "reconnect_state",
+          "full_scan_required"
+        ],
+        "type": "object"
+      },
+      "GeneralVaultsResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/GeneralVault"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
         ],
         "type": "object"
       },
@@ -1806,6 +1912,11 @@
             ],
             "title": "Archive Version Id"
           },
+          "is_directory": {
+            "default": false,
+            "title": "Is Directory",
+            "type": "boolean"
+          },
           "path": {
             "title": "Path",
             "type": "string"
@@ -1845,7 +1956,10 @@
         "additionalProperties": true,
         "properties": {
           "archive_version_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "estimate": {
             "anyOf": [
@@ -2576,6 +2690,9 @@
               "boolean"
             ]
           },
+          "cloud_only_conflict": {
+            "type": "boolean"
+          },
           "cloud_size": {
             "type": [
               "number",
@@ -2612,6 +2729,12 @@
           "local_size": {
             "type": [
               "number",
+              "null"
+            ]
+          },
+          "modified_at": {
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -2657,6 +2780,12 @@
           },
           "upload_eligible": {
             "type": "boolean"
+          },
+          "vault_id": {
+            "type": "integer"
+          },
+          "vault_name": {
+            "type": "string"
           }
         },
         "required": [
@@ -2978,243 +3107,6 @@
         "summary": "Index"
       }
     },
-    "/admin": {
-      "get": {
-        "operationId": "admin_page_admin_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Admin Page"
-      }
-    },
-    "/api/admin/cost-estimates/storage": {
-      "post": {
-        "operationId": "admin_storage_cost_estimate_api_admin_cost_estimates_storage_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StorageEstimateRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StorageEstimateResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Storage Cost Estimate"
-      }
-    },
-    "/api/admin/metadata-backups": {
-      "get": {
-        "operationId": "admin_list_metadata_backups_api_admin_metadata_backups_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Admin List Metadata Backups"
-      }
-    },
-    "/api/admin/metadata-backups/download/{run_id}": {
-      "get": {
-        "operationId": "admin_download_metadata_backup_api_admin_metadata_backups_download__run_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/octet-stream": {
-                "schema": {
-                  "format": "binary",
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Raw metadata backup artifact"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Download Metadata Backup"
-      }
-    },
-    "/api/admin/metadata-backups/run": {
-      "post": {
-        "operationId": "admin_run_metadata_backup_api_admin_metadata_backups_run_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MetadataBackupRunAction"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Run Metadata Backup"
-      }
-    },
-    "/api/admin/source-volumes": {
-      "get": {
-        "description": "Operator inventory of discovered Source Volumes (issue #148).",
-        "operationId": "admin_source_volumes_api_admin_source_volumes_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SourceVolumeInventoryResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Admin Source Volumes"
-      }
-    },
-    "/api/admin/vaults": {
-      "get": {
-        "operationId": "admin_vaults_api_admin_vaults_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminVaultsResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Admin Vaults"
-      }
-    },
-    "/api/admin/vaults/{vault_id}/reconnect": {
-      "post": {
-        "description": "Accept this folder/mount for this Vault only; mandatory cloud/local scan.",
-        "operationId": "admin_reconnect_vault_root_api_admin_vaults__vault_id__reconnect_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vault_id",
-            "required": true,
-            "schema": {
-              "title": "Vault Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VaultReconnect"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminVaultReconnectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Admin Reconnect Vault Root"
-      }
-    },
     "/api/catalog/events": {
       "get": {
         "description": "Authenticated SSE stream of coalesced catalog invalidation signals.\n\nThe payload carries only Vault identity, monotonic revision, affected\ndomains, and an optional retention gap flag \u2014 never filesystem paths.\nPass ``subscribe=false`` for a finite catch-up response used by tests and\nbounded recovery probes. Open streams observe the durable journal so\nmulti-process writers are visible without client idle polling.\n\nDocumented like ``/metrics`` as a non-JSON success body (SSE text stream);\nit is excluded from the JsonObjectResponse OpenAPI contract suite.",
@@ -3239,6 +3131,23 @@
               "default": true,
               "title": "Subscribe",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
             }
           },
           {
@@ -3298,6 +3207,23 @@
               "title": "After Revision",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
           }
         ],
         "responses": {
@@ -3346,6 +3272,25 @@
     "/api/cloud-deletion/preview": {
       "post": {
         "operationId": "preview_cloud_deletion_api_cloud_deletion_preview_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3384,6 +3329,25 @@
     "/api/cloud-purge": {
       "post": {
         "operationId": "cloud_purge_api_cloud_purge_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3476,6 +3440,23 @@
               "title": "Page Size",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
           }
         ],
         "responses": {
@@ -3507,6 +3488,25 @@
       "post": {
         "description": "Confirm that new content replaces the only cloud copy at its path.",
         "operationId": "replace_cloud_only_copy_api_files_cloud_only_conflict_replace_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3542,6 +3542,136 @@
         "summary": "Replace Cloud Only Copy"
       }
     },
+    "/api/files/detail": {
+      "get": {
+        "operationId": "file_detail_api_files_detail_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchiveListItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
+          }
+        },
+        "summary": "File Detail"
+      }
+    },
+    "/api/files/search": {
+      "get": {
+        "description": "Search name/path across all protected Vaults, independent of Session choice.",
+        "operationId": "search_all_files_api_files_search_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 10,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search All Files"
+      }
+    },
     "/api/files/versions": {
       "get": {
         "operationId": "file_versions_api_files_versions_get",
@@ -3553,6 +3683,23 @@
             "schema": {
               "title": "Path",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
             }
           }
         ],
@@ -3584,6 +3731,25 @@
     "/api/free-space": {
       "post": {
         "operationId": "free_space_api_free_space_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3617,6 +3783,195 @@
           }
         },
         "summary": "Free Space"
+      }
+    },
+    "/api/general": {
+      "get": {
+        "operationId": "general_overview_api_general_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeneralOverview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "General Overview"
+      }
+    },
+    "/api/general/cost-estimates/storage": {
+      "post": {
+        "operationId": "storage_cost_estimate_api_general_cost_estimates_storage_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StorageEstimateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorageEstimateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Storage Cost Estimate"
+      }
+    },
+    "/api/general/metadata-backups": {
+      "get": {
+        "operationId": "list_metadata_backups_api_general_metadata_backups_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonObjectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Metadata Backups"
+      }
+    },
+    "/api/general/metadata-backups/download/{run_id}": {
+      "get": {
+        "operationId": "download_metadata_backup_api_general_metadata_backups_download__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Raw metadata backup artifact"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Metadata Backup"
+      }
+    },
+    "/api/general/metadata-backups/run": {
+      "post": {
+        "operationId": "run_metadata_backup_api_general_metadata_backups_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MetadataBackupRunAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonObjectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Metadata Backup"
+      }
+    },
+    "/api/general/source-volumes": {
+      "get": {
+        "description": "Operator inventory of discovered Source Volumes (issue #148).",
+        "operationId": "general_source_volumes_api_general_source_volumes_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceVolumeInventoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "General Source Volumes"
+      }
+    },
+    "/api/general/vaults": {
+      "get": {
+        "operationId": "general_vaults_api_general_vaults_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeneralVaultsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "General Vaults"
       }
     },
     "/api/i18n/catalog": {
@@ -3668,6 +4023,25 @@
     "/api/jobs": {
       "get": {
         "operationId": "jobs_api_jobs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -3678,6 +4052,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Jobs"
@@ -3686,6 +4070,25 @@
     "/api/jobs/cancel": {
       "post": {
         "operationId": "cancel_job_api_jobs_cancel_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3965,6 +4368,47 @@
         "summary": "Mark All Notifications Read"
       }
     },
+    "/api/problems": {
+      "get": {
+        "operationId": "open_problems_api_problems_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open Problems"
+      }
+    },
     "/api/reauth": {
       "post": {
         "description": "Emergency Password Reauthentication with an isolated durable backoff.\n\nAccepted only from loopback and the LAN CIDRs; elsewhere the Owner steps\nup through the provider (see ``/auth/oidc/reauth``). Its account/IP\ncounters deliberately use namespaced keys so a Reauthentication success\ncannot reset sign-in or OIDC-related throttling state.",
@@ -4007,6 +4451,25 @@
     "/api/recover": {
       "post": {
         "operationId": "recover_api_recover_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4045,6 +4508,25 @@
     "/api/recover/approve": {
       "post": {
         "operationId": "approve_recover_api_recover_approve_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4083,6 +4565,25 @@
     "/api/recover/estimate": {
       "post": {
         "operationId": "recover_estimate_api_recover_estimate_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4215,6 +4716,25 @@
     "/api/scan": {
       "post": {
         "operationId": "start_scan_api_scan_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "responses": {
           "202": {
             "content": {
@@ -4225,6 +4745,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Start Scan"
@@ -4283,6 +4813,25 @@
     "/api/stats": {
       "get": {
         "operationId": "stats_api_stats_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -4293,6 +4842,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Stats"
@@ -4301,6 +4860,25 @@
     "/api/upload": {
       "post": {
         "operationId": "upload_api_upload_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4340,6 +4918,25 @@
       "post": {
         "description": "Backward-compatible endpoint for clients using the old upload route.",
         "operationId": "cancel_upload_api_upload_cancel_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4378,6 +4975,25 @@
     "/api/vault/lifecycle": {
       "get": {
         "operationId": "own_vault_lifecycle_api_vault_lifecycle_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -4388,12 +5004,41 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Own Vault Lifecycle"
       },
       "put": {
         "operationId": "update_vault_storage_plan_api_vault_lifecycle_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4432,6 +5077,25 @@
     "/api/vault/move": {
       "get": {
         "operationId": "preview_vault_move_api_vault_move_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -4442,12 +5106,41 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Preview Vault Move"
       },
       "post": {
         "operationId": "move_vault_api_vault_move_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4486,6 +5179,25 @@
     "/api/vault/operation-policy": {
       "get": {
         "operationId": "own_vault_operation_policy_api_vault_operation_policy_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -4496,12 +5208,41 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Own Vault Operation Policy"
       },
       "put": {
         "operationId": "update_vault_operation_policy_api_vault_operation_policy_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4540,6 +5281,25 @@
     "/api/vault/operation-policy/preview-globs": {
       "post": {
         "operationId": "preview_vault_operation_globs_api_vault_operation_policy_preview_globs_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4666,6 +5426,56 @@
           }
         },
         "summary": "Select Vault"
+      }
+    },
+    "/api/vaults/{vault_id}/reconnect": {
+      "post": {
+        "description": "Accept this folder/mount for this Vault only; mandatory cloud/local scan.",
+        "operationId": "reconnect_vault_root_api_vaults__vault_id__reconnect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VaultReconnect"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeneralVaultReconnectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reconnect Vault Root"
       }
     },
     "/api/vaults/{vault_id}/stop-protection": {
@@ -5037,22 +5847,6 @@
           }
         },
         "summary": "Ready"
-      }
-    },
-    "/vault/access": {
-      "get": {
-        "operationId": "vault_access_page_vault_access_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Vault Access Page"
       }
     },
     "/vaults/new": {

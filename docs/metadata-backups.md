@@ -13,7 +13,7 @@ reconstruction:
 ## Keep one Recovery Kit outside the server
 
 Download the installation-wide **Recovery Kit** from the recovery panel in the
-current administration/General area (`GET /api/recovery-kit/download`). Recent
+General page (`GET /api/recovery-kit/download`). Recent
 Owner reauthentication is mandatory. The attachment is secret-bearing and
 `no-store`; the action is audited without its contents. It contains:
 
@@ -62,9 +62,9 @@ internal-error problems/metrics.
   `verification_mode=pg_restore_list`, not a proven full restore. No production
   catalog or `vaults/` S3 objects are modified.
 - The weekly protection summary includes the last verified backup date.
-- Authenticated API: `GET /api/admin/metadata-backups`,
-  `POST /api/admin/metadata-backups/run` (CSRF),
-  `GET /api/admin/metadata-backups/download/{run_id}` (ciphertext only).
+- Authenticated API: `GET /api/general/metadata-backups`,
+  `POST /api/general/metadata-backups/run` (CSRF),
+  `GET /api/general/metadata-backups/download/{run_id}` (ciphertext only).
 
 ### Upgrade gate
 

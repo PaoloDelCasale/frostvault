@@ -179,13 +179,9 @@ node scripts/npm-audit-gate.mjs \
 npx playwright install chromium
 npm run test:e2e
 
-# Capture-only archive screenshots (375px; demo seams require explicit opt-in)
-VITE_ALLOW_DEMO=1 npm run build
-node scripts/capture-file-browser-screenshots.mjs
-node scripts/capture-file-operations-screenshots.mjs
-
-# Authentication captures use mocked/seeded API routes and need no demo flag:
-# screenshot-auth-pages.mjs
+# The essential shell has no demo fetch shim or fake archive screenshot mode.
+# PR CI exercises the browser at 375px and 1280px with disposable fixtures.
+# Authentication-only captures remain in screenshot-auth-pages.mjs.
 
 # S3-compatible integrity (the CI job still named "MinIO"): start a local
 # S3 server on :9000, then create the versioned bucket

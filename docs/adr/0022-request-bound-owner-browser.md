@@ -1,0 +1,13 @@
+# Bind browser requests and confirmations to explicit Vault identity
+
+Decision #365 D1–D17, implemented by #430, replaces the administrative/access shell with protected-folder navigation and General. A global search result carries its Vault identity, and browser actions, Details, recovery and folder settings send an immutable `vault_id` query scope rather than changing the shared Session selection before making a request; otherwise another tab or an out-of-order response could redirect a confirmed action to a different Vault.
+
+## Consequences
+
+The existing Owner authentication, CSRF, Source Volume gates and destructive-action reauthentication remain mandatory. An explicit missing/stopped Vault returns 404, never falls back to another Vault and never changes Session state. Unscoped legacy API consumers still use Session selection. Each UI scope/cache key includes Vault identity; switching folders discards selection and confirmation state. Only the last-used Vault ID is persisted per Owner/browser, never a file listing; home opens its root.
+
+Global name/path search is SQL-paginated across operational Vaults. Source/cloud observation failure is applied before state filtering: a missing mount cannot turn a result into Cloud-only. Results with identical paths remain distinct. Email/inbox links carry Vault, parent directory and file; the highlighted file is fetched independently of the current page. Folder settings retain Stop Protection and colder-only Move now unchanged. Cloud deletion is confined to the deliberate single-file Details flow, with the same seven-day delay, typed confirmation, reauthentication and worker fences.
+
+General shows deployment-owned optional SMTP status, Recovery Kit/custody, last verified metadata backup, per-Vault storage estimates and reconnect. There is no runtime SMTP/secret configuration or granular notification preference: #366 Q11 and #414 continue to own configuration. `APP_PUBLIC_URL` is an optional canonical HTTP(S) URL for SMTP deep links; no request Host or untrusted notification field can supply the origin. Without it email still works but cannot contain an absolute application link.
+
+The sidebar shows current monthly storage run-rate and a delta against the latest retained weekly estimate from the previous calendar month, or explicitly unavailable when there is no baseline. These are list-price estimates, not measured AWS month-to-date billing, a budget or a promise of total costs. The browser has no previews, user-facing history, per-file class changes or administration routes; retained historical ADRs/migrations describe unavailable old workflows, not compatibility aliases.
