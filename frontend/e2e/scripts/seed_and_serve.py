@@ -284,6 +284,29 @@ def _native_fixture_runtime():
         yield
 
 
+def _legacy_worker_fixture(application):
+    """Serve the old Worker from the CI server, not Playwright's page routes.
+
+    Chromium fetches a Worker's entry script outside page interception. Serving
+    the production retirement script here can unregister before `ready` resolves.
+    Only this disposable E2E app recognizes the exact fixture query string.
+    """
+    async def fixture(scope, receive, send):
+        if (scope["type"] == "http" and scope["method"] == "GET"
+                and scope["path"] == "/sw.js" and scope.get("query_string") == b"legacy-test"):
+            from starlette.responses import Response
+            response = Response(
+                '// legacy-worker-fixture\n'
+                'self.addEventListener("install", e => e.waitUntil(self.skipWaiting()));'
+                'self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));',
+                media_type="application/javascript", headers={"Cache-Control": "no-store"},
+            )
+            await response(scope, receive, send)
+        else:
+            await application(scope, receive, send)
+    return fixture
+
+
 def main() -> None:
     paths = _ensure_runtime()
     _apply_env(paths)
@@ -299,7 +322,8 @@ def main() -> None:
     host = os.environ.get("E2E_HOST", "127.0.0.1")
     port = int(os.environ.get("E2E_PORT", "8080"))
     with _native_fixture_runtime():
-        uvicorn.run("app.main:app", host=host, port=port, log_level="warning")
+        from app.main import app
+        uvicorn.run(_legacy_worker_fixture(app), host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":

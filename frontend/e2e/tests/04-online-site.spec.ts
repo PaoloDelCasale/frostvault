@@ -29,10 +29,12 @@ test("an existing PWA installation is retired without clearing Owner preferences
   await applySession(context);
   await page.goto("/");
   await expect(page.getByTestId("file-browser")).toBeVisible();
-  await page.route("**/sw.js?legacy-test", (route) => route.fulfill({
-    contentType: "application/javascript",
-    body: 'self.addEventListener("install", e => e.waitUntil(self.skipWaiting())); self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));',
-  }));
+  // A Worker's entry fetch is not page-route interceptable in Chromium.
+  // The disposable CI server serves this fixture; the normal URL still serves
+  // the real retirement Worker shipped with the application.
+  const legacyScript = await page.request.get("/sw.js?legacy-test");
+  expect(legacyScript.ok()).toBe(true);
+  expect(await legacyScript.text()).toContain("legacy-worker-fixture");
   await page.evaluate(async () => {
     await navigator.serviceWorker.register("/sw.js?legacy-test", { scope: "/" });
     await navigator.serviceWorker.ready;
