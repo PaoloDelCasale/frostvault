@@ -170,6 +170,31 @@ class VaultMoveTests(unittest.TestCase):
         self.assertEqual(self.provider.deleted,[])
         self.assertEqual(len(self.provider.versions),3)
 
+    def test_path_reuse_during_copy_cannot_publish_into_another_vault_file(self):
+        self.schedule()
+        def reuse_path():
+            with PostgresConnection(str(self.path)) as c:
+                catalog=ArchiveCatalog(c)
+                catalog.rename_file(self.vault_file_id,new_path='renamed.txt',changed_at=storage.now_iso(),vault_id=1)
+                catalog.observe_local_copy(vault_id=1,path='report.txt',file_type='regular',size=99,
+                    mtime_ns=99,observed_at=storage.now_iso())
+        self.provider.after_copy=reuse_path
+        self.run_job()
+        self.assertEqual(self.state()['status'],'failed')
+        self.assertIn('path changed',self.state()['message'])
+        self.assertEqual(self.provider.deleted,[])
+        with PostgresConnection(str(self.path)) as c:
+            self.assertEqual(c.execute('SELECT count(*) AS n FROM archive_versions').fetchone()['n'],1)
+
+    def test_revoked_source_verification_after_admission_cannot_be_moved(self):
+        self.schedule()
+        with PostgresConnection(str(self.path)) as c:
+            c.execute("UPDATE archive_versions SET integrity='mismatch' WHERE id=%s",(self.version_id,))
+        self.run_job()
+        self.assertEqual(self.state()['status'],'failed')
+        self.assertEqual(self.provider.copies,0)
+        self.assertEqual(self.provider.deleted,[])
+
     def test_missing_keeper_never_authorizes_source_deletion(self):
         self.schedule()
         self.provider.list_object_versions=lambda **kw: {'Versions':[{'Key':kw['Prefix'],'VersionId':'s3-v1'}]}

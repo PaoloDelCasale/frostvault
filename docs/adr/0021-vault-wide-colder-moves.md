@@ -14,7 +14,10 @@ Migration 0060 adds a metadata-only copy ledger. Unlike the legacy internal
 class-copy seam, the new path never mutates an Archive Version's provider identity:
 it records a new immutable destination, verifies it against the captured verified
 plaintext digest, then removes only the captured source VersionId. The original
-local release verification clock survives representation-only movement. Unknown
+local release verification clock and Cloud-only Conflict holds survive
+representation-only movement. Confirmation is bound to the displayed Vault,
+not a different Session selection in another tab; a changed file/path identity
+or revoked source verification also fences publication. Unknown
 extra versions/markers, changed current content, failed listing, lost claim or
 failed checksum never authorize deletion. Existing sole copies remain intact.
 
@@ -37,6 +40,8 @@ FULL_OBJECT: the move computes the expected part-digest tree while independently
 hashing the entire exact source against the verified plaintext digest. The new
 cold destination must match that proof or an independently available full SHA256;
 providers without suitable checksum metadata may require exact GET readback.
+Nonconforming composite metadata is not accepted: only a complete exact-VersionId
+GET/SHA256 can substitute, still compared to the captured verified plaintext digest.
 If a new cold object cannot be read/verified, all copies remain; the move fails
 closed rather than silently restoring it or lowering verification standards.
 Incomplete multipart uploads after process death expire by the existing seven-day

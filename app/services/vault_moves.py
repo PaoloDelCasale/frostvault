@@ -71,7 +71,8 @@ def estimate(rows: list[dict[str, Any]], target: str) -> dict[str, Any]:
     prices = list_prices()
     size = sum(int(r["size"]) for r in eligible)
     retrieval = sum(int(r["size"]) / 1024**3 *
-                    prices.restore_rates.get(r.get("storage_class"), {}).get("Instant", 0)
+                    prices.restore_rates.get(r.get("storage_class"), {}).get("Instant", 0) *
+                    (2 if int(r["size"]) > S3_SINGLE_COPY_MAX_BYTES else 1)
                     for r in eligible)
     return {"target_class": target, "eligible_count": len(eligible), "total_bytes": size,
             "skipped": dict(skipped), "minimum_days": MINIMUM_DAYS.get(target, 0),
@@ -79,7 +80,7 @@ def estimate(rows: list[dict[str, Any]], target: str) -> dict[str, Any]:
                                                             storage_class=target).estimated_cost_eur,
             "estimated_retrieval_eur": round(retrieval, 6),
             "pricing_effective_at": prices.effective_at, "region": prices.region,
-            "assumptions": "AWS list prices (USD used 1:1 as EUR), not a bill. Monthly storage and source retrieval only; copy/GET requests, minimum billable object sizes, archive metadata, temporary restored storage and early-deletion charges excluded. Exact source eligibility is rechecked by the worker."}
+            "assumptions": "AWS list prices (USD used 1:1 as EUR), not a bill. Monthly storage and source retrieval only; copy/GET requests, additional destination readback retrieval, minimum billable object sizes, archive metadata, temporary restored storage and early-deletion charges excluded. Exact source eligibility is rechecked by the worker."}
 
 
 def preview(connection: Any, vault_id: int) -> dict[str, Any]:
@@ -177,11 +178,27 @@ def process(job: dict[str, Any], move: dict[str, Any]) -> None:
         worker.ensure_job_claim_owned_in_transaction(connection, job, "Vault move claim lost")
         if worker.job_cancelled(int(job["id"])):
             raise worker.OperationCancelled("Vault move stopped")
-        current = connection.execute("""SELECT id,provider_version_id,object_key FROM archive_versions WHERE vault_file_id=%s
+        path_owner = connection.execute("""SELECT vault_file_id FROM file_paths
+            WHERE vault_id=%s AND path=%s AND valid_to IS NULL""", (job["vault_id"],job["path"])).fetchone()
+        if not path_owner or path_owner["vault_file_id"] != job["vault_file_id"]:
+            raise MoveBlocked("Vault File path changed; every copy retained")
+        current = connection.execute("""SELECT id,provider_version_id,object_key,integrity,availability,plaintext_sha256 FROM archive_versions WHERE vault_file_id=%s
             AND availability<>'purged' ORDER BY version_number DESC LIMIT 1""",
             (job["vault_file_id"],)).fetchone()
         if not current:
             raise MoveBlocked("Current Snapshot changed; every copy retained")
+        if current["id"] == move["source_archive_id"] and (
+            current["provider_version_id"] != move["source_version_id"] or current["object_key"] != move["object_key"]
+            or current["integrity"] != "verified" or current["availability"] != "available"
+            or current["plaintext_sha256"] != move["sha256"]
+        ):
+            raise MoveBlocked("Captured source identity or verification changed; every copy retained")
+        if current["id"] == move.get("destination_archive_id") and (
+            current["provider_version_id"] != move.get("destination_version_id") or current["object_key"] != move["object_key"]
+            or current["integrity"] != "verified" or current["availability"] != "available"
+            or current["plaintext_sha256"] != move["sha256"]
+        ):
+            raise MoveBlocked("Verified keeper changed; every copy retained")
         if current["id"] not in {move["source_archive_id"], move.get("destination_archive_id")}:
             # A cloud scan may have catalogued our response-window copy. This
             # exception authorizes no deletion or trust: publication still needs
