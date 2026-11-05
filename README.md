@@ -125,6 +125,19 @@ and Cloud-only Conflicts remain held back.
   by default. Early replacement can incur minimum-duration charges; cold recovery
   takes hours. A changed plan does not warm existing cold objects or move them
   immediately. See [storage plans and upgrade safety](docs/aws-s3-bucket.md#vault-storage-plans).
+- **Move the entire Vault now**, in the same Advanced panel, queues verified
+  Current Snapshots for a colder class on the saved plan (not Standard). Mixed
+  classes are evaluated per file: equal/colder copies, unverified/missing copies,
+  pending work (including delayed deletion), and cold sources without an explicit
+  exact-version restore are skipped. It never restores automatically or moves
+  warmer. A regional storage/source-retrieval estimate and minimum-duration warning
+  must be acknowledged first; request fees and early-deletion charges are excluded.
+  A copy resets the provider object-age/plan clock. Exact destination checksum
+  verification precedes removal of the exact old source; interruption resumes from
+  a durable ledger without discarding the only verified copy. Follow/cancel Jobs
+  in Operations; cancellation retains copies and does not undo finished movement.
+  Reconnect and Stop Protection require these Jobs to finish or be cancelled.
+  See [copy/restart safety and limitations](docs/adr/0021-vault-wide-colder-moves.md).
 - Lifecycle synchronization preserves external bucket rules and the seven-day
   incomplete-multipart abort rule. Changing a plan never deletes cloud content.
 - **Delete from cloud** is available only for **Cloud-only** files (or folders

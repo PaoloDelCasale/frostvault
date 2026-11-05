@@ -114,6 +114,7 @@ from .services.lifecycle_profiles import (
     validate_lifecycle_profile,
 )
 from .services import cloud_deletion as cloud_deletion_service
+from .services import vault_moves
 from .services.vaults import (
     InvalidVaultName,
     VaultAdoptionError,
@@ -2790,6 +2791,32 @@ def _lifecycle_payload(connection: Any, vault: dict[str, Any]) -> dict[str, Any]
             for name, profile in GUIDED_PROFILES.items()
         },
     }
+
+
+class VaultMoveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target_class: str = Field(min_length=1, max_length=40)
+    acknowledge_costs: bool = False
+
+
+@app.get("/api/vault/move", response_model=response_model("VaultMovePreview"))
+def preview_vault_move(vault: dict[str, Any] = Depends(current_vault)):
+    try:
+        with db() as connection:
+            return vault_moves.preview(connection, vault["id"])
+    except vault_moves.MoveBlocked as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/api/vault/move", response_model=response_model("VaultMoveResponse"))
+def move_vault(action: VaultMoveRequest, vault: dict[str, Any] = Depends(current_vault),
+               user: dict[str, Any] = Depends(current_user)):
+    try:
+        with db() as connection:
+            return vault_moves.schedule(connection, vault_id=vault["id"], target=action.target_class,
+                user_id=user["id"], acknowledged=action.acknowledge_costs, timestamp=now_iso())
+    except vault_moves.MoveBlocked as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @app.get("/api/vault/lifecycle", response_model=response_model("LifecycleResponse"))
