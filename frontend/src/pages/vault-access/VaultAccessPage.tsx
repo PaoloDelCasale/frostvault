@@ -1,18 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 
-import {
-  cancelOwnVaultDecommissionCloudPurge,
-  fetchOwnVaultDecommissionStatus,
-  previewOwnVaultDecommission,
-  startOwnVaultDecommission,
-} from "@/api";
-import { DecommissionVaultDialog } from "@/components/DecommissionVaultDialog";
+import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 import { Panel } from "@/components/Panel";
 import { Toast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 
-import { CloudDeletionPanel } from "./CloudDeletionPanel";
 import { LifecyclePanel } from "./LifecyclePanel";
 import { OperationPolicyPanel } from "./OperationPolicyPanel";
 import { RetentionPanel } from "./RetentionPanel";
@@ -20,25 +13,25 @@ import { RetentionPanel } from "./RetentionPanel";
 export type VaultAccessPageProps = {
   vaultId: number;
   vaultName: string;
-  decommissionState?: "active" | "decommissioning" | "decommissioned";
+  protectionState?: "active" | "decommissioning" | "decommissioned";
   onBack?: () => void;
-  onDecommissioned?: () => void;
+  onStopped?: () => void;
 };
 
 export function VaultAccessPage({
   vaultId,
   vaultName,
-  decommissionState = "active",
+  protectionState = "active",
   onBack,
-  onDecommissioned,
+  onStopped,
 }: VaultAccessPageProps) {
   const { t, ready } = useI18n();
   const [notice, setNotice] = useState<{
     message: string;
     error: boolean;
   } | null>(null);
-  const [decommissionOpen, setDecommissionOpen] = useState(
-    decommissionState !== "active",
+  const [stopOpen, setStopOpen] = useState(
+    protectionState !== "active",
   );
 
   const show = useCallback((message: string, error = false) => {
@@ -46,8 +39,8 @@ export function VaultAccessPage({
   }, []);
 
   useEffect(() => {
-    if (decommissionState !== "active") setDecommissionOpen(true);
-  }, [decommissionState]);
+    if (protectionState !== "active") setStopOpen(true);
+  }, [protectionState]);
 
   if (!ready) {
     return (
@@ -82,26 +75,26 @@ export function VaultAccessPage({
         </Button>
       </header>
 
-      {decommissionState !== "active" ? (
-        <section data-panel="decommission-progress">
+      {protectionState !== "active" ? (
+        <section data-panel="stop-protection-status">
           <Panel className="border-red-300 p-4 sm:p-5">
             <h2 className="text-lg font-bold text-ink">
-              {t("decommission.view_progress")}
+              {t("stop_protection.status")}
             </h2>
             <p className="mt-1 text-sm text-muted">
               {t(
-                decommissionState === "decommissioned"
-                  ? "decommission.root_released"
-                  : "decommission.root_reserved",
+                protectionState === "decommissioned"
+                  ? "stop_protection.stopped"
+                  : "stop_protection.pending",
               )}
             </p>
             <Button
               type="button"
               variant="primary"
               className="mt-4 min-h-11 w-full sm:w-auto"
-              onClick={() => setDecommissionOpen(true)}
+              onClick={() => setStopOpen(true)}
             >
-              {t("decommission.view_progress")}
+              {t("stop_protection.status")}
             </Button>
           </Panel>
         </section>
@@ -113,36 +106,31 @@ export function VaultAccessPage({
         <summary className="cursor-pointer py-3 font-semibold">{t("access.advanced")}</summary>
         <LifecyclePanel onNotice={show} />
       </details>
-      <CloudDeletionPanel onNotice={show} />
 
-      <section data-panel="decommission">
+      <section data-panel="stop-protection">
         <Panel className="border-red-300 p-4 sm:p-5">
-          <h2 className="text-lg font-bold text-ink">{t("decommission.owner_panel_title")}</h2>
-          <p className="mt-1 text-sm text-muted">{t("decommission.owner_panel_help")}</p>
+          <h2 className="text-lg font-bold text-ink">{t("stop_protection.title")}</h2>
+          <p className="mt-1 text-sm text-muted">{t("stop_protection.local_retained")}</p>
           <Button
             type="button"
             variant="danger"
             className="mt-4 min-h-11 w-full sm:w-auto"
-            onClick={() => setDecommissionOpen(true)}
+            onClick={() => setStopOpen(true)}
           >
-            {t("decommission.open")}
+            {t("stop_protection.title")}
           </Button>
         </Panel>
       </section>
         </>
       )}
 
-      <DecommissionVaultDialog
-        open={decommissionOpen}
-        onOpenChange={setDecommissionOpen}
+      <StopProtectionDialog
+        open={stopOpen}
+        onOpenChange={setStopOpen}
         vaultName={vaultName}
-        existingState={decommissionState}
-        preview={(selection) => previewOwnVaultDecommission(vaultId, selection)}
-        start={(payload) => startOwnVaultDecommission(vaultId, payload)}
-        status={() => fetchOwnVaultDecommissionStatus(vaultId)}
-        cancelCloudPurge={() => cancelOwnVaultDecommissionCloudPurge(vaultId)}
+        vaultId={vaultId}
         onCompleted={() => {
-          if (onDecommissioned) onDecommissioned();
+          if (onStopped) onStopped();
           else window.location.href = "/no-vault";
         }}
       />

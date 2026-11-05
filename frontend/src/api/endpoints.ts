@@ -9,11 +9,9 @@ import type {
   AdminVaultReconnectPayload,
   AdminVaultReconnectResponse,
   RecoveryKitStatus,
+  StopProtectionPayload,
+  StopProtectionStatus,
   AdminVaultsResponse,
-  VaultDecommissionPreview,
-  VaultDecommissionSelection,
-  VaultDecommissionStartPayload,
-  VaultDecommissionStatus,
   SourceVolumeInventoryResponse,
   SourceDirectoryBrowseResponse,
   CloudDeletionPreview,
@@ -289,16 +287,7 @@ export function updateLifecycleDefault(
 }
 
 export function fetchCloudDeletion(): Promise<CloudDeletionSettings> {
-  return apiRequest<CloudDeletionSettings>("/api/vault/cloud-deletion");
-}
-
-export function updateCloudDeletion(
-  enabled: boolean,
-): Promise<CloudDeletionSettings> {
-  return apiRequest<CloudDeletionSettings>("/api/vault/cloud-deletion", {
-    method: "PUT",
-    body: JSON.stringify({ enabled }),
-  });
+  return apiRequest<CloudDeletionSettings>("/api/cloud-deletion");
 }
 
 /** List the authenticated user's visible in-app notifications and unread count. */
@@ -419,41 +408,18 @@ export function reconnectAdminVault(
   );
 }
 
-export function previewOwnVaultDecommission(
-  vaultId: number,
-  payload: VaultDecommissionSelection,
-): Promise<VaultDecommissionPreview> {
-  return apiRequest<VaultDecommissionPreview>(
-    `/api/vaults/${vaultId}/decommission/preview`,
-    { method: "POST", body: JSON.stringify(payload) },
-  );
+export function fetchStopProtection(vaultId: number): Promise<StopProtectionStatus> {
+  return apiRequest<StopProtectionStatus>(`/api/vaults/${vaultId}/stop-protection`);
 }
 
-export function startOwnVaultDecommission(
-  vaultId: number,
-  payload: VaultDecommissionStartPayload,
-): Promise<VaultDecommissionStatus> {
-  return apiRequest<VaultDecommissionStatus>(`/api/vaults/${vaultId}/decommission`, {
-    method: "POST",
-    body: JSON.stringify(payload),
+export function stopProtection(vaultId: number, payload: StopProtectionPayload): Promise<StopProtectionStatus> {
+  return apiRequest<StopProtectionStatus>(`/api/vaults/${vaultId}/stop-protection`, {
+    method: "POST", body: JSON.stringify(payload),
   });
 }
 
-export function fetchOwnVaultDecommissionStatus(
-  vaultId: number,
-): Promise<VaultDecommissionStatus> {
-  return apiRequest<VaultDecommissionStatus>(
-    `/api/vaults/${vaultId}/decommission/status`,
-  );
-}
-
-export function cancelOwnVaultDecommissionCloudPurge(
-  vaultId: number,
-): Promise<VaultDecommissionStatus> {
-  return apiRequest<VaultDecommissionStatus>(
-    `/api/vaults/${vaultId}/decommission/cloud-purge/cancel`,
-    { method: "POST", body: "{}" },
-  );
+export function cancelStoppedFolderDeletion(vaultId: number): Promise<StopProtectionStatus> {
+  return apiRequest<StopProtectionStatus>(`/api/vaults/${vaultId}/stop-protection/cancel-deletion`, { method: "POST", body: "{}" });
 }
 
 export function requestScan(): Promise<ScanResponse> {

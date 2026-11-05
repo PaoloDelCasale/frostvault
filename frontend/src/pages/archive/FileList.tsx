@@ -71,10 +71,8 @@ export type FileListProps = {
   jobsByPath?: Map<string, JobGroup[]>;
   onCancelJob?: (job: JobGroup) => void;
   onApproveJob?: (job: JobGroup) => void;
-  onAcceleratePurge?: (job: JobGroup) => void;
   cancelBusyId?: string | null;
   approveBusyId?: string | null;
-  accelerateBusyId?: string | null;
 };
 
 function isDeepArchiveRow(item: ArchiveListItem): boolean {
@@ -712,10 +710,8 @@ function RowJobOrActions({
   onDesktopAction,
   onCancelJob,
   onApproveJob,
-  onAcceleratePurge,
   cancelBusyId,
   approveBusyId,
-  accelerateBusyId,
   layout,
 }: {
   item: ArchiveListItem;
@@ -726,10 +722,8 @@ function RowJobOrActions({
   onDesktopAction?: (path: string, action: RowActionId) => void;
   onCancelJob?: (job: JobGroup) => void;
   onApproveJob?: (job: JobGroup) => void;
-  onAcceleratePurge?: (job: JobGroup) => void;
   cancelBusyId?: string | null;
   approveBusyId?: string | null;
-  accelerateBusyId?: string | null;
   layout: "card" | "table";
 }) {
   if (jobs.length) {
@@ -742,10 +736,8 @@ function RowJobOrActions({
             t={t}
             onCancel={(j) => onCancelJob?.(j)}
             onApprove={(j) => onApproveJob?.(j)}
-            onAcceleratePurge={(j) => onAcceleratePurge?.(j)}
             cancelBusy={cancelBusyId === job.id}
             approveBusy={approveBusyId === job.id}
-            accelerateBusy={accelerateBusyId === job.id}
           />
         ))}
       </div>
@@ -836,10 +828,8 @@ export function FileList({
   jobsByPath,
   onCancelJob,
   onApproveJob,
-  onAcceleratePurge,
   cancelBusyId,
   approveBusyId,
-  accelerateBusyId,
 }: FileListProps) {
   const desktopListRef = useRef<HTMLDivElement>(null);
   const [compactDirectoryActions, setCompactDirectoryActions] = useState(false);
@@ -926,10 +916,8 @@ export function FileList({
                       jobs={jobs}
                       onCancelJob={onCancelJob}
                       onApproveJob={onApproveJob}
-                      onAcceleratePurge={onAcceleratePurge}
                       cancelBusyId={cancelBusyId}
                       approveBusyId={approveBusyId}
-                      accelerateBusyId={accelerateBusyId}
                       layout="card"
                     />
                   </div>
@@ -1048,10 +1036,8 @@ export function FileList({
                         onDesktopAction={onDesktopAction}
                         onCancelJob={onCancelJob}
                         onApproveJob={onApproveJob}
-                        onAcceleratePurge={onAcceleratePurge}
                         cancelBusyId={cancelBusyId}
                         approveBusyId={approveBusyId}
-                        accelerateBusyId={accelerateBusyId}
                         layout="table"
                       />
                     )}

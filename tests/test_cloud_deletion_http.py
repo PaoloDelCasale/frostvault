@@ -1,308 +1,115 @@
-"""HTTP gates for cloud deletion workflows (issue #10).
-
-Seams under test:
-- Owner/admin can toggle vault cloud-deletion setting with recent reauth.
-- Operators/viewers cannot enable setting, archive, or purge.
-- Preview, archive, and purge endpoints enforce confirmation/delay gates.
-- Cancel during pending_delay is exposed through the jobs cancel API.
-- Accelerate skips pending_delay and queues purge for immediate execution.
-"""
-
-from __future__ import annotations
-
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
-import unittest
+"""Owner reauthentication, typed confirmation, cancellation and retired HTTP surface."""
 from dataclasses import replace
 from datetime import datetime, timezone
-from pathlib import Path
+import unittest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-
 from app import main
-from app.catalog import ArchiveCatalog
 from app.config import settings
-
-from app.security import hash_password
 from app.sessions import create_session, csrf_token_for
-from app import storage as storage_module
-from tests.test_database import run_alembic
+from tests import test_cloud_deletion as fixtures
+from tests.postgres import database_dsn
 
 
 class CloudDeletionHttpTests(unittest.TestCase):
-    def setUp(self) -> None:
-        storage_module.cancelled_jobs.clear()
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.addCleanup(storage_module.cancelled_jobs.clear)
-        self.path = Path(self.tmp.name) / "app.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            self.owner_id = self._user(connection, "owner")
-            self.vault_id = connection.execute(
-                """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('docs', 'Docs Archive', '/source', 'bucket', 'docs')
-                RETURNING id
-                """
-            ).fetchone()["id"]
-            catalog = ArchiveCatalog(connection)
-            catalog.observe_local_copy(
-                vault_id=self.vault_id,
-                path="report.txt",
-                file_type="regular",
-                size=12,
-                mtime_ns=1,
-                observed_at="2026-07-21T10:00:00+00:00",
-            )
-            version_id = catalog.record_archive_version(
-                vault_id=self.vault_id,
-                path="report.txt",
-                object_key="docs/report.txt",
-                provider_version_id="s3-v1",
-                size=12,
-                storage_class="STANDARD",
-                etag="etag",
-                uploaded_at="2026-07-21T10:00:00+00:00",
-                observed_at="2026-07-21T10:00:00+00:00",
-                scan_id="scan",
-                origin="upload",
-            )
-            catalog.mark_version_verified(
-                version_id,
-                plaintext_sha256="a" * 64,
-                verified_at="2026-07-21T10:01:00+00:00",
-            )
-            file_row = catalog.get_file_by_path(self.vault_id, "report.txt")
-            catalog.mark_local_copy_missing(
-                file_row["id"], observed_at="2026-07-21T11:00:00+00:00"
-            )
-        test_settings = replace(
-            settings,
-            database_dsn=database_dsn(str(self.path)),
-            cookie_secure=False,
-            cloud_purge_delay_seconds=86400,
-        )
-        self.patchers = [
-            patch("app.main.settings", test_settings),
-            patch("app.database.settings", test_settings),
-            patch("app.sessions.settings", test_settings),
-        ]
-        for patcher in self.patchers:
+    connection = fixtures.CloudDeletionTests.connection
+    add_file = fixtures.CloudDeletionTests.add_file
+
+    def setUp(self):
+        fixtures.CloudDeletionTests.setUp(self)
+        configured = replace(settings, database_dsn=database_dsn(str(self.path)), cookie_secure=False)
+        for target in ("app.main.settings", "app.database.settings", "app.sessions.settings"):
+            patcher = patch(target, configured)
             patcher.start()
             self.addCleanup(patcher.stop)
         self.client = TestClient(main.app, client=("127.0.0.1", 50000))
+        with self.connection() as connection:
+            token = create_session(connection,user_id=1,auth_method="oidc")
+            csrf = csrf_token_for(connection,token)
+        self.client.cookies.set(settings.session_cookie_name,token)
+        self.headers = {"X-CSRF-Token":csrf}
+        self.payload = {"path":"photo.jpg", "confirmation":"Photos", "reason":"deliberate deletion"}
 
-    @staticmethod
-    def _user(connection, name: str) -> int:
-        return connection.execute(
-            """
-            INSERT INTO users(username, display_name, password_hash)
-            VALUES (%s, %s, %s) RETURNING id
-            """,
-            (name, name.title(), hash_password("a secure test password")),
-        ).fetchone()["id"]
+    def reauth(self, recent):
+        with self.connection() as connection:
+            connection.execute("UPDATE sessions SET reauth_at=%s", (
+                datetime.now(timezone.utc).isoformat() if recent else "2000-01-01T00:00:00+00:00",))
 
-    def _authenticate(self, user_id: int, *, reauth: bool = True) -> None:
-        with PostgresConnection(str(self.path)) as connection:
-            token = create_session(connection, user_id=user_id, auth_method="oidc")
-            csrf = csrf_token_for(connection, token)
-            if reauth:
-                connection.execute(
-                    "UPDATE sessions SET reauth_at=%s WHERE user_id=%s",
-                    (datetime.now(timezone.utc).isoformat(), user_id),
-                )
-        self.client.cookies.set(settings.session_cookie_name, token)
-        self.client.cookies.set(settings.csrf_cookie_name, csrf)
+    def test_recent_reauthentication_and_exact_name_required(self):
+        self.reauth(False)
+        denied = self.client.post("/api/cloud-purge",json=self.payload,headers=self.headers)
+        self.assertEqual(denied.status_code,403,denied.text)
+        self.assertEqual(denied.json(),{"error":"reauth_required"})
+        self.reauth(True)
+        denied = self.client.post("/api/cloud-purge",json={**self.payload,"confirmation":"wrong"},headers=self.headers)
+        self.assertEqual(denied.status_code,422,denied.text)
+        denied = self.client.post("/api/cloud-purge",json={**self.payload,"generated_phrase":"echo-me"},headers=self.headers)
+        self.assertEqual(denied.status_code,422,denied.text)
+        with self.connection() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"],0)
 
-    def _headers(self) -> dict[str, str]:
-        return {"X-CSRF-Token": self.client.cookies.get(settings.csrf_cookie_name) or ""}
+    def test_preview_schedule_and_cancel_exact_seven_day_delay(self):
+        self.reauth(True)
+        preview = self.client.post("/api/cloud-deletion/preview",json={"path":"photo.jpg"},headers=self.headers)
+        self.assertEqual(preview.status_code,200,preview.text)
+        self.assertEqual(preview.json()["version_count"],2)
+        self.assertEqual(self.client.get("/api/cloud-deletion").json(),{"purge_delay_seconds":604800})
+        scheduled = self.client.post("/api/cloud-purge",json=self.payload,headers=self.headers)
+        self.assertEqual(scheduled.status_code,202,scheduled.text)
+        with self.connection() as connection:
+            row = connection.execute("SELECT requested_at,pending_until FROM jobs").fetchone()
+        self.assertEqual((datetime.fromisoformat(row["pending_until"])-datetime.fromisoformat(row["requested_at"])).total_seconds(),604800)
+        self.reauth(False)  # Cancellation never requires step-up.
+        cancelled = self.client.post("/api/jobs/cancel",json={"group_id":scheduled.json()["group_id"],"action":"cloud-purge"},headers=self.headers)
+        self.assertEqual(cancelled.status_code,200,cancelled.text)
+        self.assertEqual(cancelled.json()["cancelled_count"],1)
 
-    def _select_vault(self) -> None:
-        response = self.client.post(
-            "/api/vaults/select",
-            json={"vault_id": self.vault_id},
-            headers=self._headers(),
-        )
-        self.assertEqual(response.status_code, 200, response.text)
+    def test_actual_present_file_is_never_deletable(self):
+        self.reauth(True)
+        (self.source / "photo.jpg").write_bytes(b"not yet seen by watcher")
+        for path, body in (("/api/cloud-purge",self.payload),("/api/cloud-deletion/preview",{"path":"photo.jpg"})):
+            response = self.client.post(path,json=body,headers=self.headers)
+            self.assertEqual(response.status_code,409,response.text)
 
-    def test_setting_defaults_off_and_owner_can_enable_it(self) -> None:
-        self._authenticate(self.owner_id)
-        self._select_vault()
-        response = self.client.get("/api/vault/cloud-deletion")
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertFalse(response.json()["enabled"])
+    def test_stop_delete_requires_reauth_keep_does_not_and_status_remains_accessible(self):
+        self.reauth(False)
+        payload = {"cloud_disposition":"delete","confirmation":"Photos","reason":"stop"}
+        denied = self.client.post("/api/vaults/1/stop-protection",json=payload,headers=self.headers)
+        self.assertEqual(denied.status_code,403,denied.text)
+        kept = self.client.post("/api/vaults/1/stop-protection",json={**payload,"cloud_disposition":"keep"},headers=self.headers)
+        self.assertEqual(kept.status_code,202,kept.text)
+        self.assertTrue(kept.json()["root_released"])
+        self.assertTrue(self.client.get("/api/vaults/1/stop-protection").json()["stopped"])
+        me = self.client.get("/api/me").json()
+        self.assertIsNone(me["vault"])
+        self.assertEqual(me["stopped_vault"]["id"],1)
 
-        enabled = self.client.put(
-            "/api/vault/cloud-deletion",
-            json={"enabled": True},
-            headers=self._headers(),
-        )
-        self.assertEqual(enabled.status_code, 200, enabled.text)
-        self.assertTrue(enabled.json()["enabled"])
+    def test_stopped_folder_deletion_can_be_cancelled_without_selected_operational_vault(self):
+        self.reauth(True)
+        response = self.client.post("/api/vaults/1/stop-protection",json={
+            "cloud_disposition":"delete","confirmation":"Photos","reason":"stop"},headers=self.headers)
+        self.assertEqual(response.status_code,202,response.text)
+        self.assertTrue(response.json()["cancellable"])
+        self.reauth(False)
+        cancelled = self.client.post("/api/vaults/1/stop-protection/cancel-deletion",headers=self.headers)
+        self.assertEqual(cancelled.status_code,200,cancelled.text)
+        self.assertTrue(cancelled.json()["root_released"])
 
-    def test_stale_reauth_blocks_cloud_deletion_without_side_effects(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                "UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=%s",
-                (self.vault_id,),
-            )
-        self._authenticate(self.owner_id, reauth=False)
-        self._select_vault()
-        with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                "UPDATE sessions SET reauth_at=%s WHERE user_id=%s",
-                ("2000-01-01T00:00:00+00:00", self.owner_id),
-            )
-        purge = self.client.post(
-            "/api/cloud-purge",
-            json={
-                "path": "report.txt",
-                "is_directory": False,
-                "confirmation": "Docs Archive",
-                "reason": "cleanup",
-                "generated_phrase": "amber-birch-10",
-            },
-            headers=self._headers(),
-        )
-        self.assertEqual(purge.status_code, 403, purge.text)
-        self.assertEqual(purge.json(), {"error": "reauth_required"})
-        with PostgresConnection(str(self.path)) as connection:
-            jobs = connection.execute("SELECT COUNT(*) AS total FROM jobs").fetchone()
-        # The only cloud copy is untouched: nothing was even scheduled.
-        self.assertEqual(jobs["total"], 0)
+    def test_removed_endpoints_and_acceleration_are_absent(self):
+        paths = main.app.openapi()["paths"]
+        for route in ("/api/cloud-purge/accelerate","/api/vault/cloud-deletion",
+                      "/api/vault/decommission","/api/vault/decommission/preview",
+                      "/api/vaults/{vault_id}/decommission", "/api/vaults/{vault_id}/decommission/status"):
+            self.assertNotIn(route,paths)
+        for method,path in (("post","/api/cloud-purge/accelerate"),("put","/api/vault/cloud-deletion"),
+                            ("post","/api/vaults/1/decommission")):
+            response = getattr(self.client,method)(path,json={},headers=self.headers)
+            self.assertEqual(response.status_code,404,response.text)
 
-    def test_owner_purge_requires_confirmation_and_schedules_delay(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                "UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=%s",
-                (self.vault_id,),
-            )
-        self._authenticate(self.owner_id)
-        self._select_vault()
-        preview = self.client.post(
-            "/api/cloud-deletion/preview",
-            json={"path": "report.txt", "is_directory": False},
-            headers=self._headers(),
-        )
-        self.assertEqual(preview.status_code, 200, preview.text)
-        self.assertEqual(preview.json()["version_count"], 1)
-
-        bad = self.client.post(
-            "/api/cloud-purge",
-            json={
-                "path": "report.txt",
-                "is_directory": False,
-                "confirmation": "wrong",
-                "reason": "cleanup",
-                "generated_phrase": "amber-birch-10",
-            },
-            headers=self._headers(),
-        )
-        self.assertEqual(bad.status_code, 422, bad.text)
-
-        ok = self.client.post(
-            "/api/cloud-purge",
-            json={
-                "path": "report.txt",
-                "is_directory": False,
-                "confirmation": "Docs Archive",
-                "reason": "cleanup obsolete copies",
-                "generated_phrase": "amber-birch-10",
-            },
-            headers=self._headers(),
-        )
-        self.assertEqual(ok.status_code, 202, ok.text)
-        body = ok.json()
-        self.assertEqual(body["status"], "pending_delay")
-        self.assertTrue(body["pending_until"])
-
-        cancel = self.client.post(
-            "/api/jobs/cancel",
-            json={"group_id": body["group_id"], "action": "cloud-purge"},
-            headers=self._headers(),
-        )
-        self.assertEqual(cancel.status_code, 200, cancel.text)
-        self.assertEqual(cancel.json()["cancelled_count"], 1)
-
-    def test_owner_can_accelerate_pending_purge_delay(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                "UPDATE vaults SET cloud_deletion_enabled=TRUE WHERE id=%s",
-                (self.vault_id,),
-            )
-        self._authenticate(self.owner_id)
-        self._select_vault()
-        scheduled = self.client.post(
-            "/api/cloud-purge",
-            json={
-                "path": "report.txt",
-                "is_directory": False,
-                "confirmation": "Docs Archive",
-                "reason": "cleanup obsolete copies",
-                "generated_phrase": "amber-birch-10",
-            },
-            headers=self._headers(),
-        )
-        self.assertEqual(scheduled.status_code, 202, scheduled.text)
-        group_id = scheduled.json()["group_id"]
-
-        self._authenticate(self.owner_id)
-        self._select_vault()
-        with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                "UPDATE sessions SET reauth_at=%s WHERE user_id=%s",
-                ("2000-01-01T00:00:00+00:00", self.owner_id),
-            )
-        needs_reauth = self.client.post(
-            "/api/cloud-purge/accelerate",
-            json={"group_id": group_id},
-            headers=self._headers(),
-        )
-        self.assertEqual(needs_reauth.status_code, 403, needs_reauth.text)
-        self.assertEqual(needs_reauth.json()["error"], "reauth_required")
-
-        self._authenticate(self.owner_id)
-        self._select_vault()
-        accelerated = self.client.post(
-            "/api/cloud-purge/accelerate",
-            json={"group_id": group_id},
-            headers=self._headers(),
-        )
-        self.assertEqual(accelerated.status_code, 202, accelerated.text)
-        body = accelerated.json()
-        self.assertEqual(body["status"], "queued")
-        self.assertEqual(body["accelerated_count"], 1)
-        self.assertEqual(body["message_key"], "api.cloud_purge_accelerated")
-
-        with PostgresConnection(str(self.path)) as connection:
-            job = connection.execute(
-                "SELECT status, pending_until, message_key FROM jobs WHERE group_id=%s",
-                (group_id,),
-            ).fetchone()
-            self.assertEqual(job["status"], "queued")
-            self.assertEqual(job["message_key"], "job.cloud_purge_accelerated")
-            self.assertIsNotNone(job["pending_until"])
-            audit = connection.execute(
-                """
-                SELECT event, outcome FROM audit_events
-                WHERE event='cloud_deletion.purge_accelerated'
-                ORDER BY id DESC LIMIT 1
-                """
-            ).fetchone()
-            self.assertIsNotNone(audit)
-            self.assertEqual(audit["outcome"], "accelerated")
-
-        again = self.client.post(
-            "/api/cloud-purge/accelerate",
-            json={"group_id": group_id},
-            headers=self._headers(),
-        )
-        self.assertEqual(again.status_code, 409, again.text)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_csrf_and_authentication_still_gate_deletion(self):
+        response = self.client.post("/api/cloud-purge",json=self.payload)
+        self.assertEqual(response.status_code,403)
+        self.client.cookies.clear()
+        response = self.client.post("/api/cloud-purge",json=self.payload)
+        self.assertIn(response.status_code,(401,403))

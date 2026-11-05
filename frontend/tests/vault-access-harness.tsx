@@ -59,16 +59,14 @@ export const defaultLifecycle = {
 };
 
 export const defaultCloudDeletion = {
-  enabled: false,
   purge_delay_seconds: 86400,
-  generated_phrase: "amber-birch-10",
   accepted_single_identity_risk: "Single IAM identity risk documented.",
 };
 
 type HarnessOptions = {
   vaultId?: number;
   vaultName?: string;
-  onDecommissioned?: () => void;
+  onStopped?: () => void;
   fetchImpl?: ApiFetch;
 };
 
@@ -104,7 +102,7 @@ export function createVaultAccessFetch(
     if (url === "/api/vault/lifecycle") {
       return jsonResponse(defaultLifecycle);
     }
-    if (url === "/api/vault/cloud-deletion") {
+    if (url === "/api/cloud-deletion") {
       return jsonResponse(defaultCloudDeletion);
     }
 
@@ -128,7 +126,7 @@ export function renderVaultAccess(
         <VaultAccessPage
           vaultId={options.vaultId ?? 1}
           vaultName={options.vaultName ?? "Test Archive"}
-          onDecommissioned={options.onDecommissioned}
+          onStopped={options.onStopped}
         />
       </I18nProvider>
     </ApiQueryProvider>,

@@ -84,9 +84,6 @@ class Settings:
     restore_approval_hold_seconds: int = max(
         60, int(os.getenv("RESTORE_APPROVAL_HOLD_SECONDS", "3600"))
     )
-    cloud_purge_delay_seconds: int = max(
-        60, int(os.getenv("CLOUD_PURGE_DELAY_SECONDS", str(24 * 60 * 60)))
-    )
     # Optional global upload bandwidth cap in KiB/s (#413). None/0 means
     # unlimited; recoveries and other transfers are never throttled.
     bandwidth_limit_kibps: int | None = (

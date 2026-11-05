@@ -212,6 +212,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cloud-deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Cloud Deletion Settings */
+        get: operations["cloud_deletion_settings_api_cloud_deletion_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud-deletion/preview": {
         parameters: {
             query?: never;
@@ -240,26 +257,6 @@ export interface paths {
         put?: never;
         /** Cloud Purge */
         post: operations["cloud_purge_api_cloud_purge_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/cloud-purge/accelerate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Accelerate Cloud Purge
-         * @description Skip the cancellable delay and queue permanent purge immediately.
-         */
-        post: operations["accelerate_cloud_purge_api_cloud_purge_accelerate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -741,92 +738,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/cloud-deletion": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Cloud Deletion Setting */
-        get: operations["get_cloud_deletion_setting_api_vault_cloud_deletion_get"];
-        /** Update Cloud Deletion Setting */
-        put: operations["update_cloud_deletion_setting_api_vault_cloud_deletion_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vault/decommission": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Start Own Vault Decommission */
-        post: operations["start_own_vault_decommission_api_vault_decommission_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vault/decommission/cloud-purge/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Cancel Own Vault Decommission Cloud Purge */
-        post: operations["cancel_own_vault_decommission_cloud_purge_api_vault_decommission_cloud_purge_cancel_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vault/decommission/preview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Preview Own Vault Decommission */
-        post: operations["preview_own_vault_decommission_api_vault_decommission_preview_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vault/decommission/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Own Vault Decommission Status */
-        get: operations["own_vault_decommission_status_api_vault_decommission_status_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/vault/lifecycle": {
         parameters: {
             query?: never;
@@ -922,7 +833,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vaults/{vault_id}/decommission": {
+    "/api/vaults/{vault_id}/stop-protection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stop Protection Status */
+        get: operations["stop_protection_status_api_vaults__vault_id__stop_protection_get"];
+        put?: never;
+        /** Stop Folder Protection */
+        post: operations["stop_folder_protection_api_vaults__vault_id__stop_protection_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/stop-protection/cancel-deletion": {
         parameters: {
             query?: never;
             header?: never;
@@ -931,59 +860,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start Owned Vault Decommission By Id */
-        post: operations["start_owned_vault_decommission_by_id_api_vaults__vault_id__decommission_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/decommission/cloud-purge/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Cancel Owned Vault Decommission Cloud Purge By Id */
-        post: operations["cancel_owned_vault_decommission_cloud_purge_by_id_api_vaults__vault_id__decommission_cloud_purge_cancel_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/decommission/preview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Preview Owned Vault Decommission By Id */
-        post: operations["preview_owned_vault_decommission_by_id_api_vaults__vault_id__decommission_preview_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/decommission/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Owned Vault Decommission Status By Id */
-        get: operations["owned_vault_decommission_status_by_id_api_vaults__vault_id__decommission_status_get"];
-        put?: never;
-        post?: never;
+        /** Cancel Stopped Folder Deletion */
+        post: operations["cancel_stopped_folder_deletion_api_vaults__vault_id__stop_protection_cancel_deletion_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1293,18 +1171,9 @@ export interface components {
             /** Paths */
             paths?: string[] | null;
         };
-        /** CloudDeletionSettingUpdate */
-        CloudDeletionSettingUpdate: {
-            /** Enabled */
-            enabled: boolean;
-        };
         CloudDeletionSettings: {
-            accepted_single_identity_risk?: string;
-            enabled: boolean;
-            generated_phrase?: string;
-            purge_delay_seconds?: number;
-        } & {
-            [key: string]: unknown;
+            /** @constant */
+            purge_delay_seconds: 604800;
         };
         /** CloudOnlyReplacementAction */
         CloudOnlyReplacementAction: {
@@ -1313,19 +1182,14 @@ export interface components {
         };
         CloudPurgePayload: {
             confirmation: string;
-            generated_phrase: string;
             is_directory?: boolean;
             path: string;
             reason: string;
-        } & {
-            [key: string]: unknown;
         };
         /** CloudPurgeRequest */
         CloudPurgeRequest: {
             /** Confirmation */
             confirmation: string;
-            /** Generated Phrase */
-            generated_phrase: string;
             /**
              * Is Directory
              * @default false
@@ -1622,7 +1486,21 @@ export interface components {
             /** Username */
             username: string;
         };
-        MeDecommissionVault: {
+        MeResponse: {
+            auth_method: components["schemas"]["AuthMethod"];
+            csrf_token: string;
+            display_name: string;
+            id: number;
+            locale: string;
+            locales: string[];
+            session_version: number;
+            stopped_vault?: components["schemas"]["MeStoppedVault"] | null;
+            username: string;
+            vault: components["schemas"]["MeVault"] | null;
+        } & {
+            [key: string]: unknown;
+        };
+        MeStoppedVault: {
             /** @enum {string} */
             decommission_state: "decommissioning" | "decommissioned";
             id: number;
@@ -1630,20 +1508,6 @@ export interface components {
             root_released: boolean;
             root_released_at?: string | null;
             slug: string;
-        } & {
-            [key: string]: unknown;
-        };
-        MeResponse: {
-            auth_method: components["schemas"]["AuthMethod"];
-            csrf_token: string;
-            decommission_vault?: components["schemas"]["MeDecommissionVault"] | null;
-            display_name: string;
-            id: number;
-            locale: string;
-            locales: string[];
-            session_version: number;
-            username: string;
-            vault: components["schemas"]["MeVault"] | null;
         } & {
             [key: string]: unknown;
         };
@@ -1866,6 +1730,37 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        StopProtectionPayload: {
+            /** @enum {string} */
+            cloud_disposition: "keep" | "delete";
+            confirmation: string;
+            reason: string;
+        };
+        /** StopProtectionRequest */
+        StopProtectionRequest: {
+            /** Cloud Disposition */
+            cloud_disposition: string;
+            /** Confirmation */
+            confirmation: string;
+            /** Reason */
+            reason: string;
+        };
+        StopProtectionStatus: {
+            cancellable: boolean;
+            /** @enum {string} */
+            cloud_disposition: "keep" | "delete";
+            group_id: string | null;
+            jobs: {
+                id: number;
+                pending_until: string | null;
+                status: string;
+            }[];
+            pending_until: string | null;
+            root_released: boolean;
+            stopped: boolean;
+            vault_id: number;
+            vault_name: string;
+        };
         /**
          * StorageEstimateRequest
          * @description Monthly storage estimate for an explicit size or a Vault's cloud data.
@@ -1927,133 +1822,6 @@ export interface components {
         };
         /** @enum {string} */
         VaultCreationMode: "empty" | "adopt";
-        VaultDecommissionBlocker: {
-            code: string;
-            count?: number;
-            message: string;
-            message_key?: string;
-        } & {
-            [key: string]: unknown;
-        };
-        VaultDecommissionCounts: {
-            archive_versions: number;
-            cloud_bytes: number;
-            delete_markers: number;
-            jobs: number;
-            local_bytes: number;
-            local_files: number;
-            vault_files: number;
-        } & {
-            [key: string]: unknown;
-        };
-        /** @enum {string} */
-        VaultDecommissionDisposition: "retain" | "remove" | "purge";
-        VaultDecommissionJobProgress: {
-            active: number;
-            cancelled: number;
-            completed: number;
-            failed: number;
-            total: number;
-        } & {
-            [key: string]: unknown;
-        };
-        VaultDecommissionPreview: {
-            blockers: components["schemas"]["VaultDecommissionBlocker"][];
-            can_start: boolean;
-            /** @enum {string} */
-            cloud_disposition: "retain" | "purge";
-            counts: components["schemas"]["VaultDecommissionCounts"];
-            decommission_state: string;
-            enabled: boolean;
-            fingerprint: string;
-            /** @enum {string} */
-            local_disposition: "retain" | "remove";
-            records?: {
-                [key: string]: string;
-            };
-            root_identity_fingerprint?: string | null;
-            root_identity_version?: string | null;
-            vault_id: number;
-            vault_name: string;
-        } & {
-            [key: string]: unknown;
-        };
-        /** VaultDecommissionPreview */
-        "VaultDecommissionPreview-Input": {
-            /** Cloud Disposition */
-            cloud_disposition: string;
-            /** Local Disposition */
-            local_disposition: string;
-        };
-        /** VaultDecommissionPreview */
-        "VaultDecommissionPreview-Output": {
-            [key: string]: unknown;
-        };
-        VaultDecommissionSelection: {
-            /** @enum {string} */
-            cloud_disposition: "retain" | "purge";
-            /** @enum {string} */
-            local_disposition: "retain" | "remove";
-        } & {
-            [key: string]: unknown;
-        };
-        /** VaultDecommissionStart */
-        VaultDecommissionStart: {
-            /** Cloud Disposition */
-            cloud_disposition: string;
-            /** Confirmation */
-            confirmation: string;
-            /** Local Disposition */
-            local_disposition: string;
-            /** Preview Fingerprint */
-            preview_fingerprint: string;
-            /** Reason */
-            reason: string;
-        };
-        VaultDecommissionStartPayload: {
-            /** @enum {string} */
-            cloud_disposition: "retain" | "purge";
-            confirmation: string;
-            /** @enum {string} */
-            local_disposition: "retain" | "remove";
-            preview_fingerprint: string;
-            reason: string;
-        } & {
-            [key: string]: unknown;
-        };
-        VaultDecommissionStatus: {
-            cloud_cancellable?: boolean;
-            /** @enum {string} */
-            cloud_disposition: "retain" | "purge";
-            cloud_status: string;
-            completed_at?: string | null;
-            decommission_state: string;
-            decommissioned_at?: string | null;
-            enabled: boolean;
-            error_code?: string | null;
-            error_message?: string | null;
-            id: number;
-            jobs: {
-                cloud: components["schemas"]["VaultDecommissionJobProgress"];
-                local: components["schemas"]["VaultDecommissionJobProgress"];
-            } & {
-                [key: string]: unknown;
-            };
-            /** @enum {string} */
-            local_disposition: "retain" | "remove";
-            local_status: string;
-            preview: components["schemas"]["VaultDecommissionPreview"];
-            progress_percent: number;
-            requested_at: string;
-            root_released: boolean;
-            root_released_at?: string | null;
-            state: string;
-            updated_at: string;
-            vault_id: number;
-            vault_name: string;
-        } & {
-            [key: string]: unknown;
-        };
         /** @description Vault File protection observation: pending, protected, problem, unconfirmed or cloud_only. Restore progress is independent. */
         VaultFileListItem: {
             availability?: string | null;
@@ -2452,6 +2220,26 @@ export interface operations {
             };
         };
     };
+    cloud_deletion_settings_api_cloud_deletion_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudDeletionSettings"];
+                };
+            };
+        };
+    };
     preview_cloud_deletion_api_cloud_deletion_preview_post: {
         parameters: {
             query?: never;
@@ -2495,39 +2283,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["CloudPurgeRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    accelerate_cloud_purge_api_cloud_purge_accelerate_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GroupCancelAction"];
             };
         };
         responses: {
@@ -3314,165 +3069,6 @@ export interface operations {
             };
         };
     };
-    get_cloud_deletion_setting_api_vault_cloud_deletion_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CloudDeletionSettings"];
-                };
-            };
-        };
-    };
-    update_cloud_deletion_setting_api_vault_cloud_deletion_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CloudDeletionSettingUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CloudDeletionSettings"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    start_own_vault_decommission_api_vault_decommission_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultDecommissionStart"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultDecommissionStatus"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    cancel_own_vault_decommission_cloud_purge_api_vault_decommission_cloud_purge_cancel_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-        };
-    };
-    preview_own_vault_decommission_api_vault_decommission_preview_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultDecommissionPreview-Input"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultDecommissionPreview-Output"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    own_vault_decommission_status_api_vault_decommission_status_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultDecommissionStatus"];
-                };
-            };
-        };
-    };
     own_vault_lifecycle_api_vault_lifecycle_get: {
         parameters: {
             query?: never;
@@ -3698,7 +3294,38 @@ export interface operations {
             };
         };
     };
-    start_owned_vault_decommission_by_id_api_vaults__vault_id__decommission_post: {
+    stop_protection_status_api_vaults__vault_id__stop_protection_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StopProtectionStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stop_folder_protection_api_vaults__vault_id__stop_protection_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -3709,7 +3336,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["VaultDecommissionStart"];
+                "application/json": components["schemas"]["StopProtectionRequest"];
             };
         };
         responses: {
@@ -3719,7 +3346,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["VaultDecommissionStatus"];
+                    "application/json": components["schemas"]["StopProtectionStatus"];
                 };
             };
             /** @description Validation Error */
@@ -3733,7 +3360,7 @@ export interface operations {
             };
         };
     };
-    cancel_owned_vault_decommission_cloud_purge_by_id_api_vaults__vault_id__decommission_cloud_purge_cancel_post: {
+    cancel_stopped_folder_deletion_api_vaults__vault_id__stop_protection_cancel_deletion_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -3750,73 +3377,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    preview_owned_vault_decommission_by_id_api_vaults__vault_id__decommission_preview_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultDecommissionPreview-Input"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultDecommissionPreview-Output"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    owned_vault_decommission_status_by_id_api_vaults__vault_id__decommission_status_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultDecommissionStatus"];
+                    "application/json": components["schemas"]["StopProtectionStatus"];
                 };
             };
             /** @description Validation Error */

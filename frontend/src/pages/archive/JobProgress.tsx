@@ -12,10 +12,8 @@ export type JobProgressProps = {
   t: Translate;
   onCancel: (job: JobGroup) => void;
   onApprove: (job: JobGroup) => void;
-  onAcceleratePurge?: (job: JobGroup) => void;
   cancelBusy?: boolean;
   approveBusy?: boolean;
-  accelerateBusy?: boolean;
 };
 
 export function JobProgress({
@@ -23,10 +21,8 @@ export function JobProgress({
   t,
   onCancel,
   onApprove,
-  onAcceleratePurge,
   cancelBusy,
   approveBusy,
-  accelerateBusy,
 }: JobProgressProps) {
   const status = operationStatusLabel(job, t);
   const detail =
@@ -50,11 +46,6 @@ export function JobProgress({
   if (job.restore_tier) {
     estimateBits.push(job.restore_tier);
   }
-
-  const showAccelerate =
-    onAcceleratePurge !== undefined &&
-    job.action === "cloud-purge" &&
-    job.status === "pending_delay";
 
   return (
     <div
@@ -92,18 +83,6 @@ export function JobProgress({
             onClick={() => onApprove(job)}
           >
             {approveBusy ? t("ui.approving") : t("ui.approve_restore")}
-          </Button>
-        ) : null}
-        {showAccelerate ? (
-          <Button
-            type="button"
-            variant="danger"
-            className="min-h-11 min-w-11"
-            disabled={accelerateBusy}
-            data-testid="accelerate-purge"
-            onClick={() => onAcceleratePurge?.(job)}
-          >
-            {accelerateBusy ? t("ui.purging_now") : t("ui.purge_now")}
           </Button>
         ) : null}
         <Button

@@ -888,7 +888,7 @@ class _DirectoryRollup:
             self.action_counts["recover"] += 1
         if contribution.cleanup_eligible:
             self.action_counts["free-space"] += 1
-        if contribution.has_cloud:
+        if contribution.state == "cloud_only":
             self.action_counts["cloud-purge"] += 1
         if contribution.storage_class:
             key = str(contribution.storage_class)
@@ -1082,7 +1082,7 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
             SUM(CASE WHEN coalesce(local_presence, 'missing') NOT IN ('present', 'unsupported')
                 AND recoverable_version_count > 0 THEN 1 ELSE 0 END) AS action_recover,
             SUM(CASE WHEN protection_state='protected' THEN 1 ELSE 0 END) AS action_free_space,
-            SUM(CASE WHEN availability NOT IN ('missing', 'purged')
+            SUM(CASE WHEN protection_state='cloud_only'
                 THEN 1 ELSE 0 END) AS action_cloud_purge
         FROM ({select_sql}) classified
         WHERE local_presence IN ('present', 'unsupported') OR archive_version_id IS NOT NULL

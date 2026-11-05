@@ -338,38 +338,16 @@
         "title": "CloudDeletionPreviewRequest",
         "type": "object"
       },
-      "CloudDeletionSettingUpdate": {
+      "CloudDeletionSettings": {
         "additionalProperties": false,
         "properties": {
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "enabled"
-        ],
-        "title": "CloudDeletionSettingUpdate",
-        "type": "object"
-      },
-      "CloudDeletionSettings": {
-        "additionalProperties": true,
-        "properties": {
-          "accepted_single_identity_risk": {
-            "type": "string"
-          },
-          "enabled": {
-            "type": "boolean"
-          },
-          "generated_phrase": {
-            "type": "string"
-          },
           "purge_delay_seconds": {
-            "type": "number"
+            "const": 604800,
+            "type": "integer"
           }
         },
         "required": [
-          "enabled"
+          "purge_delay_seconds"
         ],
         "type": "object"
       },
@@ -388,12 +366,9 @@
         "type": "object"
       },
       "CloudPurgePayload": {
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
           "confirmation": {
-            "type": "string"
-          },
-          "generated_phrase": {
             "type": "string"
           },
           "is_directory": {
@@ -409,8 +384,7 @@
         "required": [
           "path",
           "confirmation",
-          "reason",
-          "generated_phrase"
+          "reason"
         ],
         "type": "object"
       },
@@ -421,12 +395,6 @@
             "maxLength": 200,
             "minLength": 1,
             "title": "Confirmation",
-            "type": "string"
-          },
-          "generated_phrase": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Generated Phrase",
             "type": "string"
           },
           "is_directory": {
@@ -464,8 +432,7 @@
         "required": [
           "path",
           "confirmation",
-          "reason",
-          "generated_phrase"
+          "reason"
         ],
         "title": "CloudPurgeRequest",
         "type": "object"
@@ -1411,7 +1378,71 @@
         "title": "LoginRequest",
         "type": "object"
       },
-      "MeDecommissionVault": {
+      "MeResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "auth_method": {
+            "$ref": "#/components/schemas/AuthMethod"
+          },
+          "csrf_token": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "number"
+          },
+          "locale": {
+            "type": "string"
+          },
+          "locales": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "session_version": {
+            "type": "number"
+          },
+          "stopped_vault": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MeStoppedVault"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "username": {
+            "type": "string"
+          },
+          "vault": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MeVault"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "display_name",
+          "session_version",
+          "csrf_token",
+          "auth_method",
+          "locale",
+          "locales",
+          "vault"
+        ],
+        "type": "object"
+      },
+      "MeStoppedVault": {
         "additionalProperties": true,
         "properties": {
           "decommission_state": {
@@ -1446,70 +1477,6 @@
           "name",
           "decommission_state",
           "root_released"
-        ],
-        "type": "object"
-      },
-      "MeResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "auth_method": {
-            "$ref": "#/components/schemas/AuthMethod"
-          },
-          "csrf_token": {
-            "type": "string"
-          },
-          "decommission_vault": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MeDecommissionVault"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "display_name": {
-            "type": "string"
-          },
-          "id": {
-            "type": "number"
-          },
-          "locale": {
-            "type": "string"
-          },
-          "locales": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "session_version": {
-            "type": "number"
-          },
-          "username": {
-            "type": "string"
-          },
-          "vault": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MeVault"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "username",
-          "display_name",
-          "session_version",
-          "csrf_token",
-          "auth_method",
-          "locale",
-          "locales",
-          "vault"
         ],
         "type": "object"
       },
@@ -2268,6 +2235,135 @@
         ],
         "type": "object"
       },
+      "StopProtectionPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "cloud_disposition": {
+            "enum": [
+              "keep",
+              "delete"
+            ],
+            "type": "string"
+          },
+          "confirmation": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cloud_disposition",
+          "confirmation",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "StopProtectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cloud_disposition": {
+            "pattern": "^(keep|delete)$",
+            "title": "Cloud Disposition",
+            "type": "string"
+          },
+          "confirmation": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Confirmation",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cloud_disposition",
+          "confirmation",
+          "reason"
+        ],
+        "title": "StopProtectionRequest",
+        "type": "object"
+      },
+      "StopProtectionStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "cancellable": {
+            "type": "boolean"
+          },
+          "cloud_disposition": {
+            "enum": [
+              "keep",
+              "delete"
+            ],
+            "type": "string"
+          },
+          "group_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "jobs": {
+            "items": {
+              "properties": {
+                "id": {
+                  "type": "number"
+                },
+                "pending_until": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "status",
+                "pending_until"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "pending_until": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "root_released": {
+            "type": "boolean"
+          },
+          "stopped": {
+            "type": "boolean"
+          },
+          "vault_id": {
+            "type": "number"
+          },
+          "vault_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "vault_id",
+          "vault_name",
+          "stopped",
+          "root_released",
+          "cloud_disposition",
+          "group_id",
+          "cancellable",
+          "pending_until",
+          "jobs"
+        ],
+        "type": "object"
+      },
       "StorageEstimateRequest": {
         "additionalProperties": false,
         "description": "Monthly storage estimate for an explicit size or a Vault's cloud data.",
@@ -2460,431 +2556,6 @@
           "adopt"
         ],
         "type": "string"
-      },
-      "VaultDecommissionBlocker": {
-        "additionalProperties": true,
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "count": {
-            "type": "number"
-          },
-          "message": {
-            "type": "string"
-          },
-          "message_key": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "message"
-        ],
-        "type": "object"
-      },
-      "VaultDecommissionCounts": {
-        "additionalProperties": true,
-        "properties": {
-          "archive_versions": {
-            "type": "number"
-          },
-          "cloud_bytes": {
-            "type": "number"
-          },
-          "delete_markers": {
-            "type": "number"
-          },
-          "jobs": {
-            "type": "number"
-          },
-          "local_bytes": {
-            "type": "number"
-          },
-          "local_files": {
-            "type": "number"
-          },
-          "vault_files": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "vault_files",
-          "local_files",
-          "local_bytes",
-          "archive_versions",
-          "cloud_bytes",
-          "delete_markers",
-          "jobs"
-        ],
-        "type": "object"
-      },
-      "VaultDecommissionDisposition": {
-        "enum": [
-          "retain",
-          "remove",
-          "purge"
-        ],
-        "type": "string"
-      },
-      "VaultDecommissionJobProgress": {
-        "additionalProperties": true,
-        "properties": {
-          "active": {
-            "type": "number"
-          },
-          "cancelled": {
-            "type": "number"
-          },
-          "completed": {
-            "type": "number"
-          },
-          "failed": {
-            "type": "number"
-          },
-          "total": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "total",
-          "completed",
-          "failed",
-          "cancelled",
-          "active"
-        ],
-        "type": "object"
-      },
-      "VaultDecommissionPreview": {
-        "additionalProperties": true,
-        "properties": {
-          "blockers": {
-            "items": {
-              "$ref": "#/components/schemas/VaultDecommissionBlocker"
-            },
-            "type": "array"
-          },
-          "can_start": {
-            "type": "boolean"
-          },
-          "cloud_disposition": {
-            "enum": [
-              "retain",
-              "purge"
-            ],
-            "type": "string"
-          },
-          "counts": {
-            "$ref": "#/components/schemas/VaultDecommissionCounts"
-          },
-          "decommission_state": {
-            "type": "string"
-          },
-          "enabled": {
-            "type": "boolean"
-          },
-          "fingerprint": {
-            "type": "string"
-          },
-          "local_disposition": {
-            "enum": [
-              "retain",
-              "remove"
-            ],
-            "type": "string"
-          },
-          "records": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "root_identity_fingerprint": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "root_identity_version": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "vault_id": {
-            "type": "number"
-          },
-          "vault_name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "blockers",
-          "can_start",
-          "cloud_disposition",
-          "counts",
-          "decommission_state",
-          "enabled",
-          "fingerprint",
-          "local_disposition",
-          "vault_id",
-          "vault_name"
-        ],
-        "type": "object"
-      },
-      "VaultDecommissionPreview-Input": {
-        "additionalProperties": false,
-        "properties": {
-          "cloud_disposition": {
-            "pattern": "^(retain|purge)$",
-            "title": "Cloud Disposition",
-            "type": "string"
-          },
-          "local_disposition": {
-            "pattern": "^(retain|remove)$",
-            "title": "Local Disposition",
-            "type": "string"
-          }
-        },
-        "required": [
-          "local_disposition",
-          "cloud_disposition"
-        ],
-        "title": "VaultDecommissionPreview",
-        "type": "object"
-      },
-      "VaultDecommissionPreview-Output": {
-        "additionalProperties": true,
-        "title": "VaultDecommissionPreview",
-        "type": "object"
-      },
-      "VaultDecommissionSelection": {
-        "additionalProperties": true,
-        "properties": {
-          "cloud_disposition": {
-            "enum": [
-              "retain",
-              "purge"
-            ],
-            "type": "string"
-          },
-          "local_disposition": {
-            "enum": [
-              "retain",
-              "remove"
-            ],
-            "type": "string"
-          }
-        },
-        "required": [
-          "local_disposition",
-          "cloud_disposition"
-        ],
-        "type": "object"
-      },
-      "VaultDecommissionStart": {
-        "additionalProperties": false,
-        "properties": {
-          "cloud_disposition": {
-            "pattern": "^(retain|purge)$",
-            "title": "Cloud Disposition",
-            "type": "string"
-          },
-          "confirmation": {
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Confirmation",
-            "type": "string"
-          },
-          "local_disposition": {
-            "pattern": "^(retain|remove)$",
-            "title": "Local Disposition",
-            "type": "string"
-          },
-          "preview_fingerprint": {
-            "maxLength": 64,
-            "minLength": 64,
-            "title": "Preview Fingerprint",
-            "type": "string"
-          },
-          "reason": {
-            "maxLength": 500,
-            "minLength": 3,
-            "title": "Reason",
-            "type": "string"
-          }
-        },
-        "required": [
-          "local_disposition",
-          "cloud_disposition",
-          "confirmation",
-          "reason",
-          "preview_fingerprint"
-        ],
-        "title": "VaultDecommissionStart",
-        "type": "object"
-      },
-      "VaultDecommissionStartPayload": {
-        "additionalProperties": true,
-        "properties": {
-          "cloud_disposition": {
-            "enum": [
-              "retain",
-              "purge"
-            ],
-            "type": "string"
-          },
-          "confirmation": {
-            "type": "string"
-          },
-          "local_disposition": {
-            "enum": [
-              "retain",
-              "remove"
-            ],
-            "type": "string"
-          },
-          "preview_fingerprint": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "cloud_disposition",
-          "confirmation",
-          "local_disposition",
-          "preview_fingerprint",
-          "reason"
-        ],
-        "type": "object"
-      },
-      "VaultDecommissionStatus": {
-        "additionalProperties": true,
-        "properties": {
-          "cloud_cancellable": {
-            "type": "boolean"
-          },
-          "cloud_disposition": {
-            "enum": [
-              "retain",
-              "purge"
-            ],
-            "type": "string"
-          },
-          "cloud_status": {
-            "type": "string"
-          },
-          "completed_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "decommission_state": {
-            "type": "string"
-          },
-          "decommissioned_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "enabled": {
-            "type": "boolean"
-          },
-          "error_code": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "error_message": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "type": "number"
-          },
-          "jobs": {
-            "additionalProperties": true,
-            "properties": {
-              "cloud": {
-                "$ref": "#/components/schemas/VaultDecommissionJobProgress"
-              },
-              "local": {
-                "$ref": "#/components/schemas/VaultDecommissionJobProgress"
-              }
-            },
-            "required": [
-              "local",
-              "cloud"
-            ],
-            "type": "object"
-          },
-          "local_disposition": {
-            "enum": [
-              "retain",
-              "remove"
-            ],
-            "type": "string"
-          },
-          "local_status": {
-            "type": "string"
-          },
-          "preview": {
-            "$ref": "#/components/schemas/VaultDecommissionPreview"
-          },
-          "progress_percent": {
-            "type": "number"
-          },
-          "requested_at": {
-            "type": "string"
-          },
-          "root_released": {
-            "type": "boolean"
-          },
-          "root_released_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "state": {
-            "type": "string"
-          },
-          "updated_at": {
-            "type": "string"
-          },
-          "vault_id": {
-            "type": "number"
-          },
-          "vault_name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "cloud_disposition",
-          "cloud_status",
-          "decommission_state",
-          "enabled",
-          "id",
-          "jobs",
-          "local_disposition",
-          "local_status",
-          "preview",
-          "progress_percent",
-          "requested_at",
-          "root_released",
-          "state",
-          "updated_at",
-          "vault_id",
-          "vault_name"
-        ],
-        "type": "object"
       },
       "VaultFileListItem": {
         "additionalProperties": true,
@@ -3530,6 +3201,24 @@
         "summary": "Catalog Revision Snapshot"
       }
     },
+    "/api/cloud-deletion": {
+      "get": {
+        "operationId": "cloud_deletion_settings_api_cloud_deletion_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloudDeletionSettings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Cloud Deletion Settings"
+      }
+    },
     "/api/cloud-deletion/preview": {
       "post": {
         "operationId": "preview_cloud_deletion_api_cloud_deletion_preview_post",
@@ -3604,45 +3293,6 @@
           }
         },
         "summary": "Cloud Purge"
-      }
-    },
-    "/api/cloud-purge/accelerate": {
-      "post": {
-        "description": "Skip the cancellable delay and queue permanent purge immediately.",
-        "operationId": "accelerate_cloud_purge_api_cloud_purge_accelerate_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GroupCancelAction"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Accelerate Cloud Purge"
       }
     },
     "/api/files": {
@@ -4601,172 +4251,6 @@
         "summary": "Cancel Upload"
       }
     },
-    "/api/vault/cloud-deletion": {
-      "get": {
-        "operationId": "get_cloud_deletion_setting_api_vault_cloud_deletion_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CloudDeletionSettings"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get Cloud Deletion Setting"
-      },
-      "put": {
-        "operationId": "update_cloud_deletion_setting_api_vault_cloud_deletion_put",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CloudDeletionSettingUpdate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CloudDeletionSettings"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Update Cloud Deletion Setting"
-      }
-    },
-    "/api/vault/decommission": {
-      "post": {
-        "operationId": "start_own_vault_decommission_api_vault_decommission_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VaultDecommissionStart"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VaultDecommissionStatus"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Start Own Vault Decommission"
-      }
-    },
-    "/api/vault/decommission/cloud-purge/cancel": {
-      "post": {
-        "operationId": "cancel_own_vault_decommission_cloud_purge_api_vault_decommission_cloud_purge_cancel_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Cancel Own Vault Decommission Cloud Purge"
-      }
-    },
-    "/api/vault/decommission/preview": {
-      "post": {
-        "operationId": "preview_own_vault_decommission_api_vault_decommission_preview_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VaultDecommissionPreview-Input"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VaultDecommissionPreview-Output"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Preview Own Vault Decommission"
-      }
-    },
-    "/api/vault/decommission/status": {
-      "get": {
-        "operationId": "own_vault_decommission_status_api_vault_decommission_status_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VaultDecommissionStatus"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Own Vault Decommission Status"
-      }
-    },
     "/api/vault/lifecycle": {
       "get": {
         "operationId": "own_vault_lifecycle_api_vault_lifecycle_get",
@@ -5006,9 +4490,46 @@
         "summary": "Select Vault"
       }
     },
-    "/api/vaults/{vault_id}/decommission": {
+    "/api/vaults/{vault_id}/stop-protection": {
+      "get": {
+        "operationId": "stop_protection_status_api_vaults__vault_id__stop_protection_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopProtectionStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop Protection Status"
+      },
       "post": {
-        "operationId": "start_owned_vault_decommission_by_id_api_vaults__vault_id__decommission_post",
+        "operationId": "stop_folder_protection_api_vaults__vault_id__stop_protection_post",
         "parameters": [
           {
             "in": "path",
@@ -5024,7 +4545,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/VaultDecommissionStart"
+                "$ref": "#/components/schemas/StopProtectionRequest"
               }
             }
           },
@@ -5035,7 +4556,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/VaultDecommissionStatus"
+                  "$ref": "#/components/schemas/StopProtectionStatus"
                 }
               }
             },
@@ -5052,12 +4573,12 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Start Owned Vault Decommission By Id"
+        "summary": "Stop Folder Protection"
       }
     },
-    "/api/vaults/{vault_id}/decommission/cloud-purge/cancel": {
+    "/api/vaults/{vault_id}/stop-protection/cancel-deletion": {
       "post": {
-        "operationId": "cancel_owned_vault_decommission_cloud_purge_by_id_api_vaults__vault_id__decommission_cloud_purge_cancel_post",
+        "operationId": "cancel_stopped_folder_deletion_api_vaults__vault_id__stop_protection_cancel_deletion_post",
         "parameters": [
           {
             "in": "path",
@@ -5074,7 +4595,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
+                  "$ref": "#/components/schemas/StopProtectionStatus"
                 }
               }
             },
@@ -5091,95 +4612,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Cancel Owned Vault Decommission Cloud Purge By Id"
-      }
-    },
-    "/api/vaults/{vault_id}/decommission/preview": {
-      "post": {
-        "operationId": "preview_owned_vault_decommission_by_id_api_vaults__vault_id__decommission_preview_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vault_id",
-            "required": true,
-            "schema": {
-              "title": "Vault Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VaultDecommissionPreview-Input"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VaultDecommissionPreview-Output"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Preview Owned Vault Decommission By Id"
-      }
-    },
-    "/api/vaults/{vault_id}/decommission/status": {
-      "get": {
-        "operationId": "owned_vault_decommission_status_by_id_api_vaults__vault_id__decommission_status_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vault_id",
-            "required": true,
-            "schema": {
-              "title": "Vault Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VaultDecommissionStatus"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Owned Vault Decommission Status By Id"
+        "summary": "Cancel Stopped Folder Deletion"
       }
     },
     "/assets/{asset_path}": {

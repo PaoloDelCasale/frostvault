@@ -600,10 +600,8 @@ export function FileBrowser({
               onDesktopAction,
               onCancelJob,
               onApproveJob,
-              onAcceleratePurge,
               cancelBusyId,
               approveBusyId,
-              accelerateBusyId,
             }) => (
               <FileList
                 items={data.items}
@@ -619,10 +617,8 @@ export function FileBrowser({
                 jobsByPath={jobsByPath}
                 onCancelJob={onCancelJob}
                 onApproveJob={onApproveJob}
-                onAcceleratePurge={onAcceleratePurge}
                 cancelBusyId={cancelBusyId}
                 approveBusyId={approveBusyId}
-                accelerateBusyId={accelerateBusyId}
               />
             )}
           </FileOperationsHost>

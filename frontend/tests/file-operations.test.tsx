@@ -78,9 +78,9 @@ const messages: Record<string, string> = {
   "ui.duration_minutes_other": "{n}-minute",
   "ui.duration_hours_one": "{n}-hour",
   "ui.duration_hours_other": "{n}-hour",
+  "ui.duration_days_other": "{n}-day",
   "ui.cloud_purge_reason": "Reason for this permanent purge",
   "ui.cloud_purge_confirm_label": "Type the vault name ({vault}) or this phrase to confirm",
-  "ui.cloud_purge_phrase": "Confirmation phrase",
   "ui.cloud_purge_submit": "Schedule permanent purge",
   "ui.job_bytes_progress": "{transferred} of {total}",
   "ui.job_files_progress": "{completed} of {total} files",
@@ -90,8 +90,6 @@ const messages: Record<string, string> = {
   "ui.starting": "Starting…",
   "ui.approve_restore": "Approve restore",
   "ui.approving": "Approving…",
-  "ui.purge_now": "Delete now",
-  "ui.purging_now": "Deleting…",
   "ui.reauth_failed": "Reauthentication failed.",
   "operation.uploading": "Uploading",
   "operation.queued": "Waiting",
@@ -313,12 +311,8 @@ describe("File operations — seams 1–10", () => {
           },
         });
       }
-      if (url.includes("/api/vault/cloud-deletion")) {
-        return jsonResponse({
-          enabled: true,
-          purge_delay_seconds: 60,
-          generated_phrase: "PURGE-PHRASE",
-        });
+      if (url === "/api/cloud-deletion") {
+        return jsonResponse({ purge_delay_seconds: 604800 });
       }
       if (url.includes("/api/cloud-deletion/preview")) {
         return jsonResponse({
@@ -560,10 +554,10 @@ describe("File operations — seams 1–10", () => {
       /1 object, 2 versions, 1 marker, 2\.0 KB/,
     );
     expect(screen.getByTestId("cloud-purge-delay")).toHaveTextContent(
-      /A 1-minute cancellable delay applies/,
+      /A 7-day cancellable delay applies/,
     );
     await user.type(screen.getByTestId("cloud-purge-reason"), "cleanup obsolete");
-    await user.type(screen.getByTestId("cloud-purge-confirmation"), "PURGE-PHRASE");
+    await user.type(screen.getByTestId("cloud-purge-confirmation"), "Test Archive");
     await user.click(screen.getByTestId("cloud-purge-submit"));
     await waitFor(() => {
       expect(calls.some((c) => c.url === "/api/cloud-purge")).toBe(true);
@@ -572,8 +566,7 @@ describe("File operations — seams 1–10", () => {
     expect(calls.find((c) => c.url === "/api/cloud-purge")?.body).toMatchObject({
       path: "archive.pdf",
       reason: "cleanup obsolete",
-      confirmation: "PURGE-PHRASE",
-      generated_phrase: "PURGE-PHRASE",
+      confirmation: "Test Archive",
     });
   });
 
@@ -581,6 +574,8 @@ describe("File operations — seams 1–10", () => {
     const user = userEvent.setup();
     const calls: Array<{ url: string; body: unknown }> = [];
     mockRoutes({
+      files: { ...browsePayload, items: browsePayload.items.map((item) => item.type === "directory"
+        ? { ...item, item_count: 2, state: "cloud_only" } : item) },
       onMutation: (url, body) => {
         calls.push({ url, body });
         if (url.includes("/api/cloud-purge")) {
@@ -618,7 +613,7 @@ describe("File operations — seams 1–10", () => {
       is_directory: true,
     });
     await user.type(screen.getByTestId("cloud-purge-reason"), "folder cleanup");
-    await user.type(screen.getByTestId("cloud-purge-confirmation"), "PURGE-PHRASE");
+    await user.type(screen.getByTestId("cloud-purge-confirmation"), "Test Archive");
     await user.click(screen.getByTestId("cloud-purge-submit"));
     await waitFor(() => {
       expect(calls.some((c) => c.url === "/api/cloud-purge")).toBe(true);

@@ -885,11 +885,10 @@ export function installDemoFilesFetch(): void {
       });
     }
 
-    if (path === "/api/vault/cloud-deletion") {
+    if (path === "/api/cloud-deletion") {
       return json({
         enabled: true,
         purge_delay_seconds: 60,
-        generated_phrase: "PURGE-PHRASE",
       });
     }
 
@@ -1115,13 +1114,12 @@ export function installDemoFilesFetch(): void {
       "/api/free-space",
       "/api/cloud-purge",
       "/api/recover/approve",
-      "/api/cloud-purge/accelerate",
       "/api/scan",
     ]);
     if (method !== "GET" && mutatingActions.has(path)) {
       const action = path.split("/").pop() || "upload";
       const targetPath = String(body.path ?? "readme.txt");
-      if (action === "approve" || action === "accelerate" || action === "scan") {
+      if (action === "approve" || action === "scan") {
         return json({ group_id: "demo", message: "started", job_ids: [1] });
       }
       return json(enqueueJob(state, action, targetPath));

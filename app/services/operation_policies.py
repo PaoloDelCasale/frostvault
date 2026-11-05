@@ -396,7 +396,7 @@ def queue_auto_uploads(
 
 
 def local_release_is_confirmed(
-    connection: Any, vault_id: int, *, decommission: bool = False
+    connection: Any, vault_id: int
 ) -> bool:
     """Fail closed on absent/untrusted sources or lost cloud observability.
 
@@ -411,9 +411,9 @@ def local_release_is_confirmed(
         "SELECT source_root, enabled, decommission_state, relocation_state FROM vaults WHERE id=%s",
         (vault_id,),
     ).fetchone()
-    if not vault or (not decommission and not vault["enabled"]) or vault["relocation_state"] != "ready":
+    if not vault or not vault["enabled"] or vault["relocation_state"] != "ready":
         return False
-    if vault["decommission_state"] != ("decommissioning" if decommission else "active"):
+    if vault["decommission_state"] != "active":
         return False
     return (vault_local_access(vault["source_root"]).local_operations_allowed
             and not observation_is_unconfirmed(load_vault_health(connection, vault_id)))
