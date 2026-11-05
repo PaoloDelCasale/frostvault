@@ -468,9 +468,10 @@ class NpmAuditBaselineContractTests(unittest.TestCase):
             if name in found and pkg.get("version"):
                 found[name].append((path, pkg["version"]))
         for name, copies in found.items():
-            # glob left the dependency graph with Workbox (#415). Retain its
-            # advisory floor below if a future toolchain brings it back.
-            if name != "glob":
+            # glob left with Workbox (#415); shadcn 4.23's MCP SDK v2 update
+            # removed Express's body-parser and qs (#452). Their absence is
+            # safe: retain every advisory floor below for any returning copy.
+            if name not in {"glob", "body-parser", "qs"}:
                 self.assertTrue(copies, f"expected lockfile copies of {name}")
 
         for path, version in found["brace-expansion"]:
