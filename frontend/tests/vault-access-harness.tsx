@@ -58,11 +58,6 @@ export const defaultLifecycle = {
   },
 };
 
-export const defaultCloudDeletion = {
-  purge_delay_seconds: 86400,
-  accepted_single_identity_risk: "Single IAM identity risk documented.",
-};
-
 type HarnessOptions = {
   vaultId?: number;
   vaultName?: string;
@@ -102,10 +97,6 @@ export function createVaultAccessFetch(
     if (url === "/api/vault/lifecycle") {
       return jsonResponse(defaultLifecycle);
     }
-    if (url === "/api/cloud-deletion") {
-      return jsonResponse(defaultCloudDeletion);
-    }
-
     throw new Error(`Unexpected request: ${method} ${url}`);
   });
 }
