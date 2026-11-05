@@ -91,8 +91,9 @@ with db() as connection:
     record_metadata_restore(connection, json.loads(Path('restore-manifest.json').read_text())['created_at'])
 PY
    Registration invalidates active Vault local/mount observations and cancels
-   stale nonterminal Jobs without touching local/S3 bytes. Request wanted work
-   again after reconnect; stopped folders remain stopped.
+   stale nonterminal Jobs without touching local/S3 bytes. Unfinished deletion
+   targets are retired; completed deletion evidence is retained. Request wanted
+   work again after reconnect; stopped folders remain stopped.
 6. Configure AWS, OIDC_* and BOOTSTRAP_ADMIN_* securely. The Emergency Password
    is accepted only from loopback/allowed LAN. Start FrostVault, then explicitly
    Reconnect folder for EACH Vault, selecting the new Source Volume and directory.
@@ -176,6 +177,14 @@ def record_metadata_restore(connection: Any, backup_created_at: str) -> None:
             reconnect_volume_fingerprint=NULL
         WHERE decommission_state='active' AND root_released_at IS NULL
         """)
+    # Revoked Jobs must not leave item-level consent blocking uploads after
+    # reconnect. Retire unfinished targets, including abandoned terminal Jobs,
+    # before cancelling Jobs; retain deleted evidence and never contact S3.
+    connection.execute("""
+        UPDATE cloud_deletion_items SET status='skipped', updated_at=%s
+        WHERE status IN ('pending','failed') AND job_id IN (
+            SELECT id FROM jobs WHERE action='cloud-purge' AND status<>'completed')
+        """, (now_iso(),))
     connection.execute("""
         UPDATE jobs SET status='cancelled', claim_token=NULL, claimed_at=NULL,
             claim_expires_at=NULL, updated_at=%s,

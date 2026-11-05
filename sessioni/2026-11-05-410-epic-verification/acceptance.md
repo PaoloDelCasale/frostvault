@@ -5,8 +5,8 @@
 **can-close-epic: NO at this handoff.** The functional #366 Q18 criteria below
 pass, but the exact-main overall check rollup is still FAILURE: image publication
 cannot read GitHub check runs (HTTP 500). One infrastructure-only retry also
-failed. No application acceptance defect was found, no failing test was accepted,
-and no gate was relaxed. Coordinator sign-off/merge and disposition remain
+failed. One integrated protection-blocking defect was found and fixed below;
+no failing test was accepted and no gate was relaxed. Coordinator sign-off/merge and disposition remain
 required; **#410 stays OPEN**, with its checklist unchanged by this session.
 This is not authorization to deploy, nor a request to start a fifth session.
 
@@ -18,8 +18,10 @@ This is not authorization to deploy, nor a request to start a fifth session.
   queried directly, not inferred from issue comments.
 - Both Git trees: **`ecbae36ff4097bd6105897d6cf845b7f49db7743`**;
   `git diff --exit-code <main-sha> <reviewed-head>` succeeds. The clean prepared
-  checkout equalled fetched `origin/main`; dedicated branch
-  `docs/epic-410-verification` adds only this audit and two documentation corrections.
+  checkout equalled fetched `origin/main`. Dedicated branch
+  `docs/epic-410-verification` adds this audit, a minimal restore-consent fix with
+  two regressions and operator-doc corrections/restore clarification. The fix is **not yet on
+  main**; final audit-PR CI validates the resulting candidate separately.
 - [Main CI](https://github.com/PaoloDelCasale/frostvault/actions/runs/42061029518)
   and [strict main security](https://github.com/PaoloDelCasale/frostvault/actions/runs/42061029458):
   completed SUCCESS. All **27 CI/security check contexts** succeeded on this SHA.
@@ -83,10 +85,28 @@ Archive Version/Path History/Delete Marker identities; terminal legacy Job origi
 encrypted **metadata** backups; internal class-copy worker and scoped S3 test-cleanup
 tooling. No production rclone binary/Go build or offline registration remains.
 
-**Documentation fixes only:** `docs/ci.md` incorrectly advised full local runs and
+**Documentation fixes:** `docs/ci.md` incorrectly advised full local runs and
 PostgreSQL skips; it now follows #410's targeted-local/PR-CI policy. README's stale
 “username and password required” sentence now states OIDC or LAN Emergency Password.
-No API/source/test changes were necessary; no OpenAPI/TS regeneration is applicable.
+The metadata-restore guide and embedded kit instructions explain retirement of
+unfinished deletion targets while retaining completed deletion evidence.
+
+### Integrated defect found and fixed in this audit
+
+Restoring a backup with delayed deletion cancelled its Jobs but left item-level
+`cloud_deletion_items.status='pending'`. `queue_auto_uploads` independently excludes
+those items: after reconnect and a later local edit, protection could remain
+silently starved. The original source scan/reconnect tests mocked automatic
+admission and did not expose this cross-feature interaction.
+
+`record_metadata_restore` now retires pending/failed targets for noncompleted
+cloud-purge Jobs **before** cancelling Jobs. Deleted evidence, completed workflows
+and cloud bytes are retained; this is metadata-only revocation, not new deletion
+consent. A DB-free regression went red on the missing mutation, then the ten-case
+kit module passed. A PostgreSQL regression in `test_cloud_deletion` covers partial
+prior deletion, restore cancellation, matching reconnect observations, later edit
+and actual automatic enqueue, plus retained current cloud evidence. Its execution
+belongs to final PR CI. No API/schema change or OpenAPI/TS regeneration is needed.
 
 ## Comparable inventory (nonbinding)
 
@@ -179,7 +199,10 @@ is absent. The indicative goal does not justify removing safety tests.
   unittest selections: `test_s3_upload`, `test_upload_retry_policy`,
   `test_cloud_deletion_safety`, `test_vault_move_safety`, `test_essential_interface`
   (**51**); projection/release-policy/kit/delay/lifecycle/preflight/PostgreSQL-config
-  modules/classes (**53**); `LocalReleaseWorkerTests` (**10**): **114 passed, 0 skips**.
+  modules/classes (**53**); `LocalReleaseWorkerTests` (**10**): **114 initial passes**.
+  After the integrated fix, `test_recovery_kit` adds **10 green executions** (nine
+  repeated cases plus the new regression): **124 successful executions, 0 skips**.
+  The new regression's expected pre-fix failure is recorded separately, not accepted.
 - Main CI logs independently trace ten critical regressions in `evidence.json`.
   Dedicated S3 job ran the SDK upload/recovery and copy/multipart proofs: **moto**
   under the historical MinIO check name, **not real MinIO/AWS**, not real >5 GiB.

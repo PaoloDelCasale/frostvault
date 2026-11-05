@@ -420,8 +420,23 @@
       "tests": 10,
       "result": "OK",
       "skips": 0
+    },
+    {
+      "log": "restore-deletion-green.log",
+      "tests": 10,
+      "result": "OK",
+      "skips": 0,
+      "note": "After the integrated fix: nine kit cases repeated plus one new regression."
     }
   ],
+  "integrated_fix": {
+    "symptom": "Metadata restore cancelled cloud-purge Jobs but retained pending deletion items, starving later automatic uploads after reconnect.",
+    "cause": "record_metadata_restore revoked only Job-level consent; queue_auto_uploads also checks item-level pending consent.",
+    "fix": "Retire pending/failed items of noncompleted cloud-purge Jobs before cancelling restored Jobs; retain deleted evidence and terminal Job history, without provider/filesystem calls.",
+    "local_red_green": "New RecoveryKit mutation-boundary regression failed before the fix (0 item-retirement updates), then the 10-case targeted module passed.",
+    "postgres_regression": "tests.test_cloud_deletion.CloudDeletionTests.test_metadata_restore_revokes_item_consent_without_starving_later_uploads",
+    "postgres_execution": "Final audit PR CI only; exact-HEAD outcome attested in the PR after the last commit."
+  },
   "removed_surface_survey": {
     "result": "PASS",
     "current_openapi_paths": 61,
