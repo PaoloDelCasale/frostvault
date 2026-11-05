@@ -9,7 +9,7 @@ import { shellLabel } from "./labels";
 import { ShellNavItems } from "./ShellNavItems";
 import type { ShellCapabilities, ShellNavHandlers } from "./types";
 
-export function AppShell({ capabilities, handlers, t, queryClient: provided, children, problemCounts = {}, openProblems = 0, filter = "", spend }: {
+export function AppShell({ capabilities, handlers, t, queryClient: provided, children, problemCounts = {}, openProblems, filter = "", spend }: {
   capabilities: ShellCapabilities; handlers?: ShellNavHandlers; t?: (key: string, params?: Record<string, unknown>) => string;
   queryClient?: QueryClient; children: ReactNode; problemCounts?: Record<number, number>; openProblems?: number; filter?: string; spend?: ReactNode;
 }) {
@@ -22,7 +22,7 @@ export function AppShell({ capabilities, handlers, t, queryClient: provided, chi
       <div className="flex flex-nowrap items-center gap-2" data-testid="app-shell-header-row">
         <Button className="min-h-11 min-w-11 md:hidden" variant="secondary" aria-label={shellLabel(t, "ui.open_navigation", "Open navigation")} onClick={() => setDrawer(true)}>☰</Button>
         <span className="min-w-0 flex-1 truncate font-extrabold tracking-tight text-green">FrostVault</span>
-        <Button variant="secondary" className="min-h-11 shrink-0" onClick={handlers?.onProblems}>{openProblems} {shellLabel(t, "essential.problems", "Problems")}</Button>
+        <Button variant="secondary" className="min-h-11 shrink-0" onClick={handlers?.onProblems}>{openProblems ?? "—"} {shellLabel(t, "essential.problems", "Problems")}</Button>
         <NotificationCenter locale={capabilities.locale} t={t} queryClient={provided ?? fallback} />
         <AccountPreferencesMenu locale={capabilities.locale} locales={capabilities.locales} handlers={handlers} t={t} />
       </div>

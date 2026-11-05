@@ -45,6 +45,8 @@ Removed superseded administrative/access/demo/old browser surfaces, Mixed badge,
 Local commands are targeted only:
 
 - `.venv/bin/python -m unittest tests.test_essential_interface -v` — scope fail-closed/auth/schema/search/deep-link/SSE and recursive-estimate regressions.
+- `.venv/bin/python -m unittest tests.test_e2e_fixture -v` — CI-only legacy Worker script boundary and production/lifespan passthrough. CI trace proved Chromium's Worker entry fetch bypassed the page-route mock and served the self-unregistering production script; the disposable server now supplies the exact old-worker fixture query. No production Worker registration was added.
+- Shell regressions verify an unavailable global overview is shown as unknown, never fabricated zero open problems.
 - Focused Vitest modules for browser, Details, recovery, active work, scoped client, parity, Move/release/Stop, home, badges/theme/cleanup/create; see `vitest-final-focused.log` and `unittest.log` in this session.
 - `.venv/bin/python scripts/export_openapi.py frontend/openapi.json`, `npm run generate:api`, `git diff --check`.
 
