@@ -5,7 +5,7 @@ import { MenuSelect } from "@/components/MenuSelect";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 
-export function VaultMovePanel({ onNotice }: { onNotice: (message: string, error?: boolean) => void }) {
+export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotice: (message: string, error?: boolean) => void }) {
   const { t } = useI18n();
   const [preview, setPreview] = useState<VaultMovePreview | null>(null);
   const [target, setTarget] = useState("");
@@ -16,22 +16,30 @@ export function VaultMovePanel({ onNotice }: { onNotice: (message: string, error
     let live = true;
     void fetchVaultMove().then((next) => {
       if (live) {
+        if (next.vault_id !== vaultId) {
+          setError(t("move.vault_changed"));
+          return;
+        }
         setPreview(next);
         setTarget(next.targets.find((item) => item.eligible_count > 0)?.target_class ?? "");
       }
     }).catch((cause: unknown) => { if (live) setError(String(cause)); });
     return () => { live = false; };
-  }, []);
+  }, [vaultId, t]);
   const estimate = preview?.targets.find((item) => item.target_class === target);
   async function move() {
     if (!target || !acknowledged) return;
     setBusy(true);
     setError("");
     try {
-      const result = await startVaultMove({ target_class: target, acknowledge_costs: true });
+      const result = await startVaultMove({ vault_id: vaultId, target_class: target, acknowledge_costs: true });
       onNotice(t("move.queued", { count: result.item_count }));
       setAcknowledged(false);
-      setPreview(await fetchVaultMove());
+      const next = await fetchVaultMove();
+      if (next.vault_id !== vaultId) {
+        setPreview(null);
+        setError(t("move.vault_changed"));
+      } else setPreview(next);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally { setBusy(false); }

@@ -2744,9 +2744,13 @@
               "$ref": "#/components/schemas/VaultMoveEstimate"
             },
             "type": "array"
+          },
+          "vault_id": {
+            "type": "integer"
           }
         },
         "required": [
+          "vault_id",
           "targets"
         ],
         "type": "object"
@@ -2764,9 +2768,15 @@
             "minLength": 1,
             "title": "Target Class",
             "type": "string"
+          },
+          "vault_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Vault Id",
+            "type": "integer"
           }
         },
         "required": [
+          "vault_id",
           "target_class"
         ],
         "title": "VaultMoveRequest",

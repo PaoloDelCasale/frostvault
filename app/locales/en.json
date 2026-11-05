@@ -1,6 +1,7 @@
 {
   "move.title": "Move the entire Vault now",
   "move.help": "Only verified current copies move to a colder class on the saved Storage Plan. Equal or colder files and files with pending work are skipped. Glacier sources require an explicit restore of their exact version; this action never requests a restore or warms content.",
+  "move.vault_changed": "The selected Vault changed. Refresh these settings before moving content.",
   "move.target": "Move eligible files to",
   "move.estimate": "{count} files · {bytes} bytes. Estimated storage €{monthly}/month; source retrieval €{retrieval}. AWS list prices for {region}, published {date} (USD used 1:1 as EUR).",
   "move.exclusions": "Estimate, not a bill. Copy/verification requests, minimum billable object sizes, archive metadata, temporary restored storage and early-deletion fees are excluded. Multipart verification reads the source. Actual eligibility is rechecked in the background.",

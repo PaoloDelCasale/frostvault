@@ -2795,6 +2795,7 @@ def _lifecycle_payload(connection: Any, vault: dict[str, Any]) -> dict[str, Any]
 
 class VaultMoveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    vault_id: int = Field(gt=0)
     target_class: str = Field(min_length=1, max_length=40)
     acknowledge_costs: bool = False
 
@@ -2811,6 +2812,8 @@ def preview_vault_move(vault: dict[str, Any] = Depends(current_vault)):
 @app.post("/api/vault/move", response_model=response_model("VaultMoveResponse"))
 def move_vault(action: VaultMoveRequest, vault: dict[str, Any] = Depends(current_vault),
                user: dict[str, Any] = Depends(current_user)):
+    if action.vault_id != vault["id"]:
+        raise HTTPException(409, "Selected Vault changed; refresh the move preview")
     try:
         with db() as connection:
             return vault_moves.schedule(connection, vault_id=vault["id"], target=action.target_class,

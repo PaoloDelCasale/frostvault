@@ -18,8 +18,8 @@
     },
     "VaultMovePreview": {
       "type": "object",
-      "properties": {"targets": {"type": "array", "items": {"$ref": "#/components/schemas/VaultMoveEstimate"}}},
-      "required": ["targets"]
+      "properties": {"vault_id": {"type": "integer"}, "targets": {"type": "array", "items": {"$ref": "#/components/schemas/VaultMoveEstimate"}}},
+      "required": ["vault_id", "targets"]
     },
     "VaultMoveResponse": {
       "allOf": [

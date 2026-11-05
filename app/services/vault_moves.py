@@ -86,7 +86,7 @@ def preview(connection: Any, vault_id: int) -> dict[str, Any]:
     vault = lock_vault(connection, vault_id)
     require_ready(vault)
     rows = candidates(connection, vault_id)
-    return {"targets": [estimate(rows, step.storage_class)
+    return {"vault_id": vault_id, "targets": [estimate(rows, step.storage_class)
                         for step in load_vault_plan(connection, vault_id).transitions]}
 
 
@@ -291,6 +291,10 @@ def process(job: dict[str, Any], move: dict[str, Any]) -> None:
         if destination not in versions or markers or set(versions) - {move["source_version_id"], destination}:
             raise MoveBlocked("Unknown cloud content or missing keeper; source retained")
         require_current(client, job, move, destination)
+        # Listing/HEAD can take long enough for a same-process cancellation or
+        # heartbeat failure to win. Recheck without a second DB connection while
+        # this transaction owns the Job row, immediately before DeleteObject.
+        fence(connection)
         if move["source_version_id"] in versions:
             _delete_s3_version(client, bucket=job["s3_bucket"], object_key=move["object_key"], version_id=move["source_version_id"])
         ArchiveCatalog(connection).mark_versions_purged([move["source_archive_id"]], checked_at=worker.now_iso())

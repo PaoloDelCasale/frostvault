@@ -170,6 +170,38 @@ class VaultMoveTests(unittest.TestCase):
         self.assertEqual(self.provider.deleted,[])
         self.assertEqual(len(self.provider.versions),3)
 
+    def test_missing_keeper_never_authorizes_source_deletion(self):
+        self.schedule()
+        self.provider.list_object_versions=lambda **kw: {'Versions':[{'Key':kw['Prefix'],'VersionId':'s3-v1'}]}
+        self.run_job()
+        self.assertEqual(self.state()['status'],'failed')
+        self.assertEqual(self.provider.deleted,[])
+        self.assertIn('s3-v1',self.provider.versions)
+
+    def test_failed_listing_preserves_source_then_retries_cleanup_without_copy(self):
+        self.schedule()
+        original=self.provider.list_object_versions
+        self.provider.list_object_versions=lambda **kw: (_ for _ in ()).throw(RuntimeError('service unavailable'))
+        self.run_job()
+        self.assertEqual(self.state()['status'],'retrying',self.state()['message'])
+        self.assertEqual(self.provider.deleted,[])
+        self.provider.list_object_versions=original
+        self.run_job()
+        self.assertEqual(self.state()['status'],'completed',self.state()['message'])
+        self.assertEqual(self.provider.copies,1)
+
+    def test_cancellation_after_publication_before_delete_preserves_both_copies(self):
+        self.schedule()
+        original=self.provider.list_object_versions
+        def cancel_before_cleanup(**kw):
+            storage.cancel_jobs([self.job_id])
+            return original(**kw)
+        self.provider.list_object_versions=cancel_before_cleanup
+        self.run_job()
+        self.assertEqual(self.state()['status'],'cancelled')
+        self.assertEqual(self.provider.deleted,[])
+        self.assertEqual(len(self.provider.versions),2)
+
     def test_worker_rechecks_lifecycle_class_and_never_automatically_restores(self):
         self.schedule()
         self.provider.versions["s3-v1"]["StorageClass"]="GLACIER"

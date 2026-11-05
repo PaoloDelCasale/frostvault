@@ -1890,6 +1890,7 @@ export interface components {
         };
         VaultMovePreview: {
             targets: components["schemas"]["VaultMoveEstimate"][];
+            vault_id: number;
         };
         /** VaultMoveRequest */
         VaultMoveRequest: {
@@ -1900,6 +1901,8 @@ export interface components {
             acknowledge_costs: boolean;
             /** Target Class */
             target_class: string;
+            /** Vault Id */
+            vault_id: number;
         };
         VaultMoveResponse: components["schemas"]["VaultMoveEstimate"] & {
             group_id: string;

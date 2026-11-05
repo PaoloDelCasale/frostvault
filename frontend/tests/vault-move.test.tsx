@@ -15,7 +15,7 @@ describe("Vault-wide Move now in Advanced", () => {
     const user = userEvent.setup();
     let payload: unknown;
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
-      "GET /api/vault/move": () => jsonResponse({ targets: [estimate, { ...estimate, target_class: "GLACIER_IR", eligible_count: 0 }] }),
+      "GET /api/vault/move": () => jsonResponse({ vault_id: 1, targets: [estimate, { ...estimate, target_class: "GLACIER_IR", eligible_count: 0 }] }),
       "POST /api/vault/move": (init) => {
         payload = JSON.parse(String(init?.body));
         return jsonResponse({ ...estimate, group_id: "g", job_ids: [1, 2], item_count: 2 });
@@ -33,7 +33,7 @@ describe("Vault-wide Move now in Advanced", () => {
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("checkbox", { name: /I understand the estimated costs/ }));
     await user.click(start);
-    await waitFor(() => expect(payload).toEqual({ target_class: "DEEP_ARCHIVE", acknowledge_costs: true }));
+    await waitFor(() => expect(payload).toEqual({ vault_id: 1, target_class: "DEEP_ARCHIVE", acknowledge_costs: true }));
     expect(await screen.findByText(/2 move Jobs queued/)).toBeInTheDocument();
   });
 
@@ -47,13 +47,21 @@ describe("Vault-wide Move now in Advanced", () => {
   it("keeps acknowledgement gated and reports an admission race honestly", async () => {
     const user = userEvent.setup();
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
-      "GET /api/vault/move": () => jsonResponse({ targets: [estimate] }),
+      "GET /api/vault/move": () => jsonResponse({ vault_id: 1, targets: [estimate] }),
       "POST /api/vault/move": () => jsonResponse({ detail: "No eligible files: pending work" }, 409),
     }) });
     await user.click(await screen.findByText("Advanced", { exact: true }));
     await user.click(await screen.findByRole("checkbox", { name: /I understand the estimated costs/ }));
     await user.click(screen.getByRole("button", { name: "Move now in background" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("No eligible files: pending work");
+  });
+
+  it("refuses a stale page after the selected Vault changed in another tab", async () => {
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
+      "GET /api/vault/move": () => jsonResponse({ vault_id: 2, targets: [estimate] }),
+    }) });
+    expect(await screen.findByRole("alert", { hidden: true })).toHaveTextContent("The selected Vault changed");
+    expect(screen.queryByRole("button", { name: "Move now in background", hidden: true })).not.toBeInTheDocument();
   });
 
   it("has complete English and Italian copy and no per-file move option", () => {

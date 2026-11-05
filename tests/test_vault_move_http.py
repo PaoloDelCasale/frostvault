@@ -25,7 +25,7 @@ class VaultMoveHttpTests(unittest.TestCase):
             csrf=csrf_token_for(c,token)
         self.client.cookies.set(settings.session_cookie_name,token)
         self.headers={'X-CSRF-Token':csrf}
-        self.payload={'target_class':'DEEP_ARCHIVE','acknowledge_costs':True}
+        self.payload={'vault_id':1,'target_class':'DEEP_ARCHIVE','acknowledge_costs':True}
 
     def test_preview_and_whole_vault_admission_need_no_unrelated_reauthentication(self):
         response=self.client.get('/api/vault/move')
@@ -44,8 +44,9 @@ class VaultMoveHttpTests(unittest.TestCase):
                       {'is_directory':True},{'whole_vault':False}):
             response=self.client.post('/api/vault/move',json={**self.payload,**extra},headers=self.headers)
             self.assertEqual(response.status_code,422,response.text)
-        for payload in ({'target_class':'STANDARD','acknowledge_costs':True},
-                        {'target_class':'DEEP_ARCHIVE','acknowledge_costs':False}):
+        for payload in ({'vault_id':1,'target_class':'STANDARD','acknowledge_costs':True},
+                        {'vault_id':1,'target_class':'DEEP_ARCHIVE','acknowledge_costs':False},
+                        {'vault_id':2,'target_class':'DEEP_ARCHIVE','acknowledge_costs':True}):
             response=self.client.post('/api/vault/move',json=payload,headers=self.headers)
             self.assertEqual(response.status_code,409,response.text)
         self.assertNotIn('/api/storage-class',main.app.openapi()['paths'])
