@@ -44,9 +44,10 @@ class Provider:
         self.versions[self.current] = dict(VersionId=self.current,ContentLength=12,
             StorageClass=kw["StorageClass"],ChecksumSHA256="corrupt" if self.corrupt else self.checksum,
             Metadata=kw["Metadata"])
+        created = self.current
         if self.after_copy:
             self.after_copy()
-        return {"VersionId":self.current}
+        return {"VersionId":created}
 
     def list_object_versions(self, **kw):
         return {"Versions":[dict(Key=kw["Prefix"],VersionId=v) for v in self.versions]}
@@ -222,6 +223,100 @@ class VaultMoveTests(unittest.TestCase):
         for thread in threads: thread.join(timeout=20)
         self.assertTrue(all(not t.is_alive() for t in threads))
         self.assertEqual(sum(r is not None for r in results),1)
+
+    def test_class_move_does_not_release_cloud_only_conflict_hold(self):
+        from app.services.catalog_incidents import settle_cloud_only_copies
+        with PostgresConnection(str(self.path)) as c:
+            catalog=ArchiveCatalog(c)
+            catalog.mark_local_copy_missing(self.vault_file_id,observed_at=storage.now_iso())
+            catalog.observe_local_copy(vault_id=1,path='report.txt',file_type='regular',size=13,
+                mtime_ns=2,observed_at=storage.now_iso())
+            catalog.set_local_fingerprint(vault_id=1,path='report.txt',plaintext_sha256='b'*64,matched_archive_version_id=None)
+        self.schedule()
+        self.run_job()
+        self.assertEqual(self.state()['status'],'completed',self.state()['message'])
+        with PostgresConnection(str(self.path)) as c:
+            outcome=settle_cloud_only_copies(c,vault_id=1)
+            self.assertEqual(outcome['released'],0)
+            local=c.execute('SELECT cloud_only_version_id FROM local_copies WHERE vault_file_id=%s',(self.vault_file_id,)).fetchone()
+            self.assertEqual(local['cloud_only_version_id'],self.state()['archive_version_id'])
+            self.assertNotEqual(local['cloud_only_version_id'],self.version_id)
+            incident=c.execute("SELECT archive_version_id FROM catalog_incidents WHERE kind='cloud_only_conflict' AND status='open'").fetchone()
+            self.assertEqual(incident['archive_version_id'],local['cloud_only_version_id'])
+            ids,_,_=ArchiveCatalog(c).queue_jobs(vault_id=1,path='report.txt',action='upload',requested_by=1,
+                requested_at=storage.now_iso(),group_id='conflict',is_directory=False)
+            self.assertEqual(ids,[])
+
+    def test_explicitly_restored_glacier_moves_only_to_deep_archive(self):
+        with PostgresConnection(str(self.path)) as c:
+            c.execute("UPDATE archive_versions SET storage_class='GLACIER',restore_state='available' WHERE id=%s",(self.version_id,))
+        self.provider.versions["s3-v1"].update(StorageClass="GLACIER",Restore='ongoing-request="false", expiry-date="Fri, 06 Nov 2026 12:00:00 GMT"')
+        self.schedule()
+        self.run_job()
+        self.assertEqual(self.state()["status"],"completed",self.state()["message"])
+        self.assertEqual(self.provider.deleted,["s3-v1"])
+
+    def test_transient_copy_response_failure_retries_without_duplicate_copy(self):
+        self.schedule()
+        self.provider.after_copy=lambda: (_ for _ in ()).throw(RuntimeError("connection reset"))
+        self.run_job()
+        self.assertEqual(self.state()["status"],"retrying",self.state()["message"])
+        self.provider.after_copy=None
+        self.run_job()
+        self.assertEqual(self.state()["status"],"completed",self.state()["message"])
+        self.assertEqual(self.provider.copies,1)
+
+    def test_scan_discovery_in_crash_gap_does_not_prevent_verified_resume(self):
+        self.schedule()
+        self.provider.after_copy=lambda: (_ for _ in ()).throw(KeyboardInterrupt())
+        with self.assertRaises(KeyboardInterrupt): self.run_job()
+        self.provider.after_copy=None
+        with PostgresConnection(str(self.path)) as c:
+            discovered=ArchiveCatalog(c).record_archive_version(vault_id=1,path='report.txt',object_key='docs/report.txt',
+                provider_version_id=self.provider.current,size=12,storage_class='DEEP_ARCHIVE',etag='copy',
+                uploaded_at=storage.now_iso(),observed_at=storage.now_iso(),scan_id='scan',origin='discovered')
+        self.expire()
+        self.run_job()
+        self.assertEqual(self.state()["status"],"completed",self.state()["message"])
+        self.assertEqual(self.state()["archive_version_id"],discovered)
+        self.assertEqual(self.provider.copies,1)
+
+    def test_move_blocks_upload_and_reconnect_and_delayed_deletion_admission(self):
+        self.schedule()
+        from app.services import vault_relocation, cloud_deletion
+        with PostgresConnection(str(self.path)) as c:
+            ids,_,_=ArchiveCatalog(c).queue_jobs(vault_id=1,path='report.txt',action='upload',requested_by=1,
+                requested_at=storage.now_iso(),group_id='upload-race',is_directory=False)
+            self.assertEqual(ids,[])
+            with self.assertRaises(vault_relocation.VaultRelocationError) as blocked:
+                vault_relocation.reconnect_vault_root(c,vault_id=1,volume_alias='new-volume',
+                    relative_path='photos',actor_user_id=1,reason='reconnect deliberately')
+            self.assertEqual(blocked.exception.reason,'active_jobs')
+            with self.assertRaisesRegex(ValueError,"active Jobs"):
+                protection_stop.stop_protection(c,vault_id=1,actor_user_id=1,cloud_disposition='keep',confirmation='Docs',reason='stop')
+            # Even a Cloud-only observation cannot bypass the pending move.
+            ArchiveCatalog(c).mark_local_copy_missing(self.vault_file_id,observed_at=storage.now_iso())
+            with patch('app.services.cloud_deletion.observation_is_unconfirmed',return_value=False), \
+                 patch('app.services.cloud_deletion.require_local_absence'), \
+                 self.assertRaisesRegex(cloud_deletion.CloudDeletionError,'pending work'):
+                cloud_deletion.schedule_cloud_purge(c,vault_id=1,paths=['report.txt'],is_directory=False,
+                    actor_user_id=1,requested_at=storage.now_iso(),confirmation='Docs',reason='delete')
+
+    def test_ledger_migration_is_metadata_only_and_refuses_unsafe_downgrade(self):
+        from tests.test_database import run_alembic
+        self.schedule()
+        with PostgresConnection(str(self.path)) as c:
+            before=c.execute('SELECT * FROM archive_versions ORDER BY id').fetchall()
+        refused=run_alembic(self.path,'0059_delayed_cloud_deletion','downgrade')
+        self.assertNotEqual(refused.returncode,0)
+        with PostgresConnection(str(self.path)) as c:
+            c.execute("UPDATE jobs SET status='cancelled' WHERE id=%s",(self.job_id,))
+        for revision,command in (('0059_delayed_cloud_deletion','downgrade'),('head','upgrade')):
+            result=run_alembic(self.path,revision,command)
+            self.assertEqual(result.returncode,0,result.stderr)
+            with PostgresConnection(str(self.path)) as c:
+                self.assertEqual(c.execute('SELECT * FROM archive_versions ORDER BY id').fetchall(),before)
+        self.assertEqual(self.provider.deleted,[])
 
     def test_worker_cannot_publish_after_claim_takeover(self):
         self.schedule()

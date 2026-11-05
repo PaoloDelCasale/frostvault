@@ -268,8 +268,17 @@ def process(job: dict[str, Any], move: dict[str, Any]) -> None:
             # Same bytes, same release clock; a class move is not a new local edit.
             connection.execute("UPDATE archive_versions SET verified_at=(SELECT verified_at FROM archive_versions WHERE id=%s) WHERE id=%s",
                                (move["source_archive_id"], new_id))
-            connection.execute("UPDATE local_copies SET matched_archive_version_id=%s WHERE vault_file_id=%s AND matched_archive_version_id=%s",
-                               (new_id,job["vault_file_id"],move["source_archive_id"]))
+            connection.execute("""UPDATE local_copies SET
+                matched_archive_version_id=CASE WHEN matched_archive_version_id=%s THEN %s ELSE matched_archive_version_id END,
+                cloud_only_version_id=CASE WHEN cloud_only_version_id=%s THEN %s ELSE cloud_only_version_id END
+                WHERE vault_file_id=%s""",
+                (move["source_archive_id"],new_id,move["source_archive_id"],new_id,job["vault_file_id"]))
+            # A representation-only replacement must not release a Cloud-only
+            # Conflict when the old provider version becomes purged (#411).
+            connection.execute("""UPDATE catalog_incidents SET archive_version_id=%s
+                WHERE vault_file_id=%s AND archive_version_id=%s
+                  AND kind='cloud_only_conflict' AND status='open'""",
+                (new_id,job["vault_file_id"],move["source_archive_id"]))
             connection.execute("UPDATE jobs SET archive_version_id=%s WHERE id=%s", (new_id,job["id"]))
             connection.execute("UPDATE vault_class_moves SET destination_archive_id=%s,destination_version_id=%s WHERE job_id=%s",
                                (new_id,destination,job["id"]))
