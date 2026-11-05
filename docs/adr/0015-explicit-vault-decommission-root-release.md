@@ -1,5 +1,9 @@
 # Release Vault roots only through explicit terminal decommission
 
+> Superseded by ADR-0020 (#428): Stop Protection never removes Local Copies;
+> cloud deletion is Cloud-only-only, with a fixed seven-day cancellable delay.
+> The original decision below is historical, not an available workflow.
+
 A Vault's operational availability (`enabled`) and ownership of its local root
 are separate concerns. Disabling, losing a mount, removing members, or otherwise
 making a Vault unavailable never releases its directory. Root occupancy is

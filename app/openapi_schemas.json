@@ -3,137 +3,36 @@
     "NotificationsResponse": {
       "type": "object",
       "properties": {
-        "items": {
-          "type": "array",
-          "items": {
-            "$ref": "#/components/schemas/NotificationItem"
-          }
-        },
-        "unread_count": {
-          "type": "integer"
-        },
-        "open_problem_count": {
-          "type": "integer"
-        },
-        "email_configured": {
-          "type": "boolean"
-        },
-        "has_more": {
-          "type": "boolean"
-        }
+        "items": {"type": "array", "items": {"$ref": "#/components/schemas/NotificationItem"}},
+        "unread_count": {"type": "integer"},
+        "open_problem_count": {"type": "integer"},
+        "email_configured": {"type": "boolean"},
+        "has_more": {"type": "boolean"}
       },
-      "required": [
-        "items",
-        "unread_count",
-        "open_problem_count",
-        "email_configured",
-        "has_more"
-      ]
+      "required": ["items", "unread_count", "open_problem_count", "email_configured", "has_more"]
     },
     "NotificationItem": {
       "type": "object",
       "properties": {
-        "id": {
-          "type": "integer"
-        },
-        "user_id": {
-          "type": "integer"
-        },
-        "vault_id": {
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "job_id": {
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "event": {
-          "type": "string"
-        },
-        "title": {
-          "type": "string"
-        },
-        "body": {
-          "type": "string"
-        },
-        "title_key": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "body_key": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "message_params": {
-          "type": "object",
-          "additionalProperties": true
-        },
-        "in_app_enabled": {
-          "type": "boolean"
-        },
-        "dedupe_key": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "created_at": {
-          "type": "string"
-        },
-        "read": {
-          "type": "boolean"
-        },
-        "read_at": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "problem_status": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "enum": [
-            "open",
-            "resolved",
-            null
-          ]
-        },
-        "resolved_at": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "id": {"type": "integer"},
+        "user_id": {"type": "integer"},
+        "vault_id": {"type": ["integer", "null"]},
+        "job_id": {"type": ["integer", "null"]},
+        "event": {"type": "string"},
+        "title": {"type": "string"},
+        "body": {"type": "string"},
+        "title_key": {"type": ["string", "null"]},
+        "body_key": {"type": ["string", "null"]},
+        "message_params": {"type": "object", "additionalProperties": true},
+        "in_app_enabled": {"type": "boolean"},
+        "dedupe_key": {"type": ["string", "null"]},
+        "created_at": {"type": "string"},
+        "read": {"type": "boolean"},
+        "read_at": {"type": ["string", "null"]},
+        "problem_status": {"type": ["string", "null"], "enum": ["open", "resolved", null]},
+        "resolved_at": {"type": ["string", "null"]}
       },
-      "required": [
-        "id",
-        "user_id",
-        "vault_id",
-        "job_id",
-        "event",
-        "title",
-        "body",
-        "title_key",
-        "body_key",
-        "message_params",
-        "in_app_enabled",
-        "dedupe_key",
-        "created_at",
-        "read",
-        "read_at",
-        "problem_status",
-        "resolved_at"
-      ]
+      "required": ["id", "user_id", "vault_id", "job_id", "event", "title", "body", "title_key", "body_key", "message_params", "in_app_enabled", "dedupe_key", "created_at", "read", "read_at", "problem_status", "resolved_at"]
     },
     "AdminVault": {
       "additionalProperties": false,
@@ -244,50 +143,15 @@
     "RecoveryKitStatus": {
       "type": "object",
       "additionalProperties": true,
-      "required": [
-        "configured",
-        "fingerprint",
-        "custody_acknowledged",
-        "acknowledged_at",
-        "metadata_restore"
-      ],
+      "required": ["configured", "fingerprint", "custody_acknowledged", "acknowledged_at", "metadata_restore"],
       "properties": {
-        "configured": {
-          "type": "boolean"
-        },
-        "fingerprint": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "custody_acknowledged": {
-          "type": "boolean"
-        },
-        "acknowledged_at": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "metadata_restore": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "required": [
-            "backup_created_at",
-            "updated_files"
-          ],
-          "properties": {
-            "backup_created_at": {
-              "type": "string"
-            },
-            "updated_files": {
-              "type": "integer"
-            }
-          }
-        }
+        "configured": {"type": "boolean"},
+        "fingerprint": {"type": ["string", "null"]},
+        "custody_acknowledged": {"type": "boolean"},
+        "acknowledged_at": {"type": ["string", "null"]},
+        "metadata_restore": {"type": ["object", "null"], "required": ["backup_created_at", "updated_files"], "properties": {
+          "backup_created_at": {"type": "string"}, "updated_files": {"type": "integer"}
+        }}
       }
     },
     "AdminVaultsResponse": {
@@ -526,18 +390,8 @@
       "additionalProperties": true,
       "description": "Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed.",
       "properties": {
-        "last_known_states": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "number"
-          }
-        },
-        "last_known_at": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
+        "last_known_states": { "type": "object", "additionalProperties": { "type": "number" } },
+        "last_known_at": { "type": ["string", "null"] },
         "available_actions": {
           "additionalProperties": {
             "type": "number"
@@ -763,9 +617,7 @@
     "FilesResponse": {
       "additionalProperties": true,
       "properties": {
-        "protection_suspended": {
-          "type": "boolean"
-        },
+        "protection_suspended": { "type": "boolean" },
         "aggregate_status": {
           "description": "Directory aggregate readiness for this listing: ready, loading (no projection yet), or stale (showing prior projection while rebuild/dirty work converges).",
           "enum": [
@@ -1368,17 +1220,8 @@
           "type": "array"
         },
         "local_release_after_days": {
-          "enum": [
-            90,
-            180,
-            365,
-            730,
-            null
-          ],
-          "type": [
-            "integer",
-            "null"
-          ]
+          "enum": [90, 180, 365, 730, null],
+          "type": ["integer", "null"]
         },
         "stability_seconds": {
           "type": "number"
@@ -1632,21 +1475,9 @@
     "StatsResponse": {
       "additionalProperties": true,
       "properties": {
-        "protection_suspended": {
-          "type": "boolean"
-        },
-        "protection_state": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "last_known_states": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "number"
-          }
-        },
+        "protection_suspended": { "type": "boolean" },
+        "protection_state": { "type": ["string", "null"] },
+        "last_known_states": { "type": "object", "additionalProperties": { "type": "number" } },
         "active_jobs": {
           "type": "number"
         },
@@ -1839,18 +1670,9 @@
       "additionalProperties": true,
       "description": "Vault File protection observation: pending, protected, problem, unconfirmed or cloud_only. Restore progress is independent.",
       "properties": {
-        "last_known_state": {
-          "type": "string"
-        },
-        "last_known_at": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "previous_snapshot_protected": {
-          "type": "boolean"
-        },
+        "last_known_state": { "type": "string" },
+        "last_known_at": { "type": ["string", "null"] },
+        "previous_snapshot_protected": { "type": "boolean" },
         "availability": {
           "type": [
             "string",

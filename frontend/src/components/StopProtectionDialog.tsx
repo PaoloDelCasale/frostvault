@@ -61,6 +61,21 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
     } finally { setBusy(false); }
   }
 
+  async function keepRemaining() {
+    setBusy(true);
+    setError("");
+    try {
+      setOperation(await stopProtection(vaultId, { cloud_disposition: "keep", confirmation: vaultName,
+        reason: t("stop_protection.keep_remaining") }));
+      await onCompleted?.();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally { setBusy(false); }
+  }
+
+  const failed = operation?.jobs.some((job) => job.status === "failed")
+    && operation.jobs.every((job) => ["completed", "cancelled", "failed"].includes(job.status));
+
   return <Dialog open={open} onOpenChange={onOpenChange} title={t("stop_protection.title")}
     description={t("stop_protection.description", { vault: vaultName })}>
     <div className="grid gap-4">
@@ -70,6 +85,12 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
         <p>{t(operation.root_released ? "stop_protection.stopped" : "stop_protection.pending")}</p>
         {operation.pending_until ? <p>{t("stop_protection.deadline", { date: operation.pending_until })}</p> : null}
         <p className="text-sm text-muted">{t("stop_protection.cloud_retained_help")}</p>
+        {failed && !operation.root_released ? <>
+          <p role="alert">{t("stop_protection.failed_help")}</p>
+          <Button variant="secondary" disabled={busy} onClick={() => void keepRemaining()}>
+            {t("stop_protection.keep_remaining")}
+          </Button>
+        </> : null}
         {operation.cancellable ? <Button variant="secondary" disabled={busy} onClick={() => void cancel()}>
           {t("stop_protection.cancel_deletion")}
         </Button> : null}

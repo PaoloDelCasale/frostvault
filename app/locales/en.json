@@ -519,5 +519,9 @@
   "stop_protection.deadline": "Deletion cannot begin before {date}.",
   "stop_protection.cloud_retained_help": "Retained cloud files remain in their original S3 namespace. Recover them with the Recovery Kit instructions and any authorized S3 tool.",
   "stop_protection.cancel_deletion": "Cancel deletion and keep cloud copies",
-  "stop_protection.refresh": "Refresh status"
+  "stop_protection.refresh": "Refresh status",
+  "ui.duration_days_one": "{n}-day",
+  "ui.duration_days_other": "{n}-day",
+  "stop_protection.keep_remaining": "Keep remaining cloud copies and release the folder",
+  "stop_protection.failed_help": "Deletion partially failed. Completed deletions cannot be undone. Keep the remaining copies to release this folder safely."
 }

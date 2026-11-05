@@ -30,9 +30,8 @@ export function VaultAccessPage({
     message: string;
     error: boolean;
   } | null>(null);
-  const [stopOpen, setStopOpen] = useState(
-    protectionState !== "active",
-  );
+  const [stopOpen, setStopOpen] = useState(protectionState !== "active");
+  const [stoppedHere, setStoppedHere] = useState(false);
 
   const show = useCallback((message: string, error = false) => {
     setNotice({ message, error });
@@ -126,13 +125,16 @@ export function VaultAccessPage({
 
       <StopProtectionDialog
         open={stopOpen}
-        onOpenChange={setStopOpen}
+        onOpenChange={(open) => {
+          setStopOpen(open);
+          if (!open && stoppedHere) {
+            if (onStopped) onStopped();
+            else window.location.href = "/no-vault";
+          }
+        }}
         vaultName={vaultName}
         vaultId={vaultId}
-        onCompleted={() => {
-          if (onStopped) onStopped();
-          else window.location.href = "/no-vault";
-        }}
+        onCompleted={() => setStoppedHere(true)}
       />
 
       <Toast

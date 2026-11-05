@@ -1,13 +1,15 @@
 import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { configureApiClient, resetApiClientForTests } from "@/api";
+import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 
-const messages = JSON.parse(readFileSync(new URL("../../app/locales/en.json", import.meta.url), "utf8"));
+const messages = JSON.parse(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../app/locales/en.json"), "utf8"));
 const initial = { vault_id: 1, vault_name: "Photos", stopped: false, root_released: false,
   cloud_disposition: "keep", group_id: null, jobs: [], cancellable: false, pending_until: null };
 const pending = { ...initial, stopped: true, cloud_disposition: "delete", group_id: "group",
@@ -25,7 +27,7 @@ function setup() {
       : method === "POST" ? pending : initial;
     return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
   }) });
-  render(<I18nProvider><StopProtectionDialog open onOpenChange={vi.fn()} vaultId={1} vaultName="Photos" /></I18nProvider>);
+  render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider><StopProtectionDialog open onOpenChange={vi.fn()} vaultId={1} vaultName="Photos" /></I18nProvider></ApiQueryProvider>);
   return calls;
 }
 

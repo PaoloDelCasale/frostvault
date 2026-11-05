@@ -178,14 +178,14 @@ def _validate_files(connection: Any, vault: dict[str, Any], files: list[dict[str
     if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
         raise CloudDeletionError("Protection observations are not confirmed")
     for row in files:
-        if (row["presence"] != "missing" or row["cloud_only_version_id"] is not None
+        if (row["presence"] not in {None, "missing"} or row["cloud_only_version_id"] is not None
                 or row["integrity"] != "verified" or row["availability"] != "available"
                 or not row["path"]):
             raise CloudDeletionError("Only Cloud-only files can be deleted from the cloud")
         pending = connection.execute("""
             SELECT 1 FROM jobs WHERE vault_file_id=%s
               AND status NOT IN ('completed','failed','cancelled')
-              AND (%s IS NULL OR group_id IS DISTINCT FROM %s) LIMIT 1
+              AND (CAST(%s AS TEXT) IS NULL OR group_id IS DISTINCT FROM %s) LIMIT 1
         """, (row["vault_file_id"], own_group, own_group)).fetchone()
         if pending:
             raise CloudDeletionError("Selected file has pending work")

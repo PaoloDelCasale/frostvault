@@ -43,15 +43,19 @@ The short public identity of the current Recovery Kit, to compare with the
 independently stored kit and its one custody acknowledgment.
 _Avoid_: Master key, Checksum file
 
-**Vault Decommission**:
-A deliberate, auditable lifecycle that quiesces one Vault, applies explicit
-Local Copy and cloud-copy dispositions, and releases its root only after both
-are terminal and verified. Disabling a Vault is never a decommission.
-_Avoid_: Disable, Delete Vault, Automatic release
+**Stop Protection**:
+The Owner's deliberate end to a folder's automatic protection, keeping all Local
+Copies and choosing either retained cloud content or Delayed Cloud Deletion.
+_Avoid_: Decommission, Delete Vault, Disable
+
+**Delayed Cloud Deletion**:
+The Owner's explicit permanent removal of Cloud-only content after a seven-day
+cancellable delay; it never removes Local Copies or follows an SMB deletion.
+_Avoid_: Purge now, Hide, Sync deletion
 
 **Vault Tombstone**:
-The non-operational Vault and retained identity/history that remain after Vault
-Decommission releases its root.
+The non-operational Vault and retained identity/history after Stop Protection
+releases its root.
 _Avoid_: Deleted Vault, Active Vault
 
 **Vault File**:

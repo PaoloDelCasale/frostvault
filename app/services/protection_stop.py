@@ -48,6 +48,16 @@ def stop_protection(connection: Any, *, vault_id: int, actor_user_id: int,
         existing = connection.execute("SELECT * FROM protection_stops WHERE vault_id=%s", (vault_id,)).fetchone()
         if existing and existing["cloud_disposition"] == cloud_disposition:
             return status(connection, vault_id)
+        if existing and cloud_disposition == "keep" and not vault["root_released_at"]:
+            active = connection.execute("""SELECT 1 FROM jobs WHERE vault_id=%s
+                AND status NOT IN ('completed','failed','cancelled') LIMIT 1""", (vault_id,)).fetchone()
+            if not active:
+                connection.execute("UPDATE protection_stops SET cloud_disposition='keep' WHERE vault_id=%s", (vault_id,))
+                record_audit_event(connection, event="folder_protection.cloud_retained", actor_user_id=actor_user_id,
+                                   vault_id=vault_id, outcome="success", reason=reason.strip(),
+                                   group_id=existing["group_id"], completed_deletions_not_undone=True)
+                reconcile_one(connection, vault_id)
+                return status(connection, vault_id)
         raise ValueError("Folder protection has already stopped")
     if vault["relocation_state"] != "ready":
         raise ValueError("Reconnect must complete before stopping protection")
@@ -82,13 +92,14 @@ def reconcile_one(connection: Any, vault_id: int) -> None:
     stop = connection.execute("SELECT * FROM protection_stops WHERE vault_id=%s", (vault_id,)).fetchone()
     if not stop or vault["root_released_at"]:
         return
-    if stop["group_id"]:
+    if stop["group_id"] and stop["cloud_disposition"] == "delete":
         jobs = connection.execute("SELECT status FROM jobs WHERE vault_id=%s AND group_id=%s",
                                   (vault_id, stop["group_id"])).fetchall()
-        # Failed deletion is not proof of terminal custody: keep root allocated
-        # until explicitly choosing keep (cancel endpoint after a failure).
+        # Fail closed until the Owner explicitly chooses keep after a failure.
         if not jobs or any(j["status"] not in {"completed", "cancelled"} for j in jobs):
             return
+        if any(j["status"] == "cancelled" for j in jobs):
+            connection.execute("UPDATE protection_stops SET cloud_disposition='keep' WHERE vault_id=%s", (vault_id,))
     at = cloud_deletion.now_iso()
     connection.execute("""UPDATE vaults SET decommission_state='decommissioned',
         decommissioned_at=%s,root_released_at=%s WHERE id=%s""", (at, at, vault_id))

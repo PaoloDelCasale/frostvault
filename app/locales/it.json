@@ -519,5 +519,9 @@
   "stop_protection.deadline": "L’eliminazione non può iniziare prima del {date}.",
   "stop_protection.cloud_retained_help": "I file mantenuti nel cloud restano nel loro namespace S3 originale. Per recuperarli usa le istruzioni del Kit di recupero con uno strumento S3 autorizzato.",
   "stop_protection.cancel_deletion": "Annulla eliminazione e mantieni le copie cloud",
-  "stop_protection.refresh": "Aggiorna stato"
+  "stop_protection.refresh": "Aggiorna stato",
+  "ui.duration_days_one": "{n} giorno",
+  "ui.duration_days_other": "{n} giorni",
+  "stop_protection.keep_remaining": "Mantieni le copie cloud rimaste e rilascia la cartella",
+  "stop_protection.failed_help": "Eliminazione parzialmente fallita. Le cancellazioni completate non sono annullabili. Mantieni le copie rimaste per rilasciare la cartella in sicurezza."
 }
