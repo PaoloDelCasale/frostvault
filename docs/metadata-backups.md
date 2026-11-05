@@ -147,8 +147,9 @@ the private scratch directory. The downloaded kit includes these steps offline.
    This also invalidates restored local/mount observations and cancels stale
    nonterminal Jobs without filesystem/S3 operations: request wanted work again
    after reconnect. Unfinished deletion targets are retired too, so cancelled
-   consent cannot block later protection; already deleted evidence is retained. Every active Vault stays suspended until explicitly
-   reconnected, even if an old inode happens to match. Stopped folders stay
+   consent cannot block later protection; already deleted evidence is retained.
+   Every active Vault stays suspended until explicitly reconnected, even if an
+   old inode happens to match. Stopped folders stay
    stopped; cancelled deletion requests never resume protection. Retained cloud
    content from stopped folders is recovered with the manual S3 route below.
    Do not start workers

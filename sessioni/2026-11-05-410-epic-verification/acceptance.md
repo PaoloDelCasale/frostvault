@@ -96,7 +96,7 @@ unfinished deletion targets while retaining completed deletion evidence.
 Restoring a backup with delayed deletion cancelled its Jobs but left item-level
 `cloud_deletion_items.status='pending'`. `queue_auto_uploads` independently excludes
 those items: after reconnect and a later local edit, protection could remain
-silently starved. The original source scan/reconnect tests mocked automatic
+starved despite cancelled consent. The original source scan/reconnect tests mocked automatic
 admission and did not expose this cross-feature interaction.
 
 `record_metadata_restore` now retires pending/failed targets for noncompleted
