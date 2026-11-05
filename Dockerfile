@@ -5,7 +5,7 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build:ci
 
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 LABEL org.opencontainers.image.title="FrostVault" \
       org.opencontainers.image.description="Self-hosted S3 archival and recovery" \
