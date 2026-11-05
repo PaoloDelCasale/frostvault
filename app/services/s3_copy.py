@@ -500,11 +500,17 @@ def _verify_storage_class_destination(
         )
     destination_checksum = _full_object_sha256_checksum(destination)
     if expected_composite_checksum and destination.get("ChecksumType") == "COMPOSITE":
-        if destination.get("ChecksumSHA256") != expected_composite_checksum:
-            raise RuntimeError("Multipart copy failed its composite content-integrity check")
-        # The expected composite was independently calculated while hashing the
-        # entire exact source against the verified plaintext digest, not ETags.
-        destination_checksum = expected_sha256_checksum
+        # Some compatible providers expose a non-AWS composite encoding. Never
+        # accept that metadata: only an independent exact-VersionId full SHA256
+        # readback can substitute for the expected composite. Cold unreadable or
+        # corrupt bytes still fail closed, without requesting a restore.
+        destination_checksum = (
+            expected_sha256_checksum
+            if destination.get("ChecksumSHA256") == expected_composite_checksum
+            else None
+        )
+        # The matching composite is independently anchored to the verified full
+        # source digest, not an ETag or provider-supplied part hash alone.
     if destination_checksum is None:
         destination_checksum = _sha256_s3_version(
             client,

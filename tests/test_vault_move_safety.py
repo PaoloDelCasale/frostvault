@@ -130,6 +130,25 @@ class ExactCopyTests(unittest.TestCase):
         self.client.delete_object.assert_not_called()
         self.assertEqual(self.client.create_multipart_upload.call_args.kwargs["ChecksumType"],"COMPOSITE")
 
+    def test_nonconforming_composite_metadata_requires_full_exact_readback(self):
+        self.client.head_object.return_value={"VersionId":"dest","ContentLength":3,"StorageClass":"STANDARD_IA",
+                                              "ChecksumType":"COMPOSITE","ChecksumSHA256":"provider-incompatible"}
+        self.client.get_object.return_value={'Body':io.BytesIO(b'abc')}
+        s3_copy._verify_storage_class_destination(self.client,bucket="b",object_key="k",source_version_id="source",
+            candidate_version_id="dest",target_class="STANDARD_IA",expected_size=3,
+            expected_sha256_checksum=self.checksum,expected_composite_checksum="expected-2")
+        self.assertEqual(self.client.get_object.call_args.kwargs['VersionId'],'dest')
+
+    def test_wrong_composite_and_corrupt_bytes_fail_without_deletion(self):
+        self.client.head_object.return_value={"VersionId":"dest","ContentLength":3,"StorageClass":"STANDARD_IA",
+                                              "ChecksumType":"COMPOSITE","ChecksumSHA256":"provider-incompatible"}
+        self.client.get_object.return_value={'Body':io.BytesIO(b'bad')}
+        with self.assertRaisesRegex(RuntimeError,'integrity'):
+            s3_copy._verify_storage_class_destination(self.client,bucket="b",object_key="k",source_version_id="source",
+                candidate_version_id="dest",target_class="STANDARD_IA",expected_size=3,
+                expected_sha256_checksum=self.checksum,expected_composite_checksum="expected-2")
+        self.client.delete_object.assert_not_called()
+
     def test_cold_composite_destination_verifies_without_get_or_restore(self):
         self.client.head_object.return_value={"VersionId":"dest","ContentLength":3,"StorageClass":"DEEP_ARCHIVE",
                                               "ChecksumType":"COMPOSITE","ChecksumSHA256":"composite-2"}
