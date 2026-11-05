@@ -147,8 +147,10 @@ the private scratch directory. The downloaded kit includes these steps offline.
    This also invalidates restored local/mount observations and cancels stale
    nonterminal Jobs without filesystem/S3 operations: request wanted work again
    after reconnect. Every active Vault stays suspended until explicitly
-   reconnected, even if an old inode happens to match. Retained decommission
-   state remains quiesced and must be reviewed deliberately. Do not start workers
+   reconnected, even if an old inode happens to match. Stopped folders stay
+   stopped; cancelled deletion requests never resume protection. Retained cloud
+   content from stopped folders is recovered with the manual S3 route below.
+   Do not start workers
    against the restored catalog before this step.
 6. Configure AWS, OIDC environment and `BOOTSTRAP_ADMIN_*` securely. Start the
    app and sign in. The current Emergency Password is reapplied at startup and

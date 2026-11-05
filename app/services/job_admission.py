@@ -13,7 +13,7 @@ TERMINAL_JOB_STATUSES = ("completed", "failed", "cancelled")
 
 
 def lock_vault(
-    connection: Any, vault_id: int, *, allow_decommission: bool = False
+    connection: Any, vault_id: int
 ) -> None:
     """Serialize admission and reject normal work for a quiesced Vault."""
     row = connection.execute(
@@ -26,7 +26,5 @@ def lock_vault(
     if not row:
         raise LookupError("vault_not_found")
     lifecycle = str(row.get("decommission_state") or "active")
-    if lifecycle != "active" and not (
-        allow_decommission and lifecycle == "decommissioning"
-    ):
+    if lifecycle != "active":
         raise LookupError("vault_quiesced")

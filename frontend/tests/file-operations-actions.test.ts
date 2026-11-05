@@ -62,7 +62,7 @@ const directory: ArchiveListItem = {
     upload: 2,
     recover: 1,
     "free-space": 3,
-    "cloud-purge": 2,
+    "cloud-purge": 0,
 
   },
 };
@@ -84,7 +84,6 @@ describe("availableActions — capability gating (seam 2)", () => {
       "upload",
       "recover",
       "free-space",
-      "cloud-purge",
     ]);
     expect(availableActions(cloudOnlyFile, ownerCaps).map((a) => a.id)).toEqual([
       "recover",
@@ -96,7 +95,7 @@ describe("availableActions — capability gating (seam 2)", () => {
     const actions = availableActions(eligibleFile, ownerCaps);
     expect(actions.find((a) => a.id === "free-space")?.tone).toBe("default");
     expect(actions.map((a) => a.id)).not.toContain("cloud-archive");
-    expect(actions.find((a) => a.id === "cloud-purge")?.tone).toBe("danger");
+    expect(availableActions(cloudOnlyFile, ownerCaps).find((a) => a.id === "cloud-purge")?.tone).toBe("danger");
   });
 
   it("without cloud deletion offers upload/recover/free-space only", () => {
@@ -119,7 +118,6 @@ describe("availableActions — capability gating (seam 2)", () => {
     expect(availableActions(eligibleFile, caps).map((a) => a.id)).toEqual([
       "upload",
       "recover",
-      "cloud-purge",
     ]);
     expect(
       availableActions(directory, caps).map((a) => a.id),
@@ -143,16 +141,10 @@ describe("availableActions — capability gating (seam 2)", () => {
     ]);
   });
 
-  it("offers cloud deletion on directories with cloud-bearing children", () => {
-    expect(availableActions(directory, ownerCaps).map((a) => a.id)).toEqual([
-      "upload",
-      "recover",
-      "free-space",
-      "cloud-purge",
-    ]);
-    expect(
-      availableActions(directory, ownerCaps).find((a) => a.id === "cloud-purge"),
-    ).toMatchObject({ count: 2, tone: "danger" });
+  it("offers cloud deletion only on wholly Cloud-only directories", () => {
+    expect(availableActions(directory, ownerCaps).map((a) => a.id)).not.toContain("cloud-purge");
+    expect(availableActions({ ...directory, state: "cloud_only", available_actions: { "cloud-purge": 3 } }, ownerCaps))
+      .toContainEqual({ id: "cloud-purge", count: 3, tone: "danger" });
   });
 
   it("hides cloud deletion on local-only directories", () => {
@@ -187,11 +179,10 @@ describe("partitionRowActions — essential vs overflow", () => {
     expect(primary.map((action) => action.id)).toEqual(["upload", "recover"]);
     expect(overflow.map((action) => action.id)).toEqual([
       "free-space",
-      "cloud-purge",
     ]);
     expect(
       groupRowActions(overflow).map((group) => group.category),
-    ).toEqual(["copies", "deletion"]);
+    ).toEqual(["copies"]);
   });
 });
 

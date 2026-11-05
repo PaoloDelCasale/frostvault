@@ -97,7 +97,7 @@ def _runtime_settings():
 from .services import worker_errors as worker_error_store
 from .services import notifications as notification_service
 from .services import cloud_deletion as cloud_deletion_service
-from .services import vault_decommission as vault_decommission_service
+from .services import protection_stop as protection_stop_service
 from .services import audit_events as audit_event_store
 from .services.cost_estimates import list_prices
 from .services.restore_estimates import (
@@ -144,6 +144,8 @@ LOCAL_SCAN_WRITE_BATCH_SIZE = 250
 # merges in bounded batches so other writers (lease renewal,
 # notifications) are not blocked for the full listing.
 CLOUD_SCAN_WRITE_BATCH_SIZE = 250
+# S3 DeleteObjects accepts at most 1,000 exact targets per request.
+CLOUD_DELETE_BATCH_SIZE = 1000
 
 
 # A claim is intentionally durable rather than process-local.  Five minutes is
@@ -687,8 +689,8 @@ def _apply_filesystem_changes(
     """Apply filesystem watcher events directly to the local catalog."""
     if vault_relocation.local_work_suspended(vault):
         raise RuntimeError("Source watcher suspended for Vault relocation")
-    if vault_decommission_service.local_work_suspended(vault):
-        raise RuntimeError("Source watcher suspended for Vault decommission")
+    if protection_stop_service.local_work_suspended(vault):
+        raise RuntimeError("Source watcher suspended after protection stopped")
     with db() as connection:
         state = connection.execute(
             """
@@ -700,7 +702,7 @@ def _apply_filesystem_changes(
     if state and state["relocation_state"] != "ready":
         raise RuntimeError("Source watcher suspended for Vault relocation")
     if state and state["decommission_state"] != "active":
-        raise RuntimeError("Source watcher suspended for Vault decommission")
+        raise RuntimeError("Source watcher suspended after protection stopped")
     access = source_layout.vault_local_access(vault["source_root"])
     if not access.local_operations_allowed:
         raise RuntimeError(
@@ -1585,7 +1587,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
         # still ready. A persisted scan_required row is intentionally allowed:
         # that scan is the recovery operation which must clear the suspension.
         vault = _current_scan_vault(vault)
-        if vault_decommission_service.local_work_suspended(vault):
+        if protection_stop_service.local_work_suspended(vault):
             return {"suspended": 1}
         if (
             str(vault.get("relocation_state") or "ready") == "ready"
@@ -3985,7 +3987,7 @@ def _checked_local_release_target(
             return _checked_local_release_target(job, connection=connection)
     target = ArchiveCatalog(connection).get_job_target(job["id"])
     if not local_release_is_confirmed(
-        connection, int(job["vault_id"]), decommission=job.get("origin") == "decommission"
+        connection, int(job["vault_id"])
     ):
         raise RuntimeError("Cleanup blocked: local or cloud protection is not confirmed")
     if target and target["job_origin"] == "automatic":
@@ -4574,11 +4576,13 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
         # Retaining this no-op protects direct legacy callers from bypassing the
         # durable group acquisition primitive.
         return
-    if not job.get("cloud_deletion_enabled"):
-        raise RuntimeError("Cloud deletion is disabled for this vault")
-    validate_cloud_vault(job)
     claimed_at = now_iso()
     with db() as connection:
+        if not cloud_deletion_service.validate_execution(
+            connection, vault_id=int(job["vault_id"]), group_id=str(job.get("group_id") or ""),
+            at=claimed_at,
+        ):
+            return
         purge_jobs, items = ArchiveCatalog(connection).load_claimed_purge_group(
             lead_job_id=int(job["id"]),
             claim_token=str(claim_token),
@@ -4590,16 +4594,24 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
     group_id = job.get("group_id")
     if not group_id:
         raise RuntimeError("Permanent purge is missing its group identity")
+    validate_cloud_vault(job)
     client = s3_client()
     failures = 0
-    for offset in range(0, len(items), 1000):
-        batch = items[offset : offset + 1000]
+    for offset in range(0, len(items), CLOUD_DELETE_BATCH_SIZE):
+        batch = items[offset : offset + CLOUD_DELETE_BATCH_SIZE]
         ensure_job_active(job["id"], "Cloud purge stopped")
         stamp = now_iso()
         # Keep all group members leased while a batch is in flight.  If a
         # cancellation or takeover won, do not turn its durable state back into
         # an item result after the provider call.
         with db() as connection:
+            if not cloud_deletion_service.validate_execution(
+                connection, vault_id=int(job["vault_id"]), group_id=str(group_id), at=stamp,
+            ):
+                return
+            # Validation may traverse a large selection while holding Job locks.
+            # Never revive an expired lease using the pre-validation timestamp.
+            stamp = now_iso()
             if not ArchiveCatalog(connection).renew_purge_group_claim(
                 vault_id=int(job["vault_id"]),
                 group_id=str(group_id),
@@ -5022,8 +5034,8 @@ def process_jobs_once(*, wait: bool = True) -> int:
             if vault_relocation.local_work_suspended({"id": vault_id}):
                 continue
             if (
-                job.get("origin") != "decommission"
-                and vault_decommission_service.local_work_suspended(job)
+                job.get("origin") != "stop-protection"
+                and protection_stop_service.local_work_suspended(job)
             ):
                 continue
             if job["action"] == "cloud-purge":
@@ -5144,7 +5156,7 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
         vault = _current_scan_vault(vault)
         if not vault.get("enabled", True) or vault_relocation.local_work_suspended(vault):
             return 0
-        if vault_decommission_service.local_work_suspended(vault):
+        if protection_stop_service.local_work_suspended(vault):
             return 0
         access = source_layout.vault_local_access(vault["source_root"])
         if not access.local_operations_allowed:
@@ -5202,7 +5214,7 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
         if vault_relocation.local_work_suspended(vault):
             await asyncio.sleep(1)
             continue
-        if vault_decommission_service.local_work_suspended(vault):
+        if protection_stop_service.local_work_suspended(vault):
             await asyncio.sleep(1)
             continue
         with db() as connection:
@@ -5655,10 +5667,7 @@ async def background_loop() -> None:
                 # Converge durable directory aggregate dirty/rebuild work off the
                 # /api/files request path (issue #229).
                 await asyncio.to_thread(process_directory_aggregate_maintenance)
-                await asyncio.to_thread(
-                    vault_decommission_service.reconcile_all,
-                    purge_delay_seconds=runtime.cloud_purge_delay_seconds,
-                )
+                await asyncio.to_thread(protection_stop_service.reconcile_all)
                 # Backlog is measured independently from the selected batch: an
                 # active lease is no longer claimable, while every remaining due
                 # queued row is visible even when concurrency is small. Stuck

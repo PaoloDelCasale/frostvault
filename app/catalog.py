@@ -83,6 +83,7 @@ class ArchiveCatalog:
         self._storage_class_source_supported: bool | None = None
         self._cloud_only_hold_supported: bool | None = None
         self._content_observation_supported: bool | None = None
+        self._delayed_deletion_supported: bool | None = None
 
     def _supports_storage_class_source(self) -> bool:
         """Keep migration-time catalog writes compatible with pre-0040 schemas."""
@@ -131,6 +132,28 @@ class ArchiveCatalog:
         ).fetchone()["present"])
         self._cloud_only_hold_supported = present
         return present
+
+    def _cancel_reappeared_deletions(self, vault_id: int, file_ids: list[str], at: str) -> None:
+        """A reappearance permanently revokes pending consent, even if removed again.
+
+        Observation already owns the Vault lock. Cancel the entire selection,
+        never leave a partially authorized delayed request behind.
+        """
+        if self._delayed_deletion_supported is None:
+            self._delayed_deletion_supported = bool(self.connection.execute("""
+                SELECT EXISTS (SELECT 1 FROM information_schema.tables
+                WHERE table_schema=current_schema() AND table_name='protection_stops') AS present
+            """).fetchone()["present"])
+        if not self._delayed_deletion_supported or not file_ids:
+            return
+        from .services.cloud_deletion import cancel_cloud_deletion
+        placeholders = ','.join('%s' for _ in file_ids)
+        groups = self.connection.execute(f"""SELECT DISTINCT group_id FROM jobs
+            WHERE vault_id=%s AND vault_file_id IN ({placeholders})
+              AND action='cloud-purge' AND status='pending_delay'""", (vault_id, *file_ids)).fetchall()
+        for row in groups:
+            cancel_cloud_deletion(self.connection, vault_id=vault_id, group_id=row["group_id"],
+                                  actor_user_id=None, cancelled_at=at)
 
     def _mark_path_aggregates_dirty(self, vault_id: int, path: str | None) -> None:
         mark_path_dirty(self.connection, vault_id, path)
@@ -344,6 +367,7 @@ class ArchiveCatalog:
                 "UPDATE local_copies SET recovered_at=%s WHERE vault_file_id=%s",
                 (recovered_at, file_id),
             )
+        self._cancel_reappeared_deletions(vault_id, [file_id], observed_at)
         self._mark_path_aggregates_dirty(vault_id, path)
         return file_id
 
@@ -663,6 +687,7 @@ class ArchiveCatalog:
             """,
             params,
         )
+        self._cancel_reappeared_deletions(vault_id, list(file_ids.values()), observed_at)
         mark_paths_dirty(self.connection, vault_id, paths)
         return file_ids
 
@@ -2762,15 +2787,15 @@ class ArchiveCatalog:
             SELECT j.*, v.source_root, v.s3_bucket,
                    v.s3_prefix,
                    v.uuid AS vault_uuid, v.name AS vault_name,
-                   v.cloud_deletion_enabled, v.decommission_state
+                   v.decommission_state
             FROM jobs j
             JOIN vaults v ON v.id=j.vault_id
             WHERE v.relocation_state='ready'
               AND (
                     (v.enabled=TRUE AND v.decommission_state='active'
-                     AND j.origin<>'decommission')
+                     AND j.origin IN ('manual','automatic'))
                  OR (v.decommission_state='decommissioning'
-                     AND j.origin='decommission')
+                     AND j.origin='stop-protection' AND j.action='cloud-purge')
               )
               AND ({predicate})
             ORDER BY j.requested_at ASC, j.id ASC
@@ -3075,9 +3100,9 @@ class ArchiveCatalog:
             WHERE v.relocation_state='ready'
               AND (
                     (v.enabled=TRUE AND v.decommission_state='active'
-                     AND j.origin<>'decommission')
+                     AND j.origin IN ('manual','automatic'))
                  OR (v.decommission_state='decommissioning'
-                     AND j.origin='decommission')
+                     AND j.origin='stop-protection' AND j.action='cloud-purge')
               )
               AND ({predicate})
             """,
@@ -3163,28 +3188,10 @@ class ArchiveCatalog:
         # the candidate read and inserts.
         # Every manual upload/recovery/free-space admission therefore observes
         # one serialized Vault state.
-        lock_vault(
-            self.connection,
-            vault_id,
-            allow_decommission=origin == "decommission",
-        )
+        lock_vault(self.connection, vault_id)
         self.last_skipped_same_class = 0
-        vault = self.connection.execute(
-            """
-            SELECT decommission_state
-            FROM vaults WHERE id=%s
-            """,
-            (vault_id,),
-        ).fetchone()
-        if vault is None:
-            raise ValueError(f"Vault {vault_id} not found")
-        lifecycle = str(vault.get("decommission_state") or "active")
-        if lifecycle != "active" and not (
-            lifecycle == "decommissioning" and origin == "decommission"
-        ):
-            raise ValueError("Vault is quiesced for decommission")
-        if origin == "decommission" and lifecycle != "decommissioning":
-            raise ValueError("Decommission Jobs require a quiesced Vault")
+        if origin not in {"manual", "automatic"}:
+            raise ValueError("Unsupported Job origin")
         clauses = ["vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'"]
         params: list[Any] = [vault_id]
         clauses.append(

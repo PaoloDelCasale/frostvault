@@ -127,12 +127,26 @@ and Cloud-only Conflicts remain held back.
   immediately. See [storage plans and upgrade safety](docs/aws-s3-bucket.md#vault-storage-plans).
 - Lifecycle synchronization preserves external bucket rules and the seven-day
   incomplete-multipart abort rule. Changing a plan never deletes cloud content.
-- **Purge from cloud permanently** deletes every selected Archive Version and
-  Delete Marker after a confirmed, cancellable delay.
-  A recently reauthenticated Owner can skip the remaining delay with
-  **Delete now**.
-- Cloud actions work on files and folders. Permanent folder and vault purges
-  batch S3 deletions while preserving per-item failures for safe retries.
+- **Delete from cloud** is available only for **Cloud-only** files (or folders
+  whose selected files are all Cloud-only). Type the exact Vault name and a
+  reason, with recent Owner reauthentication. A fixed **seven-day cancellable
+  delay** applies; there is no immediate deletion or acceleration. Every exact
+  VersionId is captured once, never expanded to new content during execution.
+  Local reappearance, changed cloud content or an untrusted/unavailable source
+  cancels the request instead of deleting the only cloud copy by mistake.
+- **Stop protecting this folder** always keeps local files. Choose **keep cloud**
+  or the same delayed cloud deletion. A cloud-backed file present on the server
+  blocks the delete choice: choose keep instead. Pending Jobs/scans must finish
+  or be cancelled first. Stop+delete reserves the root until terminal; cancelling
+  means keep cloud, not resume protection. Retained cloud content stays under its
+  original S3 namespace and can be recovered using the Recovery Kit's manual S3
+  instructions; the stopped Vault is a non-operational tombstone.
+- Migration **0059** cancels legacy delayed deletion requests; make new explicit
+  requests if still wanted. Finish legacy decommissions and reconcile interrupted
+  destructive Jobs with the previous release before upgrading. No migration calls
+  S3 or deletes local files. Remove `CLOUD_PURGE_DELAY_SECONDS`; it is no longer
+  configurable. The old enablement toggle, generated phrase and decommission
+  endpoints/UI are removed. A downgrade after Stop Protection is refused.
 - Safe renames are recognized automatically only for unique, identical content
   observed within the scan window. The new cloud key is verified before cleaning
   up the old key (permanently under Current Snapshot). Ambiguous matches stay new
@@ -461,8 +475,8 @@ configured prefix, read, upload, and request object restores. Automatic rename
 cleanup requires `s3:DeleteObjectVersion` to remove the old key's versions
 only after the new key is verified. The same permission removes superseded
 versions after verified uploads; permanent purge uses it too.
-Disabling the manual cloud-deletion setting does not disable verified snapshot
-replacement or automatic rename cleanup.
+The explicit seven-day delay applies to Owner-requested cloud deletion, not
+verified snapshot replacement or automatic rename cleanup.
 
 Use the Terraform baseline in
 [`infra/terraform/archive-bucket/`](infra/terraform/archive-bucket/) or apply
@@ -485,7 +499,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS`, `SMTP_USE_TLS` (optional; see below) |
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
-| Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RESTORE_*`, `CLOUD_PURGE_DELAY_SECONDS` |
+| Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RESTORE_*` |
 
 All installation configuration is environment-only and takes effect on process
 restart. There is no mutable settings UI or API. Before upgrading through

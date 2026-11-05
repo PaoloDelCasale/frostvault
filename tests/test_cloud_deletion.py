@@ -1,24 +1,5 @@
-"""Reversible archival and permanent cloud purge (issue #10).
-
-Seams under test:
-- `app.services.cloud_deletion` public helpers: vault deletion setting,
-  selection preview, confirmation phrase checks, delete-marker copy,
-  schedule/cancel gates for reversible archive and permanent purge.
-- Worker execution via `process_jobs_once` /
-  `process_cloud_purge`: S3 delete_object (marker only) vs
-  DeleteObjectVersion for every version/marker; cancel before delay
-  must never call S3; batch items resume with per-version failures;
-  post-marker notify failures must not fail-close archive (BUG-017).
-- Lifecycle rule builder emits NoncurrentVersionTransitions for retained
-  noncurrent Archive Versions (cheapest configured archive class).
-
-System boundaries mocked: S3 client. Catalog and jobs use a real PostgreSQL
-schema via Alembic.
-"""
-
+"""#428 PostgreSQL regression coverage; runs in PR CI, never a live database."""
 from __future__ import annotations
-
-from tests.postgres import PostgresConnection, database_dsn
 
 import tempfile
 import threading
@@ -30,1215 +11,312 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app.catalog import ArchiveCatalog
-
-from app.services import cloud_deletion
-from app.storage import process_jobs_once
-from app import storage as storage_module
+from app.services import cloud_deletion as deletion, protection_stop, vault_relocation
+from app import storage
+from tests.postgres import PostgresConnection, database_dsn
 from tests.test_database import run_alembic
 
-
-def _now() -> datetime:
-    return datetime(2026, 7, 23, 12, 0, 0, tzinfo=timezone.utc)
-
-
-def _iso(value: datetime) -> str:
-    return value.isoformat()
+START = datetime(2026, 11, 5, 12, 0, tzinfo=timezone.utc)
+DUE = START + timedelta(days=7)
 
 
-class _CloudDeletionTestCase(unittest.TestCase):
-    def setUp(self) -> None:
-        storage_module.cancelled_jobs.clear()
-        self.addCleanup(storage_module.cancelled_jobs.clear)
+class CloudDeletionTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.path = self.root / "catalog.db"
+        migrated = run_alembic(self.path)
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        self.source = self.root / "source"
+        self.source.mkdir()
+        for target, value in (("app.services.source_layout.vault_local_access",
+                               SimpleNamespace(local_operations_allowed=True)),
+                              ("app.services.source_layout.path_is_mount", False),
+                              ("app.services.cloud_deletion.now_iso", START.isoformat())):
+            patcher = patch(target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        with self.connection() as connection:
+            connection.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES (1,'owner','Owner','hash')")
+            connection.execute("""INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix,
+                root_identity_version,root_identity) VALUES (1,'photos','Photos',%s,'bucket','vaults/test/',%s,%s)""",
+                               (str(self.source), vault_relocation.ROOT_IDENTITY_VERSION, vault_relocation.root_identity(self.source)))
+            self.file_id = self.add_file(connection, "photo.jpg", count=2)
+        storage.cancelled_jobs.clear()
+        self.addCleanup(storage.cancelled_jobs.clear)
 
+    def connection(self):
+        return PostgresConnection(str(self.path))
 
-def _prepare_vault_with_versions(
-    root: Path,
-    *,
-    cloud_deletion_enabled: bool = False,
-    version_count: int = 2,
-    revision: str = "head",
-) -> tuple[Path, int, str]:
-    database_path = root / "catalog.db"
-    migrated = run_alembic(database_path, revision)
-    assert migrated.returncode == 0, migrated.stderr
-    source = root / "source"
-    source.mkdir()
-    with PostgresConnection(str(database_path)) as connection:
-        connection.execute(
-            """
-            INSERT INTO users(id, username, display_name, password_hash)
-            VALUES (1, 'owner', 'Owner', 'hash')
-            """
-        )
-        # The migration test seeds a pre-SDK schema; current fixtures have no
-        # transport identity. Keep the historical column only at that boundary.
-        legacy_column = ", rclone_remote" if revision != "head" else ""
-        legacy_value = ", 'remote'" if revision != "head" else ""
-        connection.execute(
-            f"""
-            INSERT INTO vaults(
-                id, slug, name, source_root, s3_bucket, s3_prefix, cloud_deletion_enabled{legacy_column}
-            ) VALUES (
-                2, 'docs', 'Docs Archive', %s, 'bucket', 'docs', %s{legacy_value}
-            )
-            """,
-            (str(source), cloud_deletion_enabled),
-        )
+    def add_file(self, connection, path, *, count=1):
         catalog = ArchiveCatalog(connection)
-        catalog.observe_local_copy(
-            vault_id=2,
-            path="report.txt",
-            file_type="regular",
-            size=12,
-            mtime_ns=1_700_000_000_000_000_000,
-            observed_at="2026-07-21T10:00:00+00:00",
-        )
-        file_row = catalog.get_file_by_path(2, "report.txt")
-        version_ids: list[str] = []
-        for index in range(version_count):
-            version_ids.append(
-                catalog.record_archive_version(
-                    vault_id=2,
-                    path="report.txt",
-                    object_key="docs/report.txt",
-                    provider_version_id=f"s3-v{index + 1}",
-                    size=10 + index,
-                    storage_class="STANDARD",
-                    etag=f"etag-{index}",
-                    uploaded_at=f"2026-07-21T10:0{index}:00+00:00",
-                    observed_at=f"2026-07-21T10:0{index}:00+00:00",
-                    scan_id="scan-1",
-                    origin="upload",
-                )
-            )
-            catalog.mark_version_verified(
-                version_ids[-1],
-                plaintext_sha256="a" * 64,
-                verified_at=f"2026-07-21T10:0{index}:30+00:00",
-            )
-        catalog.mark_local_copy_missing(
-            file_row["id"], observed_at="2026-07-21T11:00:00+00:00"
-        )
-        return database_path, 2, file_row["id"]
+        file_id = catalog.observe_local_copy(vault_id=1, path=path, file_type="regular", size=5,
+                                              mtime_ns=1, observed_at=START.isoformat())
+        for number in range(count):
+            version = catalog.record_archive_version(vault_id=1, path=path, object_key=f"vaults/test/{path}",
+                provider_version_id=f"{path}-v{number}", size=5, storage_class="STANDARD", etag="etag",
+                uploaded_at=(START - timedelta(days=1, seconds=-number)).isoformat(),
+                observed_at=START.isoformat(), scan_id="scan", origin="upload")
+            catalog.mark_version_verified(version, plaintext_sha256="a"*64, verified_at=START.isoformat())
+        catalog.mark_local_copy_missing(file_id, observed_at=START.isoformat())
+        return file_id
 
+    def schedule(self, connection, **kwargs):
+        values = dict(vault_id=1, paths=["photo.jpg"], is_directory=False, actor_user_id=1,
+                      requested_at=START.isoformat(), confirmation="Photos", reason="Owner deliberately deletes this file")
+        values.update(kwargs)
+        return deletion.schedule_cloud_purge(connection, **values)
 
-class CloudDeletionSettingTests(_CloudDeletionTestCase):
-    def test_vault_cloud_deletion_defaults_to_disabled(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            database_path = root / "catalog.db"
-            self.assertEqual(run_alembic(database_path).returncode, 0)
-            with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/src', 'b', 'p')
-                    """
-                )
-                enabled = cloud_deletion.is_cloud_deletion_enabled(connection, 1)
-            self.assertFalse(enabled)
+    def claim(self, scheduled, at=DUE):
+        with self.connection() as connection:
+            rows = ArchiveCatalog(connection).claim_purge_group(
+                lead_job_id=scheduled.job_ids[0], claim_token="worker", claimed_at=at.isoformat(),
+                claim_expires_at=(at+timedelta(minutes=10)).isoformat(), now=at.isoformat(),
+                message="deleting", message_key="job.cloud_purge_deleting")
+            self.assertTrue(rows)
+            job = connection.execute("""SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix,
+                v.root_identity,v.root_identity_version,v.relocation_state,v.decommission_state
+                FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s""", (scheduled.job_ids[0],)).fetchone()
+        return job
 
-    def test_owner_can_enable_cloud_deletion_setting(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            database_path = root / "catalog.db"
-            self.assertEqual(run_alembic(database_path).returncode, 0)
-            with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO users(id, username, display_name, password_hash)
-                    VALUES (9, 'owner', 'Owner', 'hash')
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/src', 'b', 'p')
-                    """
-                )
-                cloud_deletion.set_cloud_deletion_enabled(
-                    connection, vault_id=1, enabled=True, actor_user_id=9
-                )
-                self.assertTrue(cloud_deletion.is_cloud_deletion_enabled(connection, 1))
+    def execute(self, scheduled, at=DUE, client=None):
+        job = self.claim(scheduled, at)
+        client = client or Mock()
+        client.delete_objects.return_value = {}
+        with patch("app.database.settings", database_dsn=database_dsn(str(self.path))), \
+             patch("app.storage.now_iso", return_value=at.isoformat()), \
+             patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=client):
+            storage.process_cloud_purge(job)
+        return client
 
+    def test_exact_seven_day_delay_and_cancellation_prevents_every_delete(self):
+        with self.connection() as connection:
+            scheduled = self.schedule(connection)
+            self.assertEqual(datetime.fromisoformat(scheduled.pending_until), DUE)
+            self.assertEqual(len(scheduled.job_ids), 1)
+            items = connection.execute("SELECT provider_version_id FROM cloud_deletion_items ORDER BY id").fetchall()
+            self.assertEqual([r["provider_version_id"] for r in items], ["photo.jpg-v0", "photo.jpg-v1"])
+            claimed = ArchiveCatalog(connection).claim_purge_group(lead_job_id=scheduled.job_ids[0],
+                claim_token="early", claimed_at=(DUE-timedelta(seconds=1)).isoformat(),
+                claim_expires_at=(DUE+timedelta(minutes=10)).isoformat(), now=(DUE-timedelta(seconds=1)).isoformat(),
+                message="deleting", message_key="job.cloud_purge_deleting")
+            self.assertEqual(claimed, [])
+            deletion.cancel_cloud_deletion(connection, vault_id=1, group_id=scheduled.group_id,
+                actor_user_id=1, cancelled_at=(DUE-timedelta(seconds=1)).isoformat())
+        with self.connection() as connection:
+            self.assertFalse(ArchiveCatalog(connection).claim_purge_group(lead_job_id=scheduled.job_ids[0],
+                claim_token="late", claimed_at=DUE.isoformat(), claim_expires_at=(DUE+timedelta(hours=1)).isoformat(),
+                now=DUE.isoformat(), message="deleting", message_key="job.cloud_purge_deleting"))
+            self.assertEqual(connection.execute("SELECT count(*) AS n FROM archive_versions WHERE availability='available'").fetchone()["n"], 2)
 
-class DeletionPreviewTests(_CloudDeletionTestCase):
-    def test_preview_counts_objects_versions_and_bytes(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path, vault_id, _file_id = _prepare_vault_with_versions(
-                Path(directory), version_count=2
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                preview = cloud_deletion.preview_selection(
-                    connection,
-                    vault_id=vault_id,
-                    paths=["report.txt"],
-                    is_directory=False,
-                )
-            self.assertEqual(preview.object_count, 1)
-            self.assertEqual(preview.version_count, 2)
-            self.assertEqual(preview.byte_count, 21)
-            self.assertEqual(preview.delete_marker_count, 0)
+    def test_worker_after_seven_days_deletes_only_captured_exact_version_ids(self):
+        with self.connection() as connection:
+            scheduled = self.schedule(connection)
+        client = self.execute(scheduled)
+        self.assertEqual(client.delete_objects.call_args.kwargs["Delete"], {"Objects":[
+            {"Key":"vaults/test/photo.jpg", "VersionId":"photo.jpg-v0"},
+            {"Key":"vaults/test/photo.jpg", "VersionId":"photo.jpg-v1"}], "Quiet":True})
+        with self.connection() as connection:
+            self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone()["status"], "completed")
+            self.assertEqual(connection.execute("SELECT count(*) AS n FROM archive_versions WHERE availability='purged'").fetchone()["n"], 2)
 
-    def test_directory_preview_and_purge_select_nested_files_only(self) -> None:
-        """Folder selection uses path prefix matching without touching siblings."""
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            database_path = root / "catalog.db"
-            self.assertEqual(run_alembic(database_path).returncode, 0)
-            source = root / "source"
-            source.mkdir()
-            with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO users(id, username, display_name, password_hash)
-                    VALUES (1, 'owner', 'Owner', 'hash')
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix, cloud_deletion_enabled
-                    ) VALUES (
-                        2, 'docs', 'Docs Archive', %s, 'bucket', 'docs', TRUE
-                    )
-                    """,
-                    (str(source),),
-                )
+    def test_reappearing_local_file_without_watcher_cancels_worker(self):
+        with self.connection() as connection:
+            scheduled = self.schedule(connection)
+        (self.source / "photo.jpg").write_bytes(b"new different content")
+        client = self.execute(scheduled)
+        client.delete_objects.assert_not_called()
+        with self.connection() as connection:
+            self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone()["status"], "cancelled")
+            self.assertEqual(connection.execute("SELECT count(*) AS n FROM archive_versions WHERE availability='available'").fetchone()["n"], 2)
+
+    def test_observed_reappearance_permanently_revokes_whole_group_single_and_batch(self):
+        for batch in (False, True):
+            with self.subTest(batch=batch), self.connection() as connection:
+                connection.execute("UPDATE local_copies SET presence='missing',cloud_only_version_id=NULL")
+                scheduled = self.schedule(connection)
                 catalog = ArchiveCatalog(connection)
-                for path, key in (
-                    ("reports/a.txt", "docs/reports/a.txt"),
-                    ("reports/nested/b.txt", "docs/reports/nested/b.txt"),
-                    ("sibling.txt", "docs/sibling.txt"),
-                ):
-                    catalog.observe_local_copy(
-                        vault_id=2,
-                        path=path,
-                        file_type="regular",
-                        size=10,
-                        mtime_ns=1_700_000_000_000_000_000,
-                        observed_at="2026-07-21T10:00:00+00:00",
-                    )
-                    version_id = catalog.record_archive_version(
-                        vault_id=2,
-                        path=path,
-                        object_key=key,
-                        provider_version_id=f"s3-{path}",
-                        size=10,
-                        storage_class="STANDARD",
-                        etag=f"etag-{path}",
-                        uploaded_at="2026-07-21T10:00:00+00:00",
-                        observed_at="2026-07-21T10:00:00+00:00",
-                        scan_id="scan-1",
-                        origin="upload",
-                    )
-                    catalog.mark_version_verified(
-                        version_id,
-                        plaintext_sha256="b" * 64,
-                        verified_at="2026-07-21T10:00:30+00:00",
-                    )
-                preview = cloud_deletion.preview_selection(
-                    connection,
-                    vault_id=2,
-                    paths=["reports"],
-                    is_directory=True,
-                )
-                self.assertEqual(preview.object_count, 2)
-                scheduled = cloud_deletion.schedule_cloud_purge(
-                    connection,
-                    vault_id=2,
-                    paths=["reports"],
-                    is_directory=True,
-                    actor_user_id=1,
-                    requested_at=_iso(_now()),
-                    confirmation="Docs Archive",
-                    reason="test selection",
-                    generated_phrase="test-phrase",
-                    delay_seconds=3600,
-                )
-                paths = {
-                    row["path"]
-                    for row in connection.execute(
-                        "SELECT path FROM jobs WHERE group_id=%s",
-                        (scheduled.group_id,),
-                    ).fetchall()
-                }
-            self.assertEqual(paths, {"reports/a.txt", "reports/nested/b.txt"})
-            self.assertNotIn("sibling.txt", paths)
+                if batch:
+                    catalog.observe_local_copies_batch(vault_id=1, entries=[("photo.jpg", "regular", 4, 2, START.isoformat())])
+                else:
+                    catalog.observe_local_copy(vault_id=1,path="photo.jpg",file_type="regular",size=4,mtime_ns=2,observed_at=START.isoformat())
+                catalog.mark_local_copy_missing(self.file_id, observed_at=START.isoformat())
+                job = connection.execute("SELECT status FROM jobs WHERE id=%s", (scheduled.job_ids[0],)).fetchone()
+                self.assertEqual(job["status"], "cancelled")
 
+    def test_local_catalog_or_actual_presence_unknown_cloud_identity_and_busy_job_reject_admission(self):
+        for field, value in (("presence", "present"), ("presence", "unsupported")):
+            with self.subTest(value=value), self.connection() as connection:
+                connection.execute(f"UPDATE local_copies SET {field}=%s", (value,))
+                with self.assertRaises(deletion.CloudDeletionError): self.schedule(connection)
+                connection.execute("UPDATE local_copies SET presence='missing'")
+        with self.connection() as connection:
+            (self.source / "photo.jpg").write_bytes(b"data")
+            with self.assertRaises(deletion.CloudDeletionError): self.schedule(connection)
+            (self.source / "photo.jpg").unlink()
+            connection.execute("UPDATE archive_versions SET provider_version_id='null' WHERE version_number=1")
+            with self.assertRaises(deletion.CloudDeletionError): self.schedule(connection)
+            connection.execute("UPDATE archive_versions SET provider_version_id='photo.jpg-v0' WHERE version_number=1")
+            with self.assertRaises(deletion.ConfirmationRequired): self.schedule(connection, confirmation="random client phrase")
+            connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at)
+                VALUES (1,%s,'photo.jpg','recover','queued',%s,%s)""", (self.file_id, START.isoformat(), START.isoformat()))
+            with self.assertRaises(deletion.CloudDeletionError): self.schedule(connection)
+            self.assertEqual(connection.execute("SELECT count(*) AS n FROM cloud_deletion_items").fetchone()["n"], 0)
 
-class ConfirmationPhraseTests(_CloudDeletionTestCase):
-    def test_vault_name_or_generated_phrase_is_accepted(self) -> None:
-        self.assertTrue(
-            cloud_deletion.confirmation_matches(
-                provided="Docs Archive",
-                vault_name="Docs Archive",
-                generated_phrase="purple-orchid-42",
-            )
-        )
-        self.assertTrue(
-            cloud_deletion.confirmation_matches(
-                provided="purple-orchid-42",
-                vault_name="Docs Archive",
-                generated_phrase="purple-orchid-42",
-            )
-        )
-        self.assertFalse(
-            cloud_deletion.confirmation_matches(
-                provided="wrong",
-                vault_name="Docs Archive",
-                generated_phrase="purple-orchid-42",
-            )
-        )
+    def test_new_cloud_version_after_consent_is_never_deleted(self):
+        with self.connection() as connection:
+            scheduled = self.schedule(connection)
+            catalog = ArchiveCatalog(connection)
+            version = catalog.record_archive_version(vault_id=1,path="photo.jpg",object_key="vaults/test/photo.jpg",
+                provider_version_id="external-new-copy",size=5,storage_class="STANDARD",etag="new",
+                uploaded_at=DUE.isoformat(),observed_at=DUE.isoformat(),scan_id="new",origin="discovered")
+            catalog.mark_version_verified(version,plaintext_sha256="b"*64,verified_at=DUE.isoformat())
+        client = self.execute(scheduled)
+        client.delete_objects.assert_not_called()
 
+    def test_lost_mount_or_replaced_root_never_authorizes_cloud_deletion(self):
+        with self.connection() as connection:
+            scheduled = self.schedule(connection)
+        with patch("app.services.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=False)):
+            client = self.execute(scheduled)
+        client.delete_objects.assert_not_called()
 
-class PermanentPurgeGateTests(_CloudDeletionTestCase):
-    def test_purge_does_not_schedule_vault_files_without_cloud_items(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path, vault_id, _ = _prepare_vault_with_versions(
-                Path(directory), cloud_deletion_enabled=True, version_count=0
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                catalog.observe_local_copy(
-                    vault_id=vault_id,
-                    path="cloud.txt",
-                    file_type="regular",
-                    size=10,
-                    mtime_ns=1_700_000_000_000_000_001,
-                    observed_at="2026-07-21T10:00:00+00:00",
-                )
-                catalog.record_archive_version(
-                    vault_id=vault_id,
-                    path="cloud.txt",
-                    object_key="docs/cloud.txt",
-                    provider_version_id="cloud-v1",
-                    size=10,
-                    storage_class="STANDARD",
-                    etag="etag-cloud",
-                    uploaded_at="2026-07-21T10:00:00+00:00",
-                    observed_at="2026-07-21T10:00:00+00:00",
-                    scan_id="scan-1",
-                    origin="upload",
-                )
-                scheduled = cloud_deletion.schedule_cloud_purge(
-                    connection,
-                    vault_id=vault_id,
-                    paths=["report.txt", "cloud.txt"],
-                    is_directory=False,
-                    actor_user_id=1,
-                    requested_at=_iso(_now()),
-                    confirmation="Docs Archive",
-                    reason="permanent cleanup",
-                    generated_phrase="x",
-                    delay_seconds=60,
-                )
-                jobs = connection.execute(
-                    "SELECT path FROM jobs WHERE group_id=%s ORDER BY path",
-                    (scheduled.group_id,),
-                ).fetchall()
-            self.assertEqual([job["path"] for job in jobs], ["cloud.txt"])
+    def test_stop_keep_retains_local_and_cloud_and_releases_only_this_root(self):
+        (self.source / "photo.jpg").write_bytes(b"local")
+        with self.connection() as connection:
+            result = protection_stop.stop_protection(connection,vault_id=1,actor_user_id=1,
+                cloud_disposition="keep",confirmation="Photos",reason="stop")
+            self.assertTrue(result["stopped"])
+            self.assertTrue(result["root_released"])
+            self.assertEqual(connection.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"], 0)
+            self.assertEqual(connection.execute("SELECT count(*) AS n FROM archive_versions WHERE availability='available'").fetchone()["n"], 2)
+        self.assertEqual((self.source / "photo.jpg").read_bytes(), b"local")
 
-    def test_purge_group_total_bytes_matches_selection_preview(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path, vault_id, _file_id = _prepare_vault_with_versions(
-                Path(directory), cloud_deletion_enabled=True
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                catalog.observe_local_copy(
-                    vault_id=vault_id,
-                    path="appendix.txt",
-                    file_type="regular",
-                    size=5,
-                    mtime_ns=1_700_000_000_000_000_000,
-                    observed_at="2026-07-21T10:10:00+00:00",
-                )
-                catalog.record_archive_version(
-                    vault_id=vault_id,
-                    path="appendix.txt",
-                    object_key="docs/appendix.txt",
-                    provider_version_id="s3-appendix",
-                    size=5,
-                    storage_class="STANDARD",
-                    etag="etag-appendix",
-                    uploaded_at="2026-07-21T10:10:00+00:00",
-                    observed_at="2026-07-21T10:10:00+00:00",
-                    scan_id="scan-1",
-                    origin="upload",
-                )
-                scheduled = cloud_deletion.schedule_cloud_purge(
-                    connection,
-                    vault_id=vault_id,
-                    paths=["report.txt", "appendix.txt"],
-                    is_directory=False,
-                    actor_user_id=1,
-                    requested_at=_iso(_now()),
-                    confirmation="Docs Archive",
-                    reason="obsolete duplicates",
-                    generated_phrase="purple-orchid-42",
-                    delay_seconds=86400,
-                )
-                rows = connection.execute(
-                    """
-                    SELECT id, path, action, status, message, message_key,
-                           requested_at, updated_at, group_id, group_path,
-                           total_bytes, transferred_bytes, pending_until,
-                           estimated_cost_eur, estimated_hours, restore_tier,
-                           restore_days
-                    FROM jobs WHERE group_id=%s
-                    """,
-                    (scheduled.group_id,),
-                ).fetchall()
+    def test_stop_delete_uses_same_delay_cancellation_keeps_cloud_without_resuming_protection(self):
+        with self.connection() as connection:
+            result = protection_stop.stop_protection(connection,vault_id=1,actor_user_id=1,
+                cloud_disposition="delete",confirmation="Photos",reason="stop")
+            self.assertTrue(result["cancellable"])
+            self.assertFalse(result["root_released"])
+            self.assertEqual(datetime.fromisoformat(result["pending_until"]), DUE)
+            with self.assertRaises(LookupError):
+                ArchiveCatalog(connection).queue_jobs(vault_id=1,path="photo.jpg",action="upload",requested_by=1,
+                    requested_at=START.isoformat(),group_id="watcher",is_directory=False)
+            result = protection_stop.cancel_deletion(connection,vault_id=1,actor_user_id=1)
+            self.assertTrue(result["stopped"])
+            self.assertTrue(result["root_released"])
+            self.assertEqual(result["cloud_disposition"], "keep")
 
-            from app.main import build_job_groups
+    def test_stop_delete_rejects_present_file_and_never_queues_local_removal(self):
+        (self.source / "photo.jpg").write_bytes(b"data")
+        with self.connection() as connection:
+            with self.assertRaises(deletion.CloudDeletionError):
+                protection_stop.stop_protection(connection,vault_id=1,actor_user_id=1,
+                    cloud_disposition="delete",confirmation="Photos",reason="stop")
+            self.assertEqual(connection.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"], 0)
 
-            group = build_job_groups(rows)[0]
-            self.assertEqual(scheduled.preview.byte_count, 26)
-            self.assertEqual(group["total_bytes"], scheduled.preview.byte_count)
+    def test_two_concurrent_requests_cannot_admit_duplicate_or_recovery_work(self):
+        barrier = threading.Barrier(2)
+        def schedule(_):
+            with self.connection() as connection:
+                barrier.wait(timeout=20)
+                try:
+                    return self.schedule(connection).group_id
+                except deletion.CloudDeletionError:
+                    return None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(schedule, range(2)))
+        self.assertEqual(sum(r is not None for r in results), 1)
+        with self.connection() as connection:
+            queued, _, _ = ArchiveCatalog(connection).queue_jobs(vault_id=1,path="photo.jpg",action="recover",requested_by=1,
+                requested_at=START.isoformat(),group_id="recovery",is_directory=False)
+            self.assertEqual(queued, [])
 
-    def test_migration_repairs_existing_purge_job_totals(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path, vault_id, _file_id = _prepare_vault_with_versions(
-                Path(directory),
-                cloud_deletion_enabled=True,
-                revision="0026_invite_revocation",
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                catalog.observe_local_copy(
-                    vault_id=vault_id,
-                    path="appendix.txt",
-                    file_type="regular",
-                    size=5,
-                    mtime_ns=1_700_000_000_000_000_000,
-                    observed_at="2026-07-21T10:10:00+00:00",
-                )
-                catalog.record_archive_version(
-                    vault_id=vault_id,
-                    path="appendix.txt",
-                    object_key="docs/appendix.txt",
-                    provider_version_id="s3-appendix",
-                    size=5,
-                    storage_class="STANDARD",
-                    etag="etag-appendix",
-                    uploaded_at="2026-07-21T10:10:00+00:00",
-                    observed_at="2026-07-21T10:10:00+00:00",
-                    scan_id="scan-1",
-                    origin="upload",
-                )
-                # Revision 0026 predates the localized notification columns.
-                with patch.object(cloud_deletion, "_notify_owner"):
-                    scheduled = cloud_deletion.schedule_cloud_purge(
-                        connection,
-                        vault_id=vault_id,
-                        paths=["report.txt", "appendix.txt"],
-                        is_directory=False,
-                        actor_user_id=1,
-                        requested_at=_iso(_now()),
-                        confirmation="Docs Archive",
-                        reason="obsolete duplicates",
-                        generated_phrase="purple-orchid-42",
-                        delay_seconds=86400,
-                    )
-                connection.execute(
-                    "UPDATE jobs SET total_bytes=%s WHERE group_id=%s",
-                    (scheduled.preview.byte_count, scheduled.group_id),
-                )
+    def test_keep_cloud_can_stop_an_unavailable_reconnect_without_reading_or_deleting_data(self):
+        with self.connection() as connection:
+            connection.execute("UPDATE vaults SET relocation_state='scan_required'")
+            with patch("app.services.source_layout.vault_local_access",
+                       return_value=SimpleNamespace(local_operations_allowed=False)):
+                status = protection_stop.stop_protection(connection, vault_id=1, actor_user_id=1,
+                    cloud_disposition="keep", confirmation="Photos", reason="Retire unavailable folder")
+            self.assertTrue(status["root_released"])
+            self.assertEqual(connection.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"], 0)
 
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(database_path)) as connection:
-                total = connection.execute(
-                    "SELECT SUM(total_bytes) AS total FROM jobs WHERE group_id=%s",
-                    (scheduled.group_id,),
-                ).fetchone()["total"]
+    def test_no_local_observation_still_requires_verified_cloud_and_physical_absence(self):
+        with self.connection() as connection:
+            connection.execute("DELETE FROM local_copies")
+            scheduled = self.schedule(connection)
+            self.assertEqual(len(scheduled.job_ids), 1)
 
-            self.assertEqual(total, scheduled.preview.byte_count)
+    def test_worker_cannot_bypass_seven_days_with_a_corrupted_earlier_pending_until(self):
+        with self.connection() as connection:
+            scheduled = self.schedule(connection)
+            connection.execute("UPDATE jobs SET pending_until=%s", (START.isoformat(),))
+        client = self.execute(scheduled, at=START + timedelta(days=1))
+        client.delete_objects.assert_not_called()
 
-    def test_purge_requires_setting_confirmation_reason_and_delay(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path, vault_id, _file_id = _prepare_vault_with_versions(
-                Path(directory), cloud_deletion_enabled=True
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                with self.assertRaises(cloud_deletion.ConfirmationRequired):
-                    cloud_deletion.schedule_cloud_purge(
-                        connection,
-                        vault_id=vault_id,
-                        paths=["report.txt"],
-                        is_directory=False,
-                        actor_user_id=1,
-                        requested_at=_iso(_now()),
-                        confirmation="",
-                        reason="cleanup",
-                        generated_phrase="purple-orchid-42",
-                        delay_seconds=86400,
-                    )
-                with self.assertRaises(cloud_deletion.ReasonRequired):
-                    cloud_deletion.schedule_cloud_purge(
-                        connection,
-                        vault_id=vault_id,
-                        paths=["report.txt"],
-                        is_directory=False,
-                        actor_user_id=1,
-                        requested_at=_iso(_now()),
-                        confirmation="Docs Archive",
-                        reason="  ",
-                        generated_phrase="purple-orchid-42",
-                        delay_seconds=86400,
-                    )
-                result = cloud_deletion.schedule_cloud_purge(
-                    connection,
-                    vault_id=vault_id,
-                    paths=["report.txt"],
-                    is_directory=False,
-                    actor_user_id=1,
-                    requested_at=_iso(_now()),
-                    confirmation="Docs Archive",
-                    reason="obsolete duplicates",
-                    generated_phrase="purple-orchid-42",
-                    delay_seconds=86400,
-                )
-                job = connection.execute(
-                    "SELECT status, pending_until, reason, action FROM jobs WHERE id=%s",
-                    (result.job_ids[0],),
-                ).fetchone()
-            self.assertEqual(job["action"], "cloud-purge")
-            self.assertEqual(job["status"], "pending_delay")
-            self.assertEqual(job["reason"], "obsolete duplicates")
-            self.assertIsNotNone(job["pending_until"])
-            pending = datetime.fromisoformat(job["pending_until"])
-            self.assertEqual(pending, _now() + timedelta(seconds=86400))
+    def test_legacy_marker_is_captured_and_deleted_by_exact_version_id_with_the_file(self):
+        with self.connection() as connection:
+            ArchiveCatalog(connection).record_delete_marker(vault_id=1, path="photo.jpg",
+                object_key="vaults/test/photo.jpg", provider_version_id="marker-version",
+                created_at=START.isoformat(), observed_at=START.isoformat())
+            scheduled = self.schedule(connection)
+            self.assertEqual(scheduled.preview.delete_marker_count, 1)
+        client = self.execute(scheduled)
+        targets = client.delete_objects.call_args.kwargs["Delete"]["Objects"]
+        self.assertIn({"Key":"vaults/test/photo.jpg", "VersionId":"marker-version"}, targets)
+        self.assertTrue(all(target.get("VersionId") for target in targets))
 
-    def test_accelerate_skips_delay_and_queues_purge(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path, vault_id, _file_id = _prepare_vault_with_versions(
-                Path(directory), cloud_deletion_enabled=True
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                scheduled = cloud_deletion.schedule_cloud_purge(
-                    connection,
-                    vault_id=vault_id,
-                    paths=["report.txt"],
-                    is_directory=False,
-                    actor_user_id=1,
-                    requested_at=_iso(_now()),
-                    confirmation="Docs Archive",
-                    reason="cleanup",
-                    generated_phrase="x",
-                    delay_seconds=86400,
-                )
-                accelerated_at = _iso(_now())
-                accelerated = cloud_deletion.accelerate_cloud_purge(
-                    connection,
-                    vault_id=vault_id,
-                    group_id=scheduled.group_id,
-                    actor_user_id=1,
-                    accelerated_at=accelerated_at,
-                )
-                job = connection.execute(
-                    """
-                    SELECT status, pending_until, message_key
-                    FROM jobs WHERE id=%s
-                    """,
-                    (scheduled.job_ids[0],),
-                ).fetchone()
-                with self.assertRaises(ValueError):
-                    cloud_deletion.accelerate_cloud_purge(
-                        connection,
-                        vault_id=vault_id,
-                        group_id=scheduled.group_id,
-                        actor_user_id=1,
-                        accelerated_at=accelerated_at,
-                    )
-            self.assertEqual(accelerated.accelerated_count, 1)
-            self.assertEqual(job["status"], "queued")
-            self.assertEqual(job["pending_until"], accelerated_at)
-            self.assertEqual(job["message_key"], "job.cloud_purge_accelerated")
+    def test_directory_selection_escapes_wildcards_and_never_partially_admits_mixed_files(self):
+        with self.connection() as connection:
+            self.add_file(connection, "album_1/photo.jpg")
+            self.add_file(connection, "albumX1/sibling.jpg")
+            selected = self.schedule(connection, paths=["album_1"], is_directory=True)
+            paths = connection.execute("SELECT path FROM jobs WHERE group_id=%s", (selected.group_id,)).fetchall()
+            self.assertEqual([r["path"] for r in paths], ["album_1/photo.jpg"])
+            deletion.cancel_cloud_deletion(connection, vault_id=1, group_id=selected.group_id,
+                actor_user_id=1, cancelled_at=START.isoformat())
+            self.add_file(connection, "album_1/present.jpg")
+            (self.source / "album_1").mkdir()
+            (self.source / "album_1/present.jpg").write_bytes(b"local")
+            with self.assertRaises(deletion.CloudDeletionError):
+                self.schedule(connection, paths=["album_1"], is_directory=True)
+            self.assertEqual(connection.execute("SELECT count(*) AS n FROM jobs WHERE status='pending_delay'").fetchone()["n"], 0)
 
-    def test_cancel_during_delay_prevents_all_deletion_calls(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path, vault_id, _file_id = _prepare_vault_with_versions(
-                Path(directory), cloud_deletion_enabled=True
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                scheduled = cloud_deletion.schedule_cloud_purge(
-                    connection,
-                    vault_id=vault_id,
-                    paths=["report.txt"],
-                    is_directory=False,
-                    actor_user_id=1,
-                    requested_at=_iso(_now()),
-                    confirmation="Docs Archive",
-                    reason="cleanup",
-                    generated_phrase="x",
-                    delay_seconds=86400,
-                )
-                cancelled = cloud_deletion.cancel_cloud_deletion(
-                    connection,
-                    vault_id=vault_id,
-                    group_id=scheduled.group_id,
-                    actor_user_id=1,
-                    cancelled_at=_iso(_now()),
-                )
-            self.assertEqual(cancelled.cancelled_count, 1)
+    def test_reconnect_and_rename_invalidate_pending_deletion_authority(self):
+        from app.services.job_admission import lock_vault
+        with self.connection() as connection:
+            connection.execute("UPDATE vaults SET relocation_state='scan_required'")
+            with self.assertRaises(deletion.CloudDeletionError): self.schedule(connection)
+            connection.execute("UPDATE vaults SET relocation_state='ready'")
+            scheduled = self.schedule(connection)
+            # Rename/catalog reconciliation is not consent for another pathname.
+            lock_vault(connection, 1)
+            connection.execute("UPDATE file_paths SET path='renamed.jpg' WHERE valid_to IS NULL")
+        client = self.execute(scheduled)
+        client.delete_objects.assert_not_called()
 
-            client = Mock()
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(
-                operation_concurrency=1,
-                cloud_purge_delay_seconds=86400,
-            )
-            with (
-                patch("app.database.settings", database_settings),
-                patch("app.storage.settings", worker_settings),
-                patch("app.storage.validate_cloud_vault"),
-                patch("app.storage.s3_client", return_value=client),
-            ):
-                process_jobs_once()
-            client.delete_object.assert_not_called()
-            if hasattr(client, "delete_object_versions"):
-                client.delete_object_versions.assert_not_called()
+    def test_stop_delete_completes_after_delay_then_releases_root(self):
+        with self.connection() as connection:
+            result = protection_stop.stop_protection(connection, vault_id=1, actor_user_id=1,
+                cloud_disposition="delete", confirmation="Photos", reason="stop")
+            job_ids = [r["id"] for r in result["jobs"]]
+            scheduled = SimpleNamespace(job_ids=job_ids)
+        client = self.execute(scheduled)
+        client.delete_objects.assert_called_once()
+        with self.connection() as connection:
+            protection_stop.reconcile_one(connection, 1)
+            status = protection_stop.status(connection, 1)
+            self.assertTrue(status["root_released"])
+            self.assertTrue(status["stopped"])
+            self.assertEqual(connection.execute("SELECT count(*) AS n FROM archive_versions WHERE availability<>'purged'").fetchone()["n"], 0)
 
-
-class PermanentPurgeExecutionTests(_CloudDeletionTestCase):
-    def test_purge_deletes_many_vault_files_in_one_s3_batch(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path, vault_id, _ = _prepare_vault_with_versions(
-                Path(directory), cloud_deletion_enabled=True, version_count=0
-            )
-            paths: list[str] = []
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                for index in range(10):
-                    path = f"bulk/file-{index:02}.txt"
-                    paths.append(path)
-                    catalog.observe_local_copy(
-                        vault_id=vault_id,
-                        path=path,
-                        file_type="regular",
-                        size=10,
-                        mtime_ns=1_700_000_000_000_000_000 + index,
-                        observed_at="2026-07-21T10:00:00+00:00",
-                    )
-                    catalog.record_archive_version(
-                        vault_id=vault_id,
-                        path=path,
-                        object_key=f"docs/{path}",
-                        provider_version_id=f"version-{index}",
-                        size=10,
-                        storage_class="STANDARD",
-                        etag=f"etag-{index}",
-                        uploaded_at="2026-07-21T10:00:00+00:00",
-                        observed_at="2026-07-21T10:00:00+00:00",
-                        scan_id="scan-1",
-                        origin="upload",
-                    )
-                scheduled = cloud_deletion.schedule_cloud_purge(
-                    connection,
-                    vault_id=vault_id,
-                    paths=paths,
-                    is_directory=False,
-                    actor_user_id=1,
-                    requested_at=_iso(_now() - timedelta(hours=25)),
-                    confirmation="Docs Archive",
-                    reason="permanent cleanup",
-                    generated_phrase="x",
-                    delay_seconds=86400,
-                )
-                connection.execute(
-                    "UPDATE jobs SET pending_until=%s WHERE group_id=%s",
-                    ("2020-01-01T00:00:00+00:00", scheduled.group_id),
-                )
-
-            client = Mock()
-            client.delete_objects.return_value = {}
-            preflight = Mock()
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(operation_concurrency=16)
-            with (
-                patch("app.database.settings", database_settings),
-                patch("app.storage.settings", worker_settings),
-                patch("app.storage.validate_cloud_vault", preflight),
-                patch("app.storage.s3_client", return_value=client),
-            ):
-                process_jobs_once()
-
-            preflight.assert_called_once()
-            client.delete_objects.assert_called_once()
-            self.assertEqual(
-                len(client.delete_objects.call_args.kwargs["Delete"]["Objects"]),
-                10,
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                statuses = connection.execute(
-                    "SELECT status FROM jobs WHERE group_id=%s",
-                    (scheduled.group_id,),
-                ).fetchall()
-            self.assertEqual({row["status"] for row in statuses}, {"completed"})
-
-    def test_purge_deletes_many_versions_in_one_s3_batch(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path, vault_id, file_id = _prepare_vault_with_versions(
-                Path(directory), cloud_deletion_enabled=True, version_count=100
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                scheduled = cloud_deletion.schedule_cloud_purge(
-                    connection,
-                    vault_id=vault_id,
-                    paths=["report.txt"],
-                    is_directory=False,
-                    actor_user_id=1,
-                    requested_at=_iso(_now() - timedelta(hours=25)),
-                    confirmation="Docs Archive",
-                    reason="permanent cleanup",
-                    generated_phrase="x",
-                    delay_seconds=86400,
-                )
-                connection.execute(
-                    "UPDATE jobs SET pending_until=%s WHERE id=%s",
-                    ("2020-01-01T00:00:00+00:00", scheduled.job_ids[0]),
-                )
-
-            client = Mock()
-            client.delete_objects.return_value = {}
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(operation_concurrency=1)
-            with (
-                patch("app.database.settings", database_settings),
-                patch("app.storage.settings", worker_settings),
-                patch("app.storage.validate_cloud_vault"),
-                patch("app.storage.s3_client", return_value=client),
-            ):
-                process_jobs_once()
-
-            client.delete_objects.assert_called_once()
-            self.assertEqual(
-                len(client.delete_objects.call_args.kwargs["Delete"]["Objects"]),
-                100,
-            )
-            client.delete_object.assert_not_called()
-            with PostgresConnection(str(database_path)) as connection:
-                job = connection.execute(
-                    "SELECT status FROM jobs WHERE id=%s",
-                    (scheduled.job_ids[0],),
-                ).fetchone()
-                remaining = connection.execute(
-                    """
-                    SELECT COUNT(*) AS total FROM archive_versions
-                    WHERE vault_file_id=%s AND availability <> 'purged'
-                    """,
-                    (file_id,),
-                ).fetchone()["total"]
-            self.assertEqual(job["status"], "completed")
-            self.assertEqual(remaining, 0)
-
-    def test_purge_after_delay_deletes_every_version_and_marker_resumably(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path, vault_id, file_id = _prepare_vault_with_versions(
-                Path(directory), cloud_deletion_enabled=True, version_count=2
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                catalog.record_delete_marker(
-                    vault_id=vault_id,
-                    path="report.txt",
-                    object_key="docs/report.txt",
-                    provider_version_id="marker-old",
-                    created_at="2026-07-21T12:00:00+00:00",
-                    observed_at="2026-07-21T12:00:00+00:00",
-                )
-                scheduled = cloud_deletion.schedule_cloud_purge(
-                    connection,
-                    vault_id=vault_id,
-                    paths=["report.txt"],
-                    is_directory=False,
-                    actor_user_id=1,
-                    requested_at=_iso(_now() - timedelta(hours=25)),
-                    confirmation="Docs Archive",
-                    reason="permanent cleanup",
-                    generated_phrase="x",
-                    delay_seconds=86400,
-                )
-                # Simulate delay already elapsed relative to wall clock.
-                connection.execute(
-                    "UPDATE jobs SET pending_until=%s WHERE id=%s",
-                    ("2020-01-01T00:00:00+00:00", scheduled.job_ids[0]),
-                )
-
-            client = Mock()
-            deleted: list[dict] = []
-
-            def delete_objects(**kwargs):
-                deleted.extend(kwargs["Delete"]["Objects"])
-                return {
-                    "Errors": [
-                        {
-                            "Key": "docs/report.txt",
-                            "VersionId": "s3-v2",
-                            "Code": "InternalError",
-                            "Message": "transient version delete failure",
-                        }
-                    ]
-                }
-
-            client.delete_objects = Mock(side_effect=delete_objects)
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(operation_concurrency=1)
-            with (
-                patch("app.database.settings", database_settings),
-                patch("app.storage.settings", worker_settings),
-                patch("app.storage.validate_cloud_vault"),
-                patch("app.storage.s3_client", return_value=client),
-            ):
-                process_jobs_once()
-
-            version_ids_called = {
-                call.get("VersionId") for call in deleted if call.get("VersionId")
-            }
-            self.assertIn("s3-v1", version_ids_called)
-            self.assertIn("marker-old", version_ids_called)
-
-            with PostgresConnection(str(database_path)) as connection:
-                items = connection.execute(
-                    """
-                    SELECT kind, provider_version_id, status
-                    FROM cloud_deletion_items
-                    WHERE job_id=%s
-                    ORDER BY id
-                    """,
-                    (scheduled.job_ids[0],),
-                ).fetchall()
-                job = connection.execute(
-                    "SELECT status FROM jobs WHERE id=%s",
-                    (scheduled.job_ids[0],),
-                ).fetchone()
-                versions = connection.execute(
-                    "SELECT availability FROM archive_versions WHERE vault_file_id=%s",
-                    (file_id,),
-                ).fetchall()
-            statuses = {row["provider_version_id"]: row["status"] for row in items}
-            self.assertEqual(statuses["s3-v1"], "deleted")
-            self.assertEqual(statuses["marker-old"], "deleted")
-            self.assertEqual(statuses["s3-v2"], "failed")
-            self.assertEqual(job["status"], "failed")
-            self.assertIn("purged", {row["availability"] for row in versions})
-
-            # Resume: fix the failing version and rerun.
-            client.delete_objects = Mock(return_value={})
-            with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    "UPDATE jobs SET status='queued', message=NULL WHERE id=%s",
-                    (scheduled.job_ids[0],),
-                )
-                connection.execute(
-                    """
-                    UPDATE cloud_deletion_items
-                    SET status='pending', error_message=NULL
-                    WHERE job_id=%s AND provider_version_id='s3-v2'
-                    """,
-                    (scheduled.job_ids[0],),
-                )
-            with (
-                patch("app.database.settings", database_settings),
-                patch("app.storage.settings", worker_settings),
-                patch("app.storage.validate_cloud_vault"),
-                patch("app.storage.s3_client", return_value=client),
-            ):
-                process_jobs_once()
-
-            with PostgresConnection(str(database_path)) as connection:
-                pending = connection.execute(
-                    """
-                    SELECT COUNT(*) AS total FROM cloud_deletion_items
-                    WHERE job_id=%s AND status='pending'
-                    """,
-                    (scheduled.job_ids[0],),
-                ).fetchone()["total"]
-                job = connection.execute(
-                    "SELECT status FROM jobs WHERE id=%s",
-                    (scheduled.job_ids[0],),
-                ).fetchone()
-                vault_file = connection.execute(
-                    "SELECT status FROM vault_files WHERE id=%s",
-                    (file_id,),
-                ).fetchone()
-                path_history = connection.execute(
-                    "SELECT COUNT(*) AS total FROM file_paths WHERE vault_file_id=%s",
-                    (file_id,),
-                ).fetchone()["total"]
-            self.assertEqual(pending, 0)
-            self.assertEqual(job["status"], "completed")
-            self.assertEqual(vault_file["status"], "purged")
-            self.assertGreaterEqual(path_history, 1)
-
-
-class ClaimLeaseSchedulerTests(_CloudDeletionTestCase):
-    def test_two_schedulers_claim_a_cloud_purge_group_atomically(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path, vault_id, _file_id = _prepare_vault_with_versions(
-                Path(directory), cloud_deletion_enabled=True, version_count=1
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                second_file = catalog.observe_local_copy(
-                    vault_id=vault_id,
-                    path="second.txt",
-                    file_type="regular",
-                    size=4,
-                    mtime_ns=2,
-                    observed_at="2026-07-21T10:00:00+00:00",
-                )
-                second_version = catalog.record_archive_version(
-                    vault_id=vault_id,
-                    path="second.txt",
-                    object_key="docs/second.txt",
-                    provider_version_id="second-version",
-                    size=4,
-                    storage_class="STANDARD",
-                    etag="second-etag",
-                    uploaded_at="2026-07-21T10:00:00+00:00",
-                    observed_at="2026-07-21T10:00:00+00:00",
-                    scan_id="scan",
-                )
-                catalog.mark_version_verified(
-                    second_version,
-                    plaintext_sha256="b" * 64,
-                    verified_at="2026-07-21T10:01:00+00:00",
-                )
-                catalog.mark_local_copy_missing(
-                    second_file, observed_at="2026-07-21T10:02:00+00:00"
-                )
-                scheduled = cloud_deletion.schedule_cloud_purge(
-                    connection,
-                    vault_id=vault_id,
-                    paths=["report.txt", "second.txt"],
-                    is_directory=False,
-                    actor_user_id=1,
-                    requested_at=_iso(_now() - timedelta(hours=25)),
-                    confirmation="Docs Archive",
-                    reason="permanent cleanup",
-                    generated_phrase="x",
-                    delay_seconds=60,
-                )
-                connection.execute(
-                    "UPDATE jobs SET pending_until=%s WHERE group_id=%s",
-                    ("2000-01-01T00:00:00+00:00", scheduled.group_id),
-                )
-
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path))
-            )
-            runtime = SimpleNamespace(
-                operation_concurrency=1,
-                bandwidth_limit_kibps=None,
-                restore_poll_interval=0,
-            )
-            start = threading.Barrier(2)
-            processed: list[int] = []
-            processed_lock = threading.Lock()
-
-            def record(job: dict) -> bool:
-                with processed_lock:
-                    processed.append(int(job["id"]))
-                return True
-
-            def run_once(_: int) -> int:
-                start.wait(timeout=10)
-                return process_jobs_once()
-
-            with (
-                patch("app.database.settings", database_settings),
-                patch("app.storage._runtime_settings", return_value=runtime),
-                patch(
-                    "app.storage.db",
-                    side_effect=lambda: PostgresConnection(str(database_path)),
-                ),
-                patch("app.storage.process_job", side_effect=record),
-            ):
-                with ThreadPoolExecutor(max_workers=2) as workers:
-                    results = list(workers.map(run_once, range(2)))
-
-            self.assertEqual(sum(results), 1)
-            self.assertEqual(len(processed), 1)
-            with PostgresConnection(str(database_path)) as connection:
-                jobs = connection.execute(
-                    """
-                    SELECT status, claim_token
-                    FROM jobs WHERE group_id=%s ORDER BY id
-                    """,
-                    (scheduled.group_id,),
-                ).fetchall()
-            self.assertEqual([job["status"] for job in jobs], ["cleaning", "cleaning"])
-            self.assertEqual(len({job["claim_token"] for job in jobs}), 1)
-            self.assertTrue(jobs[0]["claim_token"])
-
-
-class ClaimLeaseTakeoverTests(_CloudDeletionTestCase):
-    def test_blocked_purge_lease_expiry_fences_stale_worker_writes(self) -> None:
-        """A durable takeover must fence a provider call already in flight."""
-        with tempfile.TemporaryDirectory() as directory:
-            database_path, vault_id, _file_id = _prepare_vault_with_versions(
-                Path(directory), cloud_deletion_enabled=True, version_count=1
-            )
-            requested_at = _iso(_now() - timedelta(hours=25))
-            with PostgresConnection(str(database_path)) as connection:
-                scheduled = cloud_deletion.schedule_cloud_purge(
-                    connection,
-                    vault_id=vault_id,
-                    paths=["report.txt"],
-                    is_directory=False,
-                    actor_user_id=1,
-                    requested_at=requested_at,
-                    confirmation="Docs Archive",
-                    reason="permanent cleanup",
-                    generated_phrase="x",
-                    delay_seconds=60,
-                )
-                connection.execute(
-                    "UPDATE jobs SET pending_until=%s WHERE group_id=%s",
-                    ("2000-01-01T00:00:00+00:00", scheduled.group_id),
-                )
-                claimed_at = storage_module.now_iso()
-                claimed = ArchiveCatalog(connection).claim_purge_group(
-                    lead_job_id=scheduled.job_ids[0],
-                    claim_token="blocked-worker",
-                    claimed_at=claimed_at,
-                    claim_expires_at=(
-                        datetime.now(timezone.utc) + timedelta(days=1)
-                    ).isoformat(),
-                    now=claimed_at,
-                    message="Permanently deleting cloud versions and markers",
-                    message_key="job.cloud_purge_deleting",
-                )
-                self.assertEqual(len(claimed), 1)
-                job = connection.execute(
-                    """
-                    SELECT j.*, v.source_root, v.s3_bucket, v.s3_prefix,
-
-                           v.uuid AS vault_uuid, v.name AS vault_name,
-                           v.cloud_deletion_enabled, v.decommission_state
-                    FROM jobs j JOIN vaults v ON v.id=j.vault_id
-                    WHERE j.id=%s
-                    """,
-                    (scheduled.job_ids[0],),
-                ).fetchone()
-
-            provider_started = threading.Event()
-            release_provider = threading.Event()
-            heartbeat_ready = threading.Event()
-            heartbeat_ref: list[object] = []
-            client = Mock()
-            # Reconciliation must prove that the exact purge target still exists;
-            # it then requeues the expired cleaning group for the replacement claim.
-            client.list_object_versions.return_value = {
-                "Versions": [
-                    {"Key": "docs/report.txt", "VersionId": "s3-v1"}
-                ],
-                "DeleteMarkers": [],
-                "IsTruncated": False,
-            }
-
-            def blocked_delete(**_kwargs):
-                provider_started.set()
-                if not release_provider.wait(timeout=10):
-                    raise AssertionError("test did not release blocked provider")
-                return {}
-
-            client.delete_objects.side_effect = blocked_delete
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path))
-            )
-            result: list[bool] = []
-            real_heartbeat = storage_module._ClaimLeaseHeartbeat
-
-            def capture_heartbeat(active_job: dict) -> object:
-                heartbeat = real_heartbeat(active_job)
-                heartbeat_ref.append(heartbeat)
-                heartbeat_ready.set()
-                return heartbeat
-
-            with (
-                patch("app.database.settings", database_settings),
-                patch(
-                    "app.storage._runtime_settings",
-                    return_value=SimpleNamespace(restore_poll_interval=0),
-                ),
-                patch("app.storage.validate_cloud_vault"),
-                patch("app.storage.s3_client", return_value=client),
-                patch("app.storage.JOB_CLAIM_LEASE_SECONDS", 0.2),
-                patch("app.storage._ClaimLeaseHeartbeat", new=capture_heartbeat),
-            ):
-                worker = threading.Thread(
-                    target=lambda: result.append(storage_module.process_job(dict(job)))
-                )
-                worker.start()
-                self.assertTrue(provider_started.wait(timeout=10))
-                self.assertTrue(heartbeat_ready.wait(timeout=10))
-
-                # Expire the real durable lease while DeleteObjects is blocked.
-                # The heartbeat must observe this failed renewal; no test-owned
-                # loss event is injected into the worker context.
-                with PostgresConnection(str(database_path)) as connection:
-                    connection.execute(
-                        """
-                        UPDATE jobs
-                        SET claim_expires_at='2000-01-01T00:00:00+00:00'
-                        WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
-                        """,
-                        (vault_id, scheduled.group_id),
-                    )
-
-                reconciliation = storage_module.reconcile_interrupted_jobs()
-                self.assertEqual(
-                    reconciliation, {"completed": 0, "requeued": 1, "failed": 0}
-                )
-                replacement_at = storage_module.now_iso()
-                replacement_expiry = "2099-01-01T00:00:00+00:00"
-                with PostgresConnection(str(database_path)) as connection:
-                    replacement = ArchiveCatalog(connection).claim_purge_group(
-                        lead_job_id=scheduled.job_ids[0],
-                        claim_token="replacement-worker",
-                        claimed_at=replacement_at,
-                        claim_expires_at=replacement_expiry,
-                        now=replacement_at,
-                        message="Permanently deleting cloud versions and markers",
-                        message_key="job.cloud_purge_deleting",
-                    )
-                self.assertEqual(len(replacement), 1)
-
-                # The loss is detected by the real heartbeat after the second
-                # worker owns the group; only then may the provider call return.
-                self.assertTrue(heartbeat_ref[0].lost.wait(timeout=10))
-                release_provider.set()
-                worker.join(timeout=10)
-                self.assertFalse(worker.is_alive())
-
-            self.assertEqual(result, [False])
-            client.delete_objects.assert_called_once()
-            with PostgresConnection(str(database_path)) as connection:
-                jobs = connection.execute(
-                    """
-                    SELECT status, claim_token, claim_expires_at
-                    FROM jobs
-                    WHERE vault_id=%s AND group_id=%s
-                    ORDER BY id
-                    """,
-                    (vault_id, scheduled.group_id),
-                ).fetchall()
-                item_state = connection.execute(
-                    """
-                    SELECT cdi.status, av.availability, vf.status AS file_status
-                    FROM cloud_deletion_items cdi
-                    LEFT JOIN archive_versions av ON av.id=cdi.archive_version_id
-                    LEFT JOIN vault_files vf ON vf.id=av.vault_file_id
-                    WHERE cdi.job_id=%s
-                    """,
-                    (scheduled.job_ids[0],),
-                ).fetchone()
-                terminal_audits = connection.execute(
-                    """
-                    SELECT COUNT(*) AS total FROM audit_events
-                    WHERE event IN (
-                        'cloud_deletion.purge_completed',
-                        'cloud_deletion.purge_partial_failure'
-                    )
-                    """
-                ).fetchone()["total"]
-
-            self.assertEqual([row["status"] for row in jobs], ["cleaning"])
-            self.assertEqual({row["claim_token"] for row in jobs}, {"replacement-worker"})
-            self.assertEqual(
-                {row["claim_expires_at"] for row in jobs},
-                {replacement_expiry},
-            )
-            self.assertEqual(item_state["status"], "pending")
-            self.assertEqual(item_state["availability"], "available")
-            self.assertNotEqual(item_state["file_status"], "purged")
-            self.assertEqual(terminal_audits, 0)
-
-
-class ClaimLeaseRestartTests(_CloudDeletionTestCase):
-
-    def test_restart_finalizes_purge_from_deleted_item_catalog_without_repeat(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path, vault_id, _file_id = _prepare_vault_with_versions(
-                Path(directory), cloud_deletion_enabled=True, version_count=2
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                scheduled = cloud_deletion.schedule_cloud_purge(
-                    connection,
-                    vault_id=vault_id,
-                    paths=["report.txt"],
-                    is_directory=False,
-                    actor_user_id=1,
-                    requested_at=_iso(_now() - timedelta(hours=25)),
-                    confirmation="Docs Archive",
-                    reason="permanent cleanup",
-                    generated_phrase="x",
-                    delay_seconds=60,
-                )
-                item_ids = [
-                    int(row["id"])
-                    for row in connection.execute(
-                        "SELECT id FROM cloud_deletion_items WHERE job_id=%s",
-                        (scheduled.job_ids[0],),
-                    ).fetchall()
-                ]
-                cloud_deletion.mark_items_deleted(
-                    connection,
-                    item_ids=item_ids,
-                    updated_at=_iso(_now()),
-                )
-                connection.execute(
-                    """
-                    UPDATE jobs
-                    SET status='cleaning', claim_token='dead-worker',
-                        claimed_at='2026-07-23T10:00:00+00:00',
-                        claim_expires_at='2000-01-01T00:00:00+00:00'
-                    WHERE id=%s
-                    """,
-                    (scheduled.job_ids[0],),
-                )
-
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path))
-            )
-            with patch("app.database.settings", database_settings):
-                summary = storage_module.reconcile_interrupted_jobs()
-            self.assertEqual(summary, {"completed": 0, "requeued": 1, "failed": 0})
-
-            client = Mock()
-            worker_settings = SimpleNamespace(operation_concurrency=1)
-            with (
-                patch("app.database.settings", database_settings),
-                patch("app.storage.settings", worker_settings),
-                patch("app.storage.validate_cloud_vault"),
-                patch("app.storage.s3_client", return_value=client),
-            ):
-                process_jobs_once()
-            client.delete_objects.assert_not_called()
-            with PostgresConnection(str(database_path)) as connection:
-                job = connection.execute(
-                    """
-                    SELECT status, claim_token, claim_expires_at
-                    FROM jobs WHERE id=%s
-                    """,
-                    (scheduled.job_ids[0],),
-                ).fetchone()
-            self.assertEqual(job["status"], "completed")
-            self.assertIsNone(job["claim_token"])
-            self.assertIsNone(job["claim_expires_at"])
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_cancellation_after_claim_never_claims_to_undo_provider_deletion(self):
+        with self.connection() as connection:
+            scheduled = self.schedule(connection)
+        self.claim(scheduled)
+        with self.connection() as connection:
+            with self.assertRaises(deletion.CloudDeletionError):
+                deletion.cancel_cloud_deletion(connection,vault_id=1,group_id=scheduled.group_id,
+                    actor_user_id=1,cancelled_at=DUE.isoformat())

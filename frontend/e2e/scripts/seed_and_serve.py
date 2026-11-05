@@ -78,10 +78,9 @@ def _seed(paths: dict[str, Path]) -> dict:
         primary_id = connection.execute(
             """
             INSERT INTO vaults(
-                slug, name, source_root, s3_bucket, s3_prefix,
-                cloud_deletion_enabled
+                slug, name, source_root, s3_bucket, s3_prefix
             ) VALUES (
-                'family', 'Family Archive', %s, 'e2e-bucket', 'family', TRUE
+                'family', 'Family Archive', %s, 'e2e-bucket', 'family'
             ) RETURNING id
             """,
             (str(paths["source_primary"]),),

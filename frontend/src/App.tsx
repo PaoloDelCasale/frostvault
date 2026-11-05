@@ -132,15 +132,15 @@ export default function App() {
   }
   if (pathIsAdmin(pathname)) return <AdminPage />;
   if (pathIsVaultAccess(pathname)) {
-    const accessVault = me.vault ?? me.decommission_vault;
+    const accessVault = me.vault ?? me.stopped_vault;
     if (!accessVault) return <NoVaultPage />;
     return (
       <VaultAccessPage
         vaultId={accessVault.id}
         vaultName={accessVault.name}
-        decommissionState={me.decommission_vault?.decommission_state ?? "active"}
+        protectionState={me.stopped_vault?.decommission_state ?? "active"}
         onBack={() => navigate("/")}
-        onDecommissioned={() => navigate("/")}
+        onStopped={() => navigate("/")}
       />
     );
   }

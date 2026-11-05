@@ -67,28 +67,9 @@ async function renderAdmin(emailConfigured = false) {
     if (url === "/api/admin/vaults" && method === "GET") {
       return jsonResponse({ items: structuredClone(defaultVaults) });
     }
-    if (url === "/api/vaults/2/decommission/preview" && method === "POST") {
-      return jsonResponse({
-        vault_id: 2,
-        vault_name: "Vault B",
-        decommission_state: "active",
-        enabled: true,
-        local_disposition: "retain",
-        cloud_disposition: "retain",
-        fingerprint: "fp",
-        can_start: true,
-        blockers: [],
-        counts: {
-          vault_files: 0,
-          local_files: 0,
-          local_bytes: 0,
-          archive_versions: 0,
-          cloud_bytes: 0,
-          delete_markers: 0,
-          jobs: 0,
-        },
-        records: {},
-      });
+    if (url === "/api/vaults/2/stop-protection" && method === "GET") {
+      return jsonResponse({ vault_id: 2, vault_name: "Vault B", stopped: false, root_released: false,
+        cloud_disposition: "keep", group_id: null, jobs: [], cancellable: false, pending_until: null });
     }
     return jsonResponse({ detail: `unexpected ${method} ${url}` }, 500);
   });
@@ -171,24 +152,24 @@ describe("AdminPage — single owner (#412)", () => {
     expect(requests.some(({ url }) => url.startsWith("/api/admin/users"))).toBe(false);
   });
 
-  it("previews decommission through the owner Vault endpoint", async () => {
+  it("opens stop protection through the Owner Vault endpoint", async () => {
     const user = userEvent.setup();
     const { requests } = await renderAdmin();
 
     await screen.findByText("Vault B");
-    const decommissionButtons = screen.getAllByRole("button", {
-      name: /decommission/i,
+    const stopButtons = screen.getAllByRole("button", {
+      name: /stop protecting/i,
     });
-    await user.click(decommissionButtons[1]!);
+    await user.click(stopButtons[1]!);
 
     await vi.waitFor(() => {
       expect(
         requests.some(
           ({ url, method }) =>
-            url === "/api/vaults/2/decommission/preview" && method === "POST",
+            url === "/api/vaults/2/stop-protection" && method === "GET",
         ),
       ).toBe(true);
     });
-    expect(requests.some(({ url }) => url.includes("/api/admin/vaults/2/decommission"))).toBe(false);
+    expect(requests.some(({ url }) => url.includes("decommission"))).toBe(false);
   });
 });

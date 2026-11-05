@@ -2,16 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { AdminVault } from "@/api";
 import {
-  cancelOwnVaultDecommissionCloudPurge,
   fetchAdminVaults,
   fetchNotifications,
-  fetchOwnVaultDecommissionStatus,
-  previewOwnVaultDecommission,
-  startOwnVaultDecommission,
 } from "@/api";
 import { Badge } from "@/components/Badge";
 import { BottomSheet } from "@/components/BottomSheet";
-import { DecommissionVaultDialog } from "@/components/DecommissionVaultDialog";
+import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 import { Panel } from "@/components/Panel";
 import { Toast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
@@ -57,7 +53,7 @@ export function AdminPage() {
   });
 
   const [reconnectVault, setReconnectVault] = useState<AdminVault | null>(null);
-  const [decommissionVault, setDecommissionVault] = useState<AdminVault | null>(null);
+  const [stoppedVault, setStoppedVault] = useState<AdminVault | null>(null);
   const [vaultSheetOpen, setVaultSheetOpen] = useState(false);
   const [vaultSheetTarget, setVaultSheetTarget] = useState<AdminVault | null>(
     null,
@@ -186,9 +182,9 @@ export function AdminPage() {
                       }
                       label={
                         vault.decommission_state === "decommissioning"
-                          ? t("decommission.state.decommissioning")
+                          ? t("stop_protection.pending")
                           : vault.decommission_state === "decommissioned"
-                            ? t("decommission.state.decommissioned")
+                            ? t("stop_protection.stopped")
                             : vault.enabled
                               ? t("admin.active")
                               : t("admin.disabled")
@@ -219,11 +215,11 @@ export function AdminPage() {
                       type="button"
                       variant="danger"
                       className="max-md:hidden"
-                      onClick={() => setDecommissionVault(vault)}
+                      onClick={() => setStoppedVault(vault)}
                     >
                       {(vault.decommission_state ?? "active") === "active"
-                        ? t("decommission.open")
-                        : t("decommission.view_progress")}
+                        ? t("stop_protection.title")
+                        : t("stop_protection.status")}
                     </Button>
                   </div>
                 </li>
@@ -234,25 +230,13 @@ export function AdminPage() {
         )}
       </main>
 
-      <DecommissionVaultDialog
-        open={decommissionVault !== null}
+      <StopProtectionDialog
+        open={stoppedVault !== null}
         onOpenChange={(open) => {
-          if (!open) setDecommissionVault(null);
+          if (!open) setStoppedVault(null);
         }}
-        vaultName={decommissionVault?.name ?? ""}
-        existingState={decommissionVault?.decommission_state ?? "active"}
-        preview={(selection) =>
-          previewOwnVaultDecommission(decommissionVault!.id, selection)
-        }
-        start={(payload) =>
-          startOwnVaultDecommission(decommissionVault!.id, payload)
-        }
-        status={() =>
-          fetchOwnVaultDecommissionStatus(decommissionVault!.id)
-        }
-        cancelCloudPurge={() =>
-          cancelOwnVaultDecommissionCloudPurge(decommissionVault!.id)
-        }
+        vaultName={stoppedVault?.name ?? ""}
+        vaultId={stoppedVault?.id ?? 0}
         onCompleted={loadVaults}
       />
 
@@ -277,19 +261,19 @@ export function AdminPage() {
               ]
             : []),
           {
-            id: "decommission",
+            id: "stop-protection",
             label:
               (vaultSheetTarget?.decommission_state ?? "active") === "active"
-                ? t("decommission.open")
-                : t("decommission.view_progress"),
+                ? t("stop_protection.title")
+                : t("stop_protection.status"),
           },
         ]}
         onAction={(actionId) => {
           if (actionId === "reconnect" && vaultSheetTarget) {
             setReconnectVault(vaultSheetTarget);
           }
-          if (actionId === "decommission" && vaultSheetTarget) {
-            setDecommissionVault(vaultSheetTarget);
+          if (actionId === "stop-protection" && vaultSheetTarget) {
+            setStoppedVault(vaultSheetTarget);
           }
         }}
       />

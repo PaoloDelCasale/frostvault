@@ -96,17 +96,15 @@ export function activeJobsForPath(
 function fileHasCloudContent(item: ArchiveListItem): boolean {
   if (!isVaultFile(item)) return false;
   return Boolean(
-    item.cloud_exists,
+    item.cloud_exists && !item.local_exists && item.state === "cloud_only",
   );
 }
 
 function directoryCloudDeletionCount(item: ArchiveListItem): number {
-  if (!isDirectory(item)) return 0;
+  if (!isDirectory(item) || item.state !== "cloud_only") return 0;
   const available = item.available_actions || {};
   const counted = available["cloud-purge"];
-  if (typeof counted === "number" && counted > 0) return counted;
-  // Protection labels never authorize deletion: rely on copy/action evidence.
-  if ((item.cloud_size || 0) > 0) return item.item_count || 1;
+  if (typeof counted === "number" && counted === item.item_count && counted > 0) return counted;
   return 0;
 }
 

@@ -11,7 +11,6 @@ import {
 import {
   ApiError,
   ReauthenticationRedirectError,
-  accelerateCloudPurge,
   apiQueryKeys,
   approveRecover,
   cancelJob,
@@ -70,10 +69,8 @@ export type FileOperationsHostProps = {
     onDesktopAction: (path: string, action: RowActionId) => void;
     onCancelJob: (job: JobGroup) => void;
     onApproveJob: (job: JobGroup) => void;
-    onAcceleratePurge: (job: JobGroup) => void;
     cancelBusyId: string | null;
     approveBusyId: string | null;
-    accelerateBusyId: string | null;
   }) => ReactNode;
 };
 
@@ -119,7 +116,6 @@ export function FileOperationsHost({
   } | null>(null);
   const [cancelBusyId, setCancelBusyId] = useState<string | null>(null);
   const [approveBusyId, setApproveBusyId] = useState<string | null>(null);
-  const [accelerateBusyId, setAccelerateBusyId] = useState<string | null>(null);
   const itemsByPath = useMemo(() => {
     const map = new Map<string, ArchiveListItem>();
     for (const item of items) map.set(item.path, item);
@@ -184,7 +180,6 @@ export function FileOperationsHost({
             is_directory: isDir,
             confirmation: String(extra?.confirmation ?? ""),
             reason: String(extra?.reason ?? ""),
-            generated_phrase: String(extra?.generated_phrase ?? ""),
           });
           break;
         default:
@@ -335,22 +330,6 @@ export function FileOperationsHost({
     [refreshAfterMutation, showError, showSuccess, t],
   );
 
-  const onAcceleratePurge = useCallback(
-    async (job: JobGroup) => {
-      setAccelerateBusyId(job.id);
-      try {
-        const result = await accelerateCloudPurge(job.id);
-        showSuccess(result.message ?? t("ui.purge_now"));
-        await refreshAfterMutation();
-      } catch (error) {
-        showError(error);
-      } finally {
-        setAccelerateBusyId(null);
-      }
-    },
-    [refreshAfterMutation, showError, showSuccess, t],
-  );
-
   // Capture-only deep-links: open confirmation dialogs once.
   const demoBootstrapped = useRef(false);
   const gatedDemoConfirm = DEMO_MODE_ENABLED ? demoConfirm : null;
@@ -394,12 +373,8 @@ export function FileOperationsHost({
         onApproveJob: (job) => {
           void onApproveJob(job);
         },
-        onAcceleratePurge: (job) => {
-          void onAcceleratePurge(job);
-        },
         cancelBusyId,
         approveBusyId,
-        accelerateBusyId,
       })}
 
       <BottomSheet
