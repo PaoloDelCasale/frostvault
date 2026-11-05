@@ -89,6 +89,23 @@ class CloudDeletionLeaseTests(unittest.TestCase):
             targets = connection.execute("SELECT provider_version_id FROM cloud_deletion_items WHERE job_id=%s",(next_request.job_ids[0],)).fetchall()
             self.assertEqual([r["provider_version_id"] for r in targets],["photo.jpg-v1"])
 
+    def test_reappearance_between_provider_batches_prevents_the_next_deletion(self):
+        with self.connection() as connection:
+            scheduled = self.schedule(connection)
+        client = Mock()
+        def first_batch(**kwargs):
+            (self.source / "photo.jpg").write_bytes(b"new local data")
+            return {"Deleted": kwargs["Delete"]["Objects"]}
+        client.delete_objects.side_effect = first_batch
+        with patch("app.storage.CLOUD_DELETE_BATCH_SIZE", 1):
+            self.execute(scheduled, client=client)
+        self.assertEqual(client.delete_objects.call_count, 1)
+        self.assertEqual((self.source / "photo.jpg").read_bytes(), b"new local data")
+        with self.connection() as connection:
+            self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone()["status"], "cancelled")
+            states = [r["availability"] for r in connection.execute("SELECT availability FROM archive_versions").fetchall()]
+            self.assertEqual(sorted(states), ["available", "purged"])
+
     def test_restart_finalizes_catalogued_deleted_items_without_repeat_provider_call(self):
         with self.connection() as connection:
             scheduled = self.schedule(connection)

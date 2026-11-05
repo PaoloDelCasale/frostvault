@@ -144,6 +144,8 @@ LOCAL_SCAN_WRITE_BATCH_SIZE = 250
 # merges in bounded batches so other writers (lease renewal,
 # notifications) are not blocked for the full listing.
 CLOUD_SCAN_WRITE_BATCH_SIZE = 250
+# S3 DeleteObjects accepts at most 1,000 exact targets per request.
+CLOUD_DELETE_BATCH_SIZE = 1000
 
 
 # A claim is intentionally durable rather than process-local.  Five minutes is
@@ -4595,8 +4597,8 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
     validate_cloud_vault(job)
     client = s3_client()
     failures = 0
-    for offset in range(0, len(items), 1000):
-        batch = items[offset : offset + 1000]
+    for offset in range(0, len(items), CLOUD_DELETE_BATCH_SIZE):
+        batch = items[offset : offset + CLOUD_DELETE_BATCH_SIZE]
         ensure_job_active(job["id"], "Cloud purge stopped")
         stamp = now_iso()
         # Keep all group members leased while a batch is in flight.  If a
