@@ -367,22 +367,33 @@ def mark_item_deleted(connection: Any, *, item_id: int, updated_at: str) -> None
 
 
 def mark_items_deleted(connection: Any, *, item_ids: list[int], updated_at: str) -> None:
-    for item_id in item_ids:
-        item = connection.execute("SELECT * FROM cloud_deletion_items WHERE id=%s", (item_id,)).fetchone()
-        connection.execute("""UPDATE cloud_deletion_items SET status='deleted',error_message=NULL,
-            updated_at=%s WHERE id=%s""", (updated_at, item_id))
-        if item["archive_version_id"]:
-            connection.execute("UPDATE archive_versions SET availability='purged',availability_checked_at=%s WHERE id=%s",
-                               (updated_at, item["archive_version_id"]))
-            invalidate_for_archive_version_ids(connection, [str(item["archive_version_id"])])
-        else:
-            invalidate_for_vault_file(connection, int(item["vault_id"]), str(item["vault_file_id"]))
+    """Persist provider batches in bounded queries, retaining the existing scale seam."""
+    for offset in range(0, len(item_ids), 500):
+        batch = item_ids[offset:offset + 500]
+        placeholders = ','.join('%s' for _ in batch)
+        items = connection.execute(f"""SELECT archive_version_id,vault_id,vault_file_id
+            FROM cloud_deletion_items WHERE id IN ({placeholders})""", batch).fetchall()
+        connection.execute(f"""UPDATE archive_versions SET availability='purged',availability_checked_at=%s
+            WHERE id IN (SELECT archive_version_id FROM cloud_deletion_items
+                         WHERE id IN ({placeholders}) AND kind='version')""", (updated_at, *batch))
+        connection.execute(f"""UPDATE cloud_deletion_items SET status='deleted',error_message=NULL,updated_at=%s
+            WHERE id IN ({placeholders})""", (updated_at, *batch))
+        invalidate_for_archive_version_ids(connection, [str(i["archive_version_id"])
+                                                       for i in items if i["archive_version_id"]])
+        for vault_id, file_id in {(int(i["vault_id"]), str(i["vault_file_id"]))
+                                  for i in items if not i["archive_version_id"]}:
+            invalidate_for_vault_file(connection, vault_id, file_id)
 
 
 def mark_items_failed(connection: Any, *, failures: list[tuple[int, str]], updated_at: str) -> None:
-    for item_id, message in failures:
-        connection.execute("UPDATE cloud_deletion_items SET status='failed',error_message=%s,updated_at=%s WHERE id=%s",
-                           (message, updated_at, item_id))
+    for offset in range(0, len(failures), 250):
+        batch = failures[offset:offset + 250]
+        cases = ' '.join('WHEN %s THEN %s' for _ in batch)
+        placeholders = ','.join('%s' for _ in batch)
+        case_params = [value for pair in batch for value in pair]
+        connection.execute(f"""UPDATE cloud_deletion_items SET status='failed',
+            error_message=CASE id {cases} ELSE error_message END,updated_at=%s
+            WHERE id IN ({placeholders})""", (*case_params, updated_at, *(i for i, _ in batch)))
 
 
 def finalize_purge_job(connection: Any, *, job_id: int, vault_file_id: str,

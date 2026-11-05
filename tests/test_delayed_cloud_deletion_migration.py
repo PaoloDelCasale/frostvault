@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app.catalog import ArchiveCatalog
 from tests.postgres import PostgresConnection
 from tests.test_database import run_alembic
 
@@ -20,12 +21,21 @@ class DelayedDeletionMigrationTests(unittest.TestCase):
                     VALUES (1,1,'file','photo.jpg','cloud-purge','pending_delay','2026-11-05T00:00:00+00:00','2026-11-05T00:00:00+00:00','legacy','2026-11-06T00:00:00+00:00')""")
                 connection.execute("""INSERT INTO cloud_deletion_items(job_id,vault_id,vault_file_id,kind,object_key,provider_version_id,size_bytes,status,updated_at)
                     VALUES (1,1,'file','version','vaults/test/photo.jpg','exact-version',5,'pending','2026-11-05T00:00:00+00:00')""")
+                catalog = ArchiveCatalog(connection)
+                version = catalog.record_archive_version(vault_id=1, path="evidence.jpg",
+                    object_key="vaults/test/evidence.jpg", provider_version_id="sole-cloud-copy", size=5,
+                    storage_class="STANDARD", etag="etag", uploaded_at="2026-11-05T00:00:00+00:00",
+                    observed_at="2026-11-05T00:00:00+00:00", scan_id="scan", origin="upload")
+                catalog.mark_version_verified(version, plaintext_sha256="a"*64, verified_at="2026-11-05T00:00:00+00:00")
             result = run_alembic(path)
             self.assertEqual(result.returncode,0,result.stderr)
             with PostgresConnection(str(path)) as connection:
                 self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone()["status"],"cancelled")
                 item = connection.execute("SELECT * FROM cloud_deletion_items").fetchone()
                 self.assertEqual((item["status"],item["provider_version_id"]),("skipped","exact-version"))
+                evidence = connection.execute("SELECT integrity,availability,provider_version_id FROM archive_versions WHERE id=%s", (version,)).fetchone()
+                self.assertEqual((evidence["integrity"],evidence["availability"],evidence["provider_version_id"]),
+                                 ("verified","available","sole-cloud-copy"))
                 self.assertIsNone(connection.execute("SELECT root_released_at FROM vaults").fetchone()["root_released_at"])
                 self.assertFalse(connection.execute("""SELECT EXISTS(SELECT 1 FROM information_schema.columns
                     WHERE table_schema=current_schema() AND table_name='vaults' AND column_name='cloud_deletion_enabled') AS present""").fetchone()["present"])

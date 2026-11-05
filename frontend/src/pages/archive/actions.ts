@@ -101,7 +101,7 @@ function fileHasCloudContent(item: ArchiveListItem): boolean {
 }
 
 function directoryCloudDeletionCount(item: ArchiveListItem): number {
-  if (!isDirectory(item)) return 0;
+  if (!isDirectory(item) || item.state !== "cloud_only") return 0;
   const available = item.available_actions || {};
   const counted = available["cloud-purge"];
   if (typeof counted === "number" && counted === item.item_count && counted > 0) return counted;

@@ -143,7 +143,7 @@ describe("availableActions — capability gating (seam 2)", () => {
 
   it("offers cloud deletion only on wholly Cloud-only directories", () => {
     expect(availableActions(directory, ownerCaps).map((a) => a.id)).not.toContain("cloud-purge");
-    expect(availableActions({ ...directory, available_actions: { "cloud-purge": 3 } }, ownerCaps))
+    expect(availableActions({ ...directory, state: "cloud_only", available_actions: { "cloud-purge": 3 } }, ownerCaps))
       .toContainEqual({ id: "cloud-purge", count: 3, tone: "danger" });
   });
 

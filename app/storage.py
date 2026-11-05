@@ -4607,6 +4607,9 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
                 connection, vault_id=int(job["vault_id"]), group_id=str(group_id), at=stamp,
             ):
                 return
+            # Validation may traverse a large selection while holding Job locks.
+            # Never revive an expired lease using the pre-validation timestamp.
+            stamp = now_iso()
             if not ArchiveCatalog(connection).renew_purge_group_claim(
                 vault_id=int(job["vault_id"]),
                 group_id=str(group_id),

@@ -42,6 +42,35 @@ class CloudDeletionLeaseTests(unittest.TestCase):
         self.assertEqual({r["status"] for r in rows},{"cleaning"})
         self.assertEqual(len({r["claim_token"] for r in rows}),1)
 
+    def test_cancellation_racing_due_claim_is_all_or_nothing(self):
+        with self.connection() as connection:
+            self.add_file(connection, "second.jpg")
+            scheduled = self.schedule(connection, paths=["photo.jpg", "second.jpg"])
+        barrier = threading.Barrier(2)
+        def cancel():
+            with self.connection() as connection:
+                barrier.wait(timeout=20)
+                try:
+                    deletion.cancel_cloud_deletion(connection, vault_id=1, group_id=scheduled.group_id,
+                        actor_user_id=1, cancelled_at=DUE.isoformat())
+                    return True
+                except deletion.CloudDeletionError:
+                    return False
+        def claim():
+            with self.connection() as connection:
+                barrier.wait(timeout=20)
+                return ArchiveCatalog(connection).claim_purge_group(lead_job_id=scheduled.job_ids[0],
+                    claim_token="worker", claimed_at=DUE.isoformat(),
+                    claim_expires_at=(DUE+timedelta(hours=1)).isoformat(), now=DUE.isoformat(),
+                    message="delete", message_key="job.cloud_purge_deleting")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            cancelled, claimed = pool.submit(cancel), pool.submit(claim)
+            cancel_won, rows = cancelled.result(timeout=30), claimed.result(timeout=30)
+        with self.connection() as connection:
+            states = {r["status"] for r in connection.execute("SELECT status FROM jobs").fetchall()}
+        self.assertEqual(states, {"cancelled"} if cancel_won else {"cleaning"})
+        self.assertEqual(len(rows), 0 if cancel_won else 2)
+
     def test_provider_partial_failure_preserves_remaining_copy_and_requires_new_delay(self):
         with self.connection() as connection:
             scheduled = self.schedule(connection)

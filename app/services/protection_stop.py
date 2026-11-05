@@ -59,8 +59,8 @@ def stop_protection(connection: Any, *, vault_id: int, actor_user_id: int,
                 reconcile_one(connection, vault_id)
                 return status(connection, vault_id)
         raise ValueError("Folder protection has already stopped")
-    if vault["relocation_state"] != "ready":
-        raise ValueError("Reconnect must complete before stopping protection")
+    if cloud_disposition == "delete" and vault["relocation_state"] != "ready":
+        raise ValueError("Reconnect must complete before deleting cloud content")
     if connection.execute("""SELECT 1 FROM jobs WHERE vault_id=%s
         AND status NOT IN ('completed','failed','cancelled') LIMIT 1""", (vault_id,)).fetchone():
         raise ValueError("Wait for active Jobs or cancel pending work first")

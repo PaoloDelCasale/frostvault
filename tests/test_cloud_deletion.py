@@ -233,6 +233,41 @@ class CloudDeletionTests(unittest.TestCase):
                 requested_at=START.isoformat(),group_id="recovery",is_directory=False)
             self.assertEqual(queued, [])
 
+    def test_keep_cloud_can_stop_an_unavailable_reconnect_without_reading_or_deleting_data(self):
+        with self.connection() as connection:
+            connection.execute("UPDATE vaults SET relocation_state='scan_required'")
+            with patch("app.services.source_layout.vault_local_access",
+                       return_value=SimpleNamespace(local_operations_allowed=False)):
+                status = protection_stop.stop_protection(connection, vault_id=1, actor_user_id=1,
+                    cloud_disposition="keep", confirmation="Photos", reason="Retire unavailable folder")
+            self.assertTrue(status["root_released"])
+            self.assertEqual(connection.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"], 0)
+
+    def test_no_local_observation_still_requires_verified_cloud_and_physical_absence(self):
+        with self.connection() as connection:
+            connection.execute("DELETE FROM local_copies")
+            scheduled = self.schedule(connection)
+            self.assertEqual(len(scheduled.job_ids), 1)
+
+    def test_worker_cannot_bypass_seven_days_with_a_corrupted_earlier_pending_until(self):
+        with self.connection() as connection:
+            scheduled = self.schedule(connection)
+            connection.execute("UPDATE jobs SET pending_until=%s", (START.isoformat(),))
+        client = self.execute(scheduled, at=START + timedelta(days=1))
+        client.delete_objects.assert_not_called()
+
+    def test_legacy_marker_is_captured_and_deleted_by_exact_version_id_with_the_file(self):
+        with self.connection() as connection:
+            ArchiveCatalog(connection).record_delete_marker(vault_id=1, path="photo.jpg",
+                object_key="vaults/test/photo.jpg", provider_version_id="marker-version",
+                created_at=START.isoformat(), observed_at=START.isoformat())
+            scheduled = self.schedule(connection)
+            self.assertEqual(scheduled.preview.delete_marker_count, 1)
+        client = self.execute(scheduled)
+        targets = client.delete_objects.call_args.kwargs["Delete"]["Objects"]
+        self.assertIn({"Key":"vaults/test/photo.jpg", "VersionId":"marker-version"}, targets)
+        self.assertTrue(all(target.get("VersionId") for target in targets))
+
     def test_directory_selection_escapes_wildcards_and_never_partially_admits_mixed_files(self):
         with self.connection() as connection:
             self.add_file(connection, "album_1/photo.jpg")
