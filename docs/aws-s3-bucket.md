@@ -69,7 +69,8 @@ and include remediation hints, for example:
   `RestrictPublicBuckets` is false, missing, or not an explicit boolean `true`
 - `GetPublicAccessBlock` is denied, unsupported, fails, or returns missing state
 - region mismatch with `AWS_DEFAULT_REGION`
-- missing `s3:GetBucketVersioning`, `s3:GetBucketPublicAccessBlock`, or bucket-list permission for `HeadBucket`
+- missing `s3:GetBucketVersioning`, `s3:GetBucketPublicAccessBlock`, or `s3:ListBucket` (the permission `HeadBucket` needs; there is no `s3:HeadBucket` IAM action)
+- rejected credentials (`SignatureDoesNotMatch`, `InvalidAccessKeyId`, expired token): a `HeadBucket` 403 has no body, so the probe makes one extra read-only `GetBucketLocation` (already in the minimum policy) to read the provider error code. When no code distinguishes the cases the message names both possible causes: wrong/expired credentials or a missing `s3:ListBucket`. Provider messages are never shown
 
 Fix the reported issue; queued work resumes automatically after the next
 successful probe, including after IAM propagation. Failures back off at
@@ -81,7 +82,7 @@ timestamp cannot leave the gate indefinitely blocked.
 
 One installation warning and the app banner show the remedy. Affected Jobs stay
 queued (or keep their prior waiting state), without consuming their transfer
-retry budget. Local catalog browsing/scanning, heartbeat and notifications remain
+retry budget. While the gate is blocked, upload activity counts Jobs that have sent no bytes as waiting (queued), even if a lease left by a stopped process still marks them `uploading`. Local catalog browsing/scanning, heartbeat and notifications remain
 available. Cloud scans, uploads, recovery, rename and local cleanup remain
 blocked until versioning and **all four bucket-level BPA flags** are confirmed enabled. Account-level BPA alone is not sufficient proof.
 S3-compatible endpoints must implement the same API; there is no CI/provider
@@ -249,5 +250,6 @@ Job retry policy. Verify `s3:AbortMultipartUpload` permission before deployment.
 | Preflight reports versioning disabled | Re-enable versioning in S3 console or re-apply Terraform |
 | BPA not fully enabled or not verifiable | Enable all four bucket flags; grant `s3:GetBucketPublicAccessBlock`; use an API-compatible provider |
 | Region mismatch | Set `AWS_DEFAULT_REGION` to the bucket region from `terraform output` |
+| Preflight reports rejected credentials (`SignatureDoesNotMatch`, `InvalidAccessKeyId`) | Correct `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` and restart or wait for the next probe; queued Jobs resume automatically |
 | Access denied on preflight | Attach or update IAM policy from `iam/archive-operator-policy.json` |
 | Upload fails without VersionId | Same as versioning disabled; fix bucket baseline first |

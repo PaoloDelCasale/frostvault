@@ -47,6 +47,16 @@ class UploadActivityTests(unittest.TestCase):
         self.assertIn('lc.content_observed_at', queries[3])
         self.assertNotIn('pending_since', queries[3])
 
+    def test_job_stage_query_reads_the_preflight_gate_in_the_same_aggregate(self):
+        connection = Mock()
+        connection.execute.return_value.fetchall.side_effect = [[], [], []]
+        upload_activity(connection, now=datetime(2026, 11, 6, 10, tzinfo=timezone.utc))
+        stage_query = connection.execute.call_args_list[1].args[0]
+        # No extra round trip: a blocked gate demotes zero-byte 'uploading' leases to queued.
+        self.assertIn('cloud_preflight_state', stage_query)
+        self.assertIn("'blocked'", stage_query)
+        self.assertEqual(connection.execute.call_count, 2)
+
     def test_endpoint_requires_owner_and_is_installation_scoped(self):
         client = TestClient(main.app)
         self.assertEqual(client.get('/api/upload-activity').status_code, 401)
