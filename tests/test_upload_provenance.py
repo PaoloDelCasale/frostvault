@@ -12,7 +12,7 @@ from botocore.config import Config
 from botocore.awsrequest import AWSResponse
 from botocore.exceptions import ClientError
 from types import SimpleNamespace
-from app.services.upload_provenance import UploadBlocked, TOKEN_KEY, canonical, inventory, provider_identity, reconcile, receipt
+from app.services.upload_provenance import ProvenAbsent, UploadBlocked, TOKEN_KEY, canonical, inventory, provider_identity, reconcile, receipt
 from app.services.snapshot_cleanup import exact_duplicate
 from app.services.upload_snapshot import prepare_upload_snapshot
 from app.services.s3_upload import _UploadClient
@@ -60,6 +60,54 @@ class ProvenanceProviderTests(unittest.TestCase):
                     reconcile(provider, self.intent, None, lambda: None)
                 self.assertEqual(provider.objects, original)
                 self.assertEqual((provider.puts, provider.deletes), (0, 0))
+
+    def test_complete_empty_listings_and_no_incomplete_multipart_prove_the_send_never_landed(self):
+        with self.assertRaises(ProvenAbsent):
+            reconcile(self.provider, self.intent, None, lambda: None)
+        self.assertGreaterEqual(self.provider.multipart_listings, 1)
+        self.assertEqual((self.provider.puts, self.provider.gets, self.provider.deletes), (0, 0, 0))
+
+    def test_absence_is_never_proven_when_it_cannot_be_positively_read(self):
+        scenarios = {}
+        incomplete = VersionedProvider()
+        incomplete.multiparts.append(("key", "upload-1"))
+        scenarios["incomplete multipart for the key"] = incomplete
+        no_api = VersionedProvider()
+        no_api.list_multipart_uploads = None
+        scenarios["multipart listing unsupported"] = no_api
+        unconfirmed = VersionedProvider()
+        unconfirmed.list_multipart_uploads = lambda **kwargs: {"Uploads": []}
+        scenarios["pagination not confirmed"] = unconfirmed
+        for name, provider in scenarios.items():
+            with self.subTest(scenario=name):
+                with self.assertRaises(UploadBlocked) as blocked:
+                    reconcile(provider, self.intent, None, lambda: None)
+                self.assertNotIsInstance(blocked.exception, ProvenAbsent)
+                self.assertEqual(blocked.exception.reason, "ambiguous_send")
+                self.assertEqual((provider.puts, provider.deletes), (0, 0))
+
+    def test_absence_requires_the_pinned_inventory_and_no_receipt(self):
+        for name, prepare, saved in (
+            ("older version outside the pinned inventory", lambda p: p.add("key", b"other", version="external"), None),
+            ("receipt version missing from the listing", lambda p: None, {"VersionId": "lost"}),
+        ):
+            with self.subTest(case=name):
+                provider = VersionedProvider()
+                prepare(provider)
+                with self.assertRaises(UploadBlocked) as blocked:
+                    reconcile(provider, self.intent, saved, lambda: None)
+                self.assertNotIsInstance(blocked.exception, ProvenAbsent)
+
+    def test_connectivity_failure_reading_the_inventory_is_not_reported_as_a_changed_inventory(self):
+        from botocore.exceptions import EndpointConnectionError
+        error = EndpointConnectionError(endpoint_url="https://s3.invalid")
+        with patch.object(self.provider, "list_object_versions", side_effect=error):
+            with self.assertRaises(EndpointConnectionError):
+                inventory(self.provider, "bucket", "key")
+        with patch.object(self.provider, "list_object_versions", side_effect=ValueError("garbled")):
+            with self.assertRaises(UploadBlocked) as blocked:
+                inventory(self.provider, "bucket", "key")
+        self.assertEqual(blocked.exception.reason, "inventory_changed")
 
     def test_inflight_own_write_between_complete_listings_reconciles_automatically(self):
         listing = self.provider.list_object_versions

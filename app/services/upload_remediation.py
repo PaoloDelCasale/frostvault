@@ -172,6 +172,20 @@ def intercept_upload(connection: Any, *, vault_id: int, file_id: str, user_id: i
     return True,admit(connection,row,vault,user_id=user_id,stamp=stamp,automatic=automatic,group_id=group_id)
 
 
+def _refusal_reason(connection: Any, remediation_id: str) -> str:
+    """Why explicit admission refused: the stored cause, never a fake identity change."""
+    row = connection.execute("SELECT * FROM upload_remediations WHERE id=%s", (remediation_id,)).fetchone()
+    if row["state"] == "cancelled":
+        return "owner_cancelled"
+    if row["state"] == "resolved":
+        return "already_resolved"
+    busy = connection.execute("""SELECT 1 FROM jobs WHERE vault_file_id=%s
+        AND status NOT IN ('failed','cancelled','completed') LIMIT 1""", (row["vault_file_id"],)).fetchone()
+    if busy or row["state"] in {"queued","retrying"}:
+        return "active_operation"
+    return row["reason"] if row["reason"] in provenance.REMEDIES else "proof_unavailable"
+
+
 def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str, remediation_id: str | None = None) -> dict[str, Any]:
     current = connection.execute("SELECT * FROM vaults WHERE id=%s FOR UPDATE", (vault["id"],)).fetchone()
     file = connection.execute("SELECT vault_file_id FROM file_paths WHERE vault_id=%s AND path=%s AND valid_to IS NULL", (vault["id"],path)).fetchone()
@@ -206,7 +220,7 @@ def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_i
         raise provenance.UploadBlocked("ambiguous_receipt")
     result = admit(connection,rows[0],current,user_id=user_id,stamp=timestamp,automatic=False,explicit=True)
     if not result:
-        raise provenance.UploadBlocked("identity_changed")
+        raise provenance.UploadBlocked(_refusal_reason(connection,rows[0]["id"]))
     return result
 
 
@@ -229,6 +243,26 @@ def require_job(connection: Any, job: dict[str, Any]) -> None:
             or vault["s3_bucket"] != pinned.get("bucket") or vault["s3_prefix"] != pinned.get("prefix")
             or any(vault.get(k) != pinned.get(k) for k in ("source_root","root_identity","root_identity_version"))):
         raise provenance.UploadBlocked("identity_changed")
+
+
+def release_for_rearm(connection: Any, job: dict[str, Any], intent_id: str, stamp: str) -> None:
+    """Close the open episode of an intent proven never to have landed (#484).
+
+    The reconcile-only attempt becomes the file's ordinary upload (it keeps the
+    same exact intent, so nothing new is authorized) and leaves the ledger; the
+    episode is resolved with no keeper because there is no Archive Version. Old
+    failed originals stay as history. Episodes owned by another live Job stay.
+    """
+    rows = connection.execute("""SELECT r.* FROM upload_remediations r WHERE r.intent_id=%s
+        AND r.state<>'resolved' AND (r.current_job_id IS NULL OR r.current_job_id=%s) FOR UPDATE""",
+        (intent_id, job["id"])).fetchall()
+    if job.get("upload_reconcile_only"):
+        connection.execute("UPDATE jobs SET upload_reconcile_only=FALSE WHERE id=%s AND status NOT IN ('completed','failed','cancelled')", (job["id"],))
+        connection.execute("DELETE FROM upload_remediation_jobs WHERE job_id=%s", (job["id"],))
+    for row in rows:
+        connection.execute("""UPDATE upload_remediations SET state='resolved',phase='completed',reason=NULL,
+            current_job_id=NULL,resolved_at=%s,updated_at=%s WHERE id=%s""", (stamp, stamp, row["id"]))
+        _invalidate(connection, row["vault_id"], stamp)
 
 
 def record_cleanup(connection: Any, job_id: int, inventory_job_id: int) -> None:

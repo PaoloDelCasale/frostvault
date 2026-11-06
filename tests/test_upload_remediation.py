@@ -140,7 +140,7 @@ class UploadRemediationTests(unittest.TestCase):
         with self.db() as connection:
             self.assertEqual(connection.execute("SELECT state FROM upload_remediations").fetchone()["state"],"cancelled")
             self.assertEqual(connection.execute("SELECT count(*) n FROM jobs").fetchone()["n"],2)
-        with self.assertRaisesRegex(Exception,"identity_changed"):
+        with self.assertRaisesRegex(Exception,"owner_cancelled"):
             self.admit()
         self.assertEqual(self.provider.puts,1)
 

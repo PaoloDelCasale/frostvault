@@ -1168,6 +1168,10 @@ def _current_scan_vault(vault: dict[str, Any]) -> dict[str, Any]:
     return vault
 
 
+class _ScanRootUnreadable(RuntimeError):
+    """The enrolled root could not be observed; distinct from an observed mismatch."""
+
+
 def _validate_enrolled_scan_root(vault: dict[str, Any]) -> None:
     """Reject a scan unless an enrolled root still has its original identity."""
     # A few direct scan callers intentionally use a minimal in-memory Vault
@@ -1182,7 +1186,10 @@ def _validate_enrolled_scan_root(vault: dict[str, Any]) -> None:
     try:
         observed = vault_relocation.root_identity(vault["source_root"])
     except vault_relocation.VaultRelocationError as exc:
-        raise RuntimeError(f"Vault root identity is unavailable: {exc}") from exc
+        # Only an I/O failure is "unreadable"; symlinks and non-directories are
+        # observed replacements and stay a hard identity failure.
+        failure = _ScanRootUnreadable if exc.reason == "inaccessible" else RuntimeError
+        raise failure(f"Vault root identity is unavailable: {exc}") from exc
     if observed != vault["root_identity"]:
         raise RuntimeError("Vault root identity mismatch; local scan blocked")
 
@@ -3202,8 +3209,16 @@ def remove_local_copies(vault: dict[str, Any], logical_path: str) -> list[Path]:
     return [target]
 
 
+class SourceVolumeUnavailable(RuntimeError):
+    """The Source Volume cannot be read right now; this is not an identity change."""
+
+
 def _require_upload_source_identity(job: dict[str, Any]) -> None:
-    """Source Volume/root I/O is outside replayable DB transactions."""
+    """Source Volume/root I/O is outside replayable DB transactions.
+
+    ``identity_changed`` is reserved for a root that was observed and differs
+    from the enrolled one. An unreadable/unavailable volume waits (#486).
+    """
     from .services.upload_provenance import UploadBlocked
     ensure_job_active(job["id"], "Upload source claim lost")
     with db() as connection:
@@ -3211,9 +3226,11 @@ def _require_upload_source_identity(job: dict[str, Any]) -> None:
     if not vault or vault["source_root"] != job["source_root"]:
         raise UploadBlocked("identity_changed")
     if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
-        raise UploadBlocked("identity_changed")
+        raise SourceVolumeUnavailable("Source Volume is unavailable")
     try:
         _validate_enrolled_scan_root(vault)
+    except _ScanRootUnreadable as exc:
+        raise SourceVolumeUnavailable(str(exc)) from exc
     except Exception as exc:
         raise UploadBlocked("identity_changed") from exc
 
@@ -3496,6 +3513,27 @@ def _publish_upload_receipt(job: dict[str, Any], intent: dict[str, Any], respons
     return _upload_catalog_unit(job, publish)
 
 
+def _rearm_after_proven_absence(job: dict[str, Any], intent: dict[str, Any]) -> None:
+    """Claim-fenced DB-only unit; no provider I/O. Never reached with a receipt."""
+    from .services import upload_provenance as provenance, upload_remediation
+    def close(catalog: ArchiveCatalog) -> None:
+        connection = catalog.connection
+        stamp = now_iso()
+        provenance.record_no_write(connection, job, intent, provenance.ABSENT_OPERATION, stamp)
+        connection.execute("UPDATE upload_intents SET blocked_reason=NULL WHERE id=%s", (intent["id"],))
+        connection.execute("DELETE FROM snapshot_reconciliation_blocks WHERE vault_file_id=%s", (job["vault_file_id"],))
+        upload_remediation.release_for_rearm(connection, job, intent["id"], stamp)
+    _upload_catalog_unit(job, close)
+    # The remediation attempt is now this file's ordinary upload; the exact
+    # intent, token and frozen snapshot are reused, so no new authority is minted.
+    job["upload_reconcile_only"] = False
+    @retry_database_unit
+    def clear_problem() -> None:
+        with owned_connection(db()) as connection:
+            notification_service.set_problem(connection, key=f"upload_reconciliation:{job['vault_file_id']}", event="upload_reconciliation", vault_id=job["vault_id"], active=False, email=False)
+    clear_problem()
+
+
 def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], client: Any) -> None:
     from .services import upload_provenance as provenance
     pinned = json.loads(intent["target_json"])
@@ -3526,7 +3564,14 @@ def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], cli
                 _upload_catalog_unit(job, lambda catalog: catalog.link_job_version(job["id"], intent["archive_version_id"]))
             # VERSION baseline remains immutable, including cleanup-only retries.
             return
-        response = provenance.reconcile(client, intent, raw, lambda: ensure_job_active(job["id"], "Upload reconciliation stopped"))
+        try:
+            response = provenance.reconcile(client, intent, raw, lambda: ensure_job_active(job["id"], "Upload reconciliation stopped"))
+        except provenance.ProvenAbsent:
+            # Complete S3 reads prove the journaled send never landed (#484):
+            # close the intent as a definitive no-write outcome and let this
+            # Job send again from its immutable snapshot, no manual unblock.
+            _rearm_after_proven_absence(job, intent)
+            return
         provenance.append_receipt(db, intent["id"], response, now_iso())
         snapshot = UploadSnapshot.from_json(intent["snapshot_json"])
         try:
@@ -5229,6 +5274,14 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
             _release_preflight_purge_claim(job)
         else:
             set_job(job["id"], job["status"], "S3 readiness blocked; Job remains queued")
+        return False
+    except SourceVolumeUnavailable:
+        # A transient failure reading the enrolled root is not an identity
+        # change (#486). Nothing was sent by this attempt; the journaled intent,
+        # if any, reconciles on the next lease. Same wait as the pre-dispatch check.
+        if job.get("claim_token"):
+            set_job(job["id"], "queued", "Source Volume is unavailable; Job remains queued",
+                    remediation_suspension="source_volume_unavailable")
         return False
     except WorkerStopping:
         # Process shutdown is not an Owner cancellation or a failed upload.
