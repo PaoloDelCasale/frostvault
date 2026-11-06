@@ -35,6 +35,7 @@ def upgrade():
         sa.Column("created_at", sa.Text(), nullable=False),
         sa.Column("updated_at", sa.Text(), nullable=False),
         sa.Column("resolved_at", sa.Text()),
+        sa.Column("cleanup_inventory_job_id", sa.BigInteger(), sa.ForeignKey("snapshot_cleanup_inventories.job_id", ondelete="RESTRICT")),
         sa.UniqueConstraint("id", "vault_file_id", "vault_id", name="upload_remediations_scope_uq"),
         sa.ForeignKeyConstraint(["archive_version_id", "vault_file_id", "vault_id"],
             ["archive_versions.id", "archive_versions.vault_file_id", "archive_versions.vault_id"], ondelete="RESTRICT"),

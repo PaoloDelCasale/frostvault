@@ -192,7 +192,7 @@ def pin_inventory(worker: Any, job: dict[str, Any], client: Any, *, keeper_id: s
     return save()
 
 
-def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> None:
+def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> int:
     active = lambda: worker.ensure_job_active(job["id"], "Snapshot cleanup stopped")
     worker._require_upload_source_identity(job)
     provider = provider_identity(client)
@@ -334,3 +334,4 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> No
             connection.execute("UPDATE upload_intents SET settled=TRUE,blocked_reason=NULL WHERE archive_version_id=%s AND vault_file_id=%s", (keeper_id, job["vault_file_id"]))
             connection.execute("DELETE FROM snapshot_reconciliation_blocks WHERE vault_file_id=%s", (job["vault_file_id"],))
     persist_purge()
+    return int(batch["job_id"])

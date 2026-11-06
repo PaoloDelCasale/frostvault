@@ -3426,6 +3426,7 @@ class ArchiveCatalog:
                 [action, action, *params],
             ).fetchall()
         eligible = []
+        remediation_job_ids: list[int] = []
         skipped_same = 0
         target_class = (target_storage_class or "").upper() or None
         for row in candidates:
@@ -3435,6 +3436,18 @@ class ArchiveCatalog:
                 # available, digest-matching version. Unchanged protected
                 # content stays ineligible so duplicates are not queued.
                 allowed = local_copy_is_upload_eligible(row)
+                if allowed:
+                    from .services import upload_remediation
+                    handled, resumed = upload_remediation.intercept_upload(
+                        self.connection, vault_id=vault_id, file_id=row["vault_file_id"],
+                        user_id=requested_by, stamp=requested_at,
+                        automatic=origin == "automatic", group_id=group_id,
+                    )
+                    if handled:
+                        if resumed:
+                            remediation_job_ids.append(int(resumed["job_id"]))
+                            self._mark_path_aggregates_dirty(vault_id, row["path"])
+                        allowed = False
             elif action == "recover":
                 allowed = (
                     row["presence"] != "present"
@@ -3482,8 +3495,10 @@ class ArchiveCatalog:
                 eligible.append(row)
         self.last_skipped_same_class = skipped_same
 
-        job_ids: list[int] = []
-        total_bytes = 0
+        job_ids: list[int] = list(remediation_job_ids)
+        total_bytes = sum(int(row["total_bytes"] or 0) for row in self.connection.execute(
+            "SELECT total_bytes FROM jobs WHERE id=ANY(%s)", (remediation_job_ids,),
+        ).fetchall()) if remediation_job_ids else 0
         upload_mode = self._upload_verification_mode(vault_id) if action == "upload" else None
         for row in eligible:
             size = int(
@@ -3541,4 +3556,4 @@ class ArchiveCatalog:
             if action == "upload":
                 self._mark_path_aggregates_dirty(vault_id, row["path"])
             total_bytes += size
-        return job_ids, total_bytes, len(eligible)
+        return job_ids, total_bytes, len(eligible) + len(remediation_job_ids)

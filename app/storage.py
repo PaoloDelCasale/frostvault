@@ -1992,6 +1992,7 @@ def set_job(
     previous_status = None
     action = None
     with owned_connection(db()) as connection:
+        connection.execute("SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR UPDATE", (job_id,))
         current = connection.execute(
             "SELECT status, action FROM jobs WHERE id=%s",
             (job_id,),
@@ -2108,6 +2109,7 @@ def schedule_upload_retry(
     claim_token = _claim_token_for(job_id)
     action = None
     with owned_connection(db()) as connection:
+        connection.execute("SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR UPDATE", (job_id,))
         current = connection.execute(
             "SELECT action FROM jobs WHERE id=%s",
             (job_id,),
@@ -2345,12 +2347,12 @@ def _record_upload_reconciliation_block(job: dict[str, Any], reason: str) -> Non
 
 def purge_current_snapshot_superseded(
     job: dict[str, Any], *, keep_version_id: str, client: Any,
-) -> None:
+) -> int:
     """Upload and rename share exact durable per-VersionId authority."""
     import sys
     from .services import snapshot_cleanup, upload_provenance
     try:
-        snapshot_cleanup.cleanup(sys.modules[__name__], job, keep_version_id, client)
+        inventory_job_id = snapshot_cleanup.cleanup(sys.modules[__name__], job, keep_version_id, client)
     except upload_provenance.UploadBlocked as exc:
         _record_upload_reconciliation_block(job, exc.reason)
         raise
@@ -2361,6 +2363,7 @@ def purge_current_snapshot_superseded(
         raise
     with db() as connection:
         notification_service.set_problem(connection, key=f"upload_reconciliation:{job['vault_file_id']}", event="upload_reconciliation", vault_id=job["vault_id"], active=False, email=False)
+    return inventory_job_id
 
 
 def _purge_current_snapshot_scan_extras(
@@ -3228,11 +3231,15 @@ def _complete_verified_upload(
     persist_verification()
     set_job(job["id"], "uploading", message_key="job.purging_previous_snapshot")
     ensure_job_active(job["id"], "Upload claim was lost")
-    purge_current_snapshot_superseded(
+    inventory_job_id = purge_current_snapshot_superseded(
         job,
         keep_version_id=str(version_id),
         client=s3_client(),
     )
+    from .services import upload_remediation
+    _upload_catalog_unit(job, lambda catalog: upload_remediation.record_cleanup(
+        catalog.connection, job["id"], inventory_job_id,
+    ))
     progress_bytes = int(job.get("total_bytes") or 0)
     if local_stat is not None and progress_bytes <= 0:
         progress_bytes = int(local_stat.st_size)
@@ -5374,7 +5381,12 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
             owner_id = owner_user_id(connection)
             if owner_id is None:
                 return 0
-            queued = queue_auto_uploads(
+            queued = 0
+            if retry_failed_only:
+                from .services import upload_remediation
+                queued += upload_remediation.retry_vault(connection,dict(current),owner_id,
+                    (now or datetime.now(timezone.utc)).isoformat())
+            queued += queue_auto_uploads(
                 connection, vault_id=int(vault["id"]), source_root=str(root),
                 requested_by=owner_id, now=now, retry_failed_only=retry_failed_only,
             )
@@ -5419,6 +5431,24 @@ async def cloud_preflight_loop() -> None:
         except Exception as exc:
             _report_worker_error("cloud_preflight", exc)
         await asyncio.sleep(1)
+
+
+async def upload_remediation_loop() -> None:
+    # Dedicated DB-only executor: neither long transfers, mount probes nor the
+    # singleton maintenance executor can delay discovery/admission ticks.
+    from .services import upload_remediation
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="upload-remediation")
+    try:
+        while True:
+            try:
+                await loop.run_in_executor(executor, upload_remediation.sweep, db)
+                await loop.run_in_executor(executor, upload_remediation.observe, db)
+            except Exception as exc:
+                await asyncio.to_thread(_report_worker_error, "upload_remediation", exc)
+            await asyncio.sleep(upload_remediation.POLL_SECONDS)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 async def auto_upload_loop() -> None:

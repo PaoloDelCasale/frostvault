@@ -148,6 +148,7 @@ from .storage import (
     filesystem_watch_loop,
     auto_upload_loop,
     cloud_preflight_loop,
+    upload_remediation_loop,
     now_iso,
     reconcile_interrupted_jobs,
     runtime_status,
@@ -201,7 +202,7 @@ async def lifespan(_: FastAPI):
     reconcile_interrupted_jobs()
     protection_stop_service.reconcile_all()
     tasks = [asyncio.create_task(background_loop()), asyncio.create_task(auto_upload_loop()),
-             asyncio.create_task(cloud_preflight_loop())]
+             asyncio.create_task(cloud_preflight_loop()), asyncio.create_task(upload_remediation_loop())]
     if settings.filesystem_watch_enabled:
         tasks.append(asyncio.create_task(filesystem_watch_loop()))
     yield
@@ -2341,7 +2342,7 @@ def upload(
 def reconcile_upload(action: FileAction, user: dict[str, Any] = Depends(current_user), vault: dict[str, Any] = Depends(current_vault)):
     """Exact resume only, including protected files for which upload returns 409.
 
-    No sweep, no arbitrary deletion, no resurrection of deliberate cancellation.
+    Common target arbiter; no PUT, arbitrary deletion or cancellation resurrection.
     """
     from .services.upload_provenance import schedule_resume, UploadBlocked
     logical_path = safe_relative_path(action.path).as_posix()
@@ -2438,6 +2439,7 @@ def cancel_job_group(
     message_key = message_keys[job_action]
     message = translate(message_key, locale=DEFAULT_LOCALE)
     with db() as connection:
+        connection.execute("SELECT id FROM vaults WHERE id=%s FOR UPDATE", (vault["id"],))
         if job_action == "cloud-purge":
             try:
                 cancelled = cloud_deletion_service.cancel_cloud_deletion(
@@ -2503,6 +2505,10 @@ def cancel_job_group(
             """,
             [message, message_key, "{}", now_iso(), *job_ids],
         )
+        if job_action == "upload":
+            from .services import upload_remediation
+            for job_id in job_ids:
+                upload_remediation.transition(connection, job_id, "cancelled", now_iso())
         # Do not clear archive_versions.restore_state on recover cancel:
         # RestoreObject cannot be cancelled after AWS accepts it, and a later
         # recover must be able to resume polling (REQ-030 / BUG-018).

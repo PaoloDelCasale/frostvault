@@ -22,7 +22,7 @@ RESOLUTION_SQL = """EXISTS (
     JOIN upload_remediations r ON r.id=o.remediation_id
     JOIN upload_remediation_jobs b ON b.remediation_id=r.id AND b.job_id=r.resolved_by_job_id
     JOIN jobs resolving ON resolving.id=b.job_id
-    JOIN snapshot_cleanup_inventories cleanup ON cleanup.job_id=resolving.id
+    JOIN snapshot_cleanup_inventories cleanup ON cleanup.job_id=r.cleanup_inventory_job_id
     WHERE o.original_job_id=original.id AND r.state='resolved'
       AND resolving.status='completed' AND resolving.upload_reconcile_only
       AND resolving.archive_version_id=r.archive_version_id
@@ -151,6 +151,9 @@ def _suspension(connection: Any, row: dict[str, Any], vault: dict[str, Any], *, 
         return "active_operation"
     if connection.execute("SELECT 1 FROM cloud_deletion_items WHERE vault_file_id=%s AND status='pending' LIMIT 1", (row["vault_file_id"],)).fetchone():
         return "pending_deletion"
+    health = connection.execute("SELECT last_error FROM vault_component_health WHERE vault_id=%s AND component='source'", (vault["id"],)).fetchone()
+    if health and health["last_error"]:
+        return "source_volume_unavailable"
     if automatic:
         from .operation_policies import get_policy, auto_upload_path_is_included
         policy = get_policy(connection, vault["id"])
@@ -160,7 +163,8 @@ def _suspension(connection: Any, row: dict[str, Any], vault: dict[str, Any], *, 
 
 
 def admit(connection: Any, row: dict[str, Any], vault: dict[str, Any], *, user_id: int,
-          stamp: str, automatic: bool = True, explicit: bool = False) -> dict[str, Any] | None:
+          stamp: str, automatic: bool = True, explicit: bool = False,
+          group_id: str | None = None) -> dict[str, Any] | None:
     """Caller holds Vault lock. Unique active-file index protects EVERY action."""
     row = connection.execute("SELECT * FROM upload_remediations WHERE id=%s FOR UPDATE", (row["id"],)).fetchone()
     if row["state"] in {"cancelled","resolved","queued","retrying"} or (row["state"] == "blocked" and not explicit):
@@ -182,7 +186,7 @@ def admit(connection: Any, row: dict[str, Any], vault: dict[str, Any], *, user_i
             connection.execute("UPDATE upload_remediations SET state='blocked',reason=%s,updated_at=%s WHERE id=%s", ("proof_mismatch" if version["integrity"] == "mismatch" else "target_unavailable",stamp,row["id"]))
             return None
     path = json.loads(row["target_json"])["path"]
-    group = str(uuid.uuid4())
+    group = group_id or str(uuid.uuid4())
     job = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,action,status,
         requested_by,requested_at,updated_at,group_id,group_path,total_bytes,transferred_bytes,origin,
         upload_reconcile_only,upload_plaintext_sha256,upload_snapshot_json,upload_verification_requested,retry_count)
@@ -201,13 +205,13 @@ def admit(connection: Any, row: dict[str, Any], vault: dict[str, Any], *, user_i
 
 
 def intercept_upload(connection: Any, *, vault_id: int, file_id: str, user_id: int,
-                     stamp: str, automatic: bool) -> tuple[bool, dict[str, Any] | None]:
+                     stamp: str, automatic: bool, group_id: str | None = None) -> tuple[bool, dict[str, Any] | None]:
     vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
     discover_file(connection,vault,file_id,stamp)
     row = connection.execute("SELECT * FROM upload_remediations WHERE vault_file_id=%s AND state<>'resolved' ORDER BY created_at,id LIMIT 1", (file_id,)).fetchone()
     if not row:
         return False,None
-    return True,admit(connection,row,vault,user_id=user_id,stamp=stamp,automatic=automatic)
+    return True,admit(connection,row,vault,user_id=user_id,stamp=stamp,automatic=automatic,group_id=group_id)
 
 
 def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str) -> dict[str, Any]:
@@ -217,12 +221,57 @@ def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_i
         raise provenance.UploadBlocked("identity_changed")
     discover_file(connection,current,file["vault_file_id"],timestamp)
     rows = connection.execute("SELECT * FROM upload_remediations WHERE vault_file_id=%s AND state<>'resolved' ORDER BY created_at,id LIMIT 2", (file["vault_file_id"],)).fetchall()
+    if not rows:
+        # Preserve #464's explicit claimed cleanup of a scan-discovered block.
+        # No unrelated failed Job is resolved by electing a current keeper here.
+        result = provenance._schedule_resume_legacy(connection,vault=current,path=path,user_id=user_id,timestamp=timestamp)
+        job = connection.execute("SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s", (result["job_id"],)).fetchone()
+        intent = provenance.load_for_job(connection,job["id"])
+        from .vault_paths import expected_cloud_key
+        pinned = json.loads(intent["target_json"]) if intent else provenance.target(connection,job,key=expected_cloud_key(path,current["s3_prefix"]),provider="db-fence")
+        episode = connection.execute("""INSERT INTO upload_remediations(id,target_key,vault_id,vault_file_id,intent_id,
+            archive_version_id,target_json,expected_sha256,snapshot_json,requested_mode,size,state,due_at,
+            created_at,updated_at,current_job_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'queued',%s,%s,%s,%s) RETURNING id""",
+            (str(uuid.uuid4()),"intent:"+intent["id"] if intent else "version:"+job["archive_version_id"],current["id"],job["vault_file_id"],
+             intent["id"] if intent else None,job["archive_version_id"],provenance.canonical(pinned),job["upload_plaintext_sha256"],
+             job["upload_snapshot_json"],job["upload_verification_requested"],job["total_bytes"],timestamp,timestamp,timestamp,job["id"])).fetchone()
+        connection.execute("INSERT INTO upload_remediation_jobs(job_id,remediation_id,vault_file_id,vault_id) VALUES (%s,%s,%s,%s)", (job["id"],episode["id"],job["vault_file_id"],current["id"]))
+        return result
     if len(rows) != 1:
         raise provenance.UploadBlocked("ambiguous_receipt")
     result = admit(connection,rows[0],current,user_id=user_id,stamp=timestamp,automatic=False,explicit=True)
     if not result:
         raise provenance.UploadBlocked("identity_changed")
     return result
+
+
+def require_job(connection: Any, job: dict[str, Any]) -> None:
+    row = connection.execute("""SELECT r.* FROM upload_remediations r
+        JOIN upload_remediation_jobs b ON b.remediation_id=r.id WHERE b.job_id=%s""", (job["id"],)).fetchone()
+    if not row:
+        return
+    current = connection.execute("SELECT * FROM jobs WHERE id=%s", (job["id"],)).fetchone()
+    vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (row["vault_id"],)).fetchone()
+    pinned = json.loads(row["target_json"])
+    cancelled = connection.execute("""SELECT 1 FROM upload_remediation_originals o
+        JOIN jobs j ON j.id=o.original_job_id WHERE o.remediation_id=%s AND j.status='cancelled' LIMIT 1""", (row["id"],)).fetchone()
+    if (row["current_job_id"] != job["id"] or row["state"] in {'cancelled','resolved','blocked'} or cancelled
+            or not current["upload_reconcile_only"] or current["vault_file_id"] != row["vault_file_id"]
+            or current["upload_plaintext_sha256"] != row["expected_sha256"]
+            or current["upload_snapshot_json"] != row["snapshot_json"]
+            or current["upload_verification_requested"] != row["requested_mode"]
+            or (row["archive_version_id"] and current["archive_version_id"] != row["archive_version_id"])
+            or any(vault.get(k) != pinned.get(k) for k in ("source_root","root_identity","root_identity_version"))):
+        raise provenance.UploadBlocked("identity_changed")
+
+
+def record_cleanup(connection: Any, job_id: int, inventory_job_id: int) -> None:
+    # #464 reuses ORIGINAL intent inventories across attempts. Keep its exact
+    # identity, not a second authority journal and not a latest/keeper guess.
+    connection.execute("""UPDATE upload_remediations r SET cleanup_inventory_job_id=%s,
+        phase='completion' FROM upload_remediation_jobs b
+        WHERE b.remediation_id=r.id AND b.job_id=%s AND r.current_job_id=b.job_id""",
+        (inventory_job_id,job_id))
 
 
 def transition(connection: Any, job_id: int, status: str, stamp: str) -> None:
@@ -242,7 +291,7 @@ def transition(connection: Any, job_id: int, status: str, stamp: str) -> None:
         phase = "cleanup" if av["integrity"] == "verified" else "verification"
     state,reason = row["state"],row["reason"]
     if status == "completed":
-        cleanup = connection.execute("SELECT * FROM snapshot_cleanup_inventories WHERE job_id=%s", (job_id,)).fetchone()
+        cleanup = connection.execute("SELECT * FROM snapshot_cleanup_inventories WHERE job_id=%s", (row["cleanup_inventory_job_id"],)).fetchone()
         intent = provenance.load_for_job(connection,job_id)
         if (not job["upload_reconcile_only"] or not job["archive_version_id"] or not cleanup
                 or cleanup["keeper_id"] != job["archive_version_id"] or not cleanup["completed_at"]
@@ -262,6 +311,19 @@ def transition(connection: Any, job_id: int, status: str, stamp: str) -> None:
         resolved_at=CASE WHEN %s THEN %s ELSE resolved_at END WHERE id=%s""",
         (state,phase,reason,job["retry_count"],job["retry_after"] or stamp,stamp,job["archive_version_id"],
          state=="resolved",job_id,state=="resolved",stamp,row["id"]))
+
+
+def retry_vault(connection: Any, vault: dict[str, Any], user_id: int, stamp: str) -> int:
+    # Same arbiter, bounded explicit retry. A cancelled target is never rearmed;
+    # accumulated retry_count is retained even after a manual correction.
+    originals = connection.execute("""SELECT j.* FROM upload_remediation_discovery q
+        JOIN jobs j ON j.id=q.job_id WHERE q.vault_id=%s ORDER BY q.job_id LIMIT %s""", (vault["id"],TARGET_BATCH)).fetchall()
+    for original in originals:
+        _enroll(connection,original,vault,stamp)
+        connection.execute("DELETE FROM upload_remediation_discovery WHERE job_id=%s",(original["id"],))
+    rows = connection.execute("""SELECT * FROM upload_remediations WHERE vault_id=%s
+        AND state IN ('pending','blocked','suspended') ORDER BY due_at,id LIMIT %s""", (vault["id"],TARGET_BATCH)).fetchall()
+    return sum(bool(admit(connection,row,vault,user_id=user_id,stamp=stamp,explicit=True)) for row in rows)
 
 
 def _fair_vaults(connection: Any, name: str, stamp: str) -> list[dict[str, Any]]:
@@ -304,3 +366,22 @@ def sweep(db: Any, stamp: str | None = None) -> int:
                     for row in rows:
                         count += bool(admit(connection,row,vault,user_id=owner_id,stamp=stamp))
     return count
+
+
+def observe(db: Any) -> None:
+    from . import metrics
+    current = datetime.now(timezone.utc)
+    def age(value: str | None) -> float:
+        return max(0.0,(current-datetime.fromisoformat(value)).total_seconds()) if value else 0.0
+    with db() as connection:
+        inbox = connection.execute("SELECT count(*) n,min(discovered_at) oldest FROM upload_remediation_discovery").fetchone()
+        due = connection.execute("SELECT count(*) n,min(due_at) oldest FROM upload_remediations WHERE state='pending' AND due_at<=%s", (current.isoformat(),)).fetchone()
+        states = connection.execute("SELECT state,count(*) n FROM upload_remediations WHERE state<>'resolved' GROUP BY state").fetchall()
+    metrics.set_gauge("upload_remediation_discovery_backlog",inbox["n"])
+    metrics.set_gauge("upload_remediation_discovery_oldest_age_seconds",age(inbox["oldest"]))
+    metrics.set_gauge("upload_remediation_due_queue",due["n"])
+    metrics.set_gauge("upload_remediation_due_oldest_age_seconds",age(due["oldest"]))
+    counts = {r["state"]:r["n"] for r in states}
+    for state in ("pending","queued","retrying","blocked","suspended","cancelled"):
+        metrics.set_gauge("upload_remediation_states",counts.get(state,0),state=state)
+    metrics.set_gauge("upload_remediation_last_tick_unixtime",current.timestamp())
