@@ -130,6 +130,39 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(versions[0]["integrity"], "unverified")
         self.assertEqual(self.s3.reads, [])
 
+    def test_generic_invalid_checksum_HEAD_request_is_not_a_fallback(self):
+        self.upload_response.pop("ChecksumSHA256")
+        self.proof = ClientError({"Error": {"Code": "InvalidRequest"}}, "HeadObject")
+        self.queue(); self.run_worker()
+        job, versions, _ = self.rows()
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(versions[0]["provider_version_id"], "raw-version")
+        self.assertEqual(versions[0]["integrity"], "unverified")
+        self.assertIsNone(versions[0]["verification_fallback_reason"])
+        self.assertEqual(self.s3.reads, [])
+        self.assertEqual(self.s3.deleted, [])
+
+    def test_unrelated_invalid_checksum_HEAD_argument_is_not_a_fallback(self):
+        self.upload_response.pop("ChecksumSHA256")
+        self.proof = ClientError({"Error": {"Code": "InvalidArgument", "ArgumentName": "VersionId"}}, "HeadObject")
+        self.queue(); self.run_worker()
+        job, versions, _ = self.rows()
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(versions[0]["provider_version_id"], "raw-version")
+        self.assertEqual(versions[0]["integrity"], "unverified")
+        self.assertIsNone(versions[0]["verification_fallback_reason"])
+        self.assertEqual(self.s3.reads, [])
+        self.assertEqual(self.s3.deleted, [])
+
+    def test_explicit_unsupported_checksum_mode_argument_can_fall_back(self):
+        self.upload_response.pop("ChecksumSHA256")
+        self.proof = ClientError({"Error": {"Code": "InvalidArgument", "ArgumentName": "ChecksumMode"}}, "HeadObject")
+        self.queue(); self.run_worker()
+        job, versions, _ = self.rows()
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(versions[0]["verification_fallback_reason"], "checksum_api_unsupported")
+        self.assertEqual(self.s3.reads[0]["VersionId"], "raw-version")
+
     def test_wrong_completion_checksum_retains_version_and_blocks_no_fallback(self):
         self.upload_response["ChecksumSHA256"] = "wrong"
         self.queue(); self.run_worker()
