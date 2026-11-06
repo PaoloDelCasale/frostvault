@@ -82,7 +82,7 @@ timestamp cannot leave the gate indefinitely blocked.
 
 One installation warning and the app banner show the remedy. Affected Jobs stay
 queued (or keep their prior waiting state), without consuming their transfer
-retry budget. Local catalog browsing/scanning, heartbeat and notifications remain
+retry budget. While the gate is blocked, upload activity counts Jobs that have sent no bytes as waiting (queued), even if a lease left by a stopped process still marks them `uploading`. Local catalog browsing/scanning, heartbeat and notifications remain
 available. Cloud scans, uploads, recovery, rename and local cleanup remain
 blocked until versioning and **all four bucket-level BPA flags** are confirmed enabled. Account-level BPA alone is not sufficient proof.
 S3-compatible endpoints must implement the same API; there is no CI/provider

@@ -50,6 +50,39 @@ class UploadActivityPostgresTests(unittest.TestCase):
         self.assertEqual(total['awaiting_admission_files'], 2)
         self.assertEqual(len(result['vaults']), 1)
 
+    def block_gate(self, status='blocked'):
+        self.connection.execute(
+            "INSERT INTO cloud_preflight_state(id,status,remediation,failure_count,next_probe_at) "
+            "VALUES (1,%s,'S3 access was refused',1,%s) ON CONFLICT(id) DO UPDATE SET status=EXCLUDED.status",
+            (status, NOW.isoformat()))
+
+    def test_blocked_preflight_reports_leased_jobs_without_transfer_as_waiting_not_uploading(self):
+        # Leases of a stopped process keep status 'uploading' (hashing or just
+        # leased) until they expire; nothing was sent and no transfer can start.
+        for index in range(16):
+            self.job(f'leased-{index}', 'uploading')
+        self.job('moved', 'uploading', transferred=5)
+        self.job('reconcile', 'uploading', reconcile=True)
+        self.job('queue', 'queued')
+        for gate in (None, 'ready'):
+            if gate:
+                self.block_gate(gate)
+            with self.subTest(gate=gate):
+                total = upload_activity(self.connection, now=NOW)['global']
+                self.assertEqual(total['uploading']['files'], 17)
+                self.assertEqual(total['queued']['files'], 1)
+        self.block_gate('blocked')
+        result = upload_activity(self.connection, now=NOW)
+        total = result['global']
+        # Bytes that really moved stay visible as uploading; zero-byte leases wait.
+        self.assertEqual(total['uploading'], {'files': 1, 'bytes': 12, 'transferred_bytes': 5})
+        self.assertEqual(total['queued']['files'], 17)
+        self.assertEqual(total['queued']['transferred_bytes'], 0)
+        self.assertEqual(total['verifying']['files'], 1)
+        self.assertEqual(result['vaults'][0]['queued']['files'], 17)
+        self.block_gate('ready')
+        self.assertEqual(upload_activity(self.connection, now=NOW)['global']['uploading']['files'], 17)
+
     def test_global_vault_isolation_suspension_exclusions_and_read_only_scale(self):
         self.connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (10,'second','Second','/second','bucket','second')")
         self.seed('waiting')

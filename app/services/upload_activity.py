@@ -67,14 +67,21 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
     items = {row["id"]: {"vault_id": row["id"], "vault_name": row["name"], **_empty()} for row in vaults}
     # A single grouped query, with progress clamped per Job before summation.
     # Reconciliation/cleanup is verification work, not another network upload.
+    # While the installation S3 gate is blocked no transfer can start: a Job still
+    # 'uploading' with nothing sent is a lease left by a stopped process (or one
+    # about to be suspended), so it waits like a queued Job (#487). Sent bytes
+    # stay visible as uploading until the worker or lease reconciliation moves them.
     for row in connection.execute("""
+        WITH gate AS (SELECT COALESCE(
+            (SELECT status='blocked' FROM cloud_preflight_state WHERE id=1), false) AS blocked)
         SELECT vault_id, CASE
             WHEN status IN ('verifying','cleaning') OR (status='uploading' AND
                  (upload_reconcile_only OR message_key='job.purging_previous_snapshot')) THEN 'verifying'
-            WHEN status='uploading' THEN 'uploading' ELSE 'queued' END AS stage,
+            WHEN status='uploading' AND NOT (gate.blocked AND COALESCE(transferred_bytes,0)<=0)
+                 THEN 'uploading' ELSE 'queued' END AS stage,
             count(*) AS files, COALESCE(sum(GREATEST(total_bytes,0)),0) AS bytes,
             COALESCE(sum(LEAST(GREATEST(transferred_bytes,0),GREATEST(total_bytes,0))),0) AS transferred_bytes
-        FROM jobs WHERE action='upload' AND status NOT IN ('completed','failed','cancelled')
+        FROM jobs CROSS JOIN gate WHERE action='upload' AND status NOT IN ('completed','failed','cancelled')
         GROUP BY 1,2
     """).fetchall():
         if row["vault_id"] in items:
