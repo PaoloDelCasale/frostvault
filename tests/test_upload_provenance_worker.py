@@ -362,8 +362,10 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
                 VALUES (%s,'stale-move-token',%s,'legacy-keeper','docs/report.txt',%s,%s)""", (ids[0], keeper, len(A), hashlib.sha256(A).hexdigest()))
         before = dict(self.provider.objects)
         self.provider.hook = lambda *args, **kwargs: None
-        self.run_job(ids[0])
+        with patch.object(vault_moves, "load_vault_plan", return_value=SimpleNamespace(transitions=[SimpleNamespace(storage_class="GLACIER_IR")])):
+            self.run_job(ids[0])
         self.assertEqual(self.row(ids[0])["status"], "failed")
+        self.assertIn("Reconcile the pending upload before another cloud mutation", self.row(ids[0])["message"])
         self.assertEqual(self.provider.objects, before)
         self.assertEqual((self.provider.puts, self.provider.gets, self.provider.deletes), (1, 0, 0))
 
