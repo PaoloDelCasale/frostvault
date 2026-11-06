@@ -647,6 +647,7 @@ class StorageCleanupTests(unittest.TestCase):
 
         test_settings = SimpleNamespace(operation_concurrency=3, restore_poll_interval=900)
         with (
+            patch('app.storage.validate_cloud_vault'),
             patch("app.storage.db", return_value=connection),
             patch("app.storage.settings", test_settings),
             patch("app.storage.get_policy", return_value=__import__(

@@ -129,10 +129,20 @@ class UploadModeTests(unittest.TestCase):
         self.proof = ClientError({"Error": {"Code": "AccessDenied"}}, "HeadObject")
         self.queue(); self.run_worker()
         job, versions, _ = self.rows()
-        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["status"], "queued")
+        self.assertEqual(job['retry_count'],0)
         self.assertEqual(versions[0]["provider_version_id"], "raw-version")
         self.assertEqual(versions[0]["integrity"], "unverified")
         self.assertEqual(self.s3.reads, [])
+        # Auth recovery resumes the frozen exact version, not fallback or PUT.
+        from app.services import cloud_preflight_gate
+        self.proof = {'VersionId':'raw-version','ContentLength':len(self.payload),
+            'ChecksumType':'FULL_OBJECT','ChecksumSHA256':sha256_b64(self.payload)}
+        cloud_preflight_gate.check(lambda:PostgresConnection(str(self.identity)),lambda:None)
+        self.run_worker()
+        self.assertEqual(self.rows()[0]['status'],'completed')
+        self.assertEqual(self.puts,1)
+        self.assertEqual(self.s3.reads,[])
 
     def test_generic_invalid_checksum_HEAD_request_is_not_a_fallback(self):
         self.upload_response.pop("ChecksumSHA256")

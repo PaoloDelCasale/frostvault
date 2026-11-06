@@ -147,6 +147,68 @@ class AggregateDeadlockTests(unittest.TestCase):
         self.assertEqual(set(self.provider.reads), set(self.provider.puts))
         self.assertEqual(self.provider.deleted, [])
 
+    def test_sixteen_error_notifications_with_owner_maintenance_have_no_fk_deadlock(self):
+        from app.services import notifications, protection_notifications
+        from datetime import datetime, timezone
+        jobs = self.seed(16)
+        owner_held, vault_held = threading.Event(), threading.Event()
+        failures = threading.Barrier(16)
+        original_enqueue = notifications.enqueue_job_terminal_notification_best_effort
+
+        def terminal(connection, *, job_id):
+            # set_job already holds its Vault lock at this seam.
+            vault_held.set()
+            self.assertTrue(owner_held.wait(10))
+            return original_enqueue(connection,job_id=job_id)
+
+        def monitor(connection,vault,**kwargs):
+            # Real maintain_notifications already holds its Owner episode lock.
+            owner_held.set()
+            self.assertTrue(vault_held.wait(10))
+            notifications.set_problem(connection,key='blocked:docs:preflight',event='cloud_preflight_blocked',
+                vault_id=2,active=True,params={'remediation':'Check permissions'})
+
+        def fail(job):
+            failures.wait(timeout=10)
+            self.assertTrue(owner_held.wait(10))
+            raise RuntimeError('simultaneous provider failure')
+
+        def upkeep():
+            with PostgresConnection(self.path) as connection:
+                protection_notifications.maintain_notifications(connection,now=datetime.now(timezone.utc))
+
+        with patch.object(storage,'process_upload',side_effect=fail), patch.object(
+            notifications,'enqueue_job_terminal_notification_best_effort',side_effect=terminal
+        ), patch.object(protection_notifications,'monitor_vault',side_effect=monitor), ThreadPoolExecutor(max_workers=17) as pool:
+            maintenance = pool.submit(upkeep)
+            workers = [pool.submit(self.run_job,job) for job in jobs]
+            for future in workers:
+                self.assertTrue(future.result(timeout=30))
+            maintenance.result(timeout=30)
+        with PostgresConnection(self.path) as connection:
+            self.assertEqual(connection.execute("SELECT count(*) n FROM jobs WHERE status='failed' AND terminal_notification_status='done'").fetchone()['n'],16)
+            self.assertEqual(connection.execute("SELECT count(*) n FROM notifications WHERE event='job_failed'").fetchone()['n'],16)
+            self.assertEqual(connection.execute('SELECT deadlocks FROM pg_stat_database WHERE datname=current_database()').fetchone()['deadlocks'],0)
+        self.assertEqual(self.provider.puts,[])
+
+    def test_error_notification_transaction_abort_retries_whole_owned_unit(self):
+        from app.services import notifications
+        jobs = self.seed()
+        original = notifications.enqueue_job_terminal_notification
+        for code in ('40P01','40001'):
+            calls = []
+            def aborted(connection,*,job_id):
+                calls.append(job_id)
+                original(connection,job_id=job_id)
+                if len(calls) == 1:
+                    connection.execute(f"DO $$ BEGIN RAISE EXCEPTION 'forced notification abort' USING ERRCODE='{code}'; END $$")
+                return 1
+            with self.subTest(sqlstate=code), patch.object(notifications,'enqueue_job_terminal_notification',side_effect=aborted):
+                self.assertTrue(storage.set_job(jobs[0],'failed','provider refused'))
+                self.assertEqual(len(calls),2)
+            with PostgresConnection(self.path) as connection:
+                self.assertEqual(connection.execute("SELECT count(*) n FROM notifications WHERE event='job_failed'").fetchone()['n'],1)
+
     def test_16_workers_1024_nested_uploads_with_concurrent_maintenance(self):
         jobs = self.seed(1024)
         stop = threading.Event()

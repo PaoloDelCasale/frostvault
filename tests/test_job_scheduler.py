@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, Mock, patch
 
 # Windows test hosts lack the Linux open flags imported by vault decommission.
 for _flag, _value in (
@@ -75,11 +75,97 @@ class SelectFairJobsTests(unittest.TestCase):
         self.assertEqual(select_fair_jobs([], limit=5), [])
 
 
+class SchedulerFileIsolationTests(unittest.TestCase):
+    """A stale local candidate must not starve runnable Jobs in other Vaults."""
+
+    def setUp(self) -> None:
+        temporary = self.enterContext(tempfile.TemporaryDirectory())
+        self.root = Path(temporary)
+        self.missing = {
+            "id": 1, "vault_id": 10, "path": "missing.txt", "action": "upload",
+            "origin": "automatic", "source_root": str(self.root),
+            "requested_at": "2026-07-01T00:00:00+00:00",
+        }
+        self.healthy = {
+            "id": 2, "vault_id": 20, "path": "healthy.txt", "action": "upload",
+            "origin": "manual", "source_root": str(self.root),
+            "requested_at": "2026-07-01T00:01:00+00:00",
+        }
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        connection.execute.return_value.fetchone.return_value = {
+            "id": 10, "enabled": True, "source_root": str(self.root),
+        }
+        self.catalog = Mock()
+        self.catalog.list_claimable_jobs.return_value = [self.missing, self.healthy]
+        self.catalog.get_job_target.return_value = {"archive_version_id": None}
+        self.catalog.claim_job.return_value = self.healthy
+        self.enterContext(patch("app.storage.db", return_value=connection))
+        self.enterContext(patch("app.storage.ArchiveCatalog", return_value=self.catalog))
+        self.enterContext(patch("app.storage.reconcile_interrupted_jobs"))
+        self.enterContext(patch("app.storage.observe_failed_job_backlog", return_value=(0, 0)))
+        self.enterContext(patch("app.storage._runtime_settings", return_value=SimpleNamespace(
+            operation_concurrency=2, restore_poll_interval=0,
+        )))
+        self.enterContext(patch("app.storage.cloud_preflight_gate.snapshot", return_value={"status": "ready"}))
+        self.enterContext(patch("app.storage.validate_cloud_vault"))
+        self.enterContext(patch("app.storage.shutdown_state", SimpleNamespace(requested=False)))
+        self.enterContext(patch("app.storage.get_policy", return_value=SimpleNamespace(auto_upload=True)))
+        self.enterContext(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(
+            local_operations_allowed=True,
+        )))
+        self.enterContext(patch("app.services.upload_provenance.load_for_job", return_value=None))
+        self.enterContext(patch("app.storage.auto_upload_path_is_included", return_value=True))
+        self.dispatch = self.enterContext(patch("app.storage.process_job"))
+
+    def assert_healthy_job_dispatches_twice(self) -> None:
+        # The stale automatic candidate is returned again on the next tick.
+        for _ in range(2):
+            self.assertEqual(process_jobs_once(), 1)
+        self.assertEqual(self.dispatch.call_count, 2)
+        self.assertEqual([call.args[0]["id"] for call in self.dispatch.call_args_list], [2, 2])
+        self.assertEqual([call.kwargs["job_id"] for call in self.catalog.claim_job.call_args_list], [2, 2])
+
+    def test_removed_automatic_copy_does_not_block_another_vault(self) -> None:
+        self.assertFalse((self.root / "missing.txt").exists())
+        self.assert_healthy_job_dispatches_twice()
+
+    def test_unreadable_automatic_copy_does_not_block_another_vault(self) -> None:
+        source = Mock()
+        source.stat.side_effect = PermissionError("local access revoked")
+        with patch("app.storage.safe_local_path", return_value=source):
+            self.assert_healthy_job_dispatches_twice()
+
+    def test_symlink_replacement_does_not_block_another_vault(self) -> None:
+        (self.root / "missing.txt").symlink_to(self.root / "elsewhere.txt")
+        self.assert_healthy_job_dispatches_twice()
+
+    def test_changed_enrolled_root_does_not_block_another_vault(self) -> None:
+        with patch("app.storage._validate_enrolled_scan_root", side_effect=RuntimeError("root changed")):
+            self.assert_healthy_job_dispatches_twice()
+
+    def test_database_errors_are_not_hidden_as_unavailable_local_files(self) -> None:
+        with patch("app.storage.get_policy", side_effect=RuntimeError("database failure")):
+            with self.assertRaisesRegex(RuntimeError, "database failure"):
+                process_jobs_once()
+        self.catalog.claim_job.assert_not_called()
+
+    def test_linked_version_reconciliation_does_not_require_local_copy(self) -> None:
+        self.catalog.get_job_target.return_value = {"archive_version_id": 9}
+        self.assertTrue(storage_module._automatic_upload_ready(self.missing))
+
+    def test_sent_intent_reconciliation_does_not_require_local_copy(self) -> None:
+        with patch("app.services.upload_provenance.load_for_job", return_value={"send_started": True}):
+            self.assertTrue(storage_module._automatic_upload_ready(self.missing))
+
+
 class _SchedulerDbMixin:
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "scheduler.db"
+        # These tests isolate fair selection/leases, not provider readiness.
+        self.enterContext(patch('app.storage.validate_cloud_vault'))
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
         with PostgresConnection(str(self.path)) as connection:

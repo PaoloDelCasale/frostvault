@@ -36,6 +36,51 @@ class UploadRemediationTests(unittest.TestCase):
             vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
             return remediation.schedule_resume(connection,vault=vault,path="report.txt",user_id=1,timestamp=storage.now_iso())["job_id"]
 
+    def test_interrupted_own_request_finishing_during_inventory_auto_reconciles(self):
+        original = self.fail_after_ack()
+        version, payload = next(iter(self.provider.objects.items()))
+        del self.provider.objects[version]
+        # Replay an old in-flight completion, not a second PUT or a new baseline.
+        listings = []
+        def finish(stage,**kwargs):
+            if stage == 'list':
+                listings.append(1)
+                if len(listings) == 2:
+                    self.provider.objects[version] = payload
+        self.provider.hook = finish
+        self.assertEqual(remediation.sweep(self.db),1)
+        with self.db() as connection:
+            resumed = connection.execute('SELECT current_job_id FROM upload_remediations').fetchone()['current_job_id']
+        self.run_job(resumed)
+        self.assert_keeper(resumed)
+        self.assertEqual(self.provider.puts,1)
+        with self.db() as connection:
+            self.assertEqual(connection.execute('SELECT state FROM upload_remediations').fetchone()['state'],'resolved')
+            self.assertEqual(connection.execute('SELECT status FROM jobs WHERE id=%s',(original,)).fetchone()['status'],'failed')
+
+    def test_interrupted_upload_with_external_inventory_delta_stays_blocked(self):
+        self.fail_after_ack()
+        listings = []
+        def external(stage,**kwargs):
+            if stage == 'list':
+                listings.append(1)
+                if len(listings) == 2:
+                    self.provider.add('docs/report.txt',fixtures.A,version='external-writer')
+        self.provider.hook = external
+        self.assertEqual(remediation.sweep(self.db),1)
+        with self.db() as connection:
+            resumed = connection.execute('SELECT current_job_id FROM upload_remediations').fetchone()['current_job_id']
+        self.run_job(resumed)
+        self.assertEqual(self.row(resumed)['status'],'failed')
+        self.assertIn('Retry failed uploads',self.row(resumed)['message'])
+        for _ in range(3):
+            self.assertEqual(remediation.sweep(self.db),0)
+        with self.db() as connection:
+            self.assertEqual(connection.execute('SELECT state,reason FROM upload_remediations').fetchone(),
+                             {'state':'blocked','reason':'inventory_changed'})
+        self.assertEqual((self.provider.puts,self.provider.deletes),(1,0))
+        self.assertEqual(len(self.provider.objects),2)
+
     def test_post_ack_original_preserved_resolution_requires_completed_cleanup(self):
         original = self.fail_after_ack()
         before = self.row(original)

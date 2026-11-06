@@ -458,13 +458,18 @@ def enqueue_job_terminal_notification_best_effort(
 
     try:
         enqueued = enqueue_job_terminal_notification(connection, job_id=job_id)
-    except Exception:
+    except Exception as exc:
         try:
             connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
         finally:
             # RELEASE is required after ROLLBACK TO so the outer transaction
             # remains usable.
             connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        # Deadlock/serialization victims must replay the authoritative DB unit,
+        # not commit a partial outcome merely because delivery is best-effort.
+        from .database_retry import is_retryable_transaction_error
+        if is_retryable_transaction_error(exc):
+            raise
         return None
 
     connection.execute(f"RELEASE SAVEPOINT {savepoint}")
@@ -546,7 +551,9 @@ def set_problem(
     if not recipients:
         return None
     owner_id = int(recipients[0]["user_id"])
-    connection.execute("SELECT id FROM users WHERE id=%s FOR UPDATE", (owner_id,))
+    # Serialize episodes, but remain compatible with FK KEY SHARE acquired by
+    # concurrent Job/notification inserts while they hold a Vault lock.
+    connection.execute("SELECT id FROM users WHERE id=%s FOR NO KEY UPDATE", (owner_id,))
     previous = connection.execute(
         "SELECT * FROM notifications WHERE user_id=%s AND dedupe_key=%s",
         (owner_id, key),
