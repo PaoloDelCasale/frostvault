@@ -84,6 +84,76 @@ class BucketPreflightTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("s3:GetBucketVersioning", preflight_failure_message(result))
 
+    def head_denied(self, **overrides):
+        # HEAD responses have no body, so botocore reports only the status.
+        error = ClientError({"Error": {"Code": "403", "Message": "Forbidden"},
+                             "ResponseMetadata": {"HTTPStatusCode": 403}}, "HeadBucket")
+        return ready_client(head_bucket=Mock(side_effect=error), **overrides)
+
+    @staticmethod
+    def provider_error(code, operation="GetBucketLocation", status=403):
+        return ClientError({"Error": {"Code": code, "Message": "provider-secret-fixture"},
+                            "ResponseMetadata": {"HTTPStatusCode": status}}, operation)
+
+    def test_head_bucket_403_with_rejected_credentials_names_credentials_not_permission(self):
+        for code in ("SignatureDoesNotMatch", "InvalidAccessKeyId", "InvalidClientTokenId",
+                     "UnrecognizedClientException", "ExpiredToken", "InvalidToken"):
+            client = self.head_denied(get_bucket_location=Mock(side_effect=self.provider_error(code)))
+            with self.subTest(code=code):
+                result = check(client)
+                message = preflight_failure_message(result)
+                self.assertFalse(result.ok)
+                self.assertEqual([c.code for c in result.checks], ["bucket.credentials"])
+                self.assertIn(code, message)
+                self.assertIn("AWS_SECRET_ACCESS_KEY", message)
+                self.assertNotIn("Missing permission", message)
+                self.assertNotIn("provider-secret-fixture", message)
+                client.get_bucket_versioning.assert_not_called()
+
+    def test_head_bucket_403_with_readable_location_is_a_missing_list_permission(self):
+        result = check(self.head_denied())
+        message = preflight_failure_message(result)
+        self.assertEqual([c.code for c in result.checks], ["bucket.permissions"])
+        self.assertIn("s3:ListBucket", message)
+        self.assertNotIn("credentials may", message)
+
+    def test_head_bucket_403_with_authenticated_access_denied_is_a_permission_failure(self):
+        result = check(self.head_denied(get_bucket_location=Mock(side_effect=self.provider_error("AccessDenied"))))
+        message = preflight_failure_message(result)
+        self.assertEqual([c.code for c in result.checks], ["bucket.permissions"])
+        self.assertIn("s3:ListBucket", message)
+        self.assertIn("s3:GetBucketLocation", message)
+        self.assertNotIn("provider-secret-fixture", message)
+
+    def test_head_bucket_403_without_a_distinguishing_code_names_both_causes(self):
+        for failure in (self.provider_error("403"), self.provider_error(""), OSError("network"),
+                        self.provider_error("SlowDown", status=503)):
+            client = self.head_denied(get_bucket_location=Mock(side_effect=failure))
+            with self.subTest(failure=repr(failure)):
+                result = check(client)
+                message = preflight_failure_message(result)
+                self.assertFalse(result.ok)
+                self.assertEqual([c.code for c in result.checks], ["bucket.access"])
+                self.assertIn("credentials", message)
+                self.assertIn("s3:ListBucket", message)
+                self.assertNotIn("provider-secret-fixture", message)
+
+    def test_credential_rejection_after_head_bucket_is_not_reported_as_missing_permission(self):
+        for method, action in (("get_bucket_location", "s3:GetBucketLocation"),
+                               ("get_bucket_versioning", "s3:GetBucketVersioning")):
+            client = ready_client(**{method: Mock(side_effect=self.provider_error("SignatureDoesNotMatch"))})
+            with self.subTest(method=method):
+                message = preflight_failure_message(check(client))
+                self.assertIn("SignatureDoesNotMatch", message)
+                self.assertNotIn(action, message)
+
+    def test_head_bucket_non_forbidden_errors_keep_their_existing_report(self):
+        error = ClientError({"Error": {"Code": "404"}, "ResponseMetadata": {"HTTPStatusCode": 404}}, "HeadBucket")
+        client = ready_client(head_bucket=Mock(side_effect=error))
+        result = check(client)
+        self.assertEqual([c.code for c in result.checks], ["bucket.permissions"])
+        client.get_bucket_location.assert_not_called()
+
     def test_wrong_region_fails(self):
         self.assertFalse(check(ready_client(get_bucket_location=Mock(return_value={"LocationConstraint": "us-west-2"}))).ok)
 
