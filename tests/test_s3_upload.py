@@ -24,7 +24,7 @@ class ManagedUploadTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "file"
         self.client = boto3.client("s3", region_name="us-east-1", aws_access_key_id="test",
-                                   aws_secret_access_key="test", config=Config(retries={"mode": "standard"}))
+                                   aws_secret_access_key="test", config=Config(retries={"mode": "standard", "total_max_attempts": 1}))
 
     def upload(self, payload=b"content", **kwargs):
         self.path.write_bytes(payload)

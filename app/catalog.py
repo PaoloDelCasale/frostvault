@@ -706,20 +706,28 @@ class ArchiveCatalog:
         observed_at: str,
         scan_id: str,
         origin: str = "discovered",
+        vault_file_id: str | None = None,
     ) -> str:
+        # Publication must pin the owner, not re-resolve a reused path.
+        if vault_file_id is not None:
+            owner = self.connection.execute("SELECT 1 FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL WHERE vf.id=%s AND vf.vault_id=%s AND vf.status='active' AND fp.path=%s", (vault_file_id, vault_id, path)).fetchone()
+            if not owner:
+                raise RuntimeError("Archive Version publication owner/path changed")
         # Resolve existing Archive Version BEFORE minting a Vault File so a
         # cloud scan of a renamed file's old key cannot orphan a new identity.
         source_supported = self._supports_storage_class_source()
         source_column = ", storage_class_source" if source_supported else ""
         existing = self.connection.execute(
             f"""
-            SELECT id, storage_class{source_column}
+            SELECT id, vault_file_id, storage_class{source_column}
             FROM archive_versions
             WHERE vault_id=%s AND object_key=%s AND provider_version_id=%s
             """,
             (vault_id, object_key, provider_version_id),
         ).fetchone()
         if existing:
+            if vault_file_id is not None and str(existing["vault_file_id"]) != str(vault_file_id):
+                raise RuntimeError("Exact provider identity belongs to another Vault File")
             source = (
                 existing["storage_class_source"] or "unknown"
                 if source_supported
@@ -754,7 +762,7 @@ class ArchiveCatalog:
             )
             self._mark_path_aggregates_dirty(vault_id, path)
             return existing["id"]
-        file_id = self._resolve_cloud_path_file(vault_id, path, observed_at)
+        file_id = vault_file_id or self._resolve_cloud_path_file(vault_id, path, observed_at)
         self.connection.execute(
             "UPDATE vault_files SET status=status WHERE id=%s",
             (file_id,),
@@ -767,13 +775,20 @@ class ArchiveCatalog:
             (file_id,),
         ).fetchone()
         version_id = str(uuid.uuid4())
+        version_number = int(latest["version_number"]) + 1
+        if origin == "discovered":
+            # Historical observations must not elect themselves by scan order.
+            keeper = self.connection.execute("SELECT uploaded_at FROM archive_versions WHERE vault_file_id=%s AND integrity='verified' AND availability='available' ORDER BY version_number DESC LIMIT 1", (file_id,)).fetchone()
+            if keeper and str(uploaded_at) <= str(keeper["uploaded_at"]):
+                oldest = self.connection.execute("SELECT MIN(version_number) AS n FROM archive_versions WHERE vault_file_id=%s", (file_id,)).fetchone()
+                version_number = min(0, int(oldest["n"] or 0)) - 1
         source_insert_column = ", storage_class_source" if source_supported else ""
         source_insert_value = ", %s" if source_supported else ""
         insert_params = [
             version_id,
             file_id,
             vault_id,
-            int(latest["version_number"]) + 1,
+            version_number,
             object_key,
             provider_version_id,
             size,
