@@ -50,6 +50,37 @@ class ProvenanceProviderTests(unittest.TestCase):
                 self.assertEqual(provider.objects, original)
                 self.assertEqual((provider.puts, provider.deletes), (0, 0))
 
+    def test_inflight_own_write_between_complete_listings_reconciles_automatically(self):
+        listing = self.provider.list_object_versions
+        calls = []
+        def finish_write(**kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                self.provider.add('key', b'independent A', {TOKEN_KEY: self.intent['token']}, version='own-late')
+            return listing(**kwargs)
+        with patch.object(self.provider, 'list_object_versions', side_effect=finish_write):
+            result = reconcile(self.provider, self.intent, None, lambda: None)
+        self.assertEqual(result['VersionId'], 'own-late')
+        self.assertGreaterEqual(len(calls), 4, 'Must obtain two fresh complete stable listings')
+        self.assertEqual((self.provider.puts, self.provider.deletes), (0, 0))
+
+    def test_inflight_external_write_between_listings_remains_actionable_block(self):
+        listing = self.provider.list_object_versions
+        calls = []
+        self.provider.add('key', b'independent A', {TOKEN_KEY: self.intent['token']}, version='own')
+        def external_write(**kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                self.provider.add('key', b'independent A', version='external-late')
+            return listing(**kwargs)
+        with patch.object(self.provider, 'list_object_versions', side_effect=external_write):
+            with self.assertRaises(UploadBlocked) as blocked:
+                reconcile(self.provider, self.intent, None, lambda: None)
+        self.assertEqual(blocked.exception.reason, 'inventory_changed')
+        self.assertIn('Retry failed uploads', blocked.exception.remedy)
+        self.assertNotIn('stop external S3 writers', blocked.exception.remedy)
+        self.assertEqual(self.provider.deletes, 0)
+
     def test_raw_proof_cannot_hide_contradictory_head(self):
         self.provider.add("key", b"independent B", {TOKEN_KEY: self.intent["token"]}, version="exact")
         with self.assertRaises(UploadBlocked):

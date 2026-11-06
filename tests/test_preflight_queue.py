@@ -16,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, Mock
 
+from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
 from app import main, storage
 from app.catalog import ArchiveCatalog
@@ -35,6 +36,7 @@ class PreflightQueueTests(unittest.TestCase):
         self.database = self.base / 'catalog'
         migrated = run_alembic(self.database)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        self.enterContext(patch.object(gate, '_ready_pid', None))
         self.now = datetime.now(timezone.utc)
         self.observed = (self.now - timedelta(minutes=10)).isoformat()
         self.vaults = []
@@ -115,6 +117,53 @@ class PreflightQueueTests(unittest.TestCase):
             self.assertEqual(c.execute("SELECT count(*) AS n FROM jobs WHERE status='completed'").fetchone()['n'], 2)
             self.assertEqual(c.execute("SELECT count(*) AS n FROM jobs WHERE status='failed'").fetchone()['n'], 2)  # preserved history
             self.assertEqual(c.execute("SELECT count(*) AS n FROM notifications WHERE event='cloud_preflight_blocked' AND problem_status='open'").fetchone()['n'], 0)
+
+    def test_restart_ready_cache_bad_credentials_prevents_claim_and_dispatch(self):
+        self.fail_uploads(1)
+        self.retry(1)
+        gate.check(self.db, lambda: None, now=self.now)
+        gate._ready_pid = None  # The persisted state outlives the process.
+        with patch('app.storage._validate_cloud_vault', side_effect=gate.ReadinessFailure('Check AWS credentials')), patch.object(
+            ArchiveCatalog, 'claim_job', wraps=ArchiveCatalog.claim_job
+        ) as claim, patch('app.storage.process_job') as dispatch:
+            self.assertEqual(storage.process_jobs_once(), 0)
+        claim.assert_not_called()
+        dispatch.assert_not_called()
+        with self.db() as c:
+            self.assertEqual(gate.snapshot(c)['status'], 'blocked')
+            jobs = c.execute("SELECT status,retry_count,claim_token FROM jobs WHERE status<>'failed'").fetchall()
+            self.assertTrue(all(j == {'status': 'queued', 'retry_count': 0, 'claim_token': None} for j in jobs))
+
+    def test_sixteen_simultaneous_auth_failures_wait_and_promptly_invalidate_ready(self):
+        with self.db() as c:
+            catalog = ArchiveCatalog(c)
+            for i in range(16):
+                file = self.base / '1' / f'auth-{i}.txt'
+                file.write_bytes(b'photo')
+                catalog.observe_local_copy(vault_id=1,path=file.name,file_type='regular',size=5,
+                    mtime_ns=file.stat().st_mtime_ns,observed_at=self.observed)
+                catalog.queue_jobs(vault_id=1,path=file.name,action='upload',requested_by=1,
+                    requested_at=self.observed,group_id=f'auth-{i}',is_directory=False)
+        barrier = threading.Barrier(16)
+        def refused(job):
+            barrier.wait(timeout=10)
+            raise ClientError({'Error': {'Code': 'InvalidAccessKeyId', 'Message': 'not for display'},
+                               'ResponseMetadata': {'HTTPStatusCode': 403}}, 'PutObject')
+        with patch('app.storage._validate_cloud_vault'), patch('app.storage.process_upload', side_effect=refused):
+            self.assertEqual(storage.process_jobs_once(), 16)
+        with self.db() as c:
+            state = gate.snapshot(c)
+            self.assertEqual(state['status'], 'blocked')
+            self.assertTrue(gate.probe_due(state, datetime.now(timezone.utc)))
+            self.assertEqual(c.execute("SELECT count(*) n FROM jobs WHERE status='queued' AND retry_count=0 AND claim_token IS NULL").fetchone()['n'],16)
+            self.assertEqual(c.execute("SELECT count(*) n FROM notifications WHERE event='job_failed'").fetchone()['n'],0)
+            self.assertEqual(c.execute("SELECT count(*) n FROM notifications WHERE event='cloud_preflight_blocked' AND problem_status='open'").fetchone()['n'],1)
+            self.assertEqual(c.execute('SELECT deadlocks FROM pg_stat_database WHERE datname=current_database()').fetchone()['deadlocks'],0)
+        with patch('app.storage._validate_cloud_vault') as probe:
+            storage.reprobe_cloud_readiness_once()
+            probe.assert_called_once()
+        with self.db() as c:
+            self.assertEqual(gate.snapshot(c)['status'], 'ready')
 
     def test_scans_and_audits_share_one_warning_without_suppressing_local_catalog(self):
         with patch('app.storage.runtime_status', {}), patch('app.storage._verified_local_scan', return_value=(2, {}, None, True)), patch('app.storage._validate_cloud_vault', side_effect=gate.ReadinessFailure('Grant s3:GetBucketPublicAccessBlock')):

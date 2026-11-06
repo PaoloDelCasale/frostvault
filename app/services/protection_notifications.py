@@ -179,7 +179,7 @@ def maintain_notifications(connection: Any, *, now: datetime | None = None) -> N
     if owner is None:
         return
     # Serialize summary scheduling and episode updates against another worker.
-    connection.execute("SELECT id FROM users WHERE id=%s FOR UPDATE", (owner,))
+    connection.execute("SELECT id FROM users WHERE id=%s FOR NO KEY UPDATE", (owner,))
     for vault in connection.execute("SELECT * FROM vaults WHERE enabled=TRUE AND decommission_state='active'").fetchall():
         monitor_vault(connection, vault, now=now)
     inbox.reconcile_problem_states(connection)
