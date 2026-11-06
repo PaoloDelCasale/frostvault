@@ -80,7 +80,7 @@ def enroll(connection: Any, original: dict[str, Any] | None, vault: dict[str, An
         version_id = intent["archive_version_id"] or version_id
     version = connection.execute("SELECT * FROM archive_versions WHERE id=%s AND vault_id=%s", (version_id, vault["id"])).fetchone() if version_id else None
     if not intent and version:
-        intent = connection.execute("SELECT * FROM upload_intents WHERE archive_version_id=%s AND vault_id=%s AND vault_file_id=%s AND send_started AND NOT settled", (version["id"], vault["id"], version["vault_file_id"])).fetchone()
+        intent = connection.execute("SELECT * FROM upload_intents WHERE archive_version_id=%s AND vault_id=%s AND vault_file_id=%s AND send_started AND (%s OR NOT settled) ORDER BY created_at DESC LIMIT 1", (version["id"], vault["id"], version["vault_file_id"], original is not None)).fetchone()
     if not version and not (intent and intent["send_started"]):
         _reject(connection, original, stamp, "expected_evidence_missing")
         return None
