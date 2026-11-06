@@ -64,6 +64,49 @@ class ProvenanceProviderTests(unittest.TestCase):
         self.assertGreaterEqual(len(calls), 4, 'Must obtain two fresh complete stable listings')
         self.assertEqual((self.provider.puts, self.provider.deletes), (0, 0))
 
+    def test_late_token_without_independent_proof_never_authorizes_auto_reobserve(self):
+        listing = self.provider.list_object_versions
+        head = self.provider.head_object
+        calls = []
+        def finish_write(**kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                self.provider.add('key', b'independent A', {TOKEN_KEY: self.intent['token']}, version='own-late')
+            return listing(**kwargs)
+        def no_proof(**kwargs):
+            result = head(**kwargs)
+            result.pop('ChecksumSHA256')
+            result.pop('ChecksumType')
+            return result
+        with patch.object(self.provider,'list_object_versions',side_effect=finish_write), patch.object(
+            self.provider,'head_object',side_effect=no_proof
+        ), self.assertRaises(UploadBlocked) as blocked:
+            reconcile(self.provider,self.intent,None,lambda: None)
+        self.assertEqual(blocked.exception.reason,'inventory_changed')
+        self.assertEqual(len(calls),2,'Token/size alone must not trigger automatic re-observation')
+        self.assertEqual(self.provider.deletes,0)
+
+    def test_owned_arrival_does_not_allow_a_later_external_delta_or_marker(self):
+        for marker in (False,True):
+            provider = VersionedProvider()
+            listing = provider.list_object_versions
+            calls = []
+            def finish_then_external(**kwargs):
+                calls.append(1)
+                if len(calls) == 2:
+                    provider.add('key',b'independent A',{TOKEN_KEY:self.intent['token']},version='own-late')
+                if len(calls) == 3:
+                    if marker:
+                        provider.markers['key','external'] = True
+                    else:
+                        provider.add('key',b'independent A',version='external')
+                return listing(**kwargs)
+            with self.subTest(marker=marker), patch.object(provider,'list_object_versions',side_effect=finish_then_external):
+                with self.assertRaises(UploadBlocked) as blocked:
+                    reconcile(provider,self.intent,None,lambda: None)
+                self.assertEqual(blocked.exception.reason,'inventory_changed')
+                self.assertEqual((provider.puts,provider.deletes),(0,0))
+
     def test_inflight_external_write_between_listings_remains_actionable_block(self):
         listing = self.provider.list_object_versions
         calls = []

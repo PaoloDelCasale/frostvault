@@ -134,6 +134,30 @@ class PreflightQueueTests(unittest.TestCase):
             jobs = c.execute("SELECT status,retry_count,claim_token FROM jobs WHERE status<>'failed'").fetchall()
             self.assertTrue(all(j == {'status': 'queued', 'retry_count': 0, 'claim_token': None} for j in jobs))
 
+    def test_live_scheduler_does_not_wait_for_startup_provider_or_claim_jobs(self):
+        self.fail_uploads(1)
+        self.retry(1)
+        entered,release = threading.Event(),threading.Event()
+        def slow_probe(vault):
+            entered.set()
+            self.assertTrue(release.wait(10))
+            raise gate.ReadinessFailure('Check credentials')
+        with patch('app.storage._validate_cloud_vault',side_effect=slow_probe) as probe, patch(
+            'app.storage.process_job'
+        ) as dispatch, ThreadPoolExecutor(max_workers=1) as pool:
+            checking = pool.submit(storage.reprobe_cloud_readiness_once)
+            try:
+                self.assertTrue(entered.wait(5))
+                self.assertEqual(storage.process_jobs_once(wait=False),0)
+                self.assertFalse(checking.done(),'Scheduler returned while provider remains blocked')
+                self.assertEqual(probe.call_count,1)
+                dispatch.assert_not_called()
+                with self.db() as c:
+                    self.assertEqual(c.execute("SELECT count(*) n FROM jobs WHERE status='queued' AND claim_token IS NULL").fetchone()['n'],2)
+            finally:
+                release.set()
+            checking.result(timeout=5)
+
     def test_sixteen_simultaneous_auth_failures_wait_and_promptly_invalidate_ready(self):
         with self.db() as c:
             catalog = ArchiveCatalog(c)

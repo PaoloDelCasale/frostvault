@@ -5238,8 +5238,9 @@ def process_jobs_once(*, wait: bool = True) -> int:
             limit=batch_size,
         )
         preflight = cloud_preflight_gate.snapshot(connection)
-        preflight_wait = (preflight["status"] == "blocked" and
-                          not cloud_preflight_gate.probe_due(preflight, datetime.now(timezone.utc)))
+        preflight_wait = ((preflight['status'] == 'blocked' and
+                           not cloud_preflight_gate.probe_due(preflight, current))
+                          or (not wait and not cloud_preflight_gate.dispatch_ready(preflight, current)))
         eligible_candidates: list[dict[str, Any]] = []
         seen_purge_groups: set[tuple[int, str]] = set()
         for row in candidates:
@@ -5265,9 +5266,16 @@ def process_jobs_once(*, wait: bool = True) -> int:
                 seen_purge_groups.add(purge_group)
             eligible_candidates.append(job)
 
+    # Preserve the automatic-upload stability/suspension fence before preflight,
+    # even when an SMB edit has not reached the watcher/catalog yet.
+    eligible_candidates = [job for job in eligible_candidates
+        if job['action'] != 'upload' or job.get('origin') != 'automatic'
+        or _automatic_upload_ready(job)]
     # The durable ready cache may belong to a previous deployment's credentials.
     # Probe outside the candidate transaction BEFORE acquiring any Job lease.
-    if eligible_candidates:
+    # The live non-waiting scheduler never performs provider I/O: the dedicated
+    # readiness loop proves startup/expiry while heartbeat/delivery keep moving.
+    if eligible_candidates and wait:
         try:
             validate_cloud_vault(eligible_candidates[0])
         except cloud_preflight_gate.CloudPreflightBlocked:

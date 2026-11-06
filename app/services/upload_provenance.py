@@ -221,7 +221,7 @@ def _own_write_arrived(client: Any, intent: dict[str, Any], saved: dict[str, Any
         raise UploadBlocked('ambiguous_receipt')
     pinned = json.loads(intent['target_json'])
     check_active()
-    head = client.head_object(Bucket=pinned['bucket'], Key=pinned['key'], VersionId=version)
+    head = client.head_object(Bucket=pinned['bucket'], Key=pinned['key'], VersionId=version, ChecksumMode='ENABLED')
     if (str(head.get('VersionId') or '') != version or head.get('DeleteMarker')
             or (head.get('Metadata') or {}).get(TOKEN_KEY) != intent['token']):
         return False

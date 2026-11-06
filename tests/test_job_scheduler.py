@@ -80,6 +80,8 @@ class _SchedulerDbMixin:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "scheduler.db"
+        # These tests isolate fair selection/leases, not provider readiness.
+        self.enterContext(patch('app.storage.validate_cloud_vault'))
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
         with PostgresConnection(str(self.path)) as connection:
