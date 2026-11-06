@@ -86,6 +86,8 @@ class AggregateDeadlockTests(unittest.TestCase):
             connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1,'owner','Owner','hash')")
             connection.execute("""INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix)
                 VALUES (2,'docs','Docs',%s,'bucket','docs')""", (str(self.source),))
+            from app.services.vault_relocation import enroll_vault_root_identity
+            enroll_vault_root_identity(connection, 2, str(self.source))
         self.enterContext(patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(self.path))))
         self.enterContext(patch("app.storage.validate_cloud_vault"))
         self.enterContext(patch("app.storage.s3_client", return_value=self.provider))

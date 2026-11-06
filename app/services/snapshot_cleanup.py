@@ -55,6 +55,15 @@ def _keeper(connection: Any, job: dict[str, Any], keeper_id: str) -> dict[str, A
             or not row["provider_version_id"] or row["provider_version_id"] == "null"
             or not row["object_key"] or row["size"] is None or not row["plaintext_sha256"]):
         raise UploadBlocked("keeper_missing")
+    try:
+        if len(bytes.fromhex(row["plaintext_sha256"])) != 32:
+            raise ValueError("invalid digest")
+    except (TypeError, ValueError):
+        raise UploadBlocked("proof_unavailable")
+    newer = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND version_number>%s AND availability='available'", (job["vault_file_id"], row["version_number"])).fetchall()
+    if any(_has_lineage(connection, item, job["vault_file_id"]) for item in newer):
+        # A stale recovery of A is never authority to purge a later app attempt B.
+        raise UploadBlocked("identity_changed")
     latest = connection.execute("SELECT id FROM archive_versions WHERE vault_file_id=%s AND integrity='verified' AND availability='available' ORDER BY version_number DESC LIMIT 1", (job["vault_file_id"],)).fetchone()
     if not latest or str(latest["id"]) != str(keeper_id):
         raise UploadBlocked("identity_changed")
@@ -86,6 +95,8 @@ def pin_inventory(worker: Any, job: dict[str, Any], client: Any) -> dict[str, An
         pinned = target(connection, job, key=worker.expected_cloud_key(job["path"], job["s3_prefix"]), provider=provider_identity(client))
     keys = {pinned["key"]} | {r["object_key"] for r in rows if r["object_key"]}
     keys |= {worker.expected_cloud_key(r["path"], job["s3_prefix"]) for r in paths}
+    if any(not key.startswith(job["s3_prefix"].rstrip("/") + "/") for key in keys):
+        raise UploadBlocked("identity_changed")
     baseline = {k: inventory(client, job["s3_bucket"], k) for k in sorted(keys)}
     if baseline != {k: inventory(client, job["s3_bucket"], k) for k in sorted(keys)}:
         raise UploadBlocked("inventory_changed")
@@ -101,7 +112,7 @@ def pin_inventory(worker: Any, job: dict[str, Any], client: Any) -> dict[str, An
 
 def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> None:
     active = lambda: worker.ensure_job_active(job["id"], "Snapshot cleanup stopped")
-    active()
+    worker._require_upload_source_identity(job)
     provider = provider_identity(client)
     # Pin DB ownership first. Runtime source/root checks are outside replayable units.
     with worker.db() as connection:
@@ -128,6 +139,12 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> No
             admitted.add(keep_version)
         if set(value["versions"]) - admitted or value["markers"] != baseline[key]["markers"]:
             raise UploadBlocked("inventory_changed")
+        missing = set(baseline[key]["versions"]) - set(value["versions"])
+        with worker.db() as connection:
+            for version in missing:
+                prior = connection.execute("SELECT 1 FROM snapshot_cleanup_proofs WHERE vault_file_id=%s AND bucket=%s AND provider=%s AND object_key=%s AND version_id=%s AND keeper_id=%s AND sha256=%s", (job["vault_file_id"], job["s3_bucket"], provider, key, version, keeper_id, keeper["plaintext_sha256"])).fetchone()
+                if not prior:
+                    raise UploadBlocked("inventory_changed")
     if any(v["markers"] for v in expected.values()):
         # Replacement has no marker consent. Delayed deletion has its own exact set.
         raise UploadBlocked("markers_present")
@@ -191,6 +208,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> No
     final = {key: inventory(client, job["s3_bucket"], key) for key in sorted(keys)}
     if final != expected or any(v["versions"] for k, v in final.items() if k != keep_key) or final[keep_key]["versions"] != [keep_version]:
         raise UploadBlocked("inventory_changed")
+    worker._require_upload_source_identity(job)
     @retry_database_unit
     def persist_purge() -> None:
         with owned_connection(worker.db()) as connection:

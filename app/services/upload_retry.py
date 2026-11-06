@@ -64,6 +64,11 @@ def classify_upload_failure(message: str | BaseException) -> str:
     transport faults; anything else is ``permanent``. ``database_transient``
     is separate: only the aborted DB unit can be replayed, never the upload.
     """
+    from .upload_provenance import UploadBlocked
+    if isinstance(message, UploadBlocked):
+        # Durable safety blocks are not transport retries inferred from words
+        # such as "unavailable" in the reason/remedy. Explicit exact resume only.
+        return "permanent"
     if isinstance(message, BaseException):
         if is_retryable_transaction_error(message):
             return "database_transient"

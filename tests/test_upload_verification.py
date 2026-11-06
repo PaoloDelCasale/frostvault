@@ -62,6 +62,8 @@ def _prepare_plain_vault(
             """,
             (str(source),),
         )
+        from app.services.vault_relocation import enroll_vault_root_identity
+        enroll_vault_root_identity(connection, 2, str(source))
         ArchiveCatalog(connection).observe_local_copy(
             vault_id=2,
             path=relative_path,
@@ -170,7 +172,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
             self.assertEqual(provider.reads[0]["VersionId"], "upload-response")
             self.assertEqual(provider.deleted, [])
             self.assertEqual(job["status"], "failed")
-            self.assertIn("uncatalogued cloud content", job["message"])
+            self.assertIn("Upload reconciliation blocked", job["message"])
 
     def test_matching_current_key_is_not_proof_of_the_linked_version_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

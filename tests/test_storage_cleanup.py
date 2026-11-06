@@ -494,7 +494,8 @@ class StorageCleanupTests(unittest.TestCase):
                                 "ContentLength": 7,
                                 "StorageClass": "STANDARD",
                                 "ETag": '"etag"',
-                            }
+                            },
+                            list_object_versions=lambda **_: {"Versions": [], "DeleteMarkers": [], "IsTruncated": False},
                         ),
                     ),
                 ):

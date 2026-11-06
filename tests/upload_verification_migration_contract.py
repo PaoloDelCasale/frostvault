@@ -9,8 +9,13 @@ NEW_FIELDS = {
 
 
 def without_upload_verification_fields(rows, table):
-    """Project pre-0063 preservation tests onto the schema they own."""
-    return [{k: v for k, v in row.items() if k not in NEW_FIELDS.get(table, set())} for row in rows]
+    """Project older preservation tests onto the schema they own.
+
+    Descendant #464's private default flag is covered by its own populated
+    contract, not included in the schema-field assertions for revision 0063.
+    """
+    omitted = NEW_FIELDS.get(table, set()) | ({"upload_reconcile_only"} if table == "jobs" else set())
+    return [{k: v for k, v in row.items() if k not in omitted} for row in rows]
 
 
 def state(connection):

@@ -777,9 +777,10 @@ class ArchiveCatalog:
         version_id = str(uuid.uuid4())
         version_number = int(latest["version_number"]) + 1
         if origin == "discovered":
-            # Historical observations must not elect themselves by scan order.
-            keeper = self.connection.execute("SELECT uploaded_at FROM archive_versions WHERE vault_file_id=%s AND integrity='verified' AND availability='available' ORDER BY version_number DESC LIMIT 1", (file_id,)).fetchone()
-            if keeper and str(uploaded_at) <= str(keeper["uploaded_at"]):
+            # Observations never elect themselves over a verified keeper. No
+            # timestamp/latest heuristic grants Current Snapshot or delete trust.
+            keeper = self.connection.execute("SELECT id FROM archive_versions WHERE vault_file_id=%s AND integrity='verified' AND availability='available' LIMIT 1", (file_id,)).fetchone()
+            if keeper:
                 oldest = self.connection.execute("SELECT MIN(version_number) AS n FROM archive_versions WHERE vault_file_id=%s", (file_id,)).fetchone()
                 version_number = min(0, int(oldest["n"] or 0)) - 1
         source_insert_column = ", storage_class_source" if source_supported else ""

@@ -95,7 +95,7 @@ class ExactCopyTests(unittest.TestCase):
 
     def test_discovery_uses_token_not_current_class_size_or_etag(self):
         self.client.list_object_versions.return_value = {"Versions":[
-            {"Key":"vault/photo","VersionId":"source"},{"Key":"vault/photo","VersionId":"foreign"}]}
+            {"Key":"vault/photo","VersionId":"source"},{"Key":"vault/photo","VersionId":"foreign"}], "IsTruncated": False}
         self.client.head_object.return_value = {"VersionId":"foreign","ContentLength":3,
                                               "StorageClass":"DEEP_ARCHIVE","Metadata":{}}
         self.assertIsNone(moves.discover_destination(self.client,self.job,self.move))
@@ -106,7 +106,7 @@ class ExactCopyTests(unittest.TestCase):
         for markers in ([],[{"Key":"vault/photo","VersionId":"marker"}]):
             self.client.list_object_versions.return_value = {"Versions":[
                 {"Key":"vault/photo","VersionId":"d1"},{"Key":"vault/photo","VersionId":"d2"}],
-                "DeleteMarkers":markers}
+                "DeleteMarkers":markers, "IsTruncated": False}
             self.client.head_object.side_effect = lambda **kw: {"VersionId":kw["VersionId"],"ContentLength":3,
                                                                 "Metadata":{moves.TOKEN_KEY:"intent"}}
             with self.assertRaises(moves.MoveBlocked):

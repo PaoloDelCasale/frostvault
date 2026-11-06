@@ -10,6 +10,7 @@ import hashlib
 import json
 import uuid
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from .database_retry import owned_connection, retry_database_unit
 from .upload_snapshot import UploadSnapshot
@@ -43,7 +44,12 @@ def canonical(value: Any) -> str:
 def provider_identity(client: Any) -> str:
     # Namespace identity only, never credentials. Fakes explicitly identify themselves.
     meta = getattr(client, "meta", None)
-    return canonical({"endpoint": getattr(meta, "endpoint_url", "s3-compatible-test"),
+    raw = getattr(meta, "endpoint_url", "s3-compatible-test")
+    if not isinstance(raw, str):
+        raw = "s3-compatible-test"
+    parsed = urlsplit(raw)
+    endpoint = urlunsplit((parsed.scheme, (parsed.hostname or "") + (f":{parsed.port}" if parsed.port else ""), parsed.path, "", "")) if parsed.scheme else raw
+    return canonical({"endpoint": endpoint,
                       "region": getattr(getattr(meta, "config", None), "region_name", None)})
 
 
