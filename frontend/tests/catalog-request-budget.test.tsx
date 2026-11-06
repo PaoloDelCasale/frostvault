@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
 import App from "@/App";
@@ -9,7 +9,7 @@ import { jsonResponse, loadCatalog } from "./vault-settings-harness";
 // observers, not just a spy on invalidateQueries (which misses polling fan-out).
 describe("catalog event request budget", () => {
   afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); resetApiClientForTests(); });
-  it("bounds a sustained upload burst to 30 requests/min/endpoint and flushes the tail within 5s", async () => {
+  it.each([false, true])("bounds a sustained burst to 30 requests/min/endpoint and flushes within 5s (notifications open: %s)", async (open) => {
     const listeners = new Map<string, (event: MessageEvent<string>) => void>();
     vi.stubGlobal("EventSource", class {
       onerror = null;
@@ -29,23 +29,31 @@ describe("catalog event request budget", () => {
       return jsonResponse({ groups: [] });
     }) });
     const client = createAppQueryClient();
-    render(<ApiQueryProvider client={client}><I18nProvider><App /></I18nProvider></ApiQueryProvider>);
-    await screen.findByTestId("file-list-empty");
-    expect(listeners.has("catalog")).toBe(true);
+    // Install fake time BEFORE observers schedule polling, otherwise only the
+    // event throttle (not existing intervals) would be measured.
     vi.useFakeTimers();
+    render(<ApiQueryProvider client={client}><I18nProvider><App /></I18nProvider></ApiQueryProvider>);
+    for (let tick = 0; tick < 5; tick++) await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    expect(screen.getByTestId("file-list-empty")).toBeInTheDocument();
+    expect(listeners.has("catalog")).toBe(true);
+    if (open) fireEvent.click(screen.getByTestId("notification-bell"));
     calls.length = 0;
     const emit = (revision: number) => listeners.get("catalog")!({ data: JSON.stringify({ vault_id: 1, revision, domains: ["files", "stats"], has_gap: false }) } as MessageEvent<string>);
     for (let revision = 1; revision <= 600; revision++) {
       await act(async () => { emit(revision); await vi.advanceTimersByTimeAsync(100); });
     }
-    for (const endpoint of ["/api/general", "/api/notifications", "/api/files?"]) {
+    const endpoints = ["/api/general", "/api/notifications", "/api/files?"];
+    for (const endpoint of endpoints) {
       const count = calls.filter((url) => url.startsWith(endpoint)).length;
-      expect(count, `${endpoint} requests in 60s`).toBeLessThanOrEqual(30);
+      expect.soft(count, `${endpoint} requests in 60s (polling included)`).toBeLessThanOrEqual(30);
       expect(count).toBeGreaterThan(0);
     }
-    const before = calls.length;
+    const before = endpoints.map((endpoint) => calls.filter((url) => url.startsWith(endpoint)).length);
+    expect(calls.filter((url) => url === "/api/upload-activity").length).toBeLessThanOrEqual(13);
     await act(async () => { emit(601); await vi.advanceTimersByTimeAsync(5_000); });
-    expect(calls.length).toBeGreaterThan(before);
+    endpoints.forEach((endpoint, index) => {
+      expect(calls.filter((url) => url.startsWith(endpoint)).length, `${endpoint} trailing event lag`).toBeGreaterThan(before[index]!);
+    });
     cleanup(); client.clear();
   });
 });

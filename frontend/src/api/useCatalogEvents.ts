@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { QueryClient } from "@tanstack/react-query";
+import type { QueryClient, QueryFilters } from "@tanstack/react-query";
 
 import {
   fetchCatalogRevision,
@@ -35,33 +35,42 @@ function invalidateForSignal(
   queryClient: QueryClient,
   signal: CatalogRevisionSignal,
   essentialShell = false,
-): void {
+): boolean {
   const domains = normalizeDomains(signal.domains);
   const tasks: Array<Promise<unknown>> = [];
+  let busy = false;
+  const invalidate = (filters: QueryFilters) => {
+    // Never abort/restart a slow request on every flush. Keep a trailing dirty
+    // signal instead: its response may describe a snapshot from BEFORE the event.
+    busy = queryClient.getQueryCache().findAll({ ...filters, type: "active" })
+      .some((query) => query.state.fetchStatus === "fetching") || busy;
+    return queryClient.invalidateQueries(filters, { cancelRefetch: false });
+  };
   if (domains.includes("files") || signal.has_gap) {
     tasks.push(
-      queryClient.invalidateQueries({
+      invalidate({
         queryKey: ["files"],
         refetchType: "active",
         predicate: (query) => typeof query.queryKey[1] !== "number" ||
           query.queryKey[1] === signal.vault_id || Boolean(query.queryKey[2]),
-      }, { cancelRefetch: false }),
+      }),
     );
   }
   if (domains.includes("stats") || signal.has_gap) {
     tasks.push(
-      queryClient.invalidateQueries({
+      invalidate({
         queryKey: apiQueryKeys.stats,
         refetchType: "active",
-      }, { cancelRefetch: false }),
+      }),
     );
   }
   if (essentialShell && (domains.includes("files") || signal.has_gap)) {
     for (const prefix of ["general", "details", "file-detail", "file-job-history", "linked-job", "problems", "notifications"]) {
-      tasks.push(queryClient.invalidateQueries({ queryKey: [prefix], refetchType: "active" }, { cancelRefetch: false }));
+      tasks.push(invalidate({ queryKey: [prefix], refetchType: "active" }));
     }
   }
   void Promise.all(tasks);
+  return busy;
 }
 
 /**
@@ -106,7 +115,7 @@ export function useCatalogEvents({
       if (closed || !pendingSignal) return;
       const signal = pendingSignal;
       pendingSignal = null;
-      invalidateForSignal(queryClient, signal, explicitVault);
+      if (invalidateForSignal(queryClient, signal, explicitVault)) pendingSignal = signal;
       // Keep the cooldown even when a flush emptied the batch.
       refreshTimer = schedule(flush, CATALOG_REFRESH_MS);
     };
