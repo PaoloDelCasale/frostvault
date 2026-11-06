@@ -520,13 +520,15 @@ def _scan_tree(
     count = 0
     scan_started_at = scan_started_at or scan_id
     pending: list[tuple[str, str, int | None, int | None, str]] = []
+    invalidate_paths: list[str] = []
+    unreadable_paths: list[str] = []
 
     def _persisted_scan(vault_row: dict[str, Any]) -> bool:
         return "root_identity" in vault_row or "root_identity_version" in vault_row
 
     def flush() -> None:
         nonlocal count
-        if not pending:
+        if not pending and not unreadable_paths:
             return
         tree.validate_active()
         if _persisted_scan(vault):
@@ -555,6 +557,9 @@ def _scan_tree(
                     """,
                     (relative, vault_id),
                 ).fetchone()
+        for relative in unreadable_paths:
+            report_problem(connection, event="file_unreadable", vault_id=vault_id, path=relative)
+        unreadable_paths.clear()
         catalog = ArchiveCatalog(connection)
         # Issue #242: one Vault row-lock touch, one bulk identity lookup, and
         # one bulk upsert replace the per-file round-trips that pinned Postgres
@@ -566,9 +571,9 @@ def _scan_tree(
             entries=pending,
             seen_at=scan_id,
         )
-        if invalidate_content:
-            # Directory replacement can preserve size/mtime. A watcher
-            # subtree observation is an event, not an unchanged periodic scan.
+        if invalidate_paths:
+            # Directory replacement can preserve size/mtime. A watcher subtree
+            # invalidates real changes, not independently verified file echoes.
             connection.execute("""
                 UPDATE local_copies SET content_observed_at=%s,
                     plaintext_sha256=NULL, matched_archive_version_id=NULL
@@ -577,9 +582,10 @@ def _scan_tree(
                       ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
                     WHERE vf.vault_id=%s AND fp.path=ANY(%s)
                 )
-            """, (scan_id, vault_id, [entry[0] for entry in pending]))
+            """, (scan_id, vault_id, invalidate_paths))
         count += len(pending)
         pending.clear()
+        invalidate_paths.clear()
         tree.validate_active()
         if _persisted_scan(vault):
             _current_verified_scan_row(connection, vault)
@@ -593,10 +599,9 @@ def _scan_tree(
         unreadable = True
         if scan_journal is not None:
             scan_journal["incomplete"] = True
-        relative = entry.relative_to(root).as_posix()
-        report_problem(
-            connection, event="file_unreadable", vault_id=vault_id, path=relative,
-        )
+        # Defer DB writes until flush so a later echoed child can be hashed
+        # outside a write transaction, even after an unreadable sibling.
+        unreadable_paths.append(entry.relative_to(root).as_posix())
 
     with PinnedTree(root, subtree=subtree) as tree:
         if _persisted_scan(vault) and vault_relocation.opened_root_identity(tree.fd) != vault.get("root_identity"):
@@ -613,6 +618,10 @@ def _scan_tree(
                 failed(entry, exc)
                 continue
             relative = entry.relative_to(root).as_posix()
+            if invalidate_content and not local_observation.consume(vault_id, relative, pinned_entry):
+                # Use the pinned parent while it is open. Independent hashing
+                # must precede journal/catalog/problem writes for this batch.
+                invalidate_paths.append(relative)
             pending.append(
                 (
                     relative,

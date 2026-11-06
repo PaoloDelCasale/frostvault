@@ -257,6 +257,38 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WatcherSubtreeTests(unittest.TestCase):
+    def test_directory_echo_preserves_recovered_child_but_invalidates_external_child(self):
+        from app.services import local_observation
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            root = Path(directory)
+            recovered = root / "new" / "photo.jpg"
+            recovered.parent.mkdir()
+            recovered.write_bytes(b"photo")
+            (recovered.parent / "external.jpg").write_bytes(b"other")
+            local_observation.remember(126, "new/photo.jpg", recovered.stat(), hashlib.sha256(b"photo").hexdigest())
+            connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = None
+            catalog = stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
+            invalidated = []
+            def record_sql(sql, params=()):
+                if "plaintext_sha256=NULL" in sql:
+                    invalidated.extend(params[2])
+                return connection.execute.return_value
+            connection.execute.side_effect = record_sql
+            stack.enter_context(patch("app.storage._validate_enrolled_scan_root"))
+            stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(
+                local_operations_allowed=True, volume_alias=None,
+            )))
+            stack.enter_context(patch("app.storage.record_catalog_revision"))
+            storage.apply_filesystem_changes({"id": 126, "source_root": directory}, {
+                (Change.added, str(recovered.parent)),
+                (Change.added, str(recovered)),
+            })
+            self.assertTrue(catalog.observe_local_copies_batch.called)
+            self.assertEqual(invalidated, ["new/external.jpg"])
+            # A later file echo cannot repair a digest the subtree has erased.
+            self.assertTrue(local_observation.consume(126, "new/photo.jpg", recovered))
+
     def test_move_in_emits_only_directory_event_but_catalogues_nested_files(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             base = Path(directory)

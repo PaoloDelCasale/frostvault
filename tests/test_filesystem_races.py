@@ -269,8 +269,9 @@ class FilesystemCatalogTests(unittest.TestCase):
 
     def test_real_multipart_transfer_with_watcher_has_no_temporary_catalog_entries(self):
         payload = b"multipart payload" * 1024
-        target, version, digest = self.archive(content=payload, missing=True)
-        job = self.job("recover")
+        target, version, digest = self.archive("new/photo.jpg", content=payload, missing=True)
+        target.parent.rmdir()  # Recover must recreate the directory as well.
+        job = self.job("recover", path="new/photo.jpg")
         client = boto3.client("s3", region_name="us-east-1", aws_access_key_id="test", aws_secret_access_key="test")
         ranges = []
         sdk_temporaries = []
@@ -298,8 +299,14 @@ class FilesystemCatalogTests(unittest.TestCase):
         self.assertGreater(len(ranges), 1)
         self.assertTrue(sdk_temporaries)
         self.assertEqual(target.read_bytes(), payload)
-        storage.apply_filesystem_changes(self.vault, {(Change.added, str(target))})
+        storage.apply_filesystem_changes(self.vault, {
+            (Change.added, str(target.parent)), (Change.added, str(target)),
+        })
         self.assertEqual(len(self.entries()), 1)
+        self.assertEqual(self.entries()[0]["plaintext_sha256"], digest)
+        self.assertEqual(self.entries()[0]["matched_archive_version_id"], version)
+        storage.apply_filesystem_changes(self.vault, {(Change.modified, str(target))})
+        self.assertEqual(self.entries()[0]["plaintext_sha256"], digest)
         self.assertEqual(self.entries()[0]["matched_archive_version_id"], version)
 
     def test_existing_restore_ghosts_are_hidden_but_real_user_names_are_preserved(self):
