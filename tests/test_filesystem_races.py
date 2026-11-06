@@ -1,0 +1,194 @@
+"""Catalog integration for #472/#476/#477; deterministic interleavings, no S3 network."""
+from __future__ import annotations
+
+from contextlib import ExitStack
+import hashlib
+import io
+from pathlib import Path
+import unittest
+from unittest.mock import patch
+
+import boto3
+from boto3.s3.transfer import TransferConfig
+from s3transfer.utils import OSUtils
+from watchfiles import Change
+
+from app import storage
+from app.catalog import ArchiveCatalog
+from tests import test_auto_upload_watcher as fixtures
+
+
+class FilesystemCatalogTests(unittest.TestCase):
+    setUp = fixtures.WatcherAutomaticUploadTests.setUp
+    db = fixtures.WatcherAutomaticUploadTests.db
+    write = fixtures.WatcherAutomaticUploadTests.write
+    advance = fixtures.WatcherAutomaticUploadTests.advance
+    queue = fixtures.WatcherAutomaticUploadTests.queue
+    jobs = fixtures.WatcherAutomaticUploadTests.jobs
+
+    def entries(self):
+        with self.db() as connection:
+            return connection.execute("""
+                SELECT fp.path, lc.* FROM vault_files vf
+                JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+                JOIN local_copies lc ON lc.vault_file_id=vf.id
+                WHERE vf.vault_id=2 AND vf.status='active' ORDER BY fp.path
+            """).fetchall()
+
+    def archive(self, name="photo.jpg", content=b"photo", *, missing=False):
+        target = self.write(name, content)
+        digest = hashlib.sha256(content).hexdigest()
+        with self.db() as connection:
+            catalog = ArchiveCatalog(connection)
+            version = catalog.record_archive_version(
+                vault_id=2, path=name, object_key=f"photos/{name}", provider_version_id="exact",
+                size=len(content), storage_class="STANDARD", etag="etag",
+                uploaded_at=self.clock.isoformat(), observed_at=self.clock.isoformat(), scan_id="first",
+            )
+            catalog.mark_version_verified(version, plaintext_sha256=digest, verified_at=self.clock.isoformat())
+            catalog.set_local_fingerprint(vault_id=2, path=name, plaintext_sha256=digest, matched_archive_version_id=version)
+        if missing:
+            target.unlink()
+            storage.apply_filesystem_changes(self.vault, {(Change.deleted, str(target))})
+        return target, version, digest
+
+    def job(self, action, path="photo.jpg"):
+        with self.db() as connection:
+            ids, _, _ = ArchiveCatalog(connection).queue_jobs(
+                vault_id=2, path=path, action=action, requested_by=1,
+                requested_at=self.clock.isoformat(), group_id="filesystem-regression", is_directory=False,
+            )
+            return dict(connection.execute("SELECT j.*, v.source_root, v.s3_bucket, v.s3_prefix FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s", (ids[0],)).fetchone())
+
+    def test_directory_move_in_rename_and_move_out_are_catalogued_without_scan(self):
+        incoming = self.base / "incoming"
+        (incoming / "deep").mkdir(parents=True)
+        (incoming / "deep" / "photo.jpg").write_bytes(b"photo")
+        incoming.rename(self.root / "incoming")
+        storage.apply_filesystem_changes(self.vault, {(Change.added, str(self.root / "incoming"))})
+        self.assertEqual([(row["path"], row["presence"]) for row in self.entries()], [("incoming/deep/photo.jpg", "present")])
+        self.advance(300)
+        self.assertEqual(self.queue(), 1)
+        (self.root / "incoming").rename(self.root / "renamed")
+        storage.apply_filesystem_changes(self.vault, {(Change.deleted, str(self.root / "incoming")), (Change.added, str(self.root / "renamed"))})
+        self.assertEqual([(row["path"], row["presence"]) for row in self.entries()], [("incoming/deep/photo.jpg", "missing"), ("renamed/deep/photo.jpg", "present")])
+        (self.root / "renamed").rename(self.base / "outside")
+        storage.apply_filesystem_changes(self.vault, {(Change.deleted, str(self.root / "renamed"))})
+        self.assertTrue(all(row["presence"] == "missing" for row in self.entries()))
+
+    def test_subtree_batches_preserve_siblings_and_do_not_follow_symlinks(self):
+        self.write("sibling.jpg")
+        self.write("new/deep/a.jpg", watch=False)
+        self.write("new/deep/b.jpg", watch=False)
+        outside = self.base / "outside"
+        outside.mkdir()
+        (outside / "secret.jpg").write_bytes(b"outside")
+        (self.root / "new" / "link").symlink_to(outside, target_is_directory=True)
+        with patch("app.storage.LOCAL_SCAN_WRITE_BATCH_SIZE", 1):
+            storage.apply_filesystem_changes(self.vault, {(Change.added, str(self.root / "new")), (Change.added, str(self.root / "new" / "deep"))})
+        rows = {row["path"]: row for row in self.entries()}
+        self.assertEqual(set(rows), {"sibling.jpg", "new/deep/a.jpg", "new/deep/b.jpg", "new/link"})
+        self.assertEqual(rows["sibling.jpg"]["presence"], "present")
+        self.assertEqual(rows["new/link"]["presence"], "unsupported")
+
+    def test_free_space_with_watcher_during_hash_keeps_verified_state(self):
+        target, version, digest = self.archive()
+        job = self.job("free-space")
+        real_hash = storage.hash_stable_regular_file
+        observed = []
+
+        def watch_during_hash(path):
+            observed.append(path)
+            # The old implementation exposes a deleted original for the entire
+            # hash. New code may instead hash before claiming it.
+            if not target.exists():
+                storage.apply_filesystem_changes(self.vault, {(Change.deleted, str(target))})
+            return real_hash(path)
+
+        with (patch("app.storage.validate_cloud_vault"),
+              patch("app.storage.local_release_is_confirmed", return_value=True),
+              patch("app.storage.s3_client") as client,
+              patch("app.storage.hash_stable_regular_file", side_effect=watch_during_hash)):
+            client.return_value.head_object.return_value = {"ContentLength": 5, "VersionId": "exact"}
+            storage.process_free_space(job)
+        self.assertTrue(observed)
+        self.assertFalse(target.exists())
+        row = self.entries()[0]
+        self.assertEqual(row["presence"], "missing")
+        self.assertEqual(row["plaintext_sha256"], digest)
+        self.assertEqual(row["matched_archive_version_id"], version)
+
+    def test_failed_release_is_immediately_protected_even_after_queued_watcher_events(self):
+        target, version, digest = self.archive()
+        job = self.job("free-space")
+        real_check = storage._checked_local_release_target
+        calls = 0
+
+        def fail_final_check(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("Injected final protection failure")
+            return real_check(*args, **kwargs)
+
+        with (patch("app.storage.validate_cloud_vault"),
+              patch("app.storage.local_release_is_confirmed", return_value=True),
+              patch("app.storage.s3_client") as client,
+              patch("app.storage._checked_local_release_target", side_effect=fail_final_check)):
+            client.return_value.head_object.return_value = {"ContentLength": 5, "VersionId": "exact"}
+            with self.assertRaisesRegex(RuntimeError, "Injected final"):
+                storage.process_free_space(job)
+        storage.apply_filesystem_changes(self.vault, {(Change.deleted, str(target)), (Change.added, str(target))})
+        self.assertEqual(target.read_bytes(), b"photo")
+        row = self.entries()[0]
+        self.assertEqual((row["presence"], row["plaintext_sha256"], row["matched_archive_version_id"], row["cloud_only_version_id"]), ("present", digest, version, None))
+
+    def test_real_multipart_transfer_with_watcher_has_no_temporary_catalog_entries(self):
+        payload = b"multipart payload" * 1024
+        target, version, digest = self.archive(content=payload, missing=True)
+        job = self.job("recover")
+        client = boto3.client("s3", region_name="us-east-1", aws_access_key_id="test", aws_secret_access_key="test")
+        ranges = []
+        sdk_temporaries = []
+        original_rename = OSUtils.rename_file
+
+        def get_object(**kwargs):
+            ranges.append(kwargs.get("Range"))
+            start, end = kwargs.get("Range", "bytes=0-").removeprefix("bytes=").split("-")
+            content = payload[int(start): int(end) + 1 if end else None]
+            return {"Body": io.BytesIO(content), "ContentLength": len(content)}
+
+        def rename_with_watcher(osutils, source, destination):
+            sdk_temporaries.append(source)
+            storage.apply_filesystem_changes(self.vault, {(Change.added, source)})
+            original_rename(osutils, source, destination)
+            storage.apply_filesystem_changes(self.vault, {(Change.deleted, source)})
+
+        with (patch("app.storage.validate_cloud_vault"),
+              patch("app.storage.s3_client", return_value=client),
+              patch.object(client, "head_object", return_value={"ContentLength": len(payload), "VersionId": "exact"}),
+              patch.object(client, "get_object", side_effect=get_object),
+              patch("app.storage.s3_download_transfer_config", return_value=TransferConfig(multipart_threshold=1024, multipart_chunksize=4096, use_threads=False)),
+              patch.object(OSUtils, "rename_file", rename_with_watcher)):
+            storage.process_recover(job)
+        self.assertGreater(len(ranges), 1)
+        self.assertTrue(sdk_temporaries)
+        self.assertEqual(target.read_bytes(), payload)
+        self.assertEqual(len(self.entries()), 1)
+        self.assertEqual(self.entries()[0]["matched_archive_version_id"], version)
+
+    def test_existing_restore_ghosts_are_hidden_but_real_user_names_are_preserved(self):
+        target, _, _ = self.archive()
+        self.job("recover") if False else None  # The legacy repair needs a completed recovery history.
+        with self.db() as connection:
+            connection.execute("""INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by,
+                requested_at, updated_at, group_id) SELECT 2, vf.id, 'photo.jpg', 'recover', 'completed', 1,
+                %s, %s, 'old-recovery' FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id
+                WHERE fp.path='photo.jpg'""", (self.clock.isoformat(), self.clock.isoformat()))
+            catalog = ArchiveCatalog(connection)
+            for name in (f".photo.jpg.restore-{'a' * 32}.tmp.f8Fc29bA", "photo.jpg.tmp.f8Fc29bA", "user.tmp.f8Fc29bA"):
+                catalog.observe_local_copy(vault_id=2, path=name, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())
+        # Repair is part of ordinary local reconciliation, not a destructive
+        # schema migration and never a broad *.tmp.* filename filter.
+        storage.scan_tree(self.vault, self.clock.isoformat())
+        self.assertEqual({row["path"] for row in self.entries()}, {"photo.jpg", "user.tmp.f8Fc29bA"})
