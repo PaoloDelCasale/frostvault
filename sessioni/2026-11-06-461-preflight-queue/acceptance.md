@@ -83,7 +83,7 @@ Implementation files: `app/database.py`, `app/main.py`, `app/storage.py`, `app/s
 
 Contracts/UI/docs: `app/openapi_schemas.json`, `app/locales/{en,it}.json`, `frontend/openapi.json`, `frontend/src/api/{openapi.generated,types,vault}.ts`, `frontend/src/App.tsx`, `frontend/src/components/UploadRetryActions.tsx`, `frontend/src/pages/general/GeneralPage.tsx`, `frontend/src/pages/vault-settings/VaultSettingsPanel.tsx`, `docs/aws-s3-bucket.md`.
 
-Tests: `tests/test_cloud_preflight_gate.py`, `tests/test_preflight_queue.py`, updated `tests/test_{local_release,protection_notifications,s3_preflight}.py`, `frontend/tests/{app-essential,upload-retry}.test.tsx`. This acceptance document is the only new tracked session artifact.
+Tests: `tests/test_cloud_preflight_gate.py`, `tests/test_preflight_queue.py`, updated `tests/test_{local_release,protection_notifications,s3_preflight}.py`, `frontend/tests/{app-essential,upload-retry}.test.tsx`. Tracked session artifacts are this acceptance document and `ci-implementation.json` (the 28-check implementation snapshot).
 
 Also inspected the existing catalog whole-Vault/admission/claim/reuse seams, notification episodes and health, Source Volume/root safeguards, migration fixtures and CI workflows. No edits to `app/catalog.py`, existing transfer/replacement integrity code, ADRs/domain, Dockerfile, Compose, proxy rules or #463 probe implementation.
 
