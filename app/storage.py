@@ -5294,7 +5294,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
             )
         # DB failures are retried at their owned transaction boundary above.
         # Exhaustion must fail closed, not restart S3 with a lost response (#464).
-        if job["action"] == "upload" and failure_kind == "transient":
+        if job["action"] == "upload" and failure_kind in {"transient", "database_connection"}:
             next_attempt = int(job.get("retry_count") or 0) + 1
             if next_attempt <= UPLOAD_RETRY_MAX_ATTEMPTS:
                 return schedule_upload_retry(

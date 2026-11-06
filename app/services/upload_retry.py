@@ -55,6 +55,27 @@ _TRANSIENT_UPLOAD_FAILURE_MARKERS = (
 )
 
 
+_CONNECTION_SQLSTATES = frozenset({"57P01", "57P02", "57P03", "53300"})
+
+
+def is_database_connection_error(error: BaseException) -> bool:
+    """Structured loss of the PostgreSQL connection, never message heuristics.
+
+    Client-side failures ("connection is bad", refused/unreachable) carry no
+    SQLSTATE; server-side shutdown/startup/limits use class 08 and 57P0x/53300.
+    Statement timeouts, constraint and transaction-conflict errors do not count.
+    """
+    for item in exception_chain(error):
+        if isinstance(item, psycopg.InterfaceError):
+            return True
+        if not isinstance(item, psycopg.OperationalError):
+            continue
+        state = item.sqlstate
+        if state is None or state.startswith("08") or state in _CONNECTION_SQLSTATES:
+            return True
+    return False
+
+
 def classify_upload_failure(message: str | BaseException) -> str:
     """Classify an upload/verify error for retry policy.
 
@@ -63,6 +84,8 @@ def classify_upload_failure(message: str | BaseException) -> str:
     window up to ``UPLOAD_RETRY_MAX_ATTEMPTS``. ``transient`` covers retryable
     transport faults; anything else is ``permanent``. ``database_transient``
     is separate: only the aborted DB unit can be replayed, never the upload.
+    ``database_connection`` is a lost PostgreSQL connection: the Job is retried
+    with backoff and its journaled intent decides between reconcile and send.
     """
     from .upload_provenance import UploadBlocked
     if isinstance(message, UploadBlocked):
@@ -72,9 +95,14 @@ def classify_upload_failure(message: str | BaseException) -> str:
     if isinstance(message, BaseException):
         if is_retryable_transaction_error(message):
             return "database_transient"
+        if is_database_connection_error(message):
+            # The send is journaled (#464): a retry can only reconcile, or send
+            # when a definitive no-write outcome was proven. It never repeats a
+            # PUT blindly, so losing the database is a bounded retry (#484).
+            return "database_connection"
         if any(isinstance(error, psycopg.Error) for error in exception_chain(message)):
-            # Constraint failures/ambiguous connection loss are not S3 faults.
-            # Message heuristics must never schedule another provider upload.
+            # Constraint failures are not S3 faults. Message heuristics must
+            # never schedule another provider upload.
             return "permanent"
     lowered = str(message or "").lower()
     if "changed since fingerprinting" in lowered:
