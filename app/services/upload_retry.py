@@ -1,6 +1,7 @@
 """Upload failure classification and retry backoff policy."""
 from __future__ import annotations
 
+import psycopg
 from botocore.exceptions import ClientError
 from .database_retry import exception_chain, is_retryable_transaction_error
 
@@ -63,8 +64,13 @@ def classify_upload_failure(message: str | BaseException) -> str:
     transport faults; anything else is ``permanent``. ``database_transient``
     is separate: only the aborted DB unit can be replayed, never the upload.
     """
-    if isinstance(message, BaseException) and is_retryable_transaction_error(message):
-        return "database_transient"
+    if isinstance(message, BaseException):
+        if is_retryable_transaction_error(message):
+            return "database_transient"
+        if any(isinstance(error, psycopg.Error) for error in exception_chain(message)):
+            # Constraint failures/ambiguous connection loss are not S3 faults.
+            # Message heuristics must never schedule another provider upload.
+            return "permanent"
     lowered = str(message or "").lower()
     if "changed since fingerprinting" in lowered:
         return "source_changed"

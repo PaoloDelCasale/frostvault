@@ -4,6 +4,7 @@ No optional skips: TEST_POSTGRES_URL must point to a disposable PG16 server.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import tempfile
 import threading
@@ -317,6 +318,17 @@ class AggregateDeadlockTests(unittest.TestCase):
 
     def test_verification_and_post_delete_catalog_abort_replay_only_db(self):
         jobs = self.seed()
+        with PostgresConnection(self.path) as connection:
+            path = connection.execute("SELECT path FROM jobs WHERE id=%s", (jobs[0],)).fetchone()["path"]
+            key = f"docs/{path}"
+            catalog = ArchiveCatalog(connection)
+            previous = catalog.record_archive_version(
+                vault_id=2, path=path, object_key=key, provider_version_id="previous-only-copy",
+                size=3, storage_class="STANDARD", etag="old", uploaded_at="2026-07-20",
+                observed_at="2026-07-20", scan_id="old",
+            )
+            catalog.mark_version_verified(previous, plaintext_sha256=hashlib.sha256(b"old").hexdigest(), verified_at="2026-07-20")
+        self.provider.objects[(key, "previous-only-copy")] = b"old"
         original_verify = ArchiveCatalog.mark_version_verified
         original_clear = ArchiveCatalog.clear_delete_markers_for_file
         attempts = {"verify": 0, "cleanup": 0}
@@ -341,8 +353,18 @@ class AggregateDeadlockTests(unittest.TestCase):
         ):
             self.assertTrue(self.run_job(jobs[0]))
         self.assertEqual(attempts, {"verify": 2, "cleanup": 2})
-        self.assert_completed(1)
+        self.assertEqual(len(self.provider.puts), 1)
         self.assertEqual(len(self.provider.reads), 1, "Verification stream was replayed with DB work")
+        self.assertEqual(len(self.provider.deleted), 1, "DB retry replayed an external deletion")
+        self.assertEqual(self.provider.deleted[0]["VersionId"], "previous-only-copy")
+        with PostgresConnection(self.path) as connection:
+            self.assertEqual(connection.execute("SELECT status FROM jobs WHERE id=%s", (jobs[0],)).fetchone()["status"], "completed")
+            versions = ArchiveCatalog(connection).list_versions(2, path)
+            old = next(version for version in versions if version["id"] == previous)
+            current = next(version for version in versions if version["id"] != previous)
+            self.assertEqual(old["availability"], "purged")
+            self.assertEqual(current["integrity"], "verified")
+            self.assertEqual(current["availability"], "available")
 
     def test_retry_status_transaction_is_itself_retried(self):
         jobs = self.seed()

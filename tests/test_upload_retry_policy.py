@@ -71,6 +71,14 @@ class UploadRetryPolicyTests(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertEqual(classify_upload_failure(message), "permanent")
 
+    def test_other_database_errors_never_become_transport_retries(self) -> None:
+        from psycopg import OperationalError
+        from psycopg.errors import UniqueViolation
+        for error in (OperationalError("connection reset 500503"), UniqueViolation("timeout unavailable")):
+            wrapped = RuntimeError("S3 unavailable")
+            wrapped.__cause__ = error
+            self.assertEqual(classify_upload_failure(wrapped), "permanent")
+
     def test_structured_provider_status_keeps_http_retries(self) -> None:
         from botocore.exceptions import ClientError
         for status in (500, 503):
