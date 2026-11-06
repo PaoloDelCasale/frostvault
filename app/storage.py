@@ -4733,26 +4733,27 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
         return
 
 
+@retry_database_unit
+def _load_claimed_job_status(job: dict[str, Any]) -> dict[str, Any] | None:
+    with db() as connection:
+        claim_token = job.get("claim_token")
+        if claim_token:
+            return ArchiveCatalog(connection).renew_job_claim(
+                job_id=int(job["id"]), claim_token=str(claim_token),
+                now=now_iso(), claim_expires_at=_claim_expiry_at(),
+            )
+        # Direct unit/service callers retain the historic unclaimed seam;
+        # production scheduling always supplies a token.
+        return connection.execute(
+            "SELECT status FROM jobs WHERE id=%s", (job["id"],),
+        ).fetchone()
+
+
 def _process_claimed_job(job: dict[str, Any]) -> bool:
     """Process one queue item after the scheduler has acquired its lease."""
     try:
-        with db() as connection:
-            runtime = _runtime_settings()
-            claim_token = job.get("claim_token")
-            if claim_token:
-                current = ArchiveCatalog(connection).renew_job_claim(
-                    job_id=int(job["id"]),
-                    claim_token=str(claim_token),
-                    now=now_iso(),
-                    claim_expires_at=_claim_expiry_at(),
-                )
-            else:
-                # Direct unit/service callers retain the historic unclaimed seam;
-                # production scheduling always supplies a token.
-                current = connection.execute(
-                    "SELECT status FROM jobs WHERE id=%s",
-                    (job["id"],),
-                ).fetchone()
+        runtime = _runtime_settings()
+        current = _load_claimed_job_status(job)
         if current is None:
             return False
         if current["status"] in JOB_TERMINAL_STATUSES:

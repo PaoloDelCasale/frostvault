@@ -268,6 +268,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         original_dirty = storage._dirty_job_protection
         original_progress = storage.set_job_progress.__wrapped__
         injected = set()
+        progress_calls = []
 
         def dirty_once(connection, job_id):
             original_dirty(connection, job_id)
@@ -277,7 +278,8 @@ class AggregateDeadlockTests(unittest.TestCase):
                 connection.execute("DO $$ BEGIN RAISE EXCEPTION 'forced status abort' USING ERRCODE='40P01'; END $$")
 
         def progress_once(*args, **kwargs):
-            if self.provider.puts and "progress" not in injected:
+            progress_calls.append(1)
+            if len(progress_calls) == 2 and "progress" not in injected:
                 injected.add("progress")
                 # Real aborted DB handle; operation wrapper must close before retry.
                 with storage.db() as connection:
@@ -290,6 +292,100 @@ class AggregateDeadlockTests(unittest.TestCase):
             self.assertTrue(self.run_job(jobs[0]))
         self.assertEqual(injected, {"uploading", "verifying", "completed", "progress"})
         self.assert_completed(1)
+
+    def test_commit_time_abort_replays_whole_linkage_transaction(self):
+        jobs = self.seed()
+        with PostgresConnection(self.path) as connection:
+            # Sequence increments survive rollback, so exactly the first COMMIT
+            # fails, after the mutation callback has returned successfully.
+            connection.execute("CREATE SEQUENCE forced_commit_attempt")
+            connection.execute("""CREATE FUNCTION abort_first_link_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    IF NEW.archive_version_id IS NOT NULL AND NEW.status='uploading'
+                       AND nextval('forced_commit_attempt')=1 THEN
+                        RAISE EXCEPTION 'forced commit abort' USING ERRCODE='40001';
+                    END IF;
+                    RETURN NEW;
+                END $$""")
+            connection.execute("""CREATE CONSTRAINT TRIGGER abort_first_link_commit
+                AFTER UPDATE ON jobs DEFERRABLE INITIALLY DEFERRED
+                FOR EACH ROW EXECUTE FUNCTION abort_first_link_commit()""")
+        self.assertTrue(self.run_job(jobs[0]))
+        self.assert_completed(1)
+        with PostgresConnection(self.path) as connection:
+            self.assertGreaterEqual(connection.execute("SELECT last_value FROM forced_commit_attempt").fetchone()["last_value"], 2)
+
+    def test_verification_and_post_delete_catalog_abort_replay_only_db(self):
+        jobs = self.seed()
+        original_verify = ArchiveCatalog.mark_version_verified
+        original_clear = ArchiveCatalog.clear_delete_markers_for_file
+        attempts = {"verify": 0, "cleanup": 0}
+
+        def verify_once(catalog, *args, **kwargs):
+            original_verify(catalog, *args, **kwargs)
+            attempts["verify"] += 1
+            if attempts["verify"] == 1:
+                catalog.connection.execute("DO $$ BEGIN RAISE EXCEPTION 'forced verification abort' USING ERRCODE='40001'; END $$")
+
+        def cleanup_once(catalog, *args, **kwargs):
+            original_clear(catalog, *args, **kwargs)
+            attempts["cleanup"] += 1
+            if attempts["cleanup"] == 1:
+                # Even a verified version is not a completed Job at this seam.
+                state = catalog.connection.execute("SELECT status FROM jobs WHERE id=%s", (jobs[0],)).fetchone()["status"]
+                self.assertEqual(state, "uploading")
+                catalog.connection.execute("DO $$ BEGIN RAISE EXCEPTION 'forced cleanup abort' USING ERRCODE='40P01'; END $$")
+
+        with patch.object(ArchiveCatalog, "mark_version_verified", verify_once), patch.object(
+            ArchiveCatalog, "clear_delete_markers_for_file", cleanup_once
+        ):
+            self.assertTrue(self.run_job(jobs[0]))
+        self.assertEqual(attempts, {"verify": 2, "cleanup": 2})
+        self.assert_completed(1)
+        self.assertEqual(len(self.provider.reads), 1, "Verification stream was replayed with DB work")
+
+    def test_retry_status_transaction_is_itself_retried(self):
+        jobs = self.seed()
+        original = storage._dirty_job_protection
+        attempts = []
+
+        def retry_status_once(connection, job_id):
+            original(connection, job_id)
+            state = connection.execute("SELECT status FROM jobs WHERE id=%s", (job_id,)).fetchone()["status"]
+            if state == "retrying":
+                attempts.append(1)
+                if len(attempts) == 1:
+                    connection.execute("DO $$ BEGIN RAISE EXCEPTION 'forced retry status abort' USING ERRCODE='40P01'; END $$")
+
+        with patch("app.storage.upload_file", side_effect=RuntimeError("SlowDown")), patch(
+            "app.storage._dirty_job_protection", side_effect=retry_status_once
+        ):
+            self.assertTrue(self.run_job(jobs[0]))
+        self.assertEqual(len(attempts), 2)
+        with PostgresConnection(self.path) as connection:
+            state = connection.execute("SELECT status,retry_count FROM jobs WHERE id=%s", (jobs[0],)).fetchone()
+            self.assertEqual(state, {"status": "retrying", "retry_count": 1})
+        self.assertEqual(self.provider.puts, [])
+
+    def test_exhausted_post_response_db_retries_do_not_schedule_blind_reupload(self):
+        from app.services.database_retry import DATABASE_RETRY_MAX_ATTEMPTS
+        jobs = self.seed()
+        attempts = []
+
+        def always_abort(catalog, *_args):
+            attempts.append(1)
+            catalog.connection.execute("DO $$ BEGIN RAISE EXCEPTION 'forced exhausted abort' USING ERRCODE='40P01'; END $$")
+
+        with patch.object(ArchiveCatalog, "link_job_version", always_abort):
+            self.assertTrue(self.run_job(jobs[0]))
+        self.assertEqual(len(attempts), DATABASE_RETRY_MAX_ATTEMPTS)
+        self.assertEqual(len(self.provider.puts), 1)
+        self.assertEqual(self.provider.deleted, [])
+        with PostgresConnection(self.path) as connection:
+            state = connection.execute("SELECT status,retry_count,archive_version_id FROM jobs WHERE id=%s", (jobs[0],)).fetchone()
+        self.assertEqual(state, {"status": "failed", "retry_count": 0, "archive_version_id": None})
+        # Persistent adoption after exhaustion/process death belongs to #464;
+        # this fix must not hide that uncertainty by uploading/deleting again.
 
     def test_late_old_timestamp_commit_survives_incremental_and_full_rebuild(self):
         self.seed()
