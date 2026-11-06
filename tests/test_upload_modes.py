@@ -13,7 +13,7 @@ from app.catalog import ArchiveCatalog
 from app.main import queue_jobs
 from app.services.operation_policies import OperationPolicy, get_policy, set_policy
 from app.services.upload_snapshot import sha256_b64
-from app.storage import process_jobs_once
+from app.storage import process_jobs_once, expected_cloud_key
 from tests.postgres import PostgresConnection, database_dsn
 from tests.snapshot_s3_stub import VersionedS3Stub
 from tests.test_upload_verification import _prepare_plain_vault
@@ -315,6 +315,65 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(versions[0]["integrity"], "verified")
         self.assertEqual(job["status"], "failed")
         self.assertEqual(self.s3.deleted, [])
+
+    def prepare_verified_cleanup_retry(self, *, unlink=False):
+        with PostgresConnection(str(self.identity)) as connection:
+            vault = connection.execute("SELECT s3_prefix FROM vaults WHERE id=2").fetchone()
+            key = expected_cloud_key("a.txt", vault["s3_prefix"])
+            catalog = ArchiveCatalog(connection)
+            old = catalog.record_archive_version(
+                vault_id=2, path="a.txt", object_key=key, provider_version_id="prior-snapshot",
+                size=len(b"prior content"), storage_class="STANDARD", etag="old",
+                uploaded_at="2026-11-01T00:00:00+00:00", observed_at="2026-11-01T00:00:00+00:00",
+                scan_id="prior", origin="upload",
+            )
+            catalog.mark_version_verified(old, plaintext_sha256=hashlib.sha256(b"prior content").hexdigest(),
+                                          verified_at="2026-11-01T00:00:00+00:00")
+        self.s3.versions.setdefault(key, set()).add("prior-snapshot")
+        self.queue()
+        with patch("app.storage.purge_current_snapshot_superseded", side_effect=RuntimeError("connection reset by peer")):
+            self.run_worker()
+        job, versions, _ = self.rows()
+        self.assertEqual(job["status"], "retrying")
+        self.assertEqual(versions[-1]["integrity"], "verified")
+        self.assertEqual(self.puts, 1)
+        self.assertEqual(self.s3.deleted, [])
+        with PostgresConnection(str(self.identity)) as connection:
+            connection.execute("UPDATE jobs SET retry_after='2020-01-01T00:00:00+00:00'")
+            if unlink:
+                connection.execute("UPDATE jobs SET archive_version_id=NULL")
+        return key
+
+    def assert_verified_retry_contradiction_preserves_both_copies(self, fields, *, unlink=False):
+        key = self.prepare_verified_cleanup_retry(unlink=unlink)
+        self.head_before_read = fields
+        self.run_worker()
+        job, versions, _ = self.rows()
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(versions[-1]["integrity"], "mismatch")
+        self.assertEqual(self.puts, 1)
+        self.assertEqual(self.s3.reads, [])
+        self.assertEqual(self.s3.deleted, [])
+        self.assertEqual(self.s3.versions[key], {"prior-snapshot", "raw-version"})
+        self.assertEqual(self.verification_failures[-1], "mismatch")
+
+    def test_verified_linked_cleanup_retry_blocks_contradictory_checksum(self):
+        self.assert_verified_retry_contradiction_preserves_both_copies({"ChecksumSHA256": "wrong"})
+
+    def test_verified_linked_cleanup_retry_blocks_contradictory_type(self):
+        self.assert_verified_retry_contradiction_preserves_both_copies({"ChecksumType": "COMPOSITE"})
+
+    def test_verified_reusable_cleanup_retry_blocks_contradictory_checksum(self):
+        self.assert_verified_retry_contradiction_preserves_both_copies({"ChecksumSHA256": "wrong"}, unlink=True)
+
+    def test_verified_cleanup_retry_missing_checksum_needs_no_GET_or_PUT(self):
+        key = self.prepare_verified_cleanup_retry()
+        self.run_worker()
+        self.assertEqual(self.rows()[0]["status"], "completed")
+        self.assertEqual(self.puts, 1)
+        self.assertEqual(self.s3.reads, [])
+        self.assertEqual(self.s3.versions[key], {"raw-version"})
+        self.assertEqual(len(self.s3.deleted), 1)
 
     def test_legacy_expected_missing_requires_durable_plaintext_GET_not_local_B(self):
         self.set_mode("read_back"); self.queue()

@@ -3461,6 +3461,8 @@ def process_upload(job: dict[str, Any]) -> None:
                     raise RuntimeError("Upload Snapshot digest differs from durable upload digest")
             head = _verification_version_head(client, job, target)
             if integrity == "verified":
+                if snapshot is not None:
+                    evaluate_provider_proof(head, source="ordinary_head")
                 _complete_verified_upload(
                     job,
                     source=source,
@@ -3494,6 +3496,16 @@ def process_upload(job: dict[str, Any]) -> None:
             if reusable is not None and reusable_integrity == "verified":
                 version_id = str(reusable["id"])
                 _upload_catalog_unit(job, lambda catalog: catalog.link_job_version(job["id"], version_id))
+                target = _upload_catalog_unit(job, lambda catalog: catalog.get_job_target(job["id"]))
+                # A cleanup-only reuse retains the VERSION's original baseline,
+                # never today's newly hashed multipart layout or verification mode.
+                if target.get("upload_snapshot_json") is not None:
+                    snapshot = UploadSnapshot.from_json(target["upload_snapshot_json"])
+                    if snapshot.plaintext_sha256 != upload_digest:
+                        raise RuntimeError("Upload Snapshot digest differs from durable upload digest")
+                    evaluate_provider_proof(
+                        _verification_version_head(client, job, target), source="ordinary_head",
+                    )
                 _complete_verified_upload(
                     job,
                     source=source,
