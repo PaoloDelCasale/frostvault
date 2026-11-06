@@ -103,10 +103,15 @@ class FilesystemProblemTests(unittest.TestCase):
     def test_inaccessible_subtree_is_reported_and_never_marks_copies_missing(self):
         (self.root / "old.txt").write_text("data")
         storage.scan_tree(self.vault, "before")
-        def inaccessible(root, *, followlinks, onerror):
-            onerror(PermissionError(13, "denied", str(self.root / "private")))
-            return iter(())
-        with patch("app.services.fs_preflight.os.walk", side_effect=inaccessible):
+        private = self.root / "private"
+        private.mkdir()
+        (self.root / "old.txt").rename(private / "old.txt")
+        real_scandir = os.scandir
+        def inaccessible(fd):
+            if Path(os.readlink(f"/proc/self/fd/{fd}")) == private:
+                raise PermissionError(13, "denied", str(private))
+            return real_scandir(fd)
+        with patch("app.services.fs_preflight.os.scandir", side_effect=inaccessible):
             self.assertEqual(storage.scan_tree(self.vault, "incomplete"), 0)
         self.assertIn("private", str(self.problems()))
         with PostgresConnection(str(self.path)) as connection:
@@ -137,7 +142,12 @@ class FilesystemProblemTests(unittest.TestCase):
     def test_unreadable_non_utf8_filename_is_still_signalled(self):
         target = self.root / "bad\udcff.jpg"
         target.write_bytes(b"data")
-        with patch("app.services.fs_preflight.os.open", side_effect=PermissionError("denied")):
+        real_open = os.open
+        def denied(path, *args, **kwargs):
+            if str(path).endswith(".jpg"):
+                raise PermissionError("denied")
+            return real_open(path, *args, **kwargs)
+        with patch("app.services.fs_preflight.os.open", side_effect=denied):
             self.assertEqual(storage.scan_tree(self.vault, "non-utf8"), 0)
         problems = self.problems()
         self.assertEqual(len(problems), 1)
@@ -157,7 +167,7 @@ class FilesystemProblemTests(unittest.TestCase):
         from app.services.source_layout import VaultLocalAccess
         with (
             patch("app.storage.source_layout.vault_local_access", return_value=VaultLocalAccess(False, True, "photos", "replaced")),
-            patch("app.storage.walk_entries", side_effect=AssertionError("unsafe walk")),
+            patch("app.storage.PinnedTree", side_effect=AssertionError("unsafe walk")),
             patch("app.storage.inspect_entry", side_effect=AssertionError("unsafe read")),
         ):
             with self.assertRaisesRegex(RuntimeError, "Source Volume"):

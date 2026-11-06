@@ -15,18 +15,25 @@ def hash_stable_regular_file(path: Path) -> tuple[str, os.stat_result]:
         raise RuntimeError("Local file is not a regular file")
     expected = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
     digest = hashlib.sha256()
-    with path.open("rb") as source:
-        opened = os.fstat(source.fileno())
-        if (
+    # The final component can change after stat, even with a pinned parent.
+    # Reject symlinks and never block opening a substituted FIFO/device before
+    # its descriptor can be checked. O_NONBLOCK does not affect regular files.
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or (
             opened.st_dev,
             opened.st_ino,
             opened.st_size,
             opened.st_mtime_ns,
         ) != expected:
             raise RuntimeError("Local file changed since fingerprinting")
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-        after = os.fstat(source.fileno())
+        with os.fdopen(descriptor, "rb", closefd=False) as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
     if (
         after.st_dev,
         after.st_ino,

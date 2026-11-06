@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -18,6 +20,57 @@ from app.services.operation_policies import (
     LOCAL_RELEASE_PERIODS, OperationPolicy, local_cleanup_is_due,
     local_release_is_confirmed, queue_auto_local_cleanups, validate_policy,
 )
+
+
+class LocalHashSafetyTests(unittest.TestCase):
+    def check_replaced_final_component(self, replacement):
+        # A separate, bounded process proves that opening the final component
+        # cannot hang before fstat can reject it. No external FIFO writer exists.
+        script = r'''
+import os, sys
+from pathlib import Path
+from unittest.mock import patch
+from app.services.local_files import hash_stable_regular_file
+root = Path(sys.argv[1])
+path = root / "photo.jpg"
+path.write_bytes(b"photo")
+fifo = root / "outside.fifo"
+os.mkfifo(fifo)
+original_stat = Path.stat
+swapped = False
+def swap_after_stat(candidate, *args, **kwargs):
+    global swapped
+    info = original_stat(candidate, *args, **kwargs)
+    if candidate == path and not swapped:
+        swapped = True
+        path.unlink()
+        if sys.argv[2] == "fifo":
+            os.mkfifo(path)
+        else:
+            path.symlink_to(fifo)
+    return info
+with patch.object(Path, "stat", swap_after_stat):
+    try:
+        hash_stable_regular_file(path)
+    except (OSError, RuntimeError):
+        sys.exit(0)
+    sys.exit(2)
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-c", script, directory, replacement],
+                    capture_output=True, text=True, timeout=3,
+                )
+            except subprocess.TimeoutExpired:
+                self.fail(f"Hash blocked opening substituted {replacement}")
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_fifo_replacing_regular_file_before_open_never_blocks(self):
+        self.check_replaced_final_component("fifo")
+
+    def test_symlink_to_fifo_replacing_regular_file_is_not_followed(self):
+        self.check_replaced_final_component("symlink")
 
 
 class LocalReleasePolicyTests(unittest.TestCase):
@@ -98,7 +151,13 @@ class LocalReleaseWorkerTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         for name in ("ensure_job_active", "set_job", "set_job_progress", "ensure_job_claim_owned_in_transaction", "record_automatic_cleanup_outcome", "validate_cloud_vault"):
             self.stack.enter_context(patch(f"app.storage.{name}"))
-        self.stack.enter_context(patch("app.storage.db"))
+        connection = self.stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
+        connection.execute.return_value.fetchone.return_value = {
+            "id": 1, "source_root": self.tmp.name,
+            "root_identity": storage.vault_relocation.root_identity(self.tmp.name),
+            "root_identity_version": storage.vault_relocation.ROOT_IDENTITY_VERSION,
+            "relocation_state": "ready", "decommission_state": "active",
+        }
         self.catalog = self.stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
         self.catalog.get_job_target.side_effect = lambda _: dict(self.target)
         self.confirmed = self.stack.enter_context(patch("app.storage.local_release_is_confirmed", return_value=True))

@@ -33,6 +33,8 @@ from .owner import owner_user_id
 from .catalog import ArchiveCatalog
 from .database import db
 from .services import source_layout
+from .services import local_observation
+from .services.restore_ghosts import retire_absent_restore_ghosts
 from .services import vault_relocation
 from .services.catalog_event_hub import publish_committed_event
 from .services.catalog_events import record_catalog_revision
@@ -90,7 +92,7 @@ from .services.runtime_status import (
     scan_lock_for_vault,
     snapshot_runtime_status_for_stats,
 )
-from .services.fs_preflight import inspect_entry, walk_entries
+from .services.fs_preflight import PinnedTree, TreeIdentityChanged, inspect_entry
 from .services.problems import report_problem
 from .services.local_files import (
     hash_stable_regular_file,
@@ -505,6 +507,8 @@ def _scan_tree(
     finalize_missing: bool = True,
     scan_started_at: str | None = None,
     scan_journal: dict[str, Any] | None = None,
+    subtree: Path | None = None,
+    invalidate_content: bool = False,
 ) -> tuple[int, str | None]:
     """Observe a root with short catalog-write transactions.
 
@@ -516,14 +520,17 @@ def _scan_tree(
     count = 0
     scan_started_at = scan_started_at or scan_id
     pending: list[tuple[str, str, int | None, int | None, str]] = []
+    invalidate_paths: list[str] = []
+    unreadable_paths: list[str] = []
 
     def _persisted_scan(vault_row: dict[str, Any]) -> bool:
         return "root_identity" in vault_row or "root_identity_version" in vault_row
 
     def flush() -> None:
         nonlocal count
-        if not pending:
+        if not pending and not unreadable_paths:
             return
+        tree.validate_active()
         if _persisted_scan(vault):
             _current_verified_scan_row(connection, vault)
         if scan_journal is not None:
@@ -550,6 +557,9 @@ def _scan_tree(
                     """,
                     (relative, vault_id),
                 ).fetchone()
+        for relative in unreadable_paths:
+            report_problem(connection, event="file_unreadable", vault_id=vault_id, path=relative)
+        unreadable_paths.clear()
         catalog = ArchiveCatalog(connection)
         # Issue #242: one Vault row-lock touch, one bulk identity lookup, and
         # one bulk upsert replace the per-file round-trips that pinned Postgres
@@ -561,8 +571,22 @@ def _scan_tree(
             entries=pending,
             seen_at=scan_id,
         )
+        if invalidate_paths:
+            # Directory replacement can preserve size/mtime. A watcher subtree
+            # invalidates real changes, not independently verified file echoes.
+            connection.execute("""
+                UPDATE local_copies SET content_observed_at=%s,
+                    plaintext_sha256=NULL, matched_archive_version_id=NULL
+                WHERE vault_file_id IN (
+                    SELECT vf.id FROM vault_files vf JOIN file_paths fp
+                      ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+                    WHERE vf.vault_id=%s AND fp.path=ANY(%s)
+                )
+            """, (scan_id, vault_id, invalidate_paths))
         count += len(pending)
         pending.clear()
+        invalidate_paths.clear()
+        tree.validate_active()
         if _persisted_scan(vault):
             _current_verified_scan_row(connection, vault)
         if allow_chunk_commits:
@@ -575,35 +599,43 @@ def _scan_tree(
         unreadable = True
         if scan_journal is not None:
             scan_journal["incomplete"] = True
-        relative = entry.relative_to(root).as_posix()
-        report_problem(
-            connection, event="file_unreadable", vault_id=vault_id, path=relative,
-        )
+        # Defer DB writes until flush so a later echoed child can be hashed
+        # outside a write transaction, even after an unreadable sibling.
+        unreadable_paths.append(entry.relative_to(root).as_posix())
 
-    for entry in walk_entries(root, on_error=failed):
-        if is_restore_temporary_name(entry.name):
-            continue
-        try:
-            inspected = inspect_entry(entry)
-            if inspected is None:
+    with PinnedTree(root, subtree=subtree) as tree:
+        if _persisted_scan(vault) and vault_relocation.opened_root_identity(tree.fd) != vault.get("root_identity"):
+            raise _ScanRootMismatch("Vault root changed before traversal")
+        for entry, pinned_entry in tree.entries(on_error=failed):
+            if is_restore_temporary_name(entry.name):
                 continue
-            file_type, entry_stat = inspected
-        except OSError as exc:
-            failed(entry, exc)
-            continue
-        relative = entry.relative_to(root).as_posix()
-        pending.append(
-            (
-                relative,
-                file_type,
-                entry_stat.st_size,
-                entry_stat.st_mtime_ns,
-                now_iso(),
+            try:
+                inspected = inspect_entry(pinned_entry)
+                if inspected is None:
+                    continue
+                file_type, entry_stat = inspected
+            except OSError as exc:
+                failed(entry, exc)
+                continue
+            relative = entry.relative_to(root).as_posix()
+            if invalidate_content and not local_observation.consume(vault_id, relative, pinned_entry):
+                # Use the pinned parent while it is open. Independent hashing
+                # must precede journal/catalog/problem writes for this batch.
+                invalidate_paths.append(relative)
+            pending.append(
+                (
+                    relative,
+                    file_type,
+                    entry_stat.st_size,
+                    entry_stat.st_mtime_ns,
+                    now_iso(),
+                )
             )
-        )
-        if len(pending) >= LOCAL_SCAN_WRITE_BATCH_SIZE:
-            flush()
-    flush()
+            if len(pending) >= LOCAL_SCAN_WRITE_BATCH_SIZE:
+                flush()
+        tree.validate()
+        flush()
+        tree.validate()
     if unreadable:
         # Keep the per-path problems durable even if a later identity check
         # rejects the scan. Healthy observations may still be protected, but an
@@ -652,6 +684,7 @@ def scan_tree(
     if not root.exists():
         raise RuntimeError(f"Folder is not available in the container: {root}")
     if _connection is not None:
+        retire_absent_restore_ghosts(_connection, int(vault["id"]), root, now_iso())
         count, _completed_alias = _scan_tree(
             _connection,
             vault,
@@ -664,6 +697,7 @@ def scan_tree(
         )
         return count
     with db() as connection:
+        retire_absent_restore_ghosts(connection, int(vault["id"]), root, now_iso())
         count, completed_alias = _scan_tree(
             connection,
             vault,
@@ -687,11 +721,18 @@ def apply_filesystem_changes(
     with status_lock:
         lock = scan_locks.setdefault(vault_id, threading.Lock())
     with lock:
-        return _apply_filesystem_changes(vault, changes)
+        journal: dict[str, Any] = {}
+        event_id = now_iso()
+        try:
+            return _apply_filesystem_changes(vault, changes, event_id=event_id, journal=journal)
+        except Exception:
+            _rollback_local_scan_journal(vault_id, event_id, journal)
+            raise
 
 
 def _apply_filesystem_changes(
-    vault: dict[str, Any], changes: set[tuple[Change, str]]
+    vault: dict[str, Any], changes: set[tuple[Change, str]],
+    *, event_id: str | None = None, journal: dict[str, Any] | None = None,
 ) -> int:
     """Apply filesystem watcher events directly to the local catalog."""
     if vault_relocation.local_work_suspended(vault):
@@ -720,17 +761,62 @@ def _apply_filesystem_changes(
     if not root.is_dir():
         raise RuntimeError(f"Folder is not available in the container: {root}")
     changed = 0
-    event_id = now_iso()
+    event_id = event_id or now_iso()
     published: dict[str, Any] | None = None
+    subtrees: list[Path] = []
+    added_paths = {Path(value) for change, value in changes if change == Change.added}
+    paths: list[Path] = []
+    for value in {value for _, value in changes}:
+        entry = Path(value)
+        try:
+            relative = entry.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if relative == "." or ".." in entry.parts or is_restore_temporary_name(entry.name):
+            continue
+        parent = entry.parent.resolve()
+        if parent == root or root in parent.parents:
+            # Echo validation can hash a large recovered/salvaged copy. Keep
+            # that work outside every catalog write transaction.
+            if not local_observation.consume(int(vault["id"]), relative, entry):
+                paths.append(entry)
+    # Directory transactions commit in bounded batches. Process them before
+    # the atomic single-file/deletion batch, never committing a partial direct
+    # observation as an accidental side effect of a later subtree flush.
+    paths.sort(key=lambda entry: (not (entry.is_dir() and not entry.is_symlink()), str(entry)))
     with db() as connection:
         catalog = ArchiveCatalog(connection)
-        for _, path_value in sorted(changes, key=lambda item: item[1]):
-            entry = Path(path_value)
+        # A rename emits one directory event, not an event for each child.
+        # Coalesce overlapping prefixes and stream bounded scan-write batches;
+        # never finalize missing copies outside the affected subtree.
+        for entry in paths:
             try:
                 relative = entry.relative_to(root).as_posix()
             except ValueError:
                 continue
-            if not relative or is_restore_temporary_name(entry.name):
+            if relative == "." or not relative or is_restore_temporary_name(entry.name):
+                continue
+            if any(parent == entry or parent in entry.parents for parent in subtrees):
+                if entry.exists() or entry.is_symlink():
+                    continue
+                # A walk cannot emit a deleted child. Keep explicit missing
+                # events even when their parent was reconciled in this batch.
+            # Native events are lexical paths. Do not follow a substituted
+            # parent symlink outside the enrolled root.
+            parent = entry.parent.resolve()
+            if parent != root and root not in parent.parents:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                if entry not in added_paths:
+                    # Metadata-only directory changes (also emitted by polling
+                    # on child writes) are not content events for every child.
+                    continue
+                changed += _scan_tree(
+                    connection, vault, event_id, root=root, subtree=entry,
+                    allow_chunk_commits=True, finalize_missing=False,
+                    scan_journal=journal, invalidate_content=True,
+                )[0]
+                subtrees.append(entry)
                 continue
 
             try:
@@ -1639,7 +1725,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 result.update(
                     {f"rename_{key}": value for key, value in rename_summary.items()}
                 )
-            except _ScanRootMismatch as exc:
+            except (_ScanRootMismatch, TreeIdentityChanged) as exc:
                 journal = _active_scan_journals.pop(
                     (int(vault["id"]), scan_id), None
                 )
@@ -2252,7 +2338,7 @@ def cleanup_abandoned_restore_files() -> int:
     with db() as connection:
         vaults = connection.execute(
             """
-            SELECT source_root FROM vaults
+            SELECT * FROM vaults
             WHERE enabled=TRUE AND decommission_state='active'
             """
         ).fetchall()
@@ -2264,6 +2350,15 @@ def cleanup_abandoned_restore_files() -> int:
         root = Path(vault["source_root"]).resolve()
         if not root.is_dir():
             continue
+        try:
+            _validate_enrolled_scan_root(vault)
+        except RuntimeError:
+            # Never repair metadata using the absence of paths in a replaced
+            # root. The existing residue cleanup remains separately scoped.
+            pass
+        else:
+            with db() as connection:
+                retire_absent_restore_ghosts(connection, int(vault["id"]), root, now_iso())
         try:
             entries = root.rglob("*")
             for entry in entries:
@@ -4195,6 +4290,65 @@ def _checked_local_release_target(
 def process_free_space(job: dict[str, Any]) -> None:
     ensure_job_active(job["id"], "Freeing local space stopped")
     validate_cloud_vault(job, notify=False)
+    # The claim's temporary absence must never become a watcher/full-scan
+    # observation. Hashing holds no DB write transaction, only the same
+    # per-Vault filesystem lock used by scans and watcher batches.
+    with scan_lock_for_vault(int(job["vault_id"])):
+        _process_free_space(job)
+
+
+def _repair_failed_local_release(
+    job: dict[str, Any], target: dict[str, Any], local_path: Path, *, replacement: bool = False,
+) -> None:
+    """Publish salvaged/replaced bytes immediately without following symlinks."""
+    # A Job id is not a Vault id. Never fall back to the unenrolled Job row
+    # when the actual Vault disappeared; its root/source fences are mandatory.
+    with db() as connection:
+        vault = connection.execute(
+            "SELECT * FROM vaults WHERE id=%s", (int(job["vault_id"]),),
+        ).fetchone()
+    if not isinstance(vault, dict) or "source_root" not in vault:
+        raise _ScanRootMismatch("Vault is unavailable during local release repair")
+    if vault["source_root"] != job["source_root"]:
+        raise _ScanRootMismatch("Vault root changed during local release repair")
+    _validate_enrolled_scan_root(vault)
+    if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
+        raise _ScanRootMismatch("Source Volume changed during local release repair")
+    inspected = inspect_entry(local_path)
+    file_type, info = inspected if inspected else ("other", local_path.lstat())
+    digest = None
+    if file_type == "regular":
+        digest, info = hash_stable_regular_file(local_path)
+    with db() as connection:
+        if "root_identity" in vault:
+            _current_verified_scan_row(connection, vault)
+        catalog = ArchiveCatalog(connection)
+        if replacement:
+            file_id = target["vault_file_id"]
+            catalog.observe_replaced_local_copy(
+                file_id, file_type=file_type, size=info.st_size,
+                mtime_ns=info.st_mtime_ns, observed_at=now_iso(),
+            )
+        else:
+            file_id = catalog.observe_local_copy(
+                vault_id=job["vault_id"], path=job["path"], file_type=file_type,
+                size=info.st_size, mtime_ns=info.st_mtime_ns, observed_at=now_iso(),
+            )
+        if digest != target["local_sha256"]:
+            connection.execute("UPDATE local_copies SET content_observed_at=%s WHERE vault_file_id=%s", (now_iso(), file_id))
+        if digest:
+            catalog.set_local_fingerprint(
+                vault_id=job["vault_id"], path=job["path"], plaintext_sha256=digest,
+                matched_archive_version_id=(target["archive_version_id"] if digest == target["version_sha256"] else None),
+            )
+        if "root_identity" in vault:
+            _current_verified_scan_row(connection, vault)
+    if digest:
+        local_observation.remember(job["vault_id"], job["path"], info, digest)
+
+
+def _process_free_space(job: dict[str, Any]) -> None:
+    ensure_job_active(job["id"], "Freeing local space stopped")
     target = _checked_local_release_target(job)
     set_job(job["id"], "cleaning", message_key="job.verifying_cloud_copy")
     ensure_job_active(job["id"], "Freeing local space claim was lost")
@@ -4252,9 +4406,13 @@ def process_free_space(job: dict[str, Any]) -> None:
             claimed_path.unlink()
     except Exception as exc:
         if not restore_claimed_local_copy(claimed_path, local_path):
-            raise RuntimeError(
-                f"Cleanup stopped; original content was preserved at {claimed_path}"
-            ) from exc
+            try:
+                _repair_failed_local_release(job, target, local_path, replacement=True)
+            finally:
+                raise RuntimeError(
+                    f"Cleanup stopped; original content was preserved at {claimed_path}"
+                ) from exc
+        _repair_failed_local_release(job, target, local_path)
         raise
 
     ensure_job_active(job["id"], "Freeing local space claim was lost")
@@ -4703,47 +4861,42 @@ def process_recover(job: dict[str, Any]) -> None:
             raise RuntimeError(
                 "Recovered plaintext digest does not match the Archive Version"
             )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if os.path.lexists(destination):
-            raise RuntimeError(
-                "A local copy already exists at the recovery destination"
-            )
-        temporary.replace(destination)
+        with scan_lock_for_vault(int(job["vault_id"])):
+            # Transfers/hash stay outside the filesystem critical section.
+            # Publish the atomic rename and its verified observation together
+            # so a watcher cannot unprotect our own just-recovered copy.
+            ensure_job_active(job["id"], "Recovery claim was lost")
+            if not _local_stat_unchanged(temporary, recovered_stat):
+                raise RuntimeError("Recovered plaintext changed before publication")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if os.path.lexists(destination):
+                raise RuntimeError(
+                    "A local copy already exists at the recovery destination"
+                )
+            temporary.replace(destination)
+            published_stat = destination.lstat()
+            with db() as connection:
+                ensure_job_claim_owned_in_transaction(connection, job, "Recovery claim was lost")
+                catalog = ArchiveCatalog(connection)
+                recovered_at = now_iso()
+                catalog.observe_local_copy(
+                    vault_id=job["vault_id"], path=job["path"], file_type="regular",
+                    size=recovered_stat.st_size, mtime_ns=recovered_stat.st_mtime_ns,
+                    observed_at=recovered_at, recovered_at=recovered_at,
+                )
+                catalog.set_local_fingerprint(
+                    vault_id=job["vault_id"], path=job["path"],
+                    plaintext_sha256=expected_digest, matched_archive_version_id=archive_version_id,
+                )
+                if target.get("restore_state") or storage_class_requires_restore(head_class):
+                    catalog.update_restore_state(
+                        archive_version_id,
+                        state="available" if storage_class_requires_restore(head_class) else None,
+                        expiry=restore_expiry, checked_at=now_iso(), storage_class=head_class,
+                    )
+            local_observation.remember(job["vault_id"], job["path"], published_stat, expected_digest)
     finally:
         temporary.unlink(missing_ok=True)
-
-    ensure_job_active(job["id"], "Recovery claim was lost")
-    with db() as connection:
-        ensure_job_claim_owned_in_transaction(
-            connection,
-            job,
-            "Recovery claim was lost",
-        )
-        catalog = ArchiveCatalog(connection)
-        recovered_at = now_iso()
-        catalog.observe_local_copy(
-            vault_id=job["vault_id"],
-            path=job["path"],
-            file_type="regular",
-            size=recovered_stat.st_size,
-            mtime_ns=recovered_stat.st_mtime_ns,
-            observed_at=recovered_at,
-            recovered_at=recovered_at,
-        )
-        catalog.set_local_fingerprint(
-            vault_id=job["vault_id"],
-            path=job["path"],
-            plaintext_sha256=expected_digest,
-            matched_archive_version_id=archive_version_id,
-        )
-        if target.get("restore_state") or storage_class_requires_restore(head_class):
-            catalog.update_restore_state(
-                archive_version_id,
-                state="available" if storage_class_requires_restore(head_class) else None,
-                expiry=restore_expiry,
-                checked_at=now_iso(),
-                storage_class=head_class,
-            )
     set_job_progress(job["id"], int(job.get("total_bytes") or recovered_stat.st_size))
     set_job(job["id"], "completed", f"Recovered to {destination}")
 
@@ -5567,7 +5720,26 @@ def _filesystem_watch_filter(_: Change, path: str) -> bool:
     return not is_restore_temporary_name(Path(path).name)
 
 
+def _new_watcher_directories(root: Path, changes: set[tuple[Change, str]]) -> set[tuple[Change, str]]:
+    directories = set()
+    for change, value in changes:
+        entry = Path(value)
+        if change != Change.added or is_restore_temporary_name(entry.name):
+            continue
+        try:
+            entry.relative_to(root)
+            if entry.is_dir() and not entry.is_symlink():
+                directories.add((Change.added, value))
+        except (ValueError, OSError):
+            continue
+    return directories
+
+
 async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
+    # Some Source Volume backends do not reliably enroll new directories.
+    # Install the successor BEFORE draining/closing the old recursive observer:
+    # subtree catch-up alone cannot repair unrelated sibling events in a gap.
+    pending_reconcile: set[tuple[Change, str]] = set()
     while True:
         if vault_relocation.local_work_suspended(vault):
             await asyncio.sleep(1)
@@ -5615,16 +5787,62 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
             continue
         try:
             runtime = await asyncio.to_thread(_runtime_settings)
-            async for changes in awatch(
-                root,
-                watch_filter=_filesystem_watch_filter,
-                debounce=runtime.filesystem_watch_debounce_ms,
-                force_polling=settings.filesystem_watch_force_polling,
-                poll_delay_ms=runtime.filesystem_watch_poll_ms,
-                recursive=True,
-                ignore_permission_denied=False,
-            ):
-                await asyncio.to_thread(apply_filesystem_changes, vault, changes)
+            def new_observer():
+                return awatch(
+                    root,
+                    watch_filter=_filesystem_watch_filter,
+                    debounce=runtime.filesystem_watch_debounce_ms,
+                    force_polling=settings.filesystem_watch_force_polling,
+                    poll_delay_ms=runtime.filesystem_watch_poll_ms,
+                    recursive=True,
+                    ignore_permission_denied=False,
+                    # awatch is lazy: its first yield (including a timeout)
+                    # is the registration barrier, for inotify AND polling.
+                    yield_on_timeout=True,
+                    rust_timeout=1000,
+                )
+
+            watcher = new_observer()
+            successor = None
+            rearm_required = False
+            try:
+                while True:
+                    native_changes = set() if rearm_required else await anext(watcher)
+                    pending_reconcile |= native_changes
+                    new_directories = await asyncio.to_thread(
+                        _new_watcher_directories, root, native_changes,
+                    ) if native_changes else set()
+                    # PollWatcher recursively rediscovers topology every poll;
+                    # it needs no re-registration. Keep its original snapshot
+                    # alive: a timeout is NOT a completed polling-cycle fence,
+                    # so replacing it could lose pre-successor sibling changes.
+                    if (new_directories or rearm_required) and not settings.filesystem_watch_force_polling:
+                        successor = new_observer()
+                        # Old observer is still live while the successor takes
+                        # its recursive snapshot / registers native watches.
+                        first = await anext(successor)
+                        pending_reconcile |= first
+                        tail = await anext(watcher)
+                        pending_reconcile |= tail
+                        old, watcher = watcher, successor
+                        successor = None
+                        await old.aclose()
+                        # Topology added DURING registration may need another
+                        # handoff. No full-root walk, and at most two observers.
+                        additions = await asyncio.to_thread(
+                            _new_watcher_directories, root, first | tail,
+                        )
+                        rearm_required = bool(additions - new_directories)
+                    if pending_reconcile and not rearm_required:
+                        # Reconcile only once every added subtree is covered by
+                        # a registered successor, including additions made in
+                        # the preceding handoff itself.
+                        await asyncio.to_thread(apply_filesystem_changes, vault, pending_reconcile)
+                        pending_reconcile = set()
+            finally:
+                if successor is not None:
+                    await successor.aclose()
+                await watcher.aclose()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
