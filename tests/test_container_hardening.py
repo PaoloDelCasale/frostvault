@@ -819,6 +819,15 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
 
 
 class TraefikReferenceDeploymentTests(unittest.TestCase):
+    def test_reference_requires_both_explicit_proxy_allowlists(self) -> None:
+        environment = _load_compose(TRAEFIK_COMPOSE_PATH)["services"]["frostvault"]["environment"]
+        for name in ("TRUSTED_PROXIES", "FORWARDED_ALLOW_IPS"):
+            with self.subTest(name=name):
+                self.assertTrue(environment[name].startswith("${" + name + ":?"))
+                self.assertTrue(environment[name].endswith("}"))
+                self.assertNotIn("*", environment[name])
+                self.assertNotIn("172.16.0.0/12", environment[name])
+
     def test_reference_compose_keeps_app_off_public_ports(self) -> None:
         self.assertTrue(
             TRAEFIK_COMPOSE_PATH.is_file(),
@@ -875,6 +884,7 @@ class PermissionAndTraefikDocumentationTests(unittest.TestCase):
         self.assertIn("compose.traefik.yaml", docs)
         self.assertRegex(docs, r"(?i)not.*published|no.*ports")
         self.assertIn("TRUSTED_PROXIES", docs)
+        self.assertIn("FORWARDED_ALLOW_IPS", docs)
 
 
 if __name__ == "__main__":

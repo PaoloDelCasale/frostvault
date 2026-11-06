@@ -35,7 +35,7 @@ already granted by Uvicorn. Broader lists at either layer are unsafe. Matching
 narrow proxy-only lists plus correct proxy header sanitization are required.
 No runtime code is broadened to hide this disagreement.
 
-## Acceptance plan (execution results to follow)
+## Acceptance coverage
 
 - DB-free targeted integration through `uvicorn.Config.load()` and actual app
   routes: trusted HTTPS OIDC callback; untrusted scheme spoof refusal and
@@ -49,5 +49,49 @@ No runtime code is broadened to hide this disagreement.
 - Full Python/PostgreSQL/S3-compatible/frontend/browser/image/security checks
   only in draft PR CI, on final HEAD. No local DB tools or production DB use.
 
-Status: implementation in progress; this document will contain the final test
-commands, CI evidence and integration risks before handoff.
+## Local verification
+
+Python 3.12 `.venv` created and `requirements.txt` installed (Uvicorn 0.54.0).
+Only targeted tests executed, without a local database, external provider or S3:
+
+```bash
+.venv/bin/python -m unittest \
+  tests.test_forwarded_proxy tests.test_proxy tests.test_breakglass tests.test_config \
+  tests.test_container_hardening.TraefikReferenceDeploymentTests \
+  tests.test_container_hardening.PermissionAndTraefikDocumentationTests -v
+```
+
+Initial targeted run: **35 tests PASS**; rerun after final edge cases to follow.
+The DB-free test exercises `uvicorn.Config.load()` using the actual environment
+variable, actual application Host middleware, OIDC route/authorization builder,
+client resolver and Emergency Password denial handler. Only persistence and
+OIDC network I/O use test seams. Both unsafe directions of allowlist mismatch
+are explicit counterexamples, not accepted deployment configurations.
+
+`compose-validation.json` records actual Docker Compose **config-only** tests:
+coherent explicit values pass; missing or empty values for either allowlist
+fail (five cases total). YAML parses. Comparing parsed Compose against the base
+shows labels, networks, mounts, identity, security controls and every non-proxy
+field unchanged. No Docker daemon action/build/start/restart was performed.
+`py_compile` passed for new/changed proxy HTTP tests; `git diff --check` passed.
+Only existing Starlette/Authlib deprecation warnings were observed.
+
+## CI and remaining handoff
+
+Dedicated draft PR: https://github.com/PaoloDelCasale/frostvault/pull/467
+Fixes #462. PR opened early and ordering notes posted to #462/#463. Full CI
+verification is in progress; final exact-HEAD evidence will be recorded here.
+
+### Risks / integration constraints
+
+- Compose now intentionally refuses missing/empty proxy allowlists. Operators
+  must inspect their topology and set **both**, including when adopting #463.
+- Equivalence is documented, not runtime-enforced; broader lists at either layer
+  can defeat the perimeter. Do not treat app trust as a veto on Uvicorn.
+- Stable proxy-only source addresses and correct upstream header sanitization
+  are required. Shared host/gateway source IPs cannot distinguish local processes.
+- No real Traefik/OIDC/production acceptance was attempted. In-process and CI
+  fixtures prove application behavior, not a site's actual network topology.
+- No app runtime/Host changes, healthcheck, migration, production credentials,
+  live Compose changes, deployment, backup copies or merge. Integrate this draft
+  before #463 only after owner/parent review.
