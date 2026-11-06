@@ -249,8 +249,17 @@ def require_job(connection: Any, job: dict[str, Any]) -> None:
     pinned = json.loads(row["target_json"])
     cancelled = connection.execute("""SELECT 1 FROM upload_remediation_originals o
         JOIN jobs j ON j.id=o.original_job_id WHERE o.remediation_id=%s AND j.status='cancelled' LIMIT 1""", (row["id"],)).fetchone()
-    if (row["current_job_id"] != job["id"] or row["state"] in {'cancelled','resolved','blocked'} or cancelled
-            or not (current["upload_reconcile_only"] or provenance.proven_absent(connection, row["intent_id"]))
+    # Name what actually stopped this attempt; only an observed change of the
+    # path, Vault or Source Volume root is an identity change.
+    if cancelled or row["state"] == "cancelled":
+        raise provenance.UploadBlocked("owner_cancelled")
+    if row["state"] == "resolved":
+        raise provenance.UploadBlocked("already_resolved")
+    if row["current_job_id"] != job["id"]:
+        raise provenance.UploadBlocked("active_operation")
+    if row["state"] == "blocked":
+        raise provenance.UploadBlocked(row["reason"] if row["reason"] in provenance.REMEDIES else "proof_unavailable")
+    if (not (current["upload_reconcile_only"] or provenance.proven_absent(connection, row["intent_id"]))
             or current["vault_file_id"] != row["vault_file_id"]
             or current["upload_plaintext_sha256"] != row["expected_sha256"]
             or current["upload_snapshot_json"] != row["snapshot_json"]

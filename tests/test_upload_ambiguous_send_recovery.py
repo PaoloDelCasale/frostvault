@@ -334,6 +334,62 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assertIn("external-1", intents[0]["inventory_json"])
         self.assertNotEqual(intents[0]["token"], stale["token"])
 
+    def remediation_job(self):
+        self.stable_content()
+        original = self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
+        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        return original, max(j["id"] for j in self.jobs())
+
+    def episode(self):
+        with self.db() as connection:
+            return connection.execute("SELECT state,reason,current_job_id FROM upload_remediations").fetchone()
+
+    def test_a_remediation_job_resumed_after_a_restart_waits_for_the_source_volume(self):
+        # #486: right after docker kill the root cannot be read for a while. The
+        # remediation attempt must wait in verification, never fail identity_changed.
+        _, resumed = self.remediation_job()
+        before = [n["event"] for n in self.notification_events()]
+        with patch("app.storage.vault_relocation.root_identity", side_effect=VaultRelocationError("inaccessible", "volume not mounted yet")):
+            self.run_job(resumed)
+        row = self.row(resumed)
+        self.assertEqual(row["status"], "queued", row["message"])
+        self.assertNotIn("identity_changed", row["message"])
+        self.assertEqual(self.episode()["current_job_id"], resumed)
+        self.assertNotEqual(self.episode()["state"], "blocked")
+        with self.db() as connection:
+            self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+        self.assertEqual([n["event"] for n in self.notification_events()], before)
+        self.run_job(resumed)
+        self.assert_keeper(resumed)
+        self.assertEqual(self.episode()["state"], "resolved")
+
+    def test_a_job_of_a_suspended_vault_waits_and_restarts_when_the_vault_is_reactivated(self):
+        _, resumed = self.remediation_job()
+        with self.db() as connection:
+            connection.execute("UPDATE vaults SET enabled=FALSE WHERE id=2")
+        self.run_job(resumed)
+        row = self.row(resumed)
+        self.assertEqual(row["status"], "queued", row["message"])
+        self.assertEqual(self.episode()["reason"], "vault_suspended")
+        with self.db() as connection:
+            self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+        self.assertNotIn("upload_reconciliation", [n["event"] for n in self.notification_events()])
+        with self.db() as connection:
+            connection.execute("UPDATE vaults SET enabled=TRUE WHERE id=2")
+        self.run_job(resumed)
+        self.assert_keeper(resumed)
+        self.assertEqual(self.episode()["state"], "resolved")
+
+    def test_source_volume_loss_during_cleanup_requeues_without_a_cleanup_block(self):
+        job = self.queue()
+        with patch("app.services.snapshot_cleanup.cleanup", side_effect=storage.SourceVolumeUnavailable("volume gone")):
+            self.run_job(job)
+        row = self.row(job)
+        self.assertNotEqual(row["status"], "failed", row["message"])
+        with self.db() as connection:
+            self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+        self.assertNotIn("upload_reconciliation", [n["event"] for n in self.notification_events()])
+
     def test_an_observed_root_replacement_still_fails_as_identity_changed(self):
         for name, patched in (("mismatch", {"return_value": "another-root"}),
                               ("symlink", {"side_effect": VaultRelocationError("symlink", "symlinked root")})):

@@ -2483,6 +2483,8 @@ def _reconcile_job_transition(
 
 def _record_upload_reconciliation_block(job: dict[str, Any], reason: str) -> None:
     from .services import upload_provenance as provenance
+    if reason in provenance.WAIT_REASONS:
+        return  # Self-resolving: the Job waits queued, no durable block or notification.
     @retry_database_unit
     def persist() -> None:
         with owned_connection(db()) as connection:
@@ -2511,7 +2513,7 @@ def purge_current_snapshot_superseded(
     except upload_provenance.UploadBlocked as exc:
         _record_upload_reconciliation_block(job, exc.reason)
         raise
-    except OperationCancelled:
+    except (OperationCancelled, SourceVolumeUnavailable):
         raise
     except Exception:
         _record_upload_reconciliation_block(job, "cleanup_unavailable")
@@ -5313,6 +5315,15 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
             )
     except Exception as exc:
         if _claim_is_lost(int(job["id"])):
+            return False
+        from .services import upload_provenance as _provenance
+        if (job["action"] == "upload" and isinstance(exc, _provenance.UploadBlocked)
+                and exc.reason in _provenance.WAIT_REASONS):
+            # The Vault is suspended/relocating: wait queued and resume by itself
+            # once it is reactivated, instead of failing into a block nobody can lift.
+            if job.get("claim_token"):
+                set_job(job["id"], "queued", "Vault is suspended; Job remains queued",
+                        remediation_suspension=exc.reason)
             return False
         if cloud_preflight_gate.is_readiness_error(exc):
             # This happens outside the rolled-back provider/catalog unit. Do not

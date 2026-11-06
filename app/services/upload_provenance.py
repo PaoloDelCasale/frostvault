@@ -18,6 +18,9 @@ from .s3_copy import _object_version_entries
 
 TOKEN_KEY = "frostvault-upload"
 ABSENT_OPERATION = 'ProvenAbsent'
+# Conditions that resolve by themselves: the Job waits queued, nothing is blocked
+# or notified, and it restarts once the condition clears.
+WAIT_REASONS = frozenset({"vault_suspended"})
 # Refusals journaled by the SDK seam, plus the outcome proven by complete S3 reads.
 NO_WRITE_OPERATIONS = frozenset({'PutObject','CreateMultipartUpload','UploadPart','CompleteMultipartUpload',ABSENT_OPERATION})
 REMEDIES = {
@@ -522,14 +525,16 @@ def _schedule_resume_legacy(connection: Any, *, vault: dict[str, Any], path: str
     current = lock_vault(connection, vault["id"])
     try:
         require_ready(current)
-    except ValueError as exc:
-        raise UploadBlocked("identity_changed") from exc
+    except ValueError:
+        raise UploadBlocked("vault_suspended") from None
     state = describe(connection, vault_id=vault["id"], path=path)
     if not state["pending"] or not state["can_resume"]:
         raise UploadBlocked(_unresumable_reason(connection, vault["id"], path, state))
     row = connection.execute("SELECT vf.id,lc.cloud_only_version_id FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id WHERE vf.vault_id=%s AND fp.path=%s AND vf.status='active'", (vault["id"], path)).fetchone()
-    if not row or row["cloud_only_version_id"]:
+    if not row:
         raise UploadBlocked("identity_changed")
+    if row["cloud_only_version_id"]:
+        raise UploadBlocked("cloud_only_conflict")
     intent = outstanding(connection, row["id"])
     linked = _legacy_materialized(connection,row["id"]) if not intent else None
     if not intent and not linked:
