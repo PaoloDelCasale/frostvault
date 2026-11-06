@@ -772,6 +772,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/upload/reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reconcile Upload
+         * @description Exact resume only, including protected files for which upload returns 409.
+         *
+         *     No sweep, no arbitrary deletion, no resurrection of deliberate cancellation.
+         */
+        post: operations["reconcile_upload_api_upload_reconcile_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/upload/retry-failed": {
         parameters: {
             query?: never;
@@ -1332,6 +1354,7 @@ export interface components {
             default_restore_tier: string;
             items: components["schemas"]["ArchiveVersionItem"][];
             path: string;
+            reconciliation?: components["schemas"]["UploadReconciliation"];
             recoverable_count: number;
             supported_restore_tiers: string[];
         } & {
@@ -1922,6 +1945,17 @@ export interface components {
             tier: string | null;
         } & {
             [key: string]: unknown;
+        };
+        UploadReconciliation: {
+            can_resume: boolean;
+            pending: boolean;
+            /** @description Bounded reconciliation reason, not an integrity outcome */
+            reason: string | null;
+            remedy: string | null;
+        };
+        UploadReconciliationResponse: {
+            group_id: string;
+            job_id: number;
         };
         /** ValidationError */
         ValidationError: {
@@ -3359,6 +3393,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reconcile_upload_api_upload_reconcile_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FileAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadReconciliationResponse"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };

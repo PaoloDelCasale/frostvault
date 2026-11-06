@@ -61,7 +61,7 @@ class VersionSelectionTests(unittest.TestCase):
                 etag="e1",
                 uploaded_at="2026-07-20T10:00:00+00:00",
                 observed_at="2026-07-20T10:00:00+00:00",
-                scan_id="s1",
+                scan_id="s1", origin="upload",
             )
             catalog.mark_version_verified(
                 older, plaintext_sha256=_sha(b"old!"), verified_at="2026-07-20T10:01:00+00:00"
@@ -76,7 +76,7 @@ class VersionSelectionTests(unittest.TestCase):
                 etag="e2",
                 uploaded_at="2026-07-21T10:00:00+00:00",
                 observed_at="2026-07-21T10:00:00+00:00",
-                scan_id="s2",
+                scan_id="s2", origin="upload",
             )
             catalog.mark_version_verified(
                 newer, plaintext_sha256=_sha(b"new!"), verified_at="2026-07-21T10:01:00+00:00"
@@ -91,7 +91,7 @@ class VersionSelectionTests(unittest.TestCase):
                 etag="e3",
                 uploaded_at="2026-07-22T10:00:00+00:00",
                 observed_at="2026-07-22T10:00:00+00:00",
-                scan_id="s3",
+                scan_id="s3", origin="upload",
             )
             catalog.mark_version_mismatch(
                 mismatched,

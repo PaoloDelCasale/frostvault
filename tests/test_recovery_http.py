@@ -156,7 +156,7 @@ class RecoveryHttpTests(unittest.TestCase):
             newest = catalog.record_archive_version(
                 vault_id=self.vault_id, path="docs/note.txt", object_key="docs/docs/note.txt",
                 provider_version_id="v2", size=5, storage_class="STANDARD", etag="v2",
-                uploaded_at="2026-11-03", observed_at="2026-11-03", scan_id="s2",
+                uploaded_at="2026-11-03", observed_at="2026-11-03", scan_id="s2", origin="upload",
             )
             catalog.mark_version_verified(newest, plaintext_sha256=_sha(b"newer"), verified_at="2026-11-03")
         self._authenticate(self.owner_id)

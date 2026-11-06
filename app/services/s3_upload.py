@@ -17,6 +17,7 @@ from typing import Any, Callable
 
 from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError
+from botocore.client import BaseClient
 from s3transfer.bandwidth import BandwidthLimiter, LeakyBucket
 from s3transfer.manager import TransferManager
 from s3transfer.subscribers import BaseSubscriber
@@ -40,8 +41,12 @@ class _UploadClient:
     def __init__(self, client: Any, *, snapshot: UploadSnapshot | None = None,
                  check_active: Callable[[], None] = lambda: None,
                  max_bandwidth: int | None = None,
-                 on_acknowledged: Callable[[dict[str, Any]], None] | None = None) -> None:
+                 on_acknowledged: Callable[[dict[str, Any]], None] | None = None,
+                 write_client: Any = None) -> None:
         self.client = client
+        self.write_client = write_client if write_client is not None else client
+        if isinstance(self.write_client, BaseClient) and self.write_client.meta.config.retries.get("total_max_attempts") != 1:
+            raise RuntimeError("Non-idempotent S3 writes require total_max_attempts=1")
         self.snapshot = snapshot
         self.check_active = check_active
         self.max_bandwidth = max_bandwidth
@@ -107,8 +112,8 @@ class _UploadClient:
             kwargs["ChecksumSHA256"] = self.snapshot.checksum_sha256
             with self._validated_body(kwargs["Body"], 1) as body:
                 kwargs["Body"] = body
-                return self._acknowledge(self.client.put_object(**kwargs))
-        return self._acknowledge(self.client.put_object(**kwargs))
+                return self._acknowledge(self.write_client.put_object(**kwargs))
+        return self._acknowledge(self.write_client.put_object(**kwargs))
 
     def upload_part(self, **kwargs: Any) -> dict[str, Any]:
         if self.snapshot is None:
@@ -130,7 +135,7 @@ class _UploadClient:
         if self.snapshot is not None:
             kwargs["ChecksumAlgorithm"] = "SHA256"
             kwargs["ChecksumType"] = "COMPOSITE"
-        result = self.client.create_multipart_upload(**kwargs)
+        result = self.write_client.create_multipart_upload(**kwargs)
         self.pending = {"Bucket": kwargs["Bucket"], "Key": kwargs["Key"], "UploadId": result["UploadId"]}
         return result
 
@@ -144,7 +149,7 @@ class _UploadClient:
                 raise RuntimeError("Upload Snapshot completion layout mismatch")
             for part, checksum in zip(parts, self.snapshot.part_checksums):
                 part["ChecksumSHA256"] = checksum
-        response = self.client.complete_multipart_upload(**kwargs)
+        response = self.write_client.complete_multipart_upload(**kwargs)
         self.pending = None
         return self._acknowledge(response)
 
@@ -176,6 +181,7 @@ def upload_file(
     snapshot: UploadSnapshot | None = None,
     metadata: dict[str, str] | None = None,
     on_acknowledged: Callable[[dict[str, Any]], None] | None = None,
+    write_client: Any = None,
 ) -> dict[str, Any]:
     """Return the upload response or fail closed, aborting incomplete multipart.
 
@@ -206,7 +212,8 @@ def upload_file(
         if source.stat(follow_symlinks=False).st_size != snapshot.size:
             raise RuntimeError("Local file changed since fingerprinting")
     facade = _UploadClient(client, snapshot=snapshot, check_active=check_active,
-                           max_bandwidth=max_bandwidth, on_acknowledged=on_acknowledged)
+                           max_bandwidth=max_bandwidth, on_acknowledged=on_acknowledged,
+                           write_client=write_client)
     config = TransferConfig(max_bandwidth=max_bandwidth, preferred_transfer_client="classic")
     if snapshot is not None:
         config.multipart_threshold = MULTIPART_THRESHOLD

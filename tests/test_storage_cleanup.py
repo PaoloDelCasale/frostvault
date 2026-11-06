@@ -465,6 +465,8 @@ class StorageCleanupTests(unittest.TestCase):
                     """,
                     (str(source),),
                 )
+                from app.services.vault_relocation import enroll_vault_root_identity
+                enroll_vault_root_identity(connection, 2, str(source))
                 ArchiveCatalog(connection).observe_local_copy(
                     vault_id=2,
                     path="report.txt",
@@ -494,7 +496,8 @@ class StorageCleanupTests(unittest.TestCase):
                                 "ContentLength": 7,
                                 "StorageClass": "STANDARD",
                                 "ETag": '"etag"',
-                            }
+                            },
+                            list_object_versions=lambda **_: {"Versions": [], "DeleteMarkers": [], "IsTruncated": False},
                         ),
                     ),
                 ):

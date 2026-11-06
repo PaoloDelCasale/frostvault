@@ -329,6 +329,8 @@ class UploadModeTests(unittest.TestCase):
             )
             catalog.mark_version_verified(old, plaintext_sha256=hashlib.sha256(b"prior content").hexdigest(),
                                           verified_at="2026-11-01T00:00:00+00:00")
+            owner = connection.execute("SELECT vault_file_id FROM archive_versions WHERE id=%s", (old,)).fetchone()["vault_file_id"]
+            connection.execute("INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,action,status,requested_at,updated_at,upload_plaintext_sha256) VALUES (2,%s,%s,'a.txt','upload','completed','2026-11-01','2026-11-01',%s)", (owner, old, hashlib.sha256(b"prior content").hexdigest()))
         self.s3.versions.setdefault(key, set()).add("prior-snapshot")
         self.queue()
         with patch("app.storage.purge_current_snapshot_superseded", side_effect=RuntimeError("connection reset by peer")):
@@ -341,7 +343,7 @@ class UploadModeTests(unittest.TestCase):
         with PostgresConnection(str(self.identity)) as connection:
             connection.execute("UPDATE jobs SET retry_after='2020-01-01T00:00:00+00:00'")
             if unlink:
-                connection.execute("UPDATE jobs SET archive_version_id=NULL")
+                connection.execute("UPDATE jobs SET archive_version_id=NULL WHERE id=%s", (job["id"],))
         return key
 
     def assert_verified_retry_contradiction_preserves_both_copies(self, fields, *, unlink=False):
@@ -382,6 +384,12 @@ class UploadModeTests(unittest.TestCase):
         with PostgresConnection(str(self.identity)) as connection:
             connection.execute("UPDATE archive_versions SET upload_snapshot_json=NULL, upload_verification_requested=NULL")
             connection.execute("UPDATE jobs SET upload_snapshot_json=NULL, upload_verification_requested=NULL, retry_after='2020-01-01T00:00:00+00:00'")
+            # This fixture represents a pre-0063/pre-0064 upload, not deliberate
+            # tampering with the immutable baseline of a new journalled intent.
+            connection.execute("DELETE FROM upload_receipts")
+            connection.execute("DELETE FROM upload_intent_jobs")
+            connection.execute("DELETE FROM upload_intents")
+            connection.execute("DELETE FROM snapshot_cleanup_inventories")
         (self.source / "a.txt").write_bytes(b"independent snapshot B")
         self.head_error = None
         self.run_worker()

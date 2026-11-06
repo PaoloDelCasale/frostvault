@@ -13,7 +13,7 @@ from .security import hash_password, verify_password
 
 
 INTEGRITY_ERRORS = (UniqueViolation,)
-HEAD_SCHEMA_REVISION = "0063_upload_verification"
+HEAD_SCHEMA_REVISION = "0064_upload_provenance"
 
 
 class DatabaseSchemaError(RuntimeError):

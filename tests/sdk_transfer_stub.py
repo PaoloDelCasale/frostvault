@@ -11,7 +11,6 @@ from unittest.mock import patch
 @contextmanager
 def mock_sdk_upload(*, side_effect=None, return_value=None):
     import app.storage as storage
-
     def upload(job, *, source, key):
         if side_effect:
             side_effect("upload", str(source), key, job_id=job["id"])

@@ -10,7 +10,7 @@ from app.storage import upload_s3_file, s3_download_transfer_config, _ThrottledB
 class SDKBandwidthTests(unittest.TestCase):
     def test_limit_is_converted_to_bytes_for_managed_upload_only(self):
         for limit, expected in ((None, None), (0, None), (512, 512 * 1024)):
-            with self.subTest(limit=limit), patch("app.storage._runtime_settings", return_value=SimpleNamespace(bandwidth_limit_kibps=limit, job_progress_min_interval_ms=500)), patch("app.storage.s3_client"), patch("app.storage.set_job_progress"), patch("app.storage.upload_file", return_value={"VersionId": "v"}) as upload:
+            with self.subTest(limit=limit), patch("app.storage._runtime_settings", return_value=SimpleNamespace(bandwidth_limit_kibps=limit, job_progress_min_interval_ms=500)), patch("app.storage.s3_client"), patch("app.storage._require_upload_source_identity"), patch("app.storage.set_job_progress"), patch("app.storage.upload_file", return_value={"VersionId": "v"}) as upload:
                 self.assertEqual(upload_s3_file({"id": 1, "s3_bucket": "bucket"}, source=Path("file"), key="vaults/id/file"), {"VersionId": "v"})
                 self.assertEqual(upload.call_args.kwargs["max_bandwidth"], expected)
         self.assertIsNone(s3_download_transfer_config().max_bandwidth)

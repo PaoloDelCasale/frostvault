@@ -23,6 +23,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
   } });
   const item = data.data?.item.type === "file" ? data.data.item : undefined;
   const version = (data.data?.versions as FileVersionsResponse | undefined)?.items[0];
+  const reconciliation = data.data?.versions.reconciliation;
   const storage = version?.storage_class ?? item?.storage_class;
   async function perform(fn: () => Promise<unknown>) {
     if (busy) return;
@@ -43,6 +44,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
           {item.state === "problem" && <section className="grid gap-3 rounded border border-line p-3"><h2 className="font-bold">{t("essential.open_problem")}</h2><p>{t(item.cloud_only_conflict ? "essential.conflict_help" : "essential.problem_help")}</p>
             {item.cloud_only_conflict ? <Button disabled={busy} variant="danger" onClick={() => setReplace(true)}>{t("essential.replace_cloud")}</Button> : item.upload_eligible ? <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload", { path: item.path }))}>{t("essential.retry")}</Button> : null}
           </section>}
+          {reconciliation?.pending && <section className="grid gap-3 rounded border border-line p-3"><h2 className="font-bold">{t("reconciliation.title")}</h2><p>{t("reconciliation.help")}</p><p>{t(`reconciliation.reason.${reconciliation.reason ?? "proof_unavailable"}`)}</p>{reconciliation.can_resume && <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload/reconcile", { path: item.path }))}>{t("reconciliation.resume")}</Button>}</section>}
           {item.recover_eligible && <Button disabled={busy} onClick={onRecover}>{t("ui.row_action_recover")}</Button>}
           {pending.map((job) => <div key={job.id}><p>{t("essential.deletion_pending")}</p><Button disabled={busy} variant="secondary" onClick={() => void perform(() => api.post("/api/jobs/cancel", { group_id: job.id, action: "cloud-purge" }))}>{t("essential.cancel_deletion")}</Button></div>)}
           {item.type === "file" && item.state === "cloud_only" && !item.local_exists && !pending.length && <details><summary className="min-h-11 cursor-pointer py-3 font-semibold">{t("essential.danger_zone")}</summary><p>{t("ui.cloud_purge_local_note")}</p><Button disabled={busy} variant="danger" onClick={() => void perform(async () => {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import hashlib
+import json
 import os
 import stat
 import threading
@@ -357,6 +358,8 @@ def ensure_job_claim_owned_in_transaction(
     prevents every post-provider catalog or audit write in that transaction.
     """
     job_id = int(job["id"])
+    if job_cancelled(job_id):
+        raise OperationCancelled(message)
     if _claim_is_lost(job_id):
         raise JobLeaseLost(message)
     claim_token = job.get("claim_token")
@@ -437,7 +440,7 @@ class _ThrottledByteProgress:
         )
 
 
-def s3_client(*, preflight: bool = False):
+def s3_client(*, preflight: bool = False, non_idempotent: bool = False):
     access_key = os.getenv("AWS_ACCESS_KEY_ID", "")
     secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "")
     if is_placeholder(
@@ -452,7 +455,8 @@ def s3_client(*, preflight: bool = False):
         raise RuntimeError("AWS credentials are not configured in the .env file")
     config = (Config(connect_timeout=2, read_timeout=3,
                      retries={"mode": "standard", "total_max_attempts": 1})
-              if preflight else Config(retries={"mode": "standard", "max_attempts": 4}))
+              if preflight else Config(retries={"mode": "standard", "total_max_attempts": 1})
+              if non_idempotent else Config(retries={"mode": "standard", "max_attempts": 4}))
     return boto3.client("s3", region_name=settings.aws_region, config=config)
 
 
@@ -886,15 +890,11 @@ def scan_cloud(vault: dict[str, Any], scan_id: str, *, reconnect: bool = False) 
             if identity not in {(entry[2], entry[1]) for entry in entries}:
                 stale_keeper_paths.add(path)
                 continue
-            newest = entries[-1]
-            keeper = next((
-                row for row in known
-                if (row["object_key"], row["provider_version_id"]) == (newest[2], newest[1])
-            ), None)
-            if (
-                not invalid_keys and keeper and keeper["recoverable"]
-                and sum(entry[6] == newest[6] for entry in entries) == 1
-            ):
+            keeper = next((row for row in known if row["recoverable"] and
+                           (row["object_key"], row["provider_version_id"]) in {(entry[2], entry[1]) for entry in entries}), None)
+            if not invalid_keys and keeper:
+                # Discovery is observation, not election/trust. Every extra
+                # requires the same claimed exact-version cleanup authority.
                 verified_keepers[path] = keeper
 
     if reconnect and (invalid_keys or any(
@@ -2326,162 +2326,52 @@ def _reconcile_job_transition(
     return updated
 
 
-def purge_current_snapshot_superseded(
-    job: dict[str, Any],
-    *,
-    keep_version_id: str,
-    client: Any,
-) -> None:
-    """Destroy every S3 VersionId except the verified Current Snapshot.
-
-    The upload/rename Job is not complete until this succeeds. Missing provider
-    versions are treated as already gone so a retry can finish catalog purge.
-    """
-    if not keep_version_id:
-        raise RuntimeError("Current Snapshot purge requires the kept Archive Version")
-    with db() as connection:
-        keep = connection.execute(
-            """
-            SELECT id, vault_file_id, object_key, provider_version_id,
-                   integrity, availability
-            FROM archive_versions WHERE id=%s
-            """,
-            (keep_version_id,),
-        ).fetchone()
-        if (
-            keep is None
-            or keep["integrity"] != "verified"
-            or keep["availability"] != "available"
-            or not keep["object_key"]
-            or not keep["provider_version_id"]
-        ):
-            raise RuntimeError("Current Snapshot requires a verified available keeper")
-        superseded = connection.execute(
-            """
-            SELECT id, object_key, provider_version_id
-            FROM archive_versions
-            WHERE vault_file_id=%s
-              AND id<>%s
-              AND availability NOT IN ('purged')
-            """,
-            (keep["vault_file_id"], keep_version_id),
-        ).fetchall()
-    keys = {str(keep["object_key"])} if keep.get("object_key") else set()
-    keys.update(
-        str(row["object_key"]) for row in superseded if row.get("object_key")
-    )
-    keep_provider = str(keep.get("provider_version_id") or "")
-    keep_key = str(keep.get("object_key") or "")
-    # Establish the whole provider postcondition before the first deletion.
-    # A stale catalog or missing destination must never authorize removal of
-    # the only live copy, including when a rename resumes after a crash.
-    listings = {
-        object_key: _object_version_entries(
-            client, bucket=job["s3_bucket"], object_key=object_key
-        )
-        for object_key in keys
-    }
-    if keep_provider not in listings[keep_key][0]:
-        raise RuntimeError("Current Snapshot keeper is absent from cloud listing")
-    known = {(keep_key, keep_provider)} | {
-        (str(row["object_key"]), str(row["provider_version_id"]))
-        for row in superseded
-    }
-    if any(
-        (object_key, str(version_id)) not in known
-        for object_key, (versions, _markers) in listings.items()
-        for version_id in versions
-    ):
-        raise RuntimeError("Snapshot found uncatalogued cloud content; no deletion allowed")
-    for object_key, (versions, markers) in listings.items():
-        for version_id in versions:
-            if object_key == keep_key and str(version_id) == keep_provider:
-                continue
-            _delete_s3_version(
-                client,
-                bucket=job["s3_bucket"],
-                object_key=object_key,
-                version_id=str(version_id),
-            )
-        for version_id in markers:
-            _delete_s3_version(
-                client,
-                bucket=job["s3_bucket"],
-                object_key=object_key,
-                version_id=str(version_id),
-            )
-    stamp = now_iso()
-
+def _record_upload_reconciliation_block(job: dict[str, Any], reason: str) -> None:
+    from .services import upload_provenance as provenance
     @retry_database_unit
-    def persist_purge() -> None:
-        # Provider deletion is above, deliberately outside this replay unit.
+    def persist() -> None:
         with owned_connection(db()) as connection:
-            ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
-            catalog = ArchiveCatalog(connection)
-            catalog.mark_versions_purged(
-                [str(row["id"]) for row in superseded], checked_at=stamp,
-            )
-            catalog.clear_delete_markers_for_file(str(keep["vault_file_id"]))
+            connection.execute("INSERT INTO snapshot_reconciliation_blocks(vault_file_id,reason,updated_at) VALUES (%s,%s,%s) ON CONFLICT (vault_file_id) DO UPDATE SET reason=excluded.reason,updated_at=excluded.updated_at", (job["vault_file_id"], reason, now_iso()))
+            connection.execute("UPDATE upload_intents SET blocked_reason=%s WHERE vault_file_id=%s AND NOT settled", (reason, job["vault_file_id"]))
+    persist()
+    # Notifications use Owner locks separately from intent/receipt publication.
+    with db() as connection:
+        notification_service.set_problem(connection, key=f"upload_reconciliation:{job['vault_file_id']}", event="upload_reconciliation", vault_id=job["vault_id"], active=True, email=False, params={"path": job["path"], "reason": reason, "remedy": provenance.REMEDIES[reason]})
 
-    persist_purge()
+
+def purge_current_snapshot_superseded(
+    job: dict[str, Any], *, keep_version_id: str, client: Any,
+) -> None:
+    """Upload and rename share exact durable per-VersionId authority."""
+    import sys
+    from .services import snapshot_cleanup, upload_provenance
+    try:
+        snapshot_cleanup.cleanup(sys.modules[__name__], job, keep_version_id, client)
+    except upload_provenance.UploadBlocked as exc:
+        _record_upload_reconciliation_block(job, exc.reason)
+        raise
+    except OperationCancelled:
+        raise
+    except Exception:
+        _record_upload_reconciliation_block(job, "cleanup_unavailable")
+        raise
+    with db() as connection:
+        notification_service.set_problem(connection, key=f"upload_reconciliation:{job['vault_file_id']}", event="upload_reconciliation", vault_id=job["vault_id"], active=False, email=False)
 
 
 def _purge_current_snapshot_scan_extras(
-    vault: dict[str, Any],
-    extras: list[tuple[str, str, str, str]],
-    client: Any,
+    vault: dict[str, Any], extras: list[tuple[str, str, str, str]], client: Any,
 ) -> None:
-    """Delete extras only while the exact verified scan keeper remains available."""
-    for path, version_id, object_key, keeper_id in extras:
-        try:
-            with db() as connection:
-                rows = ArchiveCatalog(connection).list_versions(vault["id"], path)
-                active = connection.execute(
-                    """SELECT 1 FROM jobs WHERE vault_file_id=(
-                           SELECT vault_file_id FROM archive_versions WHERE id=%s)
-                       AND status NOT IN ('completed', 'failed', 'cancelled') LIMIT 1""",
-                    (keeper_id,),
-                ).fetchone()
-            keeper = next((row for row in rows if str(row["id"]) == keeper_id), None)
-            if active or not keeper or not keeper["recoverable"]:
-                continue
-            # Recheck the exact keeper immediately before deletion. A failed
-            # listing or changed catalog must leave every extra untouched.
-            present, _markers = _object_version_entries(
-                client, bucket=vault["s3_bucket"], object_key=keeper["object_key"],
-            )
-            if str(keeper["provider_version_id"]) not in present:
-                continue
-            if (object_key, version_id) == (keeper["object_key"], keeper["provider_version_id"]):
-                continue
-            _delete_s3_version(
-                client,
-                bucket=vault["s3_bucket"],
-                object_key=object_key,
-                version_id=version_id,
-            )
-        except Exception as exc:
-            with db() as connection:
-                worker_error_store.record_worker_error(
-                    connection,
-                    component="current_snapshot_purge",
-                    exc=exc,
-                    vault_id=vault.get("id"),
-                )
-            continue
+    """Discovery has no claim or delete authority. Offer claimed reconciliation.
+
+    The worker's common gate can prove historical duplicates by exact GET, but
+    scans never delete extras by newest/catalog/origin. #459 later admits work.
+    """
+    for path, _version, _key, keeper_id in extras:
         with db() as connection:
-            existing = connection.execute(
-                """
-                SELECT id FROM archive_versions
-                WHERE vault_id=%s AND object_key=%s AND provider_version_id=%s
-                """,
-                (vault["id"], object_key, version_id),
-            ).fetchone()
-            if existing:
-                ArchiveCatalog(connection).mark_versions_purged(
-                    [str(existing["id"])],
-                    checked_at=now_iso(),
-                )
+            row = connection.execute("SELECT vault_file_id FROM archive_versions WHERE id=%s", (keeper_id,)).fetchone()
+        if row:
+            _record_upload_reconciliation_block({"vault_id": vault["id"], "vault_file_id": row["vault_file_id"], "path": path}, "proof_unavailable")
 
 
 def _storage_head_matches_catalog(
@@ -3157,11 +3047,34 @@ def remove_local_copies(vault: dict[str, Any], logical_path: str) -> list[Path]:
     return [target]
 
 
+def _require_upload_source_identity(job: dict[str, Any]) -> None:
+    """Source Volume/root I/O is outside replayable DB transactions."""
+    from .services.upload_provenance import UploadBlocked
+    ensure_job_active(job["id"], "Upload source claim lost")
+    with db() as connection:
+        vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (job["vault_id"],)).fetchone()
+    if not vault or vault["source_root"] != job["source_root"]:
+        raise UploadBlocked("identity_changed")
+    if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
+        raise UploadBlocked("identity_changed")
+    try:
+        _validate_enrolled_scan_root(vault)
+    except Exception as exc:
+        raise UploadBlocked("identity_changed") from exc
+
+
 def upload_s3_file(job: dict[str, Any], *, source: Path, key: str) -> dict[str, Any]:
+    _require_upload_source_identity(job)
     reporter = _ThrottledByteProgress(job)
     limit = _runtime_settings().bandwidth_limit_kibps
+    from .services.upload_provenance import provider_identity, UploadBlocked
+    read_client, write_client = s3_client(), s3_client(non_idempotent=True)
+    identity = provider_identity(read_client)
+    if provider_identity(write_client) != identity or job.get("_upload_provider", identity) != identity:
+        raise UploadBlocked("identity_changed")
     response = upload_file(
-        s3_client(), source=source, bucket=job["s3_bucket"], key=key,
+        read_client, source=source, bucket=job["s3_bucket"], key=key,
+        write_client=write_client,
         check_active=lambda: ensure_job_active(job["id"], "Upload stopped"),
         on_progress=reporter.add,
         max_bandwidth=int(limit) * 1024 if limit else None,
@@ -3262,7 +3175,9 @@ def _complete_verified_upload(
     local_stat: os.stat_result | None = None,
 ) -> None:
     """Persist Integrity for snapshot A without claiming a later Local Copy."""
-    ensure_job_active(job["id"], "Upload claim was lost")
+    _require_upload_source_identity(job)
+    with db() as connection:
+        local_before = connection.execute("SELECT size,mtime_ns,plaintext_sha256,matched_archive_version_id,observed_at,content_observed_at FROM local_copies WHERE vault_file_id=%s", (job["vault_file_id"],)).fetchone()
     observed_digest, observed_stat, matches_snapshot = (
         _inspect_local_copy_for_upload_snapshot(
             job,
@@ -3272,24 +3187,31 @@ def _complete_verified_upload(
             local_stat=local_stat,
         )
     )
+    # Filesystem stability is observed outside the DB replay. A newer catalog
+    # observation can still win; the DB CAS below never overwrites that generation.
+    local_observation_stable = observed_stat is not None and _local_stat_unchanged(source, observed_stat)
     verified_at = now_iso()
 
     @retry_database_unit
     def persist_verification() -> None:
         with owned_connection(db()) as connection:
+            from .services import upload_provenance as provenance
+            provenance.target(connection, job, key=expected_cloud_key(job["path"], job["s3_prefix"]), provider="db-fence")
             ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
             catalog = ArchiveCatalog(connection)
             if mark_verified:
                 catalog.mark_version_verified(
                     version_id, plaintext_sha256=upload_digest, verified_at=verified_at,
                 )
-            if observed_stat is not None:
+            local_current = connection.execute("SELECT size,mtime_ns,plaintext_sha256,matched_archive_version_id,observed_at,content_observed_at FROM local_copies WHERE vault_file_id=%s FOR UPDATE", (job["vault_file_id"],)).fetchone()
+            publish_local = local_observation_stable and local_current == local_before
+            if publish_local and observed_stat is not None:
                 catalog.observe_local_copy(
                     vault_id=job["vault_id"], path=job["path"], file_type="regular",
                     size=observed_stat.st_size, mtime_ns=observed_stat.st_mtime_ns,
                     observed_at=verified_at,
                 )
-            if observed_digest is not None:
+            if publish_local and observed_digest is not None:
                 catalog.set_local_fingerprint(
                     vault_id=job["vault_id"], path=job["path"],
                     plaintext_sha256=observed_digest,
@@ -3324,6 +3246,10 @@ def _automatic_upload_ready(job: dict[str, Any]) -> bool:
     with owned_connection(db()) as connection:
         target = ArchiveCatalog(connection).get_job_target(job["id"])
         if target and target.get("archive_version_id"):
+            return True
+        from .services import upload_provenance as provenance
+        admitted = provenance.load_for_job(connection, job["id"])
+        if admitted and admitted["send_started"]:
             return True
         policy = get_policy(connection, int(job["vault_id"]))
         vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (job["vault_id"],)).fetchone()
@@ -3360,9 +3286,95 @@ def _upload_catalog_unit(
     job: dict[str, Any], mutation: Callable[[ArchiveCatalog], Any],
 ) -> Any:
     """One owned, replayable transaction; callbacks must contain DB work only."""
+    from .services import upload_provenance as provenance
     with owned_connection(db()) as connection:
+        # Same Vault-first lock order as admission/cleanup; this is DB-only.
+        provenance.target(connection, job, key=expected_cloud_key(job["path"], job["s3_prefix"]), provider="db-fence")
         ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
         return mutation(ArchiveCatalog(connection))
+
+
+def _publish_upload_receipt(job: dict[str, Any], intent: dict[str, Any], response: dict[str, Any]) -> str:
+    from .services import upload_provenance as provenance
+    _require_upload_source_identity(job)
+    pinned = json.loads(intent["target_json"])
+    snapshot = UploadSnapshot.from_json(intent["snapshot_json"])
+    provider_id = response.get("VersionId")
+    if not provider_id or provider_id == "null" or provider_id in json.loads(intent["inventory_json"])["versions"]:
+        raise provenance.UploadBlocked("ambiguous_receipt")
+    stamp = now_iso()
+    def publish(catalog: ArchiveCatalog) -> str:
+        provenance.require_target(catalog.connection, job, pinned)
+        catalog.connection.execute("SELECT id FROM vault_files WHERE id=%s FOR UPDATE", (job["vault_file_id"],))
+        recorded = catalog.record_archive_version(
+            vault_id=job["vault_id"], vault_file_id=job["vault_file_id"], path=job["path"],
+            object_key=pinned["key"], provider_version_id=provider_id, size=snapshot.size,
+            storage_class=response.get("StorageClass", "STANDARD"),
+            etag=str(response.get("ETag") or "").strip('"'),
+            uploaded_at=intent["created_at"], observed_at=stamp, scan_id=stamp, origin="upload")
+        catalog.set_version_upload_snapshot(recorded, snapshot_json=intent["snapshot_json"], requested=intent["requested"])
+        catalog.set_upload_snapshot(job["id"], snapshot_json=intent["snapshot_json"])
+        catalog.link_job_version(job["id"], recorded)
+        catalog.connection.execute("UPDATE upload_intents SET archive_version_id=%s WHERE id=%s AND (archive_version_id IS NULL OR archive_version_id=%s)", (recorded, intent["id"], recorded))
+        # A scan may have observed this exact write before its receipt was
+        # published. Only this owner/intent-fenced publication promotes its
+        # observation ordering; generic discovery never grants current trust.
+        catalog.connection.execute("""UPDATE archive_versions av SET
+            version_number=(SELECT COALESCE(MAX(v.version_number),0)+1
+                FROM archive_versions v WHERE v.vault_file_id=av.vault_file_id),
+            origin='upload', uploaded_at=%s
+            WHERE av.id=%s AND av.vault_file_id=%s AND av.origin='discovered'
+              AND EXISTS (SELECT 1 FROM upload_intents i WHERE i.id=%s
+                  AND i.archive_version_id=av.id AND i.vault_file_id=av.vault_file_id
+                  AND i.send_started AND i.snapshot_json=av.upload_snapshot_json)""",
+            (intent["created_at"], recorded, job["vault_file_id"], intent["id"]))
+        return recorded
+    return _upload_catalog_unit(job, publish)
+
+
+def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], client: Any) -> None:
+    from .services import upload_provenance as provenance
+    pinned = json.loads(intent["target_json"])
+    try:
+        _upload_catalog_unit(job, lambda catalog: provenance.require_target(catalog.connection, job, pinned))
+        with db() as connection:
+            linked = ArchiveCatalog(connection).get_job_target(job["id"])
+            raw = provenance.receipt(connection, intent["id"])
+        # A crash after publication but before proof evaluation must not turn
+        # a durable contradictory receipt into a mere identity check on retry.
+        # This also applies to already-verified cleanup-only continuations.
+        if raw is not None:
+            try:
+                validated_s3_proof(raw, version_id=raw["VersionId"],
+                    snapshot=UploadSnapshot.from_json(intent["snapshot_json"]),
+                    source="upload_response", completion=True)
+            except UploadProofMismatch as exc:
+                raise provenance.UploadBlocked("proof_mismatch") from exc
+        if intent["archive_version_id"]:
+            with db() as connection:
+                exact = connection.execute("SELECT * FROM archive_versions WHERE id=%s AND vault_file_id=%s AND vault_id=%s", (intent["archive_version_id"], job["vault_file_id"], job["vault_id"])).fetchone()
+            if (not exact or not raw or exact["object_key"] != pinned["key"]
+                    or exact["provider_version_id"] != raw["VersionId"]
+                    or exact["upload_snapshot_json"] != intent["snapshot_json"]
+                    or (linked and linked["archive_version_id"] and str(linked["archive_version_id"]) != str(intent["archive_version_id"]))):
+                raise provenance.UploadBlocked("ambiguous_receipt")
+            if not linked or not linked["archive_version_id"]:
+                _upload_catalog_unit(job, lambda catalog: catalog.link_job_version(job["id"], intent["archive_version_id"]))
+            # VERSION baseline remains immutable, including cleanup-only retries.
+            return
+        response = provenance.reconcile(client, intent, raw, lambda: ensure_job_active(job["id"], "Upload reconciliation stopped"))
+        provenance.append_receipt(db, intent["id"], response, now_iso())
+        snapshot = UploadSnapshot.from_json(intent["snapshot_json"])
+        try:
+            if raw is not None:
+                validated_s3_proof(raw, version_id=response["VersionId"], snapshot=snapshot, source="upload_response", completion=True)
+            validated_s3_proof(response, version_id=response["VersionId"], snapshot=snapshot, source="exact_head")
+        except UploadProofMismatch as exc:
+            raise provenance.UploadBlocked("proof_mismatch") from exc
+        _publish_upload_receipt(job, intent, response)
+    except provenance.UploadBlocked as exc:
+        _record_upload_reconciliation_block(job, exc.reason)
+        raise
 
 
 def process_upload(job: dict[str, Any]) -> None:
@@ -3371,12 +3383,28 @@ def process_upload(job: dict[str, Any]) -> None:
         set_job(job["id"], "queued", "Automatic upload waits for enabled protection and stable content")
         return
     validate_cloud_vault(job)
+    _require_upload_source_identity(job)
     source = safe_local_path(job["source_root"], job["path"])
     local_present = source.is_file()
+    from .services import upload_provenance as provenance
+    def load_intent(catalog: ArchiveCatalog) -> dict[str, Any] | None:
+        intent = provenance.load_for_job(catalog.connection, job["id"])
+        if intent is None:
+            intent = provenance.outstanding(catalog.connection, job["vault_file_id"])
+            if intent:
+                provenance.bind_for_resume(catalog.connection, job["id"], intent)
+        return intent
+    intent = _upload_catalog_unit(job, load_intent)
+    import sys
+    from .services import snapshot_cleanup
+    if intent and intent["send_started"]:
+        client = s3_client()
+        snapshot_cleanup.pin_inventory(sys.modules[__name__], job, client)
+        _resume_materialized_upload(job, intent, client)
     linked_target = _upload_catalog_unit(job, lambda catalog: catalog.get_job_target(job["id"]))
-    linked_version_id = (
-        linked_target.get("archive_version_id") if linked_target else None
-    )
+    linked_version_id = linked_target.get("archive_version_id") if linked_target else None
+    if job.get("upload_reconcile_only") and not linked_version_id:
+        raise provenance.UploadBlocked("ambiguous_send")
     if not local_present and not linked_version_id:
         raise RuntimeError("The file is no longer available in the source folder")
     if not linked_version_id and linked_target and linked_target.get(
@@ -3393,7 +3421,20 @@ def process_upload(job: dict[str, Any]) -> None:
     local_plaintext_sha256: str | None = None
     source_stat: os.stat_result | None = None
     snapshot: UploadSnapshot | None = None
-    requested_mode = str((linked_target or {}).get("job_upload_verification_requested") or "read_back")
+    requested_mode = str(intent["requested"] if intent else (linked_target or {}).get("job_upload_verification_requested") or "read_back")
+
+    def version_head() -> dict[str, Any]:
+        head = _verification_version_head(client,job,target)
+        token = (head.get("Metadata") or {}).get(provenance.TOKEN_KEY)
+        if token:
+            with db() as connection:
+                known = connection.execute("SELECT * FROM upload_intents WHERE archive_version_id=%s AND vault_file_id=%s AND token=%s", (target["archive_version_id"],job["vault_file_id"],token)).fetchone()
+            if not known:
+                raise provenance.UploadBlocked("ambiguous_receipt")
+            scope = json.loads(known["target_json"])
+            if scope["provider"] != provenance.provider_identity(client) or scope["bucket"] != job["s3_bucket"] or scope["key"] != target["object_key"]:
+                raise provenance.UploadBlocked("identity_changed")
+        return head
 
     def evaluate_provider_proof(proof: dict[str, Any], *, source: str,
                                 completion: bool = False) -> dict[str, str] | None:
@@ -3439,6 +3480,7 @@ def process_upload(job: dict[str, Any]) -> None:
         target: dict[str, Any]
         head: dict[str, Any]
         client = s3_client()
+        snapshot_cleanup.pin_inventory(sys.modules[__name__], job, client)
         if linked_version_id:
             # A retry after catalog linkage is verification-only. Uploading
             # again here would create a second provider VersionId and split the
@@ -3459,7 +3501,7 @@ def process_upload(job: dict[str, Any]) -> None:
                 requested_mode = target.get("upload_verification_requested") or "read_back"
                 if snapshot.plaintext_sha256 != upload_digest:
                     raise RuntimeError("Upload Snapshot digest differs from durable upload digest")
-            head = _verification_version_head(client, job, target)
+            head = version_head()
             if integrity == "verified":
                 if snapshot is not None:
                     evaluate_provider_proof(head, source="ordinary_head")
@@ -3480,12 +3522,14 @@ def process_upload(job: dict[str, Any]) -> None:
             # Keep the upload snapshot on the durable Job before contacting the
             # provider.  Local Copy fingerprints are mutable scan observations
             # and cannot identify a retry after the source changes.
+            reuse_provider = provenance.provider_identity(client)
             def prepare_digest(catalog: ArchiveCatalog) -> dict[str, Any] | None:
                 assert snapshot is not None
                 catalog.set_upload_snapshot(job["id"], snapshot_json=snapshot.as_json())
                 vault_file_id = job.get("vault_file_id") or (linked_target or {}).get("vault_file_id")
                 return catalog.find_reusable_upload_version(
                     vault_file_id=str(vault_file_id), plaintext_sha256=upload_digest,
+                    bucket=job["s3_bucket"], provider=reuse_provider,
                 ) if vault_file_id else None
 
             reusable = _upload_catalog_unit(job, prepare_digest)
@@ -3504,7 +3548,7 @@ def process_upload(job: dict[str, Any]) -> None:
                     if snapshot.plaintext_sha256 != upload_digest:
                         raise RuntimeError("Upload Snapshot digest differs from durable upload digest")
                     evaluate_provider_proof(
-                        _verification_version_head(client, job, target), source="ordinary_head",
+                        version_head(), source="ordinary_head",
                     )
                 _complete_verified_upload(
                     job,
@@ -3540,44 +3584,42 @@ def process_upload(job: dict[str, Any]) -> None:
                 # or policy for its historical expected evidence.
                 snapshot = UploadSnapshot.from_json(target["upload_snapshot_json"]) if target.get("upload_snapshot_json") else None
                 requested_mode = target.get("upload_verification_requested") or "read_back"
-                head = _verification_version_head(client, job, target)
+                head = version_head()
             else:
                 set_job(job["id"], "uploading", message_key="job.plain_upload")
                 key = expected_cloud_key(job["path"], job["s3_prefix"])
                 assert snapshot is not None
-                acknowledged: dict[str, Any] = {}
+                provider = provenance.provider_identity(client)
+                with db() as connection:
+                    pinned = provenance.target(connection, job, key=key, provider=provider)
+                before = provenance.inventory(client, job["s3_bucket"], key)
+                if before != provenance.inventory(client, job["s3_bucket"], key):
+                    raise provenance.UploadBlocked("inventory_changed")
+                intent = _upload_catalog_unit(job, lambda catalog: provenance.prepare(
+                    catalog.connection, job, pinned=pinned, snapshot=snapshot,
+                    requested=requested_mode, before=before, timestamp=now_iso()))
+                if intent["snapshot_json"] != snapshot.as_json() or intent["inventory_json"] != provenance.canonical(before):
+                    raise provenance.UploadBlocked("identity_changed")
+                # This transaction commits BEFORE PutObject/CreateMultipartUpload.
+                _upload_catalog_unit(job, lambda catalog: provenance.mark_send_started(catalog.connection, job, intent))
 
                 def acknowledge(response: dict[str, Any]) -> None:
-                    # Capture raw identity before HEAD/proof/cancellation. This
-                    # protects the in-process response gap, not crash/ambiguous
-                    # completion provenance (the journal belongs to #464).
-                    acknowledged["response"] = dict(response)
-                    provider_id = response.get("VersionId")
-                    if not provider_id or provider_id == "null":
-                        raise RuntimeError("Upload stored without an S3 VersionId; bucket Versioning is required")
-                    if "version_id" in acknowledged:
-                        return
-                    timestamp = now_iso()
-                    def record_response(catalog: ArchiveCatalog) -> str:
-                        recorded = catalog.record_archive_version(
-                            vault_id=job["vault_id"], path=job["path"], object_key=key,
-                            provider_version_id=provider_id, size=snapshot.size,
-                            storage_class=response.get("StorageClass", "STANDARD"),
-                            etag=response.get("ETag", "").strip('"'),
-                            uploaded_at=timestamp, observed_at=timestamp,
-                            scan_id=timestamp, origin="upload",
-                        )
-                        catalog.set_version_upload_snapshot(recorded, snapshot_json=snapshot.as_json(), requested=requested_mode)
-                        catalog.link_job_version(job["id"], recorded)
-                        return recorded
-                    acknowledged["version_id"] = _upload_catalog_unit(job, record_response)
+                    provenance.append_receipt(db, intent["id"], response, now_iso())
 
-                transfer_job = {**job, "_upload_snapshot": snapshot, "_on_upload_acknowledged": acknowledge}
-                response = upload_s3_file(transfer_job, source=source, key=key)
-                # Compatibility with injected/embedded transports that return
-                # their raw response without invoking the optional callback.
+                transfer_job = {**job, "_upload_snapshot": snapshot, "_upload_provider": provider,
+                                "_upload_metadata": {provenance.TOKEN_KEY: intent["token"]},
+                                "_on_upload_acknowledged": acknowledge}
+                try:
+                    response = upload_s3_file(transfer_job, source=source, key=key)
+                except BaseException as exc:
+                    # Shutdown joins late acknowledgments, even after cancellation.
+                    # Retry only appending the retained fact, never the provider send.
+                    raw = getattr(exc, "upload_response", None)
+                    if raw is not None:
+                        acknowledge(raw)
+                    raise
                 acknowledge(response)
-                version_id = acknowledged["version_id"]
+                version_id = _publish_upload_receipt(job, intent, response)
                 target = {
                     "archive_version_id": version_id, "object_key": key,
                     "provider_version_id": response["VersionId"], "cloud_size": snapshot.size,
@@ -3591,7 +3633,7 @@ def process_upload(job: dict[str, Any]) -> None:
                 target["_provider_proof"] = evaluate_provider_proof(
                     response, source="upload_response", completion=True,
                 )
-                head = _verification_version_head(client, job, target)
+                head = version_head()
 
         if snapshot is not None:
             # A normal HEAD may also contain checksum fields. Any present
@@ -3648,7 +3690,7 @@ def process_upload(job: dict[str, Any]) -> None:
         _upload_catalog_unit(job, lambda catalog: catalog.set_version_verification_method(
             version_id, method="read_back", fallback_reason=fallback_reason, egress_bytes=remote_size,
         ))
-        final_head = _verification_version_head(client, job, target)
+        final_head = version_head()
         if snapshot is not None:
             evaluate_provider_proof(final_head, source="ordinary_head")
         expected_stream_size = target.get("cloud_size")
@@ -3663,6 +3705,7 @@ def process_upload(job: dict[str, Any]) -> None:
             _upload_catalog_unit(job, lambda catalog: catalog.mark_version_mismatch(
                 version_id, plaintext_sha256=upload_digest, checked_at=now_iso(),
             ))
+            _record_upload_reconciliation_block(job, "proof_mismatch")
             raise RuntimeError("Cloud copy digest does not match local file")
         _complete_verified_upload(
             job,
@@ -3674,6 +3717,13 @@ def process_upload(job: dict[str, Any]) -> None:
             local_stat=source_stat,
         )
     except OperationCancelled:
+        raise
+    except provenance.UploadBlocked as exc:
+        _record_upload_reconciliation_block(job, exc.reason)
+        raise
+    except UploadProofMismatch:
+        _record_upload_reconciliation_block(job, "proof_mismatch")
+        _record_verification_failure("mismatch")
         raise
     except Exception:
         if verification_started:
@@ -3884,6 +3934,9 @@ def process_rename(job: dict[str, Any]) -> None:
             return
 
         client = s3_client()
+        import sys
+        from .services import snapshot_cleanup
+        snapshot_cleanup.pin_inventory(sys.modules[__name__], job, client)
         with db() as connection:
             destination_rows = connection.execute(
                 """
@@ -3907,6 +3960,10 @@ def process_rename(job: dict[str, Any]) -> None:
         destination_version_id: str | None = None
         source_stat = source.stat(follow_symlinks=False)
         plaintext_sha256 = previous.get("plaintext_sha256")
+        if plaintext_sha256:
+            # The admitted rename pins independently verified old content, not
+            # scan membership/origin. Persist that lineage for replacement cleanup.
+            _upload_catalog_unit(job, lambda catalog: catalog.set_upload_plaintext_digest(job["id"], plaintext_sha256=plaintext_sha256))
 
         if live_destination is not None:
             version_id = str(live_destination["id"])
@@ -3963,6 +4020,7 @@ def process_rename(job: dict[str, Any]) -> None:
                 catalog = ArchiveCatalog(connection)
                 version_id = catalog.record_archive_version(
                     vault_id=job["vault_id"],
+                    vault_file_id=job["vault_file_id"],
                     path=job["path"],
                     object_key=new_key,
                     provider_version_id=provider_version_id,

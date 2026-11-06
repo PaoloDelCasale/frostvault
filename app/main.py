@@ -2200,6 +2200,8 @@ def file_versions(
     logical_path = safe_relative_path(path).as_posix()
     with db() as connection:
         versions = ArchiveCatalog(connection).list_versions(vault["id"], logical_path)
+        from .services.upload_provenance import describe
+        reconciliation = describe(connection, vault_id=vault["id"], path=logical_path)
     # The response is an internal exact-version pin for recovery, not history.
     recoverable = [row for row in versions if row["recoverable"]][:1]
     default_version_id = recoverable[0]["id"] if recoverable else None
@@ -2208,6 +2210,7 @@ def file_versions(
         "items": recoverable,
         "recoverable_count": len(recoverable),
         "default_archive_version_id": default_version_id,
+        "reconciliation": reconciliation,
         "supported_restore_tiers": list(SUPPORTED_RESTORE_TIERS),
         "default_restore_tier": _runtime_settings().restore_tier,
         "default_restore_days": _runtime_settings().restore_days,
@@ -2332,6 +2335,25 @@ def upload(
     queued = queue_jobs(action.path, "upload", vault["id"], user["id"], action.is_directory,
                         whole_vault=action.path == "" and action.is_directory)
     return {**queued, **_api_message(request, "api.upload_started")}
+
+
+@app.post("/api/upload/reconcile", status_code=202, response_model=response_model("UploadReconciliationResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
+def reconcile_upload(action: FileAction, user: dict[str, Any] = Depends(current_user), vault: dict[str, Any] = Depends(current_vault)):
+    """Exact resume only, including protected files for which upload returns 409.
+
+    No sweep, no arbitrary deletion, no resurrection of deliberate cancellation.
+    """
+    from .services.upload_provenance import schedule_resume, UploadBlocked
+    logical_path = safe_relative_path(action.path).as_posix()
+    if action.is_directory:
+        raise HTTPException(422, "Reconciliation requires one stable Vault File")
+    if not vault_local_access(vault["source_root"]).local_operations_allowed:
+        raise HTTPException(503, "Expected Source Volume is unavailable")
+    try:
+        with db() as connection:
+            return schedule_resume(connection, vault=vault, path=logical_path, user_id=user["id"], timestamp=datetime.now(timezone.utc).isoformat())
+    except UploadBlocked as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @app.post("/api/upload/retry-failed", status_code=202, response_model=response_model("RetryFailedUploadsResponse"))

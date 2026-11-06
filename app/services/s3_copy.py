@@ -55,23 +55,34 @@ def _object_version_entries(
     kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": object_key}
     versions: dict[str, dict[str, Any]] = {}
     markers: dict[str, dict[str, Any]] = {}
+    continuations: set[tuple[str, str]] = set()
     while True:
         page = client.list_object_versions(**kwargs)
-        for item in page.get("Versions") or []:
-            if item.get("Key") == object_key and item.get("VersionId"):
-                versions[str(item["VersionId"])] = item
-        for item in page.get("DeleteMarkers") or []:
-            if item.get("Key") == object_key and item.get("VersionId"):
-                markers[str(item["VersionId"])] = item
+        if page.get("IsTruncated") not in (True, False) or "IsTruncated" not in page:
+            raise RuntimeError("S3 version listing did not confirm complete pagination")
+        for field, entries, other in (("Versions", versions, markers), ("DeleteMarkers", markers, versions)):
+            for item in page.get(field) or []:
+                if item.get("Key") != object_key:
+                    continue
+                version = str(item.get("VersionId") or "")
+                if not version or version == "null" or version in entries or version in other:
+                    raise RuntimeError("S3 version listing has ambiguous exact identities")
+                entries[version] = item
         if not page.get("IsTruncated"):
             break
         next_key = page.get("NextKeyMarker")
         next_version = page.get("NextVersionIdMarker")
         if not next_key:
             raise RuntimeError("S3 version listing omitted its continuation marker")
+        continuation = (str(next_key), str(next_version or ""))
+        if continuation in continuations:
+            raise RuntimeError("S3 version listing repeated its continuation marker")
+        continuations.add(continuation)
         kwargs["KeyMarker"] = next_key
         if next_version:
             kwargs["VersionIdMarker"] = next_version
+        else:
+            kwargs.pop("VersionIdMarker", None)
     return versions, markers
 
 

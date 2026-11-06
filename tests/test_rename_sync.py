@@ -86,6 +86,8 @@ def _prepare_renamed_plain_file(
     digest = _sha256_hex(payload)
     with PostgresConnection(str(database_path)) as connection:
         _seed_vault(connection, source_root=str(source))
+        from app.services.vault_relocation import enroll_vault_root_identity
+        enroll_vault_root_identity(connection, 2, str(source))
         catalog = ArchiveCatalog(connection)
         file_id = catalog.observe_local_copy(
             vault_id=2,
@@ -703,7 +705,7 @@ class RenameCloudJobTests(unittest.TestCase):
             self.assertEqual(deleted, [])
             self.assertEqual(markers, [])
             self.assertEqual(job["status"], "failed")
-            self.assertIn("uncatalogued cloud content", job["message"] or "")
+            self.assertIn("Upload reconciliation blocked", job["message"] or "")
             self.assertEqual(head_keys, [new_key, new_key, new_key])
             self.assertEqual(
                 download_calls[0]["VersionId"],
@@ -1044,6 +1046,8 @@ class PlaintextNamespaceRenameTests(unittest.TestCase):
                     """,
                     (str(source),),
                 )
+                from app.services.vault_relocation import enroll_vault_root_identity
+                enroll_vault_root_identity(connection, 2, str(source))
                 catalog = ArchiveCatalog(connection)
                 file_id = catalog.observe_local_copy(
                     vault_id=2,
@@ -1474,7 +1478,7 @@ class RenameDestinationProofTests(unittest.TestCase):
                 ).fetchone()
 
             self.assertEqual(job["status"], "completed")
-            self.assertEqual(missing["availability"], "purged")
+            self.assertEqual(missing["availability"], "missing", "Unproven absence is not deletion authority")
             self.assertEqual(
                 deleted_keys,
                 [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}],
@@ -1482,7 +1486,7 @@ class RenameDestinationProofTests(unittest.TestCase):
             self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
             self.assertTrue(any(call[:1] == ("upload",) for call in upload_calls))
             by_provider = {row["provider_version_id"]: row for row in versions}
-            self.assertEqual(by_provider["missing-s3-version"]["availability"], "purged")
+            self.assertEqual(by_provider["missing-s3-version"]["availability"], "missing", "Catalog projection must agree: unproven absence is not deletion authority")
             self.assertEqual(by_provider["new-s3-version"]["integrity"], "verified")
             self.assertEqual(by_provider["new-s3-version"]["availability"], "available")
             self.assertNotEqual(job["archive_version_id"], missing_id)

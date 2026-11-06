@@ -7,12 +7,12 @@ import { jsonResponse } from "./vault-settings-harness";
 
 const t = (key: string) => key;
 const stale = { type: "file" as const, name: "same.jpg", path: "same.jpg", state: "cloud_only" };
-function setup(state: string, local: boolean, conflict = false) {
+function setup(state: string, local: boolean, conflict = false, reconciliation = false) {
   const calls: string[] = [];
   configureApiClient({ fetch: vi.fn(async (input) => {
     const url = String(input); calls.push(url);
     if (url.startsWith("/api/files/detail")) return jsonResponse({ ...stale, state, local_exists: local, cloud_exists: true, cloud_only_conflict: conflict });
-    if (url.startsWith("/api/files/versions")) return jsonResponse({ items: [{ id: "v", recoverable: true, storage_class: "STANDARD", provider_version_id: "exact", verified_at: "2026-11-05", integrity: "verified" }] });
+    if (url.startsWith("/api/files/versions")) return jsonResponse({ items: [{ id: "v", recoverable: true, storage_class: "STANDARD", provider_version_id: "exact", verified_at: "2026-11-05", integrity: "verified" }], ...(reconciliation ? { reconciliation: { pending: true, can_resume: true, reason: "orphan_different", remedy: "keep copies" } } : {}) });
     if (url.startsWith("/api/jobs")) return jsonResponse({ groups: [] });
     if (url.startsWith("/api/cloud-deletion/preview")) return jsonResponse({ object_count: 1, version_count: 1, delete_marker_count: 0, byte_count: 12 });
     if (url.startsWith("/api/cloud-deletion")) return jsonResponse({ purge_delay_seconds: 604800 });
@@ -23,6 +23,15 @@ function setup(state: string, local: boolean, conflict = false) {
 }
 afterEach(resetApiClientForTests);
 describe("deliberate file Details", () => {
+  it("offers scope-pinned exact reconciliation even when protected and normal upload is ineligible", async () => {
+    const calls = setup("protected", true, false, true);
+    await screen.findByText("reconciliation.reason.orphan_different");
+    expect(screen.queryByRole("button", { name: "essential.retry" })).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "reconciliation.resume" }));
+    await waitFor(() => expect(calls).toContain("/api/upload/reconcile?vault_id=2"));
+    expect(calls.some((url) => url.includes("/api/upload?"))).toBe(false);
+    expect(screen.queryByText("essential.danger_zone")).not.toBeInTheDocument();
+  });
   it("revalidates stale Cloud-only selection and never offers cloud deletion for a present local copy", async () => {
     const calls = setup("protected", true);
     await screen.findByText("exact");

@@ -58,7 +58,9 @@ def candidates(connection: Any, vault_id: int) -> list[dict[str, Any]]:
     return connection.execute("""
         SELECT vf.id AS vault_file_id, fp.path, av.*,
             EXISTS(SELECT 1 FROM jobs j WHERE j.vault_file_id=vf.id
-                AND j.status NOT IN ('completed','failed','cancelled')) AS busy
+                AND j.status NOT IN ('completed','failed','cancelled'))
+            OR EXISTS(SELECT 1 FROM upload_intents i WHERE i.vault_file_id=vf.id
+                AND i.send_started AND NOT i.settled) AS busy
         FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
         LEFT JOIN archive_versions av ON av.id=(SELECT a.id FROM archive_versions a
             WHERE a.vault_file_id=vf.id AND a.availability<>'purged'
@@ -210,6 +212,8 @@ def process(job: dict[str, Any], move: dict[str, Any]) -> None:
     def fence(connection: Any) -> None:
         vault = lock_vault(connection, job["vault_id"])
         require_ready(vault)
+        if connection.execute("SELECT 1 FROM upload_intents WHERE vault_file_id=%s AND send_started AND NOT settled LIMIT 1", (job["vault_file_id"],)).fetchone():
+            raise MoveBlocked("Reconcile the pending upload before another cloud mutation")
         worker.ensure_job_claim_owned_in_transaction(connection, job, "Vault move claim lost")
         if worker.job_cancelled(int(job["id"])):
             raise worker.OperationCancelled("Vault move stopped")

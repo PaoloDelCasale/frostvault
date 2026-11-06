@@ -88,6 +88,8 @@ class S3UploadPrefixTests(unittest.TestCase):
                     """,
                     (str(source), prefix),
                 )
+                from app.services.vault_relocation import enroll_vault_root_identity
+                enroll_vault_root_identity(connection, 2, str(source))
                 ArchiveCatalog(connection).observe_local_copy(
                     vault_id=2,
                     path=relative_path,
@@ -192,6 +194,8 @@ class S3RenamePrefixTests(unittest.TestCase):
                     """,
                     (str(source), prefix),
                 )
+                from app.services.vault_relocation import enroll_vault_root_identity
+                enroll_vault_root_identity(connection, 2, str(source))
                 catalog = ArchiveCatalog(connection)
                 file_id = catalog.observe_local_copy(
                     vault_id=2,

@@ -831,9 +831,25 @@
       ],
       "type": "object"
     },
+    "UploadReconciliationResponse": {
+      "type": "object",
+      "properties": {"job_id": {"type": "integer"}, "group_id": {"type": "string"}},
+      "required": ["job_id", "group_id"]
+    },
+    "UploadReconciliation": {
+      "type": "object",
+      "properties": {
+        "pending": {"type": "boolean"},
+        "can_resume": {"type": "boolean"},
+        "reason": {"type": ["string", "null"], "description": "Bounded reconciliation reason, not an integrity outcome"},
+        "remedy": {"type": ["string", "null"]}
+      },
+      "required": ["pending", "can_resume", "reason", "remedy"]
+    },
     "FileVersionsResponse": {
       "additionalProperties": true,
       "properties": {
+        "reconciliation": {"$ref": "#/components/schemas/UploadReconciliation"},
         "default_archive_version_id": {
           "type": [
             "string",

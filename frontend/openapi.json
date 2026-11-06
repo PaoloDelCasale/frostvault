@@ -635,6 +635,9 @@
           "path": {
             "type": "string"
           },
+          "reconciliation": {
+            "$ref": "#/components/schemas/UploadReconciliation"
+          },
           "recoverable_count": {
             "type": "number"
           },
@@ -2686,6 +2689,51 @@
           "region",
           "pricing_effective_at",
           "assumptions"
+        ],
+        "type": "object"
+      },
+      "UploadReconciliation": {
+        "properties": {
+          "can_resume": {
+            "type": "boolean"
+          },
+          "pending": {
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "Bounded reconciliation reason, not an integrity outcome",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remedy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "pending",
+          "can_resume",
+          "reason",
+          "remedy"
+        ],
+        "type": "object"
+      },
+      "UploadReconciliationResponse": {
+        "properties": {
+          "group_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "job_id",
+          "group_id"
         ],
         "type": "object"
       },
@@ -5120,6 +5168,64 @@
           }
         },
         "summary": "Cancel Upload"
+      }
+    },
+    "/api/upload/reconcile": {
+      "post": {
+        "description": "Exact resume only, including protected files for which upload returns 409.\n\nNo sweep, no arbitrary deletion, no resurrection of deliberate cancellation.",
+        "operationId": "reconcile_upload_api_upload_reconcile_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadReconciliationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
+          }
+        },
+        "summary": "Reconcile Upload"
       }
     },
     "/api/upload/retry-failed": {

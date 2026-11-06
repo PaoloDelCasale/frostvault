@@ -30,25 +30,33 @@ class Provider:
     def __init__(self):
         self.lock = threading.Lock()
         self.objects = {}
+        self.metadata = {}
         self.puts = []
         self.reads = []
         self.deleted = []
 
-    def upload(self, _client, *, source, bucket, key, check_active, on_progress, **_):
+    def upload(self, _client, *, source, bucket, key, check_active, on_progress, on_acknowledged=None, metadata=None, **_):
         check_active()
         version = uuid.uuid4().hex
         with self.lock:
             self.objects[(key, version)] = source.read_bytes()
+            self.metadata[(key, version)] = dict(metadata or {})
             self.puts.append((key, version))
-        # Exercise the actual progress DB callback AFTER provider response.
+        response = self.head_object(Key=key,VersionId=version)
+        if on_acknowledged:
+            on_acknowledged(response)
+        # Exercise the actual progress DB callback AFTER durable raw response.
         on_progress(source.stat().st_size)
         check_active()
-        return {"VersionId": version}
+        return response
 
     def head_object(self, *, Key, VersionId, **_):
         with self.lock:
             content = self.objects[(Key, VersionId)]
-        return {"VersionId": VersionId, "ContentLength": len(content), "ETag": '"etag"'}
+        import base64
+        return {"VersionId": VersionId, "ContentLength": len(content), "ETag": '"etag"',
+                "Metadata":dict(self.metadata[(Key,VersionId)]),"ChecksumType":"FULL_OBJECT",
+                "ChecksumSHA256":base64.b64encode(hashlib.sha256(content).digest()).decode()}
 
     def get_object(self, *, Key, VersionId, **_):
         with self.lock:
@@ -86,6 +94,8 @@ class AggregateDeadlockTests(unittest.TestCase):
             connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1,'owner','Owner','hash')")
             connection.execute("""INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix)
                 VALUES (2,'docs','Docs',%s,'bucket','docs')""", (str(self.source),))
+            from app.services.vault_relocation import enroll_vault_root_identity
+            enroll_vault_root_identity(connection, 2, str(self.source))
         self.enterContext(patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(self.path))))
         self.enterContext(patch("app.storage.validate_cloud_vault"))
         self.enterContext(patch("app.storage.s3_client", return_value=self.provider))
@@ -127,7 +137,8 @@ class AggregateDeadlockTests(unittest.TestCase):
     def assert_completed(self, count):
         with PostgresConnection(self.path) as connection:
             states = connection.execute("SELECT status, COUNT(*) AS n FROM jobs GROUP BY status").fetchall()
-            self.assertEqual(states, [{"status": "completed", "n": count}])
+            failed = connection.execute("SELECT id,status,message FROM jobs WHERE status<>'completed' ORDER BY id LIMIT 16").fetchall()
+            self.assertEqual(states, [{"status": "completed", "n": count}],failed)
             versions = connection.execute("SELECT provider_version_id,integrity,availability FROM archive_versions").fetchall()
         self.assertEqual(len(versions), count)
         self.assertTrue(all(v["integrity"] == "verified" and v["availability"] == "available" for v in versions))
@@ -336,12 +347,14 @@ class AggregateDeadlockTests(unittest.TestCase):
             previous = catalog.record_archive_version(
                 vault_id=2, path=path, object_key=key, provider_version_id="previous-only-copy",
                 size=3, storage_class="STANDARD", etag="old", uploaded_at="2026-07-20",
-                observed_at="2026-07-20", scan_id="old",
+                observed_at="2026-07-20", scan_id="old", origin="upload",
             )
             catalog.mark_version_verified(previous, plaintext_sha256=hashlib.sha256(b"old").hexdigest(), verified_at="2026-07-20")
+            owner = connection.execute("SELECT vault_file_id FROM archive_versions WHERE id=%s", (previous,)).fetchone()["vault_file_id"]
+            connection.execute("INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,action,status,requested_at,updated_at,upload_plaintext_sha256) VALUES (2,%s,%s,%s,'upload','completed','2026-07-20','2026-07-20',%s)", (owner,previous,path,hashlib.sha256(b"old").hexdigest()))
         self.provider.objects[(key, "previous-only-copy")] = b"old"
         original_verify = ArchiveCatalog.mark_version_verified
-        original_clear = ArchiveCatalog.clear_delete_markers_for_file
+        original_purge = ArchiveCatalog.mark_versions_purged
         attempts = {"verify": 0, "cleanup": 0}
 
         def verify_once(catalog, *args, **kwargs):
@@ -351,7 +364,7 @@ class AggregateDeadlockTests(unittest.TestCase):
                 catalog.connection.execute("DO $$ BEGIN RAISE EXCEPTION 'forced verification abort' USING ERRCODE='40001'; END $$")
 
         def cleanup_once(catalog, *args, **kwargs):
-            original_clear(catalog, *args, **kwargs)
+            original_purge(catalog, *args, **kwargs)
             attempts["cleanup"] += 1
             if attempts["cleanup"] == 1:
                 # Even a verified version is not a completed Job at this seam.
@@ -360,7 +373,7 @@ class AggregateDeadlockTests(unittest.TestCase):
                 catalog.connection.execute("DO $$ BEGIN RAISE EXCEPTION 'forced cleanup abort' USING ERRCODE='40P01'; END $$")
 
         with patch.object(ArchiveCatalog, "mark_version_verified", verify_once), patch.object(
-            ArchiveCatalog, "clear_delete_markers_for_file", cleanup_once
+            ArchiveCatalog, "mark_versions_purged", cleanup_once
         ):
             self.assertTrue(self.run_job(jobs[0]))
         self.assertEqual(attempts, {"verify": 2, "cleanup": 2})

@@ -50,7 +50,7 @@ class Provider:
         return {"VersionId":created}
 
     def list_object_versions(self, **kw):
-        return {"Versions":[dict(Key=kw["Prefix"],VersionId=v) for v in self.versions]}
+        return {"Versions":[dict(Key=kw["Prefix"],VersionId=v) for v in self.versions], "DeleteMarkers": [], "IsTruncated": False}
 
     def delete_object(self, **kw):
         assert kw["VersionId"] != self.current

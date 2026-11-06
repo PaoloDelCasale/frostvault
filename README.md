@@ -448,11 +448,59 @@ verification behavior and exact VersionId pins; this is only a new-upload policy
 Migration `0063_upload_verification` adds nullable evidence and override fields,
 without backfilling or rewriting existing trust. Downgrade discards the new method/
 expected-provider fields, not plaintext digests or verified/available state.
-This change does not provide crash-gap provenance, orphan cleanup or automatic
-historical repair (#464/#459). See [ADR-0023](docs/adr/0023-new-upload-ingestion-proof.md).
+See [ADR-0023](docs/adr/0023-new-upload-ingestion-proof.md) for the verification
+contract and [ADR-0024](docs/adr/0024-upload-facts-and-proven-duplicate-cleanup.md)
+for durable upload facts and replacement cleanup.
 Incomplete multipart uploads are aborted on failure/cancellation, with a seven-day
 lifecycle safety net for process interruption. No external transfer binary or
 remote configuration is required.
+
+### Interrupted upload and retained cloud extras
+
+Migration `0064_upload_provenance` commits a target-specific upload intent,
+independent Upload Snapshot and separate opaque metadata token before any cloud
+mutation. Raw VersionId receipts append before proof/HEAD/progress flush or
+cancellation, independently of a worker lease; a receipt is a fact, not permission
+to publish or delete. PutObject/CreateMultipartUpload/CompleteMultipartUpload use
+`total_max_attempts=1`; reads and same-MPU parts retain ordinary SDK retries.
+
+Restart/retry reconciles the exact receipt or an exact unique token match against
+that frozen expected proof before any new PUT. Zero matches after send-started,
+multiple/fake tokens, incomplete/unstable pagination and observable external
+writers remain **reconcile-only**, not evidence that another upload is safe.
+Source A's receipt never verifies a later Local Copy B; an unavailable/replaced
+Source Volume or changed Vault/path still suspends authority, even when individual
+local-file absence would not prevent finishing an already-written target.
+
+Upload and rename replacement cleanup share durable per-VersionId authority.
+Scans discover content but do not directly delete it or grant trust by cataloging
+it. Ordinary app-owned superseded versions require independent lineage. Historical
+unknowns are adopted/cleaned only after a full exact-VersionId GET, checked length
+and SHA256 prove a duplicate of a verified, available, current keeper. The proof
+catalog does not promote an older duplicate to Current Snapshot or alter local
+matches/verification clocks. A committed exact proof avoids repeated GET on retry.
+Different, ambiguous, cold/unreadable versions stay in cloud with a deduplicated
+Problem and a safe remedy. Historical reads may incur retrieval/egress/request
+charges; explicitly restore an exact cold version externally if needed. No
+arbitrary deletion or automatic RestoreObject action is offered.
+
+File Details exposes **Retry exact reconciliation** independently of the normal
+upload action (including already protected files for which upload returns 409).
+`POST /api/upload/reconcile` admits one stable Vault File into a claim-fenced,
+reconcile-only Job incapable of PUT; `/api/files/versions` exposes pending,
+can_resume, bounded reason and remedy. Cancelled attempts retain facts and cannot
+be automatically resurrected. New writers, path/owner/source changes, missing
+keepers and Delete Markers block cleanup; only exact authorized IDs may be deleted,
+never the keeper. Keep external S3/SMB writers quiescent: DB locks are not an atomic
+provider snapshot, and in-flight deletes cannot be undone. Delayed deletion
+consent, metadata-backup retention and generic prefix utilities are unchanged.
+
+No automatic sweep or original-failure history resolution is added here; #459
+owns that separate operational cadence. Verified is still not completed until
+cleanup satisfies its postcondition. Downgrade refuses retained ambiguous sends
+or pending cleanup authority before dropping metadata, without contacting S3.
+No real AWS or object larger than 5 GiB acceptance is claimed by the compatible
+CI emulator/SDK tests.
 
 Migration `0051_plaintext_vaults` refuses legacy
 encrypted Vaults before any schema change; recover test data using the previous
