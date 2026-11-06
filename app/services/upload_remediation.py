@@ -178,7 +178,7 @@ def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_i
     if not file:
         raise provenance.UploadBlocked("identity_changed")
     discover_file(connection,current,file["vault_file_id"],timestamp)
-    rows = connection.execute("SELECT * FROM upload_remediations WHERE vault_file_id=%s AND vault_id=%s AND state<>'resolved' AND (%s::text IS NULL OR id=%s) ORDER BY created_at,id LIMIT 2", (file["vault_file_id"],vault["id"],remediation_id,remediation_id)).fetchall()
+    rows = connection.execute("SELECT * FROM upload_remediations WHERE vault_file_id=%s AND vault_id=%s AND state<>'resolved' AND (%s::text IS NULL OR id=%s) ORDER BY created_at,id LIMIT 8", (file["vault_file_id"],vault["id"],remediation_id,remediation_id)).fetchall()
     if remediation_id and not rows:
         raise provenance.UploadBlocked("identity_changed")
     if not rows:
@@ -196,6 +196,12 @@ def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_i
         connection.execute("UPDATE upload_remediations SET state='queued',current_job_id=%s WHERE id=%s", (job["id"], episode["id"]))
         connection.execute("INSERT INTO upload_remediation_jobs(job_id,remediation_id,vault_file_id,vault_id) VALUES (%s,%s,%s,%s)", (job["id"],episode["id"],job["vault_file_id"],current["id"]))
         return result
+    if len(rows) > 1 and not remediation_id:
+        # An unsettled app-write must be reconciled before any older keeper's
+        # cleanup. Never choose between two unsettled/independent targets.
+        unsettled = [r for r in rows if r["intent_id"] and connection.execute(
+            "SELECT 1 FROM upload_intents WHERE id=%s AND send_started AND NOT settled", (r["intent_id"],)).fetchone()]
+        rows = unsettled if len(unsettled) == 1 else rows
     if len(rows) != 1:
         raise provenance.UploadBlocked("ambiguous_receipt")
     result = admit(connection,rows[0],current,user_id=user_id,stamp=timestamp,automatic=False,explicit=True)

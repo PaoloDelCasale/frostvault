@@ -207,6 +207,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
             connection.execute("UPDATE jobs SET status='failed',retry_after=NULL WHERE id=%s",(original,))
             connection.execute("DELETE FROM upload_receipts")
             connection.execute("DELETE FROM upload_intent_jobs")
+            connection.execute("DELETE FROM upload_remediation_facts")
             connection.execute("DELETE FROM upload_intents")
             set_policy(connection,2,OperationPolicy(upload_verification="s3_checksum"))
             state = provenance.describe(connection,vault_id=2,path="report.txt")

@@ -37,7 +37,7 @@ def capture(connection: Any, stamp: str, *, version_id: str | None = None,
             av.vault_id,av.vault_file_id,i.id,av.id,%s,%s
         FROM archive_versions av JOIN vault_files vf ON vf.id=av.vault_file_id AND vf.vault_id=av.vault_id
         LEFT JOIN upload_intents i ON i.archive_version_id=av.id AND i.vault_id=av.vault_id
-            AND i.vault_file_id=av.vault_file_id AND i.send_started
+AND i.vault_file_id=av.vault_file_id AND i.send_started AND NOT i.settled
         WHERE av.id=%s OR (av.vault_file_id=%s AND av.id=(SELECT keeper.id FROM archive_versions keeper
             WHERE keeper.vault_file_id=%s AND keeper.integrity='verified' AND keeper.availability='available'
             ORDER BY keeper.version_number DESC LIMIT 1)) ON CONFLICT (target_key) DO NOTHING""",
@@ -69,6 +69,10 @@ def enroll(connection: Any, original: dict[str, Any] | None, vault: dict[str, An
         version_id = original["archive_version_id"]
     else:
         intent = connection.execute("SELECT * FROM upload_intents WHERE id=%s AND vault_id=%s", (intent_id, vault["id"])).fetchone() if intent_id else None
+        if intent and intent["settled"]:
+            # A settled intent is finished provenance. Remaining cleanup is an
+            # exact Archive Version obligation, never a replay of old inventory.
+            version_id, intent = intent["archive_version_id"] or version_id, None
     if intent:
         if original and original["archive_version_id"] and intent["archive_version_id"] and original["archive_version_id"] != intent["archive_version_id"]:
             _reject(connection, original, stamp, "proof_mismatch")
@@ -76,7 +80,7 @@ def enroll(connection: Any, original: dict[str, Any] | None, vault: dict[str, An
         version_id = intent["archive_version_id"] or version_id
     version = connection.execute("SELECT * FROM archive_versions WHERE id=%s AND vault_id=%s", (version_id, vault["id"])).fetchone() if version_id else None
     if not intent and version:
-        intent = connection.execute("SELECT * FROM upload_intents WHERE archive_version_id=%s AND vault_id=%s AND vault_file_id=%s AND send_started", (version["id"], vault["id"], version["vault_file_id"])).fetchone()
+        intent = connection.execute("SELECT * FROM upload_intents WHERE archive_version_id=%s AND vault_id=%s AND vault_file_id=%s AND send_started AND NOT settled", (version["id"], vault["id"], version["vault_file_id"])).fetchone()
     if not version and not (intent and intent["send_started"]):
         _reject(connection, original, stamp, "expected_evidence_missing")
         return None

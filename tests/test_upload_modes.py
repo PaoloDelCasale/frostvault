@@ -388,6 +388,7 @@ class UploadModeTests(unittest.TestCase):
             # tampering with the immutable baseline of a new journalled intent.
             connection.execute("DELETE FROM upload_receipts")
             connection.execute("DELETE FROM upload_intent_jobs")
+            connection.execute("DELETE FROM upload_remediation_facts")
             connection.execute("DELETE FROM upload_intents")
             connection.execute("DELETE FROM snapshot_cleanup_inventories")
         (self.source / "a.txt").write_bytes(b"independent snapshot B")
