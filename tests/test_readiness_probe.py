@@ -57,7 +57,7 @@ class ProbeHostTests(unittest.TestCase):
             "vault.example\x00",
             "$(touch /tmp/not-executed)",
             "vault.example; echo injected",
-            "`id`", "vault.example/path", "user:password@vault.example",
+            "`id`", "vault.example/path", "user:password@example.com",
             "https://vault.example", "vault.example:8080", "*.example", "*",
             "[::1]", "::1", "bücher.example", "bad host", "-bad.example",
             "bad..example", "bad-.example", "a" * 64 + ".example",
