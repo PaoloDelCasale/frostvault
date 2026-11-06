@@ -172,7 +172,7 @@ class UploadRemediationTests(unittest.TestCase):
         self.assertEqual(self.provider.puts,1)
 
     def test_target_budget_deadline_restart_and_explicit_retry_do_not_reset(self):
-        self.fail_after_ack()
+        original = self.fail_after_ack()
         resumed = self.admit()
         self.provider.hook = lambda stage, **kw: (_ for _ in ()).throw(TimeoutError("connection reset")) if stage == "head" else None
         self.run_job(resumed)
@@ -198,6 +198,17 @@ class UploadRemediationTests(unittest.TestCase):
         with self.db() as connection:
             self.assertEqual(connection.execute("SELECT id FROM upload_remediations").fetchone()["id"],epoch)
         self.assertEqual(self.provider.puts,1)
+        with self.db() as connection:
+            notifications.reconcile_problem_states(connection)
+            failures = connection.execute("SELECT job_id,problem_status,read_at FROM notifications WHERE event='job_failed'").fetchall()
+            self.assertEqual({row["job_id"] for row in failures}, {original, resumed})
+            self.assertTrue(all(row["problem_status"] == "resolved" and row["read_at"] for row in failures), "Failed remediation attempts are resolved and read with their exact target")
+            connection.execute("DELETE FROM notification_deliveries")
+            connection.execute("DELETE FROM notifications")
+            notifications.enqueue_job_terminal_notification(connection, job_id=resumed)
+            late = connection.execute("SELECT problem_status,read_at FROM notifications WHERE job_id=%s", (resumed,)).fetchone()
+            self.assertEqual(late["problem_status"], "resolved")
+            self.assertIsNotNone(late["read_at"], "Late resolved attempts must not remain unread forever")
 
     def test_concurrent_manual_and_sweep_share_one_target_and_active_file(self):
         self.fail_after_ack()
@@ -267,8 +278,20 @@ class UploadRemediationTests(unittest.TestCase):
             self.assertNotIn("claim_token",reverse)
 
     def test_verified_alone_cannot_complete_remediation(self):
-        self.fail_after_ack()
+        original = self.queue()
+        with patch("app.storage.purge_current_snapshot_superseded", side_effect=RuntimeError("post verified fault")):
+            self.run_job(original)
         resumed = self.admit()
+        with self.db() as connection:
+            linked = self.row(resumed)["archive_version_id"]
+            self.assertIsNotNone(linked)
+            self.assertEqual(connection.execute("SELECT integrity FROM archive_versions WHERE id=%s", (linked,)).fetchone()["integrity"], "verified")
+            # Isolate ONLY the incomplete cleanup guard: linked verified AV,
+            # settled intent and exact inventory pointer are all present.
+            connection.execute("UPDATE upload_intents SET settled=TRUE WHERE archive_version_id=%s", (linked,))
+            connection.execute("UPDATE snapshot_cleanup_inventories SET keeper_id=%s,completed_at=NULL WHERE job_id=%s", (linked, original))
+            connection.execute("UPDATE upload_remediations SET cleanup_inventory_job_id=%s", (original,))
+            self.assertTrue(connection.execute("SELECT settled FROM upload_intents WHERE archive_version_id=%s", (linked,)).fetchone()["settled"])
         with self.assertRaisesRegex(RuntimeError,"exact cleanup postcondition"):
             storage.set_job(resumed,"completed")
         self.assertEqual(self.row(resumed)["status"],"queued","Authoritative transition rolls back")

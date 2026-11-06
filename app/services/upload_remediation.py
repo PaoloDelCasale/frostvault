@@ -19,7 +19,11 @@ VAULT_BATCH = 10
 TARGET_BATCH = 10
 TERMINAL = ("completed", "failed", "cancelled")
 RESOLUTION_SQL = """EXISTS (
-    SELECT 1 FROM upload_remediation_originals o
+    SELECT 1 FROM (
+        SELECT remediation_id,original_job_id FROM upload_remediation_originals
+        UNION ALL
+        SELECT remediation_id,job_id AS original_job_id FROM upload_remediation_jobs
+    ) o
     JOIN upload_remediations r ON r.id=o.remediation_id
     JOIN upload_remediation_jobs b ON b.remediation_id=r.id AND b.job_id=r.resolved_by_job_id
     JOIN jobs resolving ON resolving.id=b.job_id

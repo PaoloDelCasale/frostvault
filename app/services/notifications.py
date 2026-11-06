@@ -340,10 +340,12 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
                     problem_status=CASE WHEN {RESOLUTION_SQL} THEN 'resolved'
                         ELSE COALESCE(n.problem_status,'open') END,
                     resolved_at=CASE WHEN {RESOLUTION_SQL} THEN COALESCE(n.resolved_at,%s)
-                        ELSE n.resolved_at END
+                        ELSE n.resolved_at END,
+                    read_at=CASE WHEN {RESOLUTION_SQL} THEN COALESCE(n.read_at,%s)
+                        ELSE n.read_at END
                     FROM jobs original WHERE original.id=n.job_id
                       AND n.user_id=%s AND n.dedupe_key=%s""",
-                (now_iso(), user_id, dedupe_key),
+                (now_iso(), now_iso(), user_id, dedupe_key),
             )
         if existing is None:
             enqueued += 1

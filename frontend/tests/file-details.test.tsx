@@ -29,6 +29,8 @@ describe("deliberate file Details", () => {
     const calls = setup("pending", true, false, false, true);
     await screen.findByText("remediation.target: snapshot-A");
     expect(screen.getByText("remediation.phase: remediation.phase.cleanup")).toBeInTheDocument();
+    expect(screen.getByText("remediation.reason: reconciliation.reason.cleanup_unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("remediation.reason: cleanup_unavailable")).not.toBeInTheDocument();
     expect(screen.getByText("essential.protection: state.pending")).toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole("button", { name: "reconciliation.resume" }));
     await waitFor(() => expect(calls).toContain("/api/upload/reconcile?vault_id=2"));
@@ -42,7 +44,7 @@ describe("deliberate file Details", () => {
     await screen.findByText("2026-11-01 · Historical failure");
     await user.click(screen.getByRole("button", { name: "remediation.older" }));
     await waitFor(() => expect(calls).toContain("/api/files/jobs?path=same.jpg&before_id=100&vault_id=2"));
-    await user.click(screen.getByRole("button", { name: "remediation.job · failed" }));
+    await user.click(screen.getByRole("button", { name: "remediation.job · operation.failed" }));
     await waitFor(() => expect(calls).toContain("/api/jobs/1?vault_id=2"));
     expect(screen.getByRole("button", { name: "remediation.original" })).toBeInTheDocument();
   });
