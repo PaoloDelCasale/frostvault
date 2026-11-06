@@ -1,5 +1,9 @@
 # Plaintext Vaults with fail-closed bucket public-access checks
 
+> ADR-0023 supersedes the CRC32/read-back-only proof contract below **for new
+> uploads only**, with independent SHA256 full/composite evidence and visible
+> exact Read-back fallback. Shared-operation verification is not weakened.
+
 Decision #366 Q13, implemented by #419, removes per-Vault encryption in favor of
 file-only emergency recovery using any authorized S3 tool. Original bytes and
 readable names live under `vaults/<uuid>/<relative-path>`; there are no per-Vault

@@ -86,6 +86,10 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             )
         return missing_id
 
+    def test_upload_verification_populated_roundtrip_never_rewrites_trust(self):
+        from tests.upload_verification_migration_contract import assert_upload_verification_migration
+        assert_upload_verification_migration(self, self.run_alembic, self._connection)
+
     def test_storage_plan_migration_preserves_populated_catalog_and_only_cloud_copy(self):
         from tests.storage_plan_migration_contract import assert_storage_plan_migration
         assert_storage_plan_migration(self, self.run_alembic, self._connection)

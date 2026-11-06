@@ -669,6 +669,7 @@ class OperationPolicyUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     auto_upload: bool = True
+    upload_verification: Literal["s3_checksum", "read_back"] | None = None
     local_release_after_days: Literal[90, 180, 365, 730] | None = None
     stability_seconds: int = Field(default=300, ge=0)
     include_globs: list[str] = Field(default_factory=list)
@@ -2791,7 +2792,9 @@ def reconnect_vault_root(
 @app.get("/api/vault/operation-policy", response_model=response_model("OperationPolicy"))
 def own_vault_operation_policy(vault: dict[str, Any] = Depends(current_vault)):
     with db() as connection:
-        return get_policy(connection, vault["id"]).as_dict()
+        policy = get_policy(connection, vault["id"])
+        return {**policy.as_dict(), "global_upload_verification": settings.upload_verification,
+                "effective_upload_verification": policy.effective_upload_verification()}
 
 
 @app.put("/api/vault/operation-policy", response_model=response_model("OperationPolicy"))
@@ -2824,7 +2827,8 @@ def update_vault_operation_policy(
             visibility="vault",
             policy=stored.as_dict(),
         )
-    return stored.as_dict()
+    return {**stored.as_dict(), "global_upload_verification": settings.upload_verification,
+            "effective_upload_verification": stored.effective_upload_verification()}
 
 
 @app.post("/api/vault/operation-policy/preview-globs", response_model=response_model("GlobPreviewResponse"))

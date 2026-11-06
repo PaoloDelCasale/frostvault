@@ -6,6 +6,7 @@ from pathlib import Path
 from app.catalog import ArchiveCatalog
 from app.services.operation_policies import get_policy
 from tests.postgres import PostgresConnection, run_alembic
+from tests.upload_verification_migration_contract import without_upload_verification_fields
 
 
 class WatcherUploadMigrationTests(unittest.TestCase):
@@ -42,7 +43,7 @@ class WatcherUploadMigrationTests(unittest.TestCase):
                 self.assertTrue(get_policy(connection, 4).auto_upload)
                 connection.execute("INSERT INTO vault_operation_policies(vault_id) VALUES (4)")
                 self.assertTrue(get_policy(connection, 4).auto_upload)  # database default too
-                self.assertEqual(connection.execute("SELECT * FROM archive_versions").fetchall(), before)
+                self.assertEqual(without_upload_verification_fields(connection.execute("SELECT * FROM archive_versions").fetchall(), "archive_versions"), before)
                 self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()["n"], 0)
             result = run_alembic(identity, "0053_vault_storage_plans", "downgrade")
             self.assertEqual(result.returncode, 0, result.stderr)

@@ -379,7 +379,8 @@ class VaultMoveTests(unittest.TestCase):
         from tests.test_database import run_alembic
         self.schedule()
         with PostgresConnection(str(self.path)) as c:
-            before=c.execute('SELECT * FROM archive_versions ORDER BY id').fetchall()
+            from tests.upload_verification_migration_contract import without_upload_verification_fields
+            before=without_upload_verification_fields(c.execute('SELECT * FROM archive_versions ORDER BY id').fetchall(), 'archive_versions')
         refused=run_alembic(self.path,'0059_delayed_cloud_deletion','downgrade')
         self.assertNotEqual(refused.returncode,0)
         with PostgresConnection(str(self.path)) as c:
@@ -388,7 +389,7 @@ class VaultMoveTests(unittest.TestCase):
             result=run_alembic(self.path,revision,command)
             self.assertEqual(result.returncode,0,result.stderr)
             with PostgresConnection(str(self.path)) as c:
-                self.assertEqual(c.execute('SELECT * FROM archive_versions ORDER BY id').fetchall(),before)
+                self.assertEqual(without_upload_verification_fields(c.execute('SELECT * FROM archive_versions ORDER BY id').fetchall(), 'archive_versions'),before)
         self.assertEqual(self.provider.deleted,[])
 
     def test_worker_cannot_publish_after_claim_takeover(self):

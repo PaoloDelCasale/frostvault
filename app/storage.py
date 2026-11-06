@@ -21,6 +21,10 @@ import psycopg
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from .services.s3_upload import upload_file
+from .services.upload_snapshot import (
+    UploadSnapshot, prepare_upload_snapshot, validated_s3_proof, UploadProofMismatch,
+    unsupported_checksum_api,
+)
 from watchfiles import Change, awatch
 
 from .config import is_placeholder, settings, settings_snapshot
@@ -3161,6 +3165,9 @@ def upload_s3_file(job: dict[str, Any], *, source: Path, key: str) -> dict[str, 
         check_active=lambda: ensure_job_active(job["id"], "Upload stopped"),
         on_progress=reporter.add,
         max_bandwidth=int(limit) * 1024 if limit else None,
+        snapshot=job.get("_upload_snapshot"),
+        metadata=job.get("_upload_metadata"),
+        on_acknowledged=job.get("_on_upload_acknowledged"),
     )
     reporter.flush()
     return response
@@ -3385,6 +3392,28 @@ def process_upload(job: dict[str, Any]) -> None:
     verification_failure_reason: str | None = None
     local_plaintext_sha256: str | None = None
     source_stat: os.stat_result | None = None
+    snapshot: UploadSnapshot | None = None
+    requested_mode = str((linked_target or {}).get("job_upload_verification_requested") or "read_back")
+
+    def evaluate_provider_proof(proof: dict[str, Any], *, source: str,
+                                completion: bool = False) -> dict[str, str] | None:
+        # Every evidence origin, including the post-read HEAD, obeys the same
+        # contradiction policy and records one verification-failure metric.
+        nonlocal verification_started, verification_failure_reason
+        assert snapshot is not None
+        verification_started = True
+        try:
+            return validated_s3_proof(
+                proof, version_id=target["provider_version_id"],
+                snapshot=snapshot, source=source, completion=completion,
+            )
+        except UploadProofMismatch:
+            verification_failure_reason = "mismatch"
+            _upload_catalog_unit(job, lambda catalog: catalog.mark_version_mismatch(
+                version_id, plaintext_sha256=upload_digest, checked_at=now_iso(),
+            ))
+            raise
+
     try:
         if not linked_version_id:
             if not local_present:
@@ -3392,7 +3421,13 @@ def process_upload(job: dict[str, Any]) -> None:
                     "The file is no longer available in the source folder"
                 )
             set_job(job["id"], "uploading", message_key="job.hashing_local_file")
-            local_plaintext_sha256, source_stat = hash_stable_regular_file(source)
+            snapshot, source_stat = prepare_upload_snapshot(
+                source, lambda: ensure_job_active(job["id"], "Upload claim was lost"),
+            )
+            local_plaintext_sha256 = snapshot.plaintext_sha256
+            old_snapshot = (linked_target or {}).get("job_upload_snapshot_json")
+            if old_snapshot is not None and old_snapshot != snapshot.as_json():
+                raise RuntimeError("Local file changed since fingerprinting")
             ensure_job_active(job["id"], "Upload claim was lost")
             # Preflight and hashing can take time. A watcher edit in between
             # must earn a fresh stability window before the first cloud write.
@@ -3419,8 +3454,15 @@ def process_upload(job: dict[str, Any]) -> None:
                 raise RuntimeError("The linked Archive Version is no longer available")
             if not target.get("object_key") or not target.get("provider_version_id"):
                 raise RuntimeError("The linked Archive Version cannot be verified safely")
+            if target.get("upload_snapshot_json") is not None:
+                snapshot = UploadSnapshot.from_json(target["upload_snapshot_json"])
+                requested_mode = target.get("upload_verification_requested") or "read_back"
+                if snapshot.plaintext_sha256 != upload_digest:
+                    raise RuntimeError("Upload Snapshot digest differs from durable upload digest")
             head = _verification_version_head(client, job, target)
             if integrity == "verified":
+                if snapshot is not None:
+                    evaluate_provider_proof(head, source="ordinary_head")
                 _complete_verified_upload(
                     job,
                     source=source,
@@ -3439,7 +3481,8 @@ def process_upload(job: dict[str, Any]) -> None:
             # provider.  Local Copy fingerprints are mutable scan observations
             # and cannot identify a retry after the source changes.
             def prepare_digest(catalog: ArchiveCatalog) -> dict[str, Any] | None:
-                catalog.set_upload_plaintext_digest(job["id"], plaintext_sha256=upload_digest)
+                assert snapshot is not None
+                catalog.set_upload_snapshot(job["id"], snapshot_json=snapshot.as_json())
                 vault_file_id = job.get("vault_file_id") or (linked_target or {}).get("vault_file_id")
                 return catalog.find_reusable_upload_version(
                     vault_file_id=str(vault_file_id), plaintext_sha256=upload_digest,
@@ -3453,6 +3496,16 @@ def process_upload(job: dict[str, Any]) -> None:
             if reusable is not None and reusable_integrity == "verified":
                 version_id = str(reusable["id"])
                 _upload_catalog_unit(job, lambda catalog: catalog.link_job_version(job["id"], version_id))
+                target = _upload_catalog_unit(job, lambda catalog: catalog.get_job_target(job["id"]))
+                # A cleanup-only reuse retains the VERSION's original baseline,
+                # never today's newly hashed multipart layout or verification mode.
+                if target.get("upload_snapshot_json") is not None:
+                    snapshot = UploadSnapshot.from_json(target["upload_snapshot_json"])
+                    if snapshot.plaintext_sha256 != upload_digest:
+                        raise RuntimeError("Upload Snapshot digest differs from durable upload digest")
+                    evaluate_provider_proof(
+                        _verification_version_head(client, job, target), source="ordinary_head",
+                    )
                 _complete_verified_upload(
                     job,
                     source=source,
@@ -3480,49 +3533,71 @@ def process_upload(job: dict[str, Any]) -> None:
                     "upload_plaintext_sha256": upload_digest,
                     "integrity": "unverified",
                     "availability": reusable.get("availability") or "available",
+                    "upload_snapshot_json": reusable.get("upload_snapshot_json"),
+                    "upload_verification_requested": reusable.get("upload_verification_requested"),
                 }
+                # Reusing a prior intent never substitutes today's Local Copy
+                # or policy for its historical expected evidence.
+                snapshot = UploadSnapshot.from_json(target["upload_snapshot_json"]) if target.get("upload_snapshot_json") else None
+                requested_mode = target.get("upload_verification_requested") or "read_back"
                 head = _verification_version_head(client, job, target)
             else:
                 set_job(job["id"], "uploading", message_key="job.plain_upload")
                 key = expected_cloud_key(job["path"], job["s3_prefix"])
-                response = upload_s3_file(job, source=source, key=key)
-                ensure_job_active(job["id"], "Upload stopped")
-                provider_version_id = response.get("VersionId")
-                head = client.head_object(Bucket=job["s3_bucket"], Key=key,
-                                          VersionId=provider_version_id)
-                if not provider_version_id:
-                    raise RuntimeError(
-                        "Upload stored without an S3 VersionId; bucket Versioning is required"
-                    )
-                ensure_job_active(job["id"], "Upload claim was lost")
-                timestamp = now_iso()
+                assert snapshot is not None
+                acknowledged: dict[str, Any] = {}
 
-                def record_response(catalog: ArchiveCatalog) -> str:
-                    # Retain exact response + HEAD across an aborted DB unit.
-                    # Never move the PUT/HEAD into this callback.
-                    recorded = catalog.record_archive_version(
-                        vault_id=job["vault_id"], path=job["path"], object_key=key,
-                        provider_version_id=provider_version_id,
-                        size=head.get("ContentLength"),
-                        storage_class=head.get("StorageClass", "STANDARD"),
-                        etag=head.get("ETag", "").strip('"'),
-                        uploaded_at=timestamp, observed_at=timestamp,
-                        scan_id=timestamp, origin="upload",
-                    )
-                    catalog.link_job_version(job["id"], recorded)
-                    return recorded
+                def acknowledge(response: dict[str, Any]) -> None:
+                    # Capture raw identity before HEAD/proof/cancellation. This
+                    # protects the in-process response gap, not crash/ambiguous
+                    # completion provenance (the journal belongs to #464).
+                    acknowledged["response"] = dict(response)
+                    provider_id = response.get("VersionId")
+                    if not provider_id or provider_id == "null":
+                        raise RuntimeError("Upload stored without an S3 VersionId; bucket Versioning is required")
+                    if "version_id" in acknowledged:
+                        return
+                    timestamp = now_iso()
+                    def record_response(catalog: ArchiveCatalog) -> str:
+                        recorded = catalog.record_archive_version(
+                            vault_id=job["vault_id"], path=job["path"], object_key=key,
+                            provider_version_id=provider_id, size=snapshot.size,
+                            storage_class=response.get("StorageClass", "STANDARD"),
+                            etag=response.get("ETag", "").strip('"'),
+                            uploaded_at=timestamp, observed_at=timestamp,
+                            scan_id=timestamp, origin="upload",
+                        )
+                        catalog.set_version_upload_snapshot(recorded, snapshot_json=snapshot.as_json(), requested=requested_mode)
+                        catalog.link_job_version(job["id"], recorded)
+                        return recorded
+                    acknowledged["version_id"] = _upload_catalog_unit(job, record_response)
 
-                version_id = _upload_catalog_unit(job, record_response)
+                transfer_job = {**job, "_upload_snapshot": snapshot, "_on_upload_acknowledged": acknowledge}
+                response = upload_s3_file(transfer_job, source=source, key=key)
+                # Compatibility with injected/embedded transports that return
+                # their raw response without invoking the optional callback.
+                acknowledge(response)
+                version_id = acknowledged["version_id"]
                 target = {
-                    "archive_version_id": version_id,
-                    "object_key": key,
-                    "provider_version_id": provider_version_id,
-                    "cloud_size": head.get("ContentLength"),
+                    "archive_version_id": version_id, "object_key": key,
+                    "provider_version_id": response["VersionId"], "cloud_size": snapshot.size,
                     "upload_plaintext_sha256": upload_digest,
-                    "integrity": "unverified",
-                    "availability": "available",
+                    "upload_snapshot_json": snapshot.as_json(),
+                    "upload_verification_requested": requested_mode,
+                    "integrity": "unverified", "availability": "available",
                 }
+                # Present contradictory completion evidence blocks even when
+                # read_back was requested; absence alone is not a mismatch.
+                target["_provider_proof"] = evaluate_provider_proof(
+                    response, source="upload_response", completion=True,
+                )
+                head = _verification_version_head(client, job, target)
 
+        if snapshot is not None:
+            # A normal HEAD may also contain checksum fields. Any present
+            # contradictory evidence blocks, even when full Read-back was
+            # requested or completion already supplied a valid proof.
+            evaluate_provider_proof(head, source="ordinary_head")
         ensure_job_active(job["id"], "Upload stopped")
         # Snapshot A is identified by the persisted upload digest. A later
         # Local Copy must not abort verification or be treated as a mismatch
@@ -3535,12 +3610,47 @@ def process_upload(job: dict[str, Any]) -> None:
             if source_stat is not None
             else int(job.get("total_bytes") or target.get("cloud_size") or 0)
         )
+        fallback_reason = None
+        checksum_proven = False
+        provider_proof = target.get("_provider_proof")
+        if requested_mode == "s3_checksum" and snapshot is not None:
+            checksum_proven = provider_proof is not None
+            if not checksum_proven:
+                try:
+                    proof = client.head_object(Bucket=job["s3_bucket"], Key=target["object_key"],
+                                               VersionId=target["provider_version_id"], ChecksumMode="ENABLED")
+                    provider_proof = evaluate_provider_proof(proof, source="exact_head")
+                    checksum_proven = provider_proof is not None
+                    if not checksum_proven:
+                        fallback_reason = "checksum_missing"
+                except Exception as exc:
+                    if not unsupported_checksum_api(exc):
+                        raise
+                    fallback_reason = "checksum_api_unsupported"
+        elif snapshot is None:
+            fallback_reason = "legacy_expected_missing"
+        method = "s3_checksum" if checksum_proven else "read_back"
+        _upload_catalog_unit(job, lambda catalog: catalog.set_version_verification_method(
+            version_id, method=method, fallback_reason=fallback_reason, egress_bytes=0 if checksum_proven else None,
+            provider_proof=provider_proof if checksum_proven else None,
+        ))
+        if checksum_proven:
+            _complete_verified_upload(
+                job, source=source, version_id=version_id, upload_digest=upload_digest,
+                mark_verified=True, local_digest=local_plaintext_sha256, local_stat=source_stat,
+            )
+            return
+        if fallback_reason:
+            set_job(job["id"], "verifying", message_key="job.verifying_cloud_fallback")
         remote_digest, remote_size = _stream_plaintext_for_verification(
-            job,
-            target=target,
-            source_size=source_size,
+            job, target=target, source_size=source_size,
         )
-        _verification_version_head(client, job, target)
+        _upload_catalog_unit(job, lambda catalog: catalog.set_version_verification_method(
+            version_id, method="read_back", fallback_reason=fallback_reason, egress_bytes=remote_size,
+        ))
+        final_head = _verification_version_head(client, job, target)
+        if snapshot is not None:
+            evaluate_provider_proof(final_head, source="ordinary_head")
         expected_stream_size = target.get("cloud_size")
         if expected_stream_size is not None and remote_size != int(expected_stream_size):
             verification_failure_reason = "truncated"

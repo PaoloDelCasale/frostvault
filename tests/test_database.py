@@ -709,6 +709,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                     "exclude_globs_json": '["tmp/**"]',
                     "local_release_after_days": None,
                     "suspended_at": None,
+                    "upload_verification": None,
                 },
             )
             self.assertEqual(tables & {"vault_quotas", "cost_price_books"}, set())

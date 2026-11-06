@@ -1172,6 +1172,12 @@ export interface components {
             size?: number | null;
             storage_class?: string | null;
             storage_class_source?: string | null;
+            /** @enum {string|null} */
+            upload_verification_requested?: "s3_checksum" | "read_back" | null;
+            verification_egress_bytes?: number | null;
+            verification_fallback_reason?: string | null;
+            /** @enum {string|null} */
+            verification_method?: "s3_checksum" | "read_back" | null;
             verified_at?: string | null;
             version_number: number;
         } & {
@@ -1666,11 +1672,20 @@ export interface components {
         };
         OperationPolicy: {
             auto_upload: boolean;
+            /** @enum {string} */
+            effective_upload_verification?: "s3_checksum" | "read_back";
             exclude_globs: string[];
+            /** @enum {string} */
+            global_upload_verification?: "s3_checksum" | "read_back";
             include_globs: string[];
             /** @enum {integer|null} */
             local_release_after_days: 90 | 180 | 365 | 730 | null;
             stability_seconds: number;
+            /**
+             * @description Override for new upload admissions; null inherits deployment default.
+             * @enum {string|null}
+             */
+            upload_verification?: "s3_checksum" | "read_back" | null;
         } & {
             [key: string]: unknown;
         };
@@ -1695,6 +1710,8 @@ export interface components {
              * @default 300
              */
             stability_seconds: number;
+            /** Upload Verification */
+            upload_verification?: ("s3_checksum" | "read_back") | null;
         };
         /** ReauthRequest */
         ReauthRequest: {
@@ -1961,8 +1978,14 @@ export interface components {
             /** @constant */
             type: "file";
             upload_eligible?: boolean;
+            /** @enum {string|null} */
+            upload_verification_requested?: "s3_checksum" | "read_back" | null;
             vault_id?: number;
             vault_name?: string;
+            verification_egress_bytes?: number | null;
+            verification_fallback_reason?: string | null;
+            /** @enum {string|null} */
+            verification_method?: "s3_checksum" | "read_back" | null;
         } & {
             [key: string]: unknown;
         };

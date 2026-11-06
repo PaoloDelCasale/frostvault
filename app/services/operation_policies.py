@@ -43,6 +43,11 @@ class OperationPolicy:
     stability_seconds: int = DEFAULT_STABILITY_SECONDS
     include_globs: tuple[str, ...] = ()
     exclude_globs: tuple[str, ...] = ()
+    upload_verification: str | None = None
+
+    def effective_upload_verification(self) -> str:
+        from ..config import settings
+        return self.upload_verification or settings.upload_verification
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -51,6 +56,7 @@ class OperationPolicy:
             "stability_seconds": self.stability_seconds,
             "include_globs": list(self.include_globs),
             "exclude_globs": list(self.exclude_globs),
+            "upload_verification": self.upload_verification,
         }
 
 
@@ -84,6 +90,8 @@ def _normalize_globs(values: Sequence[str]) -> tuple[str, ...]:
 
 
 def validate_policy(policy: OperationPolicy) -> None:
+    if policy.upload_verification not in {None, "s3_checksum", "read_back"}:
+        raise ValueError("upload_verification must be null, s3_checksum or read_back")
     if policy.stability_seconds < 0:
         raise ValueError("stability_seconds must be nonnegative")
     if policy.local_release_after_days is not None and (
@@ -108,6 +116,7 @@ def get_policy(connection: Any, vault_id: int) -> OperationPolicy:
         stability_seconds=int(row["stability_seconds"]),
         include_globs=tuple(_load_json_list(row["include_globs_json"])),
         exclude_globs=tuple(_load_json_list(row["exclude_globs_json"])),
+        upload_verification=row.get("upload_verification"),
     )
 
 
@@ -135,19 +144,21 @@ def set_policy(
         stability_seconds=int(policy.stability_seconds),
         include_globs=include_globs,
         exclude_globs=exclude_globs,
+        upload_verification=policy.upload_verification,
     )
     connection.execute(
         """
         INSERT INTO vault_operation_policies(
             vault_id, auto_upload, local_release_after_days, stability_seconds,
-            include_globs_json, exclude_globs_json
-        ) VALUES (%s, %s, %s, %s, %s, %s)
+            include_globs_json, exclude_globs_json, upload_verification
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT(vault_id) DO UPDATE SET
             auto_upload=excluded.auto_upload,
             local_release_after_days=excluded.local_release_after_days,
             stability_seconds=excluded.stability_seconds,
             include_globs_json=excluded.include_globs_json,
-            exclude_globs_json=excluded.exclude_globs_json
+            exclude_globs_json=excluded.exclude_globs_json,
+            upload_verification=excluded.upload_verification
         """,
         (
             vault_id,
@@ -156,6 +167,7 @@ def set_policy(
             canonical.stability_seconds,
             json.dumps(list(canonical.include_globs)),
             json.dumps(list(canonical.exclude_globs)),
+            canonical.upload_verification,
         ),
     )
     # Keep the start of one continuous suspension, including across restart.

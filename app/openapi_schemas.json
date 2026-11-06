@@ -436,6 +436,10 @@
     "ArchiveVersionItem": {
       "additionalProperties": {},
       "properties": {
+        "upload_verification_requested": {"type": ["string", "null"], "enum": ["s3_checksum", "read_back", null]},
+        "verification_method": {"type": ["string", "null"], "enum": ["s3_checksum", "read_back", null]},
+        "verification_fallback_reason": {"type": ["string", "null"]},
+        "verification_egress_bytes": {"type": ["integer", "null"]},
         "created_at": {
           "type": [
             "string",
@@ -1485,6 +1489,9 @@
     "OperationPolicy": {
       "additionalProperties": true,
       "properties": {
+        "upload_verification": {"type": ["string", "null"], "enum": ["s3_checksum", "read_back", null], "description": "Override for new upload admissions; null inherits deployment default."},
+        "global_upload_verification": {"type": "string", "enum": ["s3_checksum", "read_back"]},
+        "effective_upload_verification": {"type": "string", "enum": ["s3_checksum", "read_back"]},
         "auto_upload": {
           "type": "boolean"
         },
@@ -1975,6 +1982,10 @@
       "additionalProperties": true,
       "description": "Vault File protection observation: pending, protected, problem, unconfirmed or cloud_only. Restore progress is independent.",
       "properties": {
+        "upload_verification_requested": {"type": ["string", "null"], "enum": ["s3_checksum", "read_back", null]},
+        "verification_method": {"type": ["string", "null"], "enum": ["s3_checksum", "read_back", null]},
+        "verification_fallback_reason": {"type": ["string", "null"]},
+        "verification_egress_bytes": {"type": ["integer", "null"]},
         "last_known_state": {
           "type": "string"
         },

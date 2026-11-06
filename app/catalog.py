@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
@@ -849,7 +850,8 @@ class ArchiveCatalog:
             SELECT
                 av.id, av.object_key, av.provider_version_id,
                 av.size AS cloud_size, av.plaintext_sha256 AS version_sha256,
-                av.integrity, av.availability, av.storage_class, av.restore_state
+                av.integrity, av.availability, av.storage_class, av.restore_state,
+                av.upload_snapshot_json, av.upload_verification_requested
             FROM archive_versions av
             WHERE av.vault_file_id=%s
               AND av.integrity='unverified'
@@ -890,6 +892,37 @@ class ArchiveCatalog:
             (plaintext_sha256.lower(), job_id),
         )
 
+    def set_upload_snapshot(self, job_id: int, *, snapshot_json: str) -> None:
+        from .services.upload_snapshot import UploadSnapshot
+        snapshot = UploadSnapshot.from_json(snapshot_json)
+        existing = self.connection.execute("SELECT upload_snapshot_json FROM jobs WHERE id=%s FOR UPDATE", (job_id,)).fetchone()
+        if existing and existing["upload_snapshot_json"] not in {None, snapshot_json}:
+            raise RuntimeError("Upload Snapshot is immutable for an admitted intent")
+        self.connection.execute("UPDATE jobs SET upload_snapshot_json=%s, upload_plaintext_sha256=%s WHERE id=%s",
+                                (snapshot_json, snapshot.plaintext_sha256, job_id))
+
+    def set_version_upload_snapshot(self, version_id: str, *, snapshot_json: str, requested: str) -> None:
+        from .services.upload_snapshot import UploadSnapshot
+        UploadSnapshot.from_json(snapshot_json)
+        row = self.connection.execute("SELECT upload_snapshot_json, upload_verification_requested, integrity FROM archive_versions WHERE id=%s FOR UPDATE", (version_id,)).fetchone()
+        if row is None:
+            raise LookupError("Archive Version not found")
+        if row["upload_snapshot_json"] is None and row["integrity"] == "verified":
+            raise RuntimeError("Cannot reconstruct Upload Snapshot evidence for a verified Archive Version")
+        if row and row["upload_snapshot_json"] is not None:
+            if (row["upload_snapshot_json"], row["upload_verification_requested"]) != (snapshot_json, requested):
+                raise RuntimeError("Archive Version Upload Snapshot is immutable")
+            return
+        self.connection.execute("UPDATE archive_versions SET upload_snapshot_json=%s, upload_verification_requested=%s WHERE id=%s",
+                                (snapshot_json, requested, version_id))
+
+    def set_version_verification_method(self, version_id: str, *, method: str, fallback_reason: str | None,
+                                        egress_bytes: int | None, provider_proof: dict[str, Any] | None = None) -> None:
+        # Attempts may update visible fallback while unverified. Once verified,
+        # the effective method is historical evidence, not current Vault policy.
+        self.connection.execute("UPDATE archive_versions SET verification_method=%s, verification_fallback_reason=%s, verification_egress_bytes=%s, provider_checksums=COALESCE(%s,provider_checksums) WHERE id=%s AND integrity<>'verified'",
+                                (method, fallback_reason, egress_bytes, json.dumps(provider_proof) if provider_proof else None, version_id))
+
     def get_job_target(self, job_id: int) -> dict[str, Any] | None:
         return self.connection.execute(
             """
@@ -900,6 +933,13 @@ class ArchiveCatalog:
                 j.vault_file_id,
                 j.archive_version_id,
                 j.upload_plaintext_sha256,
+                j.upload_snapshot_json AS job_upload_snapshot_json,
+                j.upload_verification_requested AS job_upload_verification_requested,
+                av.upload_snapshot_json,
+                av.upload_verification_requested,
+                av.verification_method,
+                av.verification_fallback_reason,
+                av.verification_egress_bytes,
                 j.path,
                 lc.presence AS local_presence,
                 lc.file_type AS local_file_type,
@@ -2185,7 +2225,9 @@ class ArchiveCatalog:
                 av.integrity,
                 av.availability,
                 av.restore_state,
-                av.restore_expiry
+                av.restore_expiry,
+                av.upload_verification_requested, av.verification_method,
+                av.verification_fallback_reason, av.verification_egress_bytes
             FROM vault_files vf
             JOIN file_paths fp
               ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
@@ -2227,6 +2269,10 @@ class ArchiveCatalog:
                 "availability": row["availability"],
                 "restore_state": row["restore_state"],
                 "restore_expiry": row["restore_expiry"],
+                "upload_verification_requested": row["upload_verification_requested"],
+                "verification_method": row["verification_method"],
+                "verification_fallback_reason": row["verification_fallback_reason"],
+                "verification_egress_bytes": row["verification_egress_bytes"],
             }
         return {
             "id": row["id"],
@@ -2256,7 +2302,9 @@ class ArchiveCatalog:
                 av.integrity,
                 av.availability,
                 av.restore_state,
-                av.restore_expiry
+                av.restore_expiry,
+                av.upload_verification_requested, av.verification_method,
+                av.verification_fallback_reason, av.verification_egress_bytes
             FROM archive_versions av
             JOIN vault_files vf ON vf.id=av.vault_file_id
             JOIN file_paths fp
@@ -2520,6 +2568,8 @@ class ArchiveCatalog:
                 av.availability,
                 av.restore_state,
                 av.restore_expiry,
+                av.upload_verification_requested, av.verification_method,
+                av.verification_fallback_reason, av.verification_egress_bytes,
                 (
                     SELECT COUNT(*)
                     FROM archive_versions recoverable
@@ -2585,6 +2635,10 @@ class ArchiveCatalog:
                     "availability": row["availability"],
                     "restore_state": row["restore_state"],
                     "restore_expiry": row["restore_expiry"],
+                    "upload_verification_requested": row.get("upload_verification_requested"),
+                    "verification_method": row.get("verification_method"),
+                    "verification_fallback_reason": row.get("verification_fallback_reason"),
+                    "verification_egress_bytes": row.get("verification_egress_bytes"),
                     **protection,
                     "cloud_only_conflict": bool(row.get("cloud_only_version_id")),
                     "upload_eligible": upload_eligible and not self.protection_unconfirmed,
@@ -3204,6 +3258,10 @@ class ArchiveCatalog:
             "active_jobs": int(active_jobs),
         }
 
+    def _upload_verification_mode(self, vault_id: int) -> str:
+        from .services.operation_policies import get_policy
+        return get_policy(self.connection, vault_id).effective_upload_verification()
+
     def queue_jobs(
         self,
         *,
@@ -3403,6 +3461,7 @@ class ArchiveCatalog:
 
         job_ids: list[int] = []
         total_bytes = 0
+        upload_mode = self._upload_verification_mode(vault_id) if action == "upload" else None
         for row in eligible:
             size = int(
                 row["cloud_size"]
@@ -3416,11 +3475,12 @@ class ArchiveCatalog:
                     action, status, requested_by, requested_at, updated_at,
                     group_id, group_path, total_bytes, transferred_bytes,
                     restore_tier, restore_days, estimated_cost_eur,
-                    estimated_hours, pending_until, origin, target_storage_class
+                    estimated_hours, pending_until, origin, target_storage_class,
+                    upload_verification_requested
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, 0,
-                    %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT DO NOTHING
                 RETURNING id
@@ -3449,6 +3509,7 @@ class ArchiveCatalog:
                     pending_until if action == "recover" else None,
                     origin,
                     target_class if action == "storage-class" else None,
+                    upload_mode,
                 ),
             ).fetchone()
             if job is None:

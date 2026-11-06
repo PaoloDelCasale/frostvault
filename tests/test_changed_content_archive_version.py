@@ -467,8 +467,8 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
                     "app.storage.s3_client",
                     return_value=VersionedS3Stub(
                         version_bytes=payload,
-                        head_object=lambda **_: {
-                            "VersionId": version_id,
+                        head_object=lambda **kwargs: {
+                            "VersionId": kwargs.get("VersionId") or version_id,
                             "ContentLength": len(payload),
                             "StorageClass": "STANDARD",
                             "ETag": '"etag"',

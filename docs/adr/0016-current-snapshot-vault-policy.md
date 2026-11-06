@@ -1,5 +1,9 @@
 # Current Snapshot is the only cloud behavior
 
+> ADR-0023 supersedes only the new-upload read-back-only requirement: independent
+> S3 SHA256 ingestion proof can verify a new Upload Snapshot. Cleanup and all
+> other-operation guarantees below remain unchanged.
+
 Decision #362 removes user-facing cloud history and its creation-time policy
 choice. Every Vault keeps only the last verified content of each Vault File.
 The shared bucket stays versioned as an internal verified-replacement mechanism:

@@ -396,6 +396,8 @@ jobs:
       - name: Start S3-compatible server (moto)
         run: |
           python -m pip install "moto[server]==5.2.3"
+          # CI-only protocol correction; never accept malformed proof in production.
+          python -m tests.moto_checksum_support
           nohup moto_server -H 127.0.0.1 -p 9000 > /tmp/moto-server.log 2>&1 &
           for _ in $(seq 1 30); do
             if curl -fsS -o /dev/null http://127.0.0.1:9000/moto-api/; then

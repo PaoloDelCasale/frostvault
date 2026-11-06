@@ -284,7 +284,8 @@ class PreflightQueueTests(unittest.TestCase):
         result = run_alembic(self.database)
         self.assertEqual(result.returncode, 0, result.stderr)
         with self.db() as c:
-            self.assertEqual(c.execute('SELECT * FROM jobs ORDER BY id').fetchall(), before)
+            from tests.upload_verification_migration_contract import without_upload_verification_fields
+            self.assertEqual(without_upload_verification_fields(c.execute('SELECT * FROM jobs ORDER BY id').fetchall(), 'jobs'), before)
             self.assertEqual(gate.snapshot(c)['status'], 'unknown')
 
     def test_whole_upload_root_is_narrow_and_auth_csrf_preserved(self):
