@@ -38,7 +38,7 @@ class _RenameCloud:
         self.fail_listing = False
         self.fail_delete = False
 
-    def head_object(self, *, Bucket, Key, VersionId=None):
+    def head_object(self, *, Bucket, Key, VersionId=None, ChecksumMode=None):
         version = VersionId or ("old-s3-version" if Key == OLD else "new-s3-version")
         if version not in self.versions.get(Key, set()):
             raise RuntimeError("missing exact provider version")

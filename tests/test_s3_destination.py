@@ -151,7 +151,8 @@ class S3UploadPrefixTests(unittest.TestCase):
             self.assertEqual(transfer_calls[0][2], expected_remote)
             self.assertEqual(cat_calls[0][1], expected_remote)
             self.assertIn(expected_remote, upload_destinations)
-            self.assertEqual(head_keys, [expected_key, expected_key, expected_key])
+            # Includes the checksum-enabled exact HEAD before visible GET fallback.
+            self.assertEqual(head_keys, [expected_key] * 4)
 
 
 class S3RenamePrefixTests(unittest.TestCase):

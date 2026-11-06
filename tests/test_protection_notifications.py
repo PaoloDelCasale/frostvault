@@ -298,7 +298,8 @@ class FixedNotificationPostgresTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         with self.connect() as c:
             after = {table:c.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall() for table in tables}
-            self.assertEqual(after,before)
+            from tests.upload_verification_migration_contract import without_upload_verification_fields
+            self.assertEqual({table: without_upload_verification_fields(rows, table) for table, rows in after.items()}, before)
             self.assertEqual([row['event'] for row in c.execute('SELECT event FROM notifications').fetchall()],['recovery_completed'])
             self.assertEqual(c.execute('SELECT count(*) AS n FROM notification_deliveries').fetchone()['n'],1)
             self.assertEqual(inbox.enqueue_job_terminal_notification(c,job_id=recover),0)

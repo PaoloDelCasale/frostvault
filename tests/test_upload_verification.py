@@ -108,7 +108,11 @@ def _run_plain_upload(
         operation_concurrency=1,
         restore_poll_interval=900,
     )
-    size = len(read_back_bytes) if read_back_bytes is not None else 1
+    if read_back_bytes is not None:
+        size = len(read_back_bytes)
+    else:
+        with PostgresConnection(str(database_path)) as connection:
+            size = connection.execute("SELECT size FROM local_copies LIMIT 1").fetchone()["size"]
     with patch("app.database.settings", database_settings):
         queue_jobs(relative_path, "upload", 2, 1)
         with (
@@ -306,7 +310,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 ]
             )
             self.assertEqual(job["status"], "failed")
-            self.assertIn("digest", (job["message"] or "").lower())
+            self.assertIn("mismatch", (job["message"] or "").lower())
 
     def test_verification_writes_no_artifact_inside_the_vault_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

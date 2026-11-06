@@ -221,17 +221,17 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
         self.write()
         self.advance(300)
         self.assertEqual(self.queue(), 1)
-        real_hash = storage.hash_stable_regular_file
+        real_hash = storage.prepare_upload_snapshot
 
-        def edit_after_hash(source):
-            snapshot = real_hash(source)
+        def edit_after_hash(source, check_active):
+            snapshot = real_hash(source, check_active)
             self.advance(1)
             self.write(content=b"newer")
             return snapshot
 
         with (
             patch("app.storage.validate_cloud_vault"),
-            patch("app.storage.hash_stable_regular_file", side_effect=edit_after_hash),
+            patch("app.storage.prepare_upload_snapshot", side_effect=edit_after_hash),
             patch("app.storage.upload_s3_file") as upload,
             patch("app.storage.s3_client") as cloud,
         ):

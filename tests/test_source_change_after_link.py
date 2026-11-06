@@ -408,7 +408,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 queue_jobs("report.txt", "upload", 2, 1)
 
             with patch(
-                "app.storage.hash_stable_regular_file",
+                "app.storage.prepare_upload_snapshot",
                 side_effect=RuntimeError("Local file changed since fingerprinting"),
             ):
                 for _ in range(UPLOAD_RETRY_MAX_ATTEMPTS + 1):
