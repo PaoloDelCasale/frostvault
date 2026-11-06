@@ -322,8 +322,36 @@ def invalidate_for_archive_version_ids(
             mark_path_dirty(connection, int(row["vault_id"]), row["path"])
 
 
+def lock_vaults_in_order(connection: Any, vault_ids: Iterable[int]) -> None:
+    """Take the Vault row lock(s) in ascending id order (the repo-wide order).
+
+    Every writer of Vault-scoped derived rows (scanner/worker transactions,
+    catalog revisions, aggregate maintenance) must hold the Vault row BEFORE it
+    writes ``directory_aggregates`` or ``directory_aggregate_status``. Taking
+    it afterwards inverts the order of ``_vault_lock_touch`` /
+    ``CatalogEventStore._lock_vault`` / ``lock_vault`` and produced the #485
+    deadlock (``INSERT INTO directory_aggregates`` vs ``UPDATE vaults``).
+
+    ``FOR NO KEY UPDATE`` is exactly the mode of the ``UPDATE vaults SET
+    name=name`` touch and stays compatible with FK ``KEY SHARE`` inserts. The
+    lock is reentrant inside one transaction, so later touches are free. Several
+    Vaults are locked in one ordered statement so concurrent global flushes
+    cannot cross each other either.
+    """
+    ordered = sorted({int(vault_id) for vault_id in vault_ids})
+    if not ordered:
+        return
+    connection.execute(
+        "SELECT id FROM vaults WHERE id = ANY(%s) ORDER BY id FOR NO KEY UPDATE",
+        (ordered,),
+    ).fetchall()
+
+
 def request_vault_rebuild(connection: Any, vault_id: int) -> None:
     """Schedule a full aggregate rebuild for ``vault_id`` on the next flush."""
+    # The status row is a per-Vault hot row that flush also writes while it
+    # holds the Vault row; take the Vault row first (see lock_vaults_in_order).
+    lock_vaults_in_order(connection, [vault_id])
     tracker = _tracker(connection)
     tracker.rebuild_vaults.add(int(vault_id))
     connection.execute(
@@ -753,6 +781,13 @@ def flush_directory_aggregates(
         rebuild_vaults = {vid for vid in rebuild_vaults if vid == int(vault_id)}
         dirty = {(vid, path) for vid, path in dirty if vid == int(vault_id)}
     file_marks = int(tracker.dirty_file_marks)
+
+    # Vault row BEFORE the first aggregate/status write (#485). Claims above
+    # are reads and remain valid by design: only claimed mark identities are
+    # deleted, so marks committed while we wait for the lock survive.
+    lock_vaults_in_order(
+        connection, rebuild_vaults | {vid for vid, _path in dirty},
+    )
 
     rebuilt_dirs = 0
     full_rebuilds = 0
