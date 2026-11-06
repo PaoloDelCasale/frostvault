@@ -53,7 +53,7 @@ function invalidateForSignal(
     );
   }
   if (essentialShell && (domains.includes("files") || signal.has_gap)) {
-    for (const prefix of ["general", "details", "file-detail", "problems", "notifications"]) {
+    for (const prefix of ["general", "details", "file-detail", "file-job-history", "linked-job", "problems", "notifications"]) {
       tasks.push(queryClient.invalidateQueries({ queryKey: [prefix], refetchType: "active" }));
     }
   }

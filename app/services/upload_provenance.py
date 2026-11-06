@@ -66,6 +66,8 @@ def inventory(client: Any, bucket: str, key: str) -> dict[str, list[str]]:
 
 def target(connection: Any, job: dict[str, Any], *, key: str, provider: str) -> dict[str, Any]:
     vault = connection.execute("SELECT * FROM vaults WHERE id=%s FOR UPDATE", (job["vault_id"],)).fetchone()
+    from .upload_remediation import require_job
+    require_job(connection, job)
     row = connection.execute("SELECT vf.status,fp.path,fp.valid_from FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL WHERE vf.id=%s AND vf.vault_id=%s", (job["vault_file_id"], job["vault_id"])).fetchone()
     current = connection.execute("SELECT status,vault_file_id,path,claim_token FROM jobs WHERE id=%s", (job["id"],)).fetchone()
     if (not vault or not row or row["status"] != "active" or not current
@@ -131,6 +133,9 @@ def mark_send_started(connection: Any, job: dict[str, Any], intent: dict[str, An
     changed = connection.execute("UPDATE upload_intents SET send_started=TRUE WHERE id=%s AND NOT send_started RETURNING id", (intent["id"],)).fetchone()
     if not changed:
         raise UploadBlocked("ambiguous_send")
+    from datetime import datetime, timezone
+    from .upload_remediation_discovery import capture
+    capture(connection, datetime.now(timezone.utc).isoformat(), intent_id=intent["id"])
 
 
 @retry_database_unit
@@ -252,7 +257,12 @@ def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
             "reason": reason, "remedy": REMEDIES.get(reason, REMEDIES["proof_unavailable"])}
 
 
-def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str) -> dict[str, Any]:
+def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str, remediation_id: str | None = None) -> dict[str, Any]:
+    from .upload_remediation import schedule_resume as schedule
+    return schedule(connection, vault=vault, path=path, user_id=user_id, timestamp=timestamp, remediation_id=remediation_id)
+
+
+def _schedule_resume_legacy(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str) -> dict[str, Any]:
     from .cloud_deletion import lock_vault
     from .vault_moves import require_ready
     current = lock_vault(connection, vault["id"])

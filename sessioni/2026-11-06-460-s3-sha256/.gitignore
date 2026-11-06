@@ -1,4 +1,0 @@
-# Disposable CI logs and inspected third-party emulator sources, not deliverables.
-ci*.txt
-moto*.txt
-implementation-diff.txt

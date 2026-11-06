@@ -178,6 +178,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/files/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** File Job History */
+        get: operations["file_job_history_api_files_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/files/search": {
         parameters: {
             query?: never;
@@ -399,6 +416,23 @@ export interface paths {
         put?: never;
         /** Cancel Job */
         post: operations["cancel_job_api_jobs_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Job Detail */
+        get: operations["job_detail_api_jobs__job_id__get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -785,7 +819,7 @@ export interface paths {
          * Reconcile Upload
          * @description Exact resume only, including protected files for which upload returns 409.
          *
-         *     No sweep, no arbitrary deletion, no resurrection of deliberate cancellation.
+         *     Common target arbiter; no PUT, arbitrary deletion or cancellation resurrection.
          */
         post: operations["reconcile_upload_api_upload_reconcile_post"];
         delete?: never;
@@ -1318,6 +1352,10 @@ export interface components {
             /** Restore Tier */
             restore_tier?: string | null;
         };
+        FileJobHistoryResponse: {
+            items: components["schemas"]["JobRecord"][];
+            next_before_id: number | null;
+        };
         /**
          * @description Job / file-operation types (issue #67).
          * @enum {string}
@@ -1356,6 +1394,7 @@ export interface components {
             path: string;
             reconciliation?: components["schemas"]["UploadReconciliation"];
             recoverable_count: number;
+            remediations?: components["schemas"]["UploadRemediation"][];
             supported_restore_tiers: string[];
         } & {
             [key: string]: unknown;
@@ -1511,11 +1550,13 @@ export interface components {
             path: string;
             pending_until?: string | null;
             percent: number;
+            resolved_failed_count?: number;
             restore_days?: number | null;
             restore_tier?: string | null;
             status: components["schemas"]["JobStatus"];
             total_bytes: number;
             transferred_bytes: number;
+            unresolved_failed_count?: number;
             updated_at?: string;
         } & {
             [key: string]: unknown;
@@ -1523,6 +1564,7 @@ export interface components {
         JobRecord: {
             action: components["schemas"]["FileOperationAction"] | string;
             approved_at?: string | null;
+            archive_version_id?: string | null;
             estimated_cost_eur?: number | null;
             estimated_hours?: number | null;
             group_id?: string | null;
@@ -1533,6 +1575,8 @@ export interface components {
             message_params?: unknown;
             path: string;
             pending_until?: string | null;
+            remediation?: components["schemas"]["UploadRemediation"] | null;
+            remediation_rejection?: string | null;
             requested_at?: string;
             restore_days?: number | null;
             restore_tier?: string | null;
@@ -1540,6 +1584,7 @@ export interface components {
             total_bytes?: number | null;
             transferred_bytes?: number | null;
             updated_at?: string;
+            upload_reconcile_only?: boolean;
         } & {
             [key: string]: unknown;
         };
@@ -1953,9 +1998,37 @@ export interface components {
             reason: string | null;
             remedy: string | null;
         };
+        /** UploadReconciliationAction */
+        UploadReconciliationAction: {
+            /**
+             * Is Directory
+             * @default false
+             */
+            is_directory: boolean;
+            /** Path */
+            path: string;
+            /** Remediation Id */
+            remediation_id?: string | null;
+        };
         UploadReconciliationResponse: {
             group_id: string;
             job_id: number;
+        };
+        UploadRemediation: {
+            archive_version_id: string | null;
+            can_resume: boolean;
+            current_job_id: number | null;
+            due_at: string;
+            id: string;
+            original_job_ids: number[];
+            phase: string;
+            reason: string | null;
+            remedy: string;
+            resolved_at: string | null;
+            resolved_by_job_id: number | null;
+            retry_count: number;
+            /** @enum {string} */
+            state: "pending" | "queued" | "retrying" | "blocked" | "suspended" | "cancelled" | "resolved";
         };
         /** ValidationError */
         ValidationError: {
@@ -2412,6 +2485,40 @@ export interface operations {
             };
         };
     };
+    file_job_history_api_files_jobs_get: {
+        parameters: {
+            query: {
+                path: string;
+                before_id?: number | null;
+                limit?: number;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileJobHistoryResponse"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
     search_all_files_api_files_search_get: {
         parameters: {
             query?: {
@@ -2774,6 +2881,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobCancelResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    job_detail_api_jobs__job_id__get: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobRecord"];
                 };
             };
             /** @description Validation Error */
@@ -3408,7 +3548,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["FileAction"];
+                "application/json": components["schemas"]["UploadReconciliationAction"];
             };
         };
         responses: {

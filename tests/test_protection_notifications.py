@@ -127,16 +127,18 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             resolved = inbox.list_in_app_notifications(c,user_id=self.user_id,status='read')
             self.assertIn('resolved', {row['problem_status'] for row in resolved})
 
-    def test_terminal_failure_resolves_on_retry_before_email_or_inbox_read(self):
+    def test_retry_status_alone_does_not_resolve_historical_failure(self):
         with self.connect() as c:
             c.execute("UPDATE jobs SET status='failed' WHERE id=%s",(self.job_id,))
             inbox.enqueue_job_terminal_notification(c,job_id=self.job_id)
             c.execute("UPDATE jobs SET status='retrying' WHERE id=%s",(self.job_id,))
-            self.assertEqual(inbox.count_open_problems(c,user_id=self.user_id),0)
+            # #459 requires demonstrable exact completion+cleanup linkage,
+            # not a status rewrite or merely queueing another attempt.
+            self.assertEqual(inbox.count_open_problems(c,user_id=self.user_id),1)
+            self.assertEqual(inbox.count_unread_notifications(c,user_id=self.user_id),1)
+            inbox.mark_all_notifications_read(c,user_id=self.user_id)
             self.assertEqual(inbox.count_unread_notifications(c,user_id=self.user_id),0)
-            smtp = unittest.mock.Mock()
-            self.assertEqual(inbox.deliver_pending_notifications(c,smtp_client=smtp)['attempted'],0)
-            smtp.send.assert_not_called()
+            self.assertEqual(inbox.count_open_problems(c,user_id=self.user_id),1)
 
     def test_delay_is_aggregated_deduplicated_and_never_stable_age_survives_writes(self):
         from app.catalog import ArchiveCatalog
