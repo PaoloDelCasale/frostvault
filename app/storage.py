@@ -5758,7 +5758,11 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
                     new_directories = await asyncio.to_thread(
                         _new_watcher_directories, root, native_changes,
                     ) if native_changes else set()
-                    if new_directories or rearm_required:
+                    # PollWatcher recursively rediscovers topology every poll;
+                    # it needs no re-registration. Keep its original snapshot
+                    # alive: a timeout is NOT a completed polling-cycle fence,
+                    # so replacing it could lose pre-successor sibling changes.
+                    if (new_directories or rearm_required) and not settings.filesystem_watch_force_polling:
                         successor = new_observer()
                         # Old observer is still live while the successor takes
                         # its recursive snapshot / registers native watches.

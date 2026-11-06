@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
 import hashlib
 import io
 import os
@@ -343,7 +344,7 @@ class LiveWatcherCatalogTests(unittest.TestCase):
         self.advance(300)
         self.assertEqual(self.queue(), 4)
 
-    def test_sibling_mutations_survive_observer_handoff_on_both_backends(self):
+    def test_sibling_mutations_survive_topology_refresh_on_both_backends(self):
         for force_polling in (False, True):
             with self.subTest(force_polling=force_polling):
                 asyncio.run(self.check_new_directory(force_polling, mutate_siblings=True))
@@ -372,6 +373,20 @@ class LiveWatcherCatalogTests(unittest.TestCase):
                     plaintext_sha256=hashlib.sha256(b"first").hexdigest(), matched_archive_version_id=None,
                 )
 
+        injected = False
+        def inject_changes():
+            nonlocal injected
+            injected = True
+            if mutate_siblings:
+                path = sibling_dir / "existing.jpg"
+                original = path.stat()
+                path.write_bytes(b"changed sibling")
+                os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns + 2_000_000_000))
+                (sibling_dir / "deleted.jpg").unlink()
+                (sibling_dir / "before-rename.jpg").rename(sibling_dir / "after-rename.jpg")
+            target.write_bytes(b"photo")
+            os.utime(target, (1_500_000_000, 1_500_000_000))
+
         watch_calls = 0
         async def ticking_watch(*args, **kwargs):
             nonlocal watch_calls
@@ -380,20 +395,17 @@ class LiveWatcherCatalogTests(unittest.TestCase):
             if watch_calls == 2:
                 # Before successor registration; an overlapping old observer
                 # must retain changes OUTSIDE the incoming subtree as well.
-                if mutate_siblings:
-                    path = sibling_dir / "existing.jpg"
-                    original = path.stat()
-                    path.write_bytes(b"changed sibling")
-                    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns + 2_000_000_000))
-                    (sibling_dir / "deleted.jpg").unlink()
-                    (sibling_dir / "before-rename.jpg").rename(sibling_dir / "after-rename.jpg")
-                target.write_bytes(b"photo")
-                os.utime(target, (1_500_000_000, 1_500_000_000))
-            async for changes in awatch(*args, **kwargs):
-                ready.set()
-                yield changes
+                inject_changes()
+            async with aclosing(awatch(*args, **kwargs)) as observer:
+                async for changes in observer:
+                    ready.set()
+                    yield changes
 
         def apply(vault, changes):
+            if force_polling and not injected and (Change.added, str(directory)) in changes:
+                # Polling retains its original snapshot at this same topology
+                # boundary, and must detect mutations on the following cycle.
+                inject_changes()
             result = real_apply(vault, changes)
             for _, value in changes:
                 if value == str(directory):
@@ -416,7 +428,7 @@ class LiveWatcherCatalogTests(unittest.TestCase):
             return result
 
         with (patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=force_polling)),
-              patch("app.storage._runtime_settings", return_value=SimpleNamespace(filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30)),
+              patch("app.storage._runtime_settings", return_value=SimpleNamespace(filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=300 if force_polling else 30)),
               patch("app.storage.awatch", side_effect=ticking_watch),
               patch("app.storage.apply_filesystem_changes", side_effect=apply)):
             task = asyncio.create_task(storage._watch_vault_filesystem(self.vault))
@@ -436,5 +448,8 @@ class LiveWatcherCatalogTests(unittest.TestCase):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
         rows = {row["path"]: row for row in self.entries()}
-        self.assertGreaterEqual(watch_calls, 2)
+        if force_polling:
+            self.assertEqual(watch_calls, 1)
+        else:
+            self.assertGreaterEqual(watch_calls, 2)
         self.assertEqual(rows[target.relative_to(self.root).as_posix()]["presence"], "present")

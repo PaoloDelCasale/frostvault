@@ -122,10 +122,13 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
     async def test_native_sibling_changes_during_rearm_are_not_lost(self):
         await self.check_new_directory(False, mutate_siblings=True)
 
-    async def test_polling_sibling_changes_during_rearm_are_not_lost(self):
+    async def test_polling_sibling_changes_during_topology_refresh_are_not_lost(self):
         await self.check_new_directory(True, mutate_siblings=True)
 
-    async def check_new_directory(self, force_polling, *, mutate_siblings=False):
+    async def test_slow_polling_preserves_siblings_without_replacing_snapshot(self):
+        await self.check_new_directory(True, mutate_siblings=True, poll_ms=300)
+
+    async def check_new_directory(self, force_polling, *, mutate_siblings=False, poll_ms=30):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root = Path(directory)
             ready = asyncio.Event()
@@ -147,6 +150,17 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
                 (Change.added, str(root / "after-rename.jpg")),
             }
 
+            mutated = False
+            def change_siblings():
+                nonlocal mutated
+                mutated = True
+                original = (root / "existing.jpg").stat()
+                (root / "existing.jpg").write_bytes(b"modified sibling bytes")
+                # notify's polling backend compares whole-second mtimes.
+                os.utime(root / "existing.jpg", ns=(original.st_atime_ns, original.st_mtime_ns + 2_000_000_000))
+                (root / "deleted.jpg").unlink()
+                (root / "before-rename.jpg").rename(root / "after-rename.jpg")
+
             async def ticking_watch(*args, **kwargs):
                 # A timeout tick proves the native observer is installed. It
                 # also removes timing guesses from the newly-created-dir test.
@@ -158,12 +172,7 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
                     # At successor construction: old implementation has already
                     # closed the observer. An overlapping handoff must retain
                     # these unrelated writes/deletions/renames in the old one.
-                    original = (root / "existing.jpg").stat()
-                    (root / "existing.jpg").write_bytes(b"modified sibling bytes")
-                    # notify's polling backend compares whole-second mtimes.
-                    os.utime(root / "existing.jpg", ns=(original.st_atime_ns, original.st_mtime_ns + 2_000_000_000))
-                    (root / "deleted.jpg").unlink()
-                    (root / "before-rename.jpg").rename(root / "after-rename.jpg")
+                    change_siblings()
                 kwargs.update(yield_on_timeout=True, rust_timeout=50)
                 try:
                     async with aclosing(real_awatch(*args, **kwargs)) as observer:
@@ -181,6 +190,10 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
                     siblings_seen.set()
                 for _, value in changes:
                     if value == str(root / "new"):
+                        if force_polling and mutate_siblings and not mutated:
+                            # Same topology-refresh boundary, but polling must
+                            # keep the observer/snapshot instead of rearming it.
+                            change_siblings()
                         directory_seen.set()
                     if value == str(root / "new" / "nested" / "later.bin"):
                         file_seen.set()
@@ -188,7 +201,7 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
             connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = None
             stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True)))
-            stack.enter_context(patch("app.storage._runtime_settings", return_value=SimpleNamespace(filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30)))
+            stack.enter_context(patch("app.storage._runtime_settings", return_value=SimpleNamespace(filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=poll_ms)))
             stack.enter_context(patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=force_polling)))
             stack.enter_context(patch("app.storage.awatch", side_effect=ticking_watch))
             # Keep callbacks on the event-loop thread for asyncio.Event safety.
@@ -201,7 +214,8 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(ready.wait(), 3)
                 (root / "new" / "nested").mkdir(parents=True)
                 await asyncio.wait_for(directory_seen.wait(), 3)
-                await asyncio.wait_for(rearmed.wait(), 3)
+                if not force_polling:
+                    await asyncio.wait_for(rearmed.wait(), 3)
                 if mutate_siblings:
                     try:
                         await asyncio.wait_for(siblings_seen.wait(), 3)
@@ -214,7 +228,9 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.gather(task, return_exceptions=True)
             self.assertTrue(events)
             self.assertEqual(active_observers, 0, "shutdown leaked a recursive observer")
-            self.assertEqual(peak_observers, 2, "handoff must overlap exactly two observers")
+            self.assertEqual(peak_observers, 1 if force_polling else 2)
+            if force_polling:
+                self.assertEqual(watch_calls, 1, "polling must keep its original snapshot")
 
 
 class WatcherSubtreeTests(unittest.TestCase):
