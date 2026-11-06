@@ -62,7 +62,20 @@ async def lifespan(app):
             active = queued = None
             receipts = []
             async with main.lifespan(app):
-                if os.environ.get("FROSTVAULT_SHUTDOWN_FIXTURE_WORKER") == "upload":
+                mode = os.environ.get("FROSTVAULT_SHUTDOWN_FIXTURE_WORKER")
+                if mode in {"stuck-operation", "stuck-default"}:
+                    entered = threading.Event()
+                    def stuck():
+                        entered.set()
+                        threading.Event().wait(60)
+                    if mode == "stuck-operation":
+                        pool = storage._operation_pool(1)
+                        storage._operation_futures[1] = pool.submit(stuck)
+                    else:
+                        task = asyncio.create_task(asyncio.to_thread(stuck))
+                        shutdown_state.register_producers([task])
+                    assert await asyncio.to_thread(entered.wait, 3), "stuck worker never started"
+                if mode == "upload":
                     source = Path(directory) / "snapshot"
                     source.write_bytes(b"disposable upload snapshot")
                     snapshot, _ = prepare_upload_snapshot(source, lambda: None)

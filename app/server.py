@@ -41,7 +41,6 @@ class FrostVaultServer(uvicorn.Server):
         # handle_exit still supports a second SIGINT to force HTTP shutdown.
 
     async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
-        shutdown_state.request()
         # asyncio cancellation cannot stop synchronous SDK/filesystem calls or
         # Python's executor atexit joins. Bound the WHOLE process, not just HTTP.
         # Never report success if an uncooperative worker exceeded its budget.
@@ -52,6 +51,7 @@ class FrostVaultServer(uvicorn.Server):
         deadline = threading.Timer(PROCESS_SHUTDOWN_SECONDS, deadline_exceeded)
         deadline.daemon = True
         deadline.start()
+        shutdown_state.request()
         # Leave this daemon watchdog armed through asyncio.run's default-pool
         # drain and interpreter executor joins. A clean process exits first.
         await super().shutdown(sockets=sockets)
