@@ -61,8 +61,15 @@ def restore_claimed_local_copy(claimed: Path, target: Path) -> bool:
 def _require_linked_upload_digest(target: Mapping[str, Any]) -> str:
     """Return the durable snapshot fingerprint for a linked Archive Version."""
     integrity = str(target.get("integrity") or "unverified")
+    snapshot_digest = None
+    if target.get("upload_snapshot_json") is not None:
+        from .upload_snapshot import UploadSnapshot
+        snapshot_digest = UploadSnapshot.from_json(target["upload_snapshot_json"]).plaintext_sha256
+        job_digest = target.get("upload_plaintext_sha256")
+        if job_digest and str(job_digest).lower() != snapshot_digest:
+            raise RuntimeError("Upload Snapshot digest differs from durable upload digest")
     upload_digest = str(
-        target.get("upload_plaintext_sha256")
+        snapshot_digest or target.get("upload_plaintext_sha256")
         or (target.get("version_sha256") if integrity == "verified" else "")
         or ""
     ).lower()

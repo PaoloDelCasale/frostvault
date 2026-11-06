@@ -141,6 +141,40 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(self.s3.reads, [])
         self.assertEqual(self.s3.deleted, [])
 
+    def test_wrong_checksum_from_HEAD_retains_version_and_blocks(self):
+        self.upload_response.pop("ChecksumSHA256")
+        self.proof["ChecksumSHA256"] = "wrong"
+        self.queue(); self.run_worker()
+        job, versions, _ = self.rows()
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(versions[0]["provider_version_id"], "raw-version")
+        self.assertEqual(versions[0]["integrity"], "mismatch")
+        self.assertEqual(self.s3.reads, [])
+
+    def test_read_back_request_does_not_silently_downgrade_contradictory_checksum(self):
+        self.set_mode("read_back")
+        self.upload_response["ChecksumSHA256"] = "wrong"
+        self.queue(); self.run_worker()
+        self.assertEqual(self.rows()[1][0]["integrity"], "mismatch")
+        self.assertEqual(self.s3.reads, [])
+
+    def test_multipart_composite_proof_verifies_not_plaintext_digest(self):
+        from app.services.upload_snapshot import prepare_upload_snapshot, MULTIPART_THRESHOLD
+        self.payload = b"a" * MULTIPART_THRESHOLD + b"final-part"
+        path = self.source / "a.txt"
+        path.write_bytes(self.payload)
+        snapshot, _ = prepare_upload_snapshot(path, lambda: None)
+        with PostgresConnection(str(self.identity)) as connection:
+            ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="a.txt", file_type="regular", size=len(self.payload), mtime_ns=path.stat().st_mtime_ns, observed_at="2026-11-06")
+        self.upload_response = {"VersionId": "raw-version", "ChecksumType": "COMPOSITE", "ChecksumSHA256": snapshot.checksum_sha256}
+        self.queue(); self.run_worker()
+        job, versions, _ = self.rows()
+        self.assertEqual(job["status"], "completed", job["message"])
+        self.assertEqual(versions[0]["verification_method"], "s3_checksum")
+        self.assertEqual(versions[0]["plaintext_sha256"], hashlib.sha256(self.payload).hexdigest())
+        self.assertEqual(self.s3.reads, [])
+        self.assertEqual(versions[0]["upload_snapshot_json"], snapshot.as_json())
+
     def test_wrong_checksum_type_from_HEAD_retains_version_and_blocks(self):
         self.upload_response.pop("ChecksumSHA256")
         self.proof["ChecksumType"] = "COMPOSITE"

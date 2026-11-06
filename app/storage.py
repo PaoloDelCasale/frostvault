@@ -3565,7 +3565,22 @@ def process_upload(job: dict[str, Any]) -> None:
                     raise
                 head = _verification_version_head(client, job, target)
                 target["_completion_proven"] = completion_proven
+                if completion_proven:
+                    target["_provider_proof"] = {"algorithm": "SHA256", "checksum_type": snapshot.checksum_type,
+                                                 "checksum": response["ChecksumSHA256"], "version_id": response["VersionId"],
+                                                 "source": "upload_response"}
 
+        if snapshot is not None:
+            # A normal HEAD may also contain checksum fields. Any present
+            # contradictory evidence blocks, even when full Read-back was
+            # requested or completion already supplied a valid proof.
+            try:
+                check_s3_proof(head, version_id=target["provider_version_id"], snapshot=snapshot)
+            except UploadProofMismatch:
+                _upload_catalog_unit(job, lambda catalog: catalog.mark_version_mismatch(
+                    version_id, plaintext_sha256=upload_digest, checked_at=now_iso(),
+                ))
+                raise
         ensure_job_active(job["id"], "Upload stopped")
         # Snapshot A is identified by the persisted upload digest. A later
         # Local Copy must not abort verification or be treated as a mismatch
@@ -3580,6 +3595,7 @@ def process_upload(job: dict[str, Any]) -> None:
         )
         fallback_reason = None
         checksum_proven = False
+        provider_proof = target.get("_provider_proof")
         if requested_mode == "s3_checksum" and snapshot is not None:
             checksum_proven = bool(target.get("_completion_proven"))
             if not checksum_proven:
@@ -3587,6 +3603,10 @@ def process_upload(job: dict[str, Any]) -> None:
                     proof = client.head_object(Bucket=job["s3_bucket"], Key=target["object_key"],
                                                VersionId=target["provider_version_id"], ChecksumMode="ENABLED")
                     checksum_proven = check_s3_proof(proof, version_id=target["provider_version_id"], snapshot=snapshot)
+                    if checksum_proven:
+                        provider_proof = {"algorithm": "SHA256", "checksum_type": snapshot.checksum_type,
+                                          "checksum": proof["ChecksumSHA256"], "version_id": target["provider_version_id"],
+                                          "source": "exact_head"}
                     if not checksum_proven:
                         fallback_reason = "checksum_missing"
                 except UploadProofMismatch:
@@ -3604,6 +3624,7 @@ def process_upload(job: dict[str, Any]) -> None:
         method = "s3_checksum" if checksum_proven else "read_back"
         _upload_catalog_unit(job, lambda catalog: catalog.set_version_verification_method(
             version_id, method=method, fallback_reason=fallback_reason, egress_bytes=0 if checksum_proven else None,
+            provider_proof=provider_proof if checksum_proven else None,
         ))
         if checksum_proven:
             _complete_verified_upload(

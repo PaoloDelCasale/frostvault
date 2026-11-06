@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
@@ -894,7 +895,7 @@ class ArchiveCatalog:
     def set_upload_snapshot(self, job_id: int, *, snapshot_json: str) -> None:
         from .services.upload_snapshot import UploadSnapshot
         snapshot = UploadSnapshot.from_json(snapshot_json)
-        existing = self.connection.execute("SELECT upload_snapshot_json FROM jobs WHERE id=%s", (job_id,)).fetchone()
+        existing = self.connection.execute("SELECT upload_snapshot_json FROM jobs WHERE id=%s FOR UPDATE", (job_id,)).fetchone()
         if existing and existing["upload_snapshot_json"] not in {None, snapshot_json}:
             raise RuntimeError("Upload Snapshot is immutable for an admitted intent")
         self.connection.execute("UPDATE jobs SET upload_snapshot_json=%s, upload_plaintext_sha256=%s WHERE id=%s",
@@ -903,7 +904,11 @@ class ArchiveCatalog:
     def set_version_upload_snapshot(self, version_id: str, *, snapshot_json: str, requested: str) -> None:
         from .services.upload_snapshot import UploadSnapshot
         UploadSnapshot.from_json(snapshot_json)
-        row = self.connection.execute("SELECT upload_snapshot_json, upload_verification_requested FROM archive_versions WHERE id=%s FOR UPDATE", (version_id,)).fetchone()
+        row = self.connection.execute("SELECT upload_snapshot_json, upload_verification_requested, integrity FROM archive_versions WHERE id=%s FOR UPDATE", (version_id,)).fetchone()
+        if row is None:
+            raise LookupError("Archive Version not found")
+        if row["upload_snapshot_json"] is None and row["integrity"] == "verified":
+            raise RuntimeError("Cannot reconstruct Upload Snapshot evidence for a verified Archive Version")
         if row and row["upload_snapshot_json"] is not None:
             if (row["upload_snapshot_json"], row["upload_verification_requested"]) != (snapshot_json, requested):
                 raise RuntimeError("Archive Version Upload Snapshot is immutable")
@@ -912,11 +917,11 @@ class ArchiveCatalog:
                                 (snapshot_json, requested, version_id))
 
     def set_version_verification_method(self, version_id: str, *, method: str, fallback_reason: str | None,
-                                        egress_bytes: int | None) -> None:
+                                        egress_bytes: int | None, provider_proof: dict[str, Any] | None = None) -> None:
         # Attempts may update visible fallback while unverified. Once verified,
         # the effective method is historical evidence, not current Vault policy.
-        self.connection.execute("UPDATE archive_versions SET verification_method=%s, verification_fallback_reason=%s, verification_egress_bytes=%s WHERE id=%s AND integrity<>'verified'",
-                                (method, fallback_reason, egress_bytes, version_id))
+        self.connection.execute("UPDATE archive_versions SET verification_method=%s, verification_fallback_reason=%s, verification_egress_bytes=%s, provider_checksums=COALESCE(%s,provider_checksums) WHERE id=%s AND integrity<>'verified'",
+                                (method, fallback_reason, egress_bytes, json.dumps(provider_proof) if provider_proof else None, version_id))
 
     def get_job_target(self, job_id: int) -> dict[str, Any] | None:
         return self.connection.execute(
@@ -3456,6 +3461,7 @@ class ArchiveCatalog:
 
         job_ids: list[int] = []
         total_bytes = 0
+        upload_mode = self._upload_verification_mode(vault_id) if action == "upload" else None
         for row in eligible:
             size = int(
                 row["cloud_size"]
@@ -3503,7 +3509,7 @@ class ArchiveCatalog:
                     pending_until if action == "recover" else None,
                     origin,
                     target_class if action == "storage-class" else None,
-                    self._upload_verification_mode(vault_id) if action == "upload" else None,
+                    upload_mode,
                 ),
             ).fetchone()
             if job is None:

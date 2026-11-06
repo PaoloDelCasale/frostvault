@@ -93,6 +93,15 @@ class UploadSnapshotTests(unittest.TestCase):
         self.assertTrue(check_s3_proof({"VersionId": "v", "ChecksumSHA256": snapshot.checksum_sha256}, version_id="v", snapshot=snapshot, completion=True))
         self.assertFalse(check_s3_proof({"VersionId": "v", "ChecksumSHA256": snapshot.checksum_sha256}, version_id="v", snapshot=snapshot))
 
+    def test_linked_digest_uses_immutable_AV_snapshot_without_originating_Job(self):
+        from app.services.local_files import _require_linked_upload_digest
+        snapshot = self.snapshot()
+        self.assertEqual(_require_linked_upload_digest({"integrity": "unverified", "upload_snapshot_json": snapshot.as_json()}), snapshot.plaintext_sha256)
+        with self.assertRaises(RuntimeError):
+            _require_linked_upload_digest({"integrity": "unverified", "upload_snapshot_json": snapshot.as_json(), "upload_plaintext_sha256": "f" * 64})
+        with self.assertRaises(RuntimeError):
+            _require_linked_upload_digest({"integrity": "unverified", "local_sha256": snapshot.plaintext_sha256})
+
     def test_invalid_durable_evidence_fails_closed(self):
         import json
         baseline = json.loads(self.snapshot().as_json())
