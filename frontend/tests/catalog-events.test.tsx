@@ -122,9 +122,11 @@ describe("useCatalogEvents", () => {
     await waitFor(() => {
       expect(invalidateSpy).toHaveBeenCalledWith(
         expect.objectContaining({ queryKey: ["files"] }),
+        { cancelRefetch: false },
       );
       expect(invalidateSpy).toHaveBeenCalledWith(
         expect.objectContaining({ queryKey: apiQueryKeys.stats }),
+        { cancelRefetch: false },
       );
     });
   });

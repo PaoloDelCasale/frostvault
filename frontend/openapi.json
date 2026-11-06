@@ -2750,6 +2750,104 @@
         ],
         "type": "object"
       },
+      "UploadActivityResponse": {
+        "properties": {
+          "global": {
+            "$ref": "#/components/schemas/UploadActivitySummary"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "vaults": {
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/UploadActivitySummary"
+                },
+                {
+                  "properties": {
+                    "vault_id": {
+                      "type": "integer"
+                    },
+                    "vault_name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "vault_id",
+                    "vault_name"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "observed_at",
+          "global",
+          "vaults"
+        ],
+        "type": "object"
+      },
+      "UploadActivityStage": {
+        "properties": {
+          "bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "files": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "transferred_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "files",
+          "bytes",
+          "transferred_bytes"
+        ],
+        "type": "object"
+      },
+      "UploadActivitySummary": {
+        "properties": {
+          "awaiting_admission_files": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "next_stable_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "queued": {
+            "$ref": "#/components/schemas/UploadActivityStage"
+          },
+          "stability_wait": {
+            "$ref": "#/components/schemas/UploadActivityStage"
+          },
+          "uploading": {
+            "$ref": "#/components/schemas/UploadActivityStage"
+          },
+          "verifying": {
+            "$ref": "#/components/schemas/UploadActivityStage"
+          }
+        },
+        "required": [
+          "stability_wait",
+          "queued",
+          "uploading",
+          "verifying",
+          "awaiting_admission_files",
+          "next_stable_at"
+        ],
+        "type": "object"
+      },
       "UploadReconciliation": {
         "properties": {
           "can_resume": {
@@ -5427,6 +5525,24 @@
           }
         },
         "summary": "Upload"
+      }
+    },
+    "/api/upload-activity": {
+      "get": {
+        "operationId": "upload_activity_overview_api_upload_activity_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadActivityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Upload Activity Overview"
       }
     },
     "/api/upload/cancel": {

@@ -60,7 +60,8 @@ export async function emergencyPasswordLogin(page: Page): Promise<E2ECredentials
   await page.getByLabel(/username/i).fill(credentials.owner.username);
   await page.getByLabel(/password/i).fill(credentials.owner.password);
   await page.locator("form").getByRole("button", { name: /^sign in$|^accedi$/i }).click();
-  await expect(page.getByRole("heading", { name: /family archive/i })).toBeVisible({
+  // The activity summary also names this Vault; the page title is the h1.
+  await expect(page.getByRole("heading", { level: 1, name: /family archive/i })).toBeVisible({
     timeout: 20_000,
   });
   return credentials;
