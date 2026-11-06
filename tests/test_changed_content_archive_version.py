@@ -56,6 +56,8 @@ def _seed_user_vault(connection: PostgresConnection, source: Path) -> None:
         """,
         (str(source),),
     )
+    from app.services.vault_relocation import enroll_vault_root_identity
+    enroll_vault_root_identity(connection, 2, str(source))
 
 
 def _record_verified(
@@ -77,6 +79,7 @@ def _record_verified(
         uploaded_at=uploaded_at,
         observed_at=uploaded_at,
         scan_id=uploaded_at,
+        origin="upload",
     )
     catalog.mark_version_verified(
         version_id,
@@ -411,6 +414,8 @@ class ChangedContentAdmissionTests(unittest.TestCase):
 
 class ChangedContentUploadWorkerTests(unittest.TestCase):
     def _prepare(self, root: Path, payload: bytes) -> tuple[Path, Path]:
+        from tests.upload_provenance_provider import VersionedProvider
+        self.provider = VersionedProvider()
         source = root / "source"
         source.mkdir()
         target = source / "report.txt"
@@ -437,10 +442,15 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
         version_id: str,
     ) -> list[str]:
         commands: list[str] = []
+        from tests.upload_provenance_provider import VersionedProvider
+        from app.services.operation_policies import set_policy, OperationPolicy
+        if not hasattr(self, "provider"):
+            self.provider = VersionedProvider()
 
         def fake_sdk_upload(*args, **kwargs) -> None:
             command = tuple(str(arg) for arg in args if not callable(arg))
             commands.append(command[0] if command else "")
+            self.provider.add("docs/report.txt", payload, version=version_id)
 
         def fake_stream(*args, **kwargs) -> int:
             command = tuple(str(arg) for arg in args if not callable(arg))
@@ -456,24 +466,18 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
             restore_poll_interval=900,
         )
         with patch("app.database.settings", database_settings):
+            with PostgresConnection(str(database_path)) as connection:
+                set_policy(connection, 2, OperationPolicy(upload_verification="read_back"))
             queued = queue_jobs("report.txt", "upload", 2, 1)
             self.assertEqual(queued["item_count"], 1)
             with (
                 patch("app.storage.settings", worker_settings),
                 patch("app.storage.validate_cloud_vault"),
-                mock_sdk_upload( side_effect=fake_sdk_upload),
+                mock_sdk_upload(side_effect=fake_sdk_upload, return_value={"VersionId": version_id}),
                 mock_sdk_read( side_effect=fake_stream),
                 patch(
                     "app.storage.s3_client",
-                    return_value=VersionedS3Stub(
-                        version_bytes=payload,
-                        head_object=lambda **kwargs: {
-                            "VersionId": kwargs.get("VersionId") or version_id,
-                            "ContentLength": len(payload),
-                            "StorageClass": "STANDARD",
-                            "ETag": '"etag"',
-                        }
-                    ),
+                    return_value=self.provider,
                 ),
             ):
                 process_jobs_once()

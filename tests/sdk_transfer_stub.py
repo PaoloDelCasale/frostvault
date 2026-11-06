@@ -11,10 +11,6 @@ from unittest.mock import patch
 @contextmanager
 def mock_sdk_upload(*, side_effect=None, return_value=None):
     import app.storage as storage
-    # Legacy fixtures create Vault rows directly instead of using creation/startup
-    # enrollment. Set up their real roots explicitly before running the worker.
-    storage.vault_relocation.reconcile_vault_root_identities()
-
     def upload(job, *, source, key):
         if side_effect:
             side_effect("upload", str(source), key, job_id=job["id"])

@@ -111,6 +111,36 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                     self.assertEqual(job["status"], "completed", job["message"])
                 self.assertEqual(hashlib.sha256(local.read_bytes()).hexdigest(), digest)
 
+    def test_raw_receipt_after_real_sdk_upload_survives_flush_failure_without_extra_version(self):
+        from app.services import upload_provenance
+        with tempfile.TemporaryDirectory() as directory:
+            payload = b"real compatible-provider raw receipt gap"
+            source, database_path = prepare_plain_vault(Path(directory), relative_path="receipt/gap.bin", payload=payload, bucket=self.bucket, prefix=self.prefix)
+            with patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(str(database_path)))):
+                queue_jobs("receipt/gap.bin", "upload", 2, 1)
+                with patch("app.storage._ThrottledByteProgress.flush", side_effect=RuntimeError("injected post-response flush failure")):
+                    process_jobs_once()
+                with PostgresConnection(str(database_path)) as connection:
+                    original = connection.execute("SELECT * FROM jobs").fetchone()
+                    self.assertEqual(original["status"],"failed")
+                    self.assertIsNone(original["archive_version_id"])
+                    intent = upload_provenance.load_for_job(connection, original["id"])
+                    receipt = upload_provenance.receipt(connection,intent["id"])
+                    vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
+                    resumed = upload_provenance.schedule_resume(connection,vault=vault,path="receipt/gap.bin",user_id=1,timestamp="2026-11-06T00:00:00+00:00")
+                before = s3_client().list_object_versions(Bucket=self.bucket,Prefix=f"{self.prefix}/receipt/gap.bin")
+                self.assertEqual([v["VersionId"] for v in before["Versions"]],[receipt["VersionId"]])
+                process_jobs_once()
+                with PostgresConnection(str(database_path)) as connection:
+                    final = connection.execute("SELECT status,archive_version_id FROM jobs WHERE id=%s", (resumed["job_id"],)).fetchone()
+                    self.assertEqual(final["status"],"completed")
+                    keeper = connection.execute("SELECT * FROM archive_versions WHERE id=%s", (final["archive_version_id"],)).fetchone()
+                    self.assertEqual(keeper["provider_version_id"],receipt["VersionId"])
+                    self.assertEqual(keeper["plaintext_sha256"],hashlib.sha256(payload).hexdigest())
+                    self.assertEqual(connection.execute("SELECT status FROM jobs WHERE id=%s", (original["id"],)).fetchone()["status"],"failed")
+                after = s3_client().list_object_versions(Bucket=self.bucket,Prefix=f"{self.prefix}/receipt/gap.bin")
+                self.assertEqual([v["VersionId"] for v in after["Versions"]],[receipt["VersionId"]],"Recovery issued a second provider write")
+
     def test_plain_upload_and_recovery_match_sha256(self):
         self._roundtrip("docs/report.txt", b"live-integrity-payload")
 

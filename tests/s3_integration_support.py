@@ -79,6 +79,8 @@ def prepare_plain_vault(
             INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix)
             VALUES (2, 'ci', 'CI', %s, %s, %s)
         """, (str(source), bucket, prefix.strip("/"),))
+        from app.services.vault_relocation import enroll_vault_root_identity
+        enroll_vault_root_identity(connection, 2, str(source))
         ArchiveCatalog(connection).observe_local_copy(
             vault_id=2, path=relative_path, file_type="regular", size=len(payload),
             mtime_ns=target.stat().st_mtime_ns, observed_at="2026-07-22T12:00:00+00:00",

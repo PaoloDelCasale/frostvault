@@ -76,6 +76,22 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.run_job(result["job_id"])
         return result["job_id"]
 
+    def http_client(self):
+        from fastapi.testclient import TestClient
+        from app.main import app, current_user, current_vault
+        with PostgresConnection(self.db_path) as connection:
+            vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
+        previous = dict(app.dependency_overrides)
+        app.dependency_overrides[current_user] = lambda: {"id":1}
+        app.dependency_overrides[current_vault] = lambda: vault
+        def restore():
+            app.dependency_overrides.clear()
+            app.dependency_overrides.update(previous)
+        self.addCleanup(restore)
+        client = TestClient(app)  # No lifespan/background services or native server.
+        self.addCleanup(client.close)
+        return client
+
     def assert_keeper(self, job_id):
         row = self.row(job_id)
         self.assertEqual(row["status"], "completed", row["message"])
@@ -150,6 +166,55 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         resumed = self.resume()
         self.assert_keeper(resumed)
         self.assertEqual(self.provider.puts, 1)
+
+    def test_explicit_reconcile_http_admission_is_independent_of_protected_upload_409(self):
+        self.provider.add("docs/report.txt",A,version="historical-duplicate")
+        self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("delete temporarily unavailable")) if stage == "delete" else None
+        original = self.queue()
+        self.run_job(original)
+        self.assertEqual(self.row(original)["status"],"failed")
+        self.provider.hook = lambda *args, **kwargs: None
+        client = self.http_client()
+        with patch("app.main._allowed_hosts",return_value=[]):
+            ordinary = client.post("/api/upload?vault_id=2",json={"path":"report.txt"})
+            self.assertEqual(ordinary.status_code,409,ordinary.text)
+            resumed = client.post("/api/upload/reconcile?vault_id=2",json={"path":"report.txt"})
+        self.assertEqual(resumed.status_code,202,resumed.text)
+        job_id = resumed.json()["job_id"]
+        self.assertTrue(self.row(job_id)["upload_reconcile_only"])
+        self.run_job(job_id)
+        self.assert_keeper(job_id)
+        self.assertEqual(self.provider.puts,1)
+        self.assertEqual(self.row(original)["status"],"failed","No generic history resolution")
+
+    def test_failed_linked_pre0064_baseline_resumes_without_file_or_new_put(self):
+        from app.services.operation_policies import OperationPolicy, set_policy
+        with PostgresConnection(self.db_path) as connection:
+            set_policy(connection,2,OperationPolicy(upload_verification="read_back"))
+        self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("get temporarily unavailable")) if stage == "get" else None
+        original = self.queue()
+        self.run_job(original)
+        self.assertIsNotNone(self.row(original)["archive_version_id"])
+        with PostgresConnection(self.db_path) as connection:
+            # Construct a genuine populated 0063 fixture: linked version + its
+            # independent baseline, no invented/backfilled 0064 provenance.
+            connection.execute("UPDATE jobs SET status='failed',retry_after=NULL WHERE id=%s",(original,))
+            connection.execute("DELETE FROM upload_receipts")
+            connection.execute("DELETE FROM upload_intent_jobs")
+            connection.execute("DELETE FROM upload_intents")
+            set_policy(connection,2,OperationPolicy(upload_verification="s3_checksum"))
+            state = provenance.describe(connection,vault_id=2,path="report.txt")
+            self.assertTrue(state["pending"])
+            self.assertTrue(state["can_resume"])
+        self.file.unlink()
+        resumed = self.resume()
+        version = self.assert_keeper(resumed)
+        self.assertEqual(version["upload_verification_requested"],"read_back")
+        self.assertEqual(version["verification_method"],"read_back")
+        self.assertEqual((self.provider.puts,self.provider.gets),(1,2))
+        self.assertEqual(self.row(original)["status"],"failed")
+        with PostgresConnection(self.db_path) as connection:
+            self.assertIsNone(connection.execute("SELECT id FROM upload_intents").fetchone(),"Legacy resume is not provenance backfill")
 
     def test_cancel_after_raw_ack_keeps_receipt_and_never_resurrects(self):
         job = self.queue()

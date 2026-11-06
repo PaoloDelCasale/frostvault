@@ -147,6 +147,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> No
         pinned = target(connection, job, key=keeper["object_key"], provider=provider)
         rows = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND id<>%s AND availability<>'purged'", (job["vault_file_id"], keeper_id)).fetchall()
         paths = connection.execute("SELECT path FROM file_paths WHERE vault_file_id=%s", (job["vault_file_id"],)).fetchall()
+        catalog_markers = connection.execute("SELECT * FROM delete_markers WHERE vault_file_id=%s ORDER BY id", (job["vault_file_id"],)).fetchall()
     keys = {keeper["object_key"]} | {r["object_key"] for r in rows if r["object_key"]}
     keys |= {worker.expected_cloud_key(r["path"], job["s3_prefix"]) for r in paths}
     batch = pin_inventory(worker, job, client, keeper_id=keeper_id)
@@ -259,6 +260,14 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> No
             worker.ensure_job_claim_owned_in_transaction(connection, job, "Snapshot cleanup claim lost")
             if _keeper(connection, job, keeper_id) != keeper:
                 raise UploadBlocked("identity_changed")
+            current_markers = connection.execute("SELECT * FROM delete_markers WHERE vault_file_id=%s ORDER BY id", (job["vault_file_id"],)).fetchall()
+            if current_markers != catalog_markers:
+                raise UploadBlocked("inventory_changed")
+            # Metadata-only reconciliation of exact stale marker observations.
+            # No DeleteObject for markers, no broadened deletion consent.
+            for marker in catalog_markers:
+                if marker["object_key"] in final and not final[marker["object_key"]]["markers"]:
+                    connection.execute("DELETE FROM delete_markers WHERE id=%s AND vault_file_id=%s", (marker["id"],job["vault_file_id"]))
             # Absent previously authorized IDs reconcile delete->DB gaps without
             # another GET/delete. Missing unrelated rows are not falsely purged.
             proved = connection.execute("SELECT object_key,version_id FROM snapshot_cleanup_proofs WHERE vault_file_id=%s AND bucket=%s AND provider=%s AND keeper_id=%s AND sha256=%s", (job["vault_file_id"], job["s3_bucket"], provider, keeper_id, keeper["plaintext_sha256"])).fetchall()

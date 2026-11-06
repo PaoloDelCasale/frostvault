@@ -384,6 +384,12 @@ class UploadModeTests(unittest.TestCase):
         with PostgresConnection(str(self.identity)) as connection:
             connection.execute("UPDATE archive_versions SET upload_snapshot_json=NULL, upload_verification_requested=NULL")
             connection.execute("UPDATE jobs SET upload_snapshot_json=NULL, upload_verification_requested=NULL, retry_after='2020-01-01T00:00:00+00:00'")
+            # This fixture represents a pre-0063/pre-0064 upload, not deliberate
+            # tampering with the immutable baseline of a new journalled intent.
+            connection.execute("DELETE FROM upload_receipts")
+            connection.execute("DELETE FROM upload_intent_jobs")
+            connection.execute("DELETE FROM upload_intents")
+            connection.execute("DELETE FROM snapshot_cleanup_inventories")
         (self.source / "a.txt").write_bytes(b"independent snapshot B")
         self.head_error = None
         self.run_worker()

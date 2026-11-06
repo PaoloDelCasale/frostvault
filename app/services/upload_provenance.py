@@ -50,8 +50,8 @@ def provider_identity(client: Any) -> str:
         raw = "s3-compatible-test"
     parsed = urlsplit(raw)
     endpoint = urlunsplit((parsed.scheme, (parsed.hostname or "") + (f":{parsed.port}" if parsed.port else ""), parsed.path, "", "")) if parsed.scheme else raw
-    return canonical({"endpoint": endpoint,
-                      "region": getattr(getattr(meta, "config", None), "region_name", None)})
+    region = getattr(getattr(meta, "config", None), "region_name", None)
+    return canonical({"endpoint": endpoint, "region": region if isinstance(region, str) else None})
 
 
 def inventory(client: Any, bucket: str, key: str) -> dict[str, list[str]]:
@@ -197,6 +197,38 @@ def reconcile(client: Any, intent: dict[str, Any], saved: dict[str, Any] | None,
     return {**head, **(saved or {}), "VersionId": version}
 
 
+def _legacy_materialized(connection: Any, file_id: str) -> dict[str, Any] | None:
+    """Manual exact resume of failed linked pre-0064 uploads, without backfill."""
+    rows = connection.execute("""SELECT av.*,j.upload_plaintext_sha256 AS expected_sha,
+        j.upload_snapshot_json AS job_snapshot
+        FROM archive_versions av JOIN jobs j ON j.archive_version_id=av.id
+        JOIN file_paths fp ON fp.vault_file_id=av.vault_file_id AND fp.valid_to IS NULL
+        WHERE av.vault_file_id=%s AND av.availability='available' AND av.integrity='unverified'
+          AND j.action='upload' AND j.status='failed' AND j.vault_file_id=av.vault_file_id
+          AND j.vault_id=av.vault_id AND j.path=fp.path
+          AND NOT EXISTS (SELECT 1 FROM jobs cancelled WHERE cancelled.archive_version_id=av.id AND cancelled.status='cancelled' AND cancelled.action='upload')
+        ORDER BY j.id""", (file_id,)).fetchall()
+    if not rows:
+        return None
+    if len({r["id"] for r in rows}) != 1:
+        raise UploadBlocked("ambiguous_receipt")
+    for row in rows:
+        if row.get("upload_snapshot_json"):
+            try:
+                snapshot = UploadSnapshot.from_json(row["upload_snapshot_json"])
+                if row["job_snapshot"] and UploadSnapshot.from_json(row["job_snapshot"]).plaintext_sha256 != snapshot.plaintext_sha256:
+                    raise UploadBlocked("proof_mismatch")
+            except (ValueError, TypeError, KeyError, AttributeError) as exc:
+                raise UploadBlocked("proof_mismatch") from exc
+            if row["expected_sha"] != snapshot.plaintext_sha256:
+                raise UploadBlocked("proof_mismatch")
+        elif not (isinstance(row["expected_sha"],str) and len(row["expected_sha"]) == 64 and all(c in "0123456789abcdef" for c in row["expected_sha"])):
+            raise UploadBlocked("proof_unavailable")
+    if len({r["expected_sha"] for r in rows}) != 1:
+        raise UploadBlocked("proof_mismatch")
+    return rows[0]
+
+
 def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
     row = connection.execute("SELECT vf.id FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL WHERE vf.vault_id=%s AND fp.path=%s", (vault_id, path)).fetchone()
     empty = {"pending": False, "can_resume": False, "reason": None, "remedy": None}
@@ -205,12 +237,18 @@ def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
     file_id = row["id"]
     block = connection.execute("SELECT reason FROM snapshot_reconciliation_blocks WHERE vault_file_id=%s", (file_id,)).fetchone()
     intents = connection.execute("SELECT id,blocked_reason,send_started FROM upload_intents WHERE vault_file_id=%s AND NOT settled ORDER BY created_at LIMIT 2", (file_id,)).fetchall()
-    if not block and not intents:
+    legacy, legacy_reason = None, None
+    if not intents:
+        try:
+            legacy = _legacy_materialized(connection,file_id)
+        except UploadBlocked as exc:
+            legacy_reason = exc.reason
+    if not block and not intents and not legacy and not legacy_reason:
         return empty
-    reason = (block["reason"] if block else intents[0]["blocked_reason"]) or "ambiguous_send"
+    reason = (block["reason"] if block else intents[0]["blocked_reason"] if intents else legacy_reason or "proof_unavailable") or "ambiguous_send"
     busy = connection.execute("SELECT 1 FROM jobs WHERE vault_file_id=%s AND status NOT IN ('failed','cancelled','completed') LIMIT 1", (file_id,)).fetchone()
     cancelled = connection.execute("SELECT 1 FROM jobs j LEFT JOIN upload_intent_jobs b ON b.job_id=j.id WHERE j.vault_file_id=%s AND j.status='cancelled' AND (j.upload_reconcile_only OR b.intent_id IS NOT NULL) LIMIT 1", (file_id,)).fetchone()
-    return {"pending": True, "can_resume": not busy and not cancelled and len(intents) < 2 and (not intents or intents[0]["send_started"]),
+    return {"pending": True, "can_resume": not busy and not cancelled and not legacy_reason and len(intents) < 2 and (not intents or intents[0]["send_started"]),
             "reason": reason, "remedy": REMEDIES.get(reason, REMEDIES["proof_unavailable"])}
 
 
@@ -229,10 +267,12 @@ def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_i
     if not row or row["cloud_only_version_id"]:
         raise UploadBlocked("identity_changed")
     intent = outstanding(connection, row["id"])
-    linked = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND availability='available' AND integrity='verified' ORDER BY version_number DESC LIMIT 1", (row["id"],)).fetchone() if not intent else None
+    linked = _legacy_materialized(connection,row["id"]) if not intent else None
+    if not intent and not linked:
+        linked = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND availability='available' AND integrity='verified' ORDER BY version_number DESC LIMIT 1", (row["id"],)).fetchone()
     if not intent and not linked:
         raise UploadBlocked("proof_unavailable")
-    job = connection.execute("INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,action,status,requested_by,requested_at,updated_at,group_id,group_path,total_bytes,transferred_bytes,origin,upload_reconcile_only,upload_plaintext_sha256,upload_snapshot_json,upload_verification_requested) VALUES (%s,%s,%s,%s,'upload','queued',%s,%s,%s,%s,%s,%s,0,'manual',TRUE,%s,%s,%s) RETURNING id,group_id", (vault["id"], row["id"], intent["archive_version_id"] if intent else linked["id"], path, user_id, timestamp, timestamp, str(uuid.uuid4()), path, UploadSnapshot.from_json(intent["snapshot_json"]).size if intent else linked["size"], UploadSnapshot.from_json(intent["snapshot_json"]).plaintext_sha256 if intent else linked["plaintext_sha256"], intent["snapshot_json"] if intent else linked["upload_snapshot_json"], intent["requested"] if intent else linked["upload_verification_requested"])).fetchone()
+    job = connection.execute("INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,action,status,requested_by,requested_at,updated_at,group_id,group_path,total_bytes,transferred_bytes,origin,upload_reconcile_only,upload_plaintext_sha256,upload_snapshot_json,upload_verification_requested) VALUES (%s,%s,%s,%s,'upload','queued',%s,%s,%s,%s,%s,%s,0,'manual',TRUE,%s,%s,%s) RETURNING id,group_id", (vault["id"], row["id"], intent["archive_version_id"] if intent else linked["id"], path, user_id, timestamp, timestamp, str(uuid.uuid4()), path, UploadSnapshot.from_json(intent["snapshot_json"]).size if intent else linked["size"], UploadSnapshot.from_json(intent["snapshot_json"]).plaintext_sha256 if intent else linked.get("expected_sha") or linked["plaintext_sha256"], intent["snapshot_json"] if intent else linked["upload_snapshot_json"], intent["requested"] if intent else linked["upload_verification_requested"] or "read_back")).fetchone()
     if intent:
         bind_for_resume(connection, job["id"], intent)
     return {"job_id": job["id"], "group_id": job["group_id"]}

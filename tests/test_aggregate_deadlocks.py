@@ -30,25 +30,33 @@ class Provider:
     def __init__(self):
         self.lock = threading.Lock()
         self.objects = {}
+        self.metadata = {}
         self.puts = []
         self.reads = []
         self.deleted = []
 
-    def upload(self, _client, *, source, bucket, key, check_active, on_progress, **_):
+    def upload(self, _client, *, source, bucket, key, check_active, on_progress, on_acknowledged=None, metadata=None, **_):
         check_active()
         version = uuid.uuid4().hex
         with self.lock:
             self.objects[(key, version)] = source.read_bytes()
+            self.metadata[(key, version)] = dict(metadata or {})
             self.puts.append((key, version))
-        # Exercise the actual progress DB callback AFTER provider response.
+        response = self.head_object(Key=key,VersionId=version)
+        if on_acknowledged:
+            on_acknowledged(response)
+        # Exercise the actual progress DB callback AFTER durable raw response.
         on_progress(source.stat().st_size)
         check_active()
-        return {"VersionId": version}
+        return response
 
     def head_object(self, *, Key, VersionId, **_):
         with self.lock:
             content = self.objects[(Key, VersionId)]
-        return {"VersionId": VersionId, "ContentLength": len(content), "ETag": '"etag"'}
+        import base64
+        return {"VersionId": VersionId, "ContentLength": len(content), "ETag": '"etag"',
+                "Metadata":dict(self.metadata[(Key,VersionId)]),"ChecksumType":"FULL_OBJECT",
+                "ChecksumSHA256":base64.b64encode(hashlib.sha256(content).digest()).decode()}
 
     def get_object(self, *, Key, VersionId, **_):
         with self.lock:
@@ -129,7 +137,8 @@ class AggregateDeadlockTests(unittest.TestCase):
     def assert_completed(self, count):
         with PostgresConnection(self.path) as connection:
             states = connection.execute("SELECT status, COUNT(*) AS n FROM jobs GROUP BY status").fetchall()
-            self.assertEqual(states, [{"status": "completed", "n": count}])
+            failed = connection.execute("SELECT id,status,message FROM jobs WHERE status<>'completed' ORDER BY id LIMIT 16").fetchall()
+            self.assertEqual(states, [{"status": "completed", "n": count}],failed)
             versions = connection.execute("SELECT provider_version_id,integrity,availability FROM archive_versions").fetchall()
         self.assertEqual(len(versions), count)
         self.assertTrue(all(v["integrity"] == "verified" and v["availability"] == "available" for v in versions))
