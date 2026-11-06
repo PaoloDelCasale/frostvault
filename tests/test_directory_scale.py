@@ -581,7 +581,7 @@ class DirectoryScaleTests(unittest.TestCase):
         self.assertEqual(self.catalog.last_listing_rows_materialized, 0)
         self.assertLess(duration, 2.0)
 
-    def test_remark_bumps_durable_marked_at(self) -> None:
+    def test_remark_in_new_transaction_has_independent_durable_identity(self) -> None:
         self.catalog.observe_local_copy(
             vault_id=2,
             path="photos/a.jpg",
@@ -598,12 +598,12 @@ class DirectoryScaleTests(unittest.TestCase):
         first = self.connection.execute(
             "SELECT marked_at FROM directory_aggregate_dirty WHERE vault_id=2 AND path='photos'"
         ).fetchone()["marked_at"]
-        # Drop in-connection coalescing so the second mark hits durable storage.
-        aggregates._tracker(self.connection).clear()
+        # Reuse the connection/tracker after commit: it must not suppress a new mark.
+        self.connection.commit()
         with patch.object(aggregates, "_now", return_value="2026-07-21T10:00:05+00:00"):
             aggregates.mark_path_dirty(self.connection, 2, "photos/a.jpg")
         second = self.connection.execute(
-            "SELECT marked_at FROM directory_aggregate_dirty WHERE vault_id=2 AND path='photos'"
+            "SELECT marked_at FROM directory_aggregate_dirty WHERE vault_id=2 AND path='photos' ORDER BY marked_at DESC"
         ).fetchone()["marked_at"]
         self.assertEqual(first, "2026-07-21T10:00:00+00:00")
         self.assertEqual(second, "2026-07-21T10:00:05+00:00")
@@ -646,17 +646,15 @@ class DirectoryScaleTests(unittest.TestCase):
                 # Concurrent transaction committed a newer dirty mark mid-flush.
                 connection.execute(
                     """
-                    INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at)
-                    VALUES (2, 'beta', '2026-07-21T10:00:09+00:00')
-                    ON CONFLICT(vault_id, path) DO UPDATE SET marked_at=excluded.marked_at
+                    INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at, mark_id)
+                    VALUES (2, 'beta', '2026-07-21T10:00:09+00:00', 'concurrent-beta')
                     """
                 )
                 # Same-path re-mark after claim must also survive.
                 connection.execute(
                     """
-                    INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at)
-                    VALUES (2, 'alpha', '2026-07-21T10:00:09+00:00')
-                    ON CONFLICT(vault_id, path) DO UPDATE SET marked_at=excluded.marked_at
+                    INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at, mark_id)
+                    VALUES (2, 'alpha', '2026-07-21T10:00:09+00:00', 'concurrent-alpha')
                     """
                 )
 
@@ -702,10 +700,8 @@ class DirectoryScaleTests(unittest.TestCase):
                     # Concurrent dirty mark after the rebuild claim cutoff.
                     connection.execute(
                         """
-                        INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at)
-                        VALUES (2, 'keep', '2026-07-21T12:00:00+00:00')
-                        ON CONFLICT(vault_id, path) DO UPDATE SET
-                            marked_at=excluded.marked_at
+                        INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at, mark_id)
+                        VALUES (2, 'keep', '2026-07-21T12:00:00+00:00', 'concurrent-keep')
                         """
                     )
                     marked = True

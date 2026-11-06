@@ -70,6 +70,7 @@ from .services.vault_paths import (
     expected_cloud_key,
     is_restore_temporary_name,
 )
+from .services.database_retry import retry_database_unit
 from .services.upload_retry import (
     UPLOAD_RETRY_MAX_ATTEMPTS,
     classify_upload_failure,
@@ -257,6 +258,7 @@ def _job_claim_context(
             _worker_claim.lost_event = previous_lost
 
 
+@retry_database_unit
 def _renew_claim_if_owned(job_id: int, claim_token: str) -> dict[str, Any] | None:
     timestamp = now_iso()
     with db() as connection:
@@ -1962,6 +1964,7 @@ def _defer_job_counters() -> Iterator[None]:
         _pending_job_counters.reset(token)
 
 
+@retry_database_unit
 def set_job(
     job_id: int,
     status: str,
@@ -2074,6 +2077,7 @@ def set_job(
     return updated
 
 
+@retry_database_unit
 def schedule_upload_retry(
     job_id: int,
     *,
@@ -2171,6 +2175,7 @@ def schedule_upload_retry(
     return updated
 
 
+@retry_database_unit
 def set_job_progress(
     job_id: int,
     transferred_bytes: int,
@@ -2406,18 +2411,19 @@ def purge_current_snapshot_superseded(
                 version_id=str(version_id),
             )
     stamp = now_iso()
-    with db() as connection:
-        ensure_job_claim_owned_in_transaction(
-            connection,
-            job,
-            "Upload claim was lost",
-        )
-        catalog = ArchiveCatalog(connection)
-        catalog.mark_versions_purged(
-            [str(row["id"]) for row in superseded],
-            checked_at=stamp,
-        )
-        catalog.clear_delete_markers_for_file(str(keep["vault_file_id"]))
+
+    @retry_database_unit
+    def persist_purge() -> None:
+        # Provider deletion is above, deliberately outside this replay unit.
+        with db() as connection:
+            ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
+            catalog = ArchiveCatalog(connection)
+            catalog.mark_versions_purged(
+                [str(row["id"]) for row in superseded], checked_at=stamp,
+            )
+            catalog.clear_delete_markers_for_file(str(keep["vault_file_id"]))
+
+    persist_purge()
 
 
 def _purge_current_snapshot_scan_extras(
@@ -3264,40 +3270,33 @@ def _complete_verified_upload(
         )
     )
     verified_at = now_iso()
-    with db() as connection:
-        ensure_job_claim_owned_in_transaction(
-            connection,
-            job,
-            "Upload claim was lost",
-        )
-        catalog = ArchiveCatalog(connection)
-        if mark_verified:
-            catalog.mark_version_verified(
-                version_id,
-                plaintext_sha256=upload_digest,
-                verified_at=verified_at,
-            )
-        if observed_stat is not None:
-            catalog.observe_local_copy(
-                vault_id=job["vault_id"],
-                path=job["path"],
-                file_type="regular",
-                size=observed_stat.st_size,
-                mtime_ns=observed_stat.st_mtime_ns,
-                observed_at=verified_at,
-            )
-        if observed_digest is not None:
-            catalog.set_local_fingerprint(
-                vault_id=job["vault_id"],
-                path=job["path"],
-                plaintext_sha256=observed_digest,
-                matched_archive_version_id=(
-                    version_id if matches_snapshot else None
-                ),
-            )
-            if matches_snapshot:
-                connection.execute("DELETE FROM protection_pending WHERE vault_file_id=%s",
-                                   (job["vault_file_id"],))
+
+    @retry_database_unit
+    def persist_verification() -> None:
+        with db() as connection:
+            ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
+            catalog = ArchiveCatalog(connection)
+            if mark_verified:
+                catalog.mark_version_verified(
+                    version_id, plaintext_sha256=upload_digest, verified_at=verified_at,
+                )
+            if observed_stat is not None:
+                catalog.observe_local_copy(
+                    vault_id=job["vault_id"], path=job["path"], file_type="regular",
+                    size=observed_stat.st_size, mtime_ns=observed_stat.st_mtime_ns,
+                    observed_at=verified_at,
+                )
+            if observed_digest is not None:
+                catalog.set_local_fingerprint(
+                    vault_id=job["vault_id"], path=job["path"],
+                    plaintext_sha256=observed_digest,
+                    matched_archive_version_id=version_id if matches_snapshot else None,
+                )
+                if matches_snapshot:
+                    connection.execute("DELETE FROM protection_pending WHERE vault_file_id=%s",
+                                       (job["vault_file_id"],))
+
+    persist_verification()
     set_job(job["id"], "uploading", message_key="job.purging_previous_snapshot")
     ensure_job_active(job["id"], "Upload claim was lost")
     purge_current_snapshot_superseded(
@@ -3312,6 +3311,7 @@ def _complete_verified_upload(
     set_job(job["id"], "completed", message_key="job.upload_verified")
 
 
+@retry_database_unit
 def _automatic_upload_ready(job: dict[str, Any]) -> bool:
     """Recheck suspension and stability when a queued automatic upload starts.
 
@@ -3352,6 +3352,16 @@ def _automatic_upload_ready(job: dict[str, Any]) -> bool:
         )
 
 
+@retry_database_unit
+def _upload_catalog_unit(
+    job: dict[str, Any], mutation: Callable[[ArchiveCatalog], Any],
+) -> Any:
+    """One owned, replayable transaction; callbacks must contain DB work only."""
+    with db() as connection:
+        ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
+        return mutation(ArchiveCatalog(connection))
+
+
 def process_upload(job: dict[str, Any]) -> None:
     ensure_job_active(job["id"], "Upload stopped")
     if job.get("origin") == "automatic" and not _automatic_upload_ready(job):
@@ -3360,8 +3370,7 @@ def process_upload(job: dict[str, Any]) -> None:
     validate_cloud_vault(job)
     source = safe_local_path(job["source_root"], job["path"])
     local_present = source.is_file()
-    with db() as connection:
-        linked_target = ArchiveCatalog(connection).get_job_target(job["id"])
+    linked_target = _upload_catalog_unit(job, lambda catalog: catalog.get_job_target(job["id"]))
     linked_version_id = (
         linked_target.get("archive_version_id") if linked_target else None
     )
@@ -3433,41 +3442,21 @@ def process_upload(job: dict[str, Any]) -> None:
             # Keep the upload snapshot on the durable Job before contacting the
             # provider.  Local Copy fingerprints are mutable scan observations
             # and cannot identify a retry after the source changes.
-            with db() as connection:
-                ensure_job_claim_owned_in_transaction(
-                    connection,
-                    job,
-                    "Upload claim was lost",
-                )
-                catalog = ArchiveCatalog(connection)
-                catalog.set_upload_plaintext_digest(
-                    job["id"],
-                    plaintext_sha256=upload_digest,
-                )
-                vault_file_id = job.get("vault_file_id") or (
-                    linked_target or {}
-                ).get("vault_file_id")
-                reusable = (
-                    catalog.find_reusable_upload_version(
-                        vault_file_id=str(vault_file_id),
-                        plaintext_sha256=upload_digest,
-                    )
-                    if vault_file_id
-                    else None
-                )
+            def prepare_digest(catalog: ArchiveCatalog) -> dict[str, Any] | None:
+                catalog.set_upload_plaintext_digest(job["id"], plaintext_sha256=upload_digest)
+                vault_file_id = job.get("vault_file_id") or (linked_target or {}).get("vault_file_id")
+                return catalog.find_reusable_upload_version(
+                    vault_file_id=str(vault_file_id), plaintext_sha256=upload_digest,
+                ) if vault_file_id else None
+
+            reusable = _upload_catalog_unit(job, prepare_digest)
             job["upload_plaintext_sha256"] = upload_digest
             reusable_integrity = (
                 str(reusable.get("integrity") or "") if reusable is not None else ""
             )
             if reusable is not None and reusable_integrity == "verified":
                 version_id = str(reusable["id"])
-                with db() as connection:
-                    ensure_job_claim_owned_in_transaction(
-                        connection,
-                        job,
-                        "Upload claim was lost",
-                    )
-                    ArchiveCatalog(connection).link_job_version(job["id"], version_id)
+                _upload_catalog_unit(job, lambda catalog: catalog.link_job_version(job["id"], version_id))
                 _complete_verified_upload(
                     job,
                     source=source,
@@ -3486,13 +3475,7 @@ def process_upload(job: dict[str, Any]) -> None:
                         "The linked Archive Version cannot be verified safely"
                     )
                 version_id = str(reusable["id"])
-                with db() as connection:
-                    ensure_job_claim_owned_in_transaction(
-                        connection,
-                        job,
-                        "Upload claim was lost",
-                    )
-                    ArchiveCatalog(connection).link_job_version(job["id"], version_id)
+                _upload_catalog_unit(job, lambda catalog: catalog.link_job_version(job["id"], version_id))
                 target = {
                     "archive_version_id": version_id,
                     "object_key": reusable["object_key"],
@@ -3517,27 +3500,23 @@ def process_upload(job: dict[str, Any]) -> None:
                     )
                 ensure_job_active(job["id"], "Upload claim was lost")
                 timestamp = now_iso()
-                with db() as connection:
-                    ensure_job_claim_owned_in_transaction(
-                        connection,
-                        job,
-                        "Upload claim was lost",
-                    )
-                    catalog = ArchiveCatalog(connection)
-                    version_id = catalog.record_archive_version(
-                        vault_id=job["vault_id"],
-                        path=job["path"],
-                        object_key=key,
+
+                def record_response(catalog: ArchiveCatalog) -> str:
+                    # Retain exact response + HEAD across an aborted DB unit.
+                    # Never move the PUT/HEAD into this callback.
+                    recorded = catalog.record_archive_version(
+                        vault_id=job["vault_id"], path=job["path"], object_key=key,
                         provider_version_id=provider_version_id,
                         size=head.get("ContentLength"),
                         storage_class=head.get("StorageClass", "STANDARD"),
                         etag=head.get("ETag", "").strip('"'),
-                        uploaded_at=timestamp,
-                        observed_at=timestamp,
-                        scan_id=timestamp,
-                        origin="upload",
+                        uploaded_at=timestamp, observed_at=timestamp,
+                        scan_id=timestamp, origin="upload",
                     )
-                    catalog.link_job_version(job["id"], version_id)
+                    catalog.link_job_version(job["id"], recorded)
+                    return recorded
+
+                version_id = _upload_catalog_unit(job, record_response)
                 target = {
                     "archive_version_id": version_id,
                     "object_key": key,
@@ -3575,17 +3554,9 @@ def process_upload(job: dict[str, Any]) -> None:
         if remote_digest != upload_digest:
             verification_failure_reason = "mismatch"
             ensure_job_active(job["id"], "Upload claim was lost")
-            with db() as connection:
-                ensure_job_claim_owned_in_transaction(
-                    connection,
-                    job,
-                    "Upload claim was lost",
-                )
-                ArchiveCatalog(connection).mark_version_mismatch(
-                    version_id,
-                    plaintext_sha256=upload_digest,
-                    checked_at=now_iso(),
-                )
+            _upload_catalog_unit(job, lambda catalog: catalog.mark_version_mismatch(
+                version_id, plaintext_sha256=upload_digest, checked_at=now_iso(),
+            ))
             raise RuntimeError("Cloud copy digest does not match local file")
         _complete_verified_upload(
             job,
@@ -4872,7 +4843,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
             return False
         message = str(exc)
         failure_kind = (
-            classify_upload_failure(message) if job["action"] == "upload" else ""
+            classify_upload_failure(exc) if job["action"] == "upload" else ""
         )
         if job["action"] == "upload" and failure_kind == "source_changed":
             next_attempt = int(job.get("retry_count") or 0) + 1
@@ -4892,6 +4863,8 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                 message_key="job.source_changed_stalled",
                 message_params={"attempts": UPLOAD_RETRY_MAX_ATTEMPTS},
             )
+        # DB failures are retried at their owned transaction boundary above.
+        # Exhaustion must fail closed, not restart S3 with a lost response (#464).
         if job["action"] == "upload" and failure_kind == "transient":
             next_attempt = int(job.get("retry_count") or 0) + 1
             if next_attempt <= UPLOAD_RETRY_MAX_ATTEMPTS:
@@ -4904,7 +4877,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
         if job["action"] == "storage-class":
             with db() as connection:
                 move = vault_moves.load(connection, int(job["id"]))
-            if move and not isinstance(exc, vault_moves.MoveBlocked) and classify_upload_failure(message) == "transient":
+            if move and not isinstance(exc, vault_moves.MoveBlocked) and classify_upload_failure(exc) == "transient":
                 next_attempt = int(job.get("retry_count") or 0) + 1
                 if next_attempt <= UPLOAD_RETRY_MAX_ATTEMPTS:
                     return schedule_upload_retry(

@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from .protection_states import STATE_SQL, LATEST_JOIN_SQL, aggregate_state
+from .database_retry import retry_database_unit
 
 
 STATUS_READY = "ready"
@@ -171,17 +172,16 @@ class _DirectoryAggregateTracker:
 def _persist_dirty_directory(connection: Any, vault_id: int, directory: str) -> None:
     tracker = _tracker(connection)
     key = (int(vault_id), directory)
-    # Coalesce burst marks inside one connection. Cross-connection re-marks
-    # still bump durable marked_at so a concurrent flush cannot drop them.
-    if key in tracker.dirty_directories:
-        return
+    # The PK includes the server's transaction identity. Coalesce only within
+    # that transaction, never UPDATE another writer's mark. Do not rely on the
+    # connection tracker here: psycopg handles may be reused after commit or
+    # rollback (including savepoint rollback).
     marked_at = _now()
     connection.execute(
         """
         INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at)
         VALUES (%s, %s, %s)
-        ON CONFLICT(vault_id, path) DO UPDATE SET
-            marked_at=excluded.marked_at
+        ON CONFLICT DO NOTHING
         """,
         (int(vault_id), directory, marked_at),
     )
@@ -557,7 +557,8 @@ def process_directory_aggregate_maintenance(
             if not _try_claim_vault_maintenance(vid, owner):
                 totals["skipped_vaults"] += 1
                 continue
-            claimed.append(vid)
+            if vid not in claimed:
+                claimed.append(vid)
             result = flush_directory_aggregates(active, vault_id=vid)
             totals["rebuilt_directories"] += int(result["rebuilt_directories"])
             totals["full_rebuilds"] += int(result["full_rebuilds"])
@@ -575,12 +576,21 @@ def process_directory_aggregate_maintenance(
                     )
                 )
 
+    @retry_database_unit
+    def run_owned() -> None:
+        # Retry the whole owned transaction, discarding uncommitted outputs.
+        published_events.clear()
+        for key in totals:
+            totals[key] = 0
+        with db() as owned:
+            _run(owned)
+
     try:
         if connection is not None:
+            # Never replay work inside a caller-owned/possibly aborted handle.
             _run(connection)
         else:
-            with db() as owned:
-                _run(owned)
+            run_owned()
 
         if publish:
             for event in published_events:
@@ -642,12 +652,12 @@ def _claim_dirty_rows(
     *,
     vault_id: int | None,
     cutoff: str,
-) -> list[tuple[int, str]]:
-    """Snapshot durable dirty rows with marked_at at or before ``cutoff``."""
+) -> list[tuple[int, str, str]]:
+    """Snapshot immutable mark identities, not a mutable path/timestamp set."""
     if vault_id is None:
         rows = connection.execute(
             """
-            SELECT vault_id, path FROM directory_aggregate_dirty
+            SELECT vault_id, path, mark_id FROM directory_aggregate_dirty
             WHERE marked_at <= %s
             """,
             (cutoff,),
@@ -655,44 +665,29 @@ def _claim_dirty_rows(
     else:
         rows = connection.execute(
             """
-            SELECT vault_id, path FROM directory_aggregate_dirty
+            SELECT vault_id, path, mark_id FROM directory_aggregate_dirty
             WHERE vault_id=%s AND marked_at <= %s
             """,
             (int(vault_id), cutoff),
         ).fetchall()
-    return [(int(row["vault_id"]), str(row["path"])) for row in rows]
+    return [(int(row["vault_id"]), str(row["path"]), str(row["mark_id"])) for row in rows]
 
 
 def _delete_claimed_dirty_rows(
     connection: Any,
     *,
     vault_id: int,
-    paths: Iterable[str],
-    cutoff: str,
+    claims: Iterable[tuple[int, str, str]],
 ) -> None:
-    """Drop only claimed dirty rows; newer concurrent marks survive."""
-    unique_paths = sorted({str(path) for path in paths if path is not None})
-    if not unique_paths:
-        # Full-vault claim (rebuild): delete every pre-cutoff dirty row.
+    """Delete observed identities only: a late commit's mark was not claimed."""
+    identities = sorted({(path, mark_id) for vid, path, mark_id in claims if vid == vault_id})
+    for offset in range(0, len(identities), 500):
+        batch = identities[offset : offset + 500]
+        placeholders = ", ".join(["(%s, %s)"] * len(batch))
         connection.execute(
-            """
-            DELETE FROM directory_aggregate_dirty
-            WHERE vault_id=%s AND marked_at <= %s
-            """,
-            (int(vault_id), cutoff),
-        )
-        return
-    for offset in range(0, len(unique_paths), 500):
-        batch = unique_paths[offset : offset + 500]
-        placeholders = ", ".join(["%s"] * len(batch))
-        connection.execute(
-            f"""
-            DELETE FROM directory_aggregate_dirty
-            WHERE vault_id=%s
-              AND path IN ({placeholders})
-              AND marked_at <= %s
-            """,
-            (int(vault_id), *batch, cutoff),
+            f"""DELETE FROM directory_aggregate_dirty
+                WHERE vault_id=%s AND (path, mark_id) IN ({placeholders})""",
+            (int(vault_id), *(value for identity in batch for value in identity)),
         )
 
 
@@ -703,10 +698,9 @@ def flush_directory_aggregates(
 ) -> dict[str, int]:
     """Apply coalesced dirty-directory rebuilds for one or all tracked Vaults.
 
-    Claim/delete is cutoff-bounded: only dirty rows with ``marked_at`` at or
-    before the flush snapshot are removed. Marks committed during rebuild
-    (including same-path re-marks that bump ``marked_at``) remain durable for
-    the next flush — required for PostgreSQL READ COMMITTED concurrency.
+    Claim/delete uses immutable transaction identities. Marks committed during
+    rebuild survive even when their timestamp precedes the claim cutoff. No
+    writer locks another writer's invalidation or a maintenance-owned mark.
     """
     tracker = _tracker(connection)
     # Cutoff freezes the claim set before any rebuild work observes catalog rows.
@@ -739,7 +733,7 @@ def flush_directory_aggregates(
         tracker_dirty = {
             (vid, path) for vid, path in tracker_dirty if vid == int(vault_id)
         }
-    dirty = set(claimed_dirty)
+    dirty = {(vid, path) for vid, path, _mark_id in claimed_dirty}
     dirty.update(tracker_dirty)
 
     rebuild_vaults = set(tracker.rebuild_vaults)
@@ -756,6 +750,7 @@ def flush_directory_aggregates(
             connection,
             vid,
             dirty_cutoff=cutoff,
+            dirty_claims=claimed_dirty,
         )
         full_rebuilds += 1
         dirty = {(d_vid, path) for d_vid, path in dirty if d_vid != vid}
@@ -771,8 +766,7 @@ def flush_directory_aggregates(
         _delete_claimed_dirty_rows(
             connection,
             vault_id=vid,
-            paths=unique_dirs,
-            cutoff=cutoff,
+            claims=claimed_dirty,
         )
         _mark_status(connection, vid, STATUS_READY)
 
@@ -798,6 +792,7 @@ def rebuild_vault_directory_aggregates(
     vault_id: int,
     *,
     dirty_cutoff: str | None = None,
+    dirty_claims: Iterable[tuple[int, str, str]] | None = None,
 ) -> int:
     """Replace every directory aggregate row for ``vault_id`` from the catalog.
 
@@ -805,9 +800,13 @@ def rebuild_vault_directory_aggregates(
     into per-directory rollups. Peak Python cardinality is O(batch + dirs),
     never a full descendant materialization. Dirty rows newer than
     ``dirty_cutoff`` (default: now at rebuild start) are preserved so concurrent
-    transactions that mark after the claim remain durable for the next flush.
+    transactions that commit after the claim remain durable for the next flush,
+    including marks whose timestamp predates the rebuild.
     """
     cutoff = dirty_cutoff or _now()
+    claims = list(dirty_claims) if dirty_claims is not None else _claim_dirty_rows(
+        connection, vault_id=int(vault_id), cutoff=cutoff
+    )
     connection.execute(
         "DELETE FROM directory_aggregates WHERE vault_id=%s",
         (int(vault_id),),
@@ -823,8 +822,7 @@ def rebuild_vault_directory_aggregates(
     _delete_claimed_dirty_rows(
         connection,
         vault_id=int(vault_id),
-        paths=(),
-        cutoff=cutoff,
+        claims=claims,
     )
     _mark_status(connection, vault_id, STATUS_READY)
     tracker = _tracker(connection)

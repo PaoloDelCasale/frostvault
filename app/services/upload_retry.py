@@ -1,6 +1,9 @@
 """Upload failure classification and retry backoff policy."""
 from __future__ import annotations
 
+from botocore.exceptions import ClientError
+from .database_retry import exception_chain, is_retryable_transaction_error
+
 
 UPLOAD_RETRY_BASE_SECONDS = 2
 
@@ -44,8 +47,6 @@ _TRANSIENT_UPLOAD_FAILURE_MARKERS = (
     "temporary failure",
     "timeout",
     "throttl",
-    "503",
-    "500",
     "internal error",
     "econnreset",
     "unavailable",
@@ -53,19 +54,28 @@ _TRANSIENT_UPLOAD_FAILURE_MARKERS = (
 )
 
 
-def classify_upload_failure(message: str) -> str:
+def classify_upload_failure(message: str | BaseException) -> str:
     """Classify an upload/verify error for retry policy.
 
     Returns ``source_changed`` when the Local Copy mutated before an Archive
     Version is linked, so the Job can be rescheduled after the Vault stability
     window up to ``UPLOAD_RETRY_MAX_ATTEMPTS``. ``transient`` covers retryable
-    transport faults; anything else is ``permanent``.
+    transport faults; anything else is ``permanent``. ``database_transient``
+    is separate: only the aborted DB unit can be replayed, never the upload.
     """
-    lowered = (message or "").lower()
+    if isinstance(message, BaseException) and is_retryable_transaction_error(message):
+        return "database_transient"
+    lowered = str(message or "").lower()
     if "changed since fingerprinting" in lowered:
         return "source_changed"
     if any(marker in lowered for marker in _PERMANENT_UPLOAD_FAILURE_MARKERS):
         return "permanent"
+    if isinstance(message, BaseException):
+        for error in exception_chain(message):
+            if isinstance(error, ClientError) and error.response.get(
+                "ResponseMetadata", {}
+            ).get("HTTPStatusCode") in {500, 502, 503, 504}:
+                return "transient"
     if any(marker in lowered for marker in _TRANSIENT_UPLOAD_FAILURE_MARKERS):
         return "transient"
     return "permanent"
