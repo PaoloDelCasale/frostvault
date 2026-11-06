@@ -1,6 +1,7 @@
 """#461 real PostgreSQL admission/single-flight/restart tests (CI only)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -115,6 +116,15 @@ class PreflightQueueTests(unittest.TestCase):
             self.assertEqual(c.execute("SELECT count(*) AS n FROM jobs WHERE status='failed'").fetchone()['n'], 2)  # preserved history
             self.assertEqual(c.execute("SELECT count(*) AS n FROM notifications WHERE event='cloud_preflight_blocked' AND problem_status='open'").fetchone()['n'], 0)
 
+    def test_scans_and_audits_share_one_warning_without_suppressing_local_catalog(self):
+        with patch('app.storage.runtime_status', {}), patch('app.storage._verified_local_scan', return_value=(2, {}, None, True)), patch('app.storage._validate_cloud_vault', side_effect=gate.ReadinessFailure('Grant s3:GetBucketPublicAccessBlock')):
+            for vault in self.vaults:
+                self.assertEqual(storage.scan_vault(vault)['local'], 2)
+            storage.audit_all_vaults()
+        with self.db() as c:
+            rows = c.execute("SELECT event FROM notifications WHERE problem_status='open'").fetchall()
+            self.assertEqual(rows, [{'event': 'cloud_preflight_blocked'}])
+
     def test_single_flight_sixteen_workers_restart_and_safe_remediation(self):
         entered, release = threading.Event(), threading.Event()
         count = []
@@ -185,8 +195,74 @@ class PreflightQueueTests(unittest.TestCase):
         with self.db() as c:
             c.execute("UPDATE local_copies SET content_observed_at=%s", (self.observed,))
             # Missing catalog Local Copies, source mutation and absent volume also fail closed.
-            c.execute("UPDATE local_copies SET presence='absent'")
+            c.execute("UPDATE local_copies SET presence='missing'")
         self.assertEqual(self.retry(), 0)
+
+    def test_protected_conflicted_and_other_operation_failures_are_never_retried(self):
+        self.fail_uploads()
+        with self.db() as c:
+            catalog = ArchiveCatalog(c)
+            for path in ('a.txt', 'nested/b.txt'):
+                version = catalog.record_archive_version(vault_id=1, path=path, object_key='vault-1/' + path,
+                    provider_version_id=path, size=5, storage_class='STANDARD', etag='etag',
+                    uploaded_at=self.observed, observed_at=self.observed, scan_id='old')
+                digest = hashlib.sha256(b'photo').hexdigest()
+                catalog.mark_version_verified(version, plaintext_sha256=digest, verified_at=self.observed)
+                if path == 'a.txt':
+                    catalog.set_local_fingerprint(vault_id=1, path=path, plaintext_sha256=digest, matched_archive_version_id=version)
+                else:
+                    c.execute('UPDATE local_copies SET cloud_only_version_id=%s WHERE vault_file_id=(SELECT vault_file_id FROM file_paths WHERE vault_id=1 AND path=%s AND valid_to IS NULL)', (version, path))
+            c.execute("UPDATE jobs SET action='recover' WHERE vault_id=2")
+        self.assertEqual(self.retry(), 0)
+        for action in ('free-space', 'cloud-purge'):
+            with self.db() as c:
+                c.execute('UPDATE jobs SET action=%s WHERE vault_id=2', (action,))
+            self.assertEqual(self.retry(), 0)
+        with self.db() as c:
+            self.assertEqual(c.execute("SELECT count(*) AS n FROM jobs WHERE status='failed'").fetchone()['n'], 4)
+
+    def test_source_volume_root_replacement_and_changed_content_fail_closed(self):
+        self.fail_uploads()
+        with patch('app.storage.source_layout.vault_local_access', return_value=SimpleNamespace(local_operations_allowed=False)):
+            self.assertEqual(self.retry(), 0)
+        for vault in self.vaults:
+            root = Path(vault['source_root'])
+            root.rename(root.with_name(root.name + '-old'))
+            root.mkdir()
+        self.assertEqual(self.retry(), 0)
+        for vault in self.vaults:
+            root = Path(vault['source_root'])
+            root.rmdir()
+            root.with_name(root.name + '-old').rename(root)
+            for file in root.rglob('*.txt'):
+                file.write_bytes(b'changed after catalog observation')
+        self.assertEqual(self.retry(), 0)
+
+    def test_gate_backoff_survives_connections_and_never_exceeds_sixty_seconds(self):
+        current = self.now
+        for index in range(9):
+            state = gate.check(self.db, Mock(side_effect=gate.ReadinessFailure('Grant s3:GetBucketVersioning')), now=current)
+            due = datetime.fromisoformat(state['next_probe_at'])
+            self.assertGreater((due - current).total_seconds(), 0)
+            self.assertLessEqual((due - current).total_seconds(), 60)
+            current = due
+        state = gate.check(self.db, Mock(), now=current)
+        self.assertEqual(state['status'], 'ready')
+        with self.db() as c:
+            self.assertEqual(c.execute("SELECT count(*) AS n FROM notifications WHERE event='cloud_preflight_blocked'").fetchone()['n'], 1)
+
+    def test_migration_is_metadata_only_and_preserves_attempt_history(self):
+        self.fail_uploads()
+        result = run_alembic(self.database, '0061_aggregate_dirty_journal', 'downgrade')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with self.db() as c:
+            before = c.execute('SELECT * FROM jobs ORDER BY id').fetchall()
+        with patch('app.storage.s3_client', side_effect=AssertionError('migration must not call S3')):
+            result = run_alembic(self.database)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with self.db() as c:
+            self.assertEqual(c.execute('SELECT * FROM jobs ORDER BY id').fetchall(), before)
+            self.assertEqual(gate.snapshot(c)['status'], 'unknown')
 
     def test_whole_upload_root_is_narrow_and_auth_csrf_preserved(self):
         response = self.client.post('/api/upload?vault_id=1', json={'path': '', 'is_directory': True}, headers=self.headers)

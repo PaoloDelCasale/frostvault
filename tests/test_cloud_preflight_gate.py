@@ -1,5 +1,6 @@
 """Pure policy/worker tests; persistent/concurrent acceptance runs on CI PostgreSQL."""
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from app import storage
@@ -10,6 +11,12 @@ class CloudPreflightPolicyTests(unittest.TestCase):
     def test_backoff_is_bounded_even_after_long_iam_propagation(self):
         self.assertEqual([gate.reprobe_seconds(i) for i in range(1, 8)], [5, 10, 20, 40, 60, 60, 60])
         self.assertLessEqual(gate.reprobe_seconds(10**9), 60)
+
+    def test_clock_rollback_and_invalid_restart_timestamp_do_not_hold_the_gate(self):
+        now = datetime.now(timezone.utc)
+        for due in (None, 'invalid', (now + timedelta(hours=1)).isoformat(), (now - timedelta(seconds=1)).isoformat()):
+            self.assertTrue(gate.probe_due({'next_probe_at': due}, now))
+        self.assertFalse(gate.probe_due({'next_probe_at': (now + timedelta(seconds=60)).isoformat()}, now))
 
     def test_blockage_preserves_job_retry_budget_and_never_retries_mutations(self):
         for action, handler in (("upload", "process_upload"), ("recover", "process_recover"),

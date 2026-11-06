@@ -1606,9 +1606,10 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 with db() as connection:
                     _current_verified_scan_row(connection, vault)
                     vault_relocation.prepare_reconnect_local_scan(connection, vault_id)
-            except Exception:
+            except Exception as exc:
                 status["last_error"] = "Cloud reconciliation failed; reconnect remains suspended"
-                _record_scan_component_health(vault_id, "cloud", ok=False, error=status["last_error"])
+                _record_scan_component_health(vault_id, "cloud", ok=False, error=status["last_error"],
+                                              notify_problem=not isinstance(exc, cloud_preflight_gate.CloudPreflightBlocked))
                 return {"cloud": -1, "reconnect_suspended": 1}
         local_scan_identity_valid = True
         access = source_layout.vault_local_access(vault["source_root"])
@@ -1672,7 +1673,8 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 status["last_error"] = f"Cloud scan: {exc}"
                 result["cloud"] = -1
                 _record_scan_component_health(
-                    vault_id, "cloud", ok=False, error=status["last_error"]
+                    vault_id, "cloud", ok=False, error=status["last_error"],
+                    notify_problem=not isinstance(exc, cloud_preflight_gate.CloudPreflightBlocked),
                 )
             else:
                 _record_scan_component_health(
@@ -1698,7 +1700,8 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 status["last_error"] = f"Storage plan synchronization: {exc}"
                 result["lifecycle_rules"] = -1
                 _record_scan_component_health(
-                    vault_id, "policy", ok=False, error=status["last_error"]
+                    vault_id, "policy", ok=False, error=status["last_error"],
+                    notify_problem=not isinstance(exc, cloud_preflight_gate.CloudPreflightBlocked),
                 )
             else:
                 _record_scan_component_health(
@@ -5030,7 +5033,7 @@ def process_jobs_once(*, wait: bool = True) -> int:
         )
         preflight = cloud_preflight_gate.snapshot(connection)
         preflight_wait = (preflight["status"] == "blocked" and
-                          (preflight.get("next_probe_at") or "") > now)
+                          not cloud_preflight_gate.probe_due(preflight, datetime.now(timezone.utc)))
         eligible_candidates: list[dict[str, Any]] = []
         seen_purge_groups: set[tuple[int, str]] = set()
         for row in candidates:
@@ -5219,7 +5222,7 @@ def reprobe_cloud_readiness_once() -> None:
     # must recover even if the Owner has since suspended all queued Vaults.
     with db() as connection:
         state = cloud_preflight_gate.snapshot(connection)
-        if state["status"] != "blocked" or (state.get("next_probe_at") or "") > now_iso():
+        if state["status"] != "blocked" or not cloud_preflight_gate.probe_due(state, datetime.now(timezone.utc)):
             return
         vault = connection.execute("SELECT * FROM vaults ORDER BY id LIMIT 1").fetchone()
     if vault:
@@ -5437,7 +5440,8 @@ def audit_all_vaults() -> None:
             with status_lock:
                 status["last_error"] = message
             _record_scan_component_health(
-                vault_id, "audit", ok=False, error=message
+                vault_id, "audit", ok=False, error=message,
+                notify_problem=not isinstance(exc, cloud_preflight_gate.CloudPreflightBlocked),
             )
 
 

@@ -32,6 +32,15 @@ def snapshot(connection: Any) -> dict[str, Any]:
     return dict(row) if row else {"status": "unknown", "remediation": None, "next_probe_at": None}
 
 
+def probe_due(state: dict[str, Any], now: datetime) -> bool:
+    """Clock rollback/restored future timestamps cannot suspend the queue forever."""
+    try:
+        delay = (datetime.fromisoformat(state["next_probe_at"]) - now).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        return True
+    return not 0 < delay <= MAX_REPROBE_SECONDS
+
+
 def check(connect: Callable, probe: Callable[[], None], *, now: datetime | None = None) -> dict[str, Any]:
     """Return a committed cached outcome; never wait for another probe.
 
@@ -44,7 +53,7 @@ def check(connect: Callable, probe: Callable[[], None], *, now: datetime | None 
     stamp = now.isoformat()
     with connect() as connection:
         state = snapshot(connection)
-        if state.get("next_probe_at") and state["next_probe_at"] > stamp:
+        if not probe_due(state, injected_now or datetime.now(timezone.utc)):
             return state
         acquired = connection.execute(
             "SELECT pg_try_advisory_xact_lock(%s) AS acquired", (LOCK_ID,),
@@ -54,7 +63,7 @@ def check(connect: Callable, probe: Callable[[], None], *, now: datetime | None 
                     "S3 readiness check in progress; Jobs remain queued"}
         # A concurrent probe may have committed between our read and lock.
         state = snapshot(connection)
-        if state.get("next_probe_at") and state["next_probe_at"] > stamp:
+        if not probe_due(state, injected_now or datetime.now(timezone.utc)):
             return state
         remediation = None
         try:
