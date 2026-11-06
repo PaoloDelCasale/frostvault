@@ -5,6 +5,7 @@ import contextvars
 import hashlib
 import json
 import os
+import random
 import stat
 import threading
 import time
@@ -79,7 +80,9 @@ from .services.vault_paths import (
     expected_cloud_key,
     is_restore_temporary_name,
 )
-from .services.database_retry import owned_connection, retry_database_unit
+from .services.database_retry import (
+    is_retryable_transaction_error, owned_connection, retry_database_unit,
+)
 from .services.upload_retry import (
     UPLOAD_RETRY_MAX_ATTEMPTS,
     classify_upload_failure,
@@ -1596,13 +1599,51 @@ def _verified_local_scan(
 
 
 def _report_worker_error(component: str, exc: BaseException, vault_id: int | None = None) -> None:
+    # The notification tells the Owner to check the server log: write the
+    # exception there first, independently of whether the database is usable.
+    worker_error_store.log_worker_error(component, exc, vault_id)
     try:
         with db() as connection:
             worker_error_store.record_worker_error(
-                connection, component=component, exc=exc, vault_id=vault_id,
+                connection, component=component, exc=exc, vault_id=vault_id, log=False,
             )
-    except Exception:
-        pass
+    except Exception as report_error:
+        worker_error_store.log_report_failure(component, report_error)
+
+
+def _resolve_worker_error(component: str, vault_id: int | None = None) -> None:
+    """Close the internal-error problem for a worker that is healthy again.
+
+    Best effort, like the report: a failing resolve must never stop the worker.
+    """
+    try:
+        with db() as connection:
+            report_problem(
+                connection, event="internal_error", vault_id=vault_id,
+                component=component, active=False,
+            )
+    except Exception as resolve_error:
+        worker_error_store.log_report_failure(component, resolve_error, resolving=True)
+
+
+# A watcher batch is a complete DB unit plus read-only filesystem inspection.
+# A PostgreSQL deadlock/serialization victim rolled back everything, the
+# scan journal is compensated by apply_filesystem_changes, and the pending
+# change set is idempotent, so replaying the same batch is safe.
+WATCHER_APPLY_MAX_ATTEMPTS = 5
+
+
+def _apply_watcher_changes(vault: dict[str, Any], changes: set[tuple[Change, str]]) -> int:
+    """Apply one watcher batch, replaying it when PostgreSQL chose it as victim."""
+    for attempt in range(WATCHER_APPLY_MAX_ATTEMPTS):
+        try:
+            return apply_filesystem_changes(vault, changes)
+        except Exception as error:
+            if (not is_retryable_transaction_error(error)
+                    or attempt + 1 == WATCHER_APPLY_MAX_ATTEMPTS):
+                raise
+            time.sleep(random.uniform(0.05, min(1.0, 0.1 * 2 ** attempt)))
+    raise AssertionError("unreachable")
 
 
 def _record_scan_component_health(
@@ -5805,6 +5846,7 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
             watcher = new_observer()
             successor = None
             rearm_required = False
+            recovered = False
             try:
                 while True:
                     native_changes = set() if rearm_required else await anext(watcher)
@@ -5837,8 +5879,15 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
                         # Reconcile only once every added subtree is covered by
                         # a registered successor, including additions made in
                         # the preceding handoff itself.
-                        await asyncio.to_thread(apply_filesystem_changes, vault, pending_reconcile)
+                        await asyncio.to_thread(_apply_watcher_changes, vault, pending_reconcile)
                         pending_reconcile = set()
+                    if not recovered and not pending_reconcile and not rearm_required:
+                        # First fully healthy cycle of this run: registration
+                        # barrier passed and every pending change applied.
+                        await asyncio.to_thread(
+                            _resolve_worker_error, "source_watcher", int(vault["id"]),
+                        )
+                        recovered = True
             finally:
                 if successor is not None:
                     await successor.aclose()
