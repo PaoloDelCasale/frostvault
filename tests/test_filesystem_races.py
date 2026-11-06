@@ -1,18 +1,20 @@
 """Catalog integration for #472/#476/#477; deterministic interleavings, no S3 network."""
 from __future__ import annotations
 
-from contextlib import ExitStack
+import asyncio
 import hashlib
 import io
+import os
 from pathlib import Path
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import boto3
 from boto3.s3.transfer import TransferConfig
 from s3transfer.utils import OSUtils
-from watchfiles import Change
+from watchfiles import Change, awatch
 
 from app import storage
 from app.catalog import ArchiveCatalog
@@ -65,6 +67,7 @@ class FilesystemCatalogTests(unittest.TestCase):
         incoming = self.base / "incoming"
         (incoming / "deep").mkdir(parents=True)
         (incoming / "deep" / "photo.jpg").write_bytes(b"photo")
+        os.utime(incoming / "deep" / "photo.jpg", (1_500_000_000, 1_500_000_000))
         incoming.rename(self.root / "incoming")
         storage.apply_filesystem_changes(self.vault, {(Change.added, str(self.root / "incoming"))})
         self.assertEqual([(row["path"], row["presence"]) for row in self.entries()], [("incoming/deep/photo.jpg", "present")])
@@ -91,6 +94,42 @@ class FilesystemCatalogTests(unittest.TestCase):
         self.assertEqual(set(rows), {"sibling.jpg", "new/deep/a.jpg", "new/deep/b.jpg", "new/link"})
         self.assertEqual(rows["sibling.jpg"]["presence"], "present")
         self.assertEqual(rows["new/link"]["presence"], "unsupported")
+
+    def test_subtree_root_replacement_compensates_already_committed_batches(self):
+        self.write("sibling.jpg")
+        self.write("new/a.jpg", watch=False)
+        self.write("new/b.jpg", watch=False)
+        original_inspect = storage.inspect_entry
+        inspected_files = 0
+
+        def replace_root_after_first_batch(entry):
+            nonlocal inspected_files
+            result = original_inspect(entry)
+            if result and result[0] == "regular":
+                inspected_files += 1
+                if inspected_files == 2:
+                    self.root.rename(self.base / "old-root")
+                    self.root.mkdir()
+            return result
+
+        with (patch("app.storage.LOCAL_SCAN_WRITE_BATCH_SIZE", 1),
+              patch("app.storage.inspect_entry", side_effect=replace_root_after_first_batch)):
+            with self.assertRaises(RuntimeError):
+                storage.apply_filesystem_changes(self.vault, {(Change.added, str(self.root / "new"))})
+        self.assertEqual([row["path"] for row in self.entries()], ["sibling.jpg"])
+
+    def test_replaced_directory_invalidates_identical_size_and_mtime_content(self):
+        target, _, _ = self.archive("new/photo.jpg")
+        before = target.stat()
+        (self.root / "new").rename(self.base / "previous")
+        target.parent.mkdir()
+        target.write_bytes(b"other")
+        os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+        storage.apply_filesystem_changes(self.vault, {(Change.added, str(target.parent))})
+        row = self.entries()[0]
+        self.assertIsNone(row["plaintext_sha256"])
+        self.assertIsNone(row["matched_archive_version_id"])
+        self.assertEqual(row["presence"], "present")
 
     def test_free_space_with_watcher_during_hash_keeps_verified_state(self):
         target, version, digest = self.archive()
@@ -193,6 +232,7 @@ class FilesystemCatalogTests(unittest.TestCase):
         self.assertGreater(len(ranges), 1)
         self.assertTrue(sdk_temporaries)
         self.assertEqual(target.read_bytes(), payload)
+        storage.apply_filesystem_changes(self.vault, {(Change.added, str(target))})
         self.assertEqual(len(self.entries()), 1)
         self.assertEqual(self.entries()[0]["matched_archive_version_id"], version)
 
@@ -210,3 +250,92 @@ class FilesystemCatalogTests(unittest.TestCase):
         # schema migration and never a broad *.tmp.* filename filter.
         storage.scan_tree(self.vault, self.clock.isoformat())
         self.assertEqual({row["path"] for row in self.entries()}, {"photo.jpg", "user.tmp.f8Fc29bA"})
+        storage.scan_tree(self.vault, self.clock.isoformat())
+        self.assertEqual({row["path"] for row in self.entries()}, {"photo.jpg", "user.tmp.f8Fc29bA"})
+
+    def test_ghost_repair_preserves_on_disk_and_cloud_backed_reserved_names(self):
+        on_disk = f".photo.jpg.restore-{'b' * 32}.tmp.f8Fc29bA"
+        cloud_backed = f".photo.jpg.restore-{'c' * 32}.tmp.f8Fc29bA"
+        self.write(on_disk)
+        with self.db() as connection:
+            catalog = ArchiveCatalog(connection)
+            catalog.observe_local_copy(vault_id=2, path=on_disk, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())
+            catalog.record_archive_version(vault_id=2, path=cloud_backed, object_key=f"photos/{cloud_backed}", provider_version_id="keep", size=5, storage_class="STANDARD", etag="etag", uploaded_at=self.clock.isoformat(), observed_at=self.clock.isoformat(), scan_id="legacy")
+            catalog.observe_local_copy(vault_id=2, path=cloud_backed, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())
+        storage.scan_tree(self.vault, self.clock.isoformat())
+        self.assertEqual({row["path"] for row in self.entries()}, {on_disk, cloud_backed})
+        self.assertEqual((self.root / on_disk).read_bytes(), b"photo")
+
+
+class LiveWatcherCatalogTests(unittest.TestCase):
+    setUp = fixtures.WatcherAutomaticUploadTests.setUp
+    db = fixtures.WatcherAutomaticUploadTests.db
+    entries = FilesystemCatalogTests.entries
+    advance = fixtures.WatcherAutomaticUploadTests.advance
+    queue = fixtures.WatcherAutomaticUploadTests.queue
+
+    def test_new_directory_then_later_copy_is_protected_on_both_backends(self):
+        for force_polling in (False, True):
+            with self.subTest(force_polling=force_polling):
+                asyncio.run(self.check_new_directory(force_polling))
+        self.advance(300)
+        self.assertEqual(self.queue(), 4)
+
+    async def check_new_directory(self, force_polling):
+        ready = asyncio.Event()
+        directory_seen = asyncio.Event()
+        file_seen = asyncio.Event()
+        later_seen = asyncio.Event()
+        directory = self.root / str(force_polling)
+        target = directory / "nested" / "later.jpg"
+        later = directory / "nested" / "after-rearm.jpg"
+        loop = asyncio.get_running_loop()
+        real_apply = storage.apply_filesystem_changes
+
+        watch_calls = 0
+        async def ticking_watch(*args, **kwargs):
+            nonlocal watch_calls
+            watch_calls += 1
+            kwargs.update(yield_on_timeout=True, rust_timeout=50)
+            if watch_calls == 2:
+                # Force a file into the observer close/reopen gap. Only the
+                # post-registration catch-up can catalogue this one.
+                target.write_bytes(b"photo")
+                os.utime(target, (1_500_000_000, 1_500_000_000))
+            async for changes in awatch(*args, **kwargs):
+                ready.set()
+                yield changes
+
+        def apply(vault, changes):
+            result = real_apply(vault, changes)
+            for _, value in changes:
+                if value == str(directory):
+                    loop.call_soon_threadsafe(directory_seen.set)
+            rows = {row["path"] for row in self.entries()}
+            if target.relative_to(self.root).as_posix() in rows:
+                loop.call_soon_threadsafe(file_seen.set)
+            if later.relative_to(self.root).as_posix() in rows:
+                loop.call_soon_threadsafe(later_seen.set)
+            return result
+
+        with (patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=force_polling)),
+              patch("app.storage._runtime_settings", return_value=SimpleNamespace(filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30)),
+              patch("app.storage.awatch", side_effect=ticking_watch),
+              patch("app.storage.apply_filesystem_changes", side_effect=apply)):
+            task = asyncio.create_task(storage._watch_vault_filesystem(self.vault))
+            try:
+                await asyncio.wait_for(ready.wait(), 5)
+                target.parent.mkdir(parents=True)
+                await asyncio.wait_for(directory_seen.wait(), 5)
+                await asyncio.wait_for(file_seen.wait(), 5)
+                later.write_bytes(b"later")
+                os.utime(later, (1_500_000_000, 1_500_000_000))
+                # A subsequent native event must still arrive, not just the
+                # one-time catch-up scan. Use a separate completion barrier.
+                await asyncio.wait_for(later_seen.wait(), 5)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        rows = {row["path"]: row for row in self.entries()}
+        self.assertGreaterEqual(watch_calls, 2)
+        self.assertEqual(rows[target.relative_to(self.root).as_posix()]["presence"], "present")

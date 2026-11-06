@@ -777,7 +777,10 @@ def _apply_filesystem_changes(
             if relative == "." or not relative or is_restore_temporary_name(entry.name):
                 continue
             if any(parent == entry or parent in entry.parents for parent in subtrees):
-                continue
+                if entry.exists() or entry.is_symlink():
+                    continue
+                # A walk cannot emit a deleted child. Keep explicit missing
+                # events even when their parent was reconciled in this batch.
             # Native events are lexical paths. Do not follow a substituted
             # parent symlink outside the enrolled root.
             parent = entry.parent.resolve()
@@ -4244,6 +4247,7 @@ def _checked_local_release_target(
 
 
 def process_free_space(job: dict[str, Any]) -> None:
+    ensure_job_active(job["id"], "Freeing local space stopped")
     # The claim's temporary absence must never become a watcher/full-scan
     # observation. Hashing holds no DB write transaction, only the same
     # per-Vault filesystem lock used by scans and watcher batches.
@@ -5563,7 +5567,27 @@ def _filesystem_watch_filter(_: Change, path: str) -> bool:
     return not is_restore_temporary_name(Path(path).name)
 
 
+def _new_watcher_directories(root: Path, changes: set[tuple[Change, str]]) -> set[tuple[Change, str]]:
+    directories = set()
+    for change, value in changes:
+        entry = Path(value)
+        if change != Change.added or is_restore_temporary_name(entry.name):
+            continue
+        try:
+            entry.relative_to(root)
+            if entry.is_dir() and not entry.is_symlink():
+                directories.add((Change.added, value))
+        except (ValueError, OSError):
+            continue
+    return directories
+
+
 async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
+    # Some Source Volume backends do not reliably enroll directories created
+    # after native watcher startup. Explicitly re-arm after topology additions,
+    # then reconcile those subtrees AFTER the new recursive observer is live.
+    # The catch-up closes the small close/reopen event gap without a full scan.
+    pending_reconcile: set[tuple[Change, str]] = set()
     while True:
         if vault_relocation.local_work_suspended(vault):
             await asyncio.sleep(1)
@@ -5619,8 +5643,19 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
                 poll_delay_ms=runtime.filesystem_watch_poll_ms,
                 recursive=True,
                 ignore_permission_denied=False,
+                yield_on_timeout=bool(pending_reconcile),
+                rust_timeout=1000,
             ):
-                await asyncio.to_thread(apply_filesystem_changes, vault, changes)
+                native_changes = changes
+                if pending_reconcile:
+                    changes = changes | pending_reconcile
+                    pending_reconcile = set()
+                if changes:
+                    await asyncio.to_thread(apply_filesystem_changes, vault, changes)
+                new_directories = await asyncio.to_thread(_new_watcher_directories, root, native_changes) if native_changes else set()
+                if new_directories:
+                    pending_reconcile = new_directories
+                    break
         except asyncio.CancelledError:
             raise
         except Exception as exc:

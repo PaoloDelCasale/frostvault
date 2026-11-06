@@ -107,6 +107,8 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root = Path(directory)
             ready = asyncio.Event()
+            rearmed = asyncio.Event()
+            watch_calls = 0
             directory_seen = asyncio.Event()
             file_seen = asyncio.Event()
             events = []
@@ -115,8 +117,13 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
             async def ticking_watch(*args, **kwargs):
                 # A timeout tick proves the native observer is installed. It
                 # also removes timing guesses from the newly-created-dir test.
-                async for changes in real_awatch(*args, **kwargs, yield_on_timeout=True, rust_timeout=50):
+                nonlocal watch_calls
+                watch_calls += 1
+                kwargs.update(yield_on_timeout=True, rust_timeout=50)
+                async for changes in real_awatch(*args, **kwargs):
                     ready.set()
+                    if watch_calls > 1:
+                        rearmed.set()
                     yield changes
 
             def apply(vault, changes):
@@ -143,6 +150,7 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(ready.wait(), 3)
                 (root / "new" / "nested").mkdir(parents=True)
                 await asyncio.wait_for(directory_seen.wait(), 3)
+                await asyncio.wait_for(rearmed.wait(), 3)
                 (root / "new" / "nested" / "later.bin").write_bytes(b"later")
                 await asyncio.wait_for(file_seen.wait(), 3)
             finally:
