@@ -3305,6 +3305,7 @@ def _publish_upload_receipt(job: dict[str, Any], intent: dict[str, Any], respons
     stamp = now_iso()
     def publish(catalog: ArchiveCatalog) -> str:
         provenance.require_target(catalog.connection, job, pinned)
+        catalog.connection.execute("SELECT id FROM vault_files WHERE id=%s FOR UPDATE", (job["vault_file_id"],))
         recorded = catalog.record_archive_version(
             vault_id=job["vault_id"], vault_file_id=job["vault_file_id"], path=job["path"],
             object_key=pinned["key"], provider_version_id=provider_id, size=snapshot.size,
@@ -3315,6 +3316,18 @@ def _publish_upload_receipt(job: dict[str, Any], intent: dict[str, Any], respons
         catalog.set_upload_snapshot(job["id"], snapshot_json=intent["snapshot_json"])
         catalog.link_job_version(job["id"], recorded)
         catalog.connection.execute("UPDATE upload_intents SET archive_version_id=%s WHERE id=%s AND (archive_version_id IS NULL OR archive_version_id=%s)", (recorded, intent["id"], recorded))
+        # A scan may have observed this exact write before its receipt was
+        # published. Only this owner/intent-fenced publication promotes its
+        # observation ordering; generic discovery never grants current trust.
+        catalog.connection.execute("""UPDATE archive_versions av SET
+            version_number=(SELECT COALESCE(MAX(v.version_number),0)+1
+                FROM archive_versions v WHERE v.vault_file_id=av.vault_file_id),
+            origin='upload', uploaded_at=%s
+            WHERE av.id=%s AND av.vault_file_id=%s AND av.origin='discovered'
+              AND EXISTS (SELECT 1 FROM upload_intents i WHERE i.id=%s
+                  AND i.archive_version_id=av.id AND i.vault_file_id=av.vault_file_id
+                  AND i.send_started AND i.snapshot_json=av.upload_snapshot_json)""",
+            (intent["created_at"], recorded, job["vault_file_id"], intent["id"]))
         return recorded
     return _upload_catalog_unit(job, publish)
 
@@ -3327,6 +3340,16 @@ def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], cli
         with db() as connection:
             linked = ArchiveCatalog(connection).get_job_target(job["id"])
             raw = provenance.receipt(connection, intent["id"])
+        # A crash after publication but before proof evaluation must not turn
+        # a durable contradictory receipt into a mere identity check on retry.
+        # This also applies to already-verified cleanup-only continuations.
+        if raw is not None:
+            try:
+                validated_s3_proof(raw, version_id=raw["VersionId"],
+                    snapshot=UploadSnapshot.from_json(intent["snapshot_json"]),
+                    source="upload_response", completion=True)
+            except UploadProofMismatch as exc:
+                raise provenance.UploadBlocked("proof_mismatch") from exc
         if intent["archive_version_id"]:
             with db() as connection:
                 exact = connection.execute("SELECT * FROM archive_versions WHERE id=%s AND vault_file_id=%s AND vault_id=%s", (intent["archive_version_id"], job["vault_file_id"], job["vault_id"])).fetchone()

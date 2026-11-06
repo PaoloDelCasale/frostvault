@@ -347,7 +347,7 @@ class AggregateDeadlockTests(unittest.TestCase):
             previous = catalog.record_archive_version(
                 vault_id=2, path=path, object_key=key, provider_version_id="previous-only-copy",
                 size=3, storage_class="STANDARD", etag="old", uploaded_at="2026-07-20",
-                observed_at="2026-07-20", scan_id="old",
+                observed_at="2026-07-20", scan_id="old", origin="upload",
             )
             catalog.mark_version_verified(previous, plaintext_sha256=hashlib.sha256(b"old").hexdigest(), verified_at="2026-07-20")
             owner = connection.execute("SELECT vault_file_id FROM archive_versions WHERE id=%s", (previous,)).fetchone()["vault_file_id"]

@@ -3,6 +3,7 @@
 TEST_POSTGRES_URL is mandatory; never skipped locally as database evidence.
 Provider persists actual version bytes/Metadata across worker invocations.
 """
+import base64
 import hashlib
 import json
 import subprocess
@@ -19,6 +20,7 @@ from app.catalog import ArchiveCatalog
 from app.main import queue_jobs
 from app.services import upload_provenance as provenance
 from app.services.vault_relocation import enroll_vault_root_identity
+from app.services.upload_snapshot import UploadSnapshot
 from tests.postgres import PostgresConnection, database_dsn, run_alembic
 from tests.upload_provenance_provider import VersionedProvider
 
@@ -191,7 +193,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertEqual(self.provider.puts,1)
         self.assertEqual(self.row(original)["status"],"failed","No generic history resolution")
 
-    def test_failed_linked_pre0064_baseline_resumes_without_file_or_new_put(self):
+    def legacy_materialized_failure(self, *, keep_token=False):
         from app.services.operation_policies import OperationPolicy, set_policy
         with PostgresConnection(self.db_path) as connection:
             set_policy(connection,2,OperationPolicy(upload_verification="read_back"))
@@ -210,6 +212,16 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
             state = provenance.describe(connection,vault_id=2,path="report.txt")
             self.assertTrue(state["pending"])
             self.assertTrue(state["can_resume"])
+            version = connection.execute("SELECT object_key,provider_version_id FROM archive_versions WHERE id=%s", (self.row(original)["archive_version_id"],)).fetchone()
+        if not keep_token:
+            # Construct the pre-0064 provider fixture too. Clearing only the DB
+            # would leave a new-format app token without its required journal.
+            payload, metadata = self.provider.objects[version["object_key"], version["provider_version_id"]]
+            self.provider.objects[version["object_key"], version["provider_version_id"]] = (payload, {key: value for key, value in metadata.items() if key != provenance.TOKEN_KEY})
+        return original
+
+    def test_failed_linked_pre0064_baseline_resumes_without_file_or_new_put(self):
+        original = self.legacy_materialized_failure()
         self.file.unlink()
         resumed = self.resume()
         version = self.assert_keeper(resumed)
@@ -219,6 +231,141 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertEqual(self.row(original)["status"],"failed")
         with PostgresConnection(self.db_path) as connection:
             self.assertIsNone(connection.execute("SELECT id FROM upload_intents").fetchone(),"Legacy resume is not provenance backfill")
+
+    def test_new_format_token_without_its_journal_is_not_legacy_authority(self):
+        original = self.legacy_materialized_failure(keep_token=True)
+        before = dict(self.provider.objects)
+        resumed = self.resume()
+        self.assertEqual(self.row(resumed)["status"], "failed")
+        self.assertEqual(self.provider.objects, before)
+        self.assertEqual((self.provider.puts, self.provider.gets, self.provider.deletes), (1, 1, 0))
+        with PostgresConnection(self.db_path) as connection:
+            self.assertNotEqual(connection.execute("SELECT integrity FROM archive_versions WHERE id=%s", (self.row(original)["archive_version_id"],)).fetchone()["integrity"], "verified")
+
+    def observe_content(self, payload):
+        self.file.write_bytes(payload)
+        with PostgresConnection(self.db_path) as connection:
+            ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=len(payload), mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
+
+    def test_linked_resume_cannot_ignore_contradictory_receipt_after_publication_crash(self):
+        keeper = self.seed_legacy_keeper()
+        self.observe_content(B)
+        publish = storage._publish_upload_receipt
+
+        def corrupt_ack(client, **kwargs):
+            acknowledged = kwargs["on_acknowledged"]
+            def contradictory(response):
+                response["ChecksumSHA256"] = base64.b64encode(hashlib.sha256(A).digest()).decode()
+                acknowledged(response)
+            kwargs["on_acknowledged"] = contradictory
+            return self.provider.upload(client, **kwargs)
+
+        def crash_after_publish(*args, **kwargs):
+            publish(*args, **kwargs)
+            raise RuntimeError("crash after publication before proof evaluation")
+
+        original = self.queue()
+        with patch("app.storage.upload_file", side_effect=corrupt_ack), patch("app.storage._publish_upload_receipt", side_effect=crash_after_publish):
+            self.run_job(original)
+        self.assertEqual(self.row(original)["status"], "failed")
+        linked = self.row(original)["archive_version_id"]
+        self.assertIsNotNone(linked)
+        resumed = self.resume()
+        self.assertEqual(self.row(resumed)["status"], "failed")
+        with PostgresConnection(self.db_path) as connection:
+            intent = provenance.load_for_job(connection, resumed)
+            self.assertNotEqual(provenance.receipt(connection, intent["id"])["ChecksumSHA256"], UploadSnapshot.from_json(intent["snapshot_json"]).checksum_sha256)
+            self.assertEqual(provenance.describe(connection, vault_id=2, path="report.txt")["reason"], "proof_mismatch")
+            versions = {row["id"]: row for row in ArchiveCatalog(connection).list_versions(2, "report.txt")}
+        self.assertNotEqual(versions[linked]["integrity"], "verified")
+        self.assertEqual((versions[keeper]["integrity"], versions[keeper]["availability"]), ("verified", "available"))
+        self.assertEqual((self.provider.puts, self.provider.gets, self.provider.deletes), (1, 0, 0))
+        self.assertEqual(len(self.provider.objects), 2)
+
+    def test_scan_before_publication_does_not_demote_the_exact_new_app_write(self):
+        keeper = self.seed_legacy_keeper()
+        self.observe_content(B)
+        self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("lost response before publication")) if stage == "accepted" else None
+        original = self.queue(); self.run_job(original)
+        self.assertEqual(self.row(original)["status"], "failed")
+        self.assertIsNone(self.row(original)["archive_version_id"])
+        self.provider.hook = lambda *args, **kwargs: None
+        self.scan()
+        with PostgresConnection(self.db_path) as connection:
+            discovered = connection.execute("SELECT * FROM archive_versions WHERE provider_version_id<>'legacy-keeper'").fetchone()
+        self.assertEqual(discovered["origin"], "discovered")
+        self.assertLess(discovered["version_number"], 0)
+        self.assertEqual(self.provider.deletes, 0)
+        resumed = self.resume()
+        current = self.assert_keeper(resumed)
+        self.assertEqual(current["id"], discovered["id"])
+        self.assertEqual(current["origin"], "upload")
+        self.assertGreater(current["version_number"], 1)
+        self.scan()
+        with PostgresConnection(self.db_path) as connection:
+            versions = ArchiveCatalog(connection).list_versions(2, "report.txt")
+        self.assertEqual(versions[0]["id"], current["id"])
+        self.assertEqual(next(row for row in versions if row["id"] == keeper)["availability"], "purged")
+        self.assertEqual((self.provider.puts, self.provider.gets, self.provider.deletes), (1, 0, 1))
+        self.assertEqual(self.provider.deleted, [("docs/report.txt", "legacy-keeper")])
+
+    def test_provider_namespace_change_retains_all_unpublished_copies(self):
+        self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("after ack")) if stage == "acknowledged" else None
+        original = self.queue(); self.run_job(original)
+        before = dict(self.provider.objects)
+        self.provider.meta.endpoint_url = "https://another-disposable.invalid"
+        resumed = self.resume()
+        self.assertEqual(self.row(resumed)["status"], "failed")
+        self.assertEqual(self.provider.objects, before)
+        self.assertEqual((self.provider.puts, self.provider.gets, self.provider.deletes), (1, 0, 0))
+
+    def test_completed_inventory_is_not_reused_for_a_later_scan_remediation(self):
+        original = self.queue(); self.run_job(original)
+        keeper = self.assert_keeper(original)
+        with PostgresConnection(self.db_path) as connection:
+            old = connection.execute("SELECT * FROM snapshot_cleanup_inventories WHERE job_id=%s", (original,)).fetchone()
+        self.assertIsNotNone(old["completed_at"])
+        self.provider.add("docs/report.txt", A, version="duplicate-after-completion")
+        self.scan()
+        self.assertEqual(self.provider.deletes, 0)
+        resumed = self.resume()
+        self.assertEqual(self.assert_keeper(resumed)["id"], keeper["id"])
+        with PostgresConnection(self.db_path) as connection:
+            new = connection.execute("SELECT * FROM snapshot_cleanup_inventories WHERE job_id=%s", (resumed,)).fetchone()
+            unchanged = connection.execute("SELECT * FROM snapshot_cleanup_inventories WHERE job_id=%s", (original,)).fetchone()
+        self.assertEqual(unchanged, old)
+        self.assertNotEqual(new["job_id"], old["job_id"])
+        self.assertIsNotNone(new["completed_at"])
+        self.assertIn("duplicate-after-completion", json.loads(new["inventory_json"])["docs/report.txt"]["versions"])
+        self.assertEqual((self.provider.puts, self.provider.gets, self.provider.deletes), (1, 1, 1))
+
+    def test_pending_send_blocks_move_admission_and_a_stale_move_worker(self):
+        from app.services import vault_moves
+        keeper = self.seed_legacy_keeper()
+        self.observe_content(B)
+        self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("after ack")) if stage == "acknowledged" else None
+        original = self.queue(); self.run_job(original)
+        self.assertEqual(self.row(original)["status"], "failed")
+        with PostgresConnection(self.db_path) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM jobs WHERE status NOT IN ('completed','failed','cancelled')").fetchone()["n"], 0)
+            rows = vault_moves.candidates(connection, 2)
+            self.assertTrue(rows[0]["busy"])
+            self.assertEqual(vault_moves.eligibility(rows[0], "GLACIER_IR"), "pending_work")
+            with patch.object(vault_moves, "load_vault_plan", return_value=SimpleNamespace(transitions=[SimpleNamespace(storage_class="GLACIER_IR")])):
+                with self.assertRaises(vault_moves.MoveBlocked):
+                    vault_moves.schedule(connection, vault_id=2, target="GLACIER_IR", user_id=1, acknowledged=True, timestamp=storage.now_iso())
+            # Simulate an already-admitted stale Move. The worker must re-fence
+            # pending sends independently of the dedicated admission endpoint.
+            ids, _, _ = ArchiveCatalog(connection).queue_jobs(vault_id=2, path="report.txt", action="storage-class", archive_version_id=keeper, requested_by=1, requested_at=storage.now_iso(), group_id="stale-move", is_directory=False, target_storage_class="GLACIER_IR")
+            self.assertEqual(len(ids), 1)
+            connection.execute("""INSERT INTO vault_class_moves(job_id,token,source_archive_id,source_version_id,object_key,size,sha256)
+                VALUES (%s,'stale-move-token',%s,'legacy-keeper','docs/report.txt',%s,%s)""", (ids[0], keeper, len(A), hashlib.sha256(A).hexdigest()))
+        before = dict(self.provider.objects)
+        self.provider.hook = lambda *args, **kwargs: None
+        self.run_job(ids[0])
+        self.assertEqual(self.row(ids[0])["status"], "failed")
+        self.assertEqual(self.provider.objects, before)
+        self.assertEqual((self.provider.puts, self.provider.gets, self.provider.deletes), (1, 0, 0))
 
     def test_cancel_after_raw_ack_keeps_receipt_and_never_resurrects(self):
         job = self.queue()

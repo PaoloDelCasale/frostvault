@@ -52,3 +52,39 @@ def assert_upload_provenance_migration(test, run, connect):
         test.assertIsNotNone(connection.execute("SELECT * FROM upload_receipts WHERE intent_id='ambiguous'").fetchone())
         names = {r["table_name"] for r in connection.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public'").fetchall()}
         test.assertTrue(set(TABLES) <= names, "Downgrade must refuse before any DDL")
+    # Each remaining guard is isolated: no unresolved send can accidentally
+    # make these pass. This data belongs only to the disposable PG16 fixture.
+    with connect() as connection:
+        connection.execute("DELETE FROM upload_receipts")
+        connection.execute("DELETE FROM upload_intent_jobs")
+        connection.execute("DELETE FROM upload_intents")
+    cases = (
+        ("snapshot_cleanup_proofs", """INSERT INTO snapshot_cleanup_proofs(vault_file_id,bucket,provider,object_key,version_id,keeper_id,sha256,size,method,proved_at)
+            VALUES (%s,'bucket','disposable','docs/a','retained-version',%s,%s,1,'exact_get_duplicate','2026-11-06')""", (file_id, versions[0], "a" * 64)),
+        ("snapshot_cleanup_inventories", """INSERT INTO snapshot_cleanup_inventories(job_id,keeper_id,target_json,inventory_json,created_at)
+            VALUES (%s,%s,%s,%s,'2026-11-06')""", (ids[2], versions[0], canonical({"bucket":"bucket","key":"docs/a"}), canonical({"docs/a":{"versions":["verified"],"markers":[]}}))),
+        ("snapshot_reconciliation_blocks", "INSERT INTO snapshot_reconciliation_blocks(vault_file_id,reason,updated_at) VALUES (%s,'proof_unavailable','2026-11-06')", (file_id,)),
+    )
+    for table, sql, params in cases:
+        with test.subTest(downgrade_guard=table):
+            with connect() as connection:
+                connection.execute(sql, params)
+                retained = connection.execute(f"SELECT * FROM {table}").fetchall()
+            refused = run("0063_upload_verification", "downgrade")
+            test.assertNotEqual(refused.returncode, 0)
+            with connect() as connection:
+                test.assertEqual(connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"], "0064_upload_provenance")
+                names = {r["table_name"] for r in connection.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public'").fetchall()}
+                test.assertTrue(set(TABLES) <= names, "Each isolated guard must refuse before any DDL")
+                test.assertEqual(connection.execute(f"SELECT * FROM {table}").fetchall(), retained)
+                if table == "snapshot_cleanup_inventories":
+                    # A completed batch is history, unlike pending authority.
+                    connection.execute("UPDATE snapshot_cleanup_inventories SET completed_at='2026-11-06'")
+                else:
+                    connection.execute(f"DELETE FROM {table}")
+    result = run("0063_upload_verification", "downgrade")
+    test.assertEqual(result.returncode, 0, result.stderr)
+    with connect() as connection:
+        test.assertEqual({table: connection.execute(f"SELECT * FROM {table} ORDER BY id").fetchall() for table in before}, before)
+    result = run("0064_upload_provenance", "upgrade")
+    test.assertEqual(result.returncode, 0, result.stderr)

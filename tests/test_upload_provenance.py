@@ -71,14 +71,14 @@ class ProvenanceProviderTests(unittest.TestCase):
 
     def test_complete_inventory_rejects_loops_null_and_duplicate_ids(self):
         cases = [
-            {"IsTruncated": True, "NextKeyMarker": "key", "NextVersionIdMarker": "same"},
-            {"Versions": [{"Key": "key", "VersionId": "null"}]},
-            {"Versions": [{"Key": "key", "VersionId": "dup"}] * 2},
-            {"Versions": [{"Key": "key", "VersionId": "dup"}], "DeleteMarkers": [{"Key": "key", "VersionId": "dup"}]},
+            ({"IsTruncated": True, "NextKeyMarker": "key", "NextVersionIdMarker": "same"}, "repeated its continuation marker"),
+            ({"IsTruncated": False, "Versions": [{"Key": "key", "VersionId": "null"}]}, "ambiguous exact identities"),
+            ({"IsTruncated": False, "Versions": [{"Key": "key", "VersionId": "dup"}] * 2}, "ambiguous exact identities"),
+            ({"IsTruncated": False, "Versions": [{"Key": "key", "VersionId": "dup"}], "DeleteMarkers": [{"Key": "key", "VersionId": "dup"}]}, "ambiguous exact identities"),
         ]
-        for page in cases:
+        for page, reason in cases:
             with self.subTest(page=page), patch.object(self.provider, "list_object_versions", return_value=page):
-                with self.assertRaises(RuntimeError):
+                with self.assertRaisesRegex(RuntimeError, reason):
                     _object_version_entries(self.provider, bucket="bucket", object_key="key")
 
     def test_historical_exact_get_requires_identity_length_digest_and_no_token(self):
