@@ -3,6 +3,8 @@ services:
     image: ghcr.io/paolodelcasale/frostvault:latest
     container_name: frostvault
     restart: unless-stopped
+    # HTTP drain <=5s + worker drain <=20s; process failsafe at 30s.
+    stop_grace_period: 40s
     env_file:
       - path: .env
         required: false
