@@ -180,6 +180,26 @@ class SHA256ManagedUploadTests(UploadSnapshotTests):
                 self.assertEqual(self.upload(snapshot)["VersionId"], "exact-mpu")
             stub.assert_no_pending_responses()
 
+    def test_multipart_A_to_B_unread_part_is_rejected_and_aborted_without_completion(self):
+        snapshot = self.snapshot(b"a" * MULTIPART_THRESHOLD + b"tail")
+        real_part = self.client.upload_part
+        def part(**kwargs):
+            result = real_part(**kwargs)
+            if kwargs["PartNumber"] == 1:
+                with self.path.open("r+b") as stream:
+                    stream.seek(MULTIPART_THRESHOLD)
+                    stream.write(b"evil")
+            return result
+        with Stubber(self.client) as stub, patch.object(self.client, "upload_part", side_effect=part):
+            stub.add_response("create_multipart_upload", {"UploadId": "mpu"})
+            stub.add_response("upload_part", {"ETag": "part-1", "ChecksumSHA256": snapshot.part_checksums[0]})
+            stub.add_response("abort_multipart_upload", {}, {"Bucket": "bucket", "Key": "key", "UploadId": "mpu"})
+            from boto3.s3.transfer import TransferConfig
+            with patch("app.services.s3_upload.TransferConfig", return_value=TransferConfig(max_concurrency=1)):
+                with self.assertRaisesRegex(RuntimeError, "changed since fingerprinting"):
+                    self.upload(snapshot)
+            stub.assert_no_pending_responses()
+
     def test_A_to_B_between_hashing_and_transport_cannot_send_B(self):
         snapshot = self.snapshot()
         self.path.write_bytes(b"snapshot B")
