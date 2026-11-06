@@ -390,6 +390,27 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
             self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
         self.assertNotIn("upload_reconciliation", [n["event"] for n in self.notification_events()])
 
+    def test_a_proven_absence_never_starts_an_upload_while_protection_is_paused(self):
+        self.stable_content()
+        self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
+        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        resumed = max(j["id"] for j in self.jobs())
+        with patch("app.storage._upload_protection_paused", return_value=True):
+            self.run_job(resumed)
+        row = self.row(resumed)
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("protection_paused", row["message"])
+        self.assertEqual((self.provider.puts, self.provider.deletes), (0, 0))
+        intent = self.intent()
+        self.assertTrue(intent["send_started"])
+        self.assertEqual(intent["blocked_reason"], "protection_paused")
+        # Once protection is resumed the same explicit reconcile proves absence and sends.
+        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        again = max(j["id"] for j in self.jobs())
+        self.run_job(again)
+        self.assert_keeper(again)
+        self.assertEqual(self.provider.puts, 1)
+
     def test_an_observed_root_replacement_still_fails_as_identity_changed(self):
         for name, patched in (("mismatch", {"return_value": "another-root"}),
                               ("symlink", {"side_effect": VaultRelocationError("symlink", "symlinked root")})):

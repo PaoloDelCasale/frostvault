@@ -1,7 +1,8 @@
 """Pre-write upload facts. Receipts are NOT publication or deletion authority.
 
 No provider I/O in replayable DB units. An uncertain send can only reconcile;
-zero token matches never prove absence, and a fresh lease cannot quiesce old I/O.
+zero token matches prove absence only together with the complete S3 reads of
+ADR-0025 (never by themselves), and a fresh lease cannot quiesce old I/O.
 #459 consumes load_for_job/bind_for_resume; this module has no sweep/history timer.
 """
 from __future__ import annotations
@@ -24,7 +25,7 @@ WAIT_REASONS = frozenset({"vault_suspended"})
 # Refusals journaled by the SDK seam, plus the outcome proven by complete S3 reads.
 NO_WRITE_OPERATIONS = frozenset({'PutObject','CreateMultipartUpload','UploadPart','CompleteMultipartUpload',ABSENT_OPERATION})
 REMEDIES = {
-    "ambiguous_send": "Keep copies and stop external S3 writers. Retry exact reconciliation after the provider outcome is known; zero matches is not proof of no write.",
+    "ambiguous_send": "Keep copies and stop external S3 writers. Retry exact reconciliation after the provider outcome is known; the send restarts by itself only when S3 positively proves nothing was written.",
     "list_permission_denied": "S3 refused to list object versions or incomplete multipart uploads for this file, so reconciliation cannot see what was sent. Keep all copies, grant the archive IAM identity s3:ListBucketVersions and s3:ListBucketMultipartUploads on the bucket, then use Retry failed uploads.",
     "ambiguous_receipt": "Keep all copies. Inspect exact versions with authorized S3 tools; do not choose latest or delete by token.",
     "inventory_changed": "Keep all copies. The exact cloud inventory changed or could not be confirmed; this does not by itself identify an external writer. Check listing permissions and any other S3 activity, then use Retry failed uploads to retry exact reconciliation when the namespace is stable.",
@@ -39,7 +40,7 @@ REMEDIES = {
     "source_volume_unavailable": "The Source Volume is not available right now. It resumes by itself once the volume is back; the file, path and Vault were not changed.",
     "vault_suspended": "The Vault is disabled, being relocated or decommissioned. Resume it to continue; the file, path and Vault root were not changed.",
     "pending_deletion": "A cloud deletion for this file is pending. Cancel or complete it before reconciling.",
-    "protection_paused": "Automatic protection is paused for this file. Resume protection or reconcile manually.",
+    "protection_paused": "Automatic protection is paused for this file. Resume protection first: reconciliation will not start an upload while it is paused.",
     "cloud_only_conflict": "The path holds different content than a file kept only in the cloud. Choose which copy to keep before reconciling.",
     "already_resolved": "Nothing to reconcile: this upload has already been resolved.",
     "expected_evidence_missing": "The independent expected proof for this upload is missing, so exact reconciliation cannot start. Keep all copies and ask for assistance.",
@@ -259,8 +260,9 @@ def record_no_write(connection: Any, job: dict[str, Any], intent: dict[str, Any]
                     operation: str, timestamp: str) -> None:
     """Claim-fenced definitive refusal; retain the immutable outcome as a fact.
 
-    Called ONLY after the transfer manager joined all I/O and reported an auth
-    refusal without a final receipt. Zero listing matches never reach this seam.
+    Called after the transfer manager joined all I/O and reported an auth
+    refusal without a final receipt, or after complete S3 reads proved absence
+    (ADR-0025). Zero listing matches alone never reach this seam.
     Caller owns/retries its entire DB-only publication transaction.
     """
     if operation not in NO_WRITE_OPERATIONS:

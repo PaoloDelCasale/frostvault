@@ -3515,6 +3515,13 @@ def _publish_upload_receipt(job: dict[str, Any], intent: dict[str, Any], respons
     return _upload_catalog_unit(job, publish)
 
 
+def _upload_protection_paused(job: dict[str, Any]) -> bool:
+    from .services.operation_policies import get_policy, auto_upload_path_is_included
+    with db() as connection:
+        policy = get_policy(connection, int(job["vault_id"]))
+    return not policy.auto_upload or not auto_upload_path_is_included(job["path"], policy)
+
+
 def _rearm_after_proven_absence(job: dict[str, Any], intent: dict[str, Any]) -> None:
     """Claim-fenced DB-only unit; no provider I/O. Never reached with a receipt."""
     from .services import upload_provenance as provenance, upload_remediation
@@ -3572,6 +3579,10 @@ def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], cli
             # Complete S3 reads prove the journaled send never landed (#484):
             # close the intent as a definitive no-write outcome and let this
             # Job send again from its immutable snapshot, no manual unblock.
+            # An explicit reconcile never starts an upload on a path whose
+            # automatic protection is paused: stay blocked until it is resumed.
+            if _upload_protection_paused(job):
+                raise provenance.UploadBlocked("protection_paused") from None
             _rearm_after_proven_absence(job, intent)
             return
         provenance.append_receipt(db, intent["id"], response, now_iso())

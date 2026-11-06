@@ -1,7 +1,9 @@
 """DB-only discovery/admission and durable upload-remediation lifecycle.
 
 Proof/receipts/cleanup belong to #460/#464. This ledger never performs provider
-or filesystem I/O, never changes an original failure, and never grants PUT.
+or filesystem I/O and never changes an original failure. Admission only creates
+reconcile-only Jobs; such a Job may become the ordinary upload of its exact intent
+solely when the worker's S3 reads prove the send never landed (ADR-0025).
 """
 from __future__ import annotations
 
