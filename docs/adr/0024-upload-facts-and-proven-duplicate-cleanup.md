@@ -1,5 +1,11 @@
 # Separate upload facts from replacement authority
 
+> **Superseded in part by [ADR-0025](0025-proven-absence-closes-an-ambiguous-send.md)**
+> (#484, #486), only for: (1) "Zero token matches is not absence proof", now
+> refined by positive S3 proof of absence; (2) "reconcile-only ... cannot PUT":
+> a reconcile-only attempt whose send is proven absent becomes the file's
+> ordinary upload and may send. Everything else here stands.
+
 Issue #464 closes the provider-response/catalog gap with a committed pre-write
 intent and opaque upload token tied to the immutable Upload Snapshot from
 ADR-0023. Raw receipts survive cancellation or lost leases as facts only: they
@@ -10,7 +16,7 @@ ambiguity when a provider outcome cannot be proved.
 ## Consequences
 
 A committed send-started record forbids another PUT without a definitive no-write
-outcome. Zero token matches is not absence proof; multiple matches, contradictory
+outcome. Zero token matches is not, by itself, absence proof (see ADR-0025 for the positive proof that does close it); multiple matches, contradictory
 proof, unstable/incomplete listings or observable external writers block. Token,
 ETag, size, time and catalog membership never establish integrity. Exact receipt
 or unique token discovery is checked against the independent frozen expected
@@ -47,7 +53,7 @@ explicit external restore, never an automatic restore by reconciliation.
 Migration 0064 is metadata-only, without synthesized tokens/trust or live I/O.
 Downgrade refuses unresolved send-started facts and pending cleanup proofs before
 DDL, including deliberately cancelled ambiguous sends. Explicit reconcile-only
-admission is separate from normal upload eligibility and cannot PUT. Cancellation
+admission is separate from normal upload eligibility and cannot PUT by itself (ADR-0025: only a positive S3 proof of absence lets the attempt send). Cancellation
 retains the journal and cannot automatically resurrect the target. #459 owns
 bounded automatic discovery/admission, remediation history and historical failure
 resolution; this decision adds neither a sweep nor live orphan cleanup.

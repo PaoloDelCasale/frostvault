@@ -2408,7 +2408,9 @@ def upload(
 def reconcile_upload(action: UploadReconciliationAction, user: dict[str, Any] = Depends(current_user), vault: dict[str, Any] = Depends(current_vault)):
     """Exact resume only, including protected files for which upload returns 409.
 
-    Common target arbiter; no PUT, arbitrary deletion or cancellation resurrection.
+    Common target arbiter; no arbitrary deletion or cancellation resurrection. It
+    never PUTs by itself: the Job may send only when S3 positively proves the
+    earlier send never landed (ADR-0025), and never on a path with paused protection.
     """
     from .services.upload_provenance import schedule_resume, UploadBlocked
     logical_path = safe_relative_path(action.path).as_posix()

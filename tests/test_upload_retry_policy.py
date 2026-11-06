@@ -71,10 +71,21 @@ class UploadRetryPolicyTests(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertEqual(classify_upload_failure(message), "permanent")
 
+    def test_database_connection_loss_is_retryable_because_the_send_is_journaled(self) -> None:
+        from psycopg import InterfaceError, OperationalError
+        from psycopg.errors import AdminShutdown, CannotConnectNow
+        for error in (OperationalError("connection is bad: Network is unreachable"),
+                      InterfaceError("the connection is closed"),
+                      AdminShutdown("terminating connection"), CannotConnectNow("starting up")):
+            for link in ("__cause__", "__context__"):
+                wrapped = RuntimeError("database unavailable")
+                setattr(wrapped, link, error)
+                with self.subTest(error=type(error).__name__, link=link):
+                    self.assertEqual(classify_upload_failure(wrapped), "database_connection")
+
     def test_other_database_errors_never_become_transport_retries(self) -> None:
-        from psycopg import OperationalError
-        from psycopg.errors import UniqueViolation
-        for error in (OperationalError("connection reset 500503"), UniqueViolation("timeout unavailable")):
+        from psycopg.errors import QueryCanceled, UniqueViolation
+        for error in (UniqueViolation("timeout unavailable"), QueryCanceled("statement timeout")):
             wrapped = RuntimeError("S3 unavailable")
             wrapped.__cause__ = error
             self.assertEqual(classify_upload_failure(wrapped), "permanent")

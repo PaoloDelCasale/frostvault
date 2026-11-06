@@ -836,7 +836,9 @@ export interface paths {
          * Reconcile Upload
          * @description Exact resume only, including protected files for which upload returns 409.
          *
-         *     Common target arbiter; no PUT, arbitrary deletion or cancellation resurrection.
+         *     Common target arbiter; no arbitrary deletion or cancellation resurrection. It
+         *     never PUTs by itself: the Job may send only when S3 positively proves the
+         *     earlier send never landed (ADR-0025), and never on a path with paused protection.
          */
         post: operations["reconcile_upload_api_upload_reconcile_post"];
         delete?: never;

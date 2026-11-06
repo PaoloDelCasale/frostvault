@@ -93,3 +93,29 @@ class CatalogIntegrityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReconciliationReasonCatalogTests(unittest.TestCase):
+    """The SPA renders ``reconciliation.reason.<reason>`` for every backend reason."""
+
+    def emitted_reasons(self) -> set[str]:
+        import re
+        from pathlib import Path
+        from app.services import upload_provenance
+        root = Path(__file__).resolve().parents[1] / "app"
+        source = "".join(path.read_text() for path in root.rglob("*.py"))
+        literals = set(re.findall(r'UploadBlocked\(\s*"([a-z_]+)"', source))
+        literals |= set(re.findall(r'_reject\([^)]*"([a-z_]+)"\)', source))
+        literals |= {"retry_budget_exhausted", "operation_failed", "transient"}
+        return literals | set(upload_provenance.REMEDIES)
+
+    def test_every_reason_the_backend_can_emit_has_an_english_and_italian_text(self) -> None:
+        reasons = self.emitted_reasons()
+        self.assertIn("already_resolved", reasons)
+        self.assertIn("target_superseded", reasons)
+        import json
+        from pathlib import Path
+        for locale in ("en", "it"):
+            catalog = json.loads((Path(__file__).resolve().parents[1] / "app" / "locales" / f"{locale}.json").read_text())
+            missing = sorted(r for r in reasons if f"reconciliation.reason.{r}" not in catalog)
+            self.assertEqual(missing, [], f"{locale}: raw keys would be shown for {missing}")

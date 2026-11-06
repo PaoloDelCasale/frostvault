@@ -40,6 +40,10 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
         self.assertIn("s3:PutObjectTagging", actions)
         self.assertIn("s3:PutLifecycleConfiguration", actions)
         self.assertIn("s3:DeleteObjectVersion", actions)
+        # Exact upload reconciliation lists versions and incomplete multipart
+        # uploads; each is its own IAM action, separate from s3:ListBucket.
+        self.assertIn("s3:ListBucketVersions", actions)
+        self.assertIn("s3:ListBucketMultipartUploads", actions)
 
     def test_github_oidc_ci_policy_is_prefix_scoped(self) -> None:
         policy_path = MODULE_ROOT / "iam" / "github-oidc-ci-policy.json"
@@ -49,6 +53,13 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
         self.assertIn("s3:GetBucketPublicAccessBlock", raw)
         self.assertNotIn("s3:PutBucketPublicAccessBlock", raw)
         self.assertNotIn("s3:PutLifecycleConfiguration", raw)
+        # CI exercises exact upload reconciliation, so it needs both list actions
+        # (each separate from s3:ListBucket), scoped to the CI prefix.
+        statements = json.loads(raw)["Statement"]
+        scoped = next(item for item in statements if item["Sid"] == "ListOnlyCiPrefix")
+        self.assertIn("s3:ListBucketVersions", scoped["Action"])
+        self.assertIn("s3:ListBucketMultipartUploads", scoped["Action"])
+        self.assertIn("s3:prefix", scoped["Condition"]["StringLike"])
         # No unbounded object ARN.
         self.assertNotIn(
             '"Resource": "arn:aws:s3:::${archive_ci_bucket_name}/*"',

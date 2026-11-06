@@ -79,10 +79,10 @@ def _keeper(connection: Any, job: dict[str, Any], keeper_id: str, provider: str 
     newer = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND version_number>%s AND availability='available'", (job["vault_file_id"], row["version_number"])).fetchall()
     if any(_has_lineage(connection, item, job["vault_file_id"], bucket=job["s3_bucket"], provider=provider) for item in newer):
         # A stale recovery of A is never authority to purge a later app attempt B.
-        raise UploadBlocked("identity_changed")
+        raise UploadBlocked("target_superseded")
     latest = connection.execute("SELECT id FROM archive_versions WHERE vault_file_id=%s AND integrity='verified' AND availability='available' ORDER BY version_number DESC LIMIT 1", (job["vault_file_id"],)).fetchone()
     if not latest or str(latest["id"]) != str(keeper_id):
-        raise UploadBlocked("identity_changed")
+        raise UploadBlocked("target_superseded")
     return row
 
 
@@ -293,8 +293,14 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> in
             vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (job["vault_id"],)).fetchone()
             access = worker.source_layout.vault_local_access(vault["source_root"])
             if not access.local_operations_allowed:
-                raise UploadBlocked("identity_changed")
-            worker._validate_enrolled_scan_root(vault)
+                # Nothing was deleted yet: wait for the volume, never a failure.
+                raise worker.SourceVolumeUnavailable("Source Volume is unavailable")
+            try:
+                worker._validate_enrolled_scan_root(vault)
+            except worker._ScanRootUnreadable as exc:
+                raise worker.SourceVolumeUnavailable(str(exc)) from exc
+            except RuntimeError as exc:
+                raise UploadBlocked("identity_changed") from exc
             if worker.job_cancelled(job["id"]):
                 raise worker.OperationCancelled("Snapshot cleanup stopped")
             proof = connection.execute("SELECT 1 FROM snapshot_cleanup_proofs WHERE vault_file_id=%s AND bucket=%s AND provider=%s AND object_key=%s AND version_id=%s AND keeper_id=%s AND sha256=%s", (job["vault_file_id"], job["s3_bucket"], provider, key, version, keeper_id, keeper["plaintext_sha256"])).fetchone()

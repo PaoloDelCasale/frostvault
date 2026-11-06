@@ -16,6 +16,8 @@ class VersionedProvider:
         self.puts = self.gets = self.deletes = 0
         self.deleted = []
         self.delete_requests = 0
+        self.multiparts = []
+        self.multipart_listings = 0
         self.hook = lambda stage, **kwargs: None
 
     def add(self, key, payload, metadata=None, *, version=None):
@@ -63,6 +65,12 @@ class VersionedProvider:
     def get_paginator(self, name):
         assert name == "list_object_versions"
         return SimpleNamespace(paginate=lambda **kwargs: iter([self.list_object_versions(**kwargs)]))
+
+    def list_multipart_uploads(self, *, Bucket, Prefix, **kwargs):
+        self.multipart_listings += 1
+        self.hook("list_multipart", key=Prefix)
+        return {"Uploads": [{"Key": k, "UploadId": u} for k, u in self.multiparts if k.startswith(Prefix)],
+                "IsTruncated": False}
 
     def get_object_tagging(self, **kwargs):
         return {"TagSet": []}

@@ -1,7 +1,8 @@
 """Pre-write upload facts. Receipts are NOT publication or deletion authority.
 
 No provider I/O in replayable DB units. An uncertain send can only reconcile;
-zero token matches never prove absence, and a fresh lease cannot quiesce old I/O.
+zero token matches prove absence only together with the complete S3 reads of
+ADR-0025 (never by themselves), and a fresh lease cannot quiesce old I/O.
 #459 consumes load_for_job/bind_for_resume; this module has no sweep/history timer.
 """
 from __future__ import annotations
@@ -17,9 +18,18 @@ from .upload_snapshot import UploadSnapshot
 from .s3_copy import _object_version_entries
 
 TOKEN_KEY = "frostvault-upload"
-NO_WRITE_OPERATIONS = frozenset({'PutObject','CreateMultipartUpload','UploadPart','CompleteMultipartUpload'})
+ABSENT_OPERATION = 'ProvenAbsent'
+# Conditions that resolve by themselves: the Job waits queued, nothing is blocked
+# or notified, and it restarts once the condition clears.
+WAIT_REASONS = frozenset({"vault_suspended"})
+# Reasons that, raised for a Job that is itself already terminal, describe that
+# Job and not the file: they never leave a durable block or a notification.
+TERMINAL_JOB_REASONS = frozenset({"owner_cancelled", "already_resolved"})
+# Refusals journaled by the SDK seam, plus the outcome proven by complete S3 reads.
+NO_WRITE_OPERATIONS = frozenset({'PutObject','CreateMultipartUpload','UploadPart','CompleteMultipartUpload',ABSENT_OPERATION})
 REMEDIES = {
-    "ambiguous_send": "Keep copies and stop external S3 writers. Retry exact reconciliation after the provider outcome is known; zero matches is not proof of no write.",
+    "ambiguous_send": "Keep copies and stop external S3 writers. Retry exact reconciliation after the provider outcome is known; the send restarts by itself only when S3 positively proves nothing was written.",
+    "list_permission_denied": "S3 refused to list object versions or incomplete multipart uploads for this file, so reconciliation cannot see what was sent. Keep all copies, grant the archive IAM identity s3:ListBucketVersions and s3:ListBucketMultipartUploads on the bucket, then use Retry failed uploads.",
     "ambiguous_receipt": "Keep all copies. Inspect exact versions with authorized S3 tools; do not choose latest or delete by token.",
     "inventory_changed": "Keep all copies. The exact cloud inventory changed or could not be confirmed; this does not by itself identify an external writer. Check listing permissions and any other S3 activity, then use Retry failed uploads to retry exact reconciliation when the namespace is stable.",
     "cleanup_unavailable": "The verified keeper is retained; cloud cleanup could not finish. Check provider permissions/connectivity and retry exact reconciliation. Completed/in-flight deletes cannot be undone.",
@@ -29,14 +39,36 @@ REMEDIES = {
     "orphan_different": "The verified keeper is retained. Recover/export the different exact version using authorized S3 tools or the Recovery Kit; ask for assistance reconciling it. No arbitrary removal action.",
     "keeper_missing": "Restore access to the exact verified keeper before cleanup; keep every other copy.",
     "markers_present": "Keep delete markers. Replacement cleanup has no consent to remove newly observed markers; reconcile explicitly with authorized S3 tools.",
+    "active_operation": "Another operation on this file is still running or waiting to retry. Wait for it to finish; nothing changed in the file, path or Source Volume.",
+    "source_volume_unavailable": "The Source Volume is not available right now. It resumes by itself once the volume is back; the file, path and Vault were not changed.",
+    "vault_suspended": "The Vault is disabled, being relocated or decommissioned. Resume it to continue; the file, path and Vault root were not changed.",
+    "pending_deletion": "A cloud deletion for this file is pending. Cancel or complete it before reconciling.",
+    "protection_paused": "Automatic protection is paused for this file. Resume protection first: reconciliation will not start an upload while it is paused.",
+    "cloud_only_conflict": "The path holds different content than a file kept only in the cloud. Choose which copy to keep before reconciling.",
+    "already_resolved": "Nothing to reconcile: this upload has already been resolved.",
+    "expected_evidence_missing": "The independent expected proof for this upload is missing, so exact reconciliation cannot start. Keep all copies and ask for assistance.",
+    "target_superseded": "A newer verified version already protects this file; the older target is retained and cannot be reconciled.",
+    "target_unavailable": "The exact version to reconcile is not available. Keep all copies and check the exact version with authorized S3 tools.",
+    "owner_cancelled": "This reconciliation was cancelled and is never resurrected automatically. Keep copies and start a new upload when the file changes.",
 }
 
 
 class UploadBlocked(RuntimeError):
     def __init__(self, reason: str):
         self.reason = reason
-        self.remedy = REMEDIES[reason]
+        self.remedy = REMEDIES.get(reason, REMEDIES["proof_unavailable"])
         super().__init__(f"Upload reconciliation blocked ({reason}). {self.remedy}")
+
+
+class ProvenAbsent(UploadBlocked):
+    """Positive S3 proof that no send of this intent landed or can still complete.
+
+    Subclasses UploadBlocked so a caller that does not handle the proof keeps the
+    fail-closed ``ambiguous_send`` block; only the worker seam acts on it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("ambiguous_send")
 
 
 def canonical(value: Any) -> str:
@@ -56,13 +88,79 @@ def provider_identity(client: Any) -> str:
 
 
 def inventory(client: Any, bucket: str, key: str) -> dict[str, list[str]]:
+    versions, markers = _guarded_listing(lambda: _object_version_entries(client, bucket=bucket, object_key=key), bucket)
+    return {"versions": sorted(versions), "markers": sorted(markers)}
+
+
+_CREDENTIAL_CODES = frozenset({
+    "InvalidAccessKeyId", "SignatureDoesNotMatch", "ExpiredToken", "InvalidToken",
+    "TokenRefreshRequired", "InvalidClientTokenId", "UnrecognizedClientException",
+})
+
+
+def _guarded_listing(call: Any, bucket: str) -> Any:
+    """Run a provider LIST and name why it failed.
+
+    A refused listing (any HTTP 403 that is not a credential error) is a
+    permission gap of this file's reconciliation, but only when the installation
+    itself is still ready: the readiness probe does not exercise these actions, so
+    letting the error reach the worker's readiness branch would reopen the gate and
+    re-claim the Job forever (#484). A fresh bucket probe tells the two apart:
+    probe fails -> the refusal is installation-wide, so it propagates to the
+    readiness gate (the Job stays queued); probe passes -> a per-file
+    ``list_permission_denied`` block that never touches the gate. Credential,
+    network and 5xx failures say nothing about the inventory and propagate to be
+    suspended/retried; anything else is an unconfirmed inventory. The block is
+    raised outside the ``except`` so it carries no chained provider error that
+    would be read as readiness.
+    """
+    reason: str | None
     try:
-        versions, markers = _object_version_entries(client, bucket=bucket, object_key=key)
+        return call()
     except UploadBlocked:
         raise
     except Exception as exc:
-        raise UploadBlocked("inventory_changed") from exc
-    return {"versions": sorted(versions), "markers": sorted(markers)}
+        reason = _listing_block_reason(exc, bucket)
+        if reason is None:
+            raise
+    raise UploadBlocked(reason)
+
+
+def _bucket_still_ready(bucket: str) -> bool:
+    """Fresh, bounded readiness probe of the bucket (the gate's own check)."""
+    from .. import storage
+    from . import s3_preflight
+    try:
+        return bool(s3_preflight.check_bucket_readiness(
+            bucket, region=storage.settings.aws_region, client=storage.s3_client(preflight=True)).ok)
+    except Exception:
+        return False
+
+
+def _listing_block_reason(error: BaseException, bucket: str) -> str | None:
+    from .database_retry import exception_chain
+    from botocore.exceptions import ClientError
+    refusals = [item for item in exception_chain(error) if isinstance(item, ClientError)
+                and (item.response.get("Error", {}).get("Code") in {"AccessDenied", "AccessDeniedException"}
+                     or item.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 403)]
+    if refusals:
+        if any(item.response.get("Error", {}).get("Code") in _CREDENTIAL_CODES for item in refusals):
+            return None
+        return "list_permission_denied" if _bucket_still_ready(bucket) else None
+    return None if _is_provider_unreachable(error) else "inventory_changed"
+
+
+def _is_provider_unreachable(error: BaseException) -> bool:
+    """Credential, network and provider-side failures: retried or suspended, never a changed inventory."""
+    from .cloud_preflight_gate import is_readiness_error
+    from .database_retry import exception_chain
+    from botocore.exceptions import BotoCoreError, ClientError, ConnectionError as BotoConnectionError
+    return is_readiness_error(error) or any(
+        isinstance(item, (BotoConnectionError, ConnectionError, TimeoutError))
+        or (isinstance(item, BotoCoreError) and "timeout" in type(item).__name__.lower())
+        or (isinstance(item, ClientError)
+            and item.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) in range(500, 600))
+        for item in exception_chain(error))
 
 
 def target(connection: Any, job: dict[str, Any], *, key: str, provider: str) -> dict[str, Any]:
@@ -71,18 +169,25 @@ def target(connection: Any, job: dict[str, Any], *, key: str, provider: str) -> 
     require_job(connection, job)
     row = connection.execute("SELECT vf.status,fp.path,fp.valid_from FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL WHERE vf.id=%s AND vf.vault_id=%s", (job["vault_file_id"], job["vault_id"])).fetchone()
     current = connection.execute("SELECT status,vault_file_id,path,claim_token FROM jobs WHERE id=%s", (job["id"],)).fetchone()
+    if current and current["status"] == "cancelled":
+        raise UploadBlocked("owner_cancelled")
+    if current and current["status"] in {"failed", "completed"}:
+        raise UploadBlocked("already_resolved")
     if (not vault or not row or row["status"] != "active" or not current
-            or current["status"] in {"cancelled", "failed", "completed"}
             or current["vault_file_id"] != job["vault_file_id"] or current["path"] != job["path"]
             or row["path"] != job["path"] or vault["source_root"] != job["source_root"]
             or vault["s3_bucket"] != job["s3_bucket"] or vault["s3_prefix"] != job["s3_prefix"]
-            or not vault["enabled"] or vault["decommission_state"] != "active"
-            or vault["relocation_state"] != "ready" or vault.get("root_released_at")):
+            ):
         raise UploadBlocked("identity_changed")
+    if (not vault["enabled"] or vault["decommission_state"] != "active"
+            or vault["relocation_state"] != "ready" or vault.get("root_released_at")):
+        raise UploadBlocked("vault_suspended")
     incompatible = connection.execute("SELECT 1 FROM jobs WHERE vault_file_id=%s AND id<>%s AND status NOT IN ('failed','cancelled','completed') LIMIT 1", (job["vault_file_id"], job["id"])).fetchone()
     conflict = connection.execute("SELECT cloud_only_version_id FROM local_copies WHERE vault_file_id=%s", (job["vault_file_id"],)).fetchone()
-    if incompatible or (conflict and conflict["cloud_only_version_id"]):
-        raise UploadBlocked("identity_changed")
+    if incompatible:
+        raise UploadBlocked("active_operation")
+    if conflict and conflict["cloud_only_version_id"]:
+        raise UploadBlocked("cloud_only_conflict")
     return {"vault_id": job["vault_id"], "vault_file_id": job["vault_file_id"],
             "bucket": vault["s3_bucket"], "prefix": vault["s3_prefix"], "key": key,
             "provider": provider, "path": row["path"], "path_since": row["valid_from"],
@@ -100,10 +205,26 @@ def load_for_job(connection: Any, job_id: int) -> dict[str, Any] | None:
 
 
 def outstanding(connection: Any, file_id: str) -> dict[str, Any] | None:
-    rows = connection.execute("SELECT * FROM upload_intents WHERE vault_file_id=%s AND NOT settled ORDER BY created_at,id LIMIT 2", (file_id,)).fetchall()
+    # An intent whose send never started (prepared only, or closed by a proven
+    # absence) has no provider obligation: it never blocks or binds another Job.
+    rows = connection.execute("SELECT * FROM upload_intents WHERE vault_file_id=%s AND NOT settled AND send_started ORDER BY created_at,id LIMIT 2", (file_id,)).fetchall()
     if len(rows) > 1:
         raise UploadBlocked("ambiguous_send")
     return rows[0] if rows else None
+
+
+def _settle_unstarted(connection: Any, file_id: str, *, keep_intent_id: str | None = None) -> None:
+    """Close intents that never sent: nothing was written, nothing to reconcile.
+
+    ``send_started`` is committed before any request and is cleared only by a
+    journaled definitive no-write outcome, so an unsettled, unlinked intent with
+    it unset cannot have produced an object. Receipts are never ignored.
+    """
+    rows = connection.execute("SELECT id FROM upload_intents WHERE vault_file_id=%s AND NOT settled AND NOT send_started AND archive_version_id IS NULL AND id IS DISTINCT FROM %s", (file_id, keep_intent_id)).fetchall()
+    for row in rows:
+        if receipt(connection, row["id"]) is not None:
+            raise UploadBlocked("ambiguous_receipt")
+        connection.execute("UPDATE upload_intents SET settled=TRUE,blocked_reason=NULL WHERE id=%s AND NOT send_started", (row["id"],))
 
 
 def bind_for_resume(connection: Any, job_id: int, intent: dict[str, Any]) -> None:
@@ -119,7 +240,21 @@ def prepare(connection: Any, job: dict[str, Any], *, pinned: dict[str, Any], sna
     require_target(connection, job, pinned)
     existing = load_for_job(connection, job["id"])
     if existing:
-        return existing
+        current = (canonical(pinned), snapshot.as_json(), requested, canonical(before))
+        if (existing["send_started"] or existing["settled"] or existing["archive_version_id"]
+                or current == (existing["target_json"], existing["snapshot_json"], existing["requested"], existing["inventory_json"])):
+            return existing
+        # Prepared (or re-armed after a proven absence) but never sent, and the
+        # content or cloud inventory moved on: re-pin it in place with a new
+        # token rather than failing every later attempt with a false identity change.
+        if receipt(connection, existing["id"]) is not None:
+            raise UploadBlocked("ambiguous_receipt")
+        refreshed = connection.execute("UPDATE upload_intents SET token=%s,target_json=%s,snapshot_json=%s,requested=%s,inventory_json=%s,created_at=%s,blocked_reason=NULL WHERE id=%s AND NOT send_started AND NOT settled AND archive_version_id IS NULL RETURNING *", (str(uuid.uuid4()), *current, timestamp, existing["id"])).fetchone()
+        if not refreshed:
+            raise UploadBlocked("ambiguous_send")
+        _settle_unstarted(connection, job["vault_file_id"], keep_intent_id=refreshed["id"])
+        return refreshed
+    _settle_unstarted(connection, job["vault_file_id"])
     previous = outstanding(connection, job["vault_file_id"])
     if previous:
         # Caller MUST reconcile before hashing a different generation.
@@ -154,8 +289,9 @@ def record_no_write(connection: Any, job: dict[str, Any], intent: dict[str, Any]
                     operation: str, timestamp: str) -> None:
     """Claim-fenced definitive refusal; retain the immutable outcome as a fact.
 
-    Called ONLY after the transfer manager joined all I/O and reported an auth
-    refusal without a final receipt. Zero listing matches never reach this seam.
+    Called after the transfer manager joined all I/O and reported an auth
+    refusal without a final receipt, or after complete S3 reads proved absence
+    (ADR-0025). Zero listing matches alone never reach this seam.
     Caller owns/retries its entire DB-only publication transaction.
     """
     if operation not in NO_WRITE_OPERATIONS:
@@ -169,6 +305,22 @@ def record_no_write(connection: Any, job: dict[str, Any], intent: dict[str, Any]
     text = canonical({'NoWriteOperation':operation})
     connection.execute("INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
         (intent['id'],hashlib.sha256(text.encode()).hexdigest(),text,timestamp))
+
+
+def proven_absent(connection: Any, intent_id: str | None) -> bool:
+    """True when this intent was closed by a journaled positive proof of absence."""
+    if not intent_id:
+        return False
+    return connection.execute("SELECT 1 FROM upload_receipts WHERE intent_id=%s AND response_json=%s LIMIT 1",
+                              (intent_id, canonical({'NoWriteOperation': ABSENT_OPERATION}))).fetchone() is not None
+
+
+def unsent(connection: Any, intent_id: str | None) -> bool:
+    """The intent carries no provider obligation: its send never (or no longer) started."""
+    if not intent_id:
+        return False
+    return connection.execute("SELECT 1 FROM upload_intents WHERE id=%s AND NOT send_started AND archive_version_id IS NULL",
+                              (intent_id,)).fetchone() is not None
 
 
 def receipt(connection: Any, intent_id: str) -> dict[str, Any] | None:
@@ -218,8 +370,12 @@ def reconcile(client: Any, intent: dict[str, Any], saved: dict[str, Any] | None,
             break
         if observation or not _own_write_arrived(client, intent, saved, before, first, second, check_active):
             raise UploadBlocked('inventory_changed')
-    if len(matches) != 1:
-        raise UploadBlocked("ambiguous_send" if not matches else "ambiguous_receipt")
+    if len(matches) > 1:
+        raise UploadBlocked("ambiguous_receipt")
+    if not matches:
+        if saved is None and first == before:
+            _prove_absent(client, pinned, before, check_active)
+        raise UploadBlocked("ambiguous_send")
     version, head = matches[0]
     if (version in before["versions"] or first["markers"] != before["markers"]
             or set(first["versions"]) != set(before["versions"]) | {version}):
@@ -237,6 +393,51 @@ def reconcile(client: Any, intent: dict[str, Any], saved: dict[str, Any] | None,
     # Retain raw response proof if present; worker validates BOTH head and receipt
     # against the independent frozen baseline, never trusting this token as proof.
     return {**head, **(saved or {}), "VersionId": version}
+
+
+def _incomplete_uploads(client: Any, bucket: str, key: str) -> list[str]:
+    """Exact-key incomplete multipart uploads; unconfirmed completeness fails closed."""
+    lister = getattr(client, "list_multipart_uploads", None)
+    if lister is None:
+        raise UploadBlocked("ambiguous_send")
+    kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": key}
+    found: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    while True:
+        page = _guarded_listing(lambda: lister(**kwargs), bucket)
+        if not isinstance(page, dict) or page.get("IsTruncated") not in (True, False) or "IsTruncated" not in page:
+            raise UploadBlocked("ambiguous_send")
+        found += [str(item.get("UploadId") or "?") for item in page.get("Uploads") or [] if item.get("Key") == key]
+        if not page["IsTruncated"]:
+            return found
+        marker = (str(page.get("NextKeyMarker") or ""), str(page.get("NextUploadIdMarker") or ""))
+        if not marker[0] or marker in seen:
+            raise UploadBlocked("ambiguous_send")
+        seen.add(marker)
+        kwargs["KeyMarker"], kwargs["UploadIdMarker"] = marker[0], marker[1]
+        if not marker[1]:
+            kwargs.pop("UploadIdMarker")
+
+
+def _prove_absent(client: Any, pinned: dict[str, Any], before: dict[str, Any],
+                  check_active: Any) -> None:
+    """Raise ProvenAbsent only when S3 positively shows that nothing landed.
+
+    Callers already read two equal complete listings that equal the pinned
+    pre-send inventory and found no token carrier. Here: no incomplete multipart
+    upload exists for the exact key, and a later complete listing is still the
+    pinned inventory (so a request finishing meanwhile would be seen). Any read
+    failure, unsupported API, unconfirmed completeness or delta stays blocked.
+    The sender is gone: reconcile runs only for a Job that is the file's sole
+    active operation, and an intent receipt (even partial) is never ignored.
+    """
+    check_active()
+    if _incomplete_uploads(client, pinned["bucket"], pinned["key"]):
+        raise UploadBlocked("ambiguous_send")
+    check_active()
+    if inventory(client, pinned["bucket"], pinned["key"]) != before:
+        raise UploadBlocked("inventory_changed")
+    raise ProvenAbsent()
 
 
 def _own_write_arrived(client: Any, intent: dict[str, Any], saved: dict[str, Any] | None,
@@ -305,6 +506,11 @@ def _legacy_materialized(connection: Any, file_id: str) -> dict[str, Any] | None
     return rows[0]
 
 
+def _only_void_episodes(connection: Any, file_id: str) -> bool:
+    rows = connection.execute("SELECT intent_id FROM upload_remediations WHERE vault_file_id=%s AND state NOT IN ('resolved','cancelled') LIMIT 8", (file_id,)).fetchall()
+    return bool(rows) and all(proven_absent(connection, r["intent_id"]) and unsent(connection, r["intent_id"]) for r in rows)
+
+
 def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
     row = connection.execute("SELECT vf.id FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL WHERE vf.vault_id=%s AND fp.path=%s", (vault_id, path)).fetchone()
     empty = {"pending": False, "can_resume": False, "reason": None, "remedy": None}
@@ -312,7 +518,7 @@ def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
         return empty
     file_id = row["id"]
     block = connection.execute("SELECT reason FROM snapshot_reconciliation_blocks WHERE vault_file_id=%s", (file_id,)).fetchone()
-    intents = connection.execute("SELECT id,blocked_reason,send_started FROM upload_intents WHERE vault_file_id=%s AND NOT settled ORDER BY created_at LIMIT 2", (file_id,)).fetchall()
+    intents = connection.execute("SELECT id,blocked_reason,send_started FROM upload_intents WHERE vault_file_id=%s AND NOT settled AND send_started ORDER BY created_at LIMIT 2", (file_id,)).fetchall()
     legacy, legacy_reason = None, None
     if not intents:
         try:
@@ -324,8 +530,27 @@ def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
     reason = (block["reason"] if block else intents[0]["blocked_reason"] if intents else legacy_reason or "proof_unavailable") or "ambiguous_send"
     busy = connection.execute("SELECT 1 FROM jobs WHERE vault_file_id=%s AND status NOT IN ('failed','cancelled','completed') LIMIT 1", (file_id,)).fetchone()
     cancelled = connection.execute("SELECT 1 FROM jobs j LEFT JOIN upload_intent_jobs b ON b.job_id=j.id WHERE j.vault_file_id=%s AND j.status='cancelled' AND (j.upload_reconcile_only OR b.intent_id IS NOT NULL) LIMIT 1", (file_id,)).fetchone()
-    return {"pending": True, "can_resume": not busy and not cancelled and not legacy_reason and len(intents) < 2 and (not intents or intents[0]["send_started"]),
+    # An episode whose re-armed send never started has nothing left to reconcile:
+    # offering Resume would only end in a 409 (the ordinary upload retries it).
+    void_only = not intents and _only_void_episodes(connection, file_id)
+    return {"pending": True, "can_resume": not busy and not cancelled and not legacy_reason and len(intents) < 2 and not void_only,
             "reason": reason, "remedy": REMEDIES.get(reason, REMEDIES["proof_unavailable"])}
+
+
+def _unresumable_reason(connection: Any, vault_id: int, path: str, state: dict[str, Any]) -> str:
+    """Name why exact resume cannot start; never imply the path/volume changed."""
+    if not state["pending"]:
+        return "already_resolved"
+    file = connection.execute("SELECT vault_file_id FROM file_paths WHERE vault_id=%s AND path=%s AND valid_to IS NULL", (vault_id, path)).fetchone()
+    if file:
+        fid = file["vault_file_id"]
+        if connection.execute("SELECT 1 FROM jobs WHERE vault_file_id=%s AND status NOT IN ('failed','cancelled','completed') LIMIT 1", (fid,)).fetchone():
+            return "active_operation"
+        if connection.execute("SELECT 1 FROM jobs j LEFT JOIN upload_intent_jobs b ON b.job_id=j.id WHERE j.vault_file_id=%s AND j.status='cancelled' AND (j.upload_reconcile_only OR b.intent_id IS NOT NULL) LIMIT 1", (fid,)).fetchone():
+            return "owner_cancelled"
+        if len(connection.execute("SELECT 1 FROM upload_intents WHERE vault_file_id=%s AND NOT settled LIMIT 2", (fid,)).fetchall()) > 1:
+            return "ambiguous_send"
+    return state["reason"] if state.get("reason") in REMEDIES else "proof_unavailable"
 
 
 def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str, remediation_id: str | None = None) -> dict[str, Any]:
@@ -339,14 +564,16 @@ def _schedule_resume_legacy(connection: Any, *, vault: dict[str, Any], path: str
     current = lock_vault(connection, vault["id"])
     try:
         require_ready(current)
-    except ValueError as exc:
-        raise UploadBlocked("identity_changed") from exc
+    except ValueError:
+        raise UploadBlocked("vault_suspended") from None
     state = describe(connection, vault_id=vault["id"], path=path)
     if not state["pending"] or not state["can_resume"]:
-        raise UploadBlocked("identity_changed")
+        raise UploadBlocked(_unresumable_reason(connection, vault["id"], path, state))
     row = connection.execute("SELECT vf.id,lc.cloud_only_version_id FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id WHERE vf.vault_id=%s AND fp.path=%s AND vf.status='active'", (vault["id"], path)).fetchone()
-    if not row or row["cloud_only_version_id"]:
+    if not row:
         raise UploadBlocked("identity_changed")
+    if row["cloud_only_version_id"]:
+        raise UploadBlocked("cloud_only_conflict")
     intent = outstanding(connection, row["id"])
     linked = _legacy_materialized(connection,row["id"]) if not intent else None
     if not intent and not linked:

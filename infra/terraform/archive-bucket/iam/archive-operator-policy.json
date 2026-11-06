@@ -6,6 +6,8 @@
       "Effect": "Allow",
       "Action": [
         "s3:ListBucket",
+        "s3:ListBucketVersions",
+        "s3:ListBucketMultipartUploads",
         "s3:GetBucketLocation",
         "s3:GetBucketVersioning",
         "s3:GetBucketPublicAccessBlock",

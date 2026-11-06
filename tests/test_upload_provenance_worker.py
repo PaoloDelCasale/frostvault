@@ -453,7 +453,10 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
             self.assertIsNone(intent["archive_version_id"])
         self.assertEqual((self.provider.puts, self.provider.deletes), (1, 0))
 
-    def test_send_started_zero_match_remains_reconcile_only(self):
+    def test_send_started_zero_match_without_absence_proof_remains_reconcile_only(self):
+        # #484: only complete S3 reads that exclude an in-flight multipart prove
+        # absence. See test_upload_ambiguous_send_recovery for the recovery path.
+        self.provider.multiparts.append(("docs/report.txt", "in-flight"))
         self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("before provider request")) if stage == "before_put" else None
         job = self.queue()
         self.run_job(job)
