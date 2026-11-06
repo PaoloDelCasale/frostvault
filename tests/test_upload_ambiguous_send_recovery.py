@@ -256,6 +256,67 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.run_job(resumed)
         self.assert_keeper(resumed)
 
+    def rearmed_then_stopped(self):
+        """Absence is proven (intent re-armed, nothing sent), then the Job stops before sending."""
+        self.stable_content()
+        self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
+        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        resumed = max(j["id"] for j in self.jobs())
+        with patch.object(provenance, "mark_send_started", side_effect=RuntimeError("stopped before the send")):
+            self.run_job(resumed)
+        self.assertEqual(self.row(resumed)["status"], "failed")
+        intent = self.intent()
+        self.assertFalse(intent["send_started"])
+        self.assertFalse(intent["settled"])
+        self.assertEqual(self.provider.puts, 0)
+        return resumed
+
+    def assert_next_upload_is_not_blocked(self):
+        with self.db() as connection:
+            state = provenance.describe(connection, vault_id=2, path="report.txt")
+        self.assertFalse(state["pending"], state)
+        self.file.write_bytes(b"new content after the proven absence\n")
+        job = self.queue_fresh()
+        self.run_job(job)
+        row = self.row(job)
+        self.assertEqual(row["status"], "completed", row["message"])
+        self.assertEqual(self.provider.puts, 1)
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_intents WHERE NOT settled").fetchone()["n"], 0)
+
+    def test_rearmed_intent_of_a_failed_job_does_not_block_the_next_upload(self):
+        self.rearmed_then_stopped()
+        self.assert_next_upload_is_not_blocked()
+
+    def test_rearmed_intent_of_a_cancelled_job_does_not_block_the_next_upload(self):
+        resumed = self.rearmed_then_stopped()
+        with self.db() as connection:
+            connection.execute("UPDATE jobs SET status='cancelled' WHERE id=%s", (resumed,))
+        self.assert_next_upload_is_not_blocked()
+
+    def test_an_unsent_intent_is_refreshed_when_the_cloud_inventory_changed_meanwhile(self):
+        # Same Job: the intent was prepared but never sent; an external write landed since.
+        self.stable_content()
+        with patch.object(provenance, "mark_send_started", side_effect=psycopg.OperationalError("connection is bad")):
+            job = self.queue()
+            self.run_job(job)
+        self.assertEqual(self.row(job)["status"], "retrying")
+        stale = self.intent()
+        self.assertFalse(stale["send_started"])
+        self.provider.add(KEY, b"written by someone else", version="external-1")
+        self.retry_is_due(job)
+        self.run_job(job)
+        # The send itself proceeds from a re-pinned intent. Cleanup of the pinned
+        # namespace may still refuse the foreign write; that is a different, real block.
+        self.assertEqual(self.provider.puts, 1)
+        self.assertNotIn("identity_changed", self.row(job)["message"])
+        with self.db() as connection:
+            intents = connection.execute("SELECT * FROM upload_intents").fetchall()
+        self.assertEqual(len(intents), 1)
+        self.assertTrue(intents[0]["send_started"])
+        self.assertIn("external-1", intents[0]["inventory_json"])
+        self.assertNotEqual(intents[0]["token"], stale["token"])
+
     def test_an_observed_root_replacement_still_fails_as_identity_changed(self):
         for name, patched in (("mismatch", {"return_value": "another-root"}),
                               ("symlink", {"side_effect": VaultRelocationError("symlink", "symlinked root")})):

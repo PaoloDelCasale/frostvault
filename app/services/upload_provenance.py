@@ -172,10 +172,26 @@ def load_for_job(connection: Any, job_id: int) -> dict[str, Any] | None:
 
 
 def outstanding(connection: Any, file_id: str) -> dict[str, Any] | None:
-    rows = connection.execute("SELECT * FROM upload_intents WHERE vault_file_id=%s AND NOT settled ORDER BY created_at,id LIMIT 2", (file_id,)).fetchall()
+    # An intent whose send never started (prepared only, or closed by a proven
+    # absence) has no provider obligation: it never blocks or binds another Job.
+    rows = connection.execute("SELECT * FROM upload_intents WHERE vault_file_id=%s AND NOT settled AND send_started ORDER BY created_at,id LIMIT 2", (file_id,)).fetchall()
     if len(rows) > 1:
         raise UploadBlocked("ambiguous_send")
     return rows[0] if rows else None
+
+
+def _settle_unstarted(connection: Any, file_id: str, *, keep_intent_id: str | None = None) -> None:
+    """Close intents that never sent: nothing was written, nothing to reconcile.
+
+    ``send_started`` is committed before any request and is cleared only by a
+    journaled definitive no-write outcome, so an unsettled, unlinked intent with
+    it unset cannot have produced an object. Receipts are never ignored.
+    """
+    rows = connection.execute("SELECT id FROM upload_intents WHERE vault_file_id=%s AND NOT settled AND NOT send_started AND archive_version_id IS NULL AND id IS DISTINCT FROM %s", (file_id, keep_intent_id)).fetchall()
+    for row in rows:
+        if receipt(connection, row["id"]) is not None:
+            raise UploadBlocked("ambiguous_receipt")
+        connection.execute("UPDATE upload_intents SET settled=TRUE,blocked_reason=NULL WHERE id=%s AND NOT send_started", (row["id"],))
 
 
 def bind_for_resume(connection: Any, job_id: int, intent: dict[str, Any]) -> None:
@@ -191,7 +207,21 @@ def prepare(connection: Any, job: dict[str, Any], *, pinned: dict[str, Any], sna
     require_target(connection, job, pinned)
     existing = load_for_job(connection, job["id"])
     if existing:
-        return existing
+        current = (canonical(pinned), snapshot.as_json(), requested, canonical(before))
+        if (existing["send_started"] or existing["settled"] or existing["archive_version_id"]
+                or current == (existing["target_json"], existing["snapshot_json"], existing["requested"], existing["inventory_json"])):
+            return existing
+        # Prepared (or re-armed after a proven absence) but never sent, and the
+        # content or cloud inventory moved on: re-pin it in place with a new
+        # token rather than failing every later attempt with a false identity change.
+        if receipt(connection, existing["id"]) is not None:
+            raise UploadBlocked("ambiguous_receipt")
+        refreshed = connection.execute("UPDATE upload_intents SET token=%s,target_json=%s,snapshot_json=%s,requested=%s,inventory_json=%s,created_at=%s,blocked_reason=NULL WHERE id=%s AND NOT send_started AND NOT settled AND archive_version_id IS NULL RETURNING *", (str(uuid.uuid4()), *current, timestamp, existing["id"])).fetchone()
+        if not refreshed:
+            raise UploadBlocked("ambiguous_send")
+        _settle_unstarted(connection, job["vault_file_id"], keep_intent_id=refreshed["id"])
+        return refreshed
+    _settle_unstarted(connection, job["vault_file_id"])
     previous = outstanding(connection, job["vault_file_id"])
     if previous:
         # Caller MUST reconcile before hashing a different generation.
@@ -433,7 +463,7 @@ def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
         return empty
     file_id = row["id"]
     block = connection.execute("SELECT reason FROM snapshot_reconciliation_blocks WHERE vault_file_id=%s", (file_id,)).fetchone()
-    intents = connection.execute("SELECT id,blocked_reason,send_started FROM upload_intents WHERE vault_file_id=%s AND NOT settled ORDER BY created_at LIMIT 2", (file_id,)).fetchall()
+    intents = connection.execute("SELECT id,blocked_reason,send_started FROM upload_intents WHERE vault_file_id=%s AND NOT settled AND send_started ORDER BY created_at LIMIT 2", (file_id,)).fetchall()
     legacy, legacy_reason = None, None
     if not intents:
         try:
@@ -445,7 +475,7 @@ def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
     reason = (block["reason"] if block else intents[0]["blocked_reason"] if intents else legacy_reason or "proof_unavailable") or "ambiguous_send"
     busy = connection.execute("SELECT 1 FROM jobs WHERE vault_file_id=%s AND status NOT IN ('failed','cancelled','completed') LIMIT 1", (file_id,)).fetchone()
     cancelled = connection.execute("SELECT 1 FROM jobs j LEFT JOIN upload_intent_jobs b ON b.job_id=j.id WHERE j.vault_file_id=%s AND j.status='cancelled' AND (j.upload_reconcile_only OR b.intent_id IS NOT NULL) LIMIT 1", (file_id,)).fetchone()
-    return {"pending": True, "can_resume": not busy and not cancelled and not legacy_reason and len(intents) < 2 and (not intents or intents[0]["send_started"]),
+    return {"pending": True, "can_resume": not busy and not cancelled and not legacy_reason and len(intents) < 2,
             "reason": reason, "remedy": REMEDIES.get(reason, REMEDIES["proof_unavailable"])}
 
 
