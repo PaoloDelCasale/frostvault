@@ -2060,6 +2060,8 @@ def set_job(
             )
         updated = _claim_write_succeeded(result)
         if updated and action == "upload":
+            from .services import upload_remediation
+            upload_remediation.transition(connection, job_id, status, timestamp)
             _dirty_job_protection(connection, job_id)
         if updated and status in {"completed", "failed"}:
             notification_service.enqueue_job_terminal_notification_best_effort(
@@ -2168,6 +2170,8 @@ def schedule_upload_retry(
                 ),
             )
         if _claim_write_succeeded(result) and action == "upload":
+            from .services import upload_remediation
+            upload_remediation.transition(connection, job_id, "retrying", timestamp)
             _dirty_job_protection(connection, job_id)
     updated = _claim_write_succeeded(result)
     if updated:

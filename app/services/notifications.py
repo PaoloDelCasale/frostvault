@@ -332,10 +332,18 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
             channels=tuple(channels),
         )
         if event == "job_failed":
+            # Late outbox delivery must materialize already-resolved history,
+            # never reopen an exact target completed by remediation.
+            from .upload_remediation import RESOLUTION_SQL
             connection.execute(
-                "UPDATE notifications SET problem_status=COALESCE(problem_status, 'open') "
-                "WHERE user_id=%s AND dedupe_key=%s",
-                (user_id, dedupe_key),
+                f"""UPDATE notifications n SET
+                    problem_status=CASE WHEN {RESOLUTION_SQL} THEN 'resolved'
+                        ELSE COALESCE(n.problem_status,'open') END,
+                    resolved_at=CASE WHEN {RESOLUTION_SQL} THEN COALESCE(n.resolved_at,%s)
+                        ELSE n.resolved_at END
+                    FROM jobs original WHERE original.id=n.job_id
+                      AND n.user_id=%s AND n.dedupe_key=%s""",
+                (now_iso(), user_id, dedupe_key),
             )
         if existing is None:
             enqueued += 1
@@ -577,10 +585,12 @@ def reconcile_problem_states(connection: Any) -> None:
     """Refresh catalog/Job-backed problems before counting, listing or emailing.
 
     No filesystem/S3 operations and no modification of protection evidence.
-    A retry supersedes a terminal failure; a resolved incident is no longer
-    unread even when the Owner never opened the notification center.
+    Only demonstrable completed remediation with exact cleanup resolves failed
+    uploads. A newer queued/failed upload, or successful content B, proves nothing
+    about failed snapshot A. Reading remains independent of resolution.
     """
-    connection.execute("""
+    from .upload_remediation import RESOLUTION_SQL
+    connection.execute(f"""
         UPDATE notifications n SET problem_status='resolved', resolved_at=%s,
             read_at=COALESCE(read_at,%s)
         WHERE n.problem_status='open' AND (
@@ -588,12 +598,8 @@ def reconcile_problem_states(connection: Any) -> None:
                 SELECT 1 FROM catalog_incidents i
                 WHERE n.dedupe_key='incident:' || i.id::text AND i.status='resolved'
             )) OR (n.event='job_failed' AND EXISTS (
-                SELECT 1 FROM jobs original WHERE original.id=n.job_id AND (
-                    original.status<>'failed' OR EXISTS (
-                        SELECT 1 FROM jobs latest WHERE latest.vault_file_id=original.vault_file_id
-                          AND latest.action='upload' AND latest.id>original.id
-                    )
-                )
+                SELECT 1 FROM jobs original WHERE original.id=n.job_id
+                  AND {RESOLUTION_SQL}
             )) OR (n.event='file_unreadable' AND (
                 EXISTS (SELECT 1 FROM vault_component_health h WHERE h.vault_id=n.vault_id
                         AND h.component='source' AND h.last_error IS NULL AND h.last_success_at>n.created_at)
