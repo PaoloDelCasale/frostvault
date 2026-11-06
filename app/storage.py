@@ -4248,6 +4248,7 @@ def _checked_local_release_target(
 
 def process_free_space(job: dict[str, Any]) -> None:
     ensure_job_active(job["id"], "Freeing local space stopped")
+    validate_cloud_vault(job, notify=False)
     # The claim's temporary absence must never become a watcher/full-scan
     # observation. Hashing holds no DB write transaction, only the same
     # per-Vault filesystem lock used by scans and watcher batches.
@@ -4259,12 +4260,20 @@ def _repair_failed_local_release(
     job: dict[str, Any], target: dict[str, Any], local_path: Path, *, replacement: bool = False,
 ) -> None:
     """Publish salvaged/replaced bytes immediately without following symlinks."""
+    vault = _current_scan_vault(job)
+    if vault["source_root"] != job["source_root"]:
+        raise _ScanRootMismatch("Vault root changed during local release repair")
+    _validate_enrolled_scan_root(vault)
+    if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
+        raise _ScanRootMismatch("Source Volume changed during local release repair")
     inspected = inspect_entry(local_path)
     file_type, info = inspected if inspected else ("other", local_path.lstat())
     digest = None
     if file_type == "regular":
         digest, info = hash_stable_regular_file(local_path)
     with db() as connection:
+        if "root_identity" in vault:
+            _current_verified_scan_row(connection, vault)
         catalog = ArchiveCatalog(connection)
         if replacement:
             file_id = target["vault_file_id"]
@@ -4284,13 +4293,14 @@ def _repair_failed_local_release(
                 vault_id=job["vault_id"], path=job["path"], plaintext_sha256=digest,
                 matched_archive_version_id=(target["archive_version_id"] if digest == target["version_sha256"] else None),
             )
+        if "root_identity" in vault:
+            _current_verified_scan_row(connection, vault)
     if digest:
         local_observation.remember(job["vault_id"], job["path"], info, digest)
 
 
 def _process_free_space(job: dict[str, Any]) -> None:
     ensure_job_active(job["id"], "Freeing local space stopped")
-    validate_cloud_vault(job, notify=False)
     target = _checked_local_release_target(job)
     set_job(job["id"], "cleaning", message_key="job.verifying_cloud_copy")
     ensure_job_active(job["id"], "Freeing local space claim was lost")

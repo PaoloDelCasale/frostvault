@@ -184,9 +184,13 @@ class FilesystemCatalogTests(unittest.TestCase):
 
         def fail_final_check(*args, **kwargs):
             nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise RuntimeError("Injected final protection failure")
+            # The helper's connection=None entry recurses into itself. Count
+            # actual checks, not wrapper entries, to inject AFTER the rename.
+            if kwargs.get("connection") is not None:
+                calls += 1
+                if calls == 2:
+                    self.assertFalse(target.exists())
+                    raise RuntimeError("Injected final protection failure")
             return real_check(*args, **kwargs)
 
         with (patch("app.storage.validate_cloud_vault"),
@@ -196,6 +200,7 @@ class FilesystemCatalogTests(unittest.TestCase):
             client.return_value.head_object.return_value = {"ContentLength": 5, "VersionId": "exact"}
             with self.assertRaisesRegex(RuntimeError, "Injected final"):
                 storage.process_free_space(job)
+        self.assertEqual(calls, 2)
         storage.apply_filesystem_changes(self.vault, {(Change.deleted, str(target)), (Change.added, str(target))})
         self.assertEqual(target.read_bytes(), b"photo")
         row = self.entries()[0]
