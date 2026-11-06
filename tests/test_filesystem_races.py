@@ -5,6 +5,7 @@ from contextlib import ExitStack
 import hashlib
 import io
 from pathlib import Path
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -96,13 +97,25 @@ class FilesystemCatalogTests(unittest.TestCase):
         job = self.job("free-space")
         real_hash = storage.hash_stable_regular_file
         observed = []
+        threads = []
+        errors = []
 
         def watch_during_hash(path):
             observed.append(path)
-            # The old implementation exposes a deleted original for the entire
-            # hash. New code may instead hash before claiming it.
-            if not target.exists():
-                storage.apply_filesystem_changes(self.vault, {(Change.deleted, str(target))})
+            started = threading.Event()
+            def watch():
+                started.set()
+                try:
+                    storage.apply_filesystem_changes(self.vault, {(Change.deleted, str(target))})
+                except Exception as exc:
+                    errors.append(exc)
+            thread = threading.Thread(target=watch)
+            threads.append(thread)
+            thread.start()
+            self.assertTrue(started.wait(2))
+            if not storage.scan_lock_for_vault(2).locked():
+                thread.join(2)
+                self.assertFalse(thread.is_alive())
             return real_hash(path)
 
         with (patch("app.storage.validate_cloud_vault"),
@@ -110,7 +123,13 @@ class FilesystemCatalogTests(unittest.TestCase):
               patch("app.storage.s3_client") as client,
               patch("app.storage.hash_stable_regular_file", side_effect=watch_during_hash)):
             client.return_value.head_object.return_value = {"ContentLength": 5, "VersionId": "exact"}
-            storage.process_free_space(job)
+            try:
+                storage.process_free_space(job)
+            finally:
+                for thread in threads:
+                    thread.join(3)
+                    self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
         self.assertTrue(observed)
         self.assertFalse(target.exists())
         row = self.entries()[0]
@@ -178,13 +197,12 @@ class FilesystemCatalogTests(unittest.TestCase):
         self.assertEqual(self.entries()[0]["matched_archive_version_id"], version)
 
     def test_existing_restore_ghosts_are_hidden_but_real_user_names_are_preserved(self):
-        target, _, _ = self.archive()
-        self.job("recover") if False else None  # The legacy repair needs a completed recovery history.
+        target, version, _ = self.archive()
         with self.db() as connection:
             connection.execute("""INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by,
-                requested_at, updated_at, group_id) SELECT 2, vf.id, 'photo.jpg', 'recover', 'completed', 1,
-                %s, %s, 'old-recovery' FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id
-                WHERE fp.path='photo.jpg'""", (self.clock.isoformat(), self.clock.isoformat()))
+                requested_at, updated_at, group_id, archive_version_id) SELECT 2, vf.id, 'photo.jpg', 'recover', 'completed', 1,
+                %s, %s, 'old-recovery', %s FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id
+                WHERE fp.path='photo.jpg'""", (self.clock.isoformat(), self.clock.isoformat(), version))
             catalog = ArchiveCatalog(connection)
             for name in (f".photo.jpg.restore-{'a' * 32}.tmp.f8Fc29bA", "photo.jpg.tmp.f8Fc29bA", "user.tmp.f8Fc29bA"):
                 catalog.observe_local_copy(vault_id=2, path=name, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())

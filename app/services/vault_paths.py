@@ -10,14 +10,14 @@ import re
 from pathlib import Path, PurePosixPath
 
 RESTORE_TEMPORARY_RE = re.compile(
-    r"\..+\.restore-[0-9a-f]{32}\.tmp(?:\..+\.partial)?"
+    r"\..+\.restore-[0-9a-f]{32}\.tmp(?:\.[A-Za-z0-9]{8}|\..+\.partial)?"
 )
 
 
 CLEANUP_TEMPORARY_RE = re.compile(r"\..+\.cleanup-[0-9a-f]{32}\.tmp")
 
 
-VERIFY_TEMPORARY_RE = re.compile(r"\..+\.verify-[0-9a-f]{32}\.tmp")
+VERIFY_TEMPORARY_RE = re.compile(r"\..+\.verify-[0-9a-f]{32}\.tmp(?:\.[A-Za-z0-9]{8})?")
 
 
 class InvalidLogicalPath(ValueError):

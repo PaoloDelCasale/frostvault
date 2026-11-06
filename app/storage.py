@@ -33,6 +33,8 @@ from .owner import owner_user_id
 from .catalog import ArchiveCatalog
 from .database import db
 from .services import source_layout
+from .services import local_observation
+from .services.restore_ghosts import retire_absent_restore_ghosts
 from .services import vault_relocation
 from .services.catalog_event_hub import publish_committed_event
 from .services.catalog_events import record_catalog_revision
@@ -502,6 +504,8 @@ def _scan_tree(
     finalize_missing: bool = True,
     scan_started_at: str | None = None,
     scan_journal: dict[str, Any] | None = None,
+    subtree: Path | None = None,
+    invalidate_content: bool = False,
 ) -> tuple[int, str | None]:
     """Observe a root with short catalog-write transactions.
 
@@ -558,6 +562,18 @@ def _scan_tree(
             entries=pending,
             seen_at=scan_id,
         )
+        if invalidate_content:
+            # Directory replacement can preserve size/mtime. A watcher
+            # subtree observation is an event, not an unchanged periodic scan.
+            connection.execute("""
+                UPDATE local_copies SET content_observed_at=%s,
+                    plaintext_sha256=NULL, matched_archive_version_id=NULL
+                WHERE vault_file_id IN (
+                    SELECT vf.id FROM vault_files vf JOIN file_paths fp
+                      ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+                    WHERE vf.vault_id=%s AND fp.path=ANY(%s)
+                )
+            """, (scan_id, vault_id, [entry[0] for entry in pending]))
         count += len(pending)
         pending.clear()
         if _persisted_scan(vault):
@@ -577,7 +593,7 @@ def _scan_tree(
             connection, event="file_unreadable", vault_id=vault_id, path=relative,
         )
 
-    for entry in walk_entries(root, on_error=failed):
+    for entry in walk_entries(subtree or root, on_error=failed):
         if is_restore_temporary_name(entry.name):
             continue
         try:
@@ -649,6 +665,7 @@ def scan_tree(
     if not root.exists():
         raise RuntimeError(f"Folder is not available in the container: {root}")
     if _connection is not None:
+        retire_absent_restore_ghosts(_connection, int(vault["id"]), root, now_iso())
         count, _completed_alias = _scan_tree(
             _connection,
             vault,
@@ -661,6 +678,7 @@ def scan_tree(
         )
         return count
     with db() as connection:
+        retire_absent_restore_ghosts(connection, int(vault["id"]), root, now_iso())
         count, completed_alias = _scan_tree(
             connection,
             vault,
@@ -684,11 +702,18 @@ def apply_filesystem_changes(
     with status_lock:
         lock = scan_locks.setdefault(vault_id, threading.Lock())
     with lock:
-        return _apply_filesystem_changes(vault, changes)
+        journal: dict[str, Any] = {}
+        event_id = now_iso()
+        try:
+            return _apply_filesystem_changes(vault, changes, event_id=event_id, journal=journal)
+        except Exception:
+            _rollback_local_scan_journal(vault_id, event_id, journal)
+            raise
 
 
 def _apply_filesystem_changes(
-    vault: dict[str, Any], changes: set[tuple[Change, str]]
+    vault: dict[str, Any], changes: set[tuple[Change, str]],
+    *, event_id: str | None = None, journal: dict[str, Any] | None = None,
 ) -> int:
     """Apply filesystem watcher events directly to the local catalog."""
     if vault_relocation.local_work_suspended(vault):
@@ -717,17 +742,54 @@ def _apply_filesystem_changes(
     if not root.is_dir():
         raise RuntimeError(f"Folder is not available in the container: {root}")
     changed = 0
-    event_id = now_iso()
+    event_id = event_id or now_iso()
     published: dict[str, Any] | None = None
+    subtrees: list[Path] = []
+    paths: list[Path] = []
+    for value in {value for _, value in changes}:
+        entry = Path(value)
+        try:
+            relative = entry.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if relative == "." or ".." in entry.parts or is_restore_temporary_name(entry.name):
+            continue
+        parent = entry.parent.resolve()
+        if parent == root or root in parent.parents:
+            # Echo validation can hash a large recovered/salvaged copy. Keep
+            # that work outside every catalog write transaction.
+            if not local_observation.consume(int(vault["id"]), relative, entry):
+                paths.append(entry)
+    # Directory transactions commit in bounded batches. Process them before
+    # the atomic single-file/deletion batch, never committing a partial direct
+    # observation as an accidental side effect of a later subtree flush.
+    paths.sort(key=lambda entry: (not (entry.is_dir() and not entry.is_symlink()), str(entry)))
     with db() as connection:
         catalog = ArchiveCatalog(connection)
-        for _, path_value in sorted(changes, key=lambda item: item[1]):
-            entry = Path(path_value)
+        # A rename emits one directory event, not an event for each child.
+        # Coalesce overlapping prefixes and stream bounded scan-write batches;
+        # never finalize missing copies outside the affected subtree.
+        for entry in paths:
             try:
                 relative = entry.relative_to(root).as_posix()
             except ValueError:
                 continue
-            if not relative or is_restore_temporary_name(entry.name):
+            if relative == "." or not relative or is_restore_temporary_name(entry.name):
+                continue
+            if any(parent == entry or parent in entry.parents for parent in subtrees):
+                continue
+            # Native events are lexical paths. Do not follow a substituted
+            # parent symlink outside the enrolled root.
+            parent = entry.parent.resolve()
+            if parent != root and root not in parent.parents:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                changed += _scan_tree(
+                    connection, vault, event_id, root=root, subtree=entry,
+                    allow_chunk_commits=True, finalize_missing=False,
+                    scan_journal=journal, invalidate_content=True,
+                )[0]
+                subtrees.append(entry)
                 continue
 
             try:
@@ -2247,7 +2309,7 @@ def cleanup_abandoned_restore_files() -> int:
     with db() as connection:
         vaults = connection.execute(
             """
-            SELECT source_root FROM vaults
+            SELECT * FROM vaults
             WHERE enabled=TRUE AND decommission_state='active'
             """
         ).fetchall()
@@ -2259,6 +2321,15 @@ def cleanup_abandoned_restore_files() -> int:
         root = Path(vault["source_root"]).resolve()
         if not root.is_dir():
             continue
+        try:
+            _validate_enrolled_scan_root(vault)
+        except RuntimeError:
+            # Never repair metadata using the absence of paths in a replaced
+            # root. The existing residue cleanup remains separately scoped.
+            pass
+        else:
+            with db() as connection:
+                retire_absent_restore_ghosts(connection, int(vault["id"]), root, now_iso())
         try:
             entries = root.rglob("*")
             for entry in entries:
@@ -4173,6 +4244,32 @@ def _checked_local_release_target(
 
 
 def process_free_space(job: dict[str, Any]) -> None:
+    # The claim's temporary absence must never become a watcher/full-scan
+    # observation. Hashing holds no DB write transaction, only the same
+    # per-Vault filesystem lock used by scans and watcher batches.
+    with scan_lock_for_vault(int(job["vault_id"])):
+        _process_free_space(job)
+
+
+def _repair_failed_local_release(job: dict[str, Any], target: dict[str, Any], local_path: Path) -> None:
+    """Publish the salvaged bytes immediately, including changed-content cases."""
+    digest, info = hash_stable_regular_file(local_path)
+    with db() as connection:
+        catalog = ArchiveCatalog(connection)
+        file_id = catalog.observe_local_copy(
+            vault_id=job["vault_id"], path=job["path"], file_type="regular",
+            size=info.st_size, mtime_ns=info.st_mtime_ns, observed_at=now_iso(),
+        )
+        if digest != target["local_sha256"]:
+            connection.execute("UPDATE local_copies SET content_observed_at=%s WHERE vault_file_id=%s", (now_iso(), file_id))
+        catalog.set_local_fingerprint(
+            vault_id=job["vault_id"], path=job["path"], plaintext_sha256=digest,
+            matched_archive_version_id=(target["archive_version_id"] if digest == target["version_sha256"] else None),
+        )
+    local_observation.remember(job["vault_id"], job["path"], info, digest)
+
+
+def _process_free_space(job: dict[str, Any]) -> None:
     ensure_job_active(job["id"], "Freeing local space stopped")
     validate_cloud_vault(job, notify=False)
     target = _checked_local_release_target(job)
@@ -4235,6 +4332,7 @@ def process_free_space(job: dict[str, Any]) -> None:
             raise RuntimeError(
                 f"Cleanup stopped; original content was preserved at {claimed_path}"
             ) from exc
+        _repair_failed_local_release(job, target, local_path)
         raise
 
     ensure_job_active(job["id"], "Freeing local space claim was lost")
@@ -4683,47 +4781,42 @@ def process_recover(job: dict[str, Any]) -> None:
             raise RuntimeError(
                 "Recovered plaintext digest does not match the Archive Version"
             )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if os.path.lexists(destination):
-            raise RuntimeError(
-                "A local copy already exists at the recovery destination"
-            )
-        temporary.replace(destination)
+        with scan_lock_for_vault(int(job["vault_id"])):
+            # Transfers/hash stay outside the filesystem critical section.
+            # Publish the atomic rename and its verified observation together
+            # so a watcher cannot unprotect our own just-recovered copy.
+            ensure_job_active(job["id"], "Recovery claim was lost")
+            if not _local_stat_unchanged(temporary, recovered_stat):
+                raise RuntimeError("Recovered plaintext changed before publication")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if os.path.lexists(destination):
+                raise RuntimeError(
+                    "A local copy already exists at the recovery destination"
+                )
+            temporary.replace(destination)
+            published_stat = destination.lstat()
+            with db() as connection:
+                ensure_job_claim_owned_in_transaction(connection, job, "Recovery claim was lost")
+                catalog = ArchiveCatalog(connection)
+                recovered_at = now_iso()
+                catalog.observe_local_copy(
+                    vault_id=job["vault_id"], path=job["path"], file_type="regular",
+                    size=recovered_stat.st_size, mtime_ns=recovered_stat.st_mtime_ns,
+                    observed_at=recovered_at, recovered_at=recovered_at,
+                )
+                catalog.set_local_fingerprint(
+                    vault_id=job["vault_id"], path=job["path"],
+                    plaintext_sha256=expected_digest, matched_archive_version_id=archive_version_id,
+                )
+                if target.get("restore_state") or storage_class_requires_restore(head_class):
+                    catalog.update_restore_state(
+                        archive_version_id,
+                        state="available" if storage_class_requires_restore(head_class) else None,
+                        expiry=restore_expiry, checked_at=now_iso(), storage_class=head_class,
+                    )
+            local_observation.remember(job["vault_id"], job["path"], published_stat, expected_digest)
     finally:
         temporary.unlink(missing_ok=True)
-
-    ensure_job_active(job["id"], "Recovery claim was lost")
-    with db() as connection:
-        ensure_job_claim_owned_in_transaction(
-            connection,
-            job,
-            "Recovery claim was lost",
-        )
-        catalog = ArchiveCatalog(connection)
-        recovered_at = now_iso()
-        catalog.observe_local_copy(
-            vault_id=job["vault_id"],
-            path=job["path"],
-            file_type="regular",
-            size=recovered_stat.st_size,
-            mtime_ns=recovered_stat.st_mtime_ns,
-            observed_at=recovered_at,
-            recovered_at=recovered_at,
-        )
-        catalog.set_local_fingerprint(
-            vault_id=job["vault_id"],
-            path=job["path"],
-            plaintext_sha256=expected_digest,
-            matched_archive_version_id=archive_version_id,
-        )
-        if target.get("restore_state") or storage_class_requires_restore(head_class):
-            catalog.update_restore_state(
-                archive_version_id,
-                state="available" if storage_class_requires_restore(head_class) else None,
-                expiry=restore_expiry,
-                checked_at=now_iso(),
-                storage_class=head_class,
-            )
     set_job_progress(job["id"], int(job.get("total_bytes") or recovered_stat.st_size))
     set_job(job["id"], "completed", f"Recovered to {destination}")
 
