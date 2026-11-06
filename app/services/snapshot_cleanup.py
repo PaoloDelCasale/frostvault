@@ -79,10 +79,10 @@ def _keeper(connection: Any, job: dict[str, Any], keeper_id: str, provider: str 
     newer = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND version_number>%s AND availability='available'", (job["vault_file_id"], row["version_number"])).fetchall()
     if any(_has_lineage(connection, item, job["vault_file_id"], bucket=job["s3_bucket"], provider=provider) for item in newer):
         # A stale recovery of A is never authority to purge a later app attempt B.
-        raise UploadBlocked("identity_changed")
+        raise UploadBlocked("target_superseded")
     latest = connection.execute("SELECT id FROM archive_versions WHERE vault_file_id=%s AND integrity='verified' AND availability='available' ORDER BY version_number DESC LIMIT 1", (job["vault_file_id"],)).fetchone()
     if not latest or str(latest["id"]) != str(keeper_id):
-        raise UploadBlocked("identity_changed")
+        raise UploadBlocked("target_superseded")
     return row
 
 

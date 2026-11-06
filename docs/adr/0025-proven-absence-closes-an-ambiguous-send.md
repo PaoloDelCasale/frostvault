@@ -35,10 +35,18 @@ landed, all of:
   operation (the target gate already enforces this).
 
 Any read failure, unsupported or unconfirmed multipart listing, delta, marker or
-receipt keeps the block. A refused listing (`AccessDenied` on `ListBucketVersions`
-or `ListBucketMultipartUploads`) is a per-file `list_permission_denied` block,
-never an installation readiness failure; credential errors still suspend through
-the readiness gate, and network or 5xx errors retry the Job.
+receipt keeps the block. A refused listing (any HTTP 403 on `ListBucketVersions`
+or `ListBucketMultipartUploads` that is not a credential error) first runs a
+**fresh bucket readiness probe**, the gate's own check:
+
+- probe fails: the refusal is installation-wide (permissions revoked), so the
+  error goes to the readiness gate and the Job stays queued, exactly as on any
+  other S3 call, instead of failing in mass until the gate notices;
+- probe passes: it is a per-file `list_permission_denied` block that never
+  touches the gate (the probe does not exercise these two actions, so reopening
+  the gate would only re-claim the Job forever).
+
+Credential errors always go to the gate, and network or 5xx errors retry the Job.
 
 The outcome is journaled as the allowlisted immutable fact
 `NoWriteOperation: ProvenAbsent` and `send_started` is cleared, the same journal
@@ -51,9 +59,18 @@ no provider obligation: it neither blocks nor binds later uploads and is re-pinn
 or settled when the next upload prepares. Content that changed meanwhile fails the
 Job as a source change, never as an identity change.
 
-An explicit reconcile does not bypass paused protection: a proven absence on a
-path with paused automatic protection stays blocked as `protection_paused` and
-sends nothing until protection is resumed.
+A reconcile-only attempt (remediation or explicit reconcile) does not bypass
+paused protection: a proven absence on a path with paused automatic protection
+stays blocked as `protection_paused` and sends nothing until protection is
+resumed. An ordinary upload, a manual one included, is the user's own send and is
+never gated by it.
+
+An episode whose re-armed send never started (the attempt failed, was cancelled
+or the content changed before `send_started`) is *void*: it admits no Job, never
+swallows ordinary uploads, never offers Resume, and is excluded from the bounded
+retry and sweep queues so it cannot starve live episodes. The ordinary upload that
+later protects the file resolves it, and its original failure notifications, once
+that upload has completed with its exact cleanup postcondition.
 
 ## Assumptions
 
@@ -69,12 +86,13 @@ sends nothing until protection is resumed.
 ## Consequences
 
 - Residual risk, accepted: a request from the dead sender that lands after the
-  absence reads would create a second identical version carrying the same token.
-  That is never data loss: the next reconcile sees two token matches and blocks
-  with `ambiguous_receipt`, and cleanup can report `inventory_changed` or
-  `orphan_different` (and a transient `identity_changed`) for the unknown
-  version. That version is never in the set cleanup may delete, so nothing is
-  removed on its account.
+  absence reads creates a second version V1 with the pinned token. It is never
+  data loss, because V1 is not in the set cleanup may delete. What it can cause
+  depends on who sends next: a retry that reuses the token meets two token matches
+  and blocks with `ambiguous_receipt`; but `prepare` may renew the token of an
+  unsent intent (new snapshot, inventory), in which case V1 is just an unknown
+  version and cleanup reports `inventory_changed` or `orphan_different`, or a
+  transient `identity_changed`, instead.
 - Losing the PostgreSQL connection is retryable (`database_connection`), bounded
   by the upload retry budget. This is safe only because the send is journaled: a
   retry reconciles, or sends after proven absence, never repeating a blind PUT.

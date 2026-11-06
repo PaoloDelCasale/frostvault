@@ -219,10 +219,15 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
         self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
         resumed = max(j["id"] for j in self.jobs())
-        with patch.object(cloud_preflight_gate, "invalidate") as invalidate, patched:
+        with patch.object(cloud_preflight_gate, "invalidate") as invalidate, patched, self.bucket_probe(True):
             self.run_job(resumed)
         invalidate.assert_not_called()
         return resumed
+
+    def bucket_probe(self, ok):
+        from app.services.s3_preflight import PreflightResult
+        return patch("app.services.s3_preflight.check_bucket_readiness",
+                     return_value=PreflightResult("bucket", "eu-west-1", ok, ()))
 
     def assert_listing_denied_blocks_only_the_file(self, resumed):
         row = self.row(resumed)
@@ -244,6 +249,27 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
     def test_access_denied_on_version_listing_blocks_the_file_and_never_touches_the_gate(self):
         resumed = self.blocked_resume(patch.object(self.provider, "list_object_versions", side_effect=self.denied()))
         self.assert_listing_denied_blocks_only_the_file(resumed)
+
+    def test_any_403_on_a_listing_blocks_the_file_when_the_bucket_is_still_ready(self):
+        resumed = self.blocked_resume(patch.object(self.provider, "list_object_versions", side_effect=self.denied("Forbidden", 403)))
+        self.assert_listing_denied_blocks_only_the_file(resumed)
+
+    def test_revoked_permissions_suspend_through_the_gate_instead_of_failing_the_job(self):
+        # Fresh probe fails: the refusal is installation-wide, so the Job stays
+        # queued behind the readiness gate and does not fail in mass.
+        from app.services import cloud_preflight_gate
+        self.stable_content()
+        self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
+        self.http_client().post("/api/upload/retry-failed?vault_id=2")
+        resumed = max(j["id"] for j in self.jobs())
+        for code in ("AccessDenied", "Forbidden"):
+            with self.subTest(code=code), patch.object(cloud_preflight_gate, "invalidate") as invalidate, \
+                    patch.object(self.provider, "list_object_versions", side_effect=self.denied(code, 403)), self.bucket_probe(False):
+                self.run_job(resumed)
+                invalidate.assert_called_once()
+                self.assertNotEqual(self.row(resumed)["status"], "failed", self.row(resumed)["message"])
+                with self.db() as connection:
+                    self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
 
     def test_credential_errors_on_a_listing_still_use_the_readiness_gate(self):
         from app.services import cloud_preflight_gate
@@ -302,8 +328,39 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT count(*) n FROM upload_intents WHERE NOT settled").fetchone()["n"], 0)
 
     def test_rearmed_intent_of_a_failed_job_does_not_block_the_next_upload(self):
-        self.rearmed_then_stopped()
+        resumed = self.rearmed_then_stopped()
+        original = min(j["id"] for j in self.jobs())
+        episode = self.episode()
+        self.assertEqual(episode["state"], "blocked")
         self.assert_next_upload_is_not_blocked()
+        # The unlinked ordinary upload protected the file: the void episode must not
+        # stay open with the original and remediation failures still reported.
+        completed = max(j["id"] for j in self.jobs())
+        with self.db() as connection:
+            row = connection.execute("SELECT * FROM upload_remediations").fetchone()
+            self.assertEqual((row["state"], row["phase"], row["reason"]), ("resolved", "completed", None))
+            self.assertEqual(row["resolved_by_job_id"], completed)
+            self.assertIsNotNone(row["cleanup_inventory_job_id"])
+            notifications.reconcile_problem_states(connection)
+            for job in (original, resumed):
+                failed = connection.execute("SELECT problem_status FROM notifications WHERE event='job_failed' AND job_id=%s", (job,)).fetchone()
+                self.assertEqual(failed["problem_status"], "resolved", job)
+        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 0})
+
+    def test_a_void_episode_never_offers_resume_and_never_occupies_a_retry_slot(self):
+        self.rearmed_then_stopped()
+        self.assertEqual(self.episode()["state"], "blocked")
+        with self.db() as connection:
+            connection.execute("INSERT INTO snapshot_reconciliation_blocks(vault_file_id,reason,updated_at) SELECT vault_file_id,'identity_changed','2026-01-01T00:00:00+00:00' FROM upload_remediations")
+            state = provenance.describe(connection, vault_id=2, path="report.txt")
+            self.assertTrue(state["pending"])
+            self.assertFalse(state["can_resume"], state)
+            vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
+            with patch.object(remediation, "TARGET_BATCH", 1), patch.object(remediation, "admit") as admit:
+                self.assertEqual(remediation.retry_vault(connection, vault, 1, "2026-01-02T00:00:00+00:00"), 0)
+                admit.assert_not_called()
+            sweep_rows = connection.execute(f"SELECT count(*) n FROM upload_remediations r WHERE NOT {remediation.VOID_SQL}").fetchone()["n"]
+            self.assertEqual(sweep_rows, 0)
 
     def test_rearmed_intent_of_a_cancelled_job_does_not_block_the_next_upload(self):
         resumed = self.rearmed_then_stopped()
@@ -390,13 +447,41 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
             self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
         self.assertNotIn("upload_reconciliation", [n["event"] for n in self.notification_events()])
 
+    def set_auto_upload(self, enabled, **changes):
+        from dataclasses import replace
+        from app.services import operation_policies
+        with self.db() as connection:
+            policy = operation_policies.get_policy(connection, 2)
+            operation_policies.set_policy(connection, 2, replace(policy, auto_upload=enabled, **changes))
+
+    def test_a_manual_upload_is_not_stopped_by_paused_protection_after_a_network_retry(self):
+        # Paused automatic protection gates only reconcile-only attempts; a user's
+        # explicit upload that lost its database is reconciled and sent.
+        job = self.fail_before_provider_request(psycopg.OperationalError("connection is bad: Network is unreachable"))
+        self.assertEqual(self.row(job)["status"], "retrying", self.row(job)["message"])
+        self.assertEqual(self.row(job)["origin"], "manual")
+        self.set_auto_upload(False)
+        self.retry_is_due(job)
+        self.run_job(job)
+        self.assert_keeper(job)
+        self.assertEqual(self.provider.puts, 1)
+
     def test_a_proven_absence_never_starts_an_upload_while_protection_is_paused(self):
         self.stable_content()
         self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
         self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
         resumed = max(j["id"] for j in self.jobs())
-        with patch("app.storage._upload_protection_paused", return_value=True):
-            self.run_job(resumed)
+        self.assertTrue(self.row(resumed)["upload_reconcile_only"])
+        # Real policy: protection is paused after the attempt was claimed, while
+        # the absence proof reads the bucket.
+        paused = []
+        def pause(stage, **kwargs):
+            if stage == "list" and not paused:
+                paused.append(True)
+                self.set_auto_upload(False)
+        self.provider.hook = pause
+        self.run_job(resumed)
+        self.provider.hook = lambda *args, **kwargs: None
         row = self.row(resumed)
         self.assertEqual(row["status"], "failed")
         self.assertIn("protection_paused", row["message"])
@@ -405,11 +490,58 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assertTrue(intent["send_started"])
         self.assertEqual(intent["blocked_reason"], "protection_paused")
         # Once protection is resumed the same explicit reconcile proves absence and sends.
+        self.set_auto_upload(True)
         self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
         again = max(j["id"] for j in self.jobs())
         self.run_job(again)
         self.assert_keeper(again)
         self.assertEqual(self.provider.puts, 1)
+
+    def job_with_vault(self, job):
+        with self.db() as connection:
+            return connection.execute("SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s", (job,)).fetchone()
+
+    def test_a_job_that_is_already_over_names_its_own_state_and_leaves_no_block(self):
+        for status, reason in (("cancelled", "owner_cancelled"), ("failed", "already_resolved"), ("completed", "already_resolved")):
+            with self.subTest(status=status):
+                job = self.queue_fresh()
+                with self.db() as connection:
+                    connection.execute("UPDATE jobs SET status=%s WHERE id=%s", (status, job))
+                current = self.job_with_vault(job)
+                with self.db() as connection, self.assertRaises(provenance.UploadBlocked) as raised:
+                    provenance.target(connection, current, key="docs/report.txt", provider="p")
+                self.assertEqual(raised.exception.reason, reason)
+                storage._record_upload_reconciliation_block(current, reason)
+                with self.db() as connection:
+                    self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+                    self.assertIsNone(connection.execute("SELECT 1 FROM notifications WHERE event='upload_reconciliation'").fetchone())
+
+    def test_resuming_an_episode_that_is_already_resolved_says_already_resolved(self):
+        _, resumed = self.remediation_job()
+        self.run_job(resumed)
+        self.assert_keeper(resumed)
+        with self.db() as connection:
+            episode = connection.execute("SELECT id FROM upload_remediations").fetchone()["id"]
+            vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
+            for remediation_id, reason in ((episode, "already_resolved"), ("no-such-episode", "proof_unavailable")):
+                with self.assertRaises(provenance.UploadBlocked) as raised:
+                    remediation.schedule_resume(connection, vault=vault, path="report.txt", user_id=1,
+                                                timestamp="2026-01-01T00:00:00+00:00", remediation_id=remediation_id)
+                self.assertEqual(raised.exception.reason, reason)
+
+    def test_a_superseded_keeper_is_reported_as_target_superseded_not_identity_changed(self):
+        from app.services import snapshot_cleanup
+        job = self.queue()
+        self.run_job(job)
+        keeper = self.assert_keeper(job)
+        with self.db() as connection:
+            newer = dict(connection.execute("SELECT * FROM archive_versions WHERE id=%s", (keeper["id"],)).fetchone())
+            newer.update(id="newer-version", version_number=keeper["version_number"] + 1, provider_version_id="newer-provider-version")
+            columns = list(newer)
+            connection.execute(f"INSERT INTO archive_versions({','.join(columns)}) VALUES ({','.join(['%s'] * len(columns))})", [newer[c] for c in columns])
+            with self.assertRaises(provenance.UploadBlocked) as raised:
+                snapshot_cleanup._keeper(connection, self.job_with_vault(job), keeper["id"])
+        self.assertEqual(raised.exception.reason, "target_superseded")
 
     def test_an_observed_root_replacement_still_fails_as_identity_changed(self):
         for name, patched in (("mismatch", {"return_value": "another-root"}),

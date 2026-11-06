@@ -2485,6 +2485,11 @@ def _record_upload_reconciliation_block(job: dict[str, Any], reason: str) -> Non
     from .services import upload_provenance as provenance
     if reason in provenance.WAIT_REASONS:
         return  # Self-resolving: the Job waits queued, no durable block or notification.
+    if reason in provenance.TERMINAL_JOB_REASONS:
+        with db() as connection:
+            row = connection.execute("SELECT status FROM jobs WHERE id=%s", (job["id"],)).fetchone()
+        if row and row["status"] in JOB_TERMINAL_STATUSES:
+            return  # The Job is already over: nothing about the file is blocked.
     @retry_database_unit
     def persist() -> None:
         with owned_connection(db()) as connection:
@@ -3579,9 +3584,11 @@ def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], cli
             # Complete S3 reads prove the journaled send never landed (#484):
             # close the intent as a definitive no-write outcome and let this
             # Job send again from its immutable snapshot, no manual unblock.
-            # An explicit reconcile never starts an upload on a path whose
-            # automatic protection is paused: stay blocked until it is resumed.
-            if _upload_protection_paused(job):
+            # A reconcile-only attempt (remediation / explicit reconcile) never
+            # starts an upload on a path whose automatic protection is paused:
+            # stay blocked until it is resumed. An ordinary upload (a manual one
+            # included) is the user's own explicit send and is never gated here.
+            if job.get("upload_reconcile_only") and _upload_protection_paused(job):
                 raise provenance.UploadBlocked("protection_paused") from None
             _rearm_after_proven_absence(job, intent)
             return

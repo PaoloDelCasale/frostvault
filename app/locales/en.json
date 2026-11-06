@@ -178,6 +178,7 @@
   "reconciliation.reason.active_operation": "Another operation owns this file. Reconciliation waits without creating competing work.",
   "reconciliation.reason.pending_deletion": "Deletion is already planned for this file. Reconciliation does not alter that consent or its targets.",
   "reconciliation.reason.cloud_only_conflict": "There is a Cloud-only Conflict. Resolve it through the dedicated workflow before reconciliation.",
+  "reconciliation.reason.already_resolved": "Nothing to reconcile: this upload has already been resolved.",
   "reconciliation.reason.owner_cancelled": "The Owner cancelled reconciliation. This target remains excluded from automation.",
   "reconciliation.reason.transient": "Temporary failure. The next attempt uses the same exact version and durable budget.",
   "reconciliation.reason.operation_failed": "Reconciliation failed and is blocked. Keep copies, correct the cause and retry exact reconciliation.",

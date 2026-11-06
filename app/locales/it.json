@@ -178,6 +178,7 @@
   "reconciliation.reason.active_operation": "Un'altra operazione possiede il file. La ripresa attende senza creare un lavoro concorrente.",
   "reconciliation.reason.pending_deletion": "Eliminazione già pianificata per questo file. La ripresa non modifica quel consenso né i suoi target.",
   "reconciliation.reason.cloud_only_conflict": "Conflitto con la copia solo cloud. Risolvi il conflitto tramite il flusso dedicato prima della ripresa.",
+  "reconciliation.reason.already_resolved": "Niente da riconciliare: questo upload è già stato risolto.",
   "reconciliation.reason.owner_cancelled": "Ripresa annullata dall'Owner. Il target rimane escluso dagli automatismi.",
   "reconciliation.reason.transient": "Errore temporaneo. Il prossimo tentativo usa la stessa versione esatta e il budget durevole.",
   "reconciliation.reason.operation_failed": "Ripresa fallita e bloccata. Conserva le copie, correggi la causa e riprova la riconciliazione esatta.",

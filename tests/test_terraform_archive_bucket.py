@@ -53,6 +53,13 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
         self.assertIn("s3:GetBucketPublicAccessBlock", raw)
         self.assertNotIn("s3:PutBucketPublicAccessBlock", raw)
         self.assertNotIn("s3:PutLifecycleConfiguration", raw)
+        # CI exercises exact upload reconciliation, so it needs both list actions
+        # (each separate from s3:ListBucket), scoped to the CI prefix.
+        statements = json.loads(raw)["Statement"]
+        scoped = next(item for item in statements if item["Sid"] == "ListOnlyCiPrefix")
+        self.assertIn("s3:ListBucketVersions", scoped["Action"])
+        self.assertIn("s3:ListBucketMultipartUploads", scoped["Action"])
+        self.assertIn("s3:prefix", scoped["Condition"]["StringLike"])
         # No unbounded object ARN.
         self.assertNotIn(
             '"Resource": "arn:aws:s3:::${archive_ci_bucket_name}/*"',

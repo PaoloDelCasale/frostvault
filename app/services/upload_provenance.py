@@ -22,6 +22,9 @@ ABSENT_OPERATION = 'ProvenAbsent'
 # Conditions that resolve by themselves: the Job waits queued, nothing is blocked
 # or notified, and it restarts once the condition clears.
 WAIT_REASONS = frozenset({"vault_suspended"})
+# Reasons that, raised for a Job that is itself already terminal, describe that
+# Job and not the file: they never leave a durable block or a notification.
+TERMINAL_JOB_REASONS = frozenset({"owner_cancelled", "already_resolved"})
 # Refusals journaled by the SDK seam, plus the outcome proven by complete S3 reads.
 NO_WRITE_OPERATIONS = frozenset({'PutObject','CreateMultipartUpload','UploadPart','CompleteMultipartUpload',ABSENT_OPERATION})
 REMEDIES = {
@@ -85,23 +88,31 @@ def provider_identity(client: Any) -> str:
 
 
 def inventory(client: Any, bucket: str, key: str) -> dict[str, list[str]]:
-    versions, markers = _guarded_listing(lambda: _object_version_entries(client, bucket=bucket, object_key=key))
+    versions, markers = _guarded_listing(lambda: _object_version_entries(client, bucket=bucket, object_key=key), bucket)
     return {"versions": sorted(versions), "markers": sorted(markers)}
 
 
-_LIST_DENIED_CODES = frozenset({"AccessDenied", "AccessDeniedException"})
+_CREDENTIAL_CODES = frozenset({
+    "InvalidAccessKeyId", "SignatureDoesNotMatch", "ExpiredToken", "InvalidToken",
+    "TokenRefreshRequired", "InvalidClientTokenId", "UnrecognizedClientException",
+})
 
 
-def _guarded_listing(call: Any) -> Any:
+def _guarded_listing(call: Any, bucket: str) -> Any:
     """Run a provider LIST and name why it failed.
 
-    A refused listing is a permission gap of this file's reconciliation, never an
-    installation readiness failure: the readiness probe does not exercise it, so
-    letting the error reach the worker's readiness branch would reopen the gate
-    and re-claim the Job forever (#484). Credential, network and 5xx failures say
-    nothing about the inventory and propagate to be suspended/retried; anything
-    else is an unconfirmed inventory. The block is raised outside the ``except``
-    so it carries no chained provider error that would be read as readiness.
+    A refused listing (any HTTP 403 that is not a credential error) is a
+    permission gap of this file's reconciliation, but only when the installation
+    itself is still ready: the readiness probe does not exercise these actions, so
+    letting the error reach the worker's readiness branch would reopen the gate and
+    re-claim the Job forever (#484). A fresh bucket probe tells the two apart:
+    probe fails -> the refusal is installation-wide, so it propagates to the
+    readiness gate (the Job stays queued); probe passes -> a per-file
+    ``list_permission_denied`` block that never touches the gate. Credential,
+    network and 5xx failures say nothing about the inventory and propagate to be
+    suspended/retried; anything else is an unconfirmed inventory. The block is
+    raised outside the ``except`` so it carries no chained provider error that
+    would be read as readiness.
     """
     reason: str | None
     try:
@@ -109,18 +120,33 @@ def _guarded_listing(call: Any) -> Any:
     except UploadBlocked:
         raise
     except Exception as exc:
-        reason = _listing_block_reason(exc)
+        reason = _listing_block_reason(exc, bucket)
         if reason is None:
             raise
     raise UploadBlocked(reason)
 
 
-def _listing_block_reason(error: BaseException) -> str | None:
+def _bucket_still_ready(bucket: str) -> bool:
+    """Fresh, bounded readiness probe of the bucket (the gate's own check)."""
+    from .. import storage
+    from . import s3_preflight
+    try:
+        return bool(s3_preflight.check_bucket_readiness(
+            bucket, region=storage.settings.aws_region, client=storage.s3_client(preflight=True)).ok)
+    except Exception:
+        return False
+
+
+def _listing_block_reason(error: BaseException, bucket: str) -> str | None:
     from .database_retry import exception_chain
     from botocore.exceptions import ClientError
-    if any(isinstance(item, ClientError) and item.response.get("Error", {}).get("Code") in _LIST_DENIED_CODES
-           for item in exception_chain(error)):
-        return "list_permission_denied"
+    refusals = [item for item in exception_chain(error) if isinstance(item, ClientError)
+                and (item.response.get("Error", {}).get("Code") in {"AccessDenied", "AccessDeniedException"}
+                     or item.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 403)]
+    if refusals:
+        if any(item.response.get("Error", {}).get("Code") in _CREDENTIAL_CODES for item in refusals):
+            return None
+        return "list_permission_denied" if _bucket_still_ready(bucket) else None
     return None if _is_provider_unreachable(error) else "inventory_changed"
 
 
@@ -143,8 +169,11 @@ def target(connection: Any, job: dict[str, Any], *, key: str, provider: str) -> 
     require_job(connection, job)
     row = connection.execute("SELECT vf.status,fp.path,fp.valid_from FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL WHERE vf.id=%s AND vf.vault_id=%s", (job["vault_file_id"], job["vault_id"])).fetchone()
     current = connection.execute("SELECT status,vault_file_id,path,claim_token FROM jobs WHERE id=%s", (job["id"],)).fetchone()
+    if current and current["status"] == "cancelled":
+        raise UploadBlocked("owner_cancelled")
+    if current and current["status"] in {"failed", "completed"}:
+        raise UploadBlocked("already_resolved")
     if (not vault or not row or row["status"] != "active" or not current
-            or current["status"] in {"cancelled", "failed", "completed"}
             or current["vault_file_id"] != job["vault_file_id"] or current["path"] != job["path"]
             or row["path"] != job["path"] or vault["source_root"] != job["source_root"]
             or vault["s3_bucket"] != job["s3_bucket"] or vault["s3_prefix"] != job["s3_prefix"]
@@ -375,7 +404,7 @@ def _incomplete_uploads(client: Any, bucket: str, key: str) -> list[str]:
     found: list[str] = []
     seen: set[tuple[str, str]] = set()
     while True:
-        page = _guarded_listing(lambda: lister(**kwargs))
+        page = _guarded_listing(lambda: lister(**kwargs), bucket)
         if not isinstance(page, dict) or page.get("IsTruncated") not in (True, False) or "IsTruncated" not in page:
             raise UploadBlocked("ambiguous_send")
         found += [str(item.get("UploadId") or "?") for item in page.get("Uploads") or [] if item.get("Key") == key]
@@ -477,6 +506,11 @@ def _legacy_materialized(connection: Any, file_id: str) -> dict[str, Any] | None
     return rows[0]
 
 
+def _only_void_episodes(connection: Any, file_id: str) -> bool:
+    rows = connection.execute("SELECT intent_id FROM upload_remediations WHERE vault_file_id=%s AND state NOT IN ('resolved','cancelled') LIMIT 8", (file_id,)).fetchall()
+    return bool(rows) and all(proven_absent(connection, r["intent_id"]) and unsent(connection, r["intent_id"]) for r in rows)
+
+
 def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
     row = connection.execute("SELECT vf.id FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL WHERE vf.vault_id=%s AND fp.path=%s", (vault_id, path)).fetchone()
     empty = {"pending": False, "can_resume": False, "reason": None, "remedy": None}
@@ -496,7 +530,10 @@ def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
     reason = (block["reason"] if block else intents[0]["blocked_reason"] if intents else legacy_reason or "proof_unavailable") or "ambiguous_send"
     busy = connection.execute("SELECT 1 FROM jobs WHERE vault_file_id=%s AND status NOT IN ('failed','cancelled','completed') LIMIT 1", (file_id,)).fetchone()
     cancelled = connection.execute("SELECT 1 FROM jobs j LEFT JOIN upload_intent_jobs b ON b.job_id=j.id WHERE j.vault_file_id=%s AND j.status='cancelled' AND (j.upload_reconcile_only OR b.intent_id IS NOT NULL) LIMIT 1", (file_id,)).fetchone()
-    return {"pending": True, "can_resume": not busy and not cancelled and not legacy_reason and len(intents) < 2,
+    # An episode whose re-armed send never started has nothing left to reconcile:
+    # offering Resume would only end in a 409 (the ordinary upload retries it).
+    void_only = not intents and _only_void_episodes(connection, file_id)
+    return {"pending": True, "can_resume": not busy and not cancelled and not legacy_reason and len(intents) < 2 and not void_only,
             "reason": reason, "remedy": REMEDIES.get(reason, REMEDIES["proof_unavailable"])}
 
 
