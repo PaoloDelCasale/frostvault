@@ -80,4 +80,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD ["python", "-m", "app.readiness_probe"]
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Notify SSE/workers before uvicorn drains HTTP (5s); workers drain for 20s.
+# The process-wide 30s failsafe also covers non-cooperative executor joins.
+CMD ["python", "-m", "app.server", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-graceful-shutdown", "5"]
