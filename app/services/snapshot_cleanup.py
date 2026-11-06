@@ -50,7 +50,7 @@ def exact_duplicate(client: Any, *, bucket: str, key: str, version: str,
         raise UploadBlocked("orphan_different")
 
 
-def _keeper(connection: Any, job: dict[str, Any], keeper_id: str) -> dict[str, Any]:
+def _keeper(connection: Any, job: dict[str, Any], keeper_id: str, provider: str | None = None) -> dict[str, Any]:
     row = connection.execute("SELECT * FROM archive_versions WHERE id=%s AND vault_file_id=%s AND vault_id=%s", (keeper_id, job["vault_file_id"], job["vault_id"])).fetchone()
     if (not row or row["integrity"] != "verified" or row["availability"] != "available"
             or not row["provider_version_id"] or row["provider_version_id"] == "null"
@@ -63,8 +63,21 @@ def _keeper(connection: Any, job: dict[str, Any], keeper_id: str) -> dict[str, A
             raise ValueError("invalid digest")
     except (TypeError, ValueError):
         raise UploadBlocked("proof_unavailable")
+    if row.get("upload_snapshot_json"):
+        from .upload_snapshot import UploadSnapshot
+        try:
+            if UploadSnapshot.from_json(row["upload_snapshot_json"]).plaintext_sha256 != row["plaintext_sha256"]:
+                raise UploadBlocked("proof_mismatch")
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise UploadBlocked("proof_mismatch") from exc
+    expected_digests = connection.execute("SELECT DISTINCT upload_plaintext_sha256 FROM jobs WHERE archive_version_id=%s AND vault_file_id=%s AND action IN ('upload','rename') AND upload_plaintext_sha256 IS NOT NULL", (keeper_id,job["vault_file_id"])).fetchall()
+    if any(r["upload_plaintext_sha256"] != row["plaintext_sha256"] for r in expected_digests):
+        raise UploadBlocked("proof_mismatch")
+    scopes = connection.execute("SELECT target_json FROM upload_intents WHERE archive_version_id=%s UNION ALL SELECT target_json FROM snapshot_cleanup_inventories WHERE keeper_id=%s", (keeper_id,keeper_id)).fetchall()
+    if any(json.loads(s["target_json"])["bucket"] != job["s3_bucket"] or (provider is not None and json.loads(s["target_json"])["provider"] != provider) for s in scopes):
+        raise UploadBlocked("identity_changed")
     newer = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND version_number>%s AND availability='available'", (job["vault_file_id"], row["version_number"])).fetchall()
-    if any(_has_lineage(connection, item, job["vault_file_id"]) for item in newer):
+    if any(_has_lineage(connection, item, job["vault_file_id"], bucket=job["s3_bucket"], provider=provider) for item in newer):
         # A stale recovery of A is never authority to purge a later app attempt B.
         raise UploadBlocked("identity_changed")
     latest = connection.execute("SELECT id FROM archive_versions WHERE vault_file_id=%s AND integrity='verified' AND availability='available' ORDER BY version_number DESC LIMIT 1", (job["vault_file_id"],)).fetchone()
@@ -73,16 +86,55 @@ def _keeper(connection: Any, job: dict[str, Any], keeper_id: str) -> dict[str, A
     return row
 
 
-def _has_lineage(connection: Any, row: dict[str, Any] | None, file_id: str) -> bool:
+def _has_lineage(connection: Any, row: dict[str, Any] | None, file_id: str, *, bucket: str | None = None, provider: str | None = None) -> bool:
     if not row or str(row["vault_file_id"]) != str(file_id):
         return False
-    # Explicit upload/rename job linkage + independently captured expected digest.
-    # Scan/origin string/membership/remote Metadata alone never meet this condition.
-    if row["integrity"] == "verified" and row["plaintext_sha256"]:
-        return bool(connection.execute("SELECT 1 FROM jobs WHERE archive_version_id=%s AND vault_file_id=%s AND action IN ('upload','rename') AND upload_plaintext_sha256=%s LIMIT 1", (row["id"], file_id, row["plaintext_sha256"])).fetchone())
-    # Unverified app-owned superseded writes need exact durable receipt lineage,
-    # not a discovery row linked later or an arbitrary origin='upload' string.
-    return bool(connection.execute("SELECT 1 FROM upload_intents i JOIN upload_receipts r ON r.intent_id=i.id WHERE i.archive_version_id=%s AND i.vault_file_id=%s AND i.snapshot_json=%s AND r.response_json::jsonb->>'VersionId'=%s LIMIT 1", (row["id"], file_id, row.get("upload_snapshot_json"), row["provider_version_id"])).fetchone())
+    # New writes require the pre-write namespace + exact receipt. Never fall
+    # through to legacy rules when their registered namespace differs.
+    intents = connection.execute("SELECT i.* FROM upload_intents i WHERE i.archive_version_id=%s AND i.vault_file_id=%s", (row["id"],file_id)).fetchall()
+    if intents:
+        if row["integrity"] == "mismatch":
+            raise UploadBlocked("proof_mismatch")
+        for intent in intents:
+            if row["integrity"] == "verified":
+                from .upload_snapshot import UploadSnapshot
+                if UploadSnapshot.from_json(intent["snapshot_json"]).plaintext_sha256 != row["plaintext_sha256"]:
+                    raise UploadBlocked("proof_mismatch")
+            pinned = json.loads(intent["target_json"])
+            if ((bucket is None or pinned["bucket"] == bucket) and (provider is None or pinned["provider"] == provider)
+                    and pinned["key"] == row["object_key"] and intent["snapshot_json"] == row.get("upload_snapshot_json")
+                    and row["provider_version_id"] not in json.loads(intent["inventory_json"])["versions"]):
+                from .upload_provenance import receipt
+                from .upload_snapshot import UploadSnapshot, validated_s3_proof, UploadProofMismatch
+                saved = receipt(connection,intent["id"])
+                if saved and saved["VersionId"] == row["provider_version_id"]:
+                    try:
+                        proof = validated_s3_proof(saved,version_id=row["provider_version_id"],snapshot=UploadSnapshot.from_json(intent["snapshot_json"]),source="upload_response",completion=True)
+                    except UploadProofMismatch as exc:
+                        raise UploadBlocked("proof_mismatch") from exc
+                    if proof or row["integrity"] == "verified":
+                        return True
+        return False
+    if row["integrity"] != "verified" or not row["plaintext_sha256"]:
+        return False
+    scopes = connection.execute("SELECT target_json FROM snapshot_cleanup_inventories WHERE keeper_id=%s", (row["id"],)).fetchall()
+    if any((bucket is not None and json.loads(s["target_json"])["bucket"] != bucket) or (provider is not None and json.loads(s["target_json"])["provider"] != provider) for s in scopes):
+        return False
+    # Generic reuse cannot turn a verified discovery into an app write. Legacy
+    # origin alone is insufficient: an independently captured Job SHA is also
+    # required. Move destinations retain their separate exact copy ledger.
+    expected_digests = connection.execute("SELECT DISTINCT upload_plaintext_sha256 FROM jobs WHERE archive_version_id=%s AND vault_file_id=%s AND vault_id=%s AND action IN ('upload','rename') AND upload_plaintext_sha256 IS NOT NULL", (row["id"],file_id,row["vault_id"])).fetchall()
+    if any(r["upload_plaintext_sha256"] != row["plaintext_sha256"] for r in expected_digests):
+        raise UploadBlocked("proof_mismatch")
+    if row.get("origin") == "upload" and expected_digests:
+        return True
+    return bool(connection.execute("""SELECT 1 FROM vault_class_moves m JOIN jobs j ON j.id=m.job_id
+        JOIN archive_versions source ON source.id=m.source_archive_id
+        WHERE m.destination_archive_id=%s AND m.destination_version_id=%s AND m.object_key=%s
+          AND m.copy_started AND m.size=%s AND m.sha256=%s AND source.integrity='verified'
+          AND source.plaintext_sha256=m.sha256 AND source.vault_file_id=%s
+          AND j.vault_file_id=%s AND j.vault_id=%s AND j.action='storage-class' LIMIT 1""",
+        (row["id"],row["provider_version_id"],row["object_key"],row["size"],row["plaintext_sha256"],file_id,file_id,row["vault_id"])).fetchone())
 
 
 def _require_namespace_owner(connection: Any, job: dict[str, Any], keys: set[str]) -> None:
@@ -105,6 +157,9 @@ def _require_version_owner(connection: Any, job: dict[str, Any], key: str, versi
 def pin_inventory(worker: Any, job: dict[str, Any], client: Any, *, keeper_id: str | None = None) -> dict[str, Any]:
     """Commit the exact replacement namespace BEFORE any new provider write."""
     with worker.db() as connection:
+        unbound_send = connection.execute("SELECT 1 FROM upload_intents i WHERE i.vault_file_id=%s AND i.send_started AND NOT i.settled AND NOT EXISTS (SELECT 1 FROM upload_intent_jobs b WHERE b.intent_id=i.id AND b.job_id=%s) LIMIT 1", (job["vault_file_id"],job["id"])).fetchone()
+        if unbound_send:
+            raise UploadBlocked("ambiguous_send")
         bound = connection.execute("SELECT i.original_job_id FROM upload_intents i JOIN upload_intent_jobs b ON b.intent_id=i.id WHERE b.job_id=%s", (job["id"],)).fetchone()
         inventory_job = bound["original_job_id"] if bound else job["id"]
         old = connection.execute("SELECT * FROM snapshot_cleanup_inventories WHERE job_id=%s", (inventory_job,)).fetchone()
@@ -112,7 +167,7 @@ def pin_inventory(worker: Any, job: dict[str, Any], client: Any, *, keeper_id: s
             return old
         linked_id = keeper_id or job.get("archive_version_id")
         if linked_id:
-            prior = connection.execute("SELECT b.* FROM snapshot_cleanup_inventories b JOIN jobs j ON j.id=b.job_id WHERE b.keeper_id=%s OR (b.keeper_id IS NULL AND j.archive_version_id=%s AND j.vault_file_id=%s)", (linked_id, linked_id, job["vault_file_id"])).fetchall()
+            prior = connection.execute("SELECT b.* FROM snapshot_cleanup_inventories b JOIN jobs j ON j.id=b.job_id WHERE b.completed_at IS NULL AND (b.keeper_id=%s OR (b.keeper_id IS NULL AND j.archive_version_id=%s AND j.vault_file_id=%s))", (linked_id, linked_id, job["vault_file_id"])).fetchall()
             if prior:
                 if len({(r["target_json"],r["inventory_json"]) for r in prior}) != 1:
                     raise UploadBlocked("inventory_changed")
@@ -143,7 +198,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> No
     provider = provider_identity(client)
     # Pin DB ownership first. Runtime source/root checks are outside replayable units.
     with worker.db() as connection:
-        keeper = _keeper(connection, job, keeper_id)
+        keeper = _keeper(connection, job, keeper_id, provider)
         pinned = target(connection, job, key=keeper["object_key"], provider=provider)
         rows = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND id<>%s AND availability<>'purged'", (job["vault_file_id"], keeper_id)).fetchall()
         paths = connection.execute("SELECT path FROM file_paths WHERE vault_file_id=%s", (job["vault_file_id"],)).fetchall()
@@ -195,7 +250,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> No
             _require_namespace_owner(connection, job, keys)
             _require_version_owner(connection, job, key, version)
             proof = connection.execute("SELECT * FROM snapshot_cleanup_proofs WHERE vault_file_id=%s AND bucket=%s AND provider=%s AND object_key=%s AND version_id=%s", (job["vault_file_id"], job["s3_bucket"], provider, key, version)).fetchone()
-            lineage = _has_lineage(connection, known.get((key, version)), job["vault_file_id"])
+            lineage = _has_lineage(connection, known.get((key, version)), job["vault_file_id"], bucket=job["s3_bucket"], provider=provider)
         if proof and (str(proof["keeper_id"]), proof["sha256"], proof["size"]) == (str(keeper_id), keeper["plaintext_sha256"], keeper["size"]):
             continue
         method = "independent_lineage" if lineage else "exact_get_duplicate"
@@ -216,7 +271,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> No
                 _require_namespace_owner(connection, job, keys)
                 _require_version_owner(connection, job, key, version)
                 worker.ensure_job_claim_owned_in_transaction(connection, job, "Snapshot cleanup claim lost")
-                if _keeper(connection, job, keeper_id) != keeper:
+                if _keeper(connection, job, keeper_id, provider) != keeper:
                     raise UploadBlocked("identity_changed")
                 connection.execute("INSERT INTO snapshot_cleanup_proofs(vault_file_id,bucket,provider,object_key,version_id,keeper_id,sha256,size,method,proved_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (vault_file_id,bucket,provider,object_key,version_id) DO UPDATE SET keeper_id=excluded.keeper_id,sha256=excluded.sha256,size=excluded.size,method=excluded.method,proved_at=excluded.proved_at WHERE snapshot_cleanup_proofs.deleted_at IS NULL", (job["vault_file_id"], job["s3_bucket"], provider, key, version, keeper_id, keeper["plaintext_sha256"], keeper["size"], method, worker.now_iso()))
         persist_proof()
@@ -232,7 +287,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> No
             _require_namespace_owner(connection, job, keys)
             _require_version_owner(connection, job, key, version)
             worker.ensure_job_claim_owned_in_transaction(connection, job, "Snapshot cleanup claim lost")
-            current = _keeper(connection, job, keeper_id)
+            current = _keeper(connection, job, keeper_id, provider)
             if current != keeper:
                 raise UploadBlocked("identity_changed")
             vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (job["vault_id"],)).fetchone()
@@ -258,7 +313,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> No
             require_target(connection, job, pinned)
             _require_namespace_owner(connection, job, keys)
             worker.ensure_job_claim_owned_in_transaction(connection, job, "Snapshot cleanup claim lost")
-            if _keeper(connection, job, keeper_id) != keeper:
+            if _keeper(connection, job, keeper_id, provider) != keeper:
                 raise UploadBlocked("identity_changed")
             current_markers = connection.execute("SELECT * FROM delete_markers WHERE vault_file_id=%s ORDER BY id", (job["vault_file_id"],)).fetchall()
             if current_markers != catalog_markers:
@@ -275,6 +330,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> No
             worker.ArchiveCatalog(connection).mark_versions_purged([r["id"] for r in rows if (r["object_key"], r["provider_version_id"]) in absent], checked_at=worker.now_iso())
             for k, v in absent:
                 connection.execute("UPDATE snapshot_cleanup_proofs SET deleted_at=COALESCE(deleted_at,%s) WHERE vault_file_id=%s AND bucket=%s AND provider=%s AND object_key=%s AND version_id=%s", (worker.now_iso(), job["vault_file_id"], job["s3_bucket"], provider, k, v))
+            connection.execute("UPDATE snapshot_cleanup_inventories SET completed_at=COALESCE(completed_at,%s) WHERE job_id=%s", (worker.now_iso(),batch["job_id"]))
             connection.execute("UPDATE upload_intents SET settled=TRUE,blocked_reason=NULL WHERE archive_version_id=%s AND vault_file_id=%s", (keeper_id, job["vault_file_id"]))
             connection.execute("DELETE FROM snapshot_reconciliation_blocks WHERE vault_file_id=%s", (job["vault_file_id"],))
     persist_purge()

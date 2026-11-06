@@ -3300,7 +3300,7 @@ def _publish_upload_receipt(job: dict[str, Any], intent: dict[str, Any], respons
     pinned = json.loads(intent["target_json"])
     snapshot = UploadSnapshot.from_json(intent["snapshot_json"])
     provider_id = response.get("VersionId")
-    if not provider_id or provider_id == "null":
+    if not provider_id or provider_id == "null" or provider_id in json.loads(intent["inventory_json"])["versions"]:
         raise provenance.UploadBlocked("ambiguous_receipt")
     stamp = now_iso()
     def publish(catalog: ArchiveCatalog) -> str:
@@ -3400,6 +3400,19 @@ def process_upload(job: dict[str, Any]) -> None:
     snapshot: UploadSnapshot | None = None
     requested_mode = str(intent["requested"] if intent else (linked_target or {}).get("job_upload_verification_requested") or "read_back")
 
+    def version_head() -> dict[str, Any]:
+        head = _verification_version_head(client,job,target)
+        token = (head.get("Metadata") or {}).get(provenance.TOKEN_KEY)
+        if token:
+            with db() as connection:
+                known = connection.execute("SELECT * FROM upload_intents WHERE archive_version_id=%s AND vault_file_id=%s AND token=%s", (target["archive_version_id"],job["vault_file_id"],token)).fetchone()
+            if not known:
+                raise provenance.UploadBlocked("ambiguous_receipt")
+            scope = json.loads(known["target_json"])
+            if scope["provider"] != provenance.provider_identity(client) or scope["bucket"] != job["s3_bucket"] or scope["key"] != target["object_key"]:
+                raise provenance.UploadBlocked("identity_changed")
+        return head
+
     def evaluate_provider_proof(proof: dict[str, Any], *, source: str,
                                 completion: bool = False) -> dict[str, str] | None:
         # Every evidence origin, including the post-read HEAD, obeys the same
@@ -3465,7 +3478,7 @@ def process_upload(job: dict[str, Any]) -> None:
                 requested_mode = target.get("upload_verification_requested") or "read_back"
                 if snapshot.plaintext_sha256 != upload_digest:
                     raise RuntimeError("Upload Snapshot digest differs from durable upload digest")
-            head = _verification_version_head(client, job, target)
+            head = version_head()
             if integrity == "verified":
                 if snapshot is not None:
                     evaluate_provider_proof(head, source="ordinary_head")
@@ -3486,12 +3499,14 @@ def process_upload(job: dict[str, Any]) -> None:
             # Keep the upload snapshot on the durable Job before contacting the
             # provider.  Local Copy fingerprints are mutable scan observations
             # and cannot identify a retry after the source changes.
+            reuse_provider = provenance.provider_identity(client)
             def prepare_digest(catalog: ArchiveCatalog) -> dict[str, Any] | None:
                 assert snapshot is not None
                 catalog.set_upload_snapshot(job["id"], snapshot_json=snapshot.as_json())
                 vault_file_id = job.get("vault_file_id") or (linked_target or {}).get("vault_file_id")
                 return catalog.find_reusable_upload_version(
                     vault_file_id=str(vault_file_id), plaintext_sha256=upload_digest,
+                    bucket=job["s3_bucket"], provider=reuse_provider,
                 ) if vault_file_id else None
 
             reusable = _upload_catalog_unit(job, prepare_digest)
@@ -3510,7 +3525,7 @@ def process_upload(job: dict[str, Any]) -> None:
                     if snapshot.plaintext_sha256 != upload_digest:
                         raise RuntimeError("Upload Snapshot digest differs from durable upload digest")
                     evaluate_provider_proof(
-                        _verification_version_head(client, job, target), source="ordinary_head",
+                        version_head(), source="ordinary_head",
                     )
                 _complete_verified_upload(
                     job,
@@ -3546,7 +3561,7 @@ def process_upload(job: dict[str, Any]) -> None:
                 # or policy for its historical expected evidence.
                 snapshot = UploadSnapshot.from_json(target["upload_snapshot_json"]) if target.get("upload_snapshot_json") else None
                 requested_mode = target.get("upload_verification_requested") or "read_back"
-                head = _verification_version_head(client, job, target)
+                head = version_head()
             else:
                 set_job(job["id"], "uploading", message_key="job.plain_upload")
                 key = expected_cloud_key(job["path"], job["s3_prefix"])
@@ -3595,7 +3610,7 @@ def process_upload(job: dict[str, Any]) -> None:
                 target["_provider_proof"] = evaluate_provider_proof(
                     response, source="upload_response", completion=True,
                 )
-                head = _verification_version_head(client, job, target)
+                head = version_head()
 
         if snapshot is not None:
             # A normal HEAD may also contain checksum fields. Any present
@@ -3652,7 +3667,7 @@ def process_upload(job: dict[str, Any]) -> None:
         _upload_catalog_unit(job, lambda catalog: catalog.set_version_verification_method(
             version_id, method="read_back", fallback_reason=fallback_reason, egress_bytes=remote_size,
         ))
-        final_head = _verification_version_head(client, job, target)
+        final_head = version_head()
         if snapshot is not None:
             evaluate_provider_proof(final_head, source="ordinary_head")
         expected_stream_size = target.get("cloud_size")

@@ -833,6 +833,8 @@ class ArchiveCatalog:
         *,
         vault_file_id: str,
         plaintext_sha256: str,
+        bucket: str | None = None,
+        provider: str | None = None,
     ) -> dict[str, Any] | None:
         """Return an existing Archive Version that already holds this digest.
 
@@ -853,6 +855,7 @@ class ArchiveCatalog:
               AND integrity='verified'
               AND availability='available'
               AND plaintext_sha256=%s
+              AND id=(SELECT current.id FROM archive_versions current WHERE current.vault_file_id=archive_versions.vault_file_id AND current.integrity='verified' AND current.availability='available' ORDER BY current.version_number DESC LIMIT 1)
               AND (restore_state IS NULL OR restore_state <> 'restoring')
             ORDER BY version_number DESC
             LIMIT 1
@@ -860,7 +863,10 @@ class ArchiveCatalog:
             (vault_file_id, digest),
         ).fetchone()
         if verified is not None:
-            return verified
+            from .services.snapshot_cleanup import _has_lineage
+            exact = self.connection.execute("SELECT * FROM archive_versions WHERE id=%s", (verified["id"],)).fetchone()
+            if _has_lineage(self.connection,exact,vault_file_id,bucket=bucket,provider=provider):
+                return verified
         return self.connection.execute(
             """
             SELECT
@@ -875,7 +881,8 @@ class ArchiveCatalog:
               AND (av.restore_state IS NULL OR av.restore_state <> 'restoring')
               AND EXISTS (
                   SELECT 1 FROM jobs prior
-                  WHERE prior.archive_version_id=av.id
+                  WHERE prior.archive_version_id=av.id AND prior.vault_file_id=av.vault_file_id
+                    AND prior.vault_id=av.vault_id AND prior.action='upload'
                     AND prior.upload_plaintext_sha256=%s
               )
             ORDER BY av.version_number DESC

@@ -50,7 +50,8 @@ def upgrade():
         sa.Column("keeper_id", sa.Text(), sa.ForeignKey("archive_versions.id", ondelete="RESTRICT")),
         sa.Column("target_json", sa.Text(), nullable=False),
         sa.Column("inventory_json", sa.Text(), nullable=False),
-        sa.Column("created_at", sa.Text(), nullable=False))
+        sa.Column("created_at", sa.Text(), nullable=False),
+        sa.Column("completed_at", sa.Text()))
     # A proven historical duplicate is catalogued here, not elected by AV numbering.
     # Authority pins exact target + keeper + independent digest, never an origin string.
     op.create_table(
@@ -75,7 +76,9 @@ def downgrade():
     # sends retain evidence: refusing first prevents a partial destructive downgrade.
     pending = op.get_bind().execute(sa.text("SELECT 1 FROM upload_intents WHERE send_started AND NOT settled LIMIT 1")).first()
     proofs = op.get_bind().execute(sa.text("SELECT 1 FROM snapshot_cleanup_proofs WHERE deleted_at IS NULL LIMIT 1")).first()
-    if pending or proofs:
+    cleanup = op.get_bind().execute(sa.text("SELECT 1 FROM snapshot_cleanup_inventories b JOIN jobs j ON j.id=b.job_id WHERE b.completed_at IS NULL AND (b.keeper_id IS NOT NULL OR j.archive_version_id IS NOT NULL) LIMIT 1")).first()
+    blocks = op.get_bind().execute(sa.text("SELECT 1 FROM snapshot_reconciliation_blocks LIMIT 1")).first()
+    if pending or proofs or cleanup or blocks:
         raise RuntimeError("Reconcile retained upload intents/cleanup authority with this release before downgrade")
     for table in ("snapshot_cleanup_proofs", "snapshot_cleanup_inventories", "upload_receipts", "upload_intent_jobs", "upload_intents", "snapshot_reconciliation_blocks"):
         op.drop_table(table)
