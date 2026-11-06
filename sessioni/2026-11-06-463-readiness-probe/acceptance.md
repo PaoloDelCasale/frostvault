@@ -30,6 +30,8 @@ frontend and image coverage must come from PR CI, not silent local skips.
 
 Dedicated draft PR: https://github.com/PaoloDelCasale/frostvault/pull/465
 Branch: `fix/463-local-readiness-probe`.
+Worktree: `/mnt/cache/appdata/t3code-native/worktrees/frostvault/t3-f7b931d8`.
+Session: `/mnt/cache/appdata/t3code-native/worktrees/frostvault/t3-f7b931d8/sessioni/2026-11-06-463-readiness-probe`.
 
 Implemented files:
 - `app/readiness_probe.py`: standard-library probe, exact safe Host selection,
@@ -76,9 +78,42 @@ Local validation:
 - Verified **no diff from integrated main** in either Compose template,
   `app/main.py`, `app/proxy.py` or ADR-0005. Both required proxy lists and the new
   proxy tests remain intact; Host middleware has no exception or change.
-- Full PR CI must also succeed on the integrated final HEAD. Final integrated
-  run evidence will be recorded before handoff; pre-integration green is not
-  being substituted for that check.
+- Integrated implementation/merge commit
+  `c734a3f5635b5536a18a0092df054d64e0d4a1e0`: **28/28 checks COMPLETED/SUCCESS**.
+  The full check-run metadata (HEAD, base, draft/open state, statuses, URLs and
+  timestamps) is committed in this session's `ci-integrated.json`.
+  - CI: https://github.com/PaoloDelCasale/frostvault/actions/runs/42141028048
+  - Security: https://github.com/PaoloDelCasale/frostvault/actions/runs/42141028346
+  - Includes all twelve PostgreSQL unit shards + aggregate, migrations/concurrency,
+    S3-compatible integrity, frontend generation/typecheck/lint/Vitest Node 22/24,
+    production frontend build, Playwright mobile/desktop, production-image backup
+    and packaged probe checks, dependency audits, CodeQL, Gitleaks and Trivy.
+- Refetched main before recording evidence: still
+  `5a74e8e8ca897d128db28817fc467343fed249d0`, already an ancestor. Re-read updated
+  #463 comments and confirmed the preserved #462 integration requirements.
+- The final documentation/evidence commit is checked again by full PR CI before
+  handoff. Its exact HEAD and green check status are reported in the PR handoff
+  comment and final response, avoiding a self-referential commit hash here.
+
+## Acceptance mapping
+
+- Configured/empty/multiple allowlists: first safe exact Host (case preserved)
+  reaches real `/ready` over a fixed loopback socket. Public DNS and proxy env
+  cannot redirect the probe.
+- Security: CR/LF/NUL, shell fragments, userinfo, URLs, ports and wildcards cannot
+  become headers or commands; an all-unsafe non-empty list fails before any I/O.
+  No values, response bodies or exception details are logged.
+- Host perimeter unchanged: unauthorized Host is 400 from both loopback and an
+  outside peer, including `/health`, `/ready`, `/api/me`, and forwarded-Host spoof.
+- Dependency/worker/config/source-layout 503 fails even while `/health` is 200;
+  all redirects and other non-200 statuses fail without fallback or follow.
+  Timeouts, refused connections and malformed HTTP also fail.
+- Packaging: exec-form image healthcheck is inherited unchanged by both supplied
+  Compose services; no labels/routes/networks/volumes/restart policy/auth edits.
+  Probe imports/runs with the standard library only; image tests additionally run
+  it under numeric 99:100 with read-only rootfs and all capabilities dropped.
+- No restart/reload is required or authorized as part of this PR. A future image
+  release/deployment requires the Owner's separate approval.
 
 ## Limitations / operator follow-up
 
