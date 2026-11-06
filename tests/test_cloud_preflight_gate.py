@@ -13,6 +13,15 @@ class CloudPreflightPolicyTests(unittest.TestCase):
         self.assertEqual([gate.reprobe_seconds(i) for i in range(1, 8)], [5, 10, 20, 40, 60, 60, 60])
         self.assertLessEqual(gate.reprobe_seconds(10**9), 60)
 
+    def test_probe_transport_has_short_timeouts_without_changing_transfer_retries(self):
+        with patch.object(storage, 'is_placeholder', return_value=False), patch.object(storage.boto3, 'client') as client:
+            storage.s3_client(preflight=True)
+            config = client.call_args.kwargs['config']
+            self.assertEqual((config.connect_timeout, config.read_timeout), (2, 3))
+            self.assertEqual(config.retries['total_max_attempts'], 1)
+            storage.s3_client()
+            self.assertEqual(client.call_args.kwargs['config'].retries['max_attempts'], 4)
+
     def test_clock_rollback_and_invalid_restart_timestamp_do_not_hold_the_gate(self):
         now = datetime.now(timezone.utc)
         for due in (None, 'invalid', (now + timedelta(hours=1)).isoformat(), (now - timedelta(seconds=1)).isoformat()):

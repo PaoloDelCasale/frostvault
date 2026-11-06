@@ -433,7 +433,7 @@ class _ThrottledByteProgress:
         )
 
 
-def s3_client():
+def s3_client(*, preflight: bool = False):
     access_key = os.getenv("AWS_ACCESS_KEY_ID", "")
     secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "")
     if is_placeholder(
@@ -446,8 +446,10 @@ def s3_client():
         "REPLACE-WITH-SECRET-KEY",
     ):
         raise RuntimeError("AWS credentials are not configured in the .env file")
-    return boto3.client("s3", region_name=settings.aws_region,
-                        config=Config(retries={"mode": "standard", "max_attempts": 4}))
+    config = (Config(connect_timeout=2, read_timeout=3,
+                     retries={"mode": "standard", "total_max_attempts": 1})
+              if preflight else Config(retries={"mode": "standard", "max_attempts": 4}))
+    return boto3.client("s3", region_name=settings.aws_region, config=config)
 
 
 def validate_cloud_vault(vault: dict[str, Any], *, notify: bool = True) -> None:
@@ -474,7 +476,7 @@ def _validate_cloud_vault(vault: dict[str, Any]) -> None:
     result = check_bucket_readiness(
         bucket,
         region=settings.aws_region,
-        client=s3_client(),
+        client=s3_client(preflight=True),
     )
     if not result.ok:
         raise cloud_preflight_gate.ReadinessFailure(

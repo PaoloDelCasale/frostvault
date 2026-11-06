@@ -58,7 +58,9 @@ model requires separating ordinary archive work from permanent purge.
 Before cloud upload, recovery, or local cleanup, `validate_cloud_vault()` checks
 the installation-wide readiness gate for the shared Vault bucket. One read-only
 `check_bucket_readiness()` probe is allowed at a time across workers/processes;
-a successful result is cached for at most 60 seconds. Failures are actionable
+a successful result is cached for at most 60 seconds. Probe requests use short
+2-second connect/3-second read timeouts and one SDK attempt; ordinary transfer
+retry configuration is unchanged. Failures are actionable
 and include remediation hints, for example:
 
 - bucket name still a placeholder
