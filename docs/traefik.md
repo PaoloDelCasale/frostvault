@@ -153,3 +153,27 @@ The reference labels set:
 
 Adjust middleware names or CSP if you front additional assets. Preserve existing
 routing/authentication middleware when adapting this reference deployment.
+
+## Local readiness behind Traefik
+
+Both Compose templates inherit the image's Python healthcheck; no public port,
+Traefik route or authentication exception is required for it. The probe connects
+to `127.0.0.1:8080/ready` **inside FrostVault**, sends an exact authorized `Host`
+from `ALLOWED_HOSTS`, and does not go through Traefik, external DNS, TLS or
+forwarded-header processing. Keep `ALLOWED_HOSTS` set to the intended public
+hostname; do not add `127.0.0.1` merely for healthchecks. The reference router
+label expects one public hostname; the probe also supports a comma-separated
+allowlist, but changing public routing for multiple names is a separate task.
+
+```bash
+# Read-only: same probe as the Docker healthcheck, no hardcoded public Host.
+docker compose -f compose.traefik.yaml exec -T frostvault python -m app.readiness_probe
+docker inspect --format '{{json .State.Health}}' frostvault
+```
+
+A successful probe means local dependency-aware readiness, **not** proof that
+Traefik routing, TLS or OIDC works. A database/worker/configuration/Source Volume
+layout 503 must remain unhealthy even if `/health` says the process is alive.
+Host validation still rejects unauthorized hosts for both endpoints and for
+external requests. See [container readiness](../README.md#container-readiness)
+for Host selection rules, timeouts, startup grace and failure diagnosis.
