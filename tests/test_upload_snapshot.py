@@ -167,7 +167,8 @@ class UploadSnapshotTests(unittest.TestCase):
 class SHA256ManagedUploadTests(UploadSnapshotTests):
     def setUp(self):
         super().setUp()
-        self.client = boto3.client("s3", region_name="us-east-1", aws_access_key_id="test", aws_secret_access_key="test")
+        from botocore.config import Config
+        self.client = boto3.client("s3", region_name="us-east-1", aws_access_key_id="test", aws_secret_access_key="test", config=Config(retries={"mode": "standard", "total_max_attempts": 1}))
 
     def upload(self, snapshot, **kwargs):
         return upload_file(self.client, source=self.path, bucket="bucket", key="key", snapshot=snapshot,

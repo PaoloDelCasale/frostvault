@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import hashlib
+import json
 import os
 import stat
 import threading
@@ -2331,7 +2332,7 @@ def _record_upload_reconciliation_block(job: dict[str, Any], reason: str) -> Non
     from .services import upload_provenance as provenance
     @retry_database_unit
     def persist() -> None:
-        with db() as connection:
+        with owned_connection(db()) as connection:
             connection.execute("INSERT INTO snapshot_reconciliation_blocks(vault_file_id,reason,updated_at) VALUES (%s,%s,%s) ON CONFLICT (vault_file_id) DO UPDATE SET reason=excluded.reason,updated_at=excluded.updated_at", (job["vault_file_id"], reason, now_iso()))
             connection.execute("UPDATE upload_intents SET blocked_reason=%s WHERE vault_file_id=%s AND NOT settled", (reason, job["vault_file_id"]))
     persist()

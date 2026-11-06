@@ -11,7 +11,7 @@ import json
 import uuid
 from typing import Any
 
-from .database_retry import retry_database_unit
+from .database_retry import owned_connection, retry_database_unit
 from .upload_snapshot import UploadSnapshot
 from .s3_copy import _object_version_entries
 
@@ -126,7 +126,7 @@ def append_receipt(db: Any, intent_id: str, response: dict[str, Any], timestamp:
     # Allowlist facts: never HTTP headers, cookies, credentials or provider errors.
     allowed = {k: response[k] for k in ("VersionId", "ETag", "ChecksumSHA256", "ChecksumType", "ContentLength", "StorageClass") if k in response}
     text = canonical(allowed)
-    with db() as connection:
+    with owned_connection(db()) as connection:
         connection.execute("INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (intent_id, hashlib.sha256(text.encode()).hexdigest(), text, timestamp))
 
 

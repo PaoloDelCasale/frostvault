@@ -86,6 +86,10 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             )
         return missing_id
 
+    def test_upload_provenance_populated_roundtrip_and_ambiguous_downgrade_refused(self):
+        from tests.upload_provenance_migration_contract import assert_upload_provenance_migration
+        assert_upload_provenance_migration(self, self.run_alembic, self._connection)
+
     def test_upload_verification_populated_roundtrip_never_rewrites_trust(self):
         from tests.upload_verification_migration_contract import assert_upload_verification_migration
         assert_upload_verification_migration(self, self.run_alembic, self._connection)

@@ -11,7 +11,7 @@ import hashlib
 import json
 from typing import Any
 
-from .database_retry import retry_database_unit
+from .database_retry import owned_connection, retry_database_unit
 from .upload_provenance import UploadBlocked, canonical, inventory, provider_identity, target, require_target
 from .s3_copy import _delete_s3_version
 
@@ -66,7 +66,11 @@ def _has_lineage(connection: Any, row: dict[str, Any] | None, file_id: str) -> b
         return False
     # Explicit upload/rename job linkage + independently captured expected digest.
     # Scan/origin string/membership/remote Metadata alone never meet this condition.
-    return bool(connection.execute("SELECT 1 FROM jobs WHERE archive_version_id=%s AND vault_file_id=%s AND action IN ('upload','rename') AND upload_plaintext_sha256 IS NOT NULL AND length(upload_plaintext_sha256)=64 LIMIT 1", (row["id"], file_id)).fetchone())
+    if row["integrity"] == "verified" and row["plaintext_sha256"]:
+        return bool(connection.execute("SELECT 1 FROM jobs WHERE archive_version_id=%s AND vault_file_id=%s AND action IN ('upload','rename') AND upload_plaintext_sha256=%s LIMIT 1", (row["id"], file_id, row["plaintext_sha256"])).fetchone())
+    # Unverified app-owned superseded writes need exact durable receipt lineage,
+    # not a discovery row linked later or an arbitrary origin='upload' string.
+    return bool(connection.execute("SELECT 1 FROM upload_intents i JOIN upload_receipts r ON r.intent_id=i.id WHERE i.archive_version_id=%s AND i.vault_file_id=%s AND i.snapshot_json=%s AND r.response_json::jsonb->>'VersionId'=%s LIMIT 1", (row["id"], file_id, row.get("upload_snapshot_json"), row["provider_version_id"])).fetchone())
 
 
 def pin_inventory(worker: Any, job: dict[str, Any], client: Any) -> dict[str, Any]:
@@ -87,7 +91,7 @@ def pin_inventory(worker: Any, job: dict[str, Any], client: Any) -> dict[str, An
         raise UploadBlocked("inventory_changed")
     @retry_database_unit
     def save() -> dict[str, Any]:
-        with worker.db() as connection:
+        with owned_connection(worker.db()) as connection:
             require_target(connection, job, pinned)
             worker.ensure_job_claim_owned_in_transaction(connection, job, "Snapshot inventory claim lost")
             connection.execute("INSERT INTO snapshot_cleanup_inventories(job_id,target_json,inventory_json,created_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (inventory_job, canonical(pinned), canonical(baseline), worker.now_iso()))
@@ -151,7 +155,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> No
                 raise UploadBlocked("proof_unavailable") from exc
         @retry_database_unit
         def persist_proof() -> None:
-            with worker.db() as connection:
+            with owned_connection(worker.db()) as connection:
                 require_target(connection, job, pinned)
                 worker.ensure_job_claim_owned_in_transaction(connection, job, "Snapshot cleanup claim lost")
                 if _keeper(connection, job, keeper_id) != keeper:
@@ -189,7 +193,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> No
         raise UploadBlocked("inventory_changed")
     @retry_database_unit
     def persist_purge() -> None:
-        with worker.db() as connection:
+        with owned_connection(worker.db()) as connection:
             require_target(connection, job, pinned)
             worker.ensure_job_claim_owned_in_transaction(connection, job, "Snapshot cleanup claim lost")
             if _keeper(connection, job, keeper_id) != keeper:

@@ -171,13 +171,19 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             connection.execute("UPDATE archive_versions SET integrity='verified', plaintext_sha256=%s WHERE provider_version_id=%s", ("a" * 64, provider))
 
-    def test_extra_is_purged_only_with_verified_newest_keeper_present(self) -> None:
+    def test_scan_extra_is_retained_without_claimed_exact_duplicate_proof(self) -> None:
         self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
         self._verify("s3-a")
         s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 10)])
         self._scan(s3, _scan_id())
-        self.assertEqual(s3.deleted, [("docs/report.txt", "s3-b")])
+        self.assertEqual(s3.deleted, [])
         self.assertEqual(self._versions().get("s3-a"), "available")
+        self.assertEqual(self._versions().get("s3-b"), "available")
+        with PostgresConnection(str(self.database_path)) as connection:
+            current = ArchiveCatalog(connection).list_versions(2, "report.txt")[0]
+            self.assertEqual(current["provider_version_id"], "s3-a", "Older discovery cannot elect itself by version_number")
+            self.assertIsNotNone(connection.execute("SELECT * FROM snapshot_reconciliation_blocks").fetchone())
+            self.assertIsNone(connection.execute("SELECT * FROM snapshot_cleanup_proofs").fetchone())
 
     def test_equal_timestamp_ambiguity_preserves_both_copies(self) -> None:
         self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())

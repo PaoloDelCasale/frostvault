@@ -58,6 +58,8 @@ def _object_version_entries(
     continuations: set[tuple[str, str]] = set()
     while True:
         page = client.list_object_versions(**kwargs)
+        if page.get("IsTruncated") not in (True, False) or "IsTruncated" not in page:
+            raise RuntimeError("S3 version listing did not confirm complete pagination")
         for field, entries, other in (("Versions", versions, markers), ("DeleteMarkers", markers, versions)):
             for item in page.get(field) or []:
                 if item.get("Key") != object_key:
