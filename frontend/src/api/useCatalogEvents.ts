@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { QueryClient, QueryFilters } from "@tanstack/react-query";
+import type { QueryClient, InvalidateQueryFilters } from "@tanstack/react-query";
 
 import {
   fetchCatalogRevision,
@@ -39,7 +39,7 @@ function invalidateForSignal(
   const domains = normalizeDomains(signal.domains);
   const tasks: Array<Promise<unknown>> = [];
   let busy = false;
-  const invalidate = (filters: QueryFilters) => {
+  const invalidate = (filters: InvalidateQueryFilters) => {
     // Never abort/restart a slow request on every flush. Keep a trailing dirty
     // signal instead: its response may describe a snapshot from BEFORE the event.
     busy = queryClient.getQueryCache().findAll({ ...filters, type: "active" })

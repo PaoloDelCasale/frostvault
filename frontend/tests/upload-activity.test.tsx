@@ -1,7 +1,8 @@
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests, type UploadActivityResponse, type UploadActivitySummary } from "@/api";
+import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import type { UploadActivityResponse, UploadActivitySummary } from "@/api/types";
 import { UploadActivity } from "@/components/UploadActivity";
 import { formatBytes } from "@/pages/archive/format";
 import { jsonResponse, loadCatalog } from "./vault-settings-harness";

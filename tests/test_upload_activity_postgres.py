@@ -55,8 +55,10 @@ class UploadActivityPostgresTests(unittest.TestCase):
         self.seed('skip')
         self.seed('protected', archive=True, verified=True)
         set_policy(self.connection, 9, OperationPolicy(exclude_globs=('skip.jpg',)))
-        self.connection.execute("""INSERT INTO jobs(vault_id,path,action,status,requested_at,updated_at,total_bytes,transferred_bytes)
-            SELECT 10,'file-' || n,'upload','uploading',%s,%s,100,30 FROM generate_series(1,3000) n""", (NOW.isoformat(), NOW.isoformat()))
+        self.connection.execute("""INSERT INTO vault_files(id,vault_id,created_at)
+            SELECT 'activity-' || n,10,%s FROM generate_series(1,3000) n""", (NOW.isoformat(),))
+        self.connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at,total_bytes,transferred_bytes)
+            SELECT 10,id,id,'upload','uploading',%s,%s,100,30 FROM vault_files WHERE vault_id=10""", (NOW.isoformat(), NOW.isoformat()))
         before = self.connection.execute('SELECT count(*) AS n FROM archive_versions').fetchone()['n']
         result = upload_activity(self.connection, now=NOW)
         self.assertEqual(result['global']['uploading']['files'], 3000)
