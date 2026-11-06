@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-from contextlib import ExitStack
+from contextlib import ExitStack, aclosing
 from pathlib import Path
 import tempfile
 import threading
@@ -131,6 +131,8 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
             ready = asyncio.Event()
             rearmed = asyncio.Event()
             watch_calls = 0
+            active_observers = 0
+            peak_observers = 0
             directory_seen = asyncio.Event()
             file_seen = asyncio.Event()
             events = []
@@ -148,8 +150,10 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
             async def ticking_watch(*args, **kwargs):
                 # A timeout tick proves the native observer is installed. It
                 # also removes timing guesses from the newly-created-dir test.
-                nonlocal watch_calls
+                nonlocal watch_calls, active_observers, peak_observers
                 watch_calls += 1
+                active_observers += 1
+                peak_observers = max(peak_observers, active_observers)
                 if watch_calls == 2 and mutate_siblings:
                     # At successor construction: old implementation has already
                     # closed the observer. An overlapping handoff must retain
@@ -161,11 +165,15 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
                     (root / "deleted.jpg").unlink()
                     (root / "before-rename.jpg").rename(root / "after-rename.jpg")
                 kwargs.update(yield_on_timeout=True, rust_timeout=50)
-                async for changes in real_awatch(*args, **kwargs):
-                    ready.set()
-                    if watch_calls > 1:
-                        rearmed.set()
-                    yield changes
+                try:
+                    async with aclosing(real_awatch(*args, **kwargs)) as observer:
+                        async for changes in observer:
+                            ready.set()
+                            if watch_calls > 1:
+                                rearmed.set()
+                            yield changes
+                finally:
+                    active_observers -= 1
 
             def apply(vault, changes):
                 events.extend(changes)
@@ -205,6 +213,8 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
             self.assertTrue(events)
+            self.assertEqual(active_observers, 0, "shutdown leaked a recursive observer")
+            self.assertEqual(peak_observers, 2, "handoff must overlap exactly two observers")
 
 
 class WatcherSubtreeTests(unittest.TestCase):
@@ -312,6 +322,9 @@ class SubtreeContainmentTests(unittest.TestCase):
     def test_subtree_swapped_during_traversal_after_committed_batch(self):
         self.check_swap(during_walk=True)
 
+    def test_ancestor_swapped_during_traversal_after_committed_batch(self):
+        self.check_swap(during_walk=True, nested=True)
+
 
 class ReleaseRepairVaultIdentityTests(unittest.TestCase):
     setUp = test_local_release.LocalReleaseWorkerTests.setUp
@@ -334,6 +347,30 @@ class ReleaseRepairVaultIdentityTests(unittest.TestCase):
         connection.execute.return_value.fetchone.return_value = None
         with (patch("app.storage.inspect_entry") as inspect,
               self.assertRaises(RuntimeError)):
+            storage._repair_failed_local_release(self.job, self.target, self.path)
+        inspect.assert_not_called()
+        self.catalog.set_local_fingerprint.assert_not_called()
+
+    def test_actual_vault_identity_change_fails_before_read(self):
+        self.job.update(id=100, vault_id=2)
+        connection = self.stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
+        connection.execute.return_value.fetchone.return_value = {
+            "id": 2, "source_root": self.job["source_root"],
+            "root_identity": "replaced", "root_identity_version": storage.vault_relocation.ROOT_IDENTITY_VERSION,
+        }
+        with (patch("app.storage.inspect_entry") as inspect,
+              self.assertRaisesRegex(RuntimeError, "identity mismatch")):
+            storage._repair_failed_local_release(self.job, self.target, self.path)
+        inspect.assert_not_called()
+        self.catalog.set_local_fingerprint.assert_not_called()
+
+    def test_actual_vault_unavailable_source_fails_before_read(self):
+        self.job.update(id=100, vault_id=2)
+        connection = self.stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
+        connection.execute.return_value.fetchone.return_value = {"id": 2, "source_root": self.job["source_root"]}
+        with (patch("app.storage.inspect_entry") as inspect,
+              patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=False)),
+              self.assertRaisesRegex(RuntimeError, "Source Volume changed")):
             storage._repair_failed_local_release(self.job, self.target, self.path)
         inspect.assert_not_called()
         self.catalog.set_local_fingerprint.assert_not_called()

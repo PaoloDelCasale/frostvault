@@ -11,7 +11,7 @@ import time
 import uuid
 from collections.abc import Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import aclosing, contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
@@ -92,7 +92,7 @@ from .services.runtime_status import (
     scan_lock_for_vault,
     snapshot_runtime_status_for_stats,
 )
-from .services.fs_preflight import inspect_entry, walk_entries
+from .services.fs_preflight import PinnedTree, TreeIdentityChanged, inspect_entry
 from .services.problems import report_problem
 from .services.local_files import (
     hash_stable_regular_file,
@@ -528,6 +528,7 @@ def _scan_tree(
         nonlocal count
         if not pending:
             return
+        tree.validate_active()
         if _persisted_scan(vault):
             _current_verified_scan_row(connection, vault)
         if scan_journal is not None:
@@ -579,6 +580,7 @@ def _scan_tree(
             """, (scan_id, vault_id, [entry[0] for entry in pending]))
         count += len(pending)
         pending.clear()
+        tree.validate_active()
         if _persisted_scan(vault):
             _current_verified_scan_row(connection, vault)
         if allow_chunk_commits:
@@ -596,30 +598,35 @@ def _scan_tree(
             connection, event="file_unreadable", vault_id=vault_id, path=relative,
         )
 
-    for entry in walk_entries(subtree or root, on_error=failed):
-        if is_restore_temporary_name(entry.name):
-            continue
-        try:
-            inspected = inspect_entry(entry)
-            if inspected is None:
+    with PinnedTree(root, subtree=subtree) as tree:
+        if _persisted_scan(vault) and vault_relocation.opened_root_identity(tree.fd) != vault.get("root_identity"):
+            raise _ScanRootMismatch("Vault root changed before traversal")
+        for entry, pinned_entry in tree.entries(on_error=failed):
+            if is_restore_temporary_name(entry.name):
                 continue
-            file_type, entry_stat = inspected
-        except OSError as exc:
-            failed(entry, exc)
-            continue
-        relative = entry.relative_to(root).as_posix()
-        pending.append(
-            (
-                relative,
-                file_type,
-                entry_stat.st_size,
-                entry_stat.st_mtime_ns,
-                now_iso(),
+            try:
+                inspected = inspect_entry(pinned_entry)
+                if inspected is None:
+                    continue
+                file_type, entry_stat = inspected
+            except OSError as exc:
+                failed(entry, exc)
+                continue
+            relative = entry.relative_to(root).as_posix()
+            pending.append(
+                (
+                    relative,
+                    file_type,
+                    entry_stat.st_size,
+                    entry_stat.st_mtime_ns,
+                    now_iso(),
+                )
             )
-        )
-        if len(pending) >= LOCAL_SCAN_WRITE_BATCH_SIZE:
-            flush()
-    flush()
+            if len(pending) >= LOCAL_SCAN_WRITE_BATCH_SIZE:
+                flush()
+        tree.validate()
+        flush()
+        tree.validate()
     if unreadable:
         # Keep the per-path problems durable even if a later identity check
         # rejects the scan. Healthy observations may still be protected, but an
@@ -1709,7 +1716,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 result.update(
                     {f"rename_{key}": value for key, value in rename_summary.items()}
                 )
-            except _ScanRootMismatch as exc:
+            except (_ScanRootMismatch, TreeIdentityChanged) as exc:
                 journal = _active_scan_journals.pop(
                     (int(vault["id"]), scan_id), None
                 )
@@ -4268,7 +4275,14 @@ def _repair_failed_local_release(
     job: dict[str, Any], target: dict[str, Any], local_path: Path, *, replacement: bool = False,
 ) -> None:
     """Publish salvaged/replaced bytes immediately without following symlinks."""
-    vault = _current_scan_vault(job)
+    # A Job id is not a Vault id. Never fall back to the unenrolled Job row
+    # when the actual Vault disappeared; its root/source fences are mandatory.
+    with db() as connection:
+        vault = connection.execute(
+            "SELECT * FROM vaults WHERE id=%s", (int(job["vault_id"]),),
+        ).fetchone()
+    if not isinstance(vault, dict) or "source_root" not in vault:
+        raise _ScanRootMismatch("Vault is unavailable during local release repair")
     if vault["source_root"] != job["source_root"]:
         raise _ScanRootMismatch("Vault root changed during local release repair")
     _validate_enrolled_scan_root(vault)
@@ -5668,10 +5682,9 @@ def _new_watcher_directories(root: Path, changes: set[tuple[Change, str]]) -> se
 
 
 async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
-    # Some Source Volume backends do not reliably enroll directories created
-    # after native watcher startup. Explicitly re-arm after topology additions,
-    # then reconcile those subtrees AFTER the new recursive observer is live.
-    # The catch-up closes the small close/reopen event gap without a full scan.
+    # Some Source Volume backends do not reliably enroll new directories.
+    # Install the successor BEFORE draining/closing the old recursive observer:
+    # subtree catch-up alone cannot repair unrelated sibling events in a gap.
     pending_reconcile: set[tuple[Change, str]] = set()
     while True:
         if vault_relocation.local_work_suspended(vault):
@@ -5720,36 +5733,58 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
             continue
         try:
             runtime = await asyncio.to_thread(_runtime_settings)
-            async with aclosing(awatch(
-                root,
-                watch_filter=_filesystem_watch_filter,
-                debounce=runtime.filesystem_watch_debounce_ms,
-                force_polling=settings.filesystem_watch_force_polling,
-                poll_delay_ms=runtime.filesystem_watch_poll_ms,
-                recursive=True,
-                ignore_permission_denied=False,
-                yield_on_timeout=bool(pending_reconcile),
-                rust_timeout=1000,
-            )) as watcher:
-                async for native_changes in watcher:
-                    new_directories = (
-                        await asyncio.to_thread(_new_watcher_directories, root, native_changes)
-                        if native_changes else set()
-                    )
-                    if new_directories and not pending_reconcile:
-                        # Re-arm first, then walk once with live recursive
-                        # watches. Avoid walking a large incoming tree twice.
-                        pending_reconcile = native_changes
-                        break
-                    changes = native_changes | pending_reconcile
-                    if changes:
-                        # Retain this batch for retry if observation fails.
-                        pending_reconcile = changes
-                        await asyncio.to_thread(apply_filesystem_changes, vault, changes)
+            def new_observer():
+                return awatch(
+                    root,
+                    watch_filter=_filesystem_watch_filter,
+                    debounce=runtime.filesystem_watch_debounce_ms,
+                    force_polling=settings.filesystem_watch_force_polling,
+                    poll_delay_ms=runtime.filesystem_watch_poll_ms,
+                    recursive=True,
+                    ignore_permission_denied=False,
+                    # awatch is lazy: its first yield (including a timeout)
+                    # is the registration barrier, for inotify AND polling.
+                    yield_on_timeout=True,
+                    rust_timeout=1000,
+                )
+
+            watcher = new_observer()
+            successor = None
+            rearm_required = False
+            try:
+                while True:
+                    native_changes = set() if rearm_required else await anext(watcher)
+                    pending_reconcile |= native_changes
+                    new_directories = await asyncio.to_thread(
+                        _new_watcher_directories, root, native_changes,
+                    ) if native_changes else set()
+                    if new_directories or rearm_required:
+                        successor = new_observer()
+                        # Old observer is still live while the successor takes
+                        # its recursive snapshot / registers native watches.
+                        first = await anext(successor)
+                        pending_reconcile |= first
+                        tail = await anext(watcher)
+                        pending_reconcile |= tail
+                        old, watcher = watcher, successor
+                        successor = None
+                        await old.aclose()
+                        # Topology added DURING registration may need another
+                        # handoff. No full-root walk, and at most two observers.
+                        additions = await asyncio.to_thread(
+                            _new_watcher_directories, root, first | tail,
+                        )
+                        rearm_required = bool(additions - new_directories)
+                    if pending_reconcile and not rearm_required:
+                        # Reconcile only once every added subtree is covered by
+                        # a registered successor, including additions made in
+                        # the preceding handoff itself.
+                        await asyncio.to_thread(apply_filesystem_changes, vault, pending_reconcile)
                         pending_reconcile = set()
-                    if new_directories:
-                        pending_reconcile = new_directories
-                        break
+            finally:
+                if successor is not None:
+                    await successor.aclose()
+                await watcher.aclose()
         except asyncio.CancelledError:
             raise
         except Exception as exc:

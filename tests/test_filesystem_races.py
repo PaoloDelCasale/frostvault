@@ -343,8 +343,14 @@ class LiveWatcherCatalogTests(unittest.TestCase):
         self.advance(300)
         self.assertEqual(self.queue(), 4)
 
-    async def check_new_directory(self, force_polling):
+    def test_sibling_mutations_survive_observer_handoff_on_both_backends(self):
+        for force_polling in (False, True):
+            with self.subTest(force_polling=force_polling):
+                asyncio.run(self.check_new_directory(force_polling, mutate_siblings=True))
+
+    async def check_new_directory(self, force_polling, *, mutate_siblings=False):
         ready = asyncio.Event()
+        siblings_seen = asyncio.Event()
         directory_seen = asyncio.Event()
         file_seen = asyncio.Event()
         later_seen = asyncio.Event()
@@ -353,6 +359,18 @@ class LiveWatcherCatalogTests(unittest.TestCase):
         later = directory / "nested" / "after-rearm.jpg"
         loop = asyncio.get_running_loop()
         real_apply = storage.apply_filesystem_changes
+        sibling_dir = self.root / f"siblings-{force_polling}"
+        if mutate_siblings:
+            sibling_dir.mkdir()
+            for name in ("existing.jpg", "deleted.jpg", "before-rename.jpg"):
+                path = sibling_dir / name
+                path.write_bytes(b"first")
+                real_apply(self.vault, {(Change.added, str(path))})
+            with self.db() as connection:
+                ArchiveCatalog(connection).set_local_fingerprint(
+                    vault_id=2, path=f"{sibling_dir.name}/existing.jpg",
+                    plaintext_sha256=hashlib.sha256(b"first").hexdigest(), matched_archive_version_id=None,
+                )
 
         watch_calls = 0
         async def ticking_watch(*args, **kwargs):
@@ -360,8 +378,15 @@ class LiveWatcherCatalogTests(unittest.TestCase):
             watch_calls += 1
             kwargs.update(yield_on_timeout=True, rust_timeout=50)
             if watch_calls == 2:
-                # Force a file into the observer close/reopen gap. Only the
-                # post-registration catch-up can catalogue this one.
+                # Before successor registration; an overlapping old observer
+                # must retain changes OUTSIDE the incoming subtree as well.
+                if mutate_siblings:
+                    path = sibling_dir / "existing.jpg"
+                    original = path.stat()
+                    path.write_bytes(b"changed sibling")
+                    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns + 2_000_000_000))
+                    (sibling_dir / "deleted.jpg").unlink()
+                    (sibling_dir / "before-rename.jpg").rename(sibling_dir / "after-rename.jpg")
                 target.write_bytes(b"photo")
                 os.utime(target, (1_500_000_000, 1_500_000_000))
             async for changes in awatch(*args, **kwargs):
@@ -373,7 +398,17 @@ class LiveWatcherCatalogTests(unittest.TestCase):
             for _, value in changes:
                 if value == str(directory):
                     loop.call_soon_threadsafe(directory_seen.set)
-            rows = {row["path"] for row in self.entries()}
+            rows = {row["path"]: row for row in self.entries()}
+            if mutate_siblings:
+                existing = rows.get(f"{sibling_dir.name}/existing.jpg", {})
+                deleted = rows.get(f"{sibling_dir.name}/deleted.jpg", {})
+                renamed = rows.get(f"{sibling_dir.name}/before-rename.jpg", {})
+                after = rows.get(f"{sibling_dir.name}/after-rename.jpg", {})
+                if (existing.get("size") == len(b"changed sibling")
+                        and existing.get("plaintext_sha256") is None
+                        and deleted.get("presence") == renamed.get("presence") == "missing"
+                        and after.get("presence") == "present"):
+                    loop.call_soon_threadsafe(siblings_seen.set)
             if target.relative_to(self.root).as_posix() in rows:
                 loop.call_soon_threadsafe(file_seen.set)
             if later.relative_to(self.root).as_posix() in rows:
@@ -390,6 +425,8 @@ class LiveWatcherCatalogTests(unittest.TestCase):
                 target.parent.mkdir(parents=True)
                 await asyncio.wait_for(directory_seen.wait(), 5)
                 await asyncio.wait_for(file_seen.wait(), 5)
+                if mutate_siblings:
+                    await asyncio.wait_for(siblings_seen.wait(), 5)
                 later.write_bytes(b"later")
                 os.utime(later, (1_500_000_000, 1_500_000_000))
                 # A subsequent native event must still arrive, not just the
