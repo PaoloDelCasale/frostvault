@@ -1,5 +1,9 @@
 """Actual admission/claim/worker and inbox projections on disposable PG16."""
+import hashlib
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from app import storage
@@ -104,6 +108,126 @@ class UploadRemediationTests(unittest.TestCase):
                 notifications.reconcile_problem_states(connection)
                 self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE job_id=%s",(original,)).fetchone()["problem_status"],"open",status)
                 connection.execute("UPDATE jobs SET status='failed' WHERE id=%s",(other,))
+
+    def test_sweep_is_db_only_and_admits_historical_verified_completion_failure(self):
+        original = self.queue()
+        with patch("app.storage.purge_current_snapshot_superseded",side_effect=RuntimeError("post verified fault")):
+            self.run_job(original)
+        with patch("app.storage.s3_client",side_effect=AssertionError("discovery cannot use provider")), patch("app.services.source_layout.vault_local_access",side_effect=AssertionError("discovery cannot probe filesystem")):
+            self.assertEqual(remediation.sweep(self.db),1)
+            self.assertEqual(remediation.sweep(self.db),0)
+        with self.db() as connection:
+            resumed = connection.execute("SELECT current_job_id FROM upload_remediations").fetchone()["current_job_id"]
+        self.run_job(resumed)
+        self.assert_keeper(resumed)
+        self.assertEqual((self.provider.puts,self.provider.gets),(1,0))
+
+    def test_a_changed_to_b_is_not_protected_by_remediation_of_a(self):
+        self.fail_after_ack()
+        self.file.write_bytes(fixtures.B)
+        resumed = self.admit()
+        self.run_job(resumed)
+        version = self.assert_keeper(resumed)
+        self.assertEqual(version["plaintext_sha256"],hashlib.sha256(fixtures.A).hexdigest())
+        with self.db() as connection:
+            local = connection.execute("SELECT * FROM local_copies WHERE vault_file_id=%s",(self.file_id,)).fetchone()
+            self.assertNotEqual(local["matched_archive_version_id"],version["id"])
+        self.assertEqual(self.provider.puts,1)
+
+    def test_target_budget_deadline_restart_and_explicit_retry_do_not_reset(self):
+        self.fail_after_ack()
+        resumed = self.admit()
+        self.provider.hook = lambda stage, **kw: (_ for _ in ()).throw(TimeoutError("connection reset")) if stage == "head" else None
+        self.run_job(resumed)
+        self.assertEqual((self.row(resumed)["status"],self.row(resumed)["retry_count"]),("retrying",1))
+        with self.db() as connection:
+            row = connection.execute("SELECT * FROM upload_remediations").fetchone()
+            self.assertEqual((row["retry_count"],row["due_at"]),(1,self.row(resumed)["retry_after"]))
+            epoch = row["id"]
+            # Advance the durable fixture budget to its last permitted retry.
+            connection.execute("UPDATE jobs SET retry_count=8,retry_after=%s WHERE id=%s",((datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat(),resumed))
+            connection.execute("UPDATE upload_remediations SET retry_count=8 WHERE id=%s",(epoch,))
+        self.run_job(resumed)
+        self.assertEqual(self.row(resumed)["status"],"failed")
+        for _ in range(3):
+            self.assertEqual(remediation.sweep(self.db),0)
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT reason FROM upload_remediations").fetchone()["reason"],"retry_budget_exhausted")
+        self.provider.hook = lambda *args, **kw: None
+        explicit = self.admit()
+        self.assertEqual(self.row(explicit)["retry_count"],8,"Explicit retry keeps the target budget")
+        self.run_job(explicit)
+        self.assert_keeper(explicit)
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT id FROM upload_remediations").fetchone()["id"],epoch)
+        self.assertEqual(self.provider.puts,1)
+
+    def test_concurrent_manual_and_sweep_share_one_target_and_active_file(self):
+        self.fail_after_ack()
+        def explicit():
+            try:
+                return self.admit()
+            except remediation.provenance.UploadBlocked:
+                return None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda f:f(),(explicit,lambda:remediation.sweep(self.db))))
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_remediations").fetchone()["n"],1)
+            self.assertEqual(connection.execute("SELECT count(*) n FROM jobs WHERE status NOT IN ('failed','cancelled','completed')").fetchone()["n"],1)
+            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_remediation_jobs").fetchone()["n"],1)
+        self.assertTrue(any(results))
+        self.assertEqual(self.provider.puts,1)
+
+    def test_other_live_and_expired_claims_are_not_absence_of_active_work(self):
+        self.fail_after_ack()
+        with self.db() as connection:
+            other = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_by,requested_at,updated_at,claim_token,claim_expires_at)
+                VALUES (2,%s,'report.txt','recover','queued',1,%s,%s,'other-live-claim',%s) RETURNING id""",(self.file_id,storage.now_iso(),storage.now_iso(),storage._claim_expiry_at())).fetchone()["id"]
+        self.assertEqual(remediation.sweep(self.db),0)
+        future = (datetime.now(timezone.utc)+timedelta(seconds=20)).isoformat()
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT reason FROM upload_remediations").fetchone()["reason"],"active_operation")
+            connection.execute("UPDATE jobs SET claim_expires_at=%s WHERE id=%s",("2020-01-01T00:00:00+00:00",other))
+        self.assertEqual(remediation.sweep(self.db,future),0)
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) n FROM jobs").fetchone()["n"],2,"Expired claim is still the same active operation")
+
+    def test_source_volume_suspend_is_durable_but_single_file_missing_can_complete(self):
+        from types import SimpleNamespace
+        self.fail_after_ack()
+        resumed = self.admit()
+        with patch("app.services.source_layout.vault_local_access",return_value=SimpleNamespace(local_operations_allowed=False)):
+            self.assertFalse(self.run_job(resumed))
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT state,reason FROM upload_remediations").fetchone(),{"state":"suspended","reason":"source_volume_unavailable"})
+        self.assertEqual(remediation.sweep(self.db),0)
+        self.file.unlink()
+        self.run_job(resumed)
+        self.assert_keeper(resumed)
+        self.assertEqual(self.provider.puts,1)
+
+    def test_targeted_history_and_bidirectional_lookup_survive_recent50_window(self):
+        original = self.fail_after_ack()
+        resumed = self.admit()
+        self.run_job(resumed)
+        self.assert_keeper(resumed)
+        with self.db() as connection:
+            for _ in range(55):
+                connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_by,requested_at,updated_at)
+                    VALUES (2,%s,'report.txt','upload','completed',1,%s,%s)""",(self.file_id,storage.now_iso(),storage.now_iso()))
+        client = self.http_client()
+        with patch("app.main._allowed_hosts",return_value=[]):
+            recent = client.get("/api/jobs?vault_id=2")
+            self.assertEqual(recent.status_code,200,recent.text)
+            self.assertNotIn(original,[r["id"] for r in recent.json()["items"]])
+            first = client.get("/api/files/jobs?vault_id=2&path=report.txt").json()
+            second = client.get(f"/api/files/jobs?vault_id=2&path=report.txt&before_id={first['next_before_id']}").json()
+            self.assertIn(original,[r["id"] for r in second["items"]])
+            linked = client.get(f"/api/jobs/{original}?vault_id=2").json()
+            self.assertEqual(linked["remediation"]["resolved_by_job_id"],resumed)
+            reverse = client.get(f"/api/jobs/{resumed}?vault_id=2").json()
+            self.assertIn(original,reverse["remediation"]["original_job_ids"])
+            self.assertNotIn("claim_token",reverse)
 
     def test_verified_alone_cannot_complete_remediation(self):
         self.fail_after_ack()

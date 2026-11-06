@@ -31,6 +31,14 @@ RESOLUTION_SQL = """EXISTS (
 )"""
 
 
+def _invalidate(connection: Any, vault_id: int, stamp: str) -> None:
+    from .catalog_events import CatalogEventStore
+    # Do not flush aggregates or wait for maintenance. This is only a bounded,
+    # durable invalidation; Local Copy protection evidence remains untouched.
+    CatalogEventStore(connection).append_event(vault_id=vault_id,domain="catalog",scope="",
+        payload={"invalidate":["files"],"reason":"upload_remediation"},created_at=stamp)
+
+
 def _later(stamp: str) -> str:
     return (datetime.fromisoformat(stamp) + timedelta(seconds=POLL_SECONDS)).isoformat()
 
@@ -118,6 +126,7 @@ def _enroll(connection: Any, original: dict[str, Any], vault: dict[str, Any], st
         return row
     connection.execute("""INSERT INTO upload_remediation_originals(original_job_id,remediation_id,vault_file_id,vault_id)
         VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (original["id"],row["id"],row["vault_file_id"],row["vault_id"]))
+    _invalidate(connection,vault["id"],stamp)
     return row
 
 
@@ -172,6 +181,10 @@ def admit(connection: Any, row: dict[str, Any], vault: dict[str, Any], *, user_i
         return None
     if explicit and row["reason"] in {"proof_mismatch","expected_evidence_missing","target_superseded"}:
         return None
+    if row["current_job_id"]:
+        current = connection.execute("SELECT status FROM jobs WHERE id=%s",(row["current_job_id"],)).fetchone()
+        if current and current["status"] not in TERMINAL:
+            return None
     original_cancelled = connection.execute("""SELECT 1 FROM upload_remediation_originals o JOIN jobs j ON j.id=o.original_job_id
         WHERE o.remediation_id=%s AND j.status='cancelled' LIMIT 1""", (row["id"],)).fetchone()
     if original_cancelled:
@@ -202,6 +215,7 @@ def admit(connection: Any, row: dict[str, Any], vault: dict[str, Any], *, user_i
         provenance.bind_for_resume(connection,job["id"],intent)
     connection.execute("INSERT INTO upload_remediation_jobs(job_id,remediation_id,vault_file_id,vault_id) VALUES (%s,%s,%s,%s)", (job["id"],row["id"],row["vault_file_id"],vault["id"]))
     connection.execute("UPDATE upload_remediations SET state='queued',reason=NULL,current_job_id=%s,updated_at=%s WHERE id=%s", (job["id"],stamp,row["id"]))
+    _invalidate(connection,vault["id"],stamp)
     return {"job_id":job["id"],"group_id":group}
 
 
@@ -275,7 +289,7 @@ def record_cleanup(connection: Any, job_id: int, inventory_job_id: int) -> None:
         (inventory_job_id,job_id))
 
 
-def transition(connection: Any, job_id: int, status: str, stamp: str) -> None:
+def transition(connection: Any, job_id: int, status: str, stamp: str, *, suspension: str | None = None) -> None:
     """Called in the authoritative Job transaction before notifications."""
     row = connection.execute("""SELECT r.* FROM upload_remediations r
         JOIN upload_remediation_jobs b ON b.remediation_id=r.id WHERE b.job_id=%s""", (job_id,)).fetchone()
@@ -306,12 +320,18 @@ def transition(connection: Any, job_id: int, status: str, stamp: str) -> None:
         state,reason = "cancelled","owner_cancelled"
     elif status == "retrying":
         state,reason = "retrying","transient"
+    elif suspension:
+        state,reason = "suspended",suspension
+    elif status in {"uploading","verifying"}:
+        state,reason = "queued",None
     connection.execute("""UPDATE upload_remediations SET state=%s,phase=%s,reason=%s,retry_count=%s,
         due_at=%s,updated_at=%s,archive_version_id=COALESCE(archive_version_id,%s),
         resolved_by_job_id=CASE WHEN %s THEN %s ELSE resolved_by_job_id END,
         resolved_at=CASE WHEN %s THEN %s ELSE resolved_at END WHERE id=%s""",
         (state,phase,reason,job["retry_count"],job["retry_after"] or stamp,stamp,job["archive_version_id"],
          state=="resolved",job_id,state=="resolved",stamp,row["id"]))
+    if (state,phase,reason) != (row["state"],row["phase"],row["reason"]):
+        _invalidate(connection,row["vault_id"],stamp)
 
 
 def retry_vault(connection: Any, vault: dict[str, Any], user_id: int, stamp: str) -> int:
@@ -332,7 +352,7 @@ def _fair_vaults(connection: Any, name: str, stamp: str) -> list[dict[str, Any]]
     if not cursor:
         return []
     predicate = ("EXISTS (SELECT 1 FROM upload_remediation_discovery q WHERE q.vault_id=v.id)" if name == "discovery"
-        else "EXISTS (SELECT 1 FROM upload_remediations r WHERE r.vault_id=v.id AND r.state IN ('pending','suspended') AND r.due_at<=%s)")
+        else "EXISTS (SELECT 1 FROM upload_remediations r WHERE r.vault_id=v.id AND ((r.state IN ('pending','suspended') AND r.due_at<=%s AND (r.current_job_id IS NULL OR EXISTS (SELECT 1 FROM jobs current WHERE current.id=r.current_job_id AND current.status IN ('completed','failed','cancelled')))) OR (r.state IN ('queued','retrying','suspended') AND EXISTS (SELECT 1 FROM jobs j WHERE j.id=r.current_job_id AND j.status='cancelled'))))")
     params = [] if name == "discovery" else [stamp]
     rows = connection.execute(f"SELECT v.* FROM vaults v WHERE {predicate} ORDER BY (v.id>%s) DESC,v.id LIMIT %s", (*params,cursor["last_vault_id"],VAULT_BATCH)).fetchall()
     connection.execute("UPDATE upload_remediation_sweep SET last_tick_at=%s WHERE name=%s", (stamp,name))
@@ -372,10 +392,21 @@ def sweep(db: Any, stamp: str | None = None) -> int:
                     owner_id = owner_user_id(connection)
                     if owner_id is None:
                         continue
-                    rows = connection.execute("SELECT * FROM upload_remediations WHERE vault_id=%s AND state IN ('pending','suspended') AND due_at<=%s ORDER BY due_at,id LIMIT %s", (vault["id"],stamp,TARGET_BATCH)).fetchall()
+                    rows = connection.execute("""SELECT r.* FROM upload_remediations r WHERE vault_id=%s
+                        AND ((r.state IN ('pending','suspended') AND r.due_at<=%s
+                              AND (r.current_job_id IS NULL OR EXISTS (SELECT 1 FROM jobs current
+                                   WHERE current.id=r.current_job_id AND current.status IN ('completed','failed','cancelled')))) OR
+                             (r.state IN ('queued','retrying','suspended') AND EXISTS (
+                                SELECT 1 FROM jobs j WHERE j.id=r.current_job_id AND j.status='cancelled')))
+                        ORDER BY due_at,id LIMIT %s""", (vault["id"],stamp,TARGET_BATCH)).fetchall()
                     for row in rows:
                         if monotonic() >= deadline:
                             break
+                        if row["current_job_id"]:
+                            current = connection.execute("SELECT status FROM jobs WHERE id=%s",(row["current_job_id"],)).fetchone()
+                            if current and current["status"] == "cancelled":
+                                transition(connection,row["current_job_id"],"cancelled",stamp)
+                                continue
                         count += bool(admit(connection,row,vault,user_id=owner_id,stamp=stamp))
     return count
 

@@ -1972,6 +1972,7 @@ def set_job(
     *,
     message_key: str | None = None,
     message_params: dict[str, Any] | None = None,
+    remediation_suspension: str | None = None,
 ) -> bool:
     """Persist a state transition without letting a cancelled/lost claim win.
 
@@ -2062,7 +2063,7 @@ def set_job(
         updated = _claim_write_succeeded(result)
         if updated and action == "upload":
             from .services import upload_remediation
-            upload_remediation.transition(connection, job_id, status, timestamp)
+            upload_remediation.transition(connection, job_id, status, timestamp, suspension=remediation_suspension)
             _dirty_job_protection(connection, job_id)
         if updated and status in {"completed", "failed"}:
             notification_service.enqueue_job_terminal_notification_best_effort(
@@ -4972,6 +4973,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                         job["id"],
                         "queued",
                         "Source Volume is unavailable; Job remains queued",
+                        remediation_suspension="source_volume_unavailable",
                     )
                 # Restoring the expected mount is the only path back to local
                 # execution; no filesystem action is attempted here.
