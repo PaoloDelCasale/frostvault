@@ -543,6 +543,31 @@ On first startup, the application creates the Owner defined by
 every start, so they remain the Owner's Emergency Password: changing the
 password revokes existing sessions. Removing them keeps the stored credentials.
 
+### Graceful shutdown
+
+The image runs `python -m app.server`, a single-process uvicorn entrypoint that
+signals SSE streams and stops background admission **before** uvicorn waits for
+HTTP connections. SIGTERM (and SIGINT) closes active catalog streams normally;
+idle and cooperatively draining uploads exit with status 0. Keep this entrypoint
+when overriding the image command; plain `uvicorn app.main:app` has no early-stop
+hook and can wait indefinitely for SSE.
+
+HTTP graceful shutdown is bounded at 5 seconds (`--timeout-graceful-shutdown`);
+worker pools then have up to 20 seconds to join running work. Queued pool work
+is cancelled immediately, and active Jobs stop at existing transfer/verification
+checkpoints. Shutdown is not an Owner cancellation: durable leases, upload
+intents and late provider receipts remain available for conservative recovery
+once the lease expires. No ambiguous send is blindly repeated.
+
+Both repository Compose manifests set `stop_grace_period: 40s`. For a direct
+container invocation use `docker stop --time 40` (Docker's 10-second default is
+too short). A process-wide 30-second watchdog also covers synchronous SDK calls,
+filesystem operations and Python executor joins that cannot be interrupted by
+asyncio cancellation. If they do not drain in time, shutdown exits **nonzero**
+rather than claiming success; recovery evidence is retained, but a provider
+response arriving after that hard deadline cannot be recorded by the process.
+Do not shorten the stop period below the process deadline.
+
 ## Localization
 
 The UI defaults to English and includes a complete Italian translation. You
@@ -780,7 +805,7 @@ python -m venv .venv
 # .env is not auto-loaded; keep credentials in this Git-ignored file.
 set -a; . ./.env; set +a
 .venv/bin/python -m alembic upgrade head
-.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+.venv/bin/python -m app.server --host 127.0.0.1 --port 8080
 ```
 
 On Windows PowerShell, use `.venv\Scripts\python.exe` and set environment
@@ -802,7 +827,7 @@ hard-to-diagnose login failures.
 ```bash
 # terminal 1
 set -a; . ./.env; set +a
-.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+.venv/bin/python -m app.server --host 127.0.0.1 --port 8080
 
 # terminal 2
 cd frontend && npm ci && npm run dev

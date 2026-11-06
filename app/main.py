@@ -78,6 +78,7 @@ from .services import metadata_backups as metadata_backup_service
 from .services import recovery_kit as recovery_kit_service
 from .services import metrics as metrics_service
 from .services import notifications as notification_service
+from .services.shutdown import shutdown_state
 from .services.catalog_event_stream import (
     coalesced_catchup_signal,
     iter_catalog_event_sse,
@@ -149,6 +150,8 @@ from .storage import (
     auto_upload_loop,
     cloud_preflight_loop,
     upload_remediation_loop,
+    drain_background_executors,
+    stop_background_executors,
     now_iso,
     reconcile_interrupted_jobs,
     runtime_status,
@@ -187,6 +190,7 @@ def _spa_index_response() -> FileResponse:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    shutdown_state.reset()
     validate_settings()
     prepare_sources_layout()
     ensure_schema_current()
@@ -205,10 +209,18 @@ async def lifespan(_: FastAPI):
              asyncio.create_task(cloud_preflight_loop()), asyncio.create_task(upload_remediation_loop())]
     if settings.filesystem_watch_enabled:
         tasks.append(asyncio.create_task(filesystem_watch_loop()))
-    yield
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
+    shutdown_state.register_producers(tasks)
+    shutdown_state.register_stop_callback(stop_background_executors)
+    try:
+        yield
+    finally:
+        # Also works for non-uvicorn ASGI/test lifespans. In production the
+        # server has already signalled SSE and stopped these producers BEFORE
+        # waiting for HTTP connections, rather than only reaching this point.
+        shutdown_state.request()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if not await drain_background_executors():
+            raise RuntimeError("Background workers exceeded the shutdown drain budget")
 
 
 app = FastAPI(title=PRODUCT_NAME, lifespan=lifespan)
