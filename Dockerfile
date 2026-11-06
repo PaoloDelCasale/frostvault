@@ -74,5 +74,10 @@ ENV PYTHONUNBUFFERED=1 \
     FRONTEND_DIST_DIR=/app/frontend/dist
 EXPOSE 8080
 
+# Inherited by both Compose templates. Send an authorized Host to the real
+# dependency/worker readiness route; never relax Host validation for loopback.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD ["python", "-m", "app.readiness_probe"]
+
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

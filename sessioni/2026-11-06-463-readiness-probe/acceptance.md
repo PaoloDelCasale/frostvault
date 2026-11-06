@@ -26,6 +26,33 @@ frontend and image coverage must come from PR CI, not silent local skips.
 
 ## Acceptance evidence
 
-Implementation and validation in progress. This document will be updated before
-handoff with files, targeted test commands/results, exact CI run evidence and
-remaining limitations. The PR must remain draft and unmerged for parent review.
+Dedicated draft PR: https://github.com/PaoloDelCasale/frostvault/pull/465
+Branch: `fix/463-local-readiness-probe`.
+
+Implemented files:
+- `app/readiness_probe.py`: standard-library probe, exact safe Host selection,
+  fixed local socket, no proxies/redirects/body logging, only HTTP 200 succeeds.
+- `Dockerfile`: exec-form healthcheck (30s interval, 5s Docker timeout, 60s
+  startup grace, 3 retries; 3s socket timeout in the probe).
+- `tests/test_readiness_probe.py`: 13 focused tests including real middleware
+  and `/ready`, mocked dependency seams (no DB), loopback HTTP transport, empty
+  and multiple Hosts, injection/unsupported configuration, redirects, failures,
+  unchanged external and loopback Host rejection and standard-library-only CLI.
+- `.github/workflows/migrations.yml`: production-image job also verifies its
+  healthcheck metadata and runs packaged Host/HTTP/failure tests read-only as
+  UID/GID 99:100; no live service or new public port.
+- `.env.example`, `README.md`, `docs/traefik.md`, `docs/ci.md`: Host syntax,
+  inherited healthcheck, verification, actual readiness/failure semantics.
+- Neither Compose template nor Host/proxy/auth middleware was modified.
+
+Local validation:
+- Created Python 3.12 `.venv` and installed `requirements.txt` successfully.
+- `.venv/bin/python -m unittest tests.test_readiness_probe tests.test_ci_contracts -v`
+  **45 tests passed**. Log: `targeted-tests.log` in this session directory.
+- `git diff --check` passed.
+- Existing Starlette/httpx and Authlib deprecation warnings only.
+- No local database coverage claimed or skipped: real PostgreSQL, S3-compatible,
+  frontend/browser/image verification remains exclusively in PR CI.
+
+CI validation and #462 integration status will be recorded before handoff.
+The PR must remain draft and unmerged for parent review.

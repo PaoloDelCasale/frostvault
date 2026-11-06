@@ -292,6 +292,19 @@ jobs:
           docker run --rm --entrypoint sh "$IMAGE" -c 'createdb --version'
           docker run --rm --entrypoint sh "$IMAGE" -c 'dropdb --version'
           docker run --rm --entrypoint sh "$IMAGE" -c 'psql --version'
+      - name: Verify packaged local readiness probe
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect --format '{{json .Config.Healthcheck.Test}}' "$IMAGE")" = \
+            '["CMD","python","-m","app.readiness_probe"]'
+          # Run the focused HTTP/Host/failure tests using the packaged module,
+          # numeric runtime user and read-only image, without DB/S3 access.
+          docker run --rm --read-only --cap-drop=ALL \
+            --security-opt no-new-privileges:true --user 99:100 \
+            -e PYTHONPATH=/app \
+            -v "$PWD/tests/test_readiness_probe.py:/tmp/test_readiness_probe.py:ro" \
+            --entrypoint python "$IMAGE" /tmp/test_readiness_probe.py \
+            ProbeHostTests ProbeHTTPTests ProbeFailureTests -v
       - name: Exercise PostgreSQL metadata backup path
         env:
           PGHOST: localhost

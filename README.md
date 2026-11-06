@@ -511,6 +511,48 @@ equivalent versioning, encryption, public-access blocking, ownership, and
 least-privilege controls. See [docs/aws-s3-bucket.md](docs/aws-s3-bucket.md) for
 the full model.
 
+## Container readiness
+
+The image defines a healthcheck inherited by both Compose templates. Every 30s
+it runs `python -m app.readiness_probe` against **`http://127.0.0.1:8080/ready`**
+inside the container (3s socket timeout, 5s Docker timeout, 60s startup grace,
+3 consecutive failures before `unhealthy`). `APP_PORT` changes only the host
+mapping, not this internal port. No curl or additional probe package is needed.
+
+With `ALLOWED_HOSTS` configured, the probe sends the first safe concrete hostname
+or IPv4 entry as the `Host` header, preserving its exact spelling/case. Entries
+are comma-separated and trimmed; empty entries are ignored. Use bare ASCII
+hostnames (punycode for international names), **not** URLs, ports, credentials,
+wildcards or shell/header fragments. Unsupported entries are skipped; a
+non-empty allowlist with no safe entry fails closed. With an unset/empty list,
+the probe sends `Host: 127.0.0.1`. The selected public hostname is **never resolved
+or contacted**: the connection always stays on loopback and ignores HTTP proxy
+environment variables.
+
+Host protection is unchanged, including on loopback, `/health` and `/ready`.
+Do not add loopback to `ALLOWED_HOSTS` or exempt health routes just to make a
+check pass. Only HTTP 200 from `/ready` succeeds: database, worker heartbeat,
+configuration or Source Volume layout failures return 503 and make the probe
+fail. `/health` is process liveness only and is never a fallback. Redirects,
+other statuses, invalid configuration, timeouts and connection failures fail too.
+
+Read-only verification (also works behind Traefik, without a published port):
+
+```bash
+# Run exactly the packaged check; exit 0 = ready, exit 1 = failed.
+docker compose exec -T frostvault python -m app.readiness_probe
+# Inspect only health status/history, not the container environment.
+docker inspect --format '{{json .State.Health}}' frostvault
+```
+
+For the Traefik template, add `-f compose.traefik.yaml` to the Compose command.
+Probe failure output contains only a fixed diagnostic or HTTP status, not
+configuration values or response bodies. During migrations/startup it can take
+longer than the grace period to become ready; adjust `healthcheck.start_period`
+in a local Compose override for a known long upgrade rather than weakening the
+probe. Docker health status alone does not restart a container under
+`restart: unless-stopped`; investigate the failed dependency before any restart.
+
 ## Configuration
 
 Start from `.env.local.example` for local PostgreSQL use or `.env.example` for a
