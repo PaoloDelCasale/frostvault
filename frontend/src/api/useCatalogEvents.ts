@@ -10,6 +10,8 @@ import {
 } from "./catalogEvents";
 import { apiQueryKeys } from "./query";
 
+/** Leading + trailing throttle, never a debounce: continuous writes cannot starve refresh. */
+export const CATALOG_REFRESH_MS = 5_000;
 const INITIAL_RECONNECT_MS = 1_000;
 const MAX_RECONNECT_MS = 30_000;
 const scheduleReconnectTimer = (callback: () => void, ms: number) => window.setTimeout(callback, ms);
@@ -41,7 +43,9 @@ function invalidateForSignal(
       queryClient.invalidateQueries({
         queryKey: ["files"],
         refetchType: "active",
-      }),
+        predicate: (query) => typeof query.queryKey[1] !== "number" ||
+          query.queryKey[1] === signal.vault_id || Boolean(query.queryKey[2]),
+      }, { cancelRefetch: false }),
     );
   }
   if (domains.includes("stats") || signal.has_gap) {
@@ -49,12 +53,12 @@ function invalidateForSignal(
       queryClient.invalidateQueries({
         queryKey: apiQueryKeys.stats,
         refetchType: "active",
-      }),
+      }, { cancelRefetch: false }),
     );
   }
   if (essentialShell && (domains.includes("files") || signal.has_gap)) {
     for (const prefix of ["general", "details", "file-detail", "file-job-history", "linked-job", "problems", "notifications"]) {
-      tasks.push(queryClient.invalidateQueries({ queryKey: [prefix], refetchType: "active" }));
+      tasks.push(queryClient.invalidateQueries({ queryKey: [prefix], refetchType: "active" }, { cancelRefetch: false }));
     }
   }
   void Promise.all(tasks);
@@ -90,6 +94,22 @@ export function useCatalogEvents({
     let closed = false;
     let source: { close: () => void } | null = null;
     let reconnectTimer: number | null = null;
+    let refreshTimer: number | null = null;
+    let pendingSignal: CatalogRevisionSignal | null = null;
+    const clearRefresh = () => {
+      if (refreshTimer != null) cancelSchedule(refreshTimer);
+      refreshTimer = null;
+      pendingSignal = null;
+    };
+    const flush = () => {
+      refreshTimer = null;
+      if (closed || !pendingSignal) return;
+      const signal = pendingSignal;
+      pendingSignal = null;
+      invalidateForSignal(queryClient, signal, explicitVault);
+      // Keep the cooldown even when a flush emptied the batch.
+      refreshTimer = schedule(flush, CATALOG_REFRESH_MS);
+    };
     activeVaultRef.current = vaultId;
     // A Vault switch must not inherit another Vault's high-water mark.
     lastRevisionRef.current = 0;
@@ -106,6 +126,7 @@ export function useCatalogEvents({
       if (closed) return;
       closed = true;
       clearReconnect();
+      clearRefresh();
       source?.close();
       source = null;
       onSessionChanged?.();
@@ -119,7 +140,12 @@ export function useCatalogEvents({
       }
       if (!signal.has_gap && signal.revision <= lastRevisionRef.current) return;
       lastRevisionRef.current = Math.max(lastRevisionRef.current, signal.revision);
-      invalidateForSignal(queryClient, signal, explicitVault);
+      pendingSignal = pendingSignal ? {
+        ...signal,
+        domains: [...new Set([...pendingSignal.domains, ...normalizeDomains(signal.domains)])],
+        has_gap: pendingSignal.has_gap || signal.has_gap,
+      } : { ...signal, domains: normalizeDomains(signal.domains) };
+      if (refreshTimer == null) flush();
     };
 
     const connect = () => {
@@ -224,6 +250,7 @@ export function useCatalogEvents({
       closed = true;
       activeVaultRef.current = null;
       clearReconnect();
+      clearRefresh();
       source?.close();
       source = null;
       window.removeEventListener("focus", onFocus);

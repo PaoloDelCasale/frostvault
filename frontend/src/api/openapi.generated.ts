@@ -786,6 +786,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/upload-activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Upload Activity Overview */
+        get: operations["upload_activity_overview_api_upload_activity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/upload/cancel": {
         parameters: {
             query?: never;
@@ -1990,6 +2007,27 @@ export interface components {
             tier: string | null;
         } & {
             [key: string]: unknown;
+        };
+        UploadActivityResponse: {
+            global: components["schemas"]["UploadActivitySummary"];
+            observed_at: string;
+            vaults: (components["schemas"]["UploadActivitySummary"] & {
+                vault_id: number;
+                vault_name: string;
+            })[];
+        };
+        UploadActivityStage: {
+            bytes: number;
+            files: number;
+            transferred_bytes: number;
+        };
+        UploadActivitySummary: {
+            awaiting_admission_files: number;
+            next_stable_at: string | null;
+            queued: components["schemas"]["UploadActivityStage"];
+            stability_wait: components["schemas"]["UploadActivityStage"];
+            uploading: components["schemas"]["UploadActivityStage"];
+            verifying: components["schemas"]["UploadActivityStage"];
         };
         UploadReconciliation: {
             can_resume: boolean;
@@ -3498,6 +3536,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    upload_activity_overview_api_upload_activity_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadActivityResponse"];
                 };
             };
         };
