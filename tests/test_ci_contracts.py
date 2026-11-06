@@ -212,12 +212,13 @@ class PullRequestCiContractTests(unittest.TestCase):
         for name in ("python-unit-tests", "postgresql-tests", "s3-compatible-integrity", "playwright-e2e"):
             self.assertEqual(jobs[name]["services"]["postgres"]["image"], "postgres:16")
             self.assertIn("TEST_POSTGRES_URL", jobs[name]["env"])
-        self.assertIn('if path.stem != "test_migrations_postgresql"', python_runs)
+        self.assertIn('if path.stem not in {"test_migrations_postgresql", "test_aggregate_deadlocks"}', python_runs)
         self.assertIn("postgres", postgres_job.get("services") or {})
         postgres_runs = "\n".join(
             step.get("run", "") for step in postgres_job["steps"]
         )
         self.assertIn("PostgreSQLMigrationTests", postgres_runs)
+        self.assertIn("tests.test_aggregate_deadlocks", postgres_runs)
 
     def test_playwright_e2e_job_installs_chromium_and_uploads_failures(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))

@@ -389,21 +389,50 @@ class AggregateDeadlockTests(unittest.TestCase):
 
     def test_late_old_timestamp_commit_survives_incremental_and_full_rebuild(self):
         self.seed()
-        for full in (False, True):
+        for increment, full in enumerate((False, True), 1):
+            with PostgresConnection(self.path) as marker:
+                marker.execute("INSERT INTO directory_aggregate_dirty(vault_id,path,marked_at) VALUES (2,'0',%s)", (STAMP,))
             with self.subTest(full_rebuild=full), PostgresConnection(self.path) as writer:
-                # The invalidation predates the consumer cutoff but is uncommitted.
-                writer.execute("INSERT INTO directory_aggregate_dirty(vault_id,path,marked_at) VALUES (2,'0',%s)", (STAMP,))
-                with PostgresConnection(self.path) as reader:
-                    claims = aggregates._claim_dirty_rows(reader, vault_id=2, cutoff=storage.now_iso())
-                    self.assertEqual(claims, [])
+                # Change canonical data and mark BEFORE cutoff, but commit only
+                # AFTER the consumer has built its projection from old data.
+                path = writer.execute("SELECT path FROM jobs LIMIT 1").fetchone()["path"]
+                writer.execute("UPDATE local_copies SET size=size+1")
+                with patch.object(aggregates, "_now", return_value=STAMP):
+                    aggregates.mark_path_dirty(writer, 2, path)
+                original_delete = aggregates._delete_claimed_dirty_rows
+
+                def commit_late(connection, **kwargs):
                     writer.commit()
+                    return original_delete(connection, **kwargs)
+
+                with PostgresConnection(self.path) as reader, patch.object(
+                    aggregates, "_delete_claimed_dirty_rows", side_effect=commit_late
+                ):
                     if full:
-                        aggregates.rebuild_vault_directory_aggregates(reader, 2, dirty_claims=claims)
+                        aggregates.rebuild_vault_directory_aggregates(reader, 2)
                     else:
-                        aggregates._delete_claimed_dirty_rows(reader, vault_id=2, claims=claims)
+                        aggregates.flush_directory_aggregates(reader, vault_id=2)
                 with PostgresConnection(self.path) as reader:
-                    self.assertEqual(reader.execute("SELECT COUNT(*) AS n FROM directory_aggregate_dirty").fetchone()["n"], 1)
+                    remaining = reader.execute("SELECT path FROM directory_aggregate_dirty").fetchall()
+                    self.assertIn({"path": "0"}, remaining)
                     aggregates.flush_directory_aggregates(reader, vault_id=2)
+                    root = reader.execute("SELECT local_size FROM directory_aggregates WHERE vault_id=2 AND path='0'").fetchone()
+                    self.assertEqual(root["local_size"], len(PAYLOAD) + increment)
+
+    def test_writer_does_not_wait_for_consumer_deleting_same_path(self):
+        self.seed()
+        with PostgresConnection(self.path) as marker:
+            aggregates.mark_path_dirty(marker, 2, "0/a.bin")
+        with PostgresConnection(self.path) as consumer:
+            aggregates.flush_directory_aggregates(consumer, vault_id=2)
+            # Consumer holds the DELETE locks, but no writer targets those row
+            # identities anymore. The old shared-key upsert times out here.
+            with PostgresConnection(self.path) as writer:
+                writer.execute("SET LOCAL lock_timeout='250ms'")
+                aggregates.mark_path_dirty(writer, 2, "0/b.bin")
+        with PostgresConnection(self.path) as reader:
+            self.assertEqual(reader.execute("SELECT path FROM directory_aggregate_dirty").fetchall(), [{"path": "0"}])
+            aggregates.flush_directory_aggregates(reader, vault_id=2)
 
     def test_same_connection_rollback_does_not_suppress_durable_mark(self):
         self.seed()
