@@ -89,4 +89,5 @@ def _local_stat_unchanged(path: Path, previous: os.stat_result) -> bool:
         and current.st_mtime_ns == previous.st_mtime_ns
         and current.st_dev == previous.st_dev
         and current.st_ino == previous.st_ino
+        and current.st_ctime_ns == previous.st_ctime_ns
     )

@@ -95,9 +95,24 @@ A reversible cloud marker that hides a key without containing or deleting an
 Archive Version's data.
 _Avoid_: Deleted version, empty version
 
+**Upload Snapshot**:
+The fixed content and independent expected integrity evidence of one admitted
+upload, distinct from a Local Copy that may change later.
+_Avoid_: Current file, provider observation
+
+**Upload Verification Mode**:
+The requested integrity proof for an Upload Snapshot: provider cryptographic
+ingestion proof or independent full Read-back, not an Archive Version's outcome.
+_Avoid_: Global setting, upload status
+
+**Read-back**:
+An independent reading of one exact Archive Version's complete plaintext compared
+with its durable expected digest, with cloud retrieval and egress costs.
+_Avoid_: HEAD, provider ingestion proof
+
 **Integrity**:
-The durable result of comparing an Archive Version's plaintext content with its
-expected digest: unverified, verified, or mismatch.
+The durable result of proving an Archive Version's content against independent
+expected evidence: unverified, verified, or mismatch.
 _Avoid_: Upload status, availability
 
 **Availability**:

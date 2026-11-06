@@ -91,6 +91,8 @@ class Settings:
         if not os.getenv("BANDWIDTH_LIMIT_KIBPS", "").strip()
         else max(0, int(os.getenv("BANDWIDTH_LIMIT_KIBPS", "0")))
     )
+    # Deployment-owned default for NEW uploads only; Vaults may inherit/override.
+    upload_verification: str = os.getenv("UPLOAD_VERIFICATION", "s3_checksum")
     # Plain-vault recovery uses boto3 TransferManager parallel range GETs above
     # the multipart threshold.
     s3_download_max_concurrency: int = max(
@@ -192,6 +194,8 @@ def settings_snapshot(configured: Settings | Any) -> Settings:
 
 
 def validate_settings() -> None:
+    if settings.upload_verification not in {"s3_checksum", "read_back"}:
+        raise RuntimeError("UPLOAD_VERIFICATION must be s3_checksum or read_back")
     if not 1 <= settings.smtp_port <= 65535:
         raise RuntimeError("SMTP_PORT must be between 1 and 65535")
     from psycopg.conninfo import conninfo_to_dict

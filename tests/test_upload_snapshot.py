@@ -1,0 +1,220 @@
+"""No DB/network: independent snapshots, pinned SHA256 multipart wire seam."""
+import base64
+import hashlib
+import io
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+import boto3
+from botocore.stub import Stubber, ANY
+from s3transfer.futures import TransferCoordinator
+from s3transfer.upload import InterruptReader
+from s3transfer.utils import ReadFileChunk
+
+from app.services.s3_upload import upload_file, _UploadClient, _shared_budget
+from app.services.upload_snapshot import (
+    CHUNK_SIZE, MULTIPART_THRESHOLD, prepare_upload_snapshot, UploadSnapshot,
+    composite_checksum, sha256_b64, check_s3_proof, UploadProofMismatch,
+)
+from app.storage import OperationCancelled
+
+
+class UploadSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.path = Path(temp.name) / "content"
+        self.path.write_bytes(b"snapshot A")
+
+    def snapshot(self, payload=None):
+        if payload is not None:
+            self.path.write_bytes(payload)
+        return prepare_upload_snapshot(self.path, lambda: None)[0]
+
+    def test_plaintext_and_single_put_proof_from_one_snapshot(self):
+        snapshot = self.snapshot()
+        self.assertEqual(snapshot.plaintext_sha256, hashlib.sha256(b"snapshot A").hexdigest())
+        self.assertEqual(snapshot.checksum_sha256, sha256_b64(b"snapshot A"))
+        self.assertEqual(snapshot.checksum_type, "FULL_OBJECT")
+        self.assertEqual(UploadSnapshot.from_json(snapshot.as_json()), snapshot)
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
+
+    def test_multipart_composite_uses_binary_part_hashes_and_correct_boundaries(self):
+        payload = b"a" * MULTIPART_THRESHOLD + b"last"
+        snapshot = self.snapshot(payload)
+        parts = (sha256_b64(payload[:MULTIPART_THRESHOLD]), sha256_b64(payload[MULTIPART_THRESHOLD:]))
+        self.assertEqual(snapshot.part_checksums, parts)
+        self.assertEqual(snapshot.checksum_sha256, composite_checksum(parts))
+        self.assertNotEqual(snapshot.checksum_sha256.split("-")[0], sha256_b64(payload))
+        self.assertEqual(snapshot.part_length(2), 4)
+        self.assertEqual(UploadSnapshot.from_json(snapshot.as_json()), snapshot)
+        # One-part multipart at the threshold is still COMPOSITE, never plaintext.
+        single_part = self.snapshot(b"a" * MULTIPART_THRESHOLD)
+        self.assertTrue(single_part.checksum_sha256.endswith("-1"))
+        self.assertEqual(single_part.checksum_type, "COMPOSITE")
+
+    def test_empty_file_has_whole_object_sha256(self):
+        snapshot = self.snapshot(b"")
+        self.assertEqual(snapshot.checksum_sha256, sha256_b64(b""))
+        self.assertEqual(UploadSnapshot.from_json(snapshot.as_json()), snapshot)
+
+    def test_mutation_or_path_replacement_during_hash_never_produces_evidence(self):
+        for replace in (False, True):
+            self.path.write_bytes(b"original")
+            calls = 0
+            def active():
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    if replace:
+                        other = self.path.with_name("replacement")
+                        other.write_bytes(b"replaced")
+                        other.replace(self.path)
+                    else:
+                        self.path.write_bytes(b"changed-and-longer")
+            with self.assertRaisesRegex(RuntimeError, "changed since fingerprinting"):
+                prepare_upload_snapshot(self.path, active)
+
+    def test_cancellation_interrupts_hash(self):
+        with self.assertRaises(OperationCancelled):
+            prepare_upload_snapshot(self.path, Mock(side_effect=OperationCancelled("stop")))
+
+    def test_proof_absence_is_distinct_from_wrong_checksum_type_identity_and_size(self):
+        snapshot = self.snapshot()
+        self.assertFalse(check_s3_proof({"VersionId": "v"}, version_id="v", snapshot=snapshot))
+        valid = {"VersionId": "v", "ChecksumType": "FULL_OBJECT", "ChecksumSHA256": snapshot.checksum_sha256}
+        self.assertTrue(check_s3_proof(valid, version_id="v", snapshot=snapshot))
+        for changes in ({"ChecksumSHA256": "wrong"}, {"ChecksumType": "COMPOSITE"}, {"VersionId": "other"}, {"ContentLength": 99}):
+            with self.subTest(changes=changes), self.assertRaises(UploadProofMismatch):
+                check_s3_proof({**valid, **changes}, version_id="v", snapshot=snapshot)
+        self.assertTrue(check_s3_proof({"VersionId": "v", "ChecksumSHA256": snapshot.checksum_sha256}, version_id="v", snapshot=snapshot, completion=True))
+        self.assertFalse(check_s3_proof({"VersionId": "v", "ChecksumSHA256": snapshot.checksum_sha256}, version_id="v", snapshot=snapshot))
+
+    def test_invalid_durable_evidence_fails_closed(self):
+        import json
+        baseline = json.loads(self.snapshot().as_json())
+        for change in ({"checksum_sha256": "wrong"}, {"part_checksums": []}, {"algorithm": "CRC32"}, {"size": -1}, {"format": 2}):
+            with self.assertRaises(ValueError):
+                UploadSnapshot.from_json(json.dumps({**baseline, **change}))
+
+    def test_hash_reads_bounded_chunks_without_materializing_whole_file(self):
+        self.path.write_bytes(b"x" * (3 * CHUNK_SIZE + 7))
+        real_fdopen = __import__("os").fdopen
+        amounts = []
+        class TrackingFile:
+            def __init__(self, stream): self.stream = stream
+            def read(self, amount):
+                amounts.append(amount)
+                assert 0 < amount <= CHUNK_SIZE
+                return self.stream.read(amount)
+            def fileno(self): return self.stream.fileno()
+            def __enter__(self): return self
+            def __exit__(self, *args): self.stream.close()
+        with patch("app.services.upload_snapshot.os.fdopen", side_effect=lambda *a, **kw: TrackingFile(real_fdopen(*a, **kw))):
+            self.snapshot()
+        self.assertGreater(len(amounts), 3)
+
+
+class SHA256ManagedUploadTests(UploadSnapshotTests):
+    def setUp(self):
+        super().setUp()
+        self.client = boto3.client("s3", region_name="us-east-1", aws_access_key_id="test", aws_secret_access_key="test")
+
+    def upload(self, snapshot, **kwargs):
+        return upload_file(self.client, source=self.path, bucket="bucket", key="key", snapshot=snapshot,
+                           check_active=kwargs.pop("check_active", lambda: None), on_progress=lambda _: None, **kwargs)
+
+    def test_sha256_put_raw_ack_precedes_proof_errors_and_preserves_metadata(self):
+        snapshot = self.snapshot()
+        for checksum in (None, "wrong", snapshot.checksum_sha256):
+            response = {"VersionId": "exact"}
+            if checksum is not None: response["ChecksumSHA256"] = checksum
+            ack = Mock()
+            with Stubber(self.client) as stub:
+                stub.add_response("put_object", response, {"Bucket": "bucket", "Key": "key", "Body": ANY,
+                                  "ChecksumAlgorithm": "SHA256", "ChecksumSHA256": snapshot.checksum_sha256,
+                                  "Metadata": {"opaque": "token"}})
+                self.assertEqual(self.upload(snapshot, metadata={"opaque": "token"}, on_acknowledged=ack), response)
+                ack.assert_called_once_with(response)
+                stub.assert_no_pending_responses()
+
+    def test_ack_hook_and_exception_retain_version_before_cancellation(self):
+        snapshot = self.snapshot()
+        ack = Mock(side_effect=OperationCancelled("lost claim"))
+        with Stubber(self.client) as stub:
+            stub.add_response("put_object", {"VersionId": "acknowledged", "ChecksumSHA256": "wrong"})
+            with self.assertRaises(OperationCancelled) as caught:
+                self.upload(snapshot, on_acknowledged=ack)
+            self.assertEqual(caught.exception.upload_response["VersionId"], "acknowledged")
+            ack.assert_called_once()
+            stub.assert_no_pending_responses()
+
+    def test_multipart_sha256_composite_request_uses_independent_expected_parts(self):
+        snapshot = self.snapshot(b"a" * MULTIPART_THRESHOLD + b"tail")
+        with Stubber(self.client) as stub:
+            stub.add_response("create_multipart_upload", {"UploadId": "mpu"},
+                              {"Bucket": "bucket", "Key": "key", "ChecksumAlgorithm": "SHA256", "ChecksumType": "COMPOSITE"})
+            # Serialize only for deterministic Stubber response ordering.
+            for number, checksum in enumerate(snapshot.part_checksums, 1):
+                stub.add_response("upload_part", {"ETag": f"etag{number}", "ChecksumSHA256": checksum},
+                                  {"Bucket": "bucket", "Key": "key", "UploadId": "mpu", "PartNumber": number,
+                                   "Body": ANY, "ChecksumAlgorithm": "SHA256", "ChecksumSHA256": checksum})
+            stub.add_response("complete_multipart_upload", {"VersionId": "exact-mpu", "ChecksumType": "COMPOSITE", "ChecksumSHA256": snapshot.checksum_sha256},
+                              {"Bucket": "bucket", "Key": "key", "UploadId": "mpu", "ChecksumType": "COMPOSITE",
+                               "ChecksumSHA256": snapshot.checksum_sha256, "MpuObjectSize": snapshot.size,
+                               "MultipartUpload": {"Parts": [{"ETag": f"etag{n}", "PartNumber": n, "ChecksumSHA256": c} for n,c in enumerate(snapshot.part_checksums,1)]}})
+            from boto3.s3.transfer import TransferConfig
+            with patch("app.services.s3_upload.TransferConfig", return_value=TransferConfig(max_concurrency=1)):
+                self.assertEqual(self.upload(snapshot)["VersionId"], "exact-mpu")
+            stub.assert_no_pending_responses()
+
+    def test_A_to_B_between_hashing_and_transport_cannot_send_B(self):
+        snapshot = self.snapshot()
+        self.path.write_bytes(b"snapshot B")
+        with patch.object(self.client, "put_object") as put:
+            with self.assertRaisesRegex(RuntimeError, "changed since fingerprinting"):
+                self.upload(snapshot)
+            put.assert_not_called()
+
+    def test_buffered_A_is_sent_even_if_source_changes_during_provider_read(self):
+        snapshot = self.snapshot()
+        real_put = self.client.put_object
+        def put(**kwargs):
+            self.path.write_bytes(b"snapshot B")
+            self.assertEqual(kwargs["Body"].read(), b"snapshot A")
+            kwargs["Body"].seek(0)
+            self.assertEqual(kwargs["Body"].read(3), b"sna")
+            return real_put(**kwargs)
+        with Stubber(self.client) as stub, patch.object(self.client, "put_object", side_effect=put):
+            stub.add_response("put_object", {"VersionId": "A", "ChecksumSHA256": snapshot.checksum_sha256})
+            self.assertEqual(self.upload(snapshot)["VersionId"], "A")
+
+    def test_validated_transport_body_retains_real_shared_budget_cancellation_and_progress(self):
+        snapshot = self.snapshot()
+        coordinator = TransferCoordinator()
+        body = ReadFileChunk(_shared_budget(1024**3).get_bandwith_limited_stream(InterruptReader(io.BytesIO(b"snapshot A"), coordinator), coordinator, enabled=False), snapshot.size, snapshot.size, callbacks=[])
+        facade = _UploadClient(self.client, snapshot=snapshot, max_bandwidth=1024**3)
+        wrapped = facade._validated_body(body, 1)
+        self.addCleanup(lambda: (wrapped.signal_not_transferring(), wrapped.close()))
+        self.assertIs(wrapped._fileobj._leaky_bucket, _shared_budget(1024**3)._leaky_bucket)
+        progress = Mock()
+        wrapped._callbacks = [progress]
+        wrapped.signal_transferring()
+        self.assertEqual(wrapped.read(3), b"sna")
+        progress.assert_called_with(bytes_transferred=3)
+        coordinator.set_exception(OperationCancelled("cancelled"))
+        with self.assertRaises(OperationCancelled): wrapped.read(1)
+
+    def test_cancel_during_bounded_buffering_stops_before_put(self):
+        snapshot = self.snapshot(b"a" * (2 * CHUNK_SIZE))
+        checks = 0
+        def active():
+            nonlocal checks
+            checks += 1
+            if checks > 2: raise OperationCancelled("stopped")
+        with patch.object(self.client, "put_object") as put:
+            with self.assertRaises(OperationCancelled): self.upload(snapshot, check_active=active)
+            put.assert_not_called()

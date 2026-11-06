@@ -7,6 +7,7 @@ import { UploadRetryActions } from "@/components/UploadRetryActions";
 import { useI18n } from "@/i18n";
 import { LifecyclePanel } from "./LifecyclePanel";
 import { RetentionPanel } from "./RetentionPanel";
+import { UploadVerificationPanel } from "./UploadVerificationPanel";
 
 export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId: number; vaultName: string; onStopped: () => void }) {
   const { t } = useI18n();
@@ -32,6 +33,7 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     <label className="flex min-h-11 items-center gap-3 font-semibold"><input type="checkbox" checked={auto ?? false} disabled={auto === null || busy} onChange={() => void toggle()} />{t("folder_settings.policy_auto_upload")}</label>
     <p className="text-sm text-muted">{t("essential.protection_help")}</p>
     <UploadRetryActions vaultId={vaultId} />
+    <UploadVerificationPanel vaultId={vaultId} onNotice={show} />
     <RetentionPanel vaultId={vaultId} onNotice={show} />
     <details><summary className="min-h-11 cursor-pointer py-3 font-semibold">{t("folder_settings.advanced")}</summary><LifecyclePanel vaultId={vaultId} onNotice={show} /></details>
     <p className="text-sm text-muted">{t("stop_protection.local_retained")}</p>

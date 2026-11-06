@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import base64
 import logging
+import io
+import hashlib
 import threading
 import zlib
 from pathlib import Path
@@ -18,6 +20,10 @@ from botocore.exceptions import ClientError
 from s3transfer.bandwidth import BandwidthLimiter, LeakyBucket
 from s3transfer.manager import TransferManager
 from s3transfer.subscribers import BaseSubscriber
+from s3transfer.upload import InterruptReader
+from s3transfer.utils import ReadFileChunk
+
+from .upload_snapshot import UploadSnapshot, CHUNK_SIZE, MULTIPART_THRESHOLD
 
 _budget_lock = threading.Lock()
 _budgets: dict[int, BandwidthLimiter] = {}
@@ -31,27 +37,116 @@ def _shared_budget(rate: int) -> BandwidthLimiter:
 
 
 class _UploadClient:
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, *, snapshot: UploadSnapshot | None = None,
+                 check_active: Callable[[], None] = lambda: None,
+                 max_bandwidth: int | None = None,
+                 on_acknowledged: Callable[[dict[str, Any]], None] | None = None) -> None:
         self.client = client
+        self.snapshot = snapshot
+        self.check_active = check_active
+        self.max_bandwidth = max_bandwidth
+        self.on_acknowledged = on_acknowledged
         self.response: dict[str, Any] | None = None
         self.pending: dict[str, Any] | None = None
+
+    def _acknowledge(self, response: dict[str, Any]) -> dict[str, Any]:
+        # Raw response identity is available before cancellation/proof/HEAD or
+        # any worker callback can throw. #464 can journal it via this hook.
+        self.response = response
+        if self.on_acknowledged is not None:
+            self.on_acknowledged(dict(response))
+        return response
+
+    def _validated_body(self, body: Any, number: int) -> ReadFileChunk:
+        snapshot = self.snapshot
+        assert snapshot is not None
+        length = snapshot.part_length(number)
+        if len(body) != length:
+            raise RuntimeError("Local file changed since fingerprinting")
+        # Pinned classic filename bodies are ReadFileChunk -> [bandwidth] ->
+        # InterruptReader. Preserve cancellation, shared budget, progress and
+        # retry seek behavior, but send only an independently validated buffer.
+        body.signal_not_transferring()
+        digest = hashlib.sha256()
+        buffer = io.BytesIO()
+        try:
+            left = length
+            while left:
+                self.check_active()
+                chunk = body.read(min(CHUNK_SIZE, left))
+                if not chunk:
+                    raise RuntimeError("Local file changed since fingerprinting")
+                buffer.write(chunk)
+                digest.update(chunk)
+                left -= len(chunk)
+            if base64.b64encode(digest.digest()).decode("ascii") != snapshot.part_checksums[number - 1]:
+                raise RuntimeError("Local file changed since fingerprinting")
+            self.check_active()
+            buffer.seek(0)
+            original = body._fileobj
+            if self.max_bandwidth:
+                original = original._fileobj
+            coordinator = original._transfer_coordinator
+            wrapped = InterruptReader(buffer, coordinator)
+            if self.max_bandwidth:
+                wrapped = _shared_budget(self.max_bandwidth).get_bandwith_limited_stream(
+                    wrapped, coordinator, enabled=False,
+                )
+            return ReadFileChunk(wrapped, length, length, callbacks=body._callbacks,
+                                 enable_callbacks=False, close_callbacks=body._close_callbacks)
+        except BaseException:
+            buffer.close()
+            raise
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.client, name)
 
     def put_object(self, **kwargs: Any) -> dict[str, Any]:
-        self.response = self.client.put_object(**kwargs)
-        return self.response
+        if self.snapshot is not None:
+            kwargs["ChecksumAlgorithm"] = "SHA256"
+            kwargs["ChecksumSHA256"] = self.snapshot.checksum_sha256
+            with self._validated_body(kwargs["Body"], 1) as body:
+                kwargs["Body"] = body
+                return self._acknowledge(self.client.put_object(**kwargs))
+        return self._acknowledge(self.client.put_object(**kwargs))
+
+    def upload_part(self, **kwargs: Any) -> dict[str, Any]:
+        if self.snapshot is None:
+            return self.client.upload_part(**kwargs)
+        number = int(kwargs["PartNumber"])
+        expected = self.snapshot.part_checksums[number - 1]
+        kwargs["ChecksumAlgorithm"] = "SHA256"
+        kwargs["ChecksumSHA256"] = expected
+        with self._validated_body(kwargs["Body"], number) as body:
+            kwargs["Body"] = body
+            result = self.client.upload_part(**kwargs)
+        if result.get("ChecksumSHA256") is not None and result["ChecksumSHA256"] != expected:
+            raise RuntimeError("S3 upload part checksum mismatch")
+        # Completion carries OUR independently computed checksums, never an
+        # expected checksum reconstructed from provider responses.
+        return {**result, "ChecksumSHA256": expected}
 
     def create_multipart_upload(self, **kwargs: Any) -> dict[str, Any]:
+        if self.snapshot is not None:
+            kwargs["ChecksumAlgorithm"] = "SHA256"
+            kwargs["ChecksumType"] = "COMPOSITE"
         result = self.client.create_multipart_upload(**kwargs)
         self.pending = {"Bucket": kwargs["Bucket"], "Key": kwargs["Key"], "UploadId": result["UploadId"]}
         return result
 
     def complete_multipart_upload(self, **kwargs: Any) -> dict[str, Any]:
-        self.response = self.client.complete_multipart_upload(**kwargs)
+        if self.snapshot is not None:
+            kwargs["ChecksumType"] = "COMPOSITE"
+            kwargs["ChecksumSHA256"] = self.snapshot.checksum_sha256
+            kwargs["MpuObjectSize"] = self.snapshot.size
+            parts = kwargs["MultipartUpload"]["Parts"]
+            if [part["PartNumber"] for part in parts] != list(range(1, len(self.snapshot.part_checksums) + 1)):
+                raise RuntimeError("Upload Snapshot completion layout mismatch")
+            for part, checksum in zip(parts, self.snapshot.part_checksums):
+                part["ChecksumSHA256"] = checksum
+        response = self.client.complete_multipart_upload(**kwargs)
         self.pending = None
-        return self.response
+        return self._acknowledge(response)
 
     def abort_multipart_upload(self, **kwargs: Any) -> dict[str, Any]:
         try:
@@ -78,6 +173,9 @@ def upload_file(
     client: Any, *, source: Path, bucket: str, key: str,
     check_active: Callable[[], None], on_progress: Callable[[int], None],
     max_bandwidth: int | None = None,
+    snapshot: UploadSnapshot | None = None,
+    metadata: dict[str, str] | None = None,
+    on_acknowledged: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Return the upload response or fail closed, aborting incomplete multipart.
 
@@ -87,20 +185,35 @@ def upload_file(
     Completed versions are NEVER deleted here, even after cancellation.
     """
     check_active()
-    crc = 0
-    before = source.stat()
-    with source.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            check_active()
-            crc = zlib.crc32(chunk, crc)
-    after = source.stat()
-    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
-        after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
-    ):
-        raise RuntimeError("Local file changed since fingerprinting")
-    checksum = base64.b64encode(crc.to_bytes(4, "big")).decode("ascii")
-    facade = _UploadClient(client)
+    checksum = None
+    if snapshot is None:
+        # Shared rename/copy/recovery callers retain the pre-existing CRC32
+        # transport contract and their independent full verification behavior.
+        crc = 0
+        before = source.stat()
+        with source.open("rb") as stream:
+            while chunk := stream.read(CHUNK_SIZE):
+                check_active()
+                crc = zlib.crc32(chunk, crc)
+        after = source.stat()
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+            after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
+        ):
+            raise RuntimeError("Local file changed since fingerprinting")
+        checksum = base64.b64encode(crc.to_bytes(4, "big")).decode("ascii")
+    else:
+        UploadSnapshot.from_json(snapshot.as_json())
+        if source.stat(follow_symlinks=False).st_size != snapshot.size:
+            raise RuntimeError("Local file changed since fingerprinting")
+    facade = _UploadClient(client, snapshot=snapshot, check_active=check_active,
+                           max_bandwidth=max_bandwidth, on_acknowledged=on_acknowledged)
     config = TransferConfig(max_bandwidth=max_bandwidth, preferred_transfer_client="classic")
+    if snapshot is not None:
+        config.multipart_threshold = MULTIPART_THRESHOLD
+        config.multipart_chunksize = snapshot.part_size
+        # Hard bounded buffers: at most two parts per upload, no whole-file
+        # materialization, plus <=10,000 small independent part digests.
+        config.max_request_concurrency = min(config.max_request_concurrency, 2)
     manager = TransferManager(facade, config)
     if max_bandwidth:
         # One limiter across managers, not one cap per concurrent Job. This
@@ -109,12 +222,16 @@ def upload_file(
     future = None
     failed = True
     try:
-        future = manager.upload(
-            str(source), bucket, key,
-            extra_args={"ChecksumAlgorithm": "CRC32", "ChecksumType": "FULL_OBJECT",
-                        "ChecksumCRC32": checksum},
-            subscribers=[_Progress(on_progress)],
-        )
+        extra_args = ({"ChecksumAlgorithm": "SHA256", "ChecksumType": snapshot.checksum_type}
+                      if snapshot is not None else
+                      {"ChecksumAlgorithm": "CRC32", "ChecksumType": "FULL_OBJECT", "ChecksumCRC32": checksum})
+        # Do not pass ChecksumSHA256 to manager.upload: pinned s3transfer forces
+        # FULL_OBJECT for explicit checksums. The facade sets PUT/part/completion
+        # fields at their distinct API boundaries instead.
+        if metadata is not None:
+            extra_args["Metadata"] = dict(metadata)
+        future = manager.upload(str(source), bucket, key, extra_args=extra_args,
+                                subscribers=[_Progress(on_progress)])
         waiter = threading.Event()
         while not future.done():
             check_active()
@@ -124,6 +241,10 @@ def upload_file(
         response = facade.response
         if not response or not response.get("VersionId") or response["VersionId"] == "null":
             raise RuntimeError("Upload stored without an S3 VersionId; bucket Versioning is required")
+        if snapshot is not None:
+            # Evidence is evaluated by the worker only AFTER catalog linkage.
+            failed = False
+            return response
         proof = response
         if not proof.get("ChecksumCRC32"):
             # Some compatible servers omit checksums in completion responses.
@@ -139,6 +260,12 @@ def upload_file(
             raise RuntimeError("S3 did not confirm the FULL_OBJECT upload checksum")
         failed = False
         return response
+    except BaseException as exc:
+        if facade.response is not None:
+            # Preserve the original exception type/retry classification while
+            # exposing identity to callers if a post-ack callback/check throws.
+            exc.upload_response = dict(facade.response)
+        raise
     finally:
         if failed and future is not None:
             future.cancel()

@@ -412,10 +412,44 @@ Docker network and set `PGHOST` to the PostgreSQL service name.
 
 All Vaults store readable object keys `vaults/<uuid>/<relative-path>` and original
 file bytes, without client-side encryption or extension transformation. Managed
-SDK uploads use multipart transfers, a server-validated CRC32 `FULL_OBJECT`
-checksum, a shared optional upload bandwidth cap, and throttled progress. The
-upload response supplies the VersionId; verification streams that exact version
-and compares SHA-256 with the local upload snapshot. Recovery also pins VersionId.
+SDK uploads use multipart transfers, a shared optional upload bandwidth cap and
+throttled progress. New uploads default to **S3 SHA-256 ingestion proof**
+(`UPLOAD_VERIFICATION=s3_checksum`); `read_back` requests an independent complete
+GET/SHA-256. Vault settings offer inherit / S3 SHA-256 / full read-back and show
+the deployment default and effective mode. The mode is frozen at Job admission;
+later setting changes affect only new uploads, not retries or existing evidence.
+
+Both plaintext SHA-256 and independently expected provider proof come from the
+same stable Upload Snapshot. Single PUT uses SHA256 `FULL_OBJECT`; multipart uses
+SHA256 `COMPOSITE` with independently hashed parts and recorded boundaries, **not**
+the plaintext digest. Bounded validated part buffers prevent a changed Local Copy
+from being sent under an earlier digest; no verification artifacts are written
+inside the Vault or as an unbounded whole-file temporary copy. Normal buffers are
+8 MiB, adjusted up to 1 GiB for large objects (5 TiB maximum), at most two per Job;
+hashing reads 1 MiB chunks. Completed snapshot A never protects later Local Copy B.
+
+The upload response supplies the exact VersionId and is registered before later
+HEAD/proof checks. Valid S3 cryptographic proof grants Integrity verified and the
+usual guarded Current Snapshot cleanup/local release. It proves **provider
+ingestion**, not independently reread storage. Missing proof or an unsupported
+checksum HEAD API triggers a visible full exact-VersionId GET/SHA-256 fallback;
+wrong checksum/type/size/identity blocks, never silently downgrades. Read-back and
+fallback download approximately the entire uploaded size (e.g. 9 GB upload +
+9 GB download), potentially incurring request, retrieval and **S3 egress costs**.
+File Details show the recorded method, fallback reason and completed read-back
+byte count. Legacy versions without independent S3 expected evidence require
+read-back against their durable plaintext digest, never remote checksum inference
+or rehashing a changed Local Copy. Retries of linked versions do not issue another
+PUT. Providers refusing checksum-bearing writes fail safely rather than silently
+repeating an ambiguous upload without checksum.
+
+Rename, Move now, Recovery and Reconnect retain their existing full/independent
+verification behavior and exact VersionId pins; this is only a new-upload policy.
+Migration `0063_upload_verification` adds nullable evidence and override fields,
+without backfilling or rewriting existing trust. Downgrade discards the new method/
+expected-provider fields, not plaintext digests or verified/available state.
+This change does not provide crash-gap provenance, orphan cleanup or automatic
+historical repair (#464/#459). See [ADR-0023](docs/adr/0023-new-upload-ingestion-proof.md).
 Incomplete multipart uploads are aborted on failure/cancellation, with a seven-day
 lifecycle safety net for process interruption. No external transfer binary or
 remote configuration is required.
@@ -486,8 +520,8 @@ Before indexing a terabyte of data:
    (or trigger an administrative `POST /api/scan` if you need a full
    reconciliation immediately);
 3. upload one file and confirm that a distinct S3 version exists in the bucket;
-4. confirm the catalog keeps the version unverified until plaintext read-back
-   verification completes;
+4. confirm the catalog keeps the version unverified until the requested SHA-256
+   proof (or its visible exact read-back fallback) succeeds;
 5. confirm **Free local space** and **Recover** remain unavailable for an
    unverified version;
 6. keep the metadata backup master key and AWS access/recovery instructions in

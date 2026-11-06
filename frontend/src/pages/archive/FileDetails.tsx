@@ -7,6 +7,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { StorageBadge } from "@/components/StorageBadge";
 import { CloudPurgeDialog } from "./CloudPurgeDialog";
+import { VerificationEvidence } from "./VerificationEvidence";
 import type { Target } from "./RecoverSelection";
 
 export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { target: Target; t: (key: string, params?: Record<string, string | number>) => string; onClose: () => void; onRecover: () => void; onRefresh: () => void }) {
@@ -38,6 +39,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
         {item && <>
           <p>{t("essential.protection")}: {t(`state.${item.state}`)}</p><p>{t("essential.copy_location", { local: t(item.local_exists ? "essential.on_server" : "essential.not_on_server"), cloud: t(item.cloud_exists ? "essential.in_cloud" : "essential.not_in_cloud") })}</p>
           <dl className="grid gap-2"><div><dt>{t("essential.last_verified")}</dt><dd>{version?.verified_at ? String(version.verified_at) : "—"}</dd></div><div><dt>{t("essential.cloud_class")}</dt><dd>{storage ? <StorageBadge storage={storage === "DEEP_ARCHIVE" ? "deep-archive" : storage.startsWith("GLACIER") ? "glacier" : "standard"} label={t(`storage.${storage}`)} /> : "—"}</dd></div><div><dt>{t("essential.version_id")}</dt><dd className="break-all">{version?.provider_version_id ? String(version.provider_version_id) : "—"}</dd></div><div><dt>{t("essential.integrity")}</dt><dd>{version?.integrity ?? item.integrity ?? "—"}</dd></div></dl>
+          <VerificationEvidence method={item.verification_method} requested={item.upload_verification_requested} fallback={item.verification_fallback_reason} egress={item.verification_egress_bytes} t={t} />
           {item.state === "problem" && <section className="grid gap-3 rounded border border-line p-3"><h2 className="font-bold">{t("essential.open_problem")}</h2><p>{t(item.cloud_only_conflict ? "essential.conflict_help" : "essential.problem_help")}</p>
             {item.cloud_only_conflict ? <Button disabled={busy} variant="danger" onClick={() => setReplace(true)}>{t("essential.replace_cloud")}</Button> : item.upload_eligible ? <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload", { path: item.path }))}>{t("essential.retry")}</Button> : null}
           </section>}

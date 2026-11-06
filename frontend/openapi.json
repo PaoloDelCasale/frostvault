@@ -101,6 +101,40 @@
               "null"
             ]
           },
+          "upload_verification_requested": {
+            "enum": [
+              "s3_checksum",
+              "read_back",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verification_egress_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "verification_fallback_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verification_method": {
+            "enum": [
+              "s3_checksum",
+              "read_back",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "verified_at": {
             "type": [
               "string",
@@ -1813,11 +1847,25 @@
           "auto_upload": {
             "type": "boolean"
           },
+          "effective_upload_verification": {
+            "enum": [
+              "s3_checksum",
+              "read_back"
+            ],
+            "type": "string"
+          },
           "exclude_globs": {
             "items": {
               "type": "string"
             },
             "type": "array"
+          },
+          "global_upload_verification": {
+            "enum": [
+              "s3_checksum",
+              "read_back"
+            ],
+            "type": "string"
           },
           "include_globs": {
             "items": {
@@ -1840,6 +1888,18 @@
           },
           "stability_seconds": {
             "type": "number"
+          },
+          "upload_verification": {
+            "description": "Override for new upload admissions; null inherits deployment default.",
+            "enum": [
+              "s3_checksum",
+              "read_back",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1896,6 +1956,21 @@
             "minimum": 0.0,
             "title": "Stability Seconds",
             "type": "integer"
+          },
+          "upload_verification": {
+            "anyOf": [
+              {
+                "enum": [
+                  "s3_checksum",
+                  "read_back"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upload Verification"
           }
         },
         "title": "OperationPolicyUpdate",
@@ -2822,11 +2897,45 @@
           "upload_eligible": {
             "type": "boolean"
           },
+          "upload_verification_requested": {
+            "enum": [
+              "s3_checksum",
+              "read_back",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "vault_id": {
             "type": "integer"
           },
           "vault_name": {
             "type": "string"
+          },
+          "verification_egress_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "verification_fallback_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verification_method": {
+            "enum": [
+              "s3_checksum",
+              "read_back",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
