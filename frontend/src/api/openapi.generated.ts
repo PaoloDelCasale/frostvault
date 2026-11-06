@@ -772,6 +772,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/upload/retry-failed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry Failed Uploads
+         * @description Explicit scope: omitted Vault means installation, never Session choice.
+         */
+        post: operations["retry_failed_uploads_api_upload_retry_failed_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/vault/lifecycle": {
         parameters: {
             query?: never;
@@ -1336,6 +1356,12 @@ export interface components {
             [key: string]: unknown;
         };
         GeneralOverview: {
+            cloud_preflight?: {
+                next_probe_at: string | null;
+                remediation: string | null;
+                /** @enum {string} */
+                status: "unknown" | "ready" | "blocked";
+            };
             currency?: string;
             email_configured?: boolean;
             last_verified_backup?: string | null;
@@ -1738,6 +1764,9 @@ export interface components {
             tier: string;
         } & {
             [key: string]: unknown;
+        };
+        RetryFailedUploadsResponse: {
+            item_count: number;
         };
         ScanResponse: {
             message: string;
@@ -3298,6 +3327,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobCancelResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_failed_uploads_api_upload_retry_failed_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetryFailedUploadsResponse"];
                 };
             };
             /** @description Validation Error */

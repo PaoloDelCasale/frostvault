@@ -2293,6 +2293,11 @@
         "jobs"
       ]
     },
+    "RetryFailedUploadsResponse": {
+      "type": "object",
+      "properties": { "item_count": { "type": "integer" } },
+      "required": ["item_count"]
+    },
     "GeneralOverview": {
       "type": "object",
       "additionalProperties": false,
@@ -2354,6 +2359,15 @@
         },
         "email_configured": {
           "type": "boolean"
+        },
+        "cloud_preflight": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string", "enum": ["unknown", "ready", "blocked"] },
+            "remediation": { "type": ["string", "null"] },
+            "next_probe_at": { "type": ["string", "null"] }
+          },
+          "required": ["status", "remediation", "next_probe_at"]
         },
         "last_verified_backup": {
           "type": [

@@ -147,6 +147,7 @@ from .storage import (
     cleanup_abandoned_restore_files,
     filesystem_watch_loop,
     auto_upload_loop,
+    cloud_preflight_loop,
     now_iso,
     reconcile_interrupted_jobs,
     runtime_status,
@@ -199,7 +200,8 @@ async def lifespan(_: FastAPI):
     cleanup_abandoned_restore_files()
     reconcile_interrupted_jobs()
     protection_stop_service.reconcile_all()
-    tasks = [asyncio.create_task(background_loop()), asyncio.create_task(auto_upload_loop())]
+    tasks = [asyncio.create_task(background_loop()), asyncio.create_task(auto_upload_loop()),
+             asyncio.create_task(cloud_preflight_loop())]
     if settings.filesystem_watch_enabled:
         tasks.append(asyncio.create_task(filesystem_watch_loop()))
     yield
@@ -2331,11 +2333,7 @@ def upload(
     return {**queued, **_api_message(request, "api.upload_started")}
 
 
-class RetryFailedUploadsResponse(BaseModel):
-    item_count: int
-
-
-@app.post("/api/upload/retry-failed", status_code=202, response_model=RetryFailedUploadsResponse)
+@app.post("/api/upload/retry-failed", status_code=202, response_model=response_model("RetryFailedUploadsResponse"))
 def retry_failed_uploads(vault_id: int | None = Query(default=None, ge=1),
                          _: dict[str, Any] = Depends(current_user)):
     """Explicit scope: omitted Vault means installation, never Session choice."""

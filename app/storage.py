@@ -457,18 +457,6 @@ def validate_cloud_vault(vault: dict[str, Any], *, notify: bool = True) -> None:
         raise cloud_preflight_gate.CloudPreflightBlocked(state.get("remediation") or "S3 readiness check pending")
 
 
-def _report_cloud_preflight(vault: dict[str, Any], *, blocked: bool) -> None:
-    try:
-        vault_id = int(vault.get("vault_id") or vault["id"])
-        with db() as connection:
-            notification_service.set_problem(
-                connection, key=f"blocked:{vault_id}:preflight", event="protection_blocked",
-                vault_id=vault_id, active=blocked, params={"component": "cloud_configuration"},
-            )
-    except Exception:
-        pass
-
-
 def _validate_cloud_vault(vault: dict[str, Any]) -> None:
     bucket = vault.get("s3_bucket")
     if not bucket or is_placeholder(
@@ -4746,6 +4734,19 @@ def _load_claimed_job_status(job: dict[str, Any]) -> dict[str, Any] | None:
         ).fetchone()
 
 
+@retry_database_unit
+def _release_preflight_purge_claim(job: dict[str, Any]) -> None:
+    # The group was leased as cleaning, but preflight precedes DeleteObjects.
+    # Release the complete group; keep exact deletion consent and its deadline.
+    with owned_connection(db()) as connection:
+        connection.execute(
+            "UPDATE jobs SET status='queued',claim_token=NULL,claimed_at=NULL,claim_expires_at=NULL "
+            "WHERE vault_id=%s AND group_id=%s AND action='cloud-purge' AND status='cleaning' "
+            "AND claim_token=%s AND claim_expires_at>%s",
+            (job["vault_id"], job["group_id"], job["claim_token"], now_iso()),
+        )
+
+
 def _process_claimed_job(job: dict[str, Any]) -> bool:
     """Process one queue item after the scheduler has acquired its lease."""
     try:
@@ -4815,7 +4816,10 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
     except cloud_preflight_gate.CloudPreflightBlocked:
         # Readiness is checked before any provider mutation in every handler.
         # Preserve retries/retry_after and release only the scheduler lease.
-        set_job(job["id"], job["status"], "S3 readiness blocked; Job remains queued")
+        if job["action"] == "cloud-purge" and job.get("claim_token"):
+            _release_preflight_purge_claim(job)
+        else:
+            set_job(job["id"], job["status"], "S3 readiness blocked; Job remains queued")
         return False
     except JobLeaseLost:
         # A different worker/cancellation now owns the durable outcome.  Never
@@ -5175,7 +5179,10 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
         )
         with pinned_root as root, db() as connection:
             from .services.job_admission import lock_vault
-            lock_vault(connection, int(vault["id"]))
+            try:
+                lock_vault(connection, int(vault["id"]))
+            except LookupError:
+                return 0
             current = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault["id"],)).fetchone()
             if (not current or not current["enabled"] or current["relocation_state"] != "ready"
                     or current["decommission_state"] != "active"
@@ -5205,6 +5212,30 @@ def queue_all_auto_uploads_once() -> int:
         except Exception as exc:
             _report_worker_error("auto_upload_queue", exc, int(vault["id"]))
     return queued
+
+
+def reprobe_cloud_readiness_once() -> None:
+    # Independent of scheduler capacity and maintenance scans. A blocked gate
+    # must recover even if the Owner has since suspended all queued Vaults.
+    with db() as connection:
+        state = cloud_preflight_gate.snapshot(connection)
+        if state["status"] != "blocked" or (state.get("next_probe_at") or "") > now_iso():
+            return
+        vault = connection.execute("SELECT * FROM vaults ORDER BY id LIMIT 1").fetchone()
+    if vault:
+        try:
+            validate_cloud_vault(dict(vault))
+        except cloud_preflight_gate.CloudPreflightBlocked:
+            pass
+
+
+async def cloud_preflight_loop() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(reprobe_cloud_readiness_once)
+        except Exception as exc:
+            _report_worker_error("cloud_preflight", exc)
+        await asyncio.sleep(1)
 
 
 async def auto_upload_loop() -> None:

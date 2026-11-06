@@ -25,5 +25,6 @@ export type Overview = {
   vaults: { id: number; slug: string; name: string; decommission_state: string; monthly_estimate: number; open_problem_count: number }[];
   open_problem_count: number; month: string; monthly_estimate: number; previous_month_delta: number | null;
   currency: string; pricing_effective_at: string; email_configured: boolean; last_verified_backup: string | null;
+  cloud_preflight?: { status: "unknown" | "ready" | "blocked"; remediation: string | null; next_probe_at: string | null };
 };
 export const fetchOverview = () => apiRequest<Overview>("/api/general");

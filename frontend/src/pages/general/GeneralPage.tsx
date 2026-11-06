@@ -3,6 +3,7 @@ import { fetchGeneralVaults, type GeneralVault } from "@/api";
 import type { Overview } from "@/api/vault";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 import { Button } from "@/components/ui/button";
+import { UploadRetryActions } from "@/components/UploadRetryActions";
 import { useI18n } from "@/i18n";
 import { RecoveryKitSection } from "./RecoveryKitSection";
 import { ReconnectVaultDialog } from "./ReconnectVaultDialog";
@@ -26,6 +27,7 @@ export function GeneralPage({ overview, onRefresh }: { overview?: Overview; onRe
       {overview?.email_configured === false ? <p role="status" data-testid="email-not-configured">{t("ui.email_not_configured")}</p> : null}
       <p>{t("essential.last_verified_backup")}: {overview?.last_verified_backup ?? t("essential.not_available")}</p>
     </section>
+    <UploadRetryActions />
     <RecoveryKitSection />
     <section className="grid gap-3 rounded-panel border border-line bg-surface p-4">
       <h2 className="font-bold">{t("essential.protected_folders")}</h2>
