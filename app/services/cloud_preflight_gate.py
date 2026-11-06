@@ -1,18 +1,22 @@
-"""Installation-wide, restart-safe S3 readiness gate (read-only provider probes).
+"""Installation-wide S3 readiness; a new process never inherits ready authority.
 
-A transaction advisory lock gives single-flight across threads/processes without
-waiting behind a slow provider. No Job or Vault lock is held during the probe.
-Only this probe is replayable: this module never runs cloud mutations.
+The advisory probe lock is held without Job/Vault locks. Read-only provider I/O
+is outside replayable DB units; publication retries retain the probe outcome.
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+from botocore.exceptions import ClientError
 from . import notifications
+from .database_retry import exception_chain, owned_connection, retry_database_unit
 
 LOCK_ID = 461062
 MAX_REPROBE_SECONDS = 60
+_ready_pid: int | None = None
+AUTH_REMEDIATION = "S3 access was refused. Check AWS credentials and required bucket permissions; Jobs remain queued"
 
 
 class CloudPreflightBlocked(RuntimeError):
@@ -41,19 +45,82 @@ def probe_due(state: dict[str, Any], now: datetime) -> bool:
     return not 0 < delay <= MAX_REPROBE_SECONDS
 
 
-def check(connect: Callable, probe: Callable[[], None], *, now: datetime | None = None) -> dict[str, Any]:
-    """Return a committed cached outcome; never wait for another probe.
+def dispatch_ready(state: dict[str, Any], now: datetime) -> bool:
+    return (_ready_pid == os.getpid() and state['status'] == 'ready'
+            and not probe_due(state, now))
 
-    Outcome and due time survive restart. A crash releases the advisory lock;
-    it cannot leave a durable 'probing' lease blocking recovery. Failure details
-    are allowlisted local prose, never provider exception strings or credentials.
+
+def is_readiness_error(error: BaseException) -> bool:
+    """Only structured provider auth failures, including SDK/service wrappers."""
+    return any(isinstance(item, ClientError) and (
+        item.response.get('Error', {}).get('Code') in {
+            'InvalidAccessKeyId', 'SignatureDoesNotMatch', 'AccessDenied',
+            'AccessDeniedException', 'ExpiredToken', 'InvalidToken', 'TokenRefreshRequired',
+            'InvalidClientTokenId', 'UnrecognizedClientException',
+        } or item.response.get('ResponseMetadata', {}).get('HTTPStatusCode') in {401, 403}
+    ) for item in exception_chain(error))
+
+
+@retry_database_unit
+def _publish(connect: Callable, *, remediation: str | None, failures: int, due: str, stamp: str) -> dict[str, Any]:
+    with owned_connection(connect()) as connection:
+        connection.execute(
+            "INSERT INTO cloud_preflight_state(id,status,remediation,failure_count,next_probe_at) "
+            "VALUES (1,%s,%s,%s,%s) ON CONFLICT(id) DO UPDATE SET status=EXCLUDED.status, "
+            "remediation=EXCLUDED.remediation,failure_count=EXCLUDED.failure_count,next_probe_at=EXCLUDED.next_probe_at",
+            ('blocked' if remediation else 'ready', remediation, failures, due),
+        )
+        notifications.set_problem(
+            connection, key='blocked:installation:preflight', event='cloud_preflight_blocked',
+            active=bool(remediation), params={'remediation': remediation or ''},
+        )
+        # Supersede pre-461 per-Vault episodes, not Job failure history.
+        connection.execute(
+            "UPDATE notifications SET problem_status='resolved',resolved_at=%s,read_at=COALESCE(read_at,%s) "
+            "WHERE problem_status='open' AND dedupe_key LIKE 'blocked:%%:preflight' "
+            "AND dedupe_key<>'blocked:installation:preflight'", (stamp, stamp),
+        )
+        return snapshot(connection)
+
+
+@retry_database_unit
+def invalidate(connect: Callable) -> None:
+    """Fence stale ready, requesting an immediate independent probe.
+
+    Share the probe lock so an older in-flight probe cannot overwrite this
+    refusal. Call after the failing unit has closed, with no Job/Vault locks.
+    Concurrent refusals preserve an already-blocked gate's backoff.
     """
+    global _ready_pid
+    _ready_pid = None
+    stamp = datetime.now(timezone.utc).isoformat()
+    with owned_connection(connect()) as connection:
+        connection.execute('SELECT pg_advisory_xact_lock(%s)', (LOCK_ID,))
+        changed = connection.execute(
+            "INSERT INTO cloud_preflight_state(id,status,remediation,failure_count,next_probe_at) "
+            "VALUES (1,'blocked',%s,0,%s) ON CONFLICT(id) DO UPDATE SET "
+            "status='blocked',remediation=EXCLUDED.remediation,next_probe_at=EXCLUDED.next_probe_at "
+            "WHERE cloud_preflight_state.status<>'blocked' RETURNING id", (AUTH_REMEDIATION, stamp),
+        ).fetchone()
+        if changed:
+            notifications.set_problem(connection, key='blocked:installation:preflight',
+                event='cloud_preflight_blocked', active=True, params={'remediation': AUTH_REMEDIATION})
+
+
+def check(connect: Callable, probe: Callable[[], None], *, now: datetime | None = None) -> dict[str, Any]:
+    """Return a committed outcome; never wait behind another read-only probe.
+
+    Blocked backoff survives restart. Ready may be reused only after this process
+    probes successfully, because deployment credentials may have changed.
+    """
+    global _ready_pid
     injected_now = now
     now = now or datetime.now(timezone.utc)
     stamp = now.isoformat()
-    with connect() as connection:
+    with owned_connection(connect()) as connection:
         state = snapshot(connection)
-        if not probe_due(state, injected_now or datetime.now(timezone.utc)):
+        needs_startup = _ready_pid != os.getpid() and state['status'] == 'ready'
+        if not needs_startup and not probe_due(state, injected_now or datetime.now(timezone.utc)):
             return state
         acquired = connection.execute(
             "SELECT pg_try_advisory_xact_lock(%s) AS acquired", (LOCK_ID,),
@@ -61,9 +128,9 @@ def check(connect: Callable, probe: Callable[[], None], *, now: datetime | None 
         if not acquired:
             return {**state, "status": "blocked", "remediation": state.get("remediation") or
                     "S3 readiness check in progress; Jobs remain queued"}
-        # A concurrent probe may have committed between our read and lock.
         state = snapshot(connection)
-        if not probe_due(state, injected_now or datetime.now(timezone.utc)):
+        needs_startup = _ready_pid != os.getpid() and state['status'] == 'ready'
+        if not needs_startup and not probe_due(state, injected_now or datetime.now(timezone.utc)):
             return state
         remediation = None
         try:
@@ -73,23 +140,9 @@ def check(connect: Callable, probe: Callable[[], None], *, now: datetime | None 
         except Exception:
             remediation = "S3 readiness could not be confirmed. Check AWS credentials, bucket configuration and connectivity"
         failures = int(state.get("failure_count") or 0) + 1 if remediation else 0
-        # Count backoff from completion, not the beginning of a slow request.
         completed = injected_now or datetime.now(timezone.utc)
         due = (completed + timedelta(seconds=reprobe_seconds(failures) if remediation else MAX_REPROBE_SECONDS)).isoformat()
-        connection.execute(
-            "INSERT INTO cloud_preflight_state(id,status,remediation,failure_count,next_probe_at) "
-            "VALUES (1,%s,%s,%s,%s) ON CONFLICT(id) DO UPDATE SET status=EXCLUDED.status, "
-            "remediation=EXCLUDED.remediation,failure_count=EXCLUDED.failure_count,next_probe_at=EXCLUDED.next_probe_at",
-            ("blocked" if remediation else "ready", remediation, failures, due),
-        )
-        notifications.set_problem(
-            connection, key="blocked:installation:preflight", event="cloud_preflight_blocked",
-            active=bool(remediation), params={"remediation": remediation or ""},
-        )
-        # Supersede pre-461 per-Vault episodes, not Job failure history.
-        connection.execute(
-            "UPDATE notifications SET problem_status='resolved',resolved_at=%s,read_at=COALESCE(read_at,%s) "
-            "WHERE problem_status='open' AND dedupe_key LIKE 'blocked:%%:preflight' "
-            "AND dedupe_key<>'blocked:installation:preflight'", (stamp, stamp),
-        )
-        return snapshot(connection)
+        result = _publish(connect, remediation=remediation, failures=failures, due=due, stamp=stamp)
+    # Only a committed successful publication validates this process.
+    _ready_pid = os.getpid() if not remediation else None
+    return result

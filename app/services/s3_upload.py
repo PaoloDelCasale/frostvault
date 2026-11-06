@@ -302,3 +302,11 @@ def upload_file(
             # keeping the original exception object and retry classification.
             if failure is not None and facade.response is not None:
                 failure.upload_response = dict(facade.response)
+            elif snapshot is not None and isinstance(failure, ClientError):
+                # Only after shutdown joined every request, and only an explicit
+                # auth refusal from the write pipeline. A timeout, cancellation,
+                # HEAD error or any late acknowledgment is NOT absence proof.
+                from .cloud_preflight_gate import is_readiness_error
+                if (failure.operation_name in {'PutObject','CreateMultipartUpload','UploadPart','CompleteMultipartUpload'}
+                        and is_readiness_error(failure)):
+                    failure.upload_no_write_operation = failure.operation_name

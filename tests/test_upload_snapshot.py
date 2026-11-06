@@ -188,6 +188,49 @@ class SHA256ManagedUploadTests(UploadSnapshotTests):
                 ack.assert_called_once_with(response)
                 stub.assert_no_pending_responses()
 
+    def test_definitive_auth_refusal_is_distinct_from_an_ambiguous_send(self):
+        from botocore.exceptions import ClientError
+        snapshot = self.snapshot()
+        with Stubber(self.client) as stub:
+            stub.add_client_error('put_object',service_error_code='InvalidAccessKeyId',http_status_code=403)
+            with self.assertRaises(ClientError) as caught:
+                self.upload(snapshot)
+            self.assertEqual(getattr(caught.exception,'upload_no_write_operation',None),'PutObject')
+            self.assertFalse(hasattr(caught.exception,'upload_response'))
+            stub.assert_no_pending_responses()
+
+    def test_multipart_auth_refusal_before_completion_is_a_durable_no_write_candidate(self):
+        from botocore.exceptions import ClientError
+        from boto3.s3.transfer import TransferConfig
+        snapshot = self.snapshot(b'a' * MULTIPART_THRESHOLD + b'tail')
+        for refused_operation in ('create_multipart_upload','complete_multipart_upload'):
+            with self.subTest(operation=refused_operation), Stubber(self.client) as stub:
+                if refused_operation == 'complete_multipart_upload':
+                    stub.add_response('create_multipart_upload',{'UploadId':'mpu'})
+                    for number,checksum in enumerate(snapshot.part_checksums,1):
+                        stub.add_response('upload_part',{'ETag':f'part-{number}','ChecksumSHA256':checksum})
+                stub.add_client_error(refused_operation,service_error_code='AccessDenied',http_status_code=403)
+                if refused_operation == 'complete_multipart_upload':
+                    stub.add_response('abort_multipart_upload',{})
+                with patch('app.services.s3_upload.TransferConfig',return_value=TransferConfig(max_concurrency=1)):
+                    with self.assertRaises(ClientError) as caught:
+                        self.upload(snapshot)
+                self.assertEqual(caught.exception.upload_no_write_operation,
+                    'CompleteMultipartUpload' if refused_operation == 'complete_multipart_upload' else 'CreateMultipartUpload')
+                self.assertFalse(hasattr(caught.exception,'upload_response'))
+                stub.assert_no_pending_responses()
+
+    def test_auth_error_after_acknowledgment_never_confers_no_write(self):
+        from botocore.exceptions import ClientError
+        snapshot = self.snapshot()
+        refused = ClientError({'Error': {'Code':'AccessDenied'},'ResponseMetadata':{'HTTPStatusCode':403}},'PutObject')
+        with Stubber(self.client) as stub:
+            stub.add_response('put_object',{'VersionId':'accepted','ChecksumSHA256':snapshot.checksum_sha256})
+            with self.assertRaises(ClientError) as caught:
+                self.upload(snapshot,on_acknowledged=Mock(side_effect=refused))
+            self.assertFalse(hasattr(caught.exception,'upload_no_write_operation'))
+            self.assertEqual(caught.exception.upload_response['VersionId'],'accepted')
+
     def test_ack_hook_and_exception_retain_version_before_cancellation(self):
         snapshot = self.snapshot()
         ack = Mock(side_effect=OperationCancelled("lost claim"))

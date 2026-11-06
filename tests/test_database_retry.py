@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from psycopg.errors import DeadlockDetected, SerializationFailure, UniqueViolation
 
@@ -72,6 +72,30 @@ class DatabaseRetryTests(unittest.TestCase):
             with owned_connection(CommitFailureConnection()):
                 events.append("mutation")
         self.assertEqual(events, ["begin", "mutation", "commit", "close"])
+
+    def test_optional_notification_does_not_swallow_aborted_authoritative_unit(self) -> None:
+        from app.services import notifications
+        for error in (DeadlockDetected(), SerializationFailure()):
+            connection = MagicMock()
+            with self.subTest(error=type(error).__name__), patch.object(
+                notifications,'enqueue_job_terminal_notification',side_effect=error
+            ), self.assertRaises(type(error)):
+                notifications.enqueue_job_terminal_notification_best_effort(connection,job_id=1)
+            statements = [call.args[0] for call in connection.execute.call_args_list]
+            self.assertEqual(statements,['SAVEPOINT job_terminal_notification',
+                'ROLLBACK TO SAVEPOINT job_terminal_notification','RELEASE SAVEPOINT job_terminal_notification'])
+
+    def test_reconciliation_problem_retries_its_whole_notification_transaction(self) -> None:
+        from app import storage
+        connection = MagicMock()
+        with patch.object(storage,'db',return_value=connection), patch(
+            'app.services.upload_remediation_discovery.capture'
+        ), patch.object(storage.notification_service,'set_problem',side_effect=[DeadlockDetected(),None]) as notify, patch(
+            'app.services.database_retry.time.sleep'
+        ):
+            storage._record_upload_reconciliation_block({'vault_file_id':'file','vault_id':1,'path':'a'},'inventory_changed')
+        self.assertEqual(notify.call_count,2)
+        self.assertEqual(connection.close.call_count,3)
 
     def test_batch_marks_coalesce_per_call_not_connection_lifetime(self) -> None:
         from app.services.directory_aggregates import mark_paths_dirty

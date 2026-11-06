@@ -1996,7 +1996,9 @@ def set_job(
     previous_status = None
     action = None
     with owned_connection(db()) as connection:
-        connection.execute("SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR UPDATE", (job_id,))
+        # Non-key changes serialize with admission without blocking notification
+        # FK KEY SHARE locks (Owner episode -> Vault vs Vault -> Owner).
+        connection.execute("SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR NO KEY UPDATE", (job_id,))
         current = connection.execute(
             "SELECT status, action FROM jobs WHERE id=%s",
             (job_id,),
@@ -2113,7 +2115,7 @@ def schedule_upload_retry(
     claim_token = _claim_token_for(job_id)
     action = None
     with owned_connection(db()) as connection:
-        connection.execute("SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR UPDATE", (job_id,))
+        connection.execute("SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR NO KEY UPDATE", (job_id,))
         current = connection.execute(
             "SELECT action FROM jobs WHERE id=%s",
             (job_id,),
@@ -2347,8 +2349,12 @@ def _record_upload_reconciliation_block(job: dict[str, Any], reason: str) -> Non
             capture(connection, now_iso(), file_id=job["vault_file_id"])
     persist()
     # Notifications use Owner locks separately from intent/receipt publication.
-    with db() as connection:
-        notification_service.set_problem(connection, key=f"upload_reconciliation:{job['vault_file_id']}", event="upload_reconciliation", vault_id=job["vault_id"], active=True, email=False, params={"path": job["path"], "reason": reason, "remedy": provenance.REMEDIES[reason]})
+    # Retry the complete owned notification unit too, never the provider work.
+    @retry_database_unit
+    def notify() -> None:
+        with owned_connection(db()) as connection:
+            notification_service.set_problem(connection, key=f"upload_reconciliation:{job['vault_file_id']}", event="upload_reconciliation", vault_id=job["vault_id"], active=True, email=False, params={"path": job["path"], "reason": reason, "remedy": provenance.REMEDIES[reason]})
+    notify()
 
 
 def purge_current_snapshot_superseded(
@@ -3276,11 +3282,16 @@ def _automatic_upload_ready(job: dict[str, Any]) -> bool:
             return False
         if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
             return False
-        _validate_enrolled_scan_root(vault)
         if not auto_upload_path_is_included(job["path"], policy) or not target:
             return False
-        source = safe_local_path(job["source_root"], job["path"])
-        stat_result = source.stat()
+        try:
+            # Files can disappear, lose access or be replaced after admission.
+            # Suspend only this candidate; no DB work belongs in this catch.
+            _validate_enrolled_scan_root(vault)
+            source = safe_local_path(job["source_root"], job["path"])
+            stat_result = source.stat()
+        except (OSError, ValueError, RuntimeError):
+            return False
         if not stat.S_ISREG(stat_result.st_mode):
             return False
         if (stat_result.st_size, stat_result.st_mtime_ns) != (
@@ -3634,6 +3645,12 @@ def process_upload(job: dict[str, Any]) -> None:
                     raw = getattr(exc, "upload_response", None)
                     if raw is not None:
                         acknowledge(raw)
+                    no_write = getattr(exc,'upload_no_write_operation',None)
+                    if raw is None and no_write and cloud_preflight_gate.is_readiness_error(exc):
+                        # Definitive refusal is journaled before rearming send.
+                        # All ambiguous/lost-response outcomes stay reconcile-only.
+                        _upload_catalog_unit(job,lambda catalog: provenance.record_no_write(
+                            catalog.connection,job,intent,no_write,now_iso()))
                     raise
                 acknowledge(response)
                 version_id = _publish_upload_receipt(job, intent, response)
@@ -5050,6 +5067,15 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
     except Exception as exc:
         if _claim_is_lost(int(job["id"])):
             return False
+        if cloud_preflight_gate.is_readiness_error(exc):
+            # This happens outside the rolled-back provider/catalog unit. Do not
+            # consume a transfer retry or expose provider auth error payloads.
+            cloud_preflight_gate.invalidate(db)
+            if job['action'] == 'cloud-purge' and job.get('claim_token'):
+                _release_preflight_purge_claim(job)
+            else:
+                set_job(job['id'], job['status'], 'S3 readiness blocked; Job remains queued')
+            return False
         message = str(exc)
         failure_kind = (
             classify_upload_failure(exc) if job["action"] == "upload" else ""
@@ -5271,8 +5297,9 @@ def process_jobs_once(*, wait: bool = True) -> int:
             limit=batch_size,
         )
         preflight = cloud_preflight_gate.snapshot(connection)
-        preflight_wait = (preflight["status"] == "blocked" and
-                          not cloud_preflight_gate.probe_due(preflight, datetime.now(timezone.utc)))
+        preflight_wait = ((preflight['status'] == 'blocked' and
+                           not cloud_preflight_gate.probe_due(preflight, current))
+                          or (not wait and not cloud_preflight_gate.dispatch_ready(preflight, current)))
         eligible_candidates: list[dict[str, Any]] = []
         seen_purge_groups: set[tuple[int, str]] = set()
         for row in candidates:
@@ -5297,6 +5324,21 @@ def process_jobs_once(*, wait: bool = True) -> int:
                     continue
                 seen_purge_groups.add(purge_group)
             eligible_candidates.append(job)
+
+    # Preserve the automatic-upload stability/suspension fence before preflight,
+    # even when an SMB edit has not reached the watcher/catalog yet.
+    eligible_candidates = [job for job in eligible_candidates
+        if job['action'] != 'upload' or job.get('origin') != 'automatic'
+        or _automatic_upload_ready(job)]
+    # The durable ready cache may belong to a previous deployment's credentials.
+    # Probe outside the candidate transaction BEFORE acquiring any Job lease.
+    # The live non-waiting scheduler never performs provider I/O: the dedicated
+    # readiness loop proves startup/expiry while heartbeat/delivery keep moving.
+    if eligible_candidates and wait:
+        try:
+            validate_cloud_vault(eligible_candidates[0])
+        except cloud_preflight_gate.CloudPreflightBlocked:
+            return 0
 
     concurrency = int(runtime.operation_concurrency)
     if wait:
@@ -5470,7 +5512,10 @@ def reprobe_cloud_readiness_once() -> None:
     # must recover even if the Owner has since suspended all queued Vaults.
     with db() as connection:
         state = cloud_preflight_gate.snapshot(connection)
-        if state["status"] != "blocked" or not cloud_preflight_gate.probe_due(state, datetime.now(timezone.utc)):
+        now = datetime.now(timezone.utc)
+        if cloud_preflight_gate.dispatch_ready(state, now):
+            return
+        if state['status'] == 'blocked' and not cloud_preflight_gate.probe_due(state, now):
             return
         vault = connection.execute("SELECT * FROM vaults ORDER BY id LIMIT 1").fetchone()
     if vault:

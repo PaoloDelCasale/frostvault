@@ -17,10 +17,11 @@ from .upload_snapshot import UploadSnapshot
 from .s3_copy import _object_version_entries
 
 TOKEN_KEY = "frostvault-upload"
+NO_WRITE_OPERATIONS = frozenset({'PutObject','CreateMultipartUpload','UploadPart','CompleteMultipartUpload'})
 REMEDIES = {
     "ambiguous_send": "Keep copies and stop external S3 writers. Retry exact reconciliation after the provider outcome is known; zero matches is not proof of no write.",
     "ambiguous_receipt": "Keep all copies. Inspect exact versions with authorized S3 tools; do not choose latest or delete by token.",
-    "inventory_changed": "Keep copies, check listing permissions and stop external S3 writers. Retry reconciliation only after complete inventory is available and the namespace is quiescent.",
+    "inventory_changed": "Keep all copies. The exact cloud inventory changed or could not be confirmed; this does not by itself identify an external writer. Check listing permissions and any other S3 activity, then use Retry failed uploads to retry exact reconciliation when the namespace is stable.",
     "cleanup_unavailable": "The verified keeper is retained; cloud cleanup could not finish. Check provider permissions/connectivity and retry exact reconciliation. Completed/in-flight deletes cannot be undone.",
     "identity_changed": "Restore the expected Source Volume/Vault path and resolve incompatible operations before retrying reconciliation.",
     "proof_mismatch": "Contradictory independent checksum/identity evidence blocks publication and deletion. Keep copies and investigate the exact version; never downgrade to a permissive proof.",
@@ -65,7 +66,7 @@ def inventory(client: Any, bucket: str, key: str) -> dict[str, list[str]]:
 
 
 def target(connection: Any, job: dict[str, Any], *, key: str, provider: str) -> dict[str, Any]:
-    vault = connection.execute("SELECT * FROM vaults WHERE id=%s FOR UPDATE", (job["vault_id"],)).fetchone()
+    vault = connection.execute("SELECT * FROM vaults WHERE id=%s FOR NO KEY UPDATE", (job["vault_id"],)).fetchone()
     from .upload_remediation import require_job
     require_job(connection, job)
     row = connection.execute("SELECT vf.status,fp.path,fp.valid_from FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL WHERE vf.id=%s AND vf.vault_id=%s", (job["vault_file_id"], job["vault_id"])).fetchone()
@@ -130,6 +131,8 @@ def prepare(connection: Any, job: dict[str, Any], *, pinned: dict[str, Any], sna
 
 def mark_send_started(connection: Any, job: dict[str, Any], intent: dict[str, Any]) -> None:
     require_target(connection, job, json.loads(intent["target_json"]))
+    if receipt(connection, intent['id']) is not None:
+        raise UploadBlocked('ambiguous_receipt')
     changed = connection.execute("UPDATE upload_intents SET send_started=TRUE WHERE id=%s AND NOT send_started RETURNING id", (intent["id"],)).fetchone()
     if not changed:
         raise UploadBlocked("ambiguous_send")
@@ -147,11 +150,38 @@ def append_receipt(db: Any, intent_id: str, response: dict[str, Any], timestamp:
         connection.execute("INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (intent_id, hashlib.sha256(text.encode()).hexdigest(), text, timestamp))
 
 
+def record_no_write(connection: Any, job: dict[str, Any], intent: dict[str, Any],
+                    operation: str, timestamp: str) -> None:
+    """Claim-fenced definitive refusal; retain the immutable outcome as a fact.
+
+    Called ONLY after the transfer manager joined all I/O and reported an auth
+    refusal without a final receipt. Zero listing matches never reach this seam.
+    Caller owns/retries its entire DB-only publication transaction.
+    """
+    if operation not in NO_WRITE_OPERATIONS:
+        raise UploadBlocked('ambiguous_send')
+    require_target(connection,job,json.loads(intent['target_json']))
+    if receipt(connection,intent['id']) is not None:
+        raise UploadBlocked('ambiguous_receipt')
+    changed = connection.execute("UPDATE upload_intents SET send_started=FALSE WHERE id=%s AND send_started AND NOT settled AND archive_version_id IS NULL RETURNING id",(intent['id'],)).fetchone()
+    if not changed:
+        raise UploadBlocked('ambiguous_receipt')
+    text = canonical({'NoWriteOperation':operation})
+    connection.execute("INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+        (intent['id'],hashlib.sha256(text.encode()).hexdigest(),text,timestamp))
+
+
 def receipt(connection: Any, intent_id: str) -> dict[str, Any] | None:
     rows = connection.execute("SELECT response_json FROM upload_receipts WHERE intent_id=%s", (intent_id,)).fetchall()
     if not rows:
         return None
     responses = [json.loads(r["response_json"]) for r in rows]
+    # Explicit, allowlisted no-write facts are history, never a VersionId/proof.
+    # Do not ignore malformed responses or arbitrary dictionaries without IDs.
+    responses = [r for r in responses if not (set(r) == {'NoWriteOperation'}
+        and r['NoWriteOperation'] in NO_WRITE_OPERATIONS)]
+    if not responses:
+        return None
     # Discovery may add fields, but incompatible proofs/identities never overwrite.
     combined: dict[str, Any] = {}
     for response in responses:
@@ -170,17 +200,24 @@ def reconcile(client: Any, intent: dict[str, Any], saved: dict[str, Any] | None,
     if provider_identity(client) != pinned["provider"]:
         raise UploadBlocked("identity_changed")
     before = json.loads(intent["inventory_json"])
-    first = inventory(client, pinned["bucket"], pinned["key"])
-    matches = []
-    for version in first["versions"]:
-        check_active()
-        head = client.head_object(Bucket=pinned["bucket"], Key=pinned["key"], VersionId=version)
-        if str(head.get("VersionId") or "") != version or head.get("DeleteMarker"):
-            raise UploadBlocked("ambiguous_receipt")
-        if (head.get("Metadata") or {}).get(TOKEN_KEY) == intent["token"]:
-            matches.append((version, head))
-    if first != inventory(client, pinned["bucket"], pinned["key"]):
-        raise UploadBlocked("inventory_changed")
+    # A crashed worker's request can complete between the two complete reads.
+    # Re-observe ONCE only for that exact, independently proven app write. Never
+    # rebase the pinned inventory, adopt unknown deltas or retry external churn.
+    for observation in range(2):
+        first = inventory(client, pinned['bucket'], pinned['key'])
+        matches = []
+        for version in first['versions']:
+            check_active()
+            head = client.head_object(Bucket=pinned['bucket'], Key=pinned['key'], VersionId=version)
+            if str(head.get('VersionId') or '') != version or head.get('DeleteMarker'):
+                raise UploadBlocked('ambiguous_receipt')
+            if (head.get('Metadata') or {}).get(TOKEN_KEY) == intent['token']:
+                matches.append((version, head))
+        second = inventory(client, pinned['bucket'], pinned['key'])
+        if first == second:
+            break
+        if observation or not _own_write_arrived(client, intent, saved, before, first, second, check_active):
+            raise UploadBlocked('inventory_changed')
     if len(matches) != 1:
         raise UploadBlocked("ambiguous_send" if not matches else "ambiguous_receipt")
     version, head = matches[0]
@@ -200,6 +237,40 @@ def reconcile(client: Any, intent: dict[str, Any], saved: dict[str, Any] | None,
     # Retain raw response proof if present; worker validates BOTH head and receipt
     # against the independent frozen baseline, never trusting this token as proof.
     return {**head, **(saved or {}), "VersionId": version}
+
+
+def _own_write_arrived(client: Any, intent: dict[str, Any], saved: dict[str, Any] | None,
+                       before: dict[str, Any], first: dict[str, Any], second: dict[str, Any],
+                       check_active: Any) -> bool:
+    added = set(second['versions']) - set(first['versions'])
+    if (first != before or second['markers'] != before['markers'] or len(added) != 1
+            or set(second['versions']) != set(before['versions']) | added):
+        return False
+    version = next(iter(added))
+    if saved and saved['VersionId'] != version:
+        raise UploadBlocked('ambiguous_receipt')
+    pinned = json.loads(intent['target_json'])
+    check_active()
+    from .upload_snapshot import validated_s3_proof, UploadProofMismatch, unsupported_checksum_api
+    try:
+        head = client.head_object(Bucket=pinned['bucket'], Key=pinned['key'], VersionId=version, ChecksumMode='ENABLED')
+    except Exception as exc:
+        if unsupported_checksum_api(exc):
+            return False  # Capability absence is not independent attribution.
+        raise
+    if str(head.get('VersionId') or '') != version or head.get('DeleteMarker'):
+        raise UploadBlocked('ambiguous_receipt')
+    if (head.get('Metadata') or {}).get(TOKEN_KEY) != intent['token']:
+        return False
+    try:
+        expected = UploadSnapshot.from_json(intent['snapshot_json'])
+        proof = validated_s3_proof(head, version_id=version, snapshot=expected, source='exact_head')
+        if saved:
+            validated_s3_proof(saved, version_id=version, snapshot=expected, source='upload_response', completion=True)
+    except UploadProofMismatch as exc:
+        raise UploadBlocked('proof_mismatch') from exc
+    # Token/size/catalog membership alone never attribute an automatic retry.
+    return proof is not None
 
 
 def _legacy_materialized(connection: Any, file_id: str) -> dict[str, Any] | None:

@@ -38,6 +38,9 @@ class WorkerLoopDecouplingTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(shutdown_background_executors)
         self.path = Path(self.tmp.name) / "loop.db"
+        # Transfer concurrency is isolated from the independently tested gate.
+        self.enterContext(patch('app.storage.validate_cloud_vault'))
+        self.enterContext(patch('app.storage.cloud_preflight_gate.dispatch_ready',return_value=True))
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with PostgresConnection(str(self.path)) as connection:
