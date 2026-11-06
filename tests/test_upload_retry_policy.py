@@ -55,6 +55,37 @@ class UploadRetryPolicyTests(unittest.TestCase):
             with self.subTest(error=type(error).__name__):
                 self.assertEqual(classify_upload_failure(str(error)), "transient")
 
+    def test_structured_transaction_errors_are_distinct_from_transport_retry(self) -> None:
+        from psycopg.errors import DeadlockDetected, SerializationFailure
+        for error in (DeadlockDetected("pid 123"), SerializationFailure("aborted")):
+            wrapped = RuntimeError("database operation failed")
+            wrapped.__cause__ = error
+            with self.subTest(error=type(error).__name__):
+                self.assertEqual(classify_upload_failure(wrapped), "database_transient")
+                wrapped.__cause__ = None
+                wrapped.__context__ = error
+                self.assertEqual(classify_upload_failure(wrapped), "database_transient")
+
+    def test_numeric_message_fragments_never_classify_database_errors(self) -> None:
+        for message in ("deadlock detected pid 15003 xid 50342", "40P01", "40001", "500", "503"):
+            with self.subTest(message=message):
+                self.assertEqual(classify_upload_failure(message), "permanent")
+
+    def test_other_database_errors_never_become_transport_retries(self) -> None:
+        from psycopg import OperationalError
+        from psycopg.errors import UniqueViolation
+        for error in (OperationalError("connection reset 500503"), UniqueViolation("timeout unavailable")):
+            wrapped = RuntimeError("S3 unavailable")
+            wrapped.__cause__ = error
+            self.assertEqual(classify_upload_failure(wrapped), "permanent")
+
+    def test_structured_provider_status_keeps_http_retries(self) -> None:
+        from botocore.exceptions import ClientError
+        for status in (500, 503):
+            error = ClientError({"Error": {"Code": "ProviderError"},
+                                 "ResponseMetadata": {"HTTPStatusCode": status}}, "PutObject")
+            self.assertEqual(classify_upload_failure(error), "transient")
+
     def test_source_mutation_retries_are_bounded(self) -> None:
         self.assertGreaterEqual(UPLOAD_RETRY_MAX_ATTEMPTS, 1)
 
