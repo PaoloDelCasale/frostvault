@@ -61,7 +61,8 @@ Only targeted tests executed, without a local database, external provider or S3:
   tests.test_container_hardening.PermissionAndTraefikDocumentationTests -v
 ```
 
-Initial targeted run: **35 tests PASS**; rerun after final edge cases to follow.
+Final targeted run: **36 tests PASS** (0.768 seconds), including missing,
+empty and malformed forwarded client data. No local database tests were run.
 The DB-free test exercises `uvicorn.Config.load()` using the actual environment
 variable, actual application Host middleware, OIDC route/authorization builder,
 client resolver and Emergency Password denial handler. Only persistence and
@@ -72,15 +73,67 @@ are explicit counterexamples, not accepted deployment configurations.
 coherent explicit values pass; missing or empty values for either allowlist
 fail (five cases total). YAML parses. Comparing parsed Compose against the base
 shows labels, networks, mounts, identity, security controls and every non-proxy
-field unchanged. No Docker daemon action/build/start/restart was performed.
+field unchanged. No Docker daemon mutation/build/start/restart was performed.
+The existing hardening-test module performs read-only Docker availability
+checks (`docker info` / `docker compose version`) at import.
 `py_compile` passed for new/changed proxy HTTP tests; `git diff --check` passed.
 Only existing Starlette/Authlib deprecation warnings were observed.
 
-## CI and remaining handoff
+## CI evidence and handoff
 
 Dedicated draft PR: https://github.com/PaoloDelCasale/frostvault/pull/467
-Fixes #462. PR opened early and ordering notes posted to #462/#463. Full CI
-verification is in progress; final exact-HEAD evidence will be recorded here.
+Fixes #462. PR opened early and ordering notes posted to #462/#463.
+
+Implementation commit `2d37b2b5b86614bc3c17927152b08435d8bebeb9`: **28/28
+check runs COMPLETED/SUCCESS**, no failures or skipped check runs. No CI gate
+was weakened, bypassed, or replaced by local coverage.
+
+- CI: https://github.com/PaoloDelCasale/frostvault/actions/runs/42139333179
+- Security: https://github.com/PaoloDelCasale/frostvault/actions/runs/42139333226
+- `ci-implementation.json`: exact implementation SHA and all check conclusions.
+- `ci-proxy-evidence.txt`: selected actual CI route test output.
+- `gh run view <id> --log-failed` inspected for both runs; no failed logs.
+
+Coverage includes all twelve PostgreSQL Python shards, migration/concurrency,
+S3-compatible integrity (historical MinIO name; ephemeral moto, not live AWS),
+frontend typecheck/lint/Vitest Node 22/24/build, Playwright desktop/mobile,
+production-image PostgreSQL backup, CodeQL, gitleaks, pip/npm audit and image
+vulnerability scan. The new PostgreSQL route tests passed in CI: HTTPS OIDC
+begin/callback agree on the URI and persist state/session IP; allowed LAN
+Emergency Password succeeds; spoofed outside/near-miss clients and password
+reauthentication are refused, without creating sessions/backoff rows.
+
+The follow-up commit only records this handoff/evidence. Its own final CI must
+also be green before returning to the coordinator. The final PR HEAD/check
+snapshot is reported in the PR and task response rather than pretending a
+versioned document can embed its own commit hash. To independently recheck:
+
+```bash
+gh pr view 467 --json isDraft,headRefOid,mergeStateStatus
+gh pr checks 467
+gh api 'repos/PaoloDelCasale/frostvault/commits/<HEAD>/check-runs?per_page=100'
+```
+
+Self-review: acceptance traced against #462/#463 and ADR-0005/0017, no change to
+app runtime, auth, Host gate, Dockerfile command or healthchecks. Existing ADR
+wording inaccurately attributed scheme handling to app trust; corrected inline
+with the actual two-layer behavior and Owner-approved explicit-list decision.
+No external reviewer/subagent was started. Leave draft and **do not merge**.
+
+## File inventory / inspection
+
+Changed deployment/docs: `.env.example`, `compose.traefik.yaml`, `README.md`,
+`docs/traefik.md`, `docs/adr/0005-host-csrf-reauth-hardening.md`.
+Changed tests: `tests/test_oidc_http.py`, `tests/test_breakglass_http.py`,
+`tests/test_container_hardening.py`; added `tests/proxy_stack.py` and
+`tests/test_forwarded_proxy.py`. Evidence is confined to this session folder.
+
+Also inspected `app/proxy.py`, `app/main.py` (client, Host/auth/OIDC routes),
+`app/config.py`, `app/breakglass.py`, `app/oidc.py`, `app/sessions.py`, audit
+storage, `Dockerfile`, `docker/entrypoint.sh`, `requirements.txt`, existing proxy,
+config, OIDC, Emergency Password and deployment tests, `docs/ci.md`, workflow
+configuration and installed Uvicorn config/middleware. No API/schema change or
+frontend artifact regeneration was needed.
 
 ### Risks / integration constraints
 
