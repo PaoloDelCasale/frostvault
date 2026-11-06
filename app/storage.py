@@ -745,6 +745,7 @@ def _apply_filesystem_changes(
     event_id = event_id or now_iso()
     published: dict[str, Any] | None = None
     subtrees: list[Path] = []
+    added_paths = {Path(value) for change, value in changes if change == Change.added}
     paths: list[Path] = []
     for value in {value for _, value in changes}:
         entry = Path(value)
@@ -787,6 +788,10 @@ def _apply_filesystem_changes(
             if parent != root and root not in parent.parents:
                 continue
             if entry.is_dir() and not entry.is_symlink():
+                if entry not in added_paths:
+                    # Metadata-only directory changes (also emitted by polling
+                    # on child writes) are not content events for every child.
+                    continue
                 changed += _scan_tree(
                     connection, vault, event_id, root=root, subtree=entry,
                     allow_chunk_commits=True, finalize_missing=False,

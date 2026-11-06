@@ -95,6 +95,12 @@ class FilesystemCatalogTests(unittest.TestCase):
         self.assertEqual(rows["sibling.jpg"]["presence"], "present")
         self.assertEqual(rows["new/link"]["presence"], "unsupported")
 
+    def test_directory_metadata_event_does_not_unprotect_verified_children(self):
+        target, version, digest = self.archive("existing/photo.jpg")
+        self.assertEqual(storage.apply_filesystem_changes(self.vault, {(Change.modified, str(target.parent))}), 0)
+        row = self.entries()[0]
+        self.assertEqual((row["plaintext_sha256"], row["matched_archive_version_id"]), (digest, version))
+
     def test_subtree_root_replacement_compensates_already_committed_batches(self):
         self.write("sibling.jpg")
         self.write("new/a.jpg", watch=False)

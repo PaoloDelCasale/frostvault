@@ -196,6 +196,11 @@ class WatcherSubtreeTests(unittest.TestCase):
             stack.enter_context(patch("app.storage.record_catalog_revision"))
             storage.apply_filesystem_changes({"id": 2, "source_root": str(root)}, {(Change.added, str(root / "incoming"))})
             self.assertIn("incoming/nested/file.bin", observed)
+            catalog.observe_local_copies_batch.reset_mock()
+            self.assertEqual(storage.apply_filesystem_changes(
+                {"id": 2, "source_root": str(root)}, {(Change.modified, str(root / "incoming"))},
+            ), 0)
+            catalog.observe_local_copies_batch.assert_not_called()
 
 
 class SDKTemporaryNameTests(unittest.TestCase):

@@ -1094,6 +1094,8 @@ class StorageCleanupTests(unittest.TestCase):
                 """,
                 (str(source),),
             )
+            from app.services.vault_relocation import enroll_vault_root_identity
+            enroll_vault_root_identity(connection, 2, str(source))
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(
                 vault_id=2,
