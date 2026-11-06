@@ -201,6 +201,31 @@ class FilesystemCatalogTests(unittest.TestCase):
         row = self.entries()[0]
         self.assertEqual((row["presence"], row["plaintext_sha256"], row["matched_archive_version_id"], row["cloud_only_version_id"]), ("present", digest, version, None))
 
+    def test_failed_release_reconciles_external_replacement_and_keeps_salvage(self):
+        target, version, _ = self.archive()
+        job = self.job("free-space")
+        real_hash = storage.hash_stable_regular_file
+        def replace_then_fail(path):
+            if path != target:
+                target.write_bytes(b"other")
+                raise RuntimeError("Injected hash failure")
+            return real_hash(path)
+        with (patch("app.storage.validate_cloud_vault"),
+              patch("app.storage.local_release_is_confirmed", return_value=True),
+              patch("app.storage.s3_client") as client,
+              patch("app.storage.hash_stable_regular_file", side_effect=replace_then_fail)):
+            client.return_value.head_object.return_value = {"ContentLength": 5, "VersionId": "exact"}
+            with self.assertRaisesRegex(RuntimeError, "original content was preserved"):
+                storage.process_free_space(job)
+        storage.apply_filesystem_changes(self.vault, {(Change.added, str(target))})
+        row = self.entries()[0]
+        self.assertEqual(row["presence"], "present")
+        self.assertIsNone(row["matched_archive_version_id"])
+        self.assertEqual(row["plaintext_sha256"], hashlib.sha256(b"other").hexdigest())
+        self.assertEqual(row["cloud_only_version_id"], version)
+        claims = list(target.parent.glob(".*.cleanup-*.tmp"))
+        self.assertEqual([path.read_bytes() for path in claims], [b"photo"])
+
     def test_real_multipart_transfer_with_watcher_has_no_temporary_catalog_entries(self):
         payload = b"multipart payload" * 1024
         target, version, digest = self.archive(content=payload, missing=True)

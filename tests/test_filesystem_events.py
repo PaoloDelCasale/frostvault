@@ -60,6 +60,22 @@ class ReleaseWatcherRaceTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
 
 
+    def test_failed_release_preserves_salvage_and_observes_external_replacement(self):
+        real_hash = storage.hash_stable_regular_file
+        def replace_then_fail(path):
+            if path != self.path:
+                self.path.write_bytes(b"other")
+                raise RuntimeError("Injected hash failure")
+            return real_hash(path)
+        with patch("app.storage.hash_stable_regular_file", side_effect=replace_then_fail):
+            with self.assertRaisesRegex(RuntimeError, "original content was preserved"):
+                storage.process_free_space(self.job)
+        self.assertEqual(self.path.read_bytes(), b"other")
+        claims = list(self.path.parent.glob(".*.cleanup-*.tmp"))
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0].read_bytes(), b"photo")
+        self.catalog.observe_replaced_local_copy.assert_called_once()
+
     def test_one_gib_file_with_active_watcher_is_released(self):
         size = 1 << 30
         with self.path.open("wb") as stream:

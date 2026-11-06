@@ -11,7 +11,7 @@ import time
 import uuid
 from collections.abc import Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import contextmanager, nullcontext
+from contextlib import aclosing, contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
@@ -4255,22 +4255,37 @@ def process_free_space(job: dict[str, Any]) -> None:
         _process_free_space(job)
 
 
-def _repair_failed_local_release(job: dict[str, Any], target: dict[str, Any], local_path: Path) -> None:
-    """Publish the salvaged bytes immediately, including changed-content cases."""
-    digest, info = hash_stable_regular_file(local_path)
+def _repair_failed_local_release(
+    job: dict[str, Any], target: dict[str, Any], local_path: Path, *, replacement: bool = False,
+) -> None:
+    """Publish salvaged/replaced bytes immediately without following symlinks."""
+    inspected = inspect_entry(local_path)
+    file_type, info = inspected if inspected else ("other", local_path.lstat())
+    digest = None
+    if file_type == "regular":
+        digest, info = hash_stable_regular_file(local_path)
     with db() as connection:
         catalog = ArchiveCatalog(connection)
-        file_id = catalog.observe_local_copy(
-            vault_id=job["vault_id"], path=job["path"], file_type="regular",
-            size=info.st_size, mtime_ns=info.st_mtime_ns, observed_at=now_iso(),
-        )
+        if replacement:
+            file_id = target["vault_file_id"]
+            catalog.observe_replaced_local_copy(
+                file_id, file_type=file_type, size=info.st_size,
+                mtime_ns=info.st_mtime_ns, observed_at=now_iso(),
+            )
+        else:
+            file_id = catalog.observe_local_copy(
+                vault_id=job["vault_id"], path=job["path"], file_type=file_type,
+                size=info.st_size, mtime_ns=info.st_mtime_ns, observed_at=now_iso(),
+            )
         if digest != target["local_sha256"]:
             connection.execute("UPDATE local_copies SET content_observed_at=%s WHERE vault_file_id=%s", (now_iso(), file_id))
-        catalog.set_local_fingerprint(
-            vault_id=job["vault_id"], path=job["path"], plaintext_sha256=digest,
-            matched_archive_version_id=(target["archive_version_id"] if digest == target["version_sha256"] else None),
-        )
-    local_observation.remember(job["vault_id"], job["path"], info, digest)
+        if digest:
+            catalog.set_local_fingerprint(
+                vault_id=job["vault_id"], path=job["path"], plaintext_sha256=digest,
+                matched_archive_version_id=(target["archive_version_id"] if digest == target["version_sha256"] else None),
+            )
+    if digest:
+        local_observation.remember(job["vault_id"], job["path"], info, digest)
 
 
 def _process_free_space(job: dict[str, Any]) -> None:
@@ -4333,9 +4348,12 @@ def _process_free_space(job: dict[str, Any]) -> None:
             claimed_path.unlink()
     except Exception as exc:
         if not restore_claimed_local_copy(claimed_path, local_path):
-            raise RuntimeError(
-                f"Cleanup stopped; original content was preserved at {claimed_path}"
-            ) from exc
+            try:
+                _repair_failed_local_release(job, target, local_path, replacement=True)
+            finally:
+                raise RuntimeError(
+                    f"Cleanup stopped; original content was preserved at {claimed_path}"
+                ) from exc
         _repair_failed_local_release(job, target, local_path)
         raise
 
@@ -5635,7 +5653,7 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
             continue
         try:
             runtime = await asyncio.to_thread(_runtime_settings)
-            async for changes in awatch(
+            async with aclosing(awatch(
                 root,
                 watch_filter=_filesystem_watch_filter,
                 debounce=runtime.filesystem_watch_debounce_ms,
@@ -5645,17 +5663,26 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
                 ignore_permission_denied=False,
                 yield_on_timeout=bool(pending_reconcile),
                 rust_timeout=1000,
-            ):
-                native_changes = changes
-                if pending_reconcile:
-                    changes = changes | pending_reconcile
-                    pending_reconcile = set()
-                if changes:
-                    await asyncio.to_thread(apply_filesystem_changes, vault, changes)
-                new_directories = await asyncio.to_thread(_new_watcher_directories, root, native_changes) if native_changes else set()
-                if new_directories:
-                    pending_reconcile = new_directories
-                    break
+            )) as watcher:
+                async for native_changes in watcher:
+                    new_directories = (
+                        await asyncio.to_thread(_new_watcher_directories, root, native_changes)
+                        if native_changes else set()
+                    )
+                    if new_directories and not pending_reconcile:
+                        # Re-arm first, then walk once with live recursive
+                        # watches. Avoid walking a large incoming tree twice.
+                        pending_reconcile = native_changes
+                        break
+                    changes = native_changes | pending_reconcile
+                    if changes:
+                        # Retain this batch for retry if observation fails.
+                        pending_reconcile = changes
+                        await asyncio.to_thread(apply_filesystem_changes, vault, changes)
+                        pending_reconcile = set()
+                    if new_directories:
+                        pending_reconcile = new_directories
+                        break
         except asyncio.CancelledError:
             raise
         except Exception as exc:
