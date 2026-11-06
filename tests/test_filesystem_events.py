@@ -119,7 +119,13 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
     async def test_polling_files_copied_after_new_directory_are_observed(self):
         await self.check_new_directory(True)
 
-    async def check_new_directory(self, force_polling):
+    async def test_native_sibling_changes_during_rearm_are_not_lost(self):
+        await self.check_new_directory(False, mutate_siblings=True)
+
+    async def test_polling_sibling_changes_during_rearm_are_not_lost(self):
+        await self.check_new_directory(True, mutate_siblings=True)
+
+    async def check_new_directory(self, force_polling, *, mutate_siblings=False):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root = Path(directory)
             ready = asyncio.Event()
@@ -129,12 +135,31 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
             file_seen = asyncio.Event()
             events = []
             real_awatch = awatch
+            siblings_seen = asyncio.Event()
+            for name in ("existing.jpg", "deleted.jpg", "before-rename.jpg"):
+                (root / name).write_bytes(b"first")
+            expected = {
+                (Change.modified, str(root / "existing.jpg")),
+                (Change.deleted, str(root / "deleted.jpg")),
+                (Change.deleted, str(root / "before-rename.jpg")),
+                (Change.added, str(root / "after-rename.jpg")),
+            }
 
             async def ticking_watch(*args, **kwargs):
                 # A timeout tick proves the native observer is installed. It
                 # also removes timing guesses from the newly-created-dir test.
                 nonlocal watch_calls
                 watch_calls += 1
+                if watch_calls == 2 and mutate_siblings:
+                    # At successor construction: old implementation has already
+                    # closed the observer. An overlapping handoff must retain
+                    # these unrelated writes/deletions/renames in the old one.
+                    original = (root / "existing.jpg").stat()
+                    (root / "existing.jpg").write_bytes(b"modified sibling bytes")
+                    # notify's polling backend compares whole-second mtimes.
+                    os.utime(root / "existing.jpg", ns=(original.st_atime_ns, original.st_mtime_ns + 2_000_000_000))
+                    (root / "deleted.jpg").unlink()
+                    (root / "before-rename.jpg").rename(root / "after-rename.jpg")
                 kwargs.update(yield_on_timeout=True, rust_timeout=50)
                 async for changes in real_awatch(*args, **kwargs):
                     ready.set()
@@ -144,6 +169,8 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
 
             def apply(vault, changes):
                 events.extend(changes)
+                if expected <= set(events):
+                    siblings_seen.set()
                 for _, value in changes:
                     if value == str(root / "new"):
                         directory_seen.set()
@@ -167,6 +194,11 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
                 (root / "new" / "nested").mkdir(parents=True)
                 await asyncio.wait_for(directory_seen.wait(), 3)
                 await asyncio.wait_for(rearmed.wait(), 3)
+                if mutate_siblings:
+                    try:
+                        await asyncio.wait_for(siblings_seen.wait(), 3)
+                    except TimeoutError:
+                        self.fail(f"Missing sibling events: {expected - set(events)}; got {events}")
                 (root / "new" / "nested" / "later.bin").write_bytes(b"later")
                 await asyncio.wait_for(file_seen.wait(), 3)
             finally:
@@ -201,6 +233,120 @@ class WatcherSubtreeTests(unittest.TestCase):
                 {"id": 2, "source_root": str(root)}, {(Change.modified, str(root / "incoming"))},
             ), 0)
             catalog.observe_local_copies_batch.assert_not_called()
+
+
+class SubtreeContainmentTests(unittest.TestCase):
+    def check_swap(self, *, during_walk=False, nested=False):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            base = Path(directory)
+            root = base / "vault"
+            incoming = root / "parent" / "incoming" if nested else root / "incoming"
+            incoming.mkdir(parents=True)
+            for name in ("a.jpg", "b.jpg", "c.jpg"):
+                (incoming / name).write_bytes(b"inside")
+            outside = base / "outside"
+            outside.mkdir()
+            (outside / "outside-only.txt").write_bytes(b"private")
+            if nested:
+                (outside / "incoming").mkdir()
+                (outside / "incoming" / "outside-only.txt").write_bytes(b"private")
+            connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = None
+            catalog = stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
+            observed = []
+            catalog.observe_local_copies_batch.side_effect = lambda **kwargs: observed.extend(entry[0] for entry in kwargs["entries"])
+            stack.enter_context(patch("app.storage._validate_enrolled_scan_root"))
+            stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True, volume_alias=None)))
+            stack.enter_context(patch("app.storage.record_catalog_revision"))
+            rollback = stack.enter_context(patch("app.storage._rollback_local_scan_journal"))
+            stack.enter_context(patch("app.storage.LOCAL_SCAN_WRITE_BATCH_SIZE", 1))
+            real_scan, real_inspect, real_read = storage._scan_tree, storage.inspect_entry, os.read
+            read_outside = []
+            inspections = 0
+
+            def swap():
+                target = incoming.parent if nested else incoming
+                target.rename(base / "detached")
+                target.symlink_to(outside, target_is_directory=True)
+
+            def scan(*args, **kwargs):
+                if not during_walk:
+                    swap()  # After is_symlink(), immediately before real traversal.
+                return real_scan(*args, **kwargs)
+
+            def inspect(path):
+                nonlocal inspections
+                result = real_inspect(path)
+                if result and result[0] == "regular":
+                    inspections += 1
+                    if during_walk and inspections == 2:
+                        swap()  # First bounded batch has already committed.
+                return result
+
+            def read(fd, count):
+                if Path(os.readlink(f"/proc/self/fd/{fd}")).is_relative_to(outside):
+                    read_outside.append(True)
+                return real_read(fd, count)
+
+            with (patch("app.storage._scan_tree", side_effect=scan),
+                  patch("app.storage.inspect_entry", side_effect=inspect),
+                  patch("os.read", side_effect=read)):
+                error = None
+                try:
+                    storage.apply_filesystem_changes({"id": 2, "source_root": str(root)}, {(Change.added, str(incoming))})
+                except RuntimeError as exc:
+                    error = exc
+            self.assertEqual(read_outside, [], "read bytes outside the enrolled Vault")
+            self.assertFalse(any("outside-only" in path for path in observed), observed)
+            self.assertIsNotNone(error, "substituted subtree must fail closed")
+            rollback.assert_called_once()
+            if during_walk:
+                self.assertGreaterEqual(connection.commit.call_count, 1)
+
+    def test_subtree_swapped_to_symlink_before_traversal(self):
+        self.check_swap()
+
+    def test_ancestor_swapped_to_symlink_before_traversal(self):
+        self.check_swap(nested=True)
+
+    def test_subtree_swapped_during_traversal_after_committed_batch(self):
+        self.check_swap(during_walk=True)
+
+
+class ReleaseRepairVaultIdentityTests(unittest.TestCase):
+    setUp = test_local_release.LocalReleaseWorkerTests.setUp
+
+    def test_repair_uses_vault_id_not_unrelated_same_number_job_id(self):
+        self.job.update(id=100, vault_id=2)
+        vault = {"id": 2, "source_root": self.job["source_root"]}
+        unrelated = {"id": 100, "source_root": "/unrelated"}
+        connection = self.stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
+        connection.execute.side_effect = lambda sql, params: SimpleNamespace(fetchone=lambda: vault if params == (2,) else unrelated)
+        with (patch("app.storage._validate_enrolled_scan_root") as validate,
+              patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True))):
+            storage._repair_failed_local_release(self.job, self.target, self.path)
+        validate.assert_called_with(vault)
+        self.catalog.set_local_fingerprint.assert_called_once()
+
+    def test_missing_actual_vault_never_falls_back_to_unenrolled_job(self):
+        self.job.update(id=100, vault_id=2)
+        connection = self.stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
+        connection.execute.return_value.fetchone.return_value = None
+        with (patch("app.storage.inspect_entry") as inspect,
+              self.assertRaises(RuntimeError)):
+            storage._repair_failed_local_release(self.job, self.target, self.path)
+        inspect.assert_not_called()
+        self.catalog.set_local_fingerprint.assert_not_called()
+
+    def test_changed_actual_vault_fails_before_read_or_publication(self):
+        self.job.update(id=100, vault_id=2)
+        connection = self.stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
+        connection.execute.return_value.fetchone.return_value = {"id": 2, "source_root": "/changed"}
+        with (patch("app.storage.inspect_entry") as inspect,
+              self.assertRaisesRegex(RuntimeError, "root changed")):
+            storage._repair_failed_local_release(self.job, self.target, self.path)
+        inspect.assert_not_called()
+        self.catalog.set_local_fingerprint.assert_not_called()
 
 
 class SDKTemporaryNameTests(unittest.TestCase):

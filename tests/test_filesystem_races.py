@@ -124,6 +124,32 @@ class FilesystemCatalogTests(unittest.TestCase):
                 storage.apply_filesystem_changes(self.vault, {(Change.added, str(self.root / "new"))})
         self.assertEqual([row["path"] for row in self.entries()], ["sibling.jpg"])
 
+    def test_subtree_component_swap_compensates_committed_catalog_batches(self):
+        self.write("sibling.jpg")
+        for name in ("a.jpg", "b.jpg", "c.jpg"):
+            self.write(f"incoming/{name}", watch=False)
+        outside = self.base / "outside"
+        outside.mkdir()
+        (outside / "outside-only.txt").write_bytes(b"outside")
+        real_inspect = storage.inspect_entry
+        inspected = 0
+
+        def swap_after_batch(entry):
+            nonlocal inspected
+            result = real_inspect(entry)
+            if result and result[0] == "regular":
+                inspected += 1
+                if inspected == 2:
+                    (self.root / "incoming").rename(self.base / "detached")
+                    (self.root / "incoming").symlink_to(outside, target_is_directory=True)
+            return result
+
+        with (patch("app.storage.LOCAL_SCAN_WRITE_BATCH_SIZE", 1),
+              patch("app.storage.inspect_entry", side_effect=swap_after_batch)):
+            with self.assertRaises(RuntimeError):
+                storage.apply_filesystem_changes(self.vault, {(Change.added, str(self.root / "incoming"))})
+        self.assertEqual([row["path"] for row in self.entries()], ["sibling.jpg"])
+
     def test_replaced_directory_invalidates_identical_size_and_mtime_content(self):
         target, _, _ = self.archive("new/photo.jpg")
         before = target.stat()

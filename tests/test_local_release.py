@@ -98,7 +98,13 @@ class LocalReleaseWorkerTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         for name in ("ensure_job_active", "set_job", "set_job_progress", "ensure_job_claim_owned_in_transaction", "record_automatic_cleanup_outcome", "validate_cloud_vault"):
             self.stack.enter_context(patch(f"app.storage.{name}"))
-        self.stack.enter_context(patch("app.storage.db"))
+        connection = self.stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
+        connection.execute.return_value.fetchone.return_value = {
+            "id": 1, "source_root": self.tmp.name,
+            "root_identity": storage.vault_relocation.root_identity(self.tmp.name),
+            "root_identity_version": storage.vault_relocation.ROOT_IDENTITY_VERSION,
+            "relocation_state": "ready", "decommission_state": "active",
+        }
         self.catalog = self.stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
         self.catalog.get_job_target.side_effect = lambda _: dict(self.target)
         self.confirmed = self.stack.enter_context(patch("app.storage.local_release_is_confirmed", return_value=True))
