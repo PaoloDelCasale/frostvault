@@ -31,6 +31,9 @@ class UploadModeTests(unittest.TestCase):
         self.puts = 0
         self.upload_response = {"VersionId": "raw-version", "ChecksumSHA256": sha256_b64(self.payload)}
         self.head_error = None
+        self.head_before_read = {}
+        self.head_after_read = {}
+        self.verification_failures = []
         self.proof = {"VersionId": "raw-version", "ContentLength": len(self.payload), "ChecksumType": "FULL_OBJECT", "ChecksumSHA256": sha256_b64(self.payload)}
         self.on_upload = None
         self.s3 = VersionedS3Stub(version_bytes=self.payload, head_object=self.head)
@@ -41,7 +44,8 @@ class UploadModeTests(unittest.TestCase):
         if kwargs.get("ChecksumMode"):
             if isinstance(self.proof, Exception): raise self.proof
             return self.proof
-        return {"VersionId": kwargs.get("VersionId") or "raw-version", "ContentLength": len(self.payload), "StorageClass": "STANDARD", "ETag": "etag"}
+        extra = self.head_after_read if self.s3.reads else self.head_before_read
+        return {"VersionId": kwargs.get("VersionId") or "raw-version", "ContentLength": len(self.payload), "StorageClass": "STANDARD", "ETag": "etag", **extra}
 
     def upload(self, job, *, source, key):
         self.puts += 1
@@ -60,7 +64,7 @@ class UploadModeTests(unittest.TestCase):
         queue_jobs("a.txt", "upload", 2, 1)
 
     def run_worker(self):
-        with patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=self.s3), patch("app.storage.upload_s3_file", side_effect=self.upload):
+        with patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=self.s3), patch("app.storage.upload_s3_file", side_effect=self.upload), patch("app.storage._record_verification_failure", side_effect=self.verification_failures.append):
             process_jobs_once()
 
     def rows(self):
@@ -173,6 +177,7 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(versions[0]["integrity"], "mismatch")
         self.assertEqual(self.s3.reads, [])
         self.assertEqual(self.s3.deleted, [])
+        self.assertEqual(self.verification_failures, ["mismatch"])
 
     def test_wrong_checksum_from_HEAD_retains_version_and_blocks(self):
         self.upload_response.pop("ChecksumSHA256")
@@ -183,6 +188,7 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(versions[0]["provider_version_id"], "raw-version")
         self.assertEqual(versions[0]["integrity"], "mismatch")
         self.assertEqual(self.s3.reads, [])
+        self.assertEqual(self.verification_failures, ["mismatch"])
 
     def test_read_back_request_does_not_silently_downgrade_contradictory_checksum(self):
         self.set_mode("read_back")
@@ -190,6 +196,50 @@ class UploadModeTests(unittest.TestCase):
         self.queue(); self.run_worker()
         self.assertEqual(self.rows()[1][0]["integrity"], "mismatch")
         self.assertEqual(self.s3.reads, [])
+
+    def test_contradictory_ordinary_HEAD_blocks_and_counts_once_before_read(self):
+        self.head_before_read = {"ChecksumSHA256": "wrong"}
+        self.queue(); self.run_worker()
+        job, versions, _ = self.rows()
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(versions[0]["integrity"], "mismatch")
+        self.assertEqual(self.s3.reads, [])
+        self.assertEqual(self.s3.deleted, [])
+        self.assertEqual(self.verification_failures, ["mismatch"])
+
+    def assert_final_HEAD_contradiction_blocks_cleanup(self, fields):
+        self.set_mode("read_back")
+        self.head_after_read = fields
+        self.queue(); self.run_worker()
+        job, versions, _ = self.rows()
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(versions[0]["integrity"], "mismatch")
+        self.assertEqual(len(self.s3.reads), 1)
+        self.assertEqual(self.s3.deleted, [])
+        self.assertEqual(self.verification_failures, ["mismatch"])
+
+    def test_wrong_checksum_on_post_read_HEAD_never_verifies_or_cleans(self):
+        self.assert_final_HEAD_contradiction_blocks_cleanup({"ChecksumSHA256": "wrong"})
+
+    def test_wrong_type_on_post_read_HEAD_never_verifies_or_cleans(self):
+        self.assert_final_HEAD_contradiction_blocks_cleanup({"ChecksumType": "COMPOSITE"})
+
+    def assert_final_HEAD_identity_or_size_blocks_cleanup(self, fields):
+        self.set_mode("read_back")
+        self.head_after_read = fields
+        self.queue(); self.run_worker()
+        job, versions, _ = self.rows()
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(versions[0]["integrity"], "unverified")
+        self.assertEqual(versions[0]["provider_version_id"], "raw-version")
+        self.assertEqual(len(self.s3.reads), 1)
+        self.assertEqual(self.s3.deleted, [])
+
+    def test_wrong_identity_on_post_read_HEAD_never_verifies_or_cleans(self):
+        self.assert_final_HEAD_identity_or_size_blocks_cleanup({"VersionId": "other-version"})
+
+    def test_wrong_size_on_post_read_HEAD_never_verifies_or_cleans(self):
+        self.assert_final_HEAD_identity_or_size_blocks_cleanup({"ContentLength": len(self.payload) + 1})
 
     def test_multipart_composite_proof_verifies_not_plaintext_digest(self):
         from app.services.upload_snapshot import prepare_upload_snapshot, MULTIPART_THRESHOLD

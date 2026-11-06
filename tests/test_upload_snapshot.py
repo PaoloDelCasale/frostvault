@@ -18,7 +18,7 @@ from app.services.s3_upload import upload_file, _UploadClient, _shared_budget
 from app.services.upload_snapshot import (
     CHUNK_SIZE, MULTIPART_THRESHOLD, prepare_upload_snapshot, UploadSnapshot,
     composite_checksum, sha256_b64, check_s3_proof, UploadProofMismatch,
-    unsupported_checksum_api,
+    unsupported_checksum_api, validated_s3_proof,
 )
 from app.storage import OperationCancelled
 
@@ -93,6 +93,19 @@ class UploadSnapshotTests(unittest.TestCase):
                 check_s3_proof({**valid, **changes}, version_id="v", snapshot=snapshot)
         self.assertTrue(check_s3_proof({"VersionId": "v", "ChecksumSHA256": snapshot.checksum_sha256}, version_id="v", snapshot=snapshot, completion=True))
         self.assertFalse(check_s3_proof({"VersionId": "v", "ChecksumSHA256": snapshot.checksum_sha256}, version_id="v", snapshot=snapshot))
+
+    def test_observed_proof_is_normalized_only_after_independent_validation(self):
+        snapshot = self.snapshot()
+        proof = {"VersionId": "exact", "ChecksumType": "FULL_OBJECT",
+                 "ChecksumSHA256": snapshot.checksum_sha256}
+        for source in ("upload_response", "exact_head", "ordinary_head"):
+            self.assertEqual(validated_s3_proof(proof, version_id="exact", snapshot=snapshot, source=source), {
+                "algorithm": "SHA256", "checksum_type": "FULL_OBJECT",
+                "checksum": snapshot.checksum_sha256, "version_id": "exact", "source": source,
+            })
+        self.assertIsNone(validated_s3_proof({"VersionId": "exact"}, version_id="exact", snapshot=snapshot, source="exact_head"))
+        with self.assertRaises(UploadProofMismatch):
+            validated_s3_proof({**proof, "ChecksumSHA256": "wrong"}, version_id="exact", snapshot=snapshot, source="exact_head")
 
     def test_unsupported_checksum_requires_explicit_HEAD_capability_evidence(self):
         from botocore.exceptions import ClientError
@@ -182,6 +195,45 @@ class SHA256ManagedUploadTests(UploadSnapshotTests):
             with self.assertRaises(OperationCancelled) as caught:
                 self.upload(snapshot, on_acknowledged=ack)
             self.assertEqual(caught.exception.upload_response["VersionId"], "acknowledged")
+            ack.assert_called_once()
+            stub.assert_no_pending_responses()
+
+    def test_cancel_before_PUT_response_retains_late_ack_after_real_manager_shutdown(self):
+        snapshot = self.snapshot()
+        entered = threading.Event()
+        release = threading.Event()
+        cancelled = OperationCancelled("cancelled before provider response")
+        ack = Mock()
+        real_put = self.client.put_object
+        from s3transfer.manager import TransferManager as RealManager
+
+        def delayed_put(**kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("shutdown never released the provider")
+            return real_put(**kwargs)
+
+        def active():
+            if entered.is_set():
+                raise cancelled
+
+        def manager_factory(*args, **kwargs):
+            manager = RealManager(*args, **kwargs)
+            shutdown = manager.shutdown
+            def shutdown_with_late_response(*args, **kwargs):
+                release.set()
+                return shutdown(*args, **kwargs)
+            manager.shutdown = shutdown_with_late_response
+            return manager
+
+        with Stubber(self.client) as stub, patch.object(self.client, "put_object", side_effect=delayed_put), patch(
+            "app.services.s3_upload.TransferManager", side_effect=manager_factory,
+        ):
+            stub.add_response("put_object", {"VersionId": "late-response", "ChecksumSHA256": snapshot.checksum_sha256})
+            with self.assertRaises(OperationCancelled) as caught:
+                self.upload(snapshot, check_active=active, on_acknowledged=ack)
+            self.assertIs(caught.exception, cancelled)
+            self.assertEqual(caught.exception.upload_response["VersionId"], "late-response")
             ack.assert_called_once()
             stub.assert_no_pending_responses()
 

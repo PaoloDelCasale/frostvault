@@ -148,6 +148,17 @@ def check_s3_proof(proof: dict[str, Any], *, version_id: str, snapshot: UploadSn
     return bool(value and (kind == snapshot.checksum_type or (completion and snapshot.checksum_type == "FULL_OBJECT")))
 
 
+def validated_s3_proof(proof: dict[str, Any], *, version_id: str,
+                       snapshot: UploadSnapshot, source: str,
+                       completion: bool = False) -> dict[str, str] | None:
+    """Normalize observed evidence only after checking the independent baseline."""
+    if not check_s3_proof(proof, version_id=version_id, snapshot=snapshot, completion=completion):
+        return None
+    return {"algorithm": "SHA256", "checksum_type": snapshot.checksum_type,
+            "checksum": proof["ChecksumSHA256"], "version_id": version_id,
+            "source": source}
+
+
 def unsupported_checksum_api(exc: Exception) -> bool:
     """Accept explicit capability errors, never generic malformed requests.
 

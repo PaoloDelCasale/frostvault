@@ -22,7 +22,7 @@ from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from .services.s3_upload import upload_file
 from .services.upload_snapshot import (
-    UploadSnapshot, prepare_upload_snapshot, check_s3_proof, UploadProofMismatch,
+    UploadSnapshot, prepare_upload_snapshot, validated_s3_proof, UploadProofMismatch,
     unsupported_checksum_api,
 )
 from watchfiles import Change, awatch
@@ -3394,6 +3394,26 @@ def process_upload(job: dict[str, Any]) -> None:
     source_stat: os.stat_result | None = None
     snapshot: UploadSnapshot | None = None
     requested_mode = str((linked_target or {}).get("job_upload_verification_requested") or "read_back")
+
+    def evaluate_provider_proof(proof: dict[str, Any], *, source: str,
+                                completion: bool = False) -> dict[str, str] | None:
+        # Every evidence origin, including the post-read HEAD, obeys the same
+        # contradiction policy and records one verification-failure metric.
+        nonlocal verification_started, verification_failure_reason
+        assert snapshot is not None
+        verification_started = True
+        try:
+            return validated_s3_proof(
+                proof, version_id=target["provider_version_id"],
+                snapshot=snapshot, source=source, completion=completion,
+            )
+        except UploadProofMismatch:
+            verification_failure_reason = "mismatch"
+            _upload_catalog_unit(job, lambda catalog: catalog.mark_version_mismatch(
+                version_id, plaintext_sha256=upload_digest, checked_at=now_iso(),
+            ))
+            raise
+
     try:
         if not linked_version_id:
             if not local_present:
@@ -3556,31 +3576,16 @@ def process_upload(job: dict[str, Any]) -> None:
                 }
                 # Present contradictory completion evidence blocks even when
                 # read_back was requested; absence alone is not a mismatch.
-                try:
-                    completion_proven = check_s3_proof(response, version_id=response["VersionId"], snapshot=snapshot, completion=True)
-                except UploadProofMismatch:
-                    _upload_catalog_unit(job, lambda catalog: catalog.mark_version_mismatch(
-                        version_id, plaintext_sha256=upload_digest, checked_at=now_iso(),
-                    ))
-                    raise
+                target["_provider_proof"] = evaluate_provider_proof(
+                    response, source="upload_response", completion=True,
+                )
                 head = _verification_version_head(client, job, target)
-                target["_completion_proven"] = completion_proven
-                if completion_proven:
-                    target["_provider_proof"] = {"algorithm": "SHA256", "checksum_type": snapshot.checksum_type,
-                                                 "checksum": response["ChecksumSHA256"], "version_id": response["VersionId"],
-                                                 "source": "upload_response"}
 
         if snapshot is not None:
             # A normal HEAD may also contain checksum fields. Any present
             # contradictory evidence blocks, even when full Read-back was
             # requested or completion already supplied a valid proof.
-            try:
-                check_s3_proof(head, version_id=target["provider_version_id"], snapshot=snapshot)
-            except UploadProofMismatch:
-                _upload_catalog_unit(job, lambda catalog: catalog.mark_version_mismatch(
-                    version_id, plaintext_sha256=upload_digest, checked_at=now_iso(),
-                ))
-                raise
+            evaluate_provider_proof(head, source="ordinary_head")
         ensure_job_active(job["id"], "Upload stopped")
         # Snapshot A is identified by the persisted upload digest. A later
         # Local Copy must not abort verification or be treated as a mismatch
@@ -3597,24 +3602,15 @@ def process_upload(job: dict[str, Any]) -> None:
         checksum_proven = False
         provider_proof = target.get("_provider_proof")
         if requested_mode == "s3_checksum" and snapshot is not None:
-            checksum_proven = bool(target.get("_completion_proven"))
+            checksum_proven = provider_proof is not None
             if not checksum_proven:
                 try:
                     proof = client.head_object(Bucket=job["s3_bucket"], Key=target["object_key"],
                                                VersionId=target["provider_version_id"], ChecksumMode="ENABLED")
-                    checksum_proven = check_s3_proof(proof, version_id=target["provider_version_id"], snapshot=snapshot)
-                    if checksum_proven:
-                        provider_proof = {"algorithm": "SHA256", "checksum_type": snapshot.checksum_type,
-                                          "checksum": proof["ChecksumSHA256"], "version_id": target["provider_version_id"],
-                                          "source": "exact_head"}
+                    provider_proof = evaluate_provider_proof(proof, source="exact_head")
+                    checksum_proven = provider_proof is not None
                     if not checksum_proven:
                         fallback_reason = "checksum_missing"
-                except UploadProofMismatch:
-                    verification_failure_reason = "mismatch"
-                    _upload_catalog_unit(job, lambda catalog: catalog.mark_version_mismatch(
-                        version_id, plaintext_sha256=upload_digest, checked_at=now_iso(),
-                    ))
-                    raise
                 except Exception as exc:
                     if not unsupported_checksum_api(exc):
                         raise
@@ -3640,7 +3636,9 @@ def process_upload(job: dict[str, Any]) -> None:
         _upload_catalog_unit(job, lambda catalog: catalog.set_version_verification_method(
             version_id, method="read_back", fallback_reason=fallback_reason, egress_bytes=remote_size,
         ))
-        _verification_version_head(client, job, target)
+        final_head = _verification_version_head(client, job, target)
+        if snapshot is not None:
+            evaluate_provider_proof(final_head, source="ordinary_head")
         expected_stream_size = target.get("cloud_size")
         if expected_stream_size is not None and remote_size != int(expected_stream_size):
             verification_failure_reason = "truncated"

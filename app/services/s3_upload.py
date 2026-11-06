@@ -221,6 +221,7 @@ def upload_file(
         manager._bandwidth_limiter = _shared_budget(max_bandwidth)
     future = None
     failed = True
+    failure: BaseException | None = None
     try:
         extra_args = ({"ChecksumAlgorithm": "SHA256", "ChecksumType": snapshot.checksum_type}
                       if snapshot is not None else
@@ -261,26 +262,36 @@ def upload_file(
         failed = False
         return response
     except BaseException as exc:
-        if facade.response is not None:
-            # Preserve the original exception type/retry classification while
-            # exposing identity to callers if a post-ack callback/check throws.
-            exc.upload_response = dict(facade.response)
+        failure = exc
         raise
     finally:
-        if failed and future is not None:
-            future.cancel()
         try:
-            manager.shutdown()
+            if failed and future is not None:
+                future.cancel()
+            try:
+                manager.shutdown()
+            finally:
+                if facade.pending is not None:
+                    # Explicit fallback if SDK cleanup failed/interruption raced
+                    # initiation. Lifecycle also reaps uploads after process death.
+                    try:
+                        facade.abort_multipart_upload(**facade.pending)
+                    except Exception:
+                        # Never log provider messages, keys or credentials.
+                        logging.getLogger(__name__).warning(
+                            "Incomplete multipart abort failed; lifecycle cleanup is required"
+                        )
+        except BaseException as cleanup_error:
+            if failure is None:
+                failure = cleanup_error
+                raise
+            # A cleanup error must not replace the original classification.
+            logging.getLogger(__name__).warning(
+                "Upload manager shutdown failed; original transfer error retained"
+            )
         finally:
-            if facade.pending is not None:
-                # Explicit fallback if SDK cleanup failed/interruption raced
-                # initiation. Lifecycle also reaps uploads after process death.
-                try:
-                    facade.abort_multipart_upload(**facade.pending)
-                except Exception:
-                    # Preserve the original cancellation/transport exception and
-                    # therefore the existing Job retry classification. Never log
-                    # provider messages, keys or credentials from cleanup errors.
-                    logging.getLogger(__name__).warning(
-                        "Incomplete multipart abort failed; lifecycle cleanup is required"
-                    )
+            # shutdown joins in-flight requests: their acknowledgments can arrive
+            # AFTER cancellation was raised. Attach the final receipt only now,
+            # keeping the original exception object and retry classification.
+            if failure is not None and facade.response is not None:
+                failure.upload_response = dict(facade.response)
