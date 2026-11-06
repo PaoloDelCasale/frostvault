@@ -234,10 +234,13 @@ class FilesystemCatalogTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Injected final"):
                 storage.process_free_space(job)
         self.assertEqual(calls, 2)
-        storage.apply_filesystem_changes(self.vault, {(Change.deleted, str(target)), (Change.added, str(target))})
         self.assertEqual(target.read_bytes(), b"photo")
-        row = self.entries()[0]
-        self.assertEqual((row["presence"], row["plaintext_sha256"], row["matched_archive_version_id"], row["cloud_only_version_id"]), ("present", digest, version, None))
+        # Real observers can queue the deletion before rollback and emit the
+        # addition in a later batch. Do not combine them into one path set.
+        for change in (Change.deleted, Change.added, Change.modified):
+            storage.apply_filesystem_changes(self.vault, {(change, str(target))})
+            row = self.entries()[0]
+            self.assertEqual((row["presence"], row["plaintext_sha256"], row["matched_archive_version_id"], row["cloud_only_version_id"]), ("present", digest, version, None))
 
     def test_failed_release_reconciles_external_replacement_and_keeps_salvage(self):
         target, version, _ = self.archive()

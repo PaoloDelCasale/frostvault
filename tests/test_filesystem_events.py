@@ -102,14 +102,37 @@ class LocalObservationEchoTests(unittest.TestCase):
             os.utime(path, ns=(observed.st_atime_ns, observed.st_mtime_ns))
             self.assertFalse(local_observation.consume(123, path.name, path))
 
-    def test_echo_is_exact_one_shot_and_does_not_restat_later_content(self):
+    def test_separate_delayed_echoes_each_revalidate_the_same_restored_bytes(self):
         from app.services import local_observation
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "photo.jpg"
             path.write_bytes(b"photo")
             local_observation.remember(124, path.name, path.stat(), hashlib.sha256(b"photo").hexdigest())
-            self.assertTrue(local_observation.consume(124, path.name, path))
-            self.assertFalse(local_observation.consume(124, path.name, path))
+            # deleted and added may arrive in different watcher batches after
+            # rollback. Each batch must preserve this exact restored snapshot.
+            with patch.object(local_observation, "hash_stable_regular_file", wraps=local_observation.hash_stable_regular_file) as hashing:
+                self.assertTrue(local_observation.consume(124, path.name, path))
+                self.assertTrue(local_observation.consume(124, path.name, path))
+                self.assertTrue(local_observation.consume(124, path.name, path))
+                self.assertEqual(hashing.call_count, 3)
+
+    def test_later_same_stat_external_edit_is_hashed_and_retires_echo(self):
+        from app.services import local_observation
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "photo.jpg"
+            path.write_bytes(b"photo")
+            observed = path.stat()
+            signature = local_observation._signature(observed)
+            local_observation.remember(125, path.name, observed, hashlib.sha256(b"photo").hexdigest())
+            self.assertTrue(local_observation.consume(125, path.name, path))
+            path.write_bytes(b"other")
+            os.utime(path, ns=(observed.st_atime_ns, observed.st_mtime_ns))
+            # Pin coarse/unchanged stat evidence: a fresh independent digest,
+            # not a TTL/stat-only ignore, must catch this subsequent mutation.
+            with patch.object(local_observation, "_signature", return_value=signature):
+                self.assertFalse(local_observation.consume(125, path.name, path))
+                path.write_bytes(b"photo")
+                self.assertFalse(local_observation.consume(125, path.name, path))
 
 
 class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):

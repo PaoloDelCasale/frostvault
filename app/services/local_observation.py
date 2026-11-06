@@ -1,9 +1,10 @@
-"""One-shot echoes of application-owned atomic filesystem mutations.
+"""Verified echoes of application-owned atomic filesystem mutations.
 
-The watcher still receives every ordinary user path. Only an exact post-mutation
-stat AND independently re-read digest can consume an echo; external replacements
-or writes invalidate it. Coarse filesystem clocks make ctime alone insufficient.
-This cache never grants cloud verification or cleanup authority.
+One mutation can emit several delayed watcher batches. Each echo must match the
+exact post-mutation stat AND an independently re-read digest; the evidence is
+retained only while both match. External replacements or writes invalidate it.
+Coarse filesystem clocks make ctime alone insufficient. This bounded cache never
+grants cloud verification or cleanup authority.
 """
 from __future__ import annotations
 
@@ -35,15 +36,25 @@ def remember(vault_id: int, relative: str, info: os.stat_result, plaintext_sha25
 
 
 def consume(vault_id: int, relative: str, path: Path) -> bool:
+    """Consume a matching event, not the proof needed for later echo batches."""
+    key = (int(vault_id), relative)
     with _lock:
-        key = (int(vault_id), relative)
-        if key not in _echoes:
-            return False
-        expected = _echoes.pop(key)
-    try:
-        if _signature(path.lstat()) != expected[0]:
-            return False
-        digest, info = hash_stable_regular_file(path)
-        return digest == expected[1] and _signature(info) == expected[0]
-    except (OSError, RuntimeError):
+        expected = _echoes.get(key)
+    if expected is None:
         return False
+    matches = False
+    try:
+        if _signature(path.lstat()) == expected[0]:
+            digest, info = hash_stable_regular_file(path)
+            matches = digest == expected[1] and _signature(info) == expected[0]
+    except (OSError, RuntimeError):
+        pass
+    with _lock:
+        # Never erase/approve evidence replaced while the independent read ran.
+        if _echoes.get(key) != expected:
+            return False
+        if matches:
+            _echoes.move_to_end(key)
+        else:
+            _echoes.pop(key)
+    return matches
