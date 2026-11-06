@@ -119,6 +119,60 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertEqual(self.provider.puts, 1)
         self.assertEqual(self.provider.gets, 0)
 
+    def test_definitively_refused_put_waits_and_resumes_after_credentials_recover(self):
+        from botocore.exceptions import ClientError
+        refused = ClientError({'Error':{'Code':'InvalidAccessKeyId'},'ResponseMetadata':{'HTTPStatusCode':403}},'PutObject')
+        # The SDK seam separately proves this fact is set only after joining I/O
+        # with no receipt. Replay its contract through real admission/DB/worker.
+        refused.upload_no_write_operation = 'PutObject'
+        job = self.queue()
+        record = provenance.record_no_write
+        attempts = []
+        def aborted_publication(connection,*args):
+            record(connection,*args)
+            attempts.append(1)
+            if len(attempts) == 1:
+                connection.execute("DO $$ BEGIN RAISE EXCEPTION 'forced refusal publication abort' USING ERRCODE='40001'; END $$")
+        with patch('app.storage.upload_file',side_effect=refused) as send, patch.object(
+            provenance,'record_no_write',side_effect=aborted_publication
+        ):
+            self.assertFalse(self.run_job(job))
+            send.assert_called_once()
+        self.assertEqual(len(attempts),2,'Replay only the refused-result DB publication, never the PUT')
+        first = self.row(job)
+        self.assertEqual((first['status'],first['retry_count']),('queued',0))
+        with PostgresConnection(self.db_path) as connection:
+            intent = provenance.load_for_job(connection,job)
+            self.assertFalse(intent['send_started'])
+            self.assertIsNone(provenance.receipt(connection,intent['id']))
+            no_write = connection.execute('SELECT response_json FROM upload_receipts WHERE intent_id=%s',(intent['id'],)).fetchone()
+            self.assertEqual(json.loads(no_write['response_json']),{'NoWriteOperation':'PutObject'})
+        self.run_job(job)
+        self.assert_keeper(job)
+        self.assertEqual(self.provider.puts,1,'One successful object, no blind replay of ambiguous PUT')
+        with PostgresConnection(self.db_path) as connection:
+            self.assertEqual(provenance.load_for_job(connection,job)['id'],intent['id'])
+            self.assertEqual(connection.execute('SELECT count(*) n FROM upload_receipts WHERE intent_id=%s',(intent['id'],)).fetchone()['n'],2)
+
+    def test_auth_failure_after_provider_write_keeps_intent_and_reconciles_without_put(self):
+        from botocore.exceptions import ClientError
+        def refused_head(stage,**kwargs):
+            if stage == 'head':
+                raise ClientError({'Error':{'Code':'AccessDenied'},'ResponseMetadata':{'HTTPStatusCode':403}},'HeadObject')
+        self.provider.hook = refused_head
+        job = self.queue()
+        self.assertFalse(self.run_job(job))
+        self.assertEqual(self.row(job)['status'],'queued')
+        self.assertEqual(self.provider.puts,1)
+        with PostgresConnection(self.db_path) as connection:
+            intent = provenance.load_for_job(connection,job)
+            self.assertTrue(intent['send_started'])
+            self.assertEqual(connection.execute('SELECT count(*) n FROM upload_receipts').fetchone()['n'],0)
+        self.provider.hook = lambda *args,**kwargs: None
+        self.run_job(job)
+        self.assert_keeper(job)
+        self.assertEqual(self.provider.puts,1)
+
     def test_prewrite_commit_failure_never_sends(self):
         job = self.queue()
         def fail(connection, *args):

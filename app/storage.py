@@ -3637,6 +3637,12 @@ def process_upload(job: dict[str, Any]) -> None:
                     raw = getattr(exc, "upload_response", None)
                     if raw is not None:
                         acknowledge(raw)
+                    no_write = getattr(exc,'upload_no_write_operation',None)
+                    if raw is None and no_write and cloud_preflight_gate.is_readiness_error(exc):
+                        # Definitive refusal is journaled before rearming send.
+                        # All ambiguous/lost-response outcomes stay reconcile-only.
+                        _upload_catalog_unit(job,lambda catalog: provenance.record_no_write(
+                            catalog.connection,job,intent,no_write,now_iso()))
                     raise
                 acknowledge(response)
                 version_id = _publish_upload_receipt(job, intent, response)

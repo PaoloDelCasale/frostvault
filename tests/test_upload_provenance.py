@@ -5,14 +5,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import boto3
 from botocore.config import Config
 from botocore.awsrequest import AWSResponse
 from botocore.exceptions import ClientError
 from types import SimpleNamespace
-from app.services.upload_provenance import UploadBlocked, TOKEN_KEY, canonical, inventory, provider_identity, reconcile
+from app.services.upload_provenance import UploadBlocked, TOKEN_KEY, canonical, inventory, provider_identity, reconcile, receipt
 from app.services.snapshot_cleanup import exact_duplicate
 from app.services.upload_snapshot import prepare_upload_snapshot
 from app.services.s3_upload import _UploadClient
@@ -29,6 +29,17 @@ class ProvenanceProviderTests(unittest.TestCase):
         source.write_bytes(b"independent A")
         self.snapshot, _ = prepare_upload_snapshot(source, lambda: None)
         self.intent = {"token": "opaque-attempt", "target_json": canonical({"key": "key", "bucket": "bucket", "provider": provider_identity(self.provider)}), "inventory_json": canonical({"versions": [], "markers": []}), "snapshot_json": self.snapshot.as_json()}
+
+    def test_no_write_facts_are_not_receipts_or_an_escape_for_malformed_proof(self):
+        connection = MagicMock()
+        for responses, expected in (([{'NoWriteOperation':'PutObject'}],None),
+            ([{'NoWriteOperation':'CompleteMultipartUpload'},{'VersionId':'exact'}],{'VersionId':'exact'})):
+            connection.execute.return_value.fetchall.return_value = [{'response_json':canonical(r)} for r in responses]
+            self.assertEqual(receipt(connection,'intent'),expected)
+        for malformed in ({'NoWriteOperation':'HeadObject'},{'NoWriteOperation':'PutObject','VersionId':'null'},{}):
+            connection.execute.return_value.fetchall.return_value = [{'response_json':canonical(malformed)}]
+            with self.subTest(malformed=malformed), self.assertRaises(UploadBlocked):
+                receipt(connection,'intent')
 
     def test_unique_token_reconciles_exact_identity_against_independent_snapshot(self):
         self.provider.add("key", b"independent A", {TOKEN_KEY: self.intent["token"]}, version="exact")

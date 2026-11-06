@@ -17,6 +17,7 @@ from .upload_snapshot import UploadSnapshot
 from .s3_copy import _object_version_entries
 
 TOKEN_KEY = "frostvault-upload"
+NO_WRITE_OPERATIONS = frozenset({'PutObject','CreateMultipartUpload','UploadPart','CompleteMultipartUpload'})
 REMEDIES = {
     "ambiguous_send": "Keep copies and stop external S3 writers. Retry exact reconciliation after the provider outcome is known; zero matches is not proof of no write.",
     "ambiguous_receipt": "Keep all copies. Inspect exact versions with authorized S3 tools; do not choose latest or delete by token.",
@@ -130,6 +131,8 @@ def prepare(connection: Any, job: dict[str, Any], *, pinned: dict[str, Any], sna
 
 def mark_send_started(connection: Any, job: dict[str, Any], intent: dict[str, Any]) -> None:
     require_target(connection, job, json.loads(intent["target_json"]))
+    if receipt(connection, intent['id']) is not None:
+        raise UploadBlocked('ambiguous_receipt')
     changed = connection.execute("UPDATE upload_intents SET send_started=TRUE WHERE id=%s AND NOT send_started RETURNING id", (intent["id"],)).fetchone()
     if not changed:
         raise UploadBlocked("ambiguous_send")
@@ -147,11 +150,38 @@ def append_receipt(db: Any, intent_id: str, response: dict[str, Any], timestamp:
         connection.execute("INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (intent_id, hashlib.sha256(text.encode()).hexdigest(), text, timestamp))
 
 
+def record_no_write(connection: Any, job: dict[str, Any], intent: dict[str, Any],
+                    operation: str, timestamp: str) -> None:
+    """Claim-fenced definitive refusal; retain the immutable outcome as a fact.
+
+    Called ONLY after the transfer manager joined all I/O and reported an auth
+    refusal without a final receipt. Zero listing matches never reach this seam.
+    Caller owns/retries its entire DB-only publication transaction.
+    """
+    if operation not in NO_WRITE_OPERATIONS:
+        raise UploadBlocked('ambiguous_send')
+    require_target(connection,job,json.loads(intent['target_json']))
+    if receipt(connection,intent['id']) is not None:
+        raise UploadBlocked('ambiguous_receipt')
+    changed = connection.execute("UPDATE upload_intents SET send_started=FALSE WHERE id=%s AND send_started AND NOT settled AND archive_version_id IS NULL RETURNING id",(intent['id'],)).fetchone()
+    if not changed:
+        raise UploadBlocked('ambiguous_receipt')
+    text = canonical({'NoWriteOperation':operation})
+    connection.execute("INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+        (intent['id'],hashlib.sha256(text.encode()).hexdigest(),text,timestamp))
+
+
 def receipt(connection: Any, intent_id: str) -> dict[str, Any] | None:
     rows = connection.execute("SELECT response_json FROM upload_receipts WHERE intent_id=%s", (intent_id,)).fetchall()
     if not rows:
         return None
     responses = [json.loads(r["response_json"]) for r in rows]
+    # Explicit, allowlisted no-write facts are history, never a VersionId/proof.
+    # Do not ignore malformed responses or arbitrary dictionaries without IDs.
+    responses = [r for r in responses if not (set(r) == {'NoWriteOperation'}
+        and r['NoWriteOperation'] in NO_WRITE_OPERATIONS)]
+    if not responses:
+        return None
     # Discovery may add fields, but incompatible proofs/identities never overwrite.
     combined: dict[str, Any] = {}
     for response in responses:
