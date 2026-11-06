@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .cost_estimates import estimate_storage_month, list_prices
-from . import notifications
+from . import notifications, cloud_preflight_gate
 
 
 def overview(connection: Any, *, user_id: int) -> dict[str, Any]:
@@ -55,5 +55,6 @@ def overview(connection: Any, *, user_id: int) -> dict[str, Any]:
         "previous_month_delta": round(total - float(baseline), 6) if baseline is not None else None,
         "currency": prices.currency, "pricing_effective_at": prices.effective_at,
         "email_configured": notifications.email_configured(),
+        "cloud_preflight": cloud_preflight_gate.snapshot(connection),
         "last_verified_backup": backup["verified_at"] if backup else None,
     }

@@ -32,6 +32,7 @@ from .services.catalog_event_hub import publish_committed_event
 from .services.catalog_events import record_catalog_revision
 from .i18n import DEFAULT_LOCALE, format_message_params, translate
 from .services.s3_preflight import check_bucket_readiness, preflight_failure_message
+from .services import cloud_preflight_gate
 from .services.catalog_audit import audit_vault_catalog
 from .services.directory_aggregates import (
     invalidate_for_vault_file,
@@ -449,15 +450,11 @@ def s3_client():
 
 
 def validate_cloud_vault(vault: dict[str, Any], *, notify: bool = True) -> None:
-    # Cleanup blockages belong only to audit/weekly summary, not immediate mail.
-    try:
-        _validate_cloud_vault(vault)
-    except Exception:
-        if notify:
-            _report_cloud_preflight(vault, blocked=True)
-        raise
-    if notify:
-        _report_cloud_preflight(vault, blocked=False)
+    # The installation gate owns one warning, including for cleanup callers.
+    # Provider failures here only suspend work; no transfer has started yet.
+    state = cloud_preflight_gate.check(db, lambda: _validate_cloud_vault(vault))
+    if state["status"] != "ready":
+        raise cloud_preflight_gate.CloudPreflightBlocked(state.get("remediation") or "S3 readiness check pending")
 
 
 def _report_cloud_preflight(vault: dict[str, Any], *, blocked: bool) -> None:
@@ -479,14 +476,14 @@ def _validate_cloud_vault(vault: dict[str, Any]) -> None:
         "BUCKET-NAME",
         "REPLACE-WITH-BUCKET-NAME",
     ):
-        raise RuntimeError("The S3 bucket name is not configured")
+        raise cloud_preflight_gate.ReadinessFailure("The S3 bucket name is not configured. Set VAULT_S3_BUCKET to the archive bucket")
     result = check_bucket_readiness(
         bucket,
         region=settings.aws_region,
         client=s3_client(),
     )
     if not result.ok:
-        raise RuntimeError(
+        raise cloud_preflight_gate.ReadinessFailure(
             "S3 bucket preflight failed: " + preflight_failure_message(result)
         )
 
@@ -4815,6 +4812,11 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
         else:
             return False
         return True
+    except cloud_preflight_gate.CloudPreflightBlocked:
+        # Readiness is checked before any provider mutation in every handler.
+        # Preserve retries/retry_after and release only the scheduler lease.
+        set_job(job["id"], job["status"], "S3 readiness blocked; Job remains queued")
+        return False
     except JobLeaseLost:
         # A different worker/cancellation now owns the durable outcome.  Never
         # write a terminal status, audit, or notification from this stale worker.
@@ -5022,11 +5024,18 @@ def process_jobs_once(*, wait: bool = True) -> int:
             restore_due_before=restore_due_before,
             limit=batch_size,
         )
+        preflight = cloud_preflight_gate.snapshot(connection)
+        preflight_wait = (preflight["status"] == "blocked" and
+                          (preflight.get("next_probe_at") or "") > now)
         eligible_candidates: list[dict[str, Any]] = []
         seen_purge_groups: set[tuple[int, str]] = set()
         for row in candidates:
             job = dict(row)
             vault_id = int(job["vault_id"])
+            # Only handlers which call validate_cloud_vault are gated; this
+            # does not stop local catalog scans, notifications or heartbeat.
+            if preflight_wait and job["action"] in {"upload", "recover", "rename", "free-space", "storage-class", "cloud-purge"}:
+                continue
             if vault_relocation.local_work_suspended({"id": vault_id}):
                 continue
             if (
@@ -5139,7 +5148,8 @@ def scan_all_vaults() -> None:
 AUTO_UPLOAD_POLL_SECONDS = 10
 
 
-def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = None) -> int:
+def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = None,
+                             retry_failed_only: bool = False) -> int:
     """Drain stable watcher observations without a cloud call or full scan.
 
     The catalog is the durable pending set, including observations recovered by
@@ -5164,12 +5174,19 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
             if "root_identity" in vault else nullcontext(Path(vault["source_root"]))
         )
         with pinned_root as root, db() as connection:
+            from .services.job_admission import lock_vault
+            lock_vault(connection, int(vault["id"]))
+            current = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault["id"],)).fetchone()
+            if (not current or not current["enabled"] or current["relocation_state"] != "ready"
+                    or current["decommission_state"] != "active"
+                    or current["source_root"] != vault["source_root"]):
+                return 0
             owner_id = owner_user_id(connection)
             if owner_id is None:
                 return 0
             queued = queue_auto_uploads(
                 connection, vault_id=int(vault["id"]), source_root=str(root),
-                requested_by=owner_id, now=now,
+                requested_by=owner_id, now=now, retry_failed_only=retry_failed_only,
             )
             if "root_identity" in vault:
                 _current_verified_scan_row(connection, vault)

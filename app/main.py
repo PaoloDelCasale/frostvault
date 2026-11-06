@@ -2326,8 +2326,35 @@ def upload(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    queued = queue_jobs(action.path, "upload", vault["id"], user["id"], action.is_directory)
+    queued = queue_jobs(action.path, "upload", vault["id"], user["id"], action.is_directory,
+                        whole_vault=action.path == "" and action.is_directory)
     return {**queued, **_api_message(request, "api.upload_started")}
+
+
+class RetryFailedUploadsResponse(BaseModel):
+    item_count: int
+
+
+@app.post("/api/upload/retry-failed", status_code=202, response_model=RetryFailedUploadsResponse)
+def retry_failed_uploads(vault_id: int | None = Query(default=None, ge=1),
+                         _: dict[str, Any] = Depends(current_user)):
+    """Explicit scope: omitted Vault means installation, never Session choice."""
+    from .storage import queue_vault_auto_uploads, _ScanRootMismatch
+    with db() as connection:
+        vaults = connection.execute(
+            "SELECT * FROM vaults" + (" WHERE id=%s" if vault_id is not None else "") + " ORDER BY id",
+            (vault_id,) if vault_id is not None else (),
+        ).fetchall()
+    if vault_id is not None and not vaults:
+        raise HTTPException(404, "Vault not found")
+    count = 0
+    for vault in vaults:
+        try:
+            count += queue_vault_auto_uploads(dict(vault), retry_failed_only=True)
+        except (_ScanRootMismatch, OSError):
+            # Missing/replaced roots remain ineligible, not implicitly reconnected.
+            continue
+    return {"item_count": count}
 
 
 def confirm_cloud_only_replacement(
