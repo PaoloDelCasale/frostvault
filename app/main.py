@@ -1753,6 +1753,8 @@ def build_job_groups(
                 "item_count": 0,
                 "completed_count": 0,
                 "failed_count": 0,
+                "resolved_failed_count": 0,
+                "unresolved_failed_count": 0,
                 "cancelled_count": 0,
                 "updated_at": row["updated_at"],
                 "pending_until": row.get("pending_until"),
@@ -1784,6 +1786,8 @@ def build_job_groups(
                 group["message_key"] = row.get("message_key")
         elif row["status"] == "failed":
             group["failed_count"] += 1
+            resolved = (row.get("remediation") or {}).get("state") == "resolved"
+            group["resolved_failed_count" if resolved else "unresolved_failed_count"] += 1
             group["message"] = display_message or translate(
                 "job.operation_failed", locale=locale
             )
@@ -1864,6 +1868,9 @@ def jobs(request: Request, vault: dict[str, Any] = Depends(current_vault)):
                 """,
                 [vault["id"], *group_ids],
             ).fetchall()
+        from .services.upload_remediation import project_jobs
+        recent_rows = project_jobs(connection,recent_rows)
+        group_rows = project_jobs(connection,group_rows)
     rows_by_id = {row["id"]: row for row in [*recent_rows, *group_rows]}
     rows = sorted(rows_by_id.values(), key=lambda row: str(row["requested_at"]), reverse=True)
     localized_rows = [
@@ -1878,6 +1885,36 @@ def jobs(request: Request, vault: dict[str, Any] = Depends(current_vault)):
         "groups": build_job_groups(rows, locale=locale),
         "locale": locale,
     }
+
+
+_JOB_HISTORY_COLUMNS = "id,path,action,status,message,message_key,message_params,requested_at,updated_at,group_id,group_path,total_bytes,transferred_bytes,archive_version_id,upload_reconcile_only"
+
+
+@app.get("/api/jobs/{job_id}", response_model=response_model("JobRecord"))
+def job_detail(request: Request, job_id: int, vault: dict[str, Any] = Depends(current_vault)):
+    from .services.upload_remediation import project_jobs
+    with db() as connection:
+        row = connection.execute(f"SELECT {_JOB_HISTORY_COLUMNS} FROM jobs WHERE id=%s AND vault_id=%s", (job_id,vault["id"])).fetchone()
+        if not row:
+            raise HTTPException(404,"Job not found in this Vault")
+        projected = project_jobs(connection,[row])[0]
+    return {**projected,"message":present_job_message(row,_request_locale(request))}
+
+
+@app.get("/api/files/jobs", response_model=response_model("FileJobHistoryResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
+def file_job_history(request: Request, path: str = Query(), before_id: int | None = Query(default=None,ge=1),
+                     limit: int = Query(default=50,ge=1,le=50), vault: dict[str, Any] = Depends(current_vault)):
+    from .services.upload_remediation import project_jobs
+    logical_path = safe_relative_path(path).as_posix()
+    with db() as connection:
+        file = connection.execute("SELECT vault_file_id FROM file_paths WHERE vault_id=%s AND path=%s AND valid_to IS NULL",(vault["id"],logical_path)).fetchone()
+        if not file:
+            raise HTTPException(404,"Vault File not found")
+        rows = connection.execute(f"SELECT {_JOB_HISTORY_COLUMNS} FROM jobs WHERE vault_id=%s AND vault_file_id=%s AND id<%s ORDER BY id DESC LIMIT %s",
+            (vault["id"],file["vault_file_id"],before_id or 2**63-1,limit+1)).fetchall()
+        items = project_jobs(connection,rows[:limit])
+    return {"items":[{**row,"message":present_job_message(row,_request_locale(request))} for row in items],
+            "next_before_id":items[-1]["id"] if len(rows)>limit else None}
 
 
 @app.post("/api/scan", status_code=202, response_model=response_model("ScanResponse"))
@@ -2203,6 +2240,8 @@ def file_versions(
         versions = ArchiveCatalog(connection).list_versions(vault["id"], logical_path)
         from .services.upload_provenance import describe
         reconciliation = describe(connection, vault_id=vault["id"], path=logical_path)
+        from .services.upload_remediation import file_projection
+        remediations = file_projection(connection,vault["id"],logical_path)
     # The response is an internal exact-version pin for recovery, not history.
     recoverable = [row for row in versions if row["recoverable"]][:1]
     default_version_id = recoverable[0]["id"] if recoverable else None
@@ -2212,6 +2251,7 @@ def file_versions(
         "recoverable_count": len(recoverable),
         "default_archive_version_id": default_version_id,
         "reconciliation": reconciliation,
+        "remediations": remediations,
         "supported_restore_tiers": list(SUPPORTED_RESTORE_TIERS),
         "default_restore_tier": _runtime_settings().restore_tier,
         "default_restore_days": _runtime_settings().restore_days,

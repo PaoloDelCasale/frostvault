@@ -512,6 +512,27 @@
         "title": "FileAction",
         "type": "object"
       },
+      "FileJobHistoryResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/JobRecord"
+            },
+            "type": "array"
+          },
+          "next_before_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_before_id"
+        ],
+        "type": "object"
+      },
       "FileOperationAction": {
         "description": "Job / file-operation types (issue #67).",
         "enum": [
@@ -640,6 +661,12 @@
           },
           "recoverable_count": {
             "type": "number"
+          },
+          "remediations": {
+            "items": {
+              "$ref": "#/components/schemas/UploadRemediation"
+            },
+            "type": "array"
           },
           "supported_restore_tiers": {
             "items": {
@@ -1169,6 +1196,9 @@
           "percent": {
             "type": "number"
           },
+          "resolved_failed_count": {
+            "type": "number"
+          },
           "restore_days": {
             "type": [
               "number",
@@ -1188,6 +1218,9 @@
             "type": "number"
           },
           "transferred_bytes": {
+            "type": "number"
+          },
+          "unresolved_failed_count": {
             "type": "number"
           },
           "updated_at": {
@@ -1223,6 +1256,12 @@
             ]
           },
           "approved_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archive_version_id": {
             "type": [
               "string",
               "null"
@@ -1277,6 +1316,16 @@
               "null"
             ]
           },
+          "remediation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UploadRemediation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "requested_at": {
             "type": "string"
           },
@@ -1309,6 +1358,9 @@
           },
           "updated_at": {
             "type": "string"
+          },
+          "upload_reconcile_only": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -2737,6 +2789,92 @@
         ],
         "type": "object"
       },
+      "UploadRemediation": {
+        "properties": {
+          "archive_version_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "can_resume": {
+            "type": "boolean"
+          },
+          "current_job_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "due_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "original_job_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remedy": {
+            "type": "string"
+          },
+          "resolved_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_by_job_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "retry_count": {
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "queued",
+              "retrying",
+              "blocked",
+              "suspended",
+              "cancelled",
+              "resolved"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "phase",
+          "reason",
+          "retry_count",
+          "due_at",
+          "can_resume",
+          "current_job_id",
+          "resolved_by_job_id",
+          "resolved_at",
+          "archive_version_id",
+          "original_job_ids",
+          "remedy"
+        ],
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -3796,6 +3934,91 @@
         "summary": "File Detail"
       }
     },
+    "/api/files/jobs": {
+      "get": {
+        "operationId": "file_job_history_api_files_jobs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileJobHistoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
+          }
+        },
+        "summary": "File Job History"
+      }
+    },
     "/api/files/search": {
       "get": {
         "description": "Search name/path across all protected Vaults, independent of Session choice.",
@@ -4320,6 +4543,62 @@
           }
         },
         "summary": "Cancel Job"
+      }
+    },
+    "/api/jobs/{job_id}": {
+      "get": {
+        "operationId": "job_detail_api_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Job Detail"
       }
     },
     "/api/locale": {
@@ -5172,7 +5451,7 @@
     },
     "/api/upload/reconcile": {
       "post": {
-        "description": "Exact resume only, including protected files for which upload returns 409.\n\nNo sweep, no arbitrary deletion, no resurrection of deliberate cancellation.",
+        "description": "Exact resume only, including protected files for which upload returns 409.\n\nCommon target arbiter; no PUT, arbitrary deletion or cancellation resurrection.",
         "operationId": "reconcile_upload_api_upload_reconcile_post",
         "parameters": [
           {

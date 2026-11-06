@@ -16,6 +16,11 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [replace, setReplace] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [beforeId, setBeforeId] = useState<number>();
+  const [jobId, setJobId] = useState<number>();
+  const history = useQuery({ queryKey: ["file-job-history", target.vaultId, target.item.path, beforeId, revision], enabled: historyOpen, queryFn: () => api.fileJobs(target.item.path, beforeId) });
+  const linkedJob = useQuery({ queryKey: ["linked-job", target.vaultId, jobId, revision], enabled: jobId !== undefined, queryFn: () => api.job(jobId!) });
   const [deletion, setDeletion] = useState<{ settings: CloudDeletionSettings; preview: CloudDeletionPreview } | null>(null);
   const data = useQuery({ queryKey: ["details", target.vaultId, target.item.path, revision], queryFn: async () => {
     const [item, versions, jobs] = await Promise.all([api.details(target.item.path), api.versions(target.item.path), api.jobs()]);
@@ -45,6 +50,34 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
             {item.cloud_only_conflict ? <Button disabled={busy} variant="danger" onClick={() => setReplace(true)}>{t("essential.replace_cloud")}</Button> : item.upload_eligible ? <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload", { path: item.path }))}>{t("essential.retry")}</Button> : null}
           </section>}
           {reconciliation?.pending && <section className="grid gap-3 rounded border border-line p-3"><h2 className="font-bold">{t("reconciliation.title")}</h2><p>{t("reconciliation.help")}</p><p>{t(`reconciliation.reason.${reconciliation.reason ?? "proof_unavailable"}`)}</p>{reconciliation.can_resume && <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload/reconcile", { path: item.path }))}>{t("reconciliation.resume")}</Button>}</section>}
+          {data.data?.versions.remediations?.map((resume) => <section key={resume.id} className="grid gap-2 rounded border border-line p-3">
+            <h2 className="font-bold">{t("remediation.title")}: {t(`remediation.state.${resume.state}`)}</h2>
+            <p>{t("remediation.phase")}: {t(`remediation.phase.${resume.phase}`)}</p>
+            <p>{t("remediation.target")}: {resume.archive_version_id ?? "—"}</p>
+            {resume.reason && <p>{t("remediation.reason")}: {resume.reason}</p>}
+            {resume.state !== "resolved" && <p>{t("remediation.help")}</p>}
+            {resume.state === "retrying" && <p>{t("remediation.retry", { count: resume.retry_count, at: resume.due_at })}</p>}
+            {resume.resolved_by_job_id && <Button variant="secondary" onClick={() => setJobId(resume.resolved_by_job_id!)}>{t("remediation.resolved_by", { id: resume.resolved_by_job_id })}</Button>}
+            {resume.current_job_id && !resume.resolved_by_job_id && <Button variant="secondary" onClick={() => setJobId(resume.current_job_id!)}>{t("remediation.job", { id: resume.current_job_id })}</Button>}
+            {resume.can_resume && <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload/reconcile", { path: item.path }))}>{t("reconciliation.resume")}</Button>}
+          </section>)}
+          <details onToggle={(event) => setHistoryOpen(event.currentTarget.open)}><summary className="min-h-11 cursor-pointer py-3 font-semibold">{t("remediation.history")}</summary>
+            {history.isFetching && <p role="status">{t("ui.loading")}</p>}
+            {history.error && <p role="alert">{String(history.error)}</p>}
+            {history.data?.items.map((job) => <div key={job.id} className="grid gap-1 border-b border-line py-2">
+              <Button variant="secondary" onClick={() => setJobId(job.id)}>{t("remediation.job", { id: job.id })} · {job.status}</Button>
+              <p>{job.requested_at} · {job.message}</p>
+              {job.remediation?.state === "resolved" && <p>{t("remediation.resolved_by", { id: job.remediation.resolved_by_job_id ?? 0 })}</p>}
+            </div>)}
+            {beforeId && <Button variant="secondary" onClick={() => setBeforeId(undefined)}>{t("remediation.recent")}</Button>}
+            {history.data?.next_before_id && <Button variant="secondary" onClick={() => setBeforeId(history.data!.next_before_id!)}>{t("remediation.older")}</Button>}
+          </details>
+          {linkedJob.error && <p role="alert">{String(linkedJob.error)}</p>}
+          {linkedJob.data && <section className="grid gap-2 rounded border border-line p-3">
+            <h2>{t("remediation.job", { id: linkedJob.data.id })} · {linkedJob.data.status}</h2><p>{linkedJob.data.requested_at} · {linkedJob.data.message}</p>
+            {linkedJob.data.remediation?.original_job_ids.map((id) => <Button key={id} variant="secondary" onClick={() => setJobId(id)}>{t("remediation.original", { id })}</Button>)}
+            {linkedJob.data.remediation?.current_job_id && <Button variant="secondary" onClick={() => setJobId(linkedJob.data!.remediation!.current_job_id!)}>{t("remediation.job", { id: linkedJob.data.remediation.current_job_id })}</Button>}
+          </section>}
           {item.recover_eligible && <Button disabled={busy} onClick={onRecover}>{t("ui.row_action_recover")}</Button>}
           {pending.map((job) => <div key={job.id}><p>{t("essential.deletion_pending")}</p><Button disabled={busy} variant="secondary" onClick={() => void perform(() => api.post("/api/jobs/cancel", { group_id: job.id, action: "cloud-purge" }))}>{t("essential.cancel_deletion")}</Button></div>)}
           {item.type === "file" && item.state === "cloud_only" && !item.local_exists && !pending.length && <details><summary className="min-h-11 cursor-pointer py-3 font-semibold">{t("essential.danger_zone")}</summary><p>{t("ui.cloud_purge_local_note")}</p><Button disabled={busy} variant="danger" onClick={() => void perform(async () => {

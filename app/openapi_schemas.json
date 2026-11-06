@@ -831,6 +831,33 @@
       ],
       "type": "object"
     },
+    "UploadRemediation": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string"},
+        "state": {"type": "string", "enum": ["pending", "queued", "retrying", "blocked", "suspended", "cancelled", "resolved"]},
+        "phase": {"type": "string"},
+        "reason": {"type": ["string", "null"]},
+        "remedy": {"type": "string"},
+        "retry_count": {"type": "integer"},
+        "due_at": {"type": "string"},
+        "can_resume": {"type": "boolean"},
+        "current_job_id": {"type": ["integer", "null"]},
+        "resolved_by_job_id": {"type": ["integer", "null"]},
+        "resolved_at": {"type": ["string", "null"]},
+        "archive_version_id": {"type": ["string", "null"]},
+        "original_job_ids": {"type": "array", "items": {"type": "integer"}}
+      },
+      "required": ["id", "state", "phase", "reason", "retry_count", "due_at", "can_resume", "current_job_id", "resolved_by_job_id", "resolved_at", "archive_version_id", "original_job_ids", "remedy"]
+    },
+    "FileJobHistoryResponse": {
+      "type": "object",
+      "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/components/schemas/JobRecord"}},
+        "next_before_id": {"type": ["integer", "null"]}
+      },
+      "required": ["items", "next_before_id"]
+    },
     "UploadReconciliationResponse": {
       "type": "object",
       "properties": {"job_id": {"type": "integer"}, "group_id": {"type": "string"}},
@@ -850,6 +877,7 @@
       "additionalProperties": true,
       "properties": {
         "reconciliation": {"$ref": "#/components/schemas/UploadReconciliation"},
+        "remediations": {"type": "array", "items": {"$ref": "#/components/schemas/UploadRemediation"}},
         "default_archive_version_id": {
           "type": [
             "string",
@@ -1073,6 +1101,8 @@
         "failed_count": {
           "type": "number"
         },
+        "resolved_failed_count": {"type": "number"},
+        "unresolved_failed_count": {"type": "number"},
         "id": {
           "type": "string"
         },
@@ -1146,6 +1176,9 @@
     "JobRecord": {
       "additionalProperties": true,
       "properties": {
+        "remediation": {"anyOf": [{"$ref": "#/components/schemas/UploadRemediation"}, {"type": "null"}]},
+        "archive_version_id": {"type": ["string", "null"]},
+        "upload_reconcile_only": {"type": "boolean"},
         "action": {
           "anyOf": [
             {

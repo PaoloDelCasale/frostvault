@@ -37,6 +37,12 @@ def upgrade():
         sa.Column("resolved_at", sa.Text()),
         sa.Column("cleanup_inventory_job_id", sa.BigInteger(), sa.ForeignKey("snapshot_cleanup_inventories.job_id", ondelete="RESTRICT")),
         sa.UniqueConstraint("id", "vault_file_id", "vault_id", name="upload_remediations_scope_uq"),
+        sa.UniqueConstraint("archive_version_id", name="upload_remediations_version_uq"),
+        sa.UniqueConstraint("intent_id", name="upload_remediations_intent_uq"),
+        sa.ForeignKeyConstraint(["current_job_id", "vault_file_id", "vault_id"],
+            ["jobs.id", "jobs.vault_file_id", "jobs.vault_id"], ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(["resolved_by_job_id", "vault_file_id", "vault_id"],
+            ["jobs.id", "jobs.vault_file_id", "jobs.vault_id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["archive_version_id", "vault_file_id", "vault_id"],
             ["archive_versions.id", "archive_versions.vault_file_id", "archive_versions.vault_id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["intent_id", "vault_file_id", "vault_id"],
@@ -61,6 +67,8 @@ def upgrade():
     op.create_index("upload_remediations_due_idx", "upload_remediations", ["vault_id", "due_at", "id"],
         postgresql_where=sa.text("state IN ('pending','suspended')"))
     op.create_index("upload_remediations_file_idx", "upload_remediations", ["vault_file_id", "created_at"])
+    op.create_index("upload_remediations_open_idx", "upload_remediations", ["state", "current_job_id"],
+        postgresql_where=sa.text("state <> 'resolved'"))
     op.create_table("upload_remediation_discovery",
         sa.Column("job_id", sa.BigInteger(), sa.ForeignKey("jobs.id", ondelete="RESTRICT"), primary_key=True),
         sa.Column("vault_id", sa.BigInteger(), sa.ForeignKey("vaults.id", ondelete="RESTRICT"), nullable=False),

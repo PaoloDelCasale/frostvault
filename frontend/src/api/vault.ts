@@ -1,5 +1,5 @@
 import { apiRequest } from "./client";
-import type { ArchiveListItem, FileOperationPayload, FileOperationResponse, FileVersionsResponse, FilesResponse, OperationPolicy, RecoverEstimateResponse, JobsResponse } from "./types";
+import type { ArchiveListItem, FileOperationPayload, FileOperationResponse, FileVersionsResponse, FilesResponse, OperationPolicy, RecoverEstimateResponse, JobsResponse, FileJobHistoryResponse, JobRecord } from "./types";
 
 /** An immutable request scope. Never reads or changes the Session's selection.
  * The URL, including its scope, survives CSRF/reauth retries unchanged. */
@@ -16,6 +16,8 @@ export function vaultApi(vaultId: number) {
     versions: (path: string) => request<FileVersionsResponse>(`/api/files/versions?path=${encodeURIComponent(path)}`),
     policy: () => request<OperationPolicy>("/api/vault/operation-policy"),
     jobs: () => request<JobsResponse>("/api/jobs"),
+    fileJobs: (path: string, beforeId?: number) => request<FileJobHistoryResponse>(`/api/files/jobs?path=${encodeURIComponent(path)}${beforeId ? `&before_id=${beforeId}` : ""}`),
+    job: (id: number) => request<JobRecord>(`/api/jobs/${id}`),
     estimate: (payload: unknown) => post<RecoverEstimateResponse>("/api/recover/estimate", payload),
     action: (action: "recover" | "free-space", payload: FileOperationPayload) => post<FileOperationResponse>(`/api/${action}`, payload),
   };

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from time import monotonic
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -110,7 +111,7 @@ def _enroll(connection: Any, original: dict[str, Any], vault: dict[str, Any], st
          "cleanup" if version and version["integrity"] == "verified" else "verification", reason,
          stamp, stamp, stamp)).fetchone()
     if not row:
-        row = connection.execute("SELECT * FROM upload_remediations WHERE target_key=%s", (key,)).fetchone()
+        row = connection.execute("SELECT * FROM upload_remediations WHERE target_key=%s OR intent_id=%s OR archive_version_id=%s", (key,intent["id"] if intent else None,version_id)).fetchone()
     # An AV identity alone cannot link contradictory expected content to a resolution.
     if row["expected_sha256"] != expected or row["snapshot_json"] != snapshot_json:
         connection.execute("UPDATE upload_remediations SET state='blocked',reason='proof_mismatch',updated_at=%s WHERE id=%s", (stamp,row["id"]))
@@ -334,7 +335,7 @@ def _fair_vaults(connection: Any, name: str, stamp: str) -> list[dict[str, Any]]
         else "EXISTS (SELECT 1 FROM upload_remediations r WHERE r.vault_id=v.id AND r.state IN ('pending','suspended') AND r.due_at<=%s)")
     params = [] if name == "discovery" else [stamp]
     rows = connection.execute(f"SELECT v.* FROM vaults v WHERE {predicate} ORDER BY (v.id>%s) DESC,v.id LIMIT %s", (*params,cursor["last_vault_id"],VAULT_BATCH)).fetchall()
-    connection.execute("UPDATE upload_remediation_sweep SET last_vault_id=%s,last_tick_at=%s WHERE name=%s", (rows[-1]["id"] if rows else cursor["last_vault_id"],stamp,name))
+    connection.execute("UPDATE upload_remediation_sweep SET last_tick_at=%s WHERE name=%s", (stamp,name))
     return rows
 
 
@@ -343,9 +344,16 @@ def sweep(db: Any, stamp: str | None = None) -> int:
     stamp = stamp or datetime.now(timezone.utc).isoformat()
     count = 0
     for name in ("discovery","admission"):
+        deadline = monotonic() + 1.0
         with db() as connection:
+            connection.execute("SET LOCAL lock_timeout='100ms'")
+            connection.execute("SET LOCAL statement_timeout='2s'")
             vaults = _fair_vaults(connection,name,stamp)
         for candidate in vaults:
+            if monotonic() >= deadline:
+                break
+            with db() as connection:
+                connection.execute("UPDATE upload_remediation_sweep SET last_vault_id=%s WHERE name=%s", (candidate["id"],name))
             with db() as connection:
                 connection.execute("SET LOCAL lock_timeout='100ms'")
                 connection.execute("SET LOCAL statement_timeout='2s'")
@@ -355,6 +363,8 @@ def sweep(db: Any, stamp: str | None = None) -> int:
                 if name == "discovery":
                     rows = connection.execute("SELECT j.* FROM upload_remediation_discovery q JOIN jobs j ON j.id=q.job_id WHERE q.vault_id=%s ORDER BY q.job_id LIMIT %s", (vault["id"],TARGET_BATCH)).fetchall()
                     for original in rows:
+                        if monotonic() >= deadline:
+                            break
                         _enroll(connection,original,vault,stamp)
                         connection.execute("DELETE FROM upload_remediation_discovery WHERE job_id=%s", (original["id"],))
                 else:
@@ -364,8 +374,39 @@ def sweep(db: Any, stamp: str | None = None) -> int:
                         continue
                     rows = connection.execute("SELECT * FROM upload_remediations WHERE vault_id=%s AND state IN ('pending','suspended') AND due_at<=%s ORDER BY due_at,id LIMIT %s", (vault["id"],stamp,TARGET_BATCH)).fetchall()
                     for row in rows:
+                        if monotonic() >= deadline:
+                            break
                         count += bool(admit(connection,row,vault,user_id=owner_id,stamp=stamp))
     return count
+
+
+def project(connection: Any, row: dict[str, Any]) -> dict[str, Any]:
+    state = row["state"]
+    return {k:row[k] for k in ("id","state","phase","reason","retry_count","due_at","current_job_id","resolved_by_job_id","resolved_at","archive_version_id")} | {
+        "can_resume": state in {"pending","blocked","suspended"} and row["reason"] not in {
+            "proof_mismatch","expected_evidence_missing","target_superseded","source_volume_unavailable","vault_suspended"},
+        "original_job_ids": [r["original_job_id"] for r in connection.execute(
+            "SELECT original_job_id FROM upload_remediation_originals WHERE remediation_id=%s ORDER BY original_job_id LIMIT 50", (row["id"],)).fetchall()],
+        "remedy": provenance.REMEDIES.get(row["reason"],"Keep copies. Correct the reported condition and retry exact reconciliation; no fresh upload is authorized."),
+    }
+
+
+def file_projection(connection: Any, vault_id: int, path: str) -> list[dict[str, Any]]:
+    rows = connection.execute("""SELECT r.* FROM upload_remediations r JOIN file_paths fp ON fp.vault_file_id=r.vault_file_id
+        WHERE r.vault_id=%s AND fp.valid_to IS NULL AND fp.path=%s ORDER BY r.created_at DESC,r.id LIMIT 50""", (vault_id,path)).fetchall()
+    return [project(connection,row) for row in rows]
+
+
+def project_jobs(connection: Any, jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not jobs:
+        return jobs
+    links = connection.execute("""SELECT original.id job_id,r.* FROM jobs original
+        LEFT JOIN upload_remediation_originals o ON o.original_job_id=original.id
+        LEFT JOIN upload_remediation_jobs b ON b.job_id=original.id
+        JOIN upload_remediations r ON r.id=COALESCE(o.remediation_id,b.remediation_id)
+        WHERE original.id=ANY(%s)""", ([row["id"] for row in jobs],)).fetchall()
+    by_job = {r["job_id"]:project(connection,r) for r in links}
+    return [{**row,"remediation":by_job.get(row["id"])} for row in jobs]
 
 
 def observe(db: Any) -> None:
