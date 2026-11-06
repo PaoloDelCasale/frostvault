@@ -68,6 +68,16 @@ class AvailableLocalesTests(unittest.TestCase):
 
 
 class CatalogIntegrityTests(unittest.TestCase):
+    def test_upload_activity_chrome_keys_are_critical(self) -> None:
+        expected = {
+            "activity.heading", "activity.by_vault", "activity.idle",
+            "activity.stability_wait", "activity.queued", "activity.uploading",
+            "activity.verifying", "activity.sent", "activity.stable_in",
+            "activity.waiting_observation", "activity.admission",
+            "activity.current_work", "activity.unavailable",
+        }
+        self.assertEqual(expected - i18n.CRITICAL_KEYS, set())
+
     def test_english_catalog_defines_every_critical_key(self) -> None:
         self.assertEqual(i18n.missing_critical_keys("en"), frozenset())
 

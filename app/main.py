@@ -1476,6 +1476,13 @@ def search_all_files(
         )
 
 
+@app.get("/api/upload-activity", response_model=response_model("UploadActivityResponse"))
+def upload_activity_overview(_: dict[str, Any] = Depends(current_user)):
+    from .services.upload_activity import upload_activity
+    with db() as connection:
+        return upload_activity(connection)
+
+
 @app.get("/api/general", response_model=response_model("GeneralOverview"))
 def general_overview(user: dict[str, Any] = Depends(current_user)):
     from .services.essential_interface import overview

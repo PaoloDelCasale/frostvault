@@ -17,6 +17,11 @@ describe("essential Owner app routing", () => {
       if (url.startsWith("/api/me")) return jsonResponse({ id: 1, display_name: "Owner", csrf_token: "csrf", auth_method: "local", locale: "en", locales: ["en","it"], vault: { ...vaults[0], delete_enabled: true, cloud_deletion_enabled: true } });
       if (url.startsWith("/api/vaults")) return jsonResponse({ items: vaults });
       if (url.startsWith("/api/i18n/catalog")) return jsonResponse({ locale: "en", locales: ["en","it"], messages: loadCatalog() });
+      if (url.startsWith("/api/upload-activity")) {
+        const idle = { files: 0, bytes: 0, transferred_bytes: 0 };
+        return jsonResponse({ observed_at: "2026-11-06T10:00:00Z", global: { stability_wait: idle, queued: idle, uploading: { files: 13, bytes: 1000, transferred_bytes: 250 }, verifying: idle, awaiting_admission_files: 0, next_stable_at: null }, vaults: [] });
+      }
+      if (url.startsWith("/api/problems") || url.startsWith("/api/general/vaults") || url.startsWith("/api/general/source-volumes")) return jsonResponse({ items: [] });
       if (url.startsWith("/api/general")) return jsonResponse({ vaults: [], open_problem_count: 0, month: "2026-11", monthly_estimate: 0, previous_month_delta: null, currency: "EUR", email_configured: false, last_verified_backup: null, cloud_preflight: blocked ? { status: "blocked", remediation: "Grant s3:GetBucketPublicAccessBlock", next_probe_at: null } : undefined });
       if (url.startsWith("/api/files")) return jsonResponse({ items: [{ type: "file", name: "first.jpg", path: "first.jpg", state: "protected" }], total: 1 });
       if (url.startsWith("/api/notifications")) return jsonResponse({ items: [], unread_count: 0 });
@@ -25,6 +30,11 @@ describe("essential Owner app routing", () => {
   });
   afterEach(resetApiClientForTests);
   function show() { render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider><App /></I18nProvider></ApiQueryProvider>); }
+  it.each(["/", "/general", "/problems", "/vaults/new", "/?vault_id=99"])("keeps global upload activity visible on %s", async (path) => {
+    window.history.replaceState({}, "", path); show();
+    expect(await screen.findByText("13 files uploading")).toBeInTheDocument();
+    expect(screen.getByTestId("upload-activity")).toBeInTheDocument();
+  });
   it("puts the browser first without superseded dashboard statistics or administration", async () => {
     show(); await screen.findByRole("heading", { level: 1, name: "First" }); await screen.findAllByText("first.jpg");
     expect(screen.queryByTestId("stats-compact")).not.toBeInTheDocument();

@@ -2359,6 +2359,44 @@
       "properties": { "item_count": { "type": "integer" } },
       "required": ["item_count"]
     },
+    "UploadActivityStage": {
+      "type": "object",
+      "properties": {
+        "files": { "type": "integer", "minimum": 0 },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "transferred_bytes": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["files", "bytes", "transferred_bytes"]
+    },
+    "UploadActivitySummary": {
+      "type": "object",
+      "properties": {
+        "stability_wait": { "$ref": "#/components/schemas/UploadActivityStage" },
+        "queued": { "$ref": "#/components/schemas/UploadActivityStage" },
+        "uploading": { "$ref": "#/components/schemas/UploadActivityStage" },
+        "verifying": { "$ref": "#/components/schemas/UploadActivityStage" },
+        "awaiting_admission_files": { "type": "integer", "minimum": 0 },
+        "next_stable_at": { "type": ["string", "null"] }
+      },
+      "required": ["stability_wait", "queued", "uploading", "verifying", "awaiting_admission_files", "next_stable_at"]
+    },
+    "UploadActivityResponse": {
+      "type": "object",
+      "properties": {
+        "observed_at": { "type": "string" },
+        "global": { "$ref": "#/components/schemas/UploadActivitySummary" },
+        "vaults": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              { "$ref": "#/components/schemas/UploadActivitySummary" },
+              { "type": "object", "properties": { "vault_id": { "type": "integer" }, "vault_name": { "type": "string" } }, "required": ["vault_id", "vault_name"] }
+            ]
+          }
+        }
+      },
+      "required": ["observed_at", "global", "vaults"]
+    },
     "GeneralOverview": {
       "type": "object",
       "additionalProperties": false,
