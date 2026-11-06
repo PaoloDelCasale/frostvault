@@ -127,6 +127,7 @@
   "reconciliation.reason.proof_unavailable": "Rendi leggibile la versione esatta, ripristinandola esplicitamente se cold, verifica i permessi e riprova. Nessun ripristino automatico o eliminazione di contenuti non provati.",
   "reconciliation.reason.proof_mismatch": "Prova indipendente contraddittoria. Conserva le copie e indaga la versione esatta: nessun fallback permissivo o eliminazione.",
   "reconciliation.reason.orphan_different": "Contenuto sconosciuto diverso dal keeper verificato: conservato. Recuperalo o esportalo con strumenti S3 autorizzati o Recovery Kit e chiedi assistenza. Nessuna rimozione arbitraria disponibile.",
+  "reconciliation.reason.cleanup_unavailable": "Keeper verificato conservato, ma pulizia non conclusa. Verifica permessi e connettività provider e riprova la riconciliazione esatta. Le eliminazioni già avviate o completate non sono reversibili.",
   "reconciliation.reason.keeper_missing": "Keeper verificato esatto non disponibile. Ripristina l'accesso prima della pulizia, conservando ogni altra copia.",
   "reconciliation.reason.markers_present": "Delete Marker conservati: il replacement non ha consenso per rimuoverli. Riconcilia esplicitamente con strumenti S3 autorizzati.",
   "uploads.retry_failed": "Riprova upload falliti",

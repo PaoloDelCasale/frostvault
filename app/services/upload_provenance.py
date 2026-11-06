@@ -20,7 +20,8 @@ TOKEN_KEY = "frostvault-upload"
 REMEDIES = {
     "ambiguous_send": "Keep copies and stop external S3 writers. Retry exact reconciliation after the provider outcome is known; zero matches is not proof of no write.",
     "ambiguous_receipt": "Keep all copies. Inspect exact versions with authorized S3 tools; do not choose latest or delete by token.",
-    "inventory_changed": "Keep copies and stop external S3 writers. Retry reconciliation only after the namespace is quiescent.",
+    "inventory_changed": "Keep copies, check listing permissions and stop external S3 writers. Retry reconciliation only after complete inventory is available and the namespace is quiescent.",
+    "cleanup_unavailable": "The verified keeper is retained; cloud cleanup could not finish. Check provider permissions/connectivity and retry exact reconciliation. Completed/in-flight deletes cannot be undone.",
     "identity_changed": "Restore the expected Source Volume/Vault path and resolve incompatible operations before retrying reconciliation.",
     "proof_mismatch": "Contradictory independent checksum/identity evidence blocks publication and deletion. Keep copies and investigate the exact version; never downgrade to a permissive proof.",
     "proof_unavailable": "Make the exact version readable (explicit restore for cold storage), check permissions and retry reconciliation. No automatic restore or deletion.",
@@ -54,7 +55,12 @@ def provider_identity(client: Any) -> str:
 
 
 def inventory(client: Any, bucket: str, key: str) -> dict[str, list[str]]:
-    versions, markers = _object_version_entries(client, bucket=bucket, object_key=key)
+    try:
+        versions, markers = _object_version_entries(client, bucket=bucket, object_key=key)
+    except UploadBlocked:
+        raise
+    except Exception as exc:
+        raise UploadBlocked("inventory_changed") from exc
     return {"versions": sorted(versions), "markers": sorted(markers)}
 
 
@@ -198,13 +204,13 @@ def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
         return empty
     file_id = row["id"]
     block = connection.execute("SELECT reason FROM snapshot_reconciliation_blocks WHERE vault_file_id=%s", (file_id,)).fetchone()
-    intents = connection.execute("SELECT id,blocked_reason FROM upload_intents WHERE vault_file_id=%s AND NOT settled ORDER BY created_at LIMIT 2", (file_id,)).fetchall()
+    intents = connection.execute("SELECT id,blocked_reason,send_started FROM upload_intents WHERE vault_file_id=%s AND NOT settled ORDER BY created_at LIMIT 2", (file_id,)).fetchall()
     if not block and not intents:
         return empty
     reason = (block["reason"] if block else intents[0]["blocked_reason"]) or "ambiguous_send"
     busy = connection.execute("SELECT 1 FROM jobs WHERE vault_file_id=%s AND status NOT IN ('failed','cancelled','completed') LIMIT 1", (file_id,)).fetchone()
     cancelled = connection.execute("SELECT 1 FROM jobs j LEFT JOIN upload_intent_jobs b ON b.job_id=j.id WHERE j.vault_file_id=%s AND j.status='cancelled' AND (j.upload_reconcile_only OR b.intent_id IS NOT NULL) LIMIT 1", (file_id,)).fetchone()
-    return {"pending": True, "can_resume": not busy and not cancelled and len(intents) < 2,
+    return {"pending": True, "can_resume": not busy and not cancelled and len(intents) < 2 and (not intents or intents[0]["send_started"]),
             "reason": reason, "remedy": REMEDIES.get(reason, REMEDIES["proof_unavailable"])}
 
 
@@ -212,7 +218,10 @@ def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_i
     from .cloud_deletion import lock_vault
     from .vault_moves import require_ready
     current = lock_vault(connection, vault["id"])
-    require_ready(current)
+    try:
+        require_ready(current)
+    except ValueError as exc:
+        raise UploadBlocked("identity_changed") from exc
     state = describe(connection, vault_id=vault["id"], path=path)
     if not state["pending"] or not state["can_resume"]:
         raise UploadBlocked("identity_changed")

@@ -47,6 +47,7 @@ def upgrade():
     )
     op.create_table("snapshot_cleanup_inventories",
         sa.Column("job_id", sa.BigInteger(), sa.ForeignKey("jobs.id", ondelete="RESTRICT"), primary_key=True),
+        sa.Column("keeper_id", sa.Text(), sa.ForeignKey("archive_versions.id", ondelete="RESTRICT")),
         sa.Column("target_json", sa.Text(), nullable=False),
         sa.Column("inventory_json", sa.Text(), nullable=False),
         sa.Column("created_at", sa.Text(), nullable=False))

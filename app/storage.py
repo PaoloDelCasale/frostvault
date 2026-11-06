@@ -2350,6 +2350,11 @@ def purge_current_snapshot_superseded(
     except upload_provenance.UploadBlocked as exc:
         _record_upload_reconciliation_block(job, exc.reason)
         raise
+    except OperationCancelled:
+        raise
+    except Exception:
+        _record_upload_reconciliation_block(job, "cleanup_unavailable")
+        raise
     with db() as connection:
         notification_service.set_problem(connection, key=f"upload_reconciliation:{job['vault_file_id']}", event="upload_reconciliation", vault_id=job["vault_id"], active=False, email=False)
 
@@ -3328,7 +3333,7 @@ def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], cli
             if (not exact or not raw or exact["object_key"] != pinned["key"]
                     or exact["provider_version_id"] != raw["VersionId"]
                     or exact["upload_snapshot_json"] != intent["snapshot_json"]
-                    or (linked and linked["archive_version_id"] and str(linked["archive_version_id"]) != str(intent["archive_version_id"])):
+                    or (linked and linked["archive_version_id"] and str(linked["archive_version_id"]) != str(intent["archive_version_id"]))):
                 raise provenance.UploadBlocked("ambiguous_receipt")
             if not linked or not linked["archive_version_id"]:
                 _upload_catalog_unit(job, lambda catalog: catalog.link_job_version(job["id"], intent["archive_version_id"]))
@@ -3662,6 +3667,7 @@ def process_upload(job: dict[str, Any]) -> None:
             _upload_catalog_unit(job, lambda catalog: catalog.mark_version_mismatch(
                 version_id, plaintext_sha256=upload_digest, checked_at=now_iso(),
             ))
+            _record_upload_reconciliation_block(job, "proof_mismatch")
             raise RuntimeError("Cloud copy digest does not match local file")
         _complete_verified_upload(
             job,
@@ -3676,6 +3682,10 @@ def process_upload(job: dict[str, Any]) -> None:
         raise
     except provenance.UploadBlocked as exc:
         _record_upload_reconciliation_block(job, exc.reason)
+        raise
+    except UploadProofMismatch:
+        _record_upload_reconciliation_block(job, "proof_mismatch")
+        _record_verification_failure("mismatch")
         raise
     except Exception:
         if verification_started:

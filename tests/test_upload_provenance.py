@@ -9,6 +9,9 @@ from unittest.mock import patch
 
 import boto3
 from botocore.config import Config
+from botocore.awsrequest import AWSResponse
+from botocore.exceptions import ClientError
+from types import SimpleNamespace
 from app.services.upload_provenance import UploadBlocked, TOKEN_KEY, canonical, inventory, provider_identity, reconcile
 from app.services.snapshot_cleanup import exact_duplicate
 from app.services.upload_snapshot import prepare_upload_snapshot
@@ -100,6 +103,18 @@ class ProvenanceProviderTests(unittest.TestCase):
                 with self.assertRaises(UploadBlocked):
                     exact_duplicate(self.provider, bucket="bucket", key="key", version="different", digest=self.snapshot.plaintext_sha256, size=self.snapshot.size, check_active=lambda: None)
                 self.assertIn(("key", "different"), self.provider.objects)
+
+    def test_actual_botocore_mutator_failures_do_not_retry_hidden_put_or_completion(self):
+        read = boto3.client("s3", region_name="us-east-1", aws_access_key_id="test", aws_secret_access_key="test", config=Config(retries={"mode":"standard","total_max_attempts":4}))
+        write = boto3.client("s3", region_name="us-east-1", aws_access_key_id="test", aws_secret_access_key="test", config=Config(retries={"mode":"standard","total_max_attempts":1}))
+        facade = _UploadClient(read, write_client=write)
+        def unavailable(_request):
+            return AWSResponse("https://disposable.invalid",503,{"content-type":"application/xml"},SimpleNamespace(stream=lambda **_: iter([b"<Error><Code>ServiceUnavailable</Code></Error>"])))
+        for method, args in ((facade.put_object,{"Bucket":"bucket","Key":"key","Body":b"A"}), (facade.create_multipart_upload,{"Bucket":"bucket","Key":"key"}), (facade.complete_multipart_upload,{"Bucket":"bucket","Key":"key","UploadId":"same-mpu","MultipartUpload":{"Parts":[{"PartNumber":1,"ETag":"part"}]}})):
+            with self.subTest(method=method.__name__), patch.object(write._endpoint,"_send",side_effect=unavailable) as send:
+                with self.assertRaises(ClientError): method(**args)
+                self.assertEqual(send.call_count,1,"Botocore retried a non-idempotent write")
+        self.assertEqual(read.meta.config.retries["total_max_attempts"],4)
 
     def test_non_idempotent_sdk_requires_one_shot_configuration(self):
         client = boto3.client("s3", region_name="us-east-1", aws_access_key_id="test", aws_secret_access_key="test", config=Config(retries={"mode": "standard", "total_max_attempts": 4}))

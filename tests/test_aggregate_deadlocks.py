@@ -341,9 +341,11 @@ class AggregateDeadlockTests(unittest.TestCase):
                 observed_at="2026-07-20", scan_id="old",
             )
             catalog.mark_version_verified(previous, plaintext_sha256=hashlib.sha256(b"old").hexdigest(), verified_at="2026-07-20")
+            owner = connection.execute("SELECT vault_file_id FROM archive_versions WHERE id=%s", (previous,)).fetchone()["vault_file_id"]
+            connection.execute("INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,action,status,requested_at,updated_at,upload_plaintext_sha256) VALUES (2,%s,%s,%s,'upload','completed','2026-07-20','2026-07-20',%s)", (owner,previous,path,hashlib.sha256(b"old").hexdigest()))
         self.provider.objects[(key, "previous-only-copy")] = b"old"
         original_verify = ArchiveCatalog.mark_version_verified
-        original_clear = ArchiveCatalog.clear_delete_markers_for_file
+        original_purge = ArchiveCatalog.mark_versions_purged
         attempts = {"verify": 0, "cleanup": 0}
 
         def verify_once(catalog, *args, **kwargs):
@@ -353,7 +355,7 @@ class AggregateDeadlockTests(unittest.TestCase):
                 catalog.connection.execute("DO $$ BEGIN RAISE EXCEPTION 'forced verification abort' USING ERRCODE='40001'; END $$")
 
         def cleanup_once(catalog, *args, **kwargs):
-            original_clear(catalog, *args, **kwargs)
+            original_purge(catalog, *args, **kwargs)
             attempts["cleanup"] += 1
             if attempts["cleanup"] == 1:
                 # Even a verified version is not a completed Job at this seam.
@@ -362,7 +364,7 @@ class AggregateDeadlockTests(unittest.TestCase):
                 catalog.connection.execute("DO $$ BEGIN RAISE EXCEPTION 'forced cleanup abort' USING ERRCODE='40P01'; END $$")
 
         with patch.object(ArchiveCatalog, "mark_version_verified", verify_once), patch.object(
-            ArchiveCatalog, "clear_delete_markers_for_file", cleanup_once
+            ArchiveCatalog, "mark_versions_purged", cleanup_once
         ):
             self.assertTrue(self.run_job(jobs[0]))
         self.assertEqual(attempts, {"verify": 2, "cleanup": 2})
