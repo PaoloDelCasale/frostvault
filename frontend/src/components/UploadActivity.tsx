@@ -27,7 +27,7 @@ function Summary({ activity, observedAt, t }: { activity: UploadActivitySummary;
 }
 
 /** Installation scope: kept in the shell on every authenticated page. No Job lists. */
-export function UploadActivity({ t }: { t: Translate }) {
+export function UploadActivity({ t, vaultId }: { t: Translate; vaultId?: number }) {
   const query = useQuery({
     queryKey: ["upload-activity"],
     queryFn: () => apiRequest<UploadActivityResponse>("/api/upload-activity"),
@@ -35,14 +35,20 @@ export function UploadActivity({ t }: { t: Translate }) {
     refetchInterval: CATALOG_REFRESH_MS,
   });
   const data = query.data;
+  const selected = data?.vaults?.find((vault) => vault.vault_id === vaultId && stages.some((stage) => vault[stage].files > 0));
+  const otherVaults = data?.vaults?.filter((vault) => vault !== selected && stages.some((stage) => vault[stage].files > 0)) ?? [];
   return <section aria-label={t("activity.heading")} className="mb-4 min-w-0 rounded-panel border border-line bg-surface p-4" data-testid="upload-activity">
     <h2 className="font-bold">{t("activity.heading")}</h2>
     {query.isError && <p role="status">{t("activity.unavailable")}</p>}
     {!data?.global ? !query.isError && <p>{t("ui.loading")}</p> : <>
       <Summary activity={data.global} observedAt={data.observed_at} t={t} />
-      {data.vaults.some((vault) => stages.some((stage) => vault[stage].files > 0)) && <details className="mt-3">
+      {selected && <div className="mt-3 border-t border-line pt-2" data-testid="selected-vault-activity">
+        <h3 className="break-words font-bold">{selected.vault_name}</h3>
+        <Summary activity={selected} observedAt={data.observed_at} t={t} />
+      </div>}
+      {otherVaults.length > 0 && <details className="mt-3">
         <summary className="min-h-11 cursor-pointer py-2 font-semibold">{t("activity.by_vault")}</summary>
-        <ul className="grid gap-3">{data.vaults.filter((vault) => stages.some((stage) => vault[stage].files > 0)).map((vault) => <li key={vault.vault_id} className="border-t border-line pt-2">
+        <ul className="grid gap-3">{otherVaults.map((vault) => <li key={vault.vault_id} className="border-t border-line pt-2">
           <a className="break-words font-bold underline" href={`/?vault_id=${vault.vault_id}`}>{vault.vault_name}</a>
           <Summary activity={vault} observedAt={data.observed_at} t={t} />
         </li>)}</ul>

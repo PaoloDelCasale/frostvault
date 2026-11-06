@@ -17,7 +17,7 @@ const empty = (): UploadActivitySummary => ({
 const messages = loadCatalog();
 const t = (key: string, params?: Record<string, string | number>) => translate(messages, key, params);
 
-function show(activity: UploadActivitySummary) {
+function show(activity: UploadActivitySummary, vaultId?: number) {
   const data: UploadActivityResponse = {
     observed_at: "2026-11-06T10:00:00Z", global: activity,
     vaults: [{ ...activity, vault_id: 2, vault_name: "Other Vault <img>" }],
@@ -25,7 +25,7 @@ function show(activity: UploadActivitySummary) {
   const fetch = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(data));
   configureApiClient({ fetch });
   const client = createAppQueryClient();
-  render(<ApiQueryProvider client={client}><UploadActivity t={t} /></ApiQueryProvider>);
+  render(<ApiQueryProvider client={client}><UploadActivity t={t} vaultId={vaultId} /></ApiQueryProvider>);
   return { data, fetch, client };
 }
 afterEach(() => { cleanup(); vi.useRealTimers(); resetApiClientForTests(); });
@@ -48,6 +48,14 @@ describe("aggregate upload activity", () => {
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument(); // no fake batch percentage
   });
 
+  it("shows the selected Vault's own activity without expanding anything", async () => {
+    const activity = empty(); activity.uploading = { files: 13, bytes: 130, transferred_bytes: 12 };
+    show(activity, 2);
+    const selected = await screen.findByTestId("selected-vault-activity");
+    expect(selected).toBeVisible();
+    expect(within(selected).getByText("13 files uploading")).toBeVisible();
+    expect(screen.queryByText(t("activity.by_vault"))).not.toBeInTheDocument();
+  });
   it("discloses stable files awaiting admission rather than promising transfer start", async () => {
     const activity = empty(); activity.queued.files = 7; activity.awaiting_admission_files = 7;
     show(activity);

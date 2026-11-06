@@ -57,7 +57,7 @@ export default function App() {
       onLocaleChange: (next) => { void setLocale(next); },
       onSignOut: () => { void (async () => { setLeaving(true); await client.cancelQueries(); client.clear(); setUserId(null); try { await logout(); go("/login"); } catch (cause) { setError(String(cause)); setLeaving(false); } })(); },
     }}>
-    <UploadActivity t={t} />
+    <UploadActivity t={t} vaultId={chosen?.id} />
     {overview.data?.cloud_preflight?.status === "blocked" && <section role="status" className="mb-4 rounded-panel border border-line bg-surface p-4"><h2 className="font-bold">{t("uploads.preflight_blocked")}</h2><p>{overview.data.cloud_preflight.remediation}</p><p>{t("uploads.preflight_retry")}</p></section>}
     {pathname === "/vaults/new" ? <VaultCreatePage displayName={me.display_name} onNavigate={go} embedded />
       : pathname === "/general" || (!chosen && !requested) ? <GeneralPage overview={overview.data} onRefresh={refresh} />
