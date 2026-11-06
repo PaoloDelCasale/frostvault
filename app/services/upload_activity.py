@@ -69,8 +69,8 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
     # Reconciliation/cleanup is verification work, not another network upload.
     for row in connection.execute("""
         SELECT vault_id, CASE
-            WHEN status IN ('verifying','cleaning') OR upload_reconcile_only
-                 OR message_key='job.purging_previous_snapshot' THEN 'verifying'
+            WHEN status IN ('verifying','cleaning') OR (status='uploading' AND
+                 (upload_reconcile_only OR message_key='job.purging_previous_snapshot')) THEN 'verifying'
             WHEN status='uploading' THEN 'uploading' ELSE 'queued' END AS stage,
             count(*) AS files, COALESCE(sum(GREATEST(total_bytes,0)),0) AS bytes,
             COALESCE(sum(LEAST(GREATEST(transferred_bytes,0),GREATEST(total_bytes,0))),0) AS transferred_bytes

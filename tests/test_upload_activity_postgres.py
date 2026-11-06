@@ -31,7 +31,8 @@ class UploadActivityPostgresTests(unittest.TestCase):
         self.job('retry', 'retrying')
         self.job('transfer', 'uploading', transferred=5)
         self.job('verify', 'verifying', transferred=100)
-        self.job('reconcile', 'queued', reconcile=True)
+        self.job('reconcile', 'uploading', reconcile=True)
+        self.job('reconcile-wait', 'queued', reconcile=True)
         self.seed('ready')
         self.seed('protected', archive=True, verified=True)
         for status in ('completed', 'failed', 'cancelled'):
@@ -45,7 +46,7 @@ class UploadActivityPostgresTests(unittest.TestCase):
         self.assertEqual(total['verifying'], {'files': 2, 'bytes': 24, 'transferred_bytes': 12})
         # Ready observation + completed attempt with unmatched local content;
         # failed/cancelled automatic attempts do not advertise a new admission.
-        self.assertEqual(total['queued']['files'], 4)
+        self.assertEqual(total['queued']['files'], 5)
         self.assertEqual(total['awaiting_admission_files'], 2)
         self.assertEqual(len(result['vaults']), 1)
 
