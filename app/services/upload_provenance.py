@@ -22,6 +22,7 @@ ABSENT_OPERATION = 'ProvenAbsent'
 NO_WRITE_OPERATIONS = frozenset({'PutObject','CreateMultipartUpload','UploadPart','CompleteMultipartUpload',ABSENT_OPERATION})
 REMEDIES = {
     "ambiguous_send": "Keep copies and stop external S3 writers. Retry exact reconciliation after the provider outcome is known; zero matches is not proof of no write.",
+    "list_permission_denied": "S3 refused to list object versions or incomplete multipart uploads for this file, so reconciliation cannot see what was sent. Keep all copies, grant the archive IAM identity s3:ListBucketVersions and s3:ListBucketMultipartUploads on the bucket, then use Retry failed uploads.",
     "ambiguous_receipt": "Keep all copies. Inspect exact versions with authorized S3 tools; do not choose latest or delete by token.",
     "inventory_changed": "Keep all copies. The exact cloud inventory changed or could not be confirmed; this does not by itself identify an external writer. Check listing permissions and any other S3 activity, then use Retry failed uploads to retry exact reconciliation when the namespace is stable.",
     "cleanup_unavailable": "The verified keeper is retained; cloud cleanup could not finish. Check provider permissions/connectivity and retry exact reconciliation. Completed/in-flight deletes cannot be undone.",
@@ -80,25 +81,55 @@ def provider_identity(client: Any) -> str:
 
 
 def inventory(client: Any, bucket: str, key: str) -> dict[str, list[str]]:
-    try:
-        versions, markers = _object_version_entries(client, bucket=bucket, object_key=key)
-    except UploadBlocked:
-        raise
-    except Exception as exc:
-        if _is_provider_unreachable(exc):
-            raise  # The read failed; it says nothing about the inventory.
-        raise UploadBlocked("inventory_changed") from exc
+    versions, markers = _guarded_listing(lambda: _object_version_entries(client, bucket=bucket, object_key=key))
     return {"versions": sorted(versions), "markers": sorted(markers)}
 
 
+_LIST_DENIED_CODES = frozenset({"AccessDenied", "AccessDeniedException"})
+
+
+def _guarded_listing(call: Any) -> Any:
+    """Run a provider LIST and name why it failed.
+
+    A refused listing is a permission gap of this file's reconciliation, never an
+    installation readiness failure: the readiness probe does not exercise it, so
+    letting the error reach the worker's readiness branch would reopen the gate
+    and re-claim the Job forever (#484). Credential, network and 5xx failures say
+    nothing about the inventory and propagate to be suspended/retried; anything
+    else is an unconfirmed inventory. The block is raised outside the ``except``
+    so it carries no chained provider error that would be read as readiness.
+    """
+    reason: str | None
+    try:
+        return call()
+    except UploadBlocked:
+        raise
+    except Exception as exc:
+        reason = _listing_block_reason(exc)
+        if reason is None:
+            raise
+    raise UploadBlocked(reason)
+
+
+def _listing_block_reason(error: BaseException) -> str | None:
+    from .database_retry import exception_chain
+    from botocore.exceptions import ClientError
+    if any(isinstance(item, ClientError) and item.response.get("Error", {}).get("Code") in _LIST_DENIED_CODES
+           for item in exception_chain(error)):
+        return "list_permission_denied"
+    return None if _is_provider_unreachable(error) else "inventory_changed"
+
+
 def _is_provider_unreachable(error: BaseException) -> bool:
-    """Network/auth failures are retried or suspended, never read as a changed inventory."""
+    """Credential, network and provider-side failures: retried or suspended, never a changed inventory."""
     from .cloud_preflight_gate import is_readiness_error
     from .database_retry import exception_chain
-    from botocore.exceptions import BotoCoreError, ConnectionError as BotoConnectionError
+    from botocore.exceptions import BotoCoreError, ClientError, ConnectionError as BotoConnectionError
     return is_readiness_error(error) or any(
         isinstance(item, (BotoConnectionError, ConnectionError, TimeoutError))
         or (isinstance(item, BotoCoreError) and "timeout" in type(item).__name__.lower())
+        or (isinstance(item, ClientError)
+            and item.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) in range(500, 600))
         for item in exception_chain(error))
 
 
@@ -293,7 +324,7 @@ def _incomplete_uploads(client: Any, bucket: str, key: str) -> list[str]:
     found: list[str] = []
     seen: set[tuple[str, str]] = set()
     while True:
-        page = lister(**kwargs)
+        page = _guarded_listing(lambda: lister(**kwargs))
         if not isinstance(page, dict) or page.get("IsTruncated") not in (True, False) or "IsTruncated" not in page:
             raise UploadBlocked("ambiguous_send")
         found += [str(item.get("UploadId") or "?") for item in page.get("Uploads") or [] if item.get("Key") == key]

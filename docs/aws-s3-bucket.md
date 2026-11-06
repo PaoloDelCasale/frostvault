@@ -26,6 +26,11 @@ name. The policy grants:
 
 - bucket list, location, versioning, Block Public Access read, lifecycle, and tagging
   (`s3:GetBucketPublicAccessBlock` is required at bucket scope)
+- `s3:ListBucketVersions` and `s3:ListBucketMultipartUploads`: exact upload
+  reconciliation lists a key's versions and its incomplete multipart uploads to
+  prove what an interrupted send did. Without them the affected file stays
+  blocked as `list_permission_denied` (a per-file block; uploads of other files
+  are not affected) until the policy is updated and **Retry failed uploads** is used
 - object upload, version read, restore, tagging and `s3:AbortMultipartUpload`
   (required for interrupted/cancelled SDK multipart transfers)
 - delete object/version for the accepted single-identity deletion model
@@ -204,6 +209,9 @@ Job retry policy. Verify `s3:AbortMultipartUpload` permission before deployment.
 
 - **Terraform changes**: run `terraform plan` in a maintenance window; bucket
   settings are updated in place where AWS allows it.
+- **New listing permissions**: existing application IAM identities need
+  `s3:ListBucketVersions` and `s3:ListBucketMultipartUploads` before deployment,
+  or interrupted uploads cannot be reconciled and stay blocked per file.
 - **Versioning and BPA must stay enabled**: suspending versioning or disabling
   any BPA flag blocks operations. Existing application IAM identities need the
   new `s3:GetBucketPublicAccessBlock` permission before deployment. Review/apply
@@ -252,4 +260,5 @@ Job retry policy. Verify `s3:AbortMultipartUpload` permission before deployment.
 | Region mismatch | Set `AWS_DEFAULT_REGION` to the bucket region from `terraform output` |
 | Preflight reports rejected credentials (`SignatureDoesNotMatch`, `InvalidAccessKeyId`) | Correct `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` and restart or wait for the next probe; queued Jobs resume automatically |
 | Access denied on preflight | Attach or update IAM policy from `iam/archive-operator-policy.json` |
+| A file is blocked as `list_permission_denied` | Grant `s3:ListBucketVersions` and `s3:ListBucketMultipartUploads` on the bucket (see `iam/archive-operator-policy.json`), then use Retry failed uploads |
 | Upload fails without VersionId | Same as versioning disabled; fix bucket baseline first |

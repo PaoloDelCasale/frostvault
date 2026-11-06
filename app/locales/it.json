@@ -157,6 +157,7 @@
   "reconciliation.help": "Il keeper verificato resta protetto quando disponibile. La riconciliazione non ripete upload incerti né rimuove contenuti sconosciuti diversi. La verifica dei duplicati storici legge versioni cloud esatte e può comportare costi di retrieval/egress.",
   "reconciliation.resume": "Riprova riconciliazione esatta",
   "reconciliation.reason.ambiguous_send": "Esito provider incerto. Conserva le copie, ferma gli scrittori S3 esterni e riprova quando l'esito è noto. Zero token trovati non prova l'assenza di scrittura.",
+  "reconciliation.reason.list_permission_denied": "S3 ha rifiutato l'elenco delle versioni o dei multipart incompleti per questo file, quindi la riconciliazione non può vedere cosa è stato inviato. Conserva le copie, concedi all'identità IAM dell'archivio s3:ListBucketVersions e s3:ListBucketMultipartUploads, poi riprova.",
   "reconciliation.reason.ambiguous_receipt": "Provenienza o receipt ambigui. Conserva tutte le copie e ispeziona versioni esatte con strumenti S3 autorizzati; mai scegliere latest dal token.",
   "reconciliation.reason.inventory_changed": "Inventario cloud cambiato. Ferma gli scrittori S3 esterni e conserva le copie prima di riprovare.",
   "reconciliation.reason.identity_changed": "Vault, percorso, Source Volume o proprietà dell'operazione cambiati. Ripristina il volume atteso e risolvi le operazioni incompatibili.",

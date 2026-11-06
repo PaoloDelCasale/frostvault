@@ -190,6 +190,72 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assert_keeper(job)
         self.assertEqual(self.provider.puts, 1)
 
+    def denied(self, code="AccessDenied", status=403, operation="ListObjectVersions"):
+        from botocore.exceptions import ClientError
+        return ClientError({"Error": {"Code": code, "Message": "provider text"},
+                            "ResponseMetadata": {"HTTPStatusCode": status}}, operation)
+
+    def blocked_resume(self, patched):
+        """Resume an ambiguous send while one provider listing is refused."""
+        from app.services import cloud_preflight_gate
+        self.stable_content()
+        self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
+        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        resumed = max(j["id"] for j in self.jobs())
+        with patch.object(cloud_preflight_gate, "invalidate") as invalidate, patched:
+            self.run_job(resumed)
+        invalidate.assert_not_called()
+        return resumed
+
+    def assert_listing_denied_blocks_only_the_file(self, resumed):
+        row = self.row(resumed)
+        self.assertEqual(row["status"], "failed", row["message"])
+        self.assertIn("list_permission_denied", row["message"])
+        self.assertIn("s3:ListBucketMultipartUploads", row["message"])
+        self.assertIn("s3:ListBucketVersions", row["message"])
+        self.assertEqual((self.provider.puts, self.provider.deletes), (0, 0))
+        self.assertTrue(self.intent()["send_started"])
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT reason FROM snapshot_reconciliation_blocks").fetchone()["reason"], "list_permission_denied")
+            self.assertIsNone(connection.execute("SELECT 1 FROM notifications WHERE event='cloud_preflight_blocked'").fetchone())
+        self.assertNotIn("S3 readiness", row["message"])
+
+    def test_access_denied_on_multipart_listing_blocks_the_file_and_never_touches_the_gate(self):
+        resumed = self.blocked_resume(patch.object(self.provider, "list_multipart_uploads", side_effect=self.denied(operation="ListMultipartUploads")))
+        self.assert_listing_denied_blocks_only_the_file(resumed)
+
+    def test_access_denied_on_version_listing_blocks_the_file_and_never_touches_the_gate(self):
+        resumed = self.blocked_resume(patch.object(self.provider, "list_object_versions", side_effect=self.denied()))
+        self.assert_listing_denied_blocks_only_the_file(resumed)
+
+    def test_credential_errors_on_a_listing_still_use_the_readiness_gate(self):
+        from app.services import cloud_preflight_gate
+        self.stable_content()
+        self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
+        self.http_client().post("/api/upload/retry-failed?vault_id=2")
+        resumed = max(j["id"] for j in self.jobs())
+        with patch.object(cloud_preflight_gate, "invalidate") as invalidate, \
+                patch.object(self.provider, "list_object_versions", side_effect=self.denied("InvalidAccessKeyId", 403)):
+            self.run_job(resumed)
+        invalidate.assert_called_once()
+        self.assertNotEqual(self.row(resumed)["status"], "failed")
+
+    def test_provider_5xx_on_a_listing_is_retried_not_reported_as_a_changed_inventory(self):
+        self.stable_content()
+        self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
+        self.http_client().post("/api/upload/retry-failed?vault_id=2")
+        resumed = max(j["id"] for j in self.jobs())
+        with patch.object(self.provider, "list_object_versions", side_effect=self.denied("InternalError", 500)):
+            self.run_job(resumed)
+        row = self.row(resumed)
+        self.assertEqual(row["status"], "retrying", row["message"])
+        with self.db() as connection:
+            self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+        self.assertNotIn("upload_reconciliation", [n["event"] for n in self.notification_events()])
+        self.retry_is_due(resumed)
+        self.run_job(resumed)
+        self.assert_keeper(resumed)
+
     def test_an_observed_root_replacement_still_fails_as_identity_changed(self):
         for name, patched in (("mismatch", {"return_value": "another-root"}),
                               ("symlink", {"side_effect": VaultRelocationError("symlink", "symlinked root")})):

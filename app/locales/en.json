@@ -157,6 +157,7 @@
   "reconciliation.help": "A verified keeper remains protected when available. Reconciliation never repeats an uncertain upload or removes different unknown content. Historical duplicate checks read exact cloud versions and may incur retrieval/egress charges.",
   "reconciliation.resume": "Retry exact reconciliation",
   "reconciliation.reason.ambiguous_send": "The provider outcome is uncertain. Keep copies, stop external S3 writers and retry once the outcome is known. Zero token matches does not prove no write.",
+  "reconciliation.reason.list_permission_denied": "S3 refused to list object versions or incomplete multipart uploads for this file, so reconciliation cannot see what was sent. Keep copies, grant the archive IAM identity s3:ListBucketVersions and s3:ListBucketMultipartUploads, then retry.",
   "reconciliation.reason.ambiguous_receipt": "Ambiguous provenance or receipts. Keep all copies; inspect exact versions using authorized S3 tools. Never choose latest by token.",
   "reconciliation.reason.inventory_changed": "Cloud inventory changed. Stop external S3 writers and keep copies before retrying reconciliation.",
   "reconciliation.reason.identity_changed": "Expected Vault/path/Source Volume or operation ownership changed. Restore the expected volume and resolve conflicting operations first.",
