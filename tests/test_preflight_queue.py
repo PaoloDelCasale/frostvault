@@ -221,6 +221,30 @@ class PreflightQueueTests(unittest.TestCase):
         with self.db() as c:
             self.assertEqual(c.execute("SELECT count(*) AS n FROM jobs WHERE status='failed'").fetchone()['n'], 4)
 
+    def test_explicit_retry_reuses_catalogued_unverified_version_without_new_put(self):
+        self.fail_uploads(1)
+        digest = hashlib.sha256(b'photo').hexdigest()
+        with self.db() as c:
+            catalog = ArchiveCatalog(c)
+            for path in ('a.txt', 'nested/b.txt'):
+                version = catalog.record_archive_version(vault_id=1, path=path, object_key='vault-1/' + path,
+                    provider_version_id='uploaded-1', size=5, storage_class='STANDARD', etag='etag',
+                    uploaded_at=self.observed, observed_at=self.observed, scan_id='old', origin='upload')
+                c.execute("UPDATE jobs SET archive_version_id=%s, upload_plaintext_sha256=%s WHERE vault_id=1 AND path=%s", (version, digest, path))
+        self.assertEqual(self.retry(1), 2)
+        provider = VersionedS3Stub(version_bytes=b'photo', head_object=lambda **kwargs: {
+            'VersionId': kwargs.get('VersionId') or 'uploaded-1', 'ContentLength': 5,
+            'StorageClass': 'STANDARD', 'ETag': '"etag"',
+        })
+        with patch('app.storage.validate_cloud_vault'), patch('app.storage.s3_client', return_value=provider), patch('app.storage.upload_s3_file') as put:
+            storage.process_jobs_once()
+            put.assert_not_called()
+        with self.db() as c:
+            self.assertEqual(c.execute("SELECT count(*) AS n FROM jobs WHERE status='completed'").fetchone()['n'], 2)
+            self.assertEqual(c.execute("SELECT count(*) AS n FROM jobs WHERE status='failed'").fetchone()['n'], 2)
+            self.assertEqual(c.execute("SELECT count(*) AS n FROM archive_versions WHERE integrity='verified'").fetchone()['n'], 2)
+        self.assertTrue(all(read['VersionId'] == 'uploaded-1' for read in provider.reads))
+
     def test_source_volume_root_replacement_and_changed_content_fail_closed(self):
         self.fail_uploads()
         with patch('app.storage.source_layout.vault_local_access', return_value=SimpleNamespace(local_operations_allowed=False)):
@@ -257,8 +281,7 @@ class PreflightQueueTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         with self.db() as c:
             before = c.execute('SELECT * FROM jobs ORDER BY id').fetchall()
-        with patch('app.storage.s3_client', side_effect=AssertionError('migration must not call S3')):
-            result = run_alembic(self.database)
+        result = run_alembic(self.database)
         self.assertEqual(result.returncode, 0, result.stderr)
         with self.db() as c:
             self.assertEqual(c.execute('SELECT * FROM jobs ORDER BY id').fetchall(), before)

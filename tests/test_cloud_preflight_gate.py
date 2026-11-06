@@ -2,6 +2,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
+import psycopg
 
 from app import storage
 from app.services import cloud_preflight_gate as gate
@@ -17,6 +18,12 @@ class CloudPreflightPolicyTests(unittest.TestCase):
         for due in (None, 'invalid', (now + timedelta(hours=1)).isoformat(), (now - timedelta(seconds=1)).isoformat()):
             self.assertTrue(gate.probe_due({'next_probe_at': due}, now))
         self.assertFalse(gate.probe_due({'next_probe_at': (now + timedelta(seconds=60)).isoformat()}, now))
+
+    def test_aborted_readiness_publication_is_suspension_not_a_transfer_retry(self):
+        with patch.object(gate, 'check', side_effect=psycopg.errors.SerializationFailure()) as check:
+            with self.assertRaises(gate.CloudPreflightBlocked):
+                storage.validate_cloud_vault({'s3_bucket': 'bucket'})
+            check.assert_called_once()  # No provider replay due to a DB abort.
 
     def test_blockage_preserves_job_retry_budget_and_never_retries_mutations(self):
         for action, handler in (("upload", "process_upload"), ("recover", "process_recover"),

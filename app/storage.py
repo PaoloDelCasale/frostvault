@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import boto3
+import psycopg
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from .services.s3_upload import upload_file
@@ -452,7 +453,12 @@ def s3_client():
 def validate_cloud_vault(vault: dict[str, Any], *, notify: bool = True) -> None:
     # The installation gate owns one warning, including for cleanup callers.
     # Provider failures here only suspend work; no transfer has started yet.
-    state = cloud_preflight_gate.check(db, lambda: _validate_cloud_vault(vault))
+    try:
+        state = cloud_preflight_gate.check(db, lambda: _validate_cloud_vault(vault))
+    except psycopg.Error as exc:
+        # Even an aborted gate-publication transaction is before the first
+        # transfer. Suspend, do not replay a cloud call as a DB-unit retry.
+        raise cloud_preflight_gate.CloudPreflightBlocked("S3 readiness status is temporarily unavailable; Job remains queued") from exc
     if state["status"] != "ready":
         raise cloud_preflight_gate.CloudPreflightBlocked(state.get("remediation") or "S3 readiness check pending")
 
