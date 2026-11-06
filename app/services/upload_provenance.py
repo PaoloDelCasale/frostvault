@@ -221,11 +221,17 @@ def _own_write_arrived(client: Any, intent: dict[str, Any], saved: dict[str, Any
         raise UploadBlocked('ambiguous_receipt')
     pinned = json.loads(intent['target_json'])
     check_active()
-    head = client.head_object(Bucket=pinned['bucket'], Key=pinned['key'], VersionId=version, ChecksumMode='ENABLED')
-    if (str(head.get('VersionId') or '') != version or head.get('DeleteMarker')
-            or (head.get('Metadata') or {}).get(TOKEN_KEY) != intent['token']):
+    from .upload_snapshot import validated_s3_proof, UploadProofMismatch, unsupported_checksum_api
+    try:
+        head = client.head_object(Bucket=pinned['bucket'], Key=pinned['key'], VersionId=version, ChecksumMode='ENABLED')
+    except Exception as exc:
+        if unsupported_checksum_api(exc):
+            return False  # Capability absence is not independent attribution.
+        raise
+    if str(head.get('VersionId') or '') != version or head.get('DeleteMarker'):
+        raise UploadBlocked('ambiguous_receipt')
+    if (head.get('Metadata') or {}).get(TOKEN_KEY) != intent['token']:
         return False
-    from .upload_snapshot import validated_s3_proof, UploadProofMismatch
     try:
         expected = UploadSnapshot.from_json(intent['snapshot_json'])
         proof = validated_s3_proof(head, version_id=version, snapshot=expected, source='exact_head')

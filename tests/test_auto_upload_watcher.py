@@ -333,17 +333,23 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
         self.write()
         self.advance(300)
         self.assertEqual(self.queue(), 1)
-        with patch("app.storage.validate_cloud_vault", side_effect=RuntimeError("AccessDenied")), patch("app.storage.s3_client") as client, patch("app.storage.upload_s3_file") as upload:
-            storage.process_jobs_once()
+        # The public validator's declared outcome is queue suspension (#461),
+        # including before dispatch after restart (#478), not a terminal failure.
+        blocked = storage.cloud_preflight_gate.CloudPreflightBlocked('Check bucket permissions')
+        with patch("app.storage.validate_cloud_vault", side_effect=blocked), patch("app.storage.s3_client") as client, patch("app.storage.upload_s3_file") as upload:
+            self.assertEqual(storage.process_jobs_once(), 0)
             client.assert_not_called()
             upload.assert_not_called()
-        self.assertEqual(self.jobs()[0]["status"], "failed")
-        # Do not silently reset the retry budget every scheduler tick.
+        self.assertEqual(self.jobs()[0]["status"], "queued")
+        self.assertEqual(self.jobs()[0]["retry_count"], 0)
+        self.assertIsNone(self.jobs()[0]['claim_token'])
+        # Do not create a duplicate or reset a budget on another watcher tick.
         self.advance(300)
         self.assertEqual(self.queue(), 0)
         self.write(content=b"new content")
         self.advance(300)
-        self.assertEqual(self.queue(), 1)
+        self.assertEqual(self.queue(), 0)
+        self.assertEqual(len(self.jobs()), 1)
 
     def test_cloud_only_conflict_and_local_deletion_preserve_sole_cloud_copy(self):
         target = self.write()

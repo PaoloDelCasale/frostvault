@@ -86,6 +86,24 @@ class ProvenanceProviderTests(unittest.TestCase):
         self.assertEqual(len(calls),2,'Token/size alone must not trigger automatic re-observation')
         self.assertEqual(self.provider.deletes,0)
 
+    def test_unsupported_checksum_head_does_not_turn_token_into_auto_retry_authority(self):
+        listing = self.provider.list_object_versions
+        calls = []
+        def finish_write(**kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                self.provider.add('key',b'independent A',{TOKEN_KEY:self.intent['token']},version='own-late')
+            return listing(**kwargs)
+        unsupported = ClientError({'Error': {'Code':'NotImplemented'}},'HeadObject')
+        with patch.object(self.provider,'list_object_versions',side_effect=finish_write), patch.object(
+            self.provider,'head_object',side_effect=unsupported
+        ), self.assertRaises(UploadBlocked) as blocked:
+            reconcile(self.provider,self.intent,None,lambda: None)
+        self.assertEqual(blocked.exception.reason,'inventory_changed')
+        self.assertIn('Retry failed uploads',blocked.exception.remedy)
+        self.assertEqual(len(calls),2)
+        self.assertEqual(self.provider.deletes,0)
+
     def test_owned_arrival_does_not_allow_a_later_external_delta_or_marker(self):
         for marker in (False,True):
             provider = VersionedProvider()
