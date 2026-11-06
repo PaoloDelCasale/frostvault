@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import boto3
+import psycopg
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from .services.s3_upload import upload_file
@@ -32,6 +33,7 @@ from .services.catalog_event_hub import publish_committed_event
 from .services.catalog_events import record_catalog_revision
 from .i18n import DEFAULT_LOCALE, format_message_params, translate
 from .services.s3_preflight import check_bucket_readiness, preflight_failure_message
+from .services import cloud_preflight_gate
 from .services.catalog_audit import audit_vault_catalog
 from .services.directory_aggregates import (
     invalidate_for_vault_file,
@@ -431,7 +433,7 @@ class _ThrottledByteProgress:
         )
 
 
-def s3_client():
+def s3_client(*, preflight: bool = False):
     access_key = os.getenv("AWS_ACCESS_KEY_ID", "")
     secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "")
     if is_placeholder(
@@ -444,32 +446,23 @@ def s3_client():
         "REPLACE-WITH-SECRET-KEY",
     ):
         raise RuntimeError("AWS credentials are not configured in the .env file")
-    return boto3.client("s3", region_name=settings.aws_region,
-                        config=Config(retries={"mode": "standard", "max_attempts": 4}))
+    config = (Config(connect_timeout=2, read_timeout=3,
+                     retries={"mode": "standard", "total_max_attempts": 1})
+              if preflight else Config(retries={"mode": "standard", "max_attempts": 4}))
+    return boto3.client("s3", region_name=settings.aws_region, config=config)
 
 
 def validate_cloud_vault(vault: dict[str, Any], *, notify: bool = True) -> None:
-    # Cleanup blockages belong only to audit/weekly summary, not immediate mail.
+    # The installation gate owns one warning, including for cleanup callers.
+    # Provider failures here only suspend work; no transfer has started yet.
     try:
-        _validate_cloud_vault(vault)
-    except Exception:
-        if notify:
-            _report_cloud_preflight(vault, blocked=True)
-        raise
-    if notify:
-        _report_cloud_preflight(vault, blocked=False)
-
-
-def _report_cloud_preflight(vault: dict[str, Any], *, blocked: bool) -> None:
-    try:
-        vault_id = int(vault.get("vault_id") or vault["id"])
-        with db() as connection:
-            notification_service.set_problem(
-                connection, key=f"blocked:{vault_id}:preflight", event="protection_blocked",
-                vault_id=vault_id, active=blocked, params={"component": "cloud_configuration"},
-            )
-    except Exception:
-        pass
+        state = cloud_preflight_gate.check(db, lambda: _validate_cloud_vault(vault))
+    except psycopg.Error as exc:
+        # Even an aborted gate-publication transaction is before the first
+        # transfer. Suspend, do not replay a cloud call as a DB-unit retry.
+        raise cloud_preflight_gate.CloudPreflightBlocked("S3 readiness status is temporarily unavailable; Job remains queued") from exc
+    if state["status"] != "ready":
+        raise cloud_preflight_gate.CloudPreflightBlocked(state.get("remediation") or "S3 readiness check pending")
 
 
 def _validate_cloud_vault(vault: dict[str, Any]) -> None:
@@ -479,14 +472,14 @@ def _validate_cloud_vault(vault: dict[str, Any]) -> None:
         "BUCKET-NAME",
         "REPLACE-WITH-BUCKET-NAME",
     ):
-        raise RuntimeError("The S3 bucket name is not configured")
+        raise cloud_preflight_gate.ReadinessFailure("The S3 bucket name is not configured. Set VAULT_S3_BUCKET to the archive bucket")
     result = check_bucket_readiness(
         bucket,
         region=settings.aws_region,
-        client=s3_client(),
+        client=s3_client(preflight=True),
     )
     if not result.ok:
-        raise RuntimeError(
+        raise cloud_preflight_gate.ReadinessFailure(
             "S3 bucket preflight failed: " + preflight_failure_message(result)
         )
 
@@ -1621,9 +1614,10 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 with db() as connection:
                     _current_verified_scan_row(connection, vault)
                     vault_relocation.prepare_reconnect_local_scan(connection, vault_id)
-            except Exception:
+            except Exception as exc:
                 status["last_error"] = "Cloud reconciliation failed; reconnect remains suspended"
-                _record_scan_component_health(vault_id, "cloud", ok=False, error=status["last_error"])
+                _record_scan_component_health(vault_id, "cloud", ok=False, error=status["last_error"],
+                                              notify_problem=not isinstance(exc, cloud_preflight_gate.CloudPreflightBlocked))
                 return {"cloud": -1, "reconnect_suspended": 1}
         local_scan_identity_valid = True
         access = source_layout.vault_local_access(vault["source_root"])
@@ -1687,7 +1681,8 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 status["last_error"] = f"Cloud scan: {exc}"
                 result["cloud"] = -1
                 _record_scan_component_health(
-                    vault_id, "cloud", ok=False, error=status["last_error"]
+                    vault_id, "cloud", ok=False, error=status["last_error"],
+                    notify_problem=not isinstance(exc, cloud_preflight_gate.CloudPreflightBlocked),
                 )
             else:
                 _record_scan_component_health(
@@ -1713,7 +1708,8 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 status["last_error"] = f"Storage plan synchronization: {exc}"
                 result["lifecycle_rules"] = -1
                 _record_scan_component_health(
-                    vault_id, "policy", ok=False, error=status["last_error"]
+                    vault_id, "policy", ok=False, error=status["last_error"],
+                    notify_problem=not isinstance(exc, cloud_preflight_gate.CloudPreflightBlocked),
                 )
             else:
                 _record_scan_component_health(
@@ -4749,6 +4745,19 @@ def _load_claimed_job_status(job: dict[str, Any]) -> dict[str, Any] | None:
         ).fetchone()
 
 
+@retry_database_unit
+def _release_preflight_purge_claim(job: dict[str, Any]) -> None:
+    # The group was leased as cleaning, but preflight precedes DeleteObjects.
+    # Release the complete group; keep exact deletion consent and its deadline.
+    with owned_connection(db()) as connection:
+        connection.execute(
+            "UPDATE jobs SET status='queued',claim_token=NULL,claimed_at=NULL,claim_expires_at=NULL "
+            "WHERE vault_id=%s AND group_id=%s AND action='cloud-purge' AND status='cleaning' "
+            "AND claim_token=%s AND claim_expires_at>%s",
+            (job["vault_id"], job["group_id"], job["claim_token"], now_iso()),
+        )
+
+
 def _process_claimed_job(job: dict[str, Any]) -> bool:
     """Process one queue item after the scheduler has acquired its lease."""
     try:
@@ -4815,6 +4824,14 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
         else:
             return False
         return True
+    except cloud_preflight_gate.CloudPreflightBlocked:
+        # Readiness is checked before any provider mutation in every handler.
+        # Preserve retries/retry_after and release only the scheduler lease.
+        if job["action"] == "cloud-purge" and job.get("claim_token"):
+            _release_preflight_purge_claim(job)
+        else:
+            set_job(job["id"], job["status"], "S3 readiness blocked; Job remains queued")
+        return False
     except JobLeaseLost:
         # A different worker/cancellation now owns the durable outcome.  Never
         # write a terminal status, audit, or notification from this stale worker.
@@ -5022,11 +5039,18 @@ def process_jobs_once(*, wait: bool = True) -> int:
             restore_due_before=restore_due_before,
             limit=batch_size,
         )
+        preflight = cloud_preflight_gate.snapshot(connection)
+        preflight_wait = (preflight["status"] == "blocked" and
+                          not cloud_preflight_gate.probe_due(preflight, datetime.now(timezone.utc)))
         eligible_candidates: list[dict[str, Any]] = []
         seen_purge_groups: set[tuple[int, str]] = set()
         for row in candidates:
             job = dict(row)
             vault_id = int(job["vault_id"])
+            # Only handlers which call validate_cloud_vault are gated; this
+            # does not stop local catalog scans, notifications or heartbeat.
+            if preflight_wait and job["action"] in {"upload", "recover", "rename", "free-space", "storage-class", "cloud-purge"}:
+                continue
             if vault_relocation.local_work_suspended({"id": vault_id}):
                 continue
             if (
@@ -5139,7 +5163,8 @@ def scan_all_vaults() -> None:
 AUTO_UPLOAD_POLL_SECONDS = 10
 
 
-def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = None) -> int:
+def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = None,
+                             retry_failed_only: bool = False) -> int:
     """Drain stable watcher observations without a cloud call or full scan.
 
     The catalog is the durable pending set, including observations recovered by
@@ -5164,12 +5189,22 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
             if "root_identity" in vault else nullcontext(Path(vault["source_root"]))
         )
         with pinned_root as root, db() as connection:
+            from .services.job_admission import lock_vault
+            try:
+                lock_vault(connection, int(vault["id"]))
+            except LookupError:
+                return 0
+            current = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault["id"],)).fetchone()
+            if (not current or not current["enabled"] or current["relocation_state"] != "ready"
+                    or current["decommission_state"] != "active"
+                    or current["source_root"] != vault["source_root"]):
+                return 0
             owner_id = owner_user_id(connection)
             if owner_id is None:
                 return 0
             queued = queue_auto_uploads(
                 connection, vault_id=int(vault["id"]), source_root=str(root),
-                requested_by=owner_id, now=now,
+                requested_by=owner_id, now=now, retry_failed_only=retry_failed_only,
             )
             if "root_identity" in vault:
                 _current_verified_scan_row(connection, vault)
@@ -5188,6 +5223,30 @@ def queue_all_auto_uploads_once() -> int:
         except Exception as exc:
             _report_worker_error("auto_upload_queue", exc, int(vault["id"]))
     return queued
+
+
+def reprobe_cloud_readiness_once() -> None:
+    # Independent of scheduler capacity and maintenance scans. A blocked gate
+    # must recover even if the Owner has since suspended all queued Vaults.
+    with db() as connection:
+        state = cloud_preflight_gate.snapshot(connection)
+        if state["status"] != "blocked" or not cloud_preflight_gate.probe_due(state, datetime.now(timezone.utc)):
+            return
+        vault = connection.execute("SELECT * FROM vaults ORDER BY id LIMIT 1").fetchone()
+    if vault:
+        try:
+            validate_cloud_vault(dict(vault))
+        except cloud_preflight_gate.CloudPreflightBlocked:
+            pass
+
+
+async def cloud_preflight_loop() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(reprobe_cloud_readiness_once)
+        except Exception as exc:
+            _report_worker_error("cloud_preflight", exc)
+        await asyncio.sleep(1)
 
 
 async def auto_upload_loop() -> None:
@@ -5389,7 +5448,8 @@ def audit_all_vaults() -> None:
             with status_lock:
                 status["last_error"] = message
             _record_scan_component_health(
-                vault_id, "audit", ok=False, error=message
+                vault_id, "audit", ok=False, error=message,
+                notify_problem=not isinstance(exc, cloud_preflight_gate.CloudPreflightBlocked),
             )
 
 

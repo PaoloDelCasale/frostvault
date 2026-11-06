@@ -689,6 +689,36 @@
       "GeneralOverview": {
         "additionalProperties": false,
         "properties": {
+          "cloud_preflight": {
+            "properties": {
+              "next_probe_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "remediation": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "unknown",
+                  "ready",
+                  "blocked"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "remediation",
+              "next_probe_at"
+            ],
+            "type": "object"
+          },
           "currency": {
             "type": "string"
           },
@@ -2107,6 +2137,17 @@
           "estimated_cost_eur",
           "estimated_hours",
           "region"
+        ],
+        "type": "object"
+      },
+      "RetryFailedUploadsResponse": {
+        "properties": {
+          "item_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "item_count"
         ],
         "type": "object"
       },
@@ -4970,6 +5011,54 @@
           }
         },
         "summary": "Cancel Upload"
+      }
+    },
+    "/api/upload/retry-failed": {
+      "post": {
+        "description": "Explicit scope: omitted Vault means installation, never Session choice.",
+        "operationId": "retry_failed_uploads_api_upload_retry_failed_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetryFailedUploadsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Failed Uploads"
       }
     },
     "/api/vault/lifecycle": {

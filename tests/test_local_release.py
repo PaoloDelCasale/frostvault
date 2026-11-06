@@ -55,12 +55,13 @@ class LocalReleasePolicyTests(unittest.TestCase):
             catalog.assert_not_called()
             self.assertEqual(connection.execute.call_count, 1)  # Only the Vault health gate.
 
-    def test_cleanup_preflight_blockage_is_not_an_immediate_notification(self):
-        with (patch("app.storage._validate_cloud_vault", side_effect=RuntimeError("cloud unavailable")),
-              patch("app.storage._report_cloud_preflight") as report):
-            with self.assertRaises(RuntimeError):
+    def test_cleanup_preflight_uses_shared_installation_gate(self):
+        with patch("app.storage.cloud_preflight_gate.check", return_value={
+            "status": "blocked", "remediation": "Check s3:GetBucketPublicAccessBlock",
+        }) as gate:
+            with self.assertRaises(storage.cloud_preflight_gate.CloudPreflightBlocked):
                 storage.validate_cloud_vault({}, notify=False)
-            report.assert_not_called()
+            gate.assert_called_once()
 
     def test_absent_untrusted_or_unconfirmed_sources_never_authorize_release(self):
         connection = MagicMock()

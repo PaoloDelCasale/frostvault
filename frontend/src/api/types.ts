@@ -65,6 +65,7 @@ export type RecoverEstimateResponse = components["schemas"]["RecoverEstimateResp
 export type RecoveryKitCustody = components["schemas"]["RecoveryKitCustody"];
 export type RecoveryKitStatus = components["schemas"]["RecoveryKitStatus"];
 export type RestoreEstimate = components["schemas"]["RestoreEstimate"];
+export type RetryFailedUploadsResponse = components["schemas"]["RetryFailedUploadsResponse"];
 export type ScanResponse = components["schemas"]["ScanResponse"];
 export type SourceDirectoryBrowseResponse = components["schemas"]["SourceDirectoryBrowseResponse"];
 export type SourceDirectoryEntry = components["schemas"]["SourceDirectoryEntry"];

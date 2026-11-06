@@ -283,8 +283,13 @@ def queue_auto_uploads(
     source_root: str,
     requested_by: int,
     now: datetime | None = None,
+    retry_failed_only: bool = False,
 ) -> int:
-    """Queue upload Jobs for stable, included Local Copies when enabled."""
+    """Queue stable eligible uploads, optionally only latest failed attempts.
+
+    Explicit retry does not edit history or revive cancelled work. The caller
+    holds the Vault admission lock; the same catalog admission dedupes inserts.
+    """
     from ..catalog import ArchiveCatalog
     from .vault_paths import safe_local_path
 
@@ -329,11 +334,16 @@ def queue_auto_uploads(
               SELECT 1 FROM jobs active_job WHERE active_job.vault_file_id=vf.id
                 AND active_job.status NOT IN ('completed', 'failed', 'cancelled')
           )
-          AND NOT EXISTS (
-              SELECT 1 FROM jobs stopped WHERE stopped.vault_file_id=vf.id
-                AND stopped.action='upload' AND stopped.origin='automatic'
-                AND stopped.status IN ('failed', 'cancelled')
-                AND stopped.requested_at >= COALESCE(lc.content_observed_at, lc.observed_at)
+          AND (
+              (%s AND (SELECT latest.status FROM jobs latest
+                       WHERE latest.vault_file_id=vf.id AND latest.action='upload'
+                       ORDER BY latest.id DESC LIMIT 1)='failed')
+              OR (NOT %s AND NOT EXISTS (
+                  SELECT 1 FROM jobs stopped WHERE stopped.vault_file_id=vf.id
+                    AND stopped.action='upload' AND stopped.origin='automatic'
+                    AND stopped.status IN ('failed', 'cancelled')
+                    AND stopped.requested_at >= COALESCE(lc.content_observed_at, lc.observed_at)
+              ))
           )
           AND NOT EXISTS (
               SELECT 1 FROM cloud_deletion_items pending_delete
@@ -342,7 +352,7 @@ def queue_auto_uploads(
           )
         ORDER BY lower(fp.path)
         """,
-        (vault_id,),
+        (vault_id, retry_failed_only, retry_failed_only),
     ).fetchall()
     queued = 0
     timestamp = current.isoformat()

@@ -147,6 +147,7 @@ from .storage import (
     cleanup_abandoned_restore_files,
     filesystem_watch_loop,
     auto_upload_loop,
+    cloud_preflight_loop,
     now_iso,
     reconcile_interrupted_jobs,
     runtime_status,
@@ -199,7 +200,8 @@ async def lifespan(_: FastAPI):
     cleanup_abandoned_restore_files()
     reconcile_interrupted_jobs()
     protection_stop_service.reconcile_all()
-    tasks = [asyncio.create_task(background_loop()), asyncio.create_task(auto_upload_loop())]
+    tasks = [asyncio.create_task(background_loop()), asyncio.create_task(auto_upload_loop()),
+             asyncio.create_task(cloud_preflight_loop())]
     if settings.filesystem_watch_enabled:
         tasks.append(asyncio.create_task(filesystem_watch_loop()))
     yield
@@ -2326,8 +2328,31 @@ def upload(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    queued = queue_jobs(action.path, "upload", vault["id"], user["id"], action.is_directory)
+    queued = queue_jobs(action.path, "upload", vault["id"], user["id"], action.is_directory,
+                        whole_vault=action.path == "" and action.is_directory)
     return {**queued, **_api_message(request, "api.upload_started")}
+
+
+@app.post("/api/upload/retry-failed", status_code=202, response_model=response_model("RetryFailedUploadsResponse"))
+def retry_failed_uploads(vault_id: int | None = Query(default=None, ge=1),
+                         _: dict[str, Any] = Depends(current_user)):
+    """Explicit scope: omitted Vault means installation, never Session choice."""
+    from .storage import queue_vault_auto_uploads, _ScanRootMismatch
+    with db() as connection:
+        vaults = connection.execute(
+            "SELECT * FROM vaults" + (" WHERE id=%s" if vault_id is not None else "") + " ORDER BY id",
+            (vault_id,) if vault_id is not None else (),
+        ).fetchall()
+    if vault_id is not None and not vaults:
+        raise HTTPException(404, "Vault not found")
+    count = 0
+    for vault in vaults:
+        try:
+            count += queue_vault_auto_uploads(dict(vault), retry_failed_only=True)
+        except (_ScanRootMismatch, OSError):
+            # Missing/replaced roots remain ineligible, not implicitly reconnected.
+            continue
+    return {"item_count": count}
 
 
 def confirm_cloud_only_replacement(

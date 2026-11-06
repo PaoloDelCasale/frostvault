@@ -313,6 +313,8 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             rows = inbox.list_in_app_notifications(c,user_id=self.user_id)
             self.assertEqual(rows[0]['problem_status'],'open')
             self.assertNotIn('SECRET',str(rows))
+        with self.connect() as c:
+            c.execute("UPDATE cloud_preflight_state SET next_probe_at='2000-01-01T00:00:00+00:00'")
         with patch('app.storage.db',side_effect=self.connect), patch('app.storage._validate_cloud_vault'):
             storage.validate_cloud_vault(vault)
         with self.connect() as c:
