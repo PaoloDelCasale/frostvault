@@ -2774,6 +2774,38 @@
         ],
         "type": "object"
       },
+      "UploadReconciliationAction": {
+        "additionalProperties": false,
+        "properties": {
+          "is_directory": {
+            "default": false,
+            "title": "Is Directory",
+            "type": "boolean"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "remediation_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remediation Id"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "UploadReconciliationAction",
+        "type": "object"
+      },
       "UploadReconciliationResponse": {
         "properties": {
           "group_id": {
@@ -5476,7 +5508,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/FileAction"
+                "$ref": "#/components/schemas/UploadReconciliationAction"
               }
             }
           },

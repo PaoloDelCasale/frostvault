@@ -109,6 +109,43 @@ class UploadRemediationTests(unittest.TestCase):
                 self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE job_id=%s",(original,)).fetchone()["problem_status"],"open",status)
                 connection.execute("UPDATE jobs SET status='failed' WHERE id=%s",(other,))
 
+    def test_discovery_admission_continues_while_actual_provider_io_is_blocked(self):
+        self.fail_after_ack()
+        other = self.source / "other.txt"
+        other.write_bytes(fixtures.A)
+        with self.db() as connection:
+            from app.catalog import ArchiveCatalog
+            ArchiveCatalog(connection).observe_local_copy(vault_id=2,path="other.txt",file_type="regular",size=len(fixtures.A),mtime_ns=other.stat().st_mtime_ns,observed_at=storage.now_iso())
+        self.provider.hook = lambda stage, **kw: (_ for _ in ()).throw(RuntimeError("post raw ack fault")) if stage == "acknowledged" else None
+        fixtures.queue_jobs("other.txt","upload",2,1)
+        with self.db() as connection:
+            second = connection.execute("SELECT max(id) id FROM jobs").fetchone()["id"]
+        self.run_job(second)
+        self.assertEqual(self.row(second)["status"],"failed")
+        self.provider.hook = lambda *args, **kw: None
+        resumed = self.admit()
+        entered,release = threading.Event(),threading.Event()
+        def block(stage, **kw):
+            if stage == "head" and kw["key"] == "docs/report.txt":
+                entered.set()
+                if not release.wait(5):
+                    raise AssertionError("Test provider I/O was not released")
+        self.provider.hook = block
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self.run_job,resumed)
+            try:
+                self.assertTrue(entered.wait(5),"Actual claimed worker must enter provider I/O")
+                with patch("app.storage.s3_client",side_effect=AssertionError("Sweep cannot use provider")):
+                    self.assertEqual(remediation.sweep(self.db),1)
+                self.assertFalse(future.done(),"Admission must not wait for blocked provider I/O")
+                with self.db() as connection:
+                    self.assertEqual(connection.execute("SELECT count(*) n FROM upload_remediation_jobs").fetchone()["n"],2)
+            finally:
+                release.set()
+            future.result(timeout=5)
+        self.assert_keeper(resumed)
+        self.assertEqual(self.provider.puts,2,"Discovery never creates provider versions")
+
     def test_sweep_is_db_only_and_admits_historical_verified_completion_failure(self):
         original = self.queue()
         with patch("app.storage.purge_current_snapshot_superseded",side_effect=RuntimeError("post verified fault")):

@@ -254,9 +254,9 @@ def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
             "reason": reason, "remedy": REMEDIES.get(reason, REMEDIES["proof_unavailable"])}
 
 
-def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str) -> dict[str, Any]:
+def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str, remediation_id: str | None = None) -> dict[str, Any]:
     from .upload_remediation import schedule_resume as schedule
-    return schedule(connection, vault=vault, path=path, user_id=user_id, timestamp=timestamp)
+    return schedule(connection, vault=vault, path=path, user_id=user_id, timestamp=timestamp, remediation_id=remediation_id)
 
 
 def _schedule_resume_legacy(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str) -> dict[str, Any]:

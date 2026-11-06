@@ -80,6 +80,7 @@ export type StopProtectionStatus = components["schemas"]["StopProtectionStatus"]
 export type StorageEstimateRequest = components["schemas"]["StorageEstimateRequest"];
 export type StorageEstimateResponse = components["schemas"]["StorageEstimateResponse"];
 export type UploadReconciliation = components["schemas"]["UploadReconciliation"];
+export type UploadReconciliationAction = components["schemas"]["UploadReconciliationAction"];
 export type UploadReconciliationResponse = components["schemas"]["UploadReconciliationResponse"];
 export type UploadRemediation = components["schemas"]["UploadRemediation"];
 export type ValidationError = components["schemas"]["ValidationError"];

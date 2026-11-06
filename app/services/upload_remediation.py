@@ -75,8 +75,12 @@ def _enroll(connection: Any, original: dict[str, Any], vault: dict[str, Any], st
     if intent:
         pinned = json.loads(intent["target_json"])
         snapshot_json = intent["snapshot_json"]
-        snapshot = UploadSnapshot.from_json(snapshot_json)
-        expected, size, mode = snapshot.plaintext_sha256, snapshot.size, intent["requested"]
+        try:
+            snapshot = UploadSnapshot.from_json(snapshot_json)
+            expected, size = snapshot.plaintext_sha256, snapshot.size
+        except (ValueError,TypeError,KeyError,AttributeError):
+            expected, size, reason = None, int(original["total_bytes"] or 0), "proof_mismatch"
+        mode = intent["requested"]
         key = "intent:" + intent["id"]
         version_id = intent["archive_version_id"]
     else:
@@ -95,8 +99,11 @@ def _enroll(connection: Any, original: dict[str, Any], vault: dict[str, Any], st
         if not _sha(expected):
             reason = "expected_evidence_missing"
         if snapshot_json:
-            snapshot = UploadSnapshot.from_json(snapshot_json)
-            if snapshot.plaintext_sha256 != expected:
+            try:
+                snapshot = UploadSnapshot.from_json(snapshot_json)
+                if snapshot.plaintext_sha256 != expected:
+                    reason = "proof_mismatch"
+            except (ValueError,TypeError,KeyError,AttributeError):
                 reason = "proof_mismatch"
         if version["integrity"] == "verified" and version["plaintext_sha256"] != expected:
             reason = "proof_mismatch"
@@ -122,7 +129,7 @@ def _enroll(connection: Any, original: dict[str, Any], vault: dict[str, Any], st
         row = connection.execute("SELECT * FROM upload_remediations WHERE target_key=%s OR intent_id=%s OR archive_version_id=%s", (key,intent["id"] if intent else None,version_id)).fetchone()
     # An AV identity alone cannot link contradictory expected content to a resolution.
     if row["expected_sha256"] != expected or row["snapshot_json"] != snapshot_json:
-        connection.execute("UPDATE upload_remediations SET state='blocked',reason='proof_mismatch',updated_at=%s WHERE id=%s", (stamp,row["id"]))
+        connection.execute("UPDATE upload_remediations SET state='blocked',reason='proof_mismatch',updated_at=%s WHERE id=%s AND state<>'resolved'", (stamp,row["id"]))
         return row
     connection.execute("""INSERT INTO upload_remediation_originals(original_job_id,remediation_id,vault_file_id,vault_id)
         VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (original["id"],row["id"],row["vault_file_id"],row["vault_id"]))
@@ -229,13 +236,15 @@ def intercept_upload(connection: Any, *, vault_id: int, file_id: str, user_id: i
     return True,admit(connection,row,vault,user_id=user_id,stamp=stamp,automatic=automatic,group_id=group_id)
 
 
-def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str) -> dict[str, Any]:
+def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str, remediation_id: str | None = None) -> dict[str, Any]:
     current = connection.execute("SELECT * FROM vaults WHERE id=%s FOR UPDATE", (vault["id"],)).fetchone()
     file = connection.execute("SELECT vault_file_id FROM file_paths WHERE vault_id=%s AND path=%s AND valid_to IS NULL", (vault["id"],path)).fetchone()
     if not file:
         raise provenance.UploadBlocked("identity_changed")
     discover_file(connection,current,file["vault_file_id"],timestamp)
-    rows = connection.execute("SELECT * FROM upload_remediations WHERE vault_file_id=%s AND state<>'resolved' ORDER BY created_at,id LIMIT 2", (file["vault_file_id"],)).fetchall()
+    rows = connection.execute("SELECT * FROM upload_remediations WHERE vault_file_id=%s AND vault_id=%s AND state<>'resolved' AND (%s::text IS NULL OR id=%s) ORDER BY created_at,id LIMIT 2", (file["vault_file_id"],vault["id"],remediation_id,remediation_id)).fetchall()
+    if remediation_id and not rows:
+        raise provenance.UploadBlocked("identity_changed")
     if not rows:
         # Preserve #464's explicit claimed cleanup of a scan-discovered block.
         # No unrelated failed Job is resolved by electing a current keeper here.
@@ -342,8 +351,12 @@ def retry_vault(connection: Any, vault: dict[str, Any], user_id: int, stamp: str
     for original in originals:
         _enroll(connection,original,vault,stamp)
         connection.execute("DELETE FROM upload_remediation_discovery WHERE job_id=%s",(original["id"],))
-    rows = connection.execute("""SELECT * FROM upload_remediations WHERE vault_id=%s
-        AND state IN ('pending','blocked','suspended') ORDER BY due_at,id LIMIT %s""", (vault["id"],TARGET_BATCH)).fetchall()
+    rows = connection.execute("""SELECT r.* FROM upload_remediations r WHERE vault_id=%s
+        AND state IN ('pending','blocked','suspended')
+        AND COALESCE(reason,'') NOT IN ('proof_mismatch','expected_evidence_missing','target_superseded')
+        AND (current_job_id IS NULL OR EXISTS (SELECT 1 FROM jobs j WHERE j.id=r.current_job_id
+             AND j.status IN ('failed','completed','cancelled')))
+        ORDER BY updated_at,id LIMIT %s""", (vault["id"],TARGET_BATCH)).fetchall()
     return sum(bool(admit(connection,row,vault,user_id=user_id,stamp=stamp,explicit=True)) for row in rows)
 
 

@@ -1997,6 +1997,18 @@ export interface components {
             reason: string | null;
             remedy: string | null;
         };
+        /** UploadReconciliationAction */
+        UploadReconciliationAction: {
+            /**
+             * Is Directory
+             * @default false
+             */
+            is_directory: boolean;
+            /** Path */
+            path: string;
+            /** Remediation Id */
+            remediation_id?: string | null;
+        };
         UploadReconciliationResponse: {
             group_id: string;
             job_id: number;
@@ -3535,7 +3547,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["FileAction"];
+                "application/json": components["schemas"]["UploadReconciliationAction"];
             };
         };
         responses: {

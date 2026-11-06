@@ -565,6 +565,13 @@ class FileAction(BaseModel):
     restore_days: int | None = Field(default=None, ge=1, le=30)
 
 
+class UploadReconciliationAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    is_directory: bool = False
+    remediation_id: str | None = Field(default=None,min_length=1,max_length=128)
+
+
 class CloudOnlyReplacementAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2379,7 +2386,7 @@ def upload(
 
 
 @app.post("/api/upload/reconcile", status_code=202, response_model=response_model("UploadReconciliationResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
-def reconcile_upload(action: FileAction, user: dict[str, Any] = Depends(current_user), vault: dict[str, Any] = Depends(current_vault)):
+def reconcile_upload(action: UploadReconciliationAction, user: dict[str, Any] = Depends(current_user), vault: dict[str, Any] = Depends(current_vault)):
     """Exact resume only, including protected files for which upload returns 409.
 
     Common target arbiter; no PUT, arbitrary deletion or cancellation resurrection.
@@ -2392,7 +2399,7 @@ def reconcile_upload(action: FileAction, user: dict[str, Any] = Depends(current_
         raise HTTPException(503, "Expected Source Volume is unavailable")
     try:
         with db() as connection:
-            return schedule_resume(connection, vault=vault, path=logical_path, user_id=user["id"], timestamp=datetime.now(timezone.utc).isoformat())
+            return schedule_resume(connection, vault=vault, path=logical_path, user_id=user["id"], timestamp=datetime.now(timezone.utc).isoformat(), remediation_id=action.remediation_id)
     except UploadBlocked as exc:
         raise HTTPException(409, str(exc)) from exc
 

@@ -59,7 +59,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
             {resume.state === "retrying" && <p>{t("remediation.retry", { count: resume.retry_count, at: resume.due_at })}</p>}
             {resume.resolved_by_job_id && <Button variant="secondary" onClick={() => setJobId(resume.resolved_by_job_id!)}>{t("remediation.resolved_by", { id: resume.resolved_by_job_id })}</Button>}
             {resume.current_job_id && !resume.resolved_by_job_id && <Button variant="secondary" onClick={() => setJobId(resume.current_job_id!)}>{t("remediation.job", { id: resume.current_job_id })}</Button>}
-            {resume.can_resume && <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload/reconcile", { path: item.path }))}>{t("reconciliation.resume")}</Button>}
+            {resume.can_resume && <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload/reconcile", { path: item.path, remediation_id: resume.id }))}>{t("reconciliation.resume")}</Button>}
           </section>)}
           <details onToggle={(event) => setHistoryOpen(event.currentTarget.open)}><summary className="min-h-11 cursor-pointer py-3 font-semibold">{t("remediation.history")}</summary>
             {history.isFetching && <p role="status">{t("ui.loading")}</p>}
