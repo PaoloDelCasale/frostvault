@@ -598,6 +598,12 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
                     """,
                     (version_id, len(payload), _sha(payload)),
                 )
+            # The scenario is an upload that already reached cloud storage.
+            # Seed actual bytes independently; strict HEAD/listing must not
+            # invent this version from its catalog row or create a new upload.
+            from tests.upload_provenance_provider import VersionedProvider
+            self.provider = VersionedProvider()
+            self.provider.add("docs/report.txt", payload, version="s3-unverified")
             commands = self._run_upload(
                 database_path, payload=payload, version_id="s3-unverified"
             )
@@ -608,8 +614,9 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
                     """
                 ).fetchall()
                 jobs = connection.execute(
-                    "SELECT status FROM jobs ORDER BY id"
+                    "SELECT status,message FROM jobs ORDER BY id"
                 ).fetchall()
+            self.assertEqual(jobs[-1]["status"], "completed", jobs[-1]["message"])
             self.assertEqual(local.read_bytes(), payload)
             self.assertEqual(commands, ["read"])
             self.assertEqual(len(versions), 1)

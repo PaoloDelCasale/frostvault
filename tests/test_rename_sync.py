@@ -1486,7 +1486,7 @@ class RenameDestinationProofTests(unittest.TestCase):
             self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
             self.assertTrue(any(call[:1] == ("upload",) for call in upload_calls))
             by_provider = {row["provider_version_id"]: row for row in versions}
-            self.assertEqual(by_provider["missing-s3-version"]["availability"], "purged")
+            self.assertEqual(by_provider["missing-s3-version"]["availability"], "missing", "Catalog projection must agree: unproven absence is not deletion authority")
             self.assertEqual(by_provider["new-s3-version"]["integrity"], "verified")
             self.assertEqual(by_provider["new-s3-version"]["availability"], "available")
             self.assertNotEqual(job["archive_version_id"], missing_id)

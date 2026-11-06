@@ -171,6 +171,10 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.provider.add("docs/report.txt",A,version="historical-duplicate")
         self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("delete temporarily unavailable")) if stage == "delete" else None
         original = self.queue()
+        # This scenario requires a terminal historical failure, not a still-active
+        # transient retry. Exhaust the existing budget before the injected fault.
+        with PostgresConnection(self.db_path) as connection:
+            connection.execute("UPDATE jobs SET retry_count=%s WHERE id=%s", (storage.UPLOAD_RETRY_MAX_ATTEMPTS, original))
         self.run_job(original)
         self.assertEqual(self.row(original)["status"],"failed")
         self.provider.hook = lambda *args, **kwargs: None
