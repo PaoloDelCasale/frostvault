@@ -1,0 +1,47 @@
+{
+  "yaml": "valid",
+  "non_proxy_structure_preserved": true,
+  "command": [
+    "docker",
+    "compose",
+    "--env-file",
+    "/dev/null",
+    "-f",
+    "/mnt/cache/appdata/t3code-native/worktrees/frostvault/t3-05c82f87/compose.traefik.yaml",
+    "config",
+    "--quiet"
+  ],
+  "cases": [
+    {
+      "missing": null,
+      "empty": false,
+      "exit_code": 0,
+      "passed": true
+    },
+    {
+      "missing": "TRUSTED_PROXIES",
+      "empty": false,
+      "exit_code": 1,
+      "passed": true
+    },
+    {
+      "missing": "TRUSTED_PROXIES",
+      "empty": true,
+      "exit_code": 1,
+      "passed": true
+    },
+    {
+      "missing": "FORWARDED_ALLOW_IPS",
+      "empty": false,
+      "exit_code": 1,
+      "passed": true
+    },
+    {
+      "missing": "FORWARDED_ALLOW_IPS",
+      "empty": true,
+      "exit_code": 1,
+      "passed": true
+    }
+  ],
+  "no_daemon_or_services_changed": true
+}

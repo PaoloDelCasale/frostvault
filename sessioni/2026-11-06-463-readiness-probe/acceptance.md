@@ -4,7 +4,9 @@
 
 - Issue: https://github.com/PaoloDelCasale/frostvault/issues/463
 - Adjacent integration: https://github.com/PaoloDelCasale/frostvault/issues/462
-  must integrate first; this change does not implement proxy configuration.
+  integrated first through merged PR #467 at
+  `5a74e8e8ca897d128db28817fc467343fed249d0`. This change does not implement or
+  modify its explicit proxy configuration.
 - Read the updated issues and comments (none at implementation start), AGENTS.md,
   CONTEXT.md, issue-tracker instructions, ADR-0004 and ADR-0005.
 - Native relationships checked with GraphQL: neither issue has a parent or native
@@ -47,12 +49,48 @@ Implemented files:
 
 Local validation:
 - Created Python 3.12 `.venv` and installed `requirements.txt` successfully.
-- `.venv/bin/python -m unittest tests.test_readiness_probe tests.test_ci_contracts -v`
-  **45 tests passed**. Log: `targeted-tests.log` in this session directory.
+- After integrating #462:
+  `.venv/bin/python -m unittest tests.test_readiness_probe tests.test_ci_contracts tests.test_public_release_hygiene tests.test_forwarded_proxy -v`
+  **58 tests passed**. Log: `targeted-tests.log` in this session directory.
+- Parsed both Compose templates and the changed CI YAML with PyYAML.
 - `git diff --check` passed.
 - Existing Starlette/httpx and Authlib deprecation warnings only.
 - No local database coverage claimed or skipped: real PostgreSQL, S3-compatible,
   frontend/browser/image verification remains exclusively in PR CI.
 
-CI validation and #462 integration status will be recorded before handoff.
-The PR must remain draft and unmerged for parent review.
+## CI evidence and integration
+
+- Initial implementation CI run `42139141139` passed image/probe, PostgreSQL,
+  S3-compatible, frontend/Playwright checks except one unit shard: a fake test
+  credential's domain violated the existing public-release hygiene rule. The
+  exact targeted hygiene test reproduced it locally (red); only the fixture was
+  changed to the permitted `example.com` domain. No gate was bypassed/weakened.
+- Fixed implementation commit `b6ee22725de0cc76fd95df0ba32bfc1d72863a30`:
+  **28/28 checks completed SUCCESS**, verified through PR check runs.
+  - CI: https://github.com/PaoloDelCasale/frostvault/actions/runs/42139639397
+  - Security: https://github.com/PaoloDelCasale/frostvault/actions/runs/42139639392
+- Merged latest `origin/main` normally (no rebase/force push) after the coordinator
+  merged #467. Resolved the one documentation conflict by retaining all of
+  #462's trust-layer explanations, explicit required allowlists and routing/auth
+  preservation guidance, then appending #463's separate local-readiness section.
+- Verified **no diff from integrated main** in either Compose template,
+  `app/main.py`, `app/proxy.py` or ADR-0005. Both required proxy lists and the new
+  proxy tests remain intact; Host middleware has no exception or change.
+- Full PR CI must also succeed on the integrated final HEAD. Final integrated
+  run evidence will be recorded before handoff; pre-integration green is not
+  being substituted for that check.
+
+## Limitations / operator follow-up
+
+- No production deploy/restart, local image/frontend build, database or S3 work.
+- CI uses disposable PostgreSQL 16 and S3-compatible moto (historical job name
+  MinIO), not live AWS/Glacier proof. Dependency seams in local tests are mocked;
+  real PostgreSQL coverage is provided by CI, never silently skipped locally.
+- The probe is local readiness, not proof of public Traefik/TLS/OIDC availability.
+- The internal port is 8080, matching the image command; `APP_PORT` is host-only.
+- Multiple allowlist entries work for the probe; the reference Traefik router
+  still expects one hostname. Wildcards/URLs/ports are not probe Host entries.
+- Startup grace is 60s; operators can explicitly override it for known long
+  migrations. Health status does not cause `unless-stopped` to restart a process.
+- Parent retains review, any deployment authorization and final merge. This PR
+  must remain **draft and unmerged**.

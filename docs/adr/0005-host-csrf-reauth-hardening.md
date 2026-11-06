@@ -12,13 +12,26 @@ the request scheme, and mutating requests carrying a cross-origin `Origin` heade
 are refused as defence in depth. `return_to` is an open-redirect guard: it
 accepts only a local path (must start with a single `/`, never `//`, `/\`, or a
 backslash/control character), so the OIDC round-trip can never bounce a user to
-an attacker's site. The real client IP is resolved by `app/proxy.py`: a
-`Trusted Proxy` is any peer inside `TRUSTED_PROXIES` (CIDRs), and only then are
-`X-Forwarded-For`/`X-Forwarded-Proto` believed — trusted hops are stripped from
-the right until the first untrusted address, which is the client; otherwise the
-direct socket peer is used. This is the promotion of PR4's socket-peer-only rule
-to a proxy-aware one, so Break-glass network gating now works correctly behind a
-reverse proxy.
+an attacker's site. The application client IP is resolved by `app/proxy.py`: it walks
+`X-Forwarded-For` only if the ASGI client it receives is inside
+`TRUSTED_PROXIES` (CIDRs), stripping trusted hops from the right until the first
+untrusted address; otherwise that ASGI client is used directly. In the deployed
+stack this is not necessarily the original socket peer (see the #462
+clarification below). This promotes PR4's socket-peer-only network gate to a
+proxy-aware one for the Owner's Emergency Password.
+
+**Forwarded deployment clarification (#462).** Uvicorn independently checks the
+socket peer against `FORWARDED_ALLOW_IPS`, then processes `X-Forwarded-Proto`
+for the scheme and `X-Forwarded-For` for the ASGI client **before** calling the
+app. FrostVault does not process forwarded scheme or recover the original peer;
+its allowlist cannot veto a rewrite already accepted by Uvicorn. The Owner chose
+two explicit, narrow and coherent proxy-only allowlists, not automatic
+derivation or wildcard trust. Set both lists to the same actual proxy hops as
+seen by FrostVault. Broader trust at either layer is unsafe, not compensated by
+a narrower list at the other. The proxy must sanitize scheme and append/replace
+client headers with the real connecting address. See
+[the deployment and verification guide](../traefik.md). Host/origin rules and
+the loopback/allowed-LAN Emergency Password gate remain unchanged.
 
 **CSRF edge.** Every Session already owns a per-session `csrf_token`
 (synchronizer token, created in PR1's schema). It is exposed to the frontend

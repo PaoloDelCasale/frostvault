@@ -16,6 +16,7 @@ from app import main, oidc
 from app.config import settings
 
 from tests.oidc_fake import FakeOidcProvider
+from tests.proxy_stack import uvicorn_proxy_app
 from tests.test_database import run_alembic
 
 
@@ -107,6 +108,73 @@ class OidcHttpTests(unittest.TestCase):
         location = response.headers["location"]
         query = parse_qs(urlparse(location).query)
         self.assertEqual(query["state"][0], self._latest_login()["state"])
+
+    def test_trusted_proxy_https_login_and_callback_use_same_redirect_uri(self) -> None:
+        self._use_oidc_client()
+        proxy_settings = replace(
+            self.test_settings,
+            cookie_secure=True,
+            allowed_hosts="frostvault.example.com",
+            trusted_proxies="172.30.0.2/32",
+        )
+        headers = {"X-Forwarded-Proto": "https", "X-Forwarded-For": "203.0.113.7"}
+        # HTTP transport is intentional: HTTPS must come from Uvicorn, not the
+        # TestClient base URL. OIDC I/O uses the existing fake provider transport.
+        client = TestClient(
+            uvicorn_proxy_app(main.app, "172.30.0.2/32"),
+            client=("172.30.0.2", 40000),
+            base_url="http://frostvault.example.com",
+            follow_redirects=False,
+        )
+        self.addCleanup(client.close)
+        with patch.object(main, "settings", proxy_settings):
+            started = client.get("/auth/oidc/login", headers=headers)
+            self.assertEqual(started.status_code, 303, started.text)
+            query = parse_qs(urlparse(started.headers["location"]).query)
+            expected_uri = "https://frostvault.example.com/auth/oidc/callback"
+            self.assertEqual(query["redirect_uri"], [expected_uri])
+            pending = self._latest_login()
+            self.assertEqual(query["state"], [pending["state"]])
+            self._use_oidc_client(id_token=self.provider.make_id_token(
+                nonce=pending["nonce"], subject=self.subject,
+            ))
+            callback = client.get(
+                "/auth/oidc/callback",
+                headers=headers,
+                params={"state": pending["state"], "code": "auth-code"},
+            )
+        self.assertEqual(callback.status_code, 303, callback.text)
+        self.assertEqual(self.provider.token_requests[-1]["redirect_uri"], expected_uri)
+        self.assertTrue(client.cookies.get(self.cookie_name))
+        self.assertIn("Secure", callback.headers["set-cookie"])
+        with PostgresConnection(str(self.database_path)) as connection:
+            session = connection.execute("SELECT ip FROM sessions").fetchone()
+        self.assertEqual(session["ip"], "203.0.113.7")
+
+    def test_untrusted_peer_cannot_force_https_oidc_redirect(self) -> None:
+        self._use_oidc_client()
+        proxy_settings = replace(
+            self.test_settings,
+            cookie_secure=True,
+            allowed_hosts="frostvault.example.com",
+            trusted_proxies="172.30.0.2/32",
+        )
+        client = TestClient(
+            uvicorn_proxy_app(main.app, "172.30.0.2/32"),
+            client=("203.0.113.7", 40000),
+            base_url="http://frostvault.example.com",
+            follow_redirects=False,
+        )
+        self.addCleanup(client.close)
+        with patch.object(main, "settings", proxy_settings):
+            response = client.get("/auth/oidc/login", headers={
+                "X-Forwarded-Proto": "https", "X-Forwarded-For": "127.0.0.1",
+            })
+        self.assertEqual(response.status_code, 303, response.text)
+        query = parse_qs(urlparse(response.headers["location"]).query)
+        self.assertEqual(query["redirect_uri"],
+                         ["http://frostvault.example.com/auth/oidc/callback"])
+        self.assertEqual(query["state"], [self._latest_login()["state"]])
 
     def test_callback_signs_in_a_linked_identity(self) -> None:
         self._use_oidc_client()
