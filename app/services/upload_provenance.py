@@ -133,6 +133,9 @@ def mark_send_started(connection: Any, job: dict[str, Any], intent: dict[str, An
     changed = connection.execute("UPDATE upload_intents SET send_started=TRUE WHERE id=%s AND NOT send_started RETURNING id", (intent["id"],)).fetchone()
     if not changed:
         raise UploadBlocked("ambiguous_send")
+    from datetime import datetime, timezone
+    from .upload_remediation_discovery import capture
+    capture(connection, datetime.now(timezone.utc).isoformat(), intent_id=intent["id"])
 
 
 @retry_database_unit

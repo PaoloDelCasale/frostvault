@@ -27,3 +27,6 @@ frontend/e2e/test-results/
 frontend/e2e-report/
 frontend/playwright-report/
 frontend/e2e/e2e-report/
+
+# Agent working notes are not repository content; issues and PRs are the record.
+/sessioni/

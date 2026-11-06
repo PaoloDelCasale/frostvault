@@ -1576,6 +1576,7 @@ export interface components {
             path: string;
             pending_until?: string | null;
             remediation?: components["schemas"]["UploadRemediation"] | null;
+            remediation_rejection?: string | null;
             requested_at?: string;
             restore_days?: number | null;
             restore_tier?: string | null;

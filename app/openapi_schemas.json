@@ -1177,6 +1177,7 @@
       "additionalProperties": true,
       "properties": {
         "remediation": {"anyOf": [{"$ref": "#/components/schemas/UploadRemediation"}, {"type": "null"}]},
+        "remediation_rejection": {"type": ["string", "null"]},
         "archive_version_id": {"type": ["string", "null"]},
         "upload_reconcile_only": {"type": "boolean"},
         "action": {

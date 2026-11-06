@@ -1326,6 +1326,12 @@
               }
             ]
           },
+          "remediation_rejection": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "requested_at": {
             "type": "string"
           },
