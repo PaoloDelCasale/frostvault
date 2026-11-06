@@ -4,8 +4,9 @@ from __future__ import annotations
 import random
 import time
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from functools import wraps
-from typing import ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeVar
 
 import psycopg
 
@@ -34,6 +35,23 @@ def is_retryable_transaction_error(error: BaseException) -> bool:
         isinstance(item, psycopg.Error) and item.sqlstate in {"40P01", "40001"}
         for item in exception_chain(error)
     )
+
+
+@contextmanager
+def owned_connection(connection: Any) -> Iterator[Any]:
+    """Always close an owned handle, including when its COMMIT raises.
+
+    psycopg's Connection.__exit__ commits before close; a commit-time 40001
+    otherwise bypasses close. Never use this for caller-owned/pool handles.
+    Lightweight recording seams may implement only the context protocol.
+    """
+    try:
+        with connection as active:
+            yield active
+    finally:
+        close = getattr(connection, "close", None)
+        if close is not None:
+            close()
 
 
 def retry_database_unit(operation: Callable[P, T]) -> Callable[P, T]:

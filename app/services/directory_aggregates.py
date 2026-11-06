@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from .protection_states import STATE_SQL, LATEST_JOIN_SQL, aggregate_state
-from .database_retry import retry_database_unit
+from .database_retry import owned_connection, retry_database_unit
 
 
 STATUS_READY = "ready"
@@ -593,7 +593,7 @@ def process_directory_aggregate_maintenance(
         published_events.clear()
         for key in totals:
             totals[key] = 0
-        with db() as owned:
+        with owned_connection(db()) as owned:
             _run(owned)
 
     try:

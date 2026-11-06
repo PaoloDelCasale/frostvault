@@ -7,7 +7,7 @@ from unittest.mock import patch
 from psycopg.errors import DeadlockDetected, SerializationFailure, UniqueViolation
 
 from app.services.database_retry import (
-    DATABASE_RETRY_MAX_ATTEMPTS, is_retryable_transaction_error, retry_database_unit,
+    DATABASE_RETRY_MAX_ATTEMPTS, is_retryable_transaction_error, owned_connection, retry_database_unit,
 )
 
 
@@ -52,6 +52,26 @@ class DatabaseRetryTests(unittest.TestCase):
         self.assertTrue(is_retryable_transaction_error(outer))
         for error in (RuntimeError("deadlock 40P01 pid 500503"), UniqueViolation("40001")):
             self.assertFalse(is_retryable_transaction_error(error))
+
+    def test_commit_failure_closes_owned_handle_before_retry(self) -> None:
+        events = []
+
+        class CommitFailureConnection:
+            def __enter__(self):
+                events.append("begin")
+                return self
+
+            def __exit__(self, *_):
+                events.append("commit")
+                raise SerializationFailure("commit aborted")
+
+            def close(self):
+                events.append("close")
+
+        with self.assertRaises(SerializationFailure):
+            with owned_connection(CommitFailureConnection()):
+                events.append("mutation")
+        self.assertEqual(events, ["begin", "mutation", "commit", "close"])
 
     def test_batch_marks_coalesce_per_call_not_connection_lifetime(self) -> None:
         from app.services.directory_aggregates import mark_paths_dirty

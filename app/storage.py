@@ -70,7 +70,7 @@ from .services.vault_paths import (
     expected_cloud_key,
     is_restore_temporary_name,
 )
-from .services.database_retry import retry_database_unit
+from .services.database_retry import owned_connection, retry_database_unit
 from .services.upload_retry import (
     UPLOAD_RETRY_MAX_ATTEMPTS,
     classify_upload_failure,
@@ -261,7 +261,7 @@ def _job_claim_context(
 @retry_database_unit
 def _renew_claim_if_owned(job_id: int, claim_token: str) -> dict[str, Any] | None:
     timestamp = now_iso()
-    with db() as connection:
+    with owned_connection(db()) as connection:
         return ArchiveCatalog(connection).renew_job_claim(
             job_id=int(job_id),
             claim_token=claim_token,
@@ -1991,7 +1991,7 @@ def set_job(
     held = status in JOB_LEASE_HELD_STATUSES
     previous_status = None
     action = None
-    with db() as connection:
+    with owned_connection(db()) as connection:
         current = connection.execute(
             "SELECT status, action FROM jobs WHERE id=%s",
             (job_id,),
@@ -2105,7 +2105,7 @@ def schedule_upload_retry(
         return False
     claim_token = _claim_token_for(job_id)
     action = None
-    with db() as connection:
+    with owned_connection(db()) as connection:
         current = connection.execute(
             "SELECT action FROM jobs WHERE id=%s",
             (job_id,),
@@ -2186,7 +2186,7 @@ def set_job_progress(
     if _claim_is_lost(job_id):
         return False
     claim_token = claim_token or _claim_token_for(job_id)
-    with db() as connection:
+    with owned_connection(db()) as connection:
         if claim_token:
             result = connection.execute(
                 """
@@ -2415,7 +2415,7 @@ def purge_current_snapshot_superseded(
     @retry_database_unit
     def persist_purge() -> None:
         # Provider deletion is above, deliberately outside this replay unit.
-        with db() as connection:
+        with owned_connection(db()) as connection:
             ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
             catalog = ArchiveCatalog(connection)
             catalog.mark_versions_purged(
@@ -3273,7 +3273,7 @@ def _complete_verified_upload(
 
     @retry_database_unit
     def persist_verification() -> None:
-        with db() as connection:
+        with owned_connection(db()) as connection:
             ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
             catalog = ArchiveCatalog(connection)
             if mark_verified:
@@ -3318,7 +3318,7 @@ def _automatic_upload_ready(job: dict[str, Any]) -> bool:
     Queue time is not authority to upload later edits. Linked versions must
     finish verification/reconciliation even if automation was subsequently paused.
     """
-    with db() as connection:
+    with owned_connection(db()) as connection:
         target = ArchiveCatalog(connection).get_job_target(job["id"])
         if target and target.get("archive_version_id"):
             return True
@@ -3357,7 +3357,7 @@ def _upload_catalog_unit(
     job: dict[str, Any], mutation: Callable[[ArchiveCatalog], Any],
 ) -> Any:
     """One owned, replayable transaction; callbacks must contain DB work only."""
-    with db() as connection:
+    with owned_connection(db()) as connection:
         ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
         return mutation(ArchiveCatalog(connection))
 
@@ -4735,7 +4735,7 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
 
 @retry_database_unit
 def _load_claimed_job_status(job: dict[str, Any]) -> dict[str, Any] | None:
-    with db() as connection:
+    with owned_connection(db()) as connection:
         claim_token = job.get("claim_token")
         if claim_token:
             return ArchiveCatalog(connection).renew_job_claim(

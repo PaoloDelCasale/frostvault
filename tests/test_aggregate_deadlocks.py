@@ -311,7 +311,18 @@ class AggregateDeadlockTests(unittest.TestCase):
             connection.execute("""CREATE CONSTRAINT TRIGGER abort_first_link_commit
                 AFTER UPDATE ON jobs DEFERRABLE INITIALLY DEFERRED
                 FOR EACH ROW EXECUTE FUNCTION abort_first_link_commit()""")
-        self.assertTrue(self.run_job(jobs[0]))
+        connections = []
+        real_db = storage.db
+
+        def tracked_db():
+            connection = real_db()
+            connections.append(connection)
+            return connection
+
+        with patch("app.storage.db", side_effect=tracked_db):
+            self.assertTrue(self.run_job(jobs[0]))
+        self.assertTrue(connections)
+        self.assertTrue(all(connection.closed for connection in connections), "COMMIT abort leaked an owned handle")
         self.assert_completed(1)
         with PostgresConnection(self.path) as connection:
             self.assertGreaterEqual(connection.execute("SELECT last_value FROM forced_commit_attempt").fetchone()["last_value"], 2)

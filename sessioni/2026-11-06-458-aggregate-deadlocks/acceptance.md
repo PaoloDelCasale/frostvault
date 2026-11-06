@@ -46,7 +46,16 @@ Local validation (no PostgreSQL/S3/server/build):
 git diff --check
 ```
 
-The targeted command passes: **36 tests, OK**. Final CI run/check evidence will be added after final validation.
+The targeted command passes: **37 tests, OK**.
+
+Implementation commit `367a8d1ac64dfa79066869e0851b5304cde2f443` obtained **28/28 completed SUCCESS checks**:
+- [Full PR CI](https://github.com/PaoloDelCasale/frostvault/actions/runs/42140283646), including all twelve Python/PostgreSQL shards, migration/concurrency aggregate, S3-compatible integrity, frontend, Playwright and production-image backup.
+- [Security](https://github.com/PaoloDelCasale/frostvault/actions/runs/42140283676), all applicable scanners successful.
+- [PostgreSQL acceptance log](https://github.com/PaoloDelCasale/frostvault/actions/runs/42140283646/job/127639054123): **39 tests OK in 155.150s**, including the 12 new journal/Job/migration cases. **1,024/1,024 Jobs completed, 16 workers, 57 concurrent maintenance passes, full semantic aggregate parity**. Both forced SQLSTATEs and the real PostgreSQL deadlock completed with exactly one provider PUT.
+
+Inspecting that green log exposed a psycopg ResourceWarning: native `Connection.__exit__` does not reach `close()` if COMMIT itself raises. The final patch adds `owned_connection` around retry-owned handles with unconditional close in `finally`, a targeted recording regression, and an actual PostgreSQL assertion that every handle (including the aborted COMMIT handle) is closed. No global connection factory/production transaction policy was changed.
+
+The final-HEAD verdict, exact SHA, fresh run links and all applicable check counts are maintained in the [final CI attestation](https://github.com/PaoloDelCasale/frostvault/pull/466#issuecomment-6673775356). The earlier green SHA above is evidence of the acceptance run, not a substitute for final-HEAD checks.
 
 CI caught a batching regression in the first journal implementation (`test_100_file_batch_uses_constant_statement_count`: 109 statements vs maximum 10, run 42139748069 / shard 8). Fixed by coalescing ancestor directories inside each `mark_paths_dirty` invocation, retaining the existing constant-statement budget without trusting connection-lifetime tracker state. The original assertion was not weakened; a targeted non-DB SQL-recording regression also covers per-call coalescing and re-marks on a reused handle. `targeted-local.log`, pip log and downloaded CI logs remain ignored session artifacts, not committed test output.
 
