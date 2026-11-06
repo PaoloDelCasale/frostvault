@@ -3282,11 +3282,16 @@ def _automatic_upload_ready(job: dict[str, Any]) -> bool:
             return False
         if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
             return False
-        _validate_enrolled_scan_root(vault)
         if not auto_upload_path_is_included(job["path"], policy) or not target:
             return False
-        source = safe_local_path(job["source_root"], job["path"])
-        stat_result = source.stat()
+        try:
+            # Files can disappear, lose access or be replaced after admission.
+            # Suspend only this candidate; no DB work belongs in this catch.
+            _validate_enrolled_scan_root(vault)
+            source = safe_local_path(job["source_root"], job["path"])
+            stat_result = source.stat()
+        except (OSError, ValueError, RuntimeError):
+            return False
         if not stat.S_ISREG(stat_result.st_mode):
             return False
         if (stat_result.st_size, stat_result.st_mtime_ns) != (

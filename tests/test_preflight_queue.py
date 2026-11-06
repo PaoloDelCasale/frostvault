@@ -158,6 +158,34 @@ class PreflightQueueTests(unittest.TestCase):
                 release.set()
             checking.result(timeout=5)
 
+    def test_missing_automatic_copy_does_not_starve_healthy_other_vault(self):
+        with self.db() as c:
+            catalog = ArchiveCatalog(c)
+            missing, _, _ = catalog.queue_jobs(
+                vault_id=1, path='a.txt', action='upload', requested_by=1,
+                requested_at=self.observed, group_id='missing', is_directory=False,
+                origin='automatic',
+            )
+            healthy, _, _ = catalog.queue_jobs(
+                vault_id=2, path='a.txt', action='upload', requested_by=1,
+                requested_at=self.observed, group_id='healthy', is_directory=False,
+            )
+            c.execute("UPDATE local_copies SET presence='missing' WHERE vault_file_id="
+                      "(SELECT vault_file_id FROM jobs WHERE id=%s)", (missing[0],))
+        (self.base / '1' / 'a.txt').unlink()
+        processed = []
+        def finish(job):
+            processed.append(job['id'])
+            with self.db() as c:
+                c.execute("UPDATE jobs SET status='completed' WHERE id=%s", (job['id'],))
+        with patch('app.storage.validate_cloud_vault'), patch('app.storage.process_job', side_effect=finish):
+            self.assertEqual(storage.process_jobs_once(), 1)
+            self.assertEqual(storage.process_jobs_once(), 0)
+        self.assertEqual(processed, healthy)
+        with self.db() as c:
+            row = c.execute("SELECT status,retry_count,claim_token FROM jobs WHERE id=%s", (missing[0],)).fetchone()
+            self.assertEqual(row, {'status': 'queued', 'retry_count': 0, 'claim_token': None})
+
     def test_sixteen_simultaneous_auth_failures_wait_and_promptly_invalidate_ready(self):
         with self.db() as c:
             catalog = ArchiveCatalog(c)
