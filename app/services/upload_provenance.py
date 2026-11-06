@@ -273,6 +273,22 @@ def record_no_write(connection: Any, job: dict[str, Any], intent: dict[str, Any]
         (intent['id'],hashlib.sha256(text.encode()).hexdigest(),text,timestamp))
 
 
+def proven_absent(connection: Any, intent_id: str | None) -> bool:
+    """True when this intent was closed by a journaled positive proof of absence."""
+    if not intent_id:
+        return False
+    return connection.execute("SELECT 1 FROM upload_receipts WHERE intent_id=%s AND response_json=%s LIMIT 1",
+                              (intent_id, canonical({'NoWriteOperation': ABSENT_OPERATION}))).fetchone() is not None
+
+
+def unsent(connection: Any, intent_id: str | None) -> bool:
+    """The intent carries no provider obligation: its send never (or no longer) started."""
+    if not intent_id:
+        return False
+    return connection.execute("SELECT 1 FROM upload_intents WHERE id=%s AND NOT send_started AND archive_version_id IS NULL",
+                              (intent_id,)).fetchone() is not None
+
+
 def receipt(connection: Any, intent_id: str) -> dict[str, Any] | None:
     rows = connection.execute("SELECT response_json FROM upload_receipts WHERE intent_id=%s", (intent_id,)).fetchall()
     if not rows:

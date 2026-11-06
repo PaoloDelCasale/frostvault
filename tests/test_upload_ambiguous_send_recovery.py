@@ -89,11 +89,28 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         response = client.post("/api/upload/retry-failed?vault_id=2")
         self.assertEqual((response.status_code, response.json()), (202, {"item_count": 1}))
         resumed = max(j["id"] for j in self.jobs())
+        # Absence is proven, then the database drops once more before the send.
+        with patch.object(provenance, "mark_send_started", side_effect=psycopg.OperationalError("connection is bad")):
+            self.run_job(resumed)
+        self.assertEqual(self.row(resumed)["status"], "retrying")
+        self.assertFalse(self.intent()["send_started"])
+        with self.db() as connection:
+            episode = connection.execute("SELECT state,resolved_by_job_id,current_job_id FROM upload_remediations").fetchone()
+            # The file is not protected yet: the episode stays open and linked.
+            self.assertEqual((episode["state"], episode["resolved_by_job_id"], episode["current_job_id"]), ("retrying", None, resumed))
+            failed = connection.execute("SELECT problem_status FROM notifications WHERE event='job_failed' AND job_id=%s", (job,)).fetchone()
+            self.assertEqual(failed["problem_status"], "open")
+        self.retry_is_due(resumed)
         self.run_job(resumed)
         self.assert_keeper(resumed)
         self.assertEqual((self.provider.puts, self.provider.deletes), (1, 0))
         with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT state FROM upload_remediations").fetchone()["state"], "resolved")
+            episode = connection.execute("SELECT * FROM upload_remediations").fetchone()
+            self.assertEqual((episode["state"], episode["phase"], episode["resolved_by_job_id"]), ("resolved", "completed", resumed))
+            self.assertIsNotNone(episode["cleanup_inventory_job_id"])
+            self.assertEqual(connection.execute("SELECT completed_at IS NOT NULL done FROM snapshot_cleanup_inventories WHERE job_id=%s", (episode["cleanup_inventory_job_id"],)).fetchone()["done"], True)
+            notifications.reconcile_problem_states(connection)
+            self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE event='job_failed' AND job_id=%s", (job,)).fetchone()["problem_status"], "resolved")
             self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
             self.assertEqual(connection.execute("SELECT count(*) n FROM upload_receipts WHERE response_json LIKE %s", ("%NoWriteOperation%",)).fetchone()["n"], 1)
         self.assertEqual([j["status"] for j in self.jobs()], ["failed", "completed"])

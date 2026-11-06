@@ -132,6 +132,7 @@
   "notification.upload_reconciliation.body": "{path}: {reason}. {remedy}",
   "remediation.title": "Exact upload remediation",
   "remediation.phase": "Operational phase",
+  "remediation.phase.upload": "Nothing reached the cloud; the upload restarted and awaits verification",
   "remediation.phase.verification": "Cloud verification pending",
   "remediation.phase.cleanup": "Cloud verified, cleanup pending",
   "remediation.phase.completion": "Cleanup satisfied, completion pending",

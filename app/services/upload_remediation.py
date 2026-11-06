@@ -29,7 +29,9 @@ RESOLUTION_SQL = """EXISTS (
     JOIN jobs resolving ON resolving.id=b.job_id
     JOIN snapshot_cleanup_inventories cleanup ON cleanup.job_id=r.cleanup_inventory_job_id
     WHERE o.original_job_id=original.id AND r.state='resolved'
-      AND resolving.status='completed' AND resolving.upload_reconcile_only
+      AND resolving.status='completed' AND (resolving.upload_reconcile_only OR EXISTS (
+          SELECT 1 FROM upload_receipts absent WHERE absent.intent_id=r.intent_id
+            AND absent.response_json='{"NoWriteOperation":"ProvenAbsent"}'))
       AND resolving.archive_version_id=r.archive_version_id
       AND cleanup.keeper_id=r.archive_version_id AND cleanup.completed_at IS NOT NULL
       AND (original.archive_version_id IS NULL OR original.archive_version_id=r.archive_version_id)
@@ -115,12 +117,24 @@ def _suspension(connection: Any, row: dict[str, Any], vault: dict[str, Any], *, 
     return None
 
 
+def _void(connection: Any, row: dict[str, Any]) -> bool:
+    """The episode's send was proven never to have landed and has not restarted.
+
+    Nothing is left to reconcile: such an episode neither admits a reconcile-only
+    Job (it could only fail with ambiguous_send) nor swallows the file's ordinary
+    uploads. The ordinary upload path re-pins or settles the unsent intent.
+    """
+    return provenance.proven_absent(connection, row["intent_id"]) and provenance.unsent(connection, row["intent_id"])
+
+
 def admit(connection: Any, row: dict[str, Any], vault: dict[str, Any], *, user_id: int,
           stamp: str, automatic: bool = True, explicit: bool = False,
           group_id: str | None = None) -> dict[str, Any] | None:
     """Caller holds Vault lock. Unique active-file index protects EVERY action."""
     row = connection.execute("SELECT * FROM upload_remediations WHERE id=%s FOR UPDATE", (row["id"],)).fetchone()
     if row["state"] in {"cancelled","resolved","queued","retrying"} or (row["state"] == "blocked" and not explicit):
+        return None
+    if _void(connection, row):
         return None
     if explicit and row["reason"] in {"proof_mismatch","expected_evidence_missing","target_superseded"}:
         return None
@@ -166,7 +180,8 @@ def intercept_upload(connection: Any, *, vault_id: int, file_id: str, user_id: i
                      stamp: str, automatic: bool, group_id: str | None = None) -> tuple[bool, dict[str, Any] | None]:
     vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
     discover_file(connection,vault,file_id,stamp)
-    row = connection.execute("SELECT * FROM upload_remediations WHERE vault_file_id=%s AND state<>'resolved' ORDER BY created_at,id LIMIT 1", (file_id,)).fetchone()
+    rows = connection.execute("SELECT * FROM upload_remediations WHERE vault_file_id=%s AND state<>'resolved' ORDER BY created_at,id LIMIT 8", (file_id,)).fetchall()
+    row = next((r for r in rows if not _void(connection, r)), None)
     if not row:
         return False,None
     return True,admit(connection,row,vault,user_id=user_id,stamp=stamp,automatic=automatic,group_id=group_id)
@@ -235,7 +250,8 @@ def require_job(connection: Any, job: dict[str, Any]) -> None:
     cancelled = connection.execute("""SELECT 1 FROM upload_remediation_originals o
         JOIN jobs j ON j.id=o.original_job_id WHERE o.remediation_id=%s AND j.status='cancelled' LIMIT 1""", (row["id"],)).fetchone()
     if (row["current_job_id"] != job["id"] or row["state"] in {'cancelled','resolved','blocked'} or cancelled
-            or not current["upload_reconcile_only"] or current["vault_file_id"] != row["vault_file_id"]
+            or not (current["upload_reconcile_only"] or provenance.proven_absent(connection, row["intent_id"]))
+            or current["vault_file_id"] != row["vault_file_id"]
             or current["upload_plaintext_sha256"] != row["expected_sha256"]
             or current["upload_snapshot_json"] != row["snapshot_json"]
             or current["upload_verification_requested"] != row["requested_mode"]
@@ -246,22 +262,30 @@ def require_job(connection: Any, job: dict[str, Any]) -> None:
 
 
 def release_for_rearm(connection: Any, job: dict[str, Any], intent_id: str, stamp: str) -> None:
-    """Close the open episode of an intent proven never to have landed (#484).
+    """A reconcile-only attempt whose intent was proven never to have landed (#484).
 
-    The reconcile-only attempt becomes the file's ordinary upload (it keeps the
-    same exact intent, so nothing new is authorized) and leaves the ledger; the
-    episode is resolved with no keeper because there is no Archive Version. Old
-    failed originals stay as history. Episodes owned by another live Job stay.
+    The attempt keeps its exact intent and snapshot, so nothing new is authorized,
+    but it may now send: it stops being reconcile-only. The episode is NOT
+    resolved here: it stays open and linked to this Job and resolves, through the
+    ordinary completion/cleanup postcondition, only when the upload completes and
+    the file is actually protected. An unowned open episode of the intent is
+    adopted so the same completion resolves it; old failed originals stay history.
     """
-    rows = connection.execute("""SELECT r.* FROM upload_remediations r WHERE r.intent_id=%s
-        AND r.state<>'resolved' AND (r.current_job_id IS NULL OR r.current_job_id=%s) FOR UPDATE""",
-        (intent_id, job["id"])).fetchall()
     if job.get("upload_reconcile_only"):
         connection.execute("UPDATE jobs SET upload_reconcile_only=FALSE WHERE id=%s AND status NOT IN ('completed','failed','cancelled')", (job["id"],))
-        connection.execute("DELETE FROM upload_remediation_jobs WHERE job_id=%s", (job["id"],))
+    linked = connection.execute("SELECT 1 FROM upload_remediation_jobs WHERE job_id=%s", (job["id"],)).fetchone()
+    if not linked:
+        orphan = connection.execute("""SELECT * FROM upload_remediations WHERE intent_id=%s AND state<>'resolved'
+            AND current_job_id IS NULL FOR UPDATE""", (intent_id,)).fetchone()
+        if orphan:
+            connection.execute("INSERT INTO upload_remediation_jobs(job_id,remediation_id,vault_file_id,vault_id) VALUES (%s,%s,%s,%s)",
+                (job["id"], orphan["id"], orphan["vault_file_id"], orphan["vault_id"]))
+            connection.execute("UPDATE upload_remediations SET current_job_id=%s WHERE id=%s", (job["id"], orphan["id"]))
+    rows = connection.execute("""SELECT r.* FROM upload_remediations r JOIN upload_remediation_jobs b ON b.remediation_id=r.id
+        WHERE b.job_id=%s AND r.current_job_id=%s AND r.state<>'resolved' FOR UPDATE OF r""", (job["id"], job["id"])).fetchall()
     for row in rows:
-        connection.execute("""UPDATE upload_remediations SET state='resolved',phase='completed',reason=NULL,
-            current_job_id=NULL,resolved_at=%s,updated_at=%s WHERE id=%s""", (stamp, stamp, row["id"]))
+        connection.execute("""UPDATE upload_remediations SET state='queued',phase='upload',reason=NULL,updated_at=%s
+            WHERE id=%s""", (stamp, row["id"]))
         _invalidate(connection, row["vault_id"], stamp)
 
 
@@ -298,7 +322,8 @@ def transition(connection: Any, job_id: int, status: str, stamp: str, *, suspens
             require_job(connection, job)  # Cancellation/namespace/target fence in the same completion transaction.
         cleanup = connection.execute("SELECT * FROM snapshot_cleanup_inventories WHERE job_id=%s", (row["cleanup_inventory_job_id"],)).fetchone()
         intent = provenance.load_for_job(connection,job_id)
-        if (not job["upload_reconcile_only"] or not job["archive_version_id"] or not cleanup
+        if (not (job["upload_reconcile_only"] or provenance.proven_absent(connection, row["intent_id"]))
+                or not job["archive_version_id"] or not cleanup
                 or cleanup["keeper_id"] != job["archive_version_id"] or not cleanup["completed_at"]
                 or (intent and not intent["settled"])):
             raise RuntimeError("Upload remediation completion requires exact cleanup postcondition")
@@ -414,7 +439,8 @@ def project(connection: Any, row: dict[str, Any]) -> dict[str, Any]:
     state = row["state"]
     return {k:row[k] for k in ("id","state","phase","reason","retry_count","due_at","current_job_id","resolved_by_job_id","resolved_at","archive_version_id")} | {
         "can_resume": state in {"pending","blocked","suspended"} and row["reason"] not in {
-            "proof_mismatch","expected_evidence_missing","target_superseded","source_volume_unavailable","vault_suspended"},
+            "proof_mismatch","expected_evidence_missing","target_superseded","source_volume_unavailable","vault_suspended"}
+            and not _void(connection,row),
         "original_job_ids": [r["original_job_id"] for r in connection.execute(
             "SELECT original_job_id FROM upload_remediation_originals WHERE remediation_id=%s ORDER BY original_job_id LIMIT 50", (row["id"],)).fetchall()],
         "remedy": provenance.REMEDIES.get(row["reason"],"Keep copies. Correct the reported condition and retry exact reconciliation; no fresh upload is authorized."),

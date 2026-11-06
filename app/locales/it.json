@@ -132,6 +132,7 @@
   "notification.upload_reconciliation.body": "{path}: {reason}. {remedy}",
   "remediation.title": "Ripresa dell’upload esatto",
   "remediation.phase": "Fase operativa",
+  "remediation.phase.upload": "Nulla è arrivato nel cloud; l'upload è ripartito e attende la verifica",
   "remediation.phase.verification": "Verifica cloud pendente",
   "remediation.phase.cleanup": "Cloud verificato, pulizia pendente",
   "remediation.phase.completion": "Pulizia soddisfatta, completamento pendente",
