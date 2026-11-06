@@ -231,8 +231,19 @@ def mark_file_id_dirty(connection: Any, vault_id: int, vault_file_id: str | None
 
 
 def mark_paths_dirty(connection: Any, vault_id: int, paths: Iterable[str]) -> None:
+    if vault_id is None:
+        return
+    # Coalesce within this call, not by connection lifetime: bulk observation
+    # must keep O(unique directories) round-trips without suppressing a later
+    # transaction's durable signal after commit/rollback on a reused handle.
+    tracker = _tracker(connection)
+    directories: set[str] = set()
     for path in paths:
-        mark_path_dirty(connection, vault_id, path)
+        if path:
+            tracker.dirty_file_marks += 1
+            directories.update(ancestor_directories(str(path)))
+    for directory in sorted(directories):
+        _persist_dirty_directory(connection, int(vault_id), directory)
 
 
 def invalidate_for_vault_file(

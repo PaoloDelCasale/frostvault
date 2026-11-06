@@ -15,7 +15,10 @@ depends_on = None
 def upgrade() -> None:
     op.add_column("directory_aggregate_dirty", sa.Column(
         "mark_id", sa.Text(), nullable=False,
-        server_default=sa.text("pg_current_xact_id()::text"),
+        # The server-start epoch prevents an imported journal from colliding
+        # with xid values on a different/restored PostgreSQL cluster.
+        server_default=sa.text("(pg_current_xact_id()::text || '@' || "
+                               "extract(epoch from pg_postmaster_start_time())::text)"),
     ))
     op.drop_constraint("directory_aggregate_dirty_pkey", "directory_aggregate_dirty", type_="primary")
     op.create_primary_key("directory_aggregate_dirty_pkey", "directory_aggregate_dirty",

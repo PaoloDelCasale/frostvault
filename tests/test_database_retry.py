@@ -53,6 +53,27 @@ class DatabaseRetryTests(unittest.TestCase):
         for error in (RuntimeError("deadlock 40P01 pid 500503"), UniqueViolation("40001")):
             self.assertFalse(is_retryable_transaction_error(error))
 
+    def test_batch_marks_coalesce_per_call_not_connection_lifetime(self) -> None:
+        from app.services.directory_aggregates import mark_paths_dirty
+
+        class RecordingConnection:
+            def __init__(self):
+                self.statements = []
+
+            def execute(self, query, params):
+                self.statements.append((query, params))
+
+        connection = RecordingConnection()
+        paths = [f"nested/{index}.bin" for index in range(100)]
+        mark_paths_dirty(connection, 2, paths)
+        self.assertEqual(len(connection.statements), 1)
+        # A later call must reach the database even with a populated tracker:
+        # only PostgreSQL knows whether the transaction changed or rolled back.
+        mark_paths_dirty(connection, 2, paths)
+        self.assertEqual(len(connection.statements), 2)
+        self.assertIn("ON CONFLICT DO NOTHING", connection.statements[0][0])
+        self.assertNotIn("DO UPDATE", connection.statements[0][0])
+
     def test_nontransaction_failures_are_never_replayed(self) -> None:
         for error in (RuntimeError("503"), UniqueViolation("constraint")):
             calls = []

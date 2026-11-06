@@ -22,7 +22,7 @@ Dedicated checkout: `/mnt/cache/appdata/t3code-native/worktrees/frostvault/t3-67
 
 ## Design / integration handoff
 
-Migration `0061_aggregate_dirty_journal` extends the dirty primary key with `mark_id`, defaulting to PostgreSQL's full transaction identity (`pg_current_xact_id()::text`). A writer inserts an immutable signal per directory/transaction, coalescing repeats only within that transaction (`ON CONFLICT DO NOTHING`). It never updates a mark from another transaction. Catalog mutations and their signals still commit/roll back together; there is no best-effort post-commit invalidation window. Reused psycopg connections and savepoint/outer rollback cannot suppress the next mark: correctness no longer depends on the lifetime of Python tracker state.
+Migration `0061_aggregate_dirty_journal` extends the dirty primary key with `mark_id`, defaulting to PostgreSQL's full transaction identity plus server-start epoch (`pg_current_xact_id()` + `pg_postmaster_start_time()`). The epoch distinguishes imported signals from transaction IDs allocated on a different/restored cluster. A writer inserts an immutable signal per directory/transaction, coalescing repeats only within that transaction (`ON CONFLICT DO NOTHING`). It never updates a mark from another transaction. Catalog mutations and their signals still commit/roll back together; there is no best-effort post-commit invalidation window. Reused psycopg connections and savepoint/outer rollback cannot suppress the next mark: correctness no longer depends on the lifetime of Python tracker state.
 
 Consumers snapshot exact `(vault_id, path, mark_id)` identities before rollup and delete only those identities. A late commit survives even if its timestamp predates the cutoff. The same rule applies to incremental refresh and full rebuild. Derived rollups still coalesce by directory. Maintenance retries its own complete DB transaction and clears uncommitted event/results before replay; caller-owned connections are never replayed.
 
@@ -46,7 +46,9 @@ Local validation (no PostgreSQL/S3/server/build):
 git diff --check
 ```
 
-The targeted command passes; exact final count and CI run/check evidence will be added after final validation. `targeted-local.log`, pip log and downloaded CI logs remain ignored session artifacts, not committed test output.
+The targeted command passes: **36 tests, OK**. Final CI run/check evidence will be added after final validation.
+
+CI caught a batching regression in the first journal implementation (`test_100_file_batch_uses_constant_statement_count`: 109 statements vs maximum 10, run 42139748069 / shard 8). Fixed by coalescing ancestor directories inside each `mark_paths_dirty` invocation, retaining the existing constant-statement budget without trusting connection-lifetime tracker state. The original assertion was not weakened; a targeted non-DB SQL-recording regression also covers per-call coalescing and re-marks on a reused handle. `targeted-local.log`, pip log and downloaded CI logs remain ignored session artifacts, not committed test output.
 
 PR CI explicitly runs `tests.test_aggregate_deadlocks` in the required **PostgreSQL migration and concurrency tests** job, not an optional/skip path or duplicated shard. Acceptance covers:
 
