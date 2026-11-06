@@ -3,8 +3,9 @@
 #
 # Prerequisites: a Traefik instance with an entrypoint `websecure`, a
 # certificate resolver `letsencrypt`, and the external network `proxy`.
-# Point TRUSTED_PROXIES at the Traefik container CIDR and set ALLOWED_HOSTS
-# to the public hostname before enabling COOKIE_SECURE=true.
+# Set TRUSTED_PROXIES (app) and FORWARDED_ALLOW_IPS (Uvicorn) explicitly to
+# the same narrow proxy IPs/CIDRs as seen by FrostVault, and ALLOWED_HOSTS
+# to the public hostname. Neither proxy allowlist is derived from the other.
 
 networks:
   proxy:
@@ -26,7 +27,8 @@ services:
       PGID: ${PGID:-100}
       COOKIE_SECURE: "true"
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-frostvault.example.com}
-      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:?Set TRUSTED_PROXIES to the actual proxy IPs/CIDRs}
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:?Set FORWARDED_ALLOW_IPS to the same proxy IPs/CIDRs}
     # cap_drop: ALL deliberately removes the privileges needed to switch IDs.
     # Start as the configured identity; the image includes the 99:100 default.
     user: "${PUID:-99}:${PGID:-100}"

@@ -360,8 +360,15 @@ instead of trying other credentials available on the computer.
    [fresh `./data` preflight](#compose-identity-and-fresh-host-data-directory)
    using the same `PUID`/`PGID` values. For a network deployment set `COOKIE_SECURE=true`
    and provide `ALLOWED_HOSTS` (the hostnames the panel answers to) and
-   `TRUSTED_PROXIES` (CIDRs of your reverse proxies); the app refuses to start
-   in production without them. Set `OIDC_ENABLED=true` and configure
+   `TRUSTED_PROXIES` (the app's proxy IP/CIDR allowlist); the app refuses to start
+   in production without them. **Also set `FORWARDED_ALLOW_IPS` explicitly** for
+   Uvicorn to the same narrow proxy IPs/CIDRs as seen by FrostVault. Neither list
+   derives from the other. Uvicorn rewrites both scheme and client address;
+   `TRUSTED_PROXIES` cannot veto overly broad Uvicorn trust. Without the proxy in
+   `FORWARDED_ALLOW_IPS`, OIDC redirects remain `http` even with secure cookies.
+   Never use `*` or an entire Docker/LAN range as a shortcut; follow the
+   [Traefik trust and verification guide](docs/traefik.md).
+   Set `OIDC_ENABLED=true` and configure
    `OIDC_ISSUER`/`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET` for single sign-on; OIDC
    is configured only through these variables. List your LAN in
    `BREAK_GLASS_ALLOWED_CIDRS` to accept the Emergency Password from it.
@@ -438,7 +445,10 @@ Tailscale to make it reachable. Set `COOKIE_SECURE=true` when using HTTPS.
 Compose pulls `ghcr.io/paolodelcasale/frostvault:latest` from the GitHub
 Container Registry (a standard deploy does not build the image locally).
 For production behind Traefik, use `compose.traefik.yaml` so the app is not
-published on host ports. See [docs/traefik.md](docs/traefik.md).
+published on host ports. It requires both `TRUSTED_PROXIES` (app) and
+`FORWARDED_ALLOW_IPS` (Uvicorn), explicitly configured to the actual trusted
+proxy addresses, with no permissive defaults. See
+[docs/traefik.md](docs/traefik.md) for topology selection and HTTPS OIDC checks.
 
 The image bakes in default `99:100`; Compose runs directly as numeric
 `PUID`/`PGID` and never creates an account at runtime. Permission the host
@@ -521,7 +531,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | --- | --- |
 | Database | `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` (or `.pgpass`); optional PostgreSQL `DATABASE_URL` overrides corresponding `PG*` values |
 | Authentication | `BOOTSTRAP_ADMIN_*` (the Owner and its Emergency Password), `OIDC_*`, `BREAK_GLASS_ALLOWED_CIDRS` (LAN networks that accept the Emergency Password) |
-| Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES` |
+| Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES`, `FORWARDED_ALLOW_IPS` (Uvicorn) |
 | Frontend | `FRONTEND_DIST_DIR` (Vite build output; required for HTML routes) |
 | Email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS`, `SMTP_USE_TLS` (optional; see below) |
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION` |

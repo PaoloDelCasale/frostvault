@@ -15,6 +15,7 @@ from app.config import settings
 
 from app.security import DUMMY_PASSWORD_HASH, hash_password
 from tests.spa_fixture import write_spa_dist
+from tests.proxy_stack import uvicorn_proxy_app
 from tests.test_database import run_alembic
 
 
@@ -164,6 +165,110 @@ class BreakGlassHttpTests(unittest.TestCase):
             json={"username": "admin", "password": ADMIN_PASSWORD},
         )
         self.assertEqual(response.status_code, 403, response.text)
+
+    def _proxy_client(self, peer: tuple[str, int]) -> TestClient:
+        client = TestClient(
+            uvicorn_proxy_app(main.app, "172.30.0.2/32"),
+            client=peer,
+            base_url="https://frostvault.example.com",
+            follow_redirects=False,
+        )
+        self.addCleanup(client.close)
+        return client
+
+    def _proxy_settings(self):
+        return replace(
+            self.test_settings,
+            cookie_secure=True,
+            allowed_hosts="frostvault.example.com",
+            trusted_proxies="172.30.0.2/32",
+            break_glass_allowed_cidrs="192.168.1.0/24",
+        )
+
+    def test_uvicorn_trusted_proxy_admits_real_lan_client_and_records_ip(self) -> None:
+        proxy_settings = self._proxy_settings()
+        client = self._proxy_client(("172.30.0.2", 40000))
+        with patch.object(main, "settings", proxy_settings), patch(
+            "app.breakglass.settings", proxy_settings
+        ):
+            response = client.post(
+                "/api/login",
+                headers={"X-Forwarded-Proto": "https", "X-Forwarded-For": LAN[0]},
+                json={"username": "admin", "password": ADMIN_PASSWORD},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(client.get("/api/me").json()["username"], "admin")
+        self.assertIn("Secure", response.headers["set-cookie"])
+        with PostgresConnection(str(self.database_path)) as connection:
+            session = connection.execute("SELECT ip FROM sessions").fetchone()
+        self.assertEqual(session["ip"], LAN[0])
+
+    def test_uvicorn_stack_denies_spoofed_password_networks_and_audits_real_ip(self) -> None:
+        proxy_settings = self._proxy_settings()
+        attempts = (
+            (OUTSIDE, "127.0.0.1"),
+            (OUTSIDE, LAN[0]),
+            (("172.30.0.3", 40000), "127.0.0.1"),
+            (("172.30.0.2", 40000), f"127.0.0.1, {OUTSIDE[0]}"),
+            (("172.30.0.2", 40000), f"{LAN[0]}, {OUTSIDE[0]}"),
+        )
+        with patch.object(main, "settings", proxy_settings), patch(
+            "app.breakglass.settings", proxy_settings
+        ):
+            for peer, claimed in attempts:
+                with self.subTest(peer=peer, claimed=claimed):
+                    client = self._proxy_client(peer)
+                    response = client.post(
+                        "/api/login",
+                        headers={"X-Forwarded-Proto": "https", "X-Forwarded-For": claimed},
+                        json={"username": "admin", "password": ADMIN_PASSWORD},
+                    )
+                    self.assertEqual(response.status_code, 403, response.text)
+                    self.assertIsNone(client.cookies.get(self.cookie_name))
+        with PostgresConnection(str(self.database_path)) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) AS total FROM sessions"
+            ).fetchone()["total"], 0)
+            events = connection.execute(
+                "SELECT detail_json::jsonb->>'ip' AS ip FROM audit_events "
+                "WHERE event='break_glass_denied'"
+            ).fetchall()
+        self.assertCountEqual([row["ip"] for row in events],
+                              [OUTSIDE[0], OUTSIDE[0], "172.30.0.3", OUTSIDE[0], OUTSIDE[0]])
+        self.assertEqual(self._backoff_rows(), 0)
+
+    def test_uvicorn_stack_cannot_spoof_network_for_password_reauthentication(self) -> None:
+        proxy_settings = self._proxy_settings()
+        allowed = self._proxy_client(("172.30.0.2", 40000))
+        with patch.object(main, "settings", proxy_settings), patch(
+            "app.breakglass.settings", proxy_settings
+        ):
+            login = allowed.post(
+                "/api/login",
+                headers={"X-Forwarded-Proto": "https", "X-Forwarded-For": LAN[0]},
+                json={"username": "admin", "password": ADMIN_PASSWORD},
+            )
+            self.assertEqual(login.status_code, 200, login.text)
+            for peer, claimed in (
+                (OUTSIDE, "127.0.0.1"),
+                (OUTSIDE, LAN[0]),
+                (("172.30.0.2", 40000), f"127.0.0.1, {OUTSIDE[0]}"),
+            ):
+                with self.subTest(peer=peer, claimed=claimed):
+                    outside = self._proxy_client(peer)
+                    outside.cookies.update(allowed.cookies)
+                    response = outside.post(
+                        "/api/reauth",
+                        headers={
+                            "X-Forwarded-Proto": "https",
+                            "X-Forwarded-For": claimed,
+                            "X-CSRF-Token": allowed.cookies.get(proxy_settings.csrf_cookie_name),
+                        },
+                        json={"password": ADMIN_PASSWORD},
+                    )
+                    self.assertEqual(response.status_code, 403, response.text)
+                    self.assertEqual(response.json()["detail"],
+                                     "Password reauthentication is not allowed here")
 
     def test_unknown_username_and_wrong_password_are_indistinguishable(
         self,
