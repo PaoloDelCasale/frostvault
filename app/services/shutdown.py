@@ -16,8 +16,17 @@ WORKER_DRAIN_SECONDS = 20
 PROCESS_SHUTDOWN_SECONDS = 30
 
 
-class WorkerStopping(RuntimeError):
-    """Leave durable Job leases/evidence recoverable, not owner-cancelled."""
+class OperationCancelled(RuntimeError):
+    """Raised when a queued or active operation is deliberately interrupted."""
+
+
+class WorkerStopping(OperationCancelled):
+    """Leave durable Job leases/evidence recoverable, not owner-cancelled.
+
+    Use the existing cancellation hierarchy so transfer/verification/cleanup
+    helpers propagate this unchanged instead of reclassifying it as bad proof.
+    The Job runner handles this subtype before ordinary Owner cancellation.
+    """
 
 
 class ShutdownState:

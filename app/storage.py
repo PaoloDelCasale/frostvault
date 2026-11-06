@@ -107,7 +107,9 @@ from .services import notifications as notification_service
 from .services import cloud_deletion as cloud_deletion_service
 from .services import vault_moves
 from .services import protection_stop as protection_stop_service
-from .services.shutdown import WORKER_DRAIN_SECONDS, WorkerStopping, shutdown_state
+from .services.shutdown import (
+    WORKER_DRAIN_SECONDS, OperationCancelled, WorkerStopping, shutdown_state,
+)
 from .services import audit_events as audit_event_store
 from .services.cost_estimates import list_prices
 from .services.restore_estimates import (
@@ -192,10 +194,6 @@ _INTERRUPTED_JOB_SQL = """
 )
 """
 _worker_claim = threading.local()
-
-
-class OperationCancelled(RuntimeError):
-    """Raised when a queued or active operation is deliberately interrupted."""
 
 
 class JobLeaseLost(OperationCancelled):

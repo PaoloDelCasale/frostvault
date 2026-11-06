@@ -14,6 +14,7 @@ import signal
 import socket
 import threading
 from collections.abc import Iterator
+from types import FrameType
 
 import uvicorn
 from uvicorn.server import HANDLED_SIGNALS
@@ -25,6 +26,16 @@ logger = logging.getLogger("uvicorn.error")
 
 
 class FrostVaultServer(uvicorn.Server):
+    def __init__(self, config: uvicorn.Config) -> None:
+        super().__init__(config)
+        self._shutdown_deadline: threading.Timer | None = None
+
+    def handle_exit(self, sig: int, frame: FrameType | None) -> None:
+        # Arm from the signal handler, not a later event-loop/lifespan turn:
+        # synchronous work blocking that loop must not defer the process bound.
+        self._arm_shutdown_deadline()
+        super().handle_exit(sig, frame)
+
     @contextmanager
     def capture_signals(self) -> Iterator[None]:
         if threading.current_thread() is not threading.main_thread():
@@ -40,7 +51,9 @@ class FrostVaultServer(uvicorn.Server):
         # graceful shutdown: the container contract is a successful exit (0).
         # handle_exit still supports a second SIGINT to force HTTP shutdown.
 
-    async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+    def _arm_shutdown_deadline(self) -> None:
+        if self._shutdown_deadline is not None:
+            return
         # asyncio cancellation cannot stop synchronous SDK/filesystem calls or
         # Python's executor atexit joins. Bound the WHOLE process, not just HTTP.
         # Never report success if an uncooperative worker exceeded its budget.
@@ -48,12 +61,15 @@ class FrostVaultServer(uvicorn.Server):
             logger.error("Process shutdown deadline exceeded; unfinished work retains durable recovery evidence")
             os._exit(1)
 
-        deadline = threading.Timer(PROCESS_SHUTDOWN_SECONDS, deadline_exceeded)
-        deadline.daemon = True
-        deadline.start()
-        shutdown_state.request()
+        self._shutdown_deadline = threading.Timer(PROCESS_SHUTDOWN_SECONDS, deadline_exceeded)
+        self._shutdown_deadline.daemon = True
+        self._shutdown_deadline.start()
         # Leave this daemon watchdog armed through asyncio.run's default-pool
         # drain and interpreter executor joins. A clean process exits first.
+
+    async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+        self._arm_shutdown_deadline()  # Also bounds programmatic should_exit.
+        shutdown_state.request()
         await super().shutdown(sockets=sockets)
 
 

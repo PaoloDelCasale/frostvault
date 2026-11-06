@@ -16,8 +16,10 @@ import unittest
 from unittest.mock import patch
 
 import yaml
+import uvicorn
 
 from app import storage
+from app.server import FrostVaultServer
 from app.services.catalog_event_hub import catalog_event_hub
 from app.services.catalog_event_stream import StreamTickSnapshot, iter_catalog_event_sse
 from app.services.shutdown import (
@@ -30,6 +32,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ServerShutdownTests(unittest.TestCase):
+    def test_process_deadline_is_armed_on_signal_before_event_loop_shutdown(self):
+        server = FrostVaultServer(uvicorn.Config("tests.shutdown_fixture:app"))
+        with patch("app.server.threading.Timer") as timer:
+            server.handle_exit(signal.SIGTERM, None)
+            server.handle_exit(signal.SIGTERM, None)
+            self.assertTrue(server.should_exit)
+            timer.assert_called_once()
+            self.assertEqual(timer.call_args.args[0], PROCESS_SHUTDOWN_SECONDS)
+            timer.return_value.start.assert_called_once()
+            self.assertTrue(timer.return_value.daemon)
+
     def test_sigterm_with_open_sse_exits_cleanly_before_deadline(self):
         self._stop_with_open_stream(signal.SIGTERM)
 
@@ -111,6 +124,10 @@ class ServerShutdownTests(unittest.TestCase):
 
 
 class StreamShutdownBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        shutdown_state.reset()
+        self.addCleanup(shutdown_state.reset)
+
     async def test_shutdown_wakes_hub_and_hubless_streams_without_another_db_tick(self):
         for use_hub in (True, False):
             with self.subTest(use_hub=use_hub):
@@ -157,6 +174,7 @@ class WorkerDrainBoundaryTests(unittest.IsolatedAsyncioTestCase):
         with patch("app.storage.db", side_effect=AssertionError("unexpected DB I/O")), patch("app.storage.set_job") as terminal:
             self.assertEqual(storage.process_jobs_once(wait=False), 0)
             self.assertFalse(storage.process_job({"id": 1, "action": "upload"}))
+            self.assertTrue(issubclass(WorkerStopping, storage.OperationCancelled))
             with self.assertRaises(WorkerStopping):
                 storage.ensure_job_active(1, "stop")
             with self.assertRaises(WorkerStopping):
