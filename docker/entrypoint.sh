@@ -54,10 +54,16 @@ auto_migrate_enabled() {
   esac
 }
 
+is_web_command() {
+  [ "${1:-}" = "uvicorn" ] || {
+    [ "${1:-}" = "python" ] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "app.server" ]
+  }
+}
+
 maybe_migrate() {
   # Only when launching the web app. One-shot admin commands (alembic,
   # backup_upgrade, shell) keep full control of schema timing.
-  if [ "$#" -eq 0 ] || [ "$1" != "uvicorn" ]; then
+  if ! is_web_command "$@"; then
     return 0
   fi
   if ! auto_migrate_enabled; then
@@ -103,7 +109,7 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 
 assert_runtime_identity
-if [ "$#" -gt 0 ] && [ "$1" = "uvicorn" ]; then
+if is_web_command "$@"; then
   assert_writable_runtime_directories
 fi
 maybe_migrate "$@"

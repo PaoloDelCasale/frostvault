@@ -107,6 +107,9 @@ from .services import notifications as notification_service
 from .services import cloud_deletion as cloud_deletion_service
 from .services import vault_moves
 from .services import protection_stop as protection_stop_service
+from .services.shutdown import (
+    WORKER_DRAIN_SECONDS, OperationCancelled, WorkerStopping, shutdown_state,
+)
 from .services import audit_events as audit_event_store
 from .services.cost_estimates import list_prices
 from .services.restore_estimates import (
@@ -191,10 +194,6 @@ _INTERRUPTED_JOB_SQL = """
 )
 """
 _worker_claim = threading.local()
-
-
-class OperationCancelled(RuntimeError):
-    """Raised when a queued or active operation is deliberately interrupted."""
 
 
 class JobLeaseLost(OperationCancelled):
@@ -302,6 +301,8 @@ class _ClaimLeaseHeartbeat:
         # future policy changes cannot silently make a live transfer reclaimable.
         interval = max(0.1, JOB_CLAIM_LEASE_SECONDS / 3)
         while not self._stop.wait(interval):
+            if shutdown_state.requested:
+                return
             try:
                 if _renew_claim_if_owned(self.job_id, str(self.claim_token)) is None:
                     self.lost.set()
@@ -336,6 +337,7 @@ def ensure_job_active(job_id: int, message: str) -> None:
     also required because another application process may cancel or reclaim the
     row while this worker is inside a long-running operation.
     """
+    shutdown_state.checkpoint()
     if job_cancelled(job_id):
         raise OperationCancelled(message)
     if _claim_is_lost(job_id):
@@ -357,6 +359,7 @@ def ensure_job_claim_owned_in_transaction(
     transaction commits.  A cancellation/takeover that won first therefore
     prevents every post-provider catalog or audit write in that transaction.
     """
+    shutdown_state.checkpoint()
     job_id = int(job["id"])
     if job_cancelled(job_id):
         raise OperationCancelled(message)
@@ -4943,6 +4946,7 @@ def _release_preflight_purge_claim(job: dict[str, Any]) -> None:
 def _process_claimed_job(job: dict[str, Any]) -> bool:
     """Process one queue item after the scheduler has acquired its lease."""
     try:
+        shutdown_state.checkpoint()
         runtime = _runtime_settings()
         current = _load_claimed_job_status(job)
         if current is None:
@@ -5014,6 +5018,10 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
             _release_preflight_purge_claim(job)
         else:
             set_job(job["id"], job["status"], "S3 readiness blocked; Job remains queued")
+        return False
+    except WorkerStopping:
+        # Process shutdown is not an Owner cancellation or a failed upload.
+        # Keep the durable lease, intent and any late receipts for recovery.
         return False
     except JobLeaseLost:
         # A different worker/cancellation now owns the durable outcome.  Never
@@ -5133,6 +5141,7 @@ def _operation_pool(max_workers: int) -> ThreadPoolExecutor:
     global _operation_executor
     workers = max(1, int(max_workers))
     with _operation_lock:
+        shutdown_state.checkpoint()
         if _operation_executor is None:
             _operation_executor = ThreadPoolExecutor(
                 max_workers=workers,
@@ -5162,31 +5171,68 @@ def _submit_maintenance(name: str, func: Callable[..., Any], *args: Any) -> None
     # here would re-acquire it and freeze the event loop thread that runs
     # ``background_loop`` on the first scheduled scan, audit or backup.
     with _maintenance_lock:
+        if shutdown_state.requested:
+            return
         existing = _maintenance_futures.get(name)
         if existing is not None and not existing.done():
             return
         _maintenance_futures[name] = _maintenance_pool_locked().submit(func, *args)
 
 
-def shutdown_background_executors() -> None:
-    """Release worker pools without waiting for long transfers to finish.
+def stop_background_executors() -> None:
+    """Cancel queued work immediately, retaining running futures for draining."""
+    with _operation_lock:
+        if _operation_executor is not None:
+            _operation_executor.shutdown(wait=False, cancel_futures=True)
+    with _maintenance_lock:
+        if _maintenance_executor is not None:
+            _maintenance_executor.shutdown(wait=False, cancel_futures=True)
 
-    In-flight Jobs keep their durable leases; a later sweep recovers them.
-    Stale workers still cannot publish because claim checks remain in place.
-    """
+
+def _detach_background_executors() -> list[Future[Any]]:
     global _operation_executor, _maintenance_executor
     with _operation_lock:
         executor = _operation_executor
         _operation_executor = None
+        futures = list(_operation_futures.values())
         _operation_futures.clear()
-    if executor is not None:
-        executor.shutdown(wait=False, cancel_futures=True)
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
     with _maintenance_lock:
         maintenance = _maintenance_executor
         _maintenance_executor = None
+        futures.extend(_maintenance_futures.values())
         _maintenance_futures.clear()
-    if maintenance is not None:
-        maintenance.shutdown(wait=False, cancel_futures=True)
+        if maintenance is not None:
+            maintenance.shutdown(wait=False, cancel_futures=True)
+    return futures
+
+
+def shutdown_background_executors() -> None:
+    """Release pools immediately; test/service callers retain this cleanup seam."""
+    _detach_background_executors()
+
+
+async def drain_background_executors(timeout: float = WORKER_DRAIN_SECONDS) -> bool:
+    """Cancel queued work and await running workers without blocking HTTP's loop.
+
+    Stop admission and signal cooperative checkpoints before detaching pools.
+    A timeout is NOT success: the process watchdog also bounds default-executor
+    and interpreter thread joins, which asyncio cancellation cannot interrupt.
+    """
+    shutdown_state.request()
+    futures = [asyncio.wrap_future(future) for future in _detach_background_executors()
+               if not future.cancelled()]
+    if not futures:
+        return True
+    done, pending = await asyncio.wait(futures, timeout=timeout)
+    for future in done:
+        # Retrieve exceptions; worker error/state handling already owns them.
+        if not future.cancelled():
+            future.exception()
+    for future in pending:
+        future.cancel()
+    return not pending
 
 
 def process_jobs_once(*, wait: bool = True) -> int:
@@ -5200,6 +5246,8 @@ def process_jobs_once(*, wait: bool = True) -> int:
     When ``wait`` is false the caller keeps polling, delivering notifications,
     and refreshing health while transfers continue on the operation pool.
     """
+    if shutdown_state.requested:
+        return 0
     reconcile_interrupted_jobs()
     try:
         failed_count, failed_age = observe_failed_job_backlog()
@@ -5263,6 +5311,8 @@ def process_jobs_once(*, wait: bool = True) -> int:
     )
     claimed_jobs: list[dict[str, Any]] = []
     for job in selected:
+        if shutdown_state.requested:
+            break
         claimed_at = now_iso()
         claim_token = uuid.uuid4().hex
         claim_expires_at = _claim_expiry_at(claimed_at)
@@ -5313,6 +5363,8 @@ def process_jobs_once(*, wait: bool = True) -> int:
             with _operation_lock:
                 for job in claimed_jobs:
                     job_id = int(job["id"])
+                    if shutdown_state.requested:
+                        break
                     if job_id in _operation_futures and not _operation_futures[job_id].done():
                         continue
                     _operation_futures[job_id] = executor.submit(process_job, job)
@@ -6003,5 +6055,6 @@ async def background_loop() -> None:
             )
             await asyncio.sleep(delay)
     except asyncio.CancelledError:
-        shutdown_background_executors()
+        # Lifespan owns pool draining after all producers have been cancelled.
+        # Detaching here would lose the running futures before they can drain.
         raise

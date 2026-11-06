@@ -26,7 +26,6 @@ is held across awaits.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -41,6 +40,7 @@ from .catalog_event_hub import (
     signal_from_event,
 )
 from .catalog_events import MAX_EVENT_PAGE_SIZE
+from .shutdown import shutdown_state
 
 
 # Wake / multi-process observation cadence.  One consolidated snapshot per tick.
@@ -431,6 +431,8 @@ async def iter_catalog_event_sse(
     Hub notifications only wake the wait loop.  Advancement always comes from
     ``stream_tick_snapshot`` journal observation starting at ``last_seen``.
     """
+    if shutdown_state.requested:
+        return
     vault_id = int(vault_id)
     user_id = int(user_id)
     subscriber = None
@@ -446,6 +448,8 @@ async def iter_catalog_event_sse(
             max_events=max_events,
             explicit_vault=explicit_vault,
         )
+        if shutdown_state.requested:
+            return
         if not initial.ok:
             code = initial.error or "session_revoked"
             yield _error_frame(
@@ -485,36 +489,30 @@ async def iter_catalog_event_sse(
         if not subscribe:
             return
 
-        while True:
+        while not shutdown_state.requested:
             if is_disconnected is not None and await is_disconnected():
                 break
 
-            # Hub is wake-up only: wait for notification or cadence timeout.
-            if subscriber is not None:
-                get_task = asyncio.create_task(subscriber.queue.get())
-                try:
-                    done, _pending = await asyncio.wait(
-                        {get_task}, timeout=durable_poll_seconds
-                    )
-                    if done:
-                        # Drain/coalesce wake-ups; ignore payload content.
-                        while True:
-                            try:
-                                subscriber.queue.get_nowait()
-                            except asyncio.QueueEmpty:
-                                break
-                    else:
-                        get_task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await get_task
-                except Exception:
-                    get_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await get_task
-                    raise
-            else:
-                await asyncio.sleep(durable_poll_seconds)
+            # Shutdown wakes even hub-less streams immediately, independent of
+            # the durable polling cadence. Always reap both helper tasks, also
+            # when Starlette cancels a disconnected response.
+            stop_task = asyncio.create_task(shutdown_state.wait())
+            get_task = (asyncio.create_task(subscriber.queue.get())
+                        if subscriber is not None else None)
+            waits = {stop_task, get_task} if get_task is not None else {stop_task}
+            try:
+                await asyncio.wait(waits, timeout=durable_poll_seconds,
+                                   return_when=asyncio.FIRST_COMPLETED)
+                if subscriber is not None:
+                    while not subscriber.queue.empty():
+                        subscriber.queue.get_nowait()
+            finally:
+                for task in waits:
+                    task.cancel()
+                await asyncio.gather(*waits, return_exceptions=True)
 
+            if shutdown_state.requested:
+                break
             if is_disconnected is not None and await is_disconnected():
                 break
 
@@ -527,6 +525,8 @@ async def iter_catalog_event_sse(
                 max_events=max_events,
                 explicit_vault=explicit_vault,
             )
+            if shutdown_state.requested:
+                break
             if not tick.ok:
                 code = tick.error or "session_revoked"
                 yield _error_frame(
