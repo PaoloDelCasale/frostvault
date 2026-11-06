@@ -55,9 +55,11 @@ model requires separating ordinary archive work from permanent purge.
 
 ## Application preflight
 
-Before cloud upload, recovery, or local cleanup, `validate_cloud_vault()` runs
-`check_bucket_readiness()` against the vault bucket. Failures are actionable and
-include remediation hints, for example:
+Before cloud upload, recovery, or local cleanup, `validate_cloud_vault()` checks
+the installation-wide readiness gate for the shared Vault bucket. One read-only
+`check_bucket_readiness()` probe is allowed at a time across workers/processes;
+a successful result is cached for at most 60 seconds. Failures are actionable
+and include remediation hints, for example:
 
 - bucket name still a placeholder
 - versioning suspended or disabled
@@ -67,9 +69,19 @@ include remediation hints, for example:
 - region mismatch with `AWS_DEFAULT_REGION`
 - missing `s3:GetBucketVersioning`, `s3:GetBucketPublicAccessBlock`, or bucket-list permission for `HeadBucket`
 
-Fix the reported issue and retry. Cloud scans, uploads, recovery, rename and
-local cleanup remain blocked until versioning and **all four bucket-level BPA
-flags** are confirmed enabled. Account-level BPA alone is not sufficient proof.
+Fix the reported issue; queued work resumes automatically after the next
+successful probe, including after IAM propagation. Failures back off at
+5/10/20/40/60 seconds (never longer); an independent one-second background tick
+checks due probes even when all operation workers are occupied or Vaults are
+suspended. Probe outcomes/backoff survive process restart; PostgreSQL releases
+the single-flight lock on connection loss. A clock rollback/future restored
+timestamp cannot leave the gate indefinitely blocked.
+
+One installation warning and the app banner show the remedy. Affected Jobs stay
+queued (or keep their prior waiting state), without consuming their transfer
+retry budget. Local catalog browsing/scanning, heartbeat and notifications remain
+available. Cloud scans, uploads, recovery, rename and local cleanup remain
+blocked until versioning and **all four bucket-level BPA flags** are confirmed enabled. Account-level BPA alone is not sufficient proof.
 S3-compatible endpoints must implement the same API; there is no CI/provider
 bypass. Grant read permission to the application, not permission to change BPA.
 
@@ -79,6 +91,33 @@ metadata backup ciphertext under `system/backups/` remains Fernet-encrypted.
 Anyone with authorized object-read credentials can read photos and names: use
 MFA and a bucket-scoped IAM policy. No real bucket configuration is changed by
 an application migration or preflight.
+
+### Retrying historical failed uploads (#461)
+
+**General → Retry failed uploads** selects all Vaults; the same action in
+**Vault settings** selects only that Vault. `POST /api/upload/retry-failed`
+accepts an optional `vault_id` query parameter: omission means global scope,
+never the Session's selected Vault. A repeat click safely returns zero when
+there is no newly eligible work. Existing failed attempts remain unchanged.
+
+Only files whose latest upload attempt failed and which still pass ordinary
+stable automatic-upload admission receive fresh Jobs. Active Jobs, cancelled
+uploads, already protected content, Cloud-only Conflicts, missing/untrusted or
+replaced Source Volumes/roots, disabled/suspended/stopped Vaults, pending deletion
+and exclusion rules remain fenced. Failed recover/free-space/cloud-purge Jobs
+are never retried. This action neither completes historical verified failures
+(#459) nor grants authority over unknown cloud versions (#464).
+
+**Vault settings → Upload whole Vault** uses the existing `/api/upload` action
+with `{"path":"","is_directory":true}` and explicit `vault_id`. This narrow root
+allowance applies only to uploads; traversal, absolute paths and empty paths for
+other operations remain rejected. The catalog's usual eligibility/active-Job
+checks still apply.
+
+Migration `0062_cloud_preflight_gate` adds only the readiness cache table. It
+makes no S3 calls, changes no historical Job or catalog trust, and requires no
+manual queue reset. Deploy API and generated SPA contracts together after the
+normal authorized metadata migration/upgrade procedure.
 
 ## Vault storage plans
 
