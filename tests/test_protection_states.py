@@ -1,6 +1,7 @@
 """Five protection observations; PostgreSQL parity runs only in PR CI."""
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from collections import Counter
@@ -240,7 +241,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.seed('._meta', path='photos/._meta')
         self.connection.execute(
             "INSERT INTO vault_operation_policies(vault_id, auto_upload, stability_seconds, include_globs_json, exclude_globs_json) "
-            "VALUES (9, TRUE, 300, '[]', %s)", ('["[z-a]*", "a\\u0000b", "[a-z[:digit:]]*"]',))
+            "VALUES (9, TRUE, 300, '[]', %s)", (json.dumps(["[z-a]*", "a\u0000b", "[a-z[:digit:]]*", "*a" * 6500 + "*"]),))
         self.assertEqual(self.catalog.summary(9)['states'], {'pending': 1, 'excluded': 1})
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         aggregates.mark_directory_dirty(self.connection, 9, 'photos')

@@ -9,6 +9,7 @@ explicit and ignore these rules.
 from __future__ import annotations
 
 import fnmatch
+import functools
 import logging
 import re
 from typing import Any
@@ -20,6 +21,14 @@ _logger = logging.getLogger(__name__)
 
 class UnsafeGlob(ValueError):
     """A glob that cannot be expressed as a safe PostgreSQL regular expression."""
+
+
+# PostgreSQL refuses a regular expression it finds "too complex" (observed from
+# ~12.6 KB of ``*a`` repeated), which would fail every query that classifies
+# files. A prudent cap keeps a large safety margin; the count bounds the size of
+# the generated statements.
+MAX_GLOB_LENGTH = 1024
+MAX_GLOBS_PER_POLICY = 100
 
 
 # Admission matches a path with its backslashes read as separators; the SQL
@@ -42,6 +51,15 @@ def _posix_are(body: str) -> str:
         if char == "\\":
             out.append(body[i:i + 2])
             i += 2
+        elif body.startswith("(?!)", i):
+            # Python's translation of an empty range such as ``[z-a]``: it can never
+            # match and PostgreSQL's reading of the empty lookahead is not guaranteed.
+            raise UnsafeGlob("empty character range")
+        elif body.startswith("(?>", i):
+            # Python's atomic groups are an optimization, not part of the glob
+            # language; PostgreSQL ARE has noncapturing groups instead.
+            out.append("(?:")
+            i += 3
         elif char == "[":
             out.append("[")
             i += 1
@@ -78,17 +96,12 @@ def glob_body(pattern: str) -> str:
         pattern.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise UnsafeGlob("pattern is not valid text") from exc
-    body = fnmatch.translate(pattern)[4:-3]
-    if "(?!)" in body:
-        # Python's translation of an empty range such as ``[z-a]``: it can never
-        # match and PostgreSQL's reading of the empty lookahead is not guaranteed.
-        raise UnsafeGlob("empty character range")
-    # Python's atomic groups are an optimization, not part of the glob language.
-    # PostgreSQL ARE supports noncapturing groups and a leading (?s) flag.
-    return _posix_are(body).replace("(?>", "(?:")
+    return _posix_are(fnmatch.translate(pattern)[4:-3])
 
 
 def path_pattern(pattern: str) -> str:
+    if len(pattern) > MAX_GLOB_LENGTH:
+        raise UnsafeGlob(f"glob longer than {MAX_GLOB_LENGTH} characters")
     body = glob_body(pattern)
     alternatives = [f"^(?:{body})$"]
     if "**" in pattern and pattern.endswith("/**"):
@@ -107,6 +120,20 @@ def validate_glob(pattern: str) -> None:
         raise UnsafeGlob(f"unsupported glob: {exc}") from exc
 
 
+@functools.lru_cache(maxsize=512)
+def _stored_regex(pattern: str) -> str | None:
+    """The regex for a glob already in use, or None when it is unsupported.
+
+    Cached so the warning for an unsupported stored glob is logged once, not on
+    every query that classifies files.
+    """
+    try:
+        return path_pattern(pattern)
+    except UnsafeGlob as exc:
+        _logger.warning("Ignoring an unsupported upload glob in the SQL projection (%s)", exc)
+        return None
+
+
 def eligibility_sql(policy: Any) -> tuple[str, list[str]]:
     """Informational projection of the admission path rules, parametrized AREs.
 
@@ -121,10 +148,8 @@ def eligibility_sql(policy: Any) -> tuple[str, list[str]]:
     params: list[str] = []
 
     def match(pattern: str) -> str:
-        try:
-            regex = path_pattern(pattern)
-        except UnsafeGlob:
-            _logger.warning("Ignoring an unsupported upload glob in the SQL projection")
+        regex = _stored_regex(pattern)
+        if regex is None:
             return "FALSE"
         params.append(regex)
         if "**" in pattern:

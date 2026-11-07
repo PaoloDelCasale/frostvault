@@ -141,6 +141,12 @@ class OperationPolicyHttpTests(unittest.TestCase):
                 with self.subTest(field=field, glob=glob):
                     response = self.client.put(endpoint, headers=self._headers(), json={field: [glob]})
                     self.assertEqual(response.status_code, 422, response.text)
+        for glob in ("*a" * 6500 + "*", "a" * 1025):
+            with self.subTest(length=len(glob)):
+                response = self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": [glob]})
+                self.assertEqual(response.status_code, 422, response.text)
+        too_many = [f"g{index}*" for index in range(101)]
+        self.assertEqual(self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": too_many}).status_code, 422)
         response = self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": ["[a-z[:digit:]]*", "[[.a.]]"]})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.client.get(endpoint).json()["exclude_globs"], ["[a-z[:digit:]]*", "[[.a.]]"])

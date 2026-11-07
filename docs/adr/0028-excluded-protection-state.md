@@ -44,9 +44,11 @@ Vault's `include_globs`/`exclude_globs`, the same rules as admission).
   escaped, so `[:`, `[.` and `[=` never open a class). Paths are compared after
   the same backslash-to-separator normalization admission applies, so a Linux
   name containing `\` is classified like admission does. Saving a glob that has
-  no safe translation (NUL, an empty range such as `[z-a]`) is refused with 422;
-  an already stored one is treated as matching nothing and never blocks other
-  edits or breaks a query. Global aggregate maintenance isolates each Vault in a
+  no safe translation (NUL, an empty range such as `[z-a]`, more than 1024
+  characters, which PostgreSQL may reject as "too complex", or a new glob that
+  takes the policy past 100) is refused with 422; an already stored one is
+  treated as matching nothing, logged once, and never blocks other edits or
+  breaks a query. Global aggregate maintenance isolates each Vault in a
   savepoint, so one failing Vault cannot stall the others or the worker tick.
 - The UI shows Excluded as its own label and filter, never as Pending, with a
   short explanation in file Details. `GET /api/stats` reports it in `states` and
