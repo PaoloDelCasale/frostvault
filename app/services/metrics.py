@@ -37,6 +37,8 @@ _ALLOWED_METRICS = {
     "metadata_backups_total": "counter",
     "metadata_backup_verifications_total": "counter",
     "queue_depth": "gauge",
+    "queue_stalled": "gauge",
+    "queue_stalled_seconds": "gauge",
     "jobs_stuck": "gauge",
     "jobs_stuck_oldest_age_seconds": "gauge",
     "jobs_failed_backlog": "gauge",

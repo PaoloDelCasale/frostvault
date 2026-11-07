@@ -74,6 +74,40 @@ class SelectFairJobsTests(unittest.TestCase):
     def test_empty_input_returns_empty(self) -> None:
         self.assertEqual(select_fair_jobs([], limit=5), [])
 
+    def test_user_operations_precede_automatic_uploads(self) -> None:
+        # Issue #500: a restore or free-space waits behind no automatic upload,
+        # however old the uploads are and whichever Vault owns them.
+        old = "2026-07-01T00:00:00+00:00"
+        new = "2026-07-01T09:00:00+00:00"
+        jobs = [
+            {"id": 1, "vault_id": 10, "action": "upload", "origin": "automatic", "requested_at": old},
+            {"id": 2, "vault_id": 10, "action": "upload", "origin": "automatic", "requested_at": old},
+            {"id": 3, "vault_id": 20, "action": "free-space", "origin": "manual", "requested_at": new},
+            {"id": 4, "vault_id": 30, "action": "recover", "origin": "manual", "requested_at": new},
+            {"id": 5, "vault_id": 20, "action": "upload", "origin": "manual", "requested_at": new},
+        ]
+        order = [job["id"] for job in select_fair_jobs(jobs, limit=5)]
+        self.assertEqual(order, [3, 4, 5, 1, 2])
+        self.assertEqual([job["id"] for job in select_fair_jobs(jobs, limit=2)], [3, 4])
+
+    def test_vaults_alternate_inside_one_tier(self) -> None:
+        jobs = [
+            {"id": index, "vault_id": 10 if index < 5 else 20, "action": "upload",
+             "origin": "automatic", "requested_at": f"2026-07-01T00:00:{index:02d}+00:00"}
+            for index in range(1, 7)
+        ]
+        order = [job["id"] for job in select_fair_jobs(jobs, limit=4)]
+        self.assertEqual(order, [1, 5, 2, 6])
+
+    def test_priority_tiers(self) -> None:
+        from app.services.job_scheduler import job_priority
+        self.assertLess(job_priority({"action": "recover", "origin": "manual"}),
+                        job_priority({"action": "upload", "origin": "manual"}))
+        self.assertLess(job_priority({"action": "upload", "origin": "manual"}),
+                        job_priority({"action": "upload", "origin": "automatic"}))
+        self.assertEqual(job_priority({"action": "rename", "origin": "automatic"}),
+                         job_priority({"action": "free-space", "origin": "manual"}))
+
 
 class SchedulerFileIsolationTests(unittest.TestCase):
     """A stale local candidate must not starve runnable Jobs in other Vaults."""
@@ -117,6 +151,8 @@ class SchedulerFileIsolationTests(unittest.TestCase):
         self.enterContext(patch("app.services.upload_provenance.load_for_job", return_value=None))
         self.enterContext(patch("app.storage.auto_upload_path_is_included", return_value=True))
         self.dispatch = self.enterContext(patch("app.storage.process_job"))
+        storage_module._deferred_jobs.clear()
+        self.addCleanup(storage_module._deferred_jobs.clear)
 
     def assert_healthy_job_dispatches_twice(self) -> None:
         # The stale automatic candidate is returned again on the next tick.
@@ -126,9 +162,14 @@ class SchedulerFileIsolationTests(unittest.TestCase):
         self.assertEqual([call.args[0]["id"] for call in self.dispatch.call_args_list], [2, 2])
         self.assertEqual([call.kwargs["job_id"] for call in self.catalog.claim_job.call_args_list], [2, 2])
 
-    def test_removed_automatic_copy_does_not_block_another_vault(self) -> None:
+    def test_removed_automatic_copy_is_closed_by_its_worker_and_blocks_nothing(self) -> None:
+        # #493/#499: a file that is gone is dispatched so its worker can close
+        # the Job; it is neither retried forever nor allowed to hide other work.
         self.assertFalse((self.root / "missing.txt").exists())
-        self.assert_healthy_job_dispatches_twice()
+        by_id = {1: self.missing, 2: self.healthy}
+        self.catalog.claim_job.side_effect = lambda **kwargs: dict(by_id[kwargs["job_id"]])
+        self.assertEqual(process_jobs_once(), 2)
+        self.assertEqual(sorted(call.args[0]["id"] for call in self.dispatch.call_args_list), [1, 2])
 
     def test_unreadable_automatic_copy_does_not_block_another_vault(self) -> None:
         source = Mock()
@@ -157,6 +198,54 @@ class SchedulerFileIsolationTests(unittest.TestCase):
     def test_sent_intent_reconciliation_does_not_require_local_copy(self) -> None:
         with patch("app.services.upload_provenance.load_for_job", return_value={"send_started": True}):
             self.assertTrue(storage_module._automatic_upload_ready(self.missing))
+
+    def test_unready_candidate_is_deferred_and_left_out_of_the_next_query(self) -> None:
+        # The same head-of-queue Job must not be re-read and rechecked every tick.
+        source = Mock()
+        source.stat.side_effect = PermissionError("local access revoked")
+        with patch("app.storage.safe_local_path", return_value=source):
+            process_jobs_once()
+            first = self.catalog.list_claimable_jobs.call_args_list[0].kwargs
+            second_exclusions = None
+            process_jobs_once()
+            second_exclusions = self.catalog.list_claimable_jobs.call_args_list[1].kwargs
+        self.assertEqual(list(first["exclude_job_ids"]), [])
+        self.assertEqual(list(second_exclusions["exclude_job_ids"]), [1])
+
+    def test_candidate_window_is_per_vault(self) -> None:
+        process_jobs_once()
+        kwargs = self.catalog.list_claimable_jobs.call_args.kwargs
+        self.assertEqual(kwargs["per_vault_limit"], 10)
+        self.assertGreater(kwargs["limit"], kwargs["per_vault_limit"])
+
+    def test_busy_scheduler_does_not_read_or_recheck_candidates(self) -> None:
+        # Issue #500: with every worker busy a tick must cost nothing.
+        with patch("app.storage._active_operation_count", return_value=2), \
+                patch("app.storage._automatic_upload_state") as state:
+            self.assertEqual(process_jobs_once(wait=False), 0)
+        self.catalog.list_claimable_jobs.assert_not_called()
+        state.assert_not_called()
+
+    def test_readiness_is_rechecked_only_until_the_free_slots_are_filled(self) -> None:
+        autos = [
+            {"id": index, "vault_id": 10, "path": f"f{index}.txt", "action": "upload",
+             "origin": "automatic", "source_root": str(self.root),
+             "requested_at": f"2026-07-01T00:00:{index:02d}+00:00"}
+            for index in range(1, 6)
+        ]
+        self.catalog.list_claimable_jobs.return_value = autos
+        self.catalog.claim_job.side_effect = lambda **kwargs: {"id": kwargs["job_id"]}
+        checked: list[int] = []
+
+        def ready(job):
+            checked.append(job["id"])
+            return storage_module.UPLOAD_READY
+
+        with patch("app.storage._automatic_upload_state", side_effect=ready), \
+                patch("app.storage._runtime_settings", return_value=SimpleNamespace(
+                    operation_concurrency=1, restore_poll_interval=0)):
+            self.assertEqual(process_jobs_once(), 1)
+        self.assertEqual(checked, [1])
 
 
 class _SchedulerDbMixin:
