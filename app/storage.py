@@ -2510,6 +2510,17 @@ def _record_upload_reconciliation_block(job: dict[str, Any], reason: str) -> Non
     notify()
 
 
+def _keep_wait_state(job: dict[str, Any]) -> dict[str, Any]:
+    """set_job keyword arguments that keep a Source Volume wait (its start, attempt).
+
+    ``set_job`` rewrites ``message_key``/``message_params``; a Job that is waiting for
+    its volume and is touched for another reason (readiness gate) must not lose them.
+    """
+    if job.get("message_key") != SOURCE_VOLUME_WAIT_KEY:
+        return {}
+    return {"message_key": SOURCE_VOLUME_WAIT_KEY, "message_params": parse_message_params(job.get("message_params"))}
+
+
 def _fail_upload_on_permission_refusal(job: dict[str, Any], exc: BaseException) -> bool:
     """A refused S3 action for one file, while the bucket itself stays ready (#492).
 
@@ -2521,9 +2532,7 @@ def _fail_upload_on_permission_refusal(job: dict[str, Any], exc: BaseException) 
     reconcile); a refused write stored nothing and is journaled as a no-write
     outcome, so the file is simply retried by the ordinary flow once fixed.
     """
-    if job["action"] != "upload" or cloud_preflight_gate.is_cold_storage_error(exc):
-        # A version in cold storage (403 InvalidObjectState) needs a restore, it is
-        # neither a missing permission nor a credential problem.
+    if job["action"] != "upload":
         return False
     from .services import upload_provenance as provenance
     try:
@@ -5328,6 +5337,26 @@ def _clear_source_volume_problem(job: dict[str, Any]) -> None:
     resolve()
 
 
+def _source_volume_readable(vault: dict[str, Any]) -> bool:
+    """The same criterion the upload uses to decide that it must keep waiting.
+
+    ``vault_local_access`` must allow local operations AND the enrolled root must be
+    observable (``_validate_enrolled_scan_root`` raising ``_ScanRootUnreadable`` is an
+    I/O failure of the root: ENOENT/EIO/ESTALE on an otherwise healthy mount). Any
+    other validator failure is an observed identity mismatch: the upload fails
+    instead of waiting, so nothing is waiting any more.
+    """
+    try:
+        if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
+            return False
+        _validate_enrolled_scan_root(vault)
+    except _ScanRootUnreadable:
+        return False
+    except Exception:
+        return True
+    return True
+
+
 def sweep_source_volume_problems() -> int:
     """Resolve ``source_volume_unavailable`` problems nothing keeps alive (#492).
 
@@ -5343,16 +5372,13 @@ def sweep_source_volume_problems() -> int:
             "AND n.vault_id IS NOT NULL", (SOURCE_VOLUME_PROBLEM,)).fetchall()
         resolvable: list[int] = []
         for row in rows:
-            vault = connection.execute("SELECT id,source_root FROM vaults WHERE id=%s", (row["vault_id"],)).fetchone()
+            vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (row["vault_id"],)).fetchone()
             waiting = connection.execute(
                 "SELECT 1 FROM jobs WHERE vault_id=%s AND action='upload' AND status IN ('queued','retrying') "
                 "AND message_key=%s LIMIT 1", (row["vault_id"], SOURCE_VOLUME_WAIT_KEY)).fetchone()
             readable = False
             if vault and waiting:
-                try:
-                    readable = bool(source_layout.vault_local_access(vault["source_root"]).local_operations_allowed)
-                except Exception:
-                    readable = False
+                readable = _source_volume_readable(vault)
             if not vault or not waiting or readable:
                 resolvable.append(int(row["vault_id"]))
     for vault_id in resolvable:
@@ -5433,7 +5459,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
         if job["action"] == "cloud-purge" and job.get("claim_token"):
             _release_preflight_purge_claim(job)
         else:
-            set_job(job["id"], job["status"], "S3 readiness blocked; Job remains queued")
+            set_job(job["id"], job["status"], "S3 readiness blocked; Job remains queued", **_keep_wait_state(job))
         return False
     except SourceVolumeUnavailable:
         # A transient failure reading the enrolled root is not an identity
@@ -5490,7 +5516,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
             if job['action'] == 'cloud-purge' and job.get('claim_token'):
                 _release_preflight_purge_claim(job)
             else:
-                set_job(job['id'], job['status'], 'S3 readiness blocked; Job remains queued')
+                set_job(job['id'], job['status'], 'S3 readiness blocked; Job remains queued', **_keep_wait_state(job))
             return False
         message = str(exc)
         failure_kind = (

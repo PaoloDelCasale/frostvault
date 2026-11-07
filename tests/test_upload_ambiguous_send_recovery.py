@@ -462,8 +462,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
 
     def test_the_source_volume_problem_ends_when_its_waiting_job_is_cancelled(self):
         job = self.open_source_volume_problem()
-        with patch("app.storage.source_layout.vault_local_access",
-                   return_value=SimpleNamespace(local_operations_allowed=False, volume_health="missing")):
+        with self.unreadable_root():
             self.assertEqual(storage.sweep_source_volume_problems(), 0, "an upload still waits for the volume")
         self.assertEqual(self.source_volume_problem_status(), ["open"])
         storage.cancel_jobs([job])
@@ -471,15 +470,31 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assertEqual(self.source_volume_problem_status(), ["resolved"])
         self.assertEqual(storage.sweep_source_volume_problems(), 0)
 
+    def unreadable_root(self):
+        """A healthy mount whose enrolled root cannot be observed (ENOENT/EIO/ESTALE)."""
+        return patch("app.storage.vault_relocation.root_identity", side_effect=VaultRelocationError("inaccessible", "stale file handle"))
+
+    def test_the_sweep_does_not_flap_the_problem_while_the_root_stays_unobservable(self):
+        # vault_local_access passes, but the upload keeps waiting because the root identity
+        # cannot be read: the sweep must apply the same criterion or the notice would be
+        # resolved and re-opened (read_at cleared) every cycle.
+        job = self.open_source_volume_problem()
+        with self.unreadable_root():
+            for _ in range(3):
+                self.assertEqual(storage.sweep_source_volume_problems(), 0)
+            self.assertEqual(self.source_volume_problem_status(), ["open"])
+            self.retry_is_due(job)
+            self.run_job(job)
+        self.assertEqual(self.source_volume_problem_status(), ["open"], "one notice, never re-opened")
+        self.assertEqual(self.row(job)["message_key"], "job.source_volume_waiting")
+
     def test_the_source_volume_problem_ends_when_the_root_is_readable_without_other_uploads(self):
         self.open_source_volume_problem()
         with patch("app.storage.source_layout.vault_local_access",
                    return_value=SimpleNamespace(local_operations_allowed=False, volume_health="missing")):
             self.assertEqual(storage.sweep_source_volume_problems(), 0)
         self.assertEqual(self.source_volume_problem_status(), ["open"])
-        with patch("app.storage.source_layout.vault_local_access",
-                   return_value=SimpleNamespace(local_operations_allowed=True, volume_health="ok")):
-            self.assertEqual(storage.sweep_source_volume_problems(), 1)
+        self.assertEqual(storage.sweep_source_volume_problems(), 1)
         self.assertEqual(self.source_volume_problem_status(), ["resolved"])
 
     def test_a_cold_storage_403_on_the_historical_get_stays_proof_unavailable_and_never_reaches_the_gate(self):

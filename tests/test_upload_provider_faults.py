@@ -201,6 +201,16 @@ class WorkerRefusalTests(unittest.TestCase):
         record.assert_not_called()
         self.assertIn("s3:PutObject", set_job.call_args.args[2])
 
+    def test_a_cold_storage_error_chained_with_a_real_refusal_still_blocks_the_file(self):
+        denied = client_error("AccessDenied", 403, "GetObject")
+        for outer, inner in ((client_error("InvalidObjectState", 403, "GetObject"), denied),
+                             (denied, client_error("InvalidObjectState", 403, "GetObject"))):
+            outer.__cause__ = inner
+            with self.subTest(outer=outer.response["Error"]["Code"]):
+                handled, record, set_job = self.run_refusal(outer)
+                self.assertTrue(handled)
+                record.assert_called_once_with(self.job, "read_permission_denied")
+
     def test_an_installation_wide_refusal_is_left_to_the_gate(self):
         handled, record, set_job = self.run_refusal(client_error("AccessDenied", 403, "PutObject"), ready=False)
         self.assertFalse(handled)
@@ -222,6 +232,25 @@ class WorkerRefusalTests(unittest.TestCase):
             self.assertTrue(storage._process_claimed_job(job))
         fail.assert_called_once()
         invalidate.assert_not_called()
+
+
+class WaitStateKeptTests(unittest.TestCase):
+    def test_a_waiting_job_keeps_its_wait_state_when_the_gate_blocks_it(self):
+        waiting = {"id": 9, "action": "upload", "status": "retrying", "claim_token": "t", "source_root": "/s",
+                   "message_key": "job.source_volume_waiting",
+                   "message_params": '{"attempt": 3, "since": "2026-11-07T10:00:00+00:00", "seconds": 8}'}
+        kept = storage._keep_wait_state(waiting)
+        self.assertEqual(kept["message_key"], "job.source_volume_waiting")
+        self.assertEqual((kept["message_params"]["attempt"], kept["message_params"]["since"]), (3, "2026-11-07T10:00:00+00:00"))
+        self.assertEqual(storage._keep_wait_state({**waiting, "message_key": None}), {})
+        with patch.object(storage, "_runtime_settings"), patch.object(storage, "_load_claimed_job_status", return_value={"status": "retrying"}), \
+                patch.object(storage.source_layout, "vault_local_access", return_value=MagicMock(local_operations_allowed=True)), \
+                patch.object(storage, "process_upload", side_effect=cloud_preflight_gate.CloudPreflightBlocked("blocked")), \
+                patch.object(storage, "set_job") as set_job:
+            self.assertFalse(storage._process_claimed_job(dict(waiting)))
+        self.assertEqual(set_job.call_args.args[:2], (9, "retrying"))
+        self.assertEqual(set_job.call_args.kwargs["message_key"], "job.source_volume_waiting")
+        self.assertEqual(set_job.call_args.kwargs["message_params"]["attempt"], 3)
 
 
 class SourceVolumeWaitTests(unittest.TestCase):
