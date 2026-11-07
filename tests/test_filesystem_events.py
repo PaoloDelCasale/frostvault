@@ -617,7 +617,10 @@ class WatcherScanPairingTests(unittest.IsolatedAsyncioTestCase):
         self.health = stack.enter_context(patch("app.storage._record_scan_component_health"))
         stack.enter_context(patch("app.storage.worker_error_store.log_worker_error"))
         self.scan = stack.enter_context(patch("app.storage.scan_vault", side_effect=scans))
-        return asyncio.create_task(storage._watch_vault_filesystem({"id": 2, "source_root": str(root)}))
+        # A dedicated Vault id, and no runtime status left behind: that module
+        # global is shared with every other test of the process.
+        self.addCleanup(storage.runtime_status.pop, 9402, None)
+        return asyncio.create_task(storage._watch_vault_filesystem({"id": 9402, "source_root": str(root)}))
 
     @staticmethod
     def quiet(*args, **kwargs):
