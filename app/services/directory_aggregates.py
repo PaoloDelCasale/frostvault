@@ -28,7 +28,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
-from .protection_states import STATE_SQL, LATEST_JOIN_SQL, aggregate_state
+from .operation_policies import get_policy
+from .protection_states import LATEST_JOIN_SQL, aggregate_state, state_sql
 from .database_retry import owned_connection, retry_database_unit
 
 
@@ -65,6 +66,7 @@ _STATE_COLUMNS = {
     "problem": "state_problem",
     "unconfirmed": "state_unconfirmed",
     "cloud_only": "state_cloud_only",
+    "excluded": "state_excluded",
 }
 
 _ACTION_COLUMNS = {
@@ -941,6 +943,7 @@ class _DirectoryRollup:
 
 def _visible_file_select_sql(
     *,
+    policy: Any = None,
     path_prefix: str | None = None,
     keyset_path: str | None = None,
     limit: int | None = None,
@@ -963,7 +966,7 @@ def _visible_file_select_sql(
         params.append(int(limit))
     sql = f"""
         SELECT
-            {STATE_SQL} AS protection_state,
+            {state_sql(policy)} AS protection_state,
             vf.id AS vault_file_id,
             fp.path,
             lc.presence AS local_presence,
@@ -1010,8 +1013,10 @@ def _iter_visible_file_contribution_batches(
     if size <= 0:
         size = REBUILD_CONTRIBUTION_BATCH_SIZE
     keyset_path = ""
+    policy = get_policy(connection, int(vault_id))
     while True:
         sql, extra_params = _visible_file_select_sql(
+            policy=policy,
             path_prefix=path_prefix,
             keyset_path=keyset_path,
             limit=size,
@@ -1106,8 +1111,10 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
         return
     escaped = _escape_like(directory)
     # Use the same SQL classification as files and statistics. The result is
-    # bounded to five states, regardless of descendant count.
-    select_sql, extra_params = _visible_file_select_sql(path_prefix=directory)
+    # bounded to the six states, regardless of descendant count.
+    select_sql, extra_params = _visible_file_select_sql(
+        policy=get_policy(connection, int(vault_id)), path_prefix=directory,
+    )
     summaries = connection.execute(
         f"""
         SELECT protection_state, COUNT(*) AS item_count,
@@ -1217,12 +1224,14 @@ def _upsert_rollup(
             vault_id, path, parent_path, name,
             item_count, total_size, local_size, cloud_size,
             state_pending, state_cloud_only, state_protected, state_problem, state_unconfirmed,
+            state_excluded,
             action_upload, action_recover, action_free_space,
             action_cloud_purge, storage_class_counts, updated_at
         ) VALUES (
             %s, %s, %s, %s,
             %s, %s, %s, %s,
             %s, %s, %s, %s, %s,
+            %s,
             %s, %s, %s,
             %s, %s, %s
         )
@@ -1238,6 +1247,7 @@ def _upsert_rollup(
             state_protected=excluded.state_protected,
             state_problem=excluded.state_problem,
             state_unconfirmed=excluded.state_unconfirmed,
+            state_excluded=excluded.state_excluded,
             action_upload=excluded.action_upload,
             action_recover=excluded.action_recover,
             action_free_space=excluded.action_free_space,
@@ -1259,6 +1269,7 @@ def _upsert_rollup(
             int(rollup.state_counts.get("protected", 0)),
             int(rollup.state_counts.get("problem", 0)),
             int(rollup.state_counts.get("unconfirmed", 0)),
+            int(rollup.state_counts.get("excluded", 0)),
             int(rollup.action_counts.get("upload", 0)),
             int(rollup.action_counts.get("recover", 0)),
             int(rollup.action_counts.get("free-space", 0)),

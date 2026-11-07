@@ -7,7 +7,7 @@ from typing import Any, Sequence
 
 from .services.job_admission import TERMINAL_JOB_STATUSES, lock_vault
 from .services.protection_states import (
-    STATE_SQL, VISIBLE_SQL, LATEST_JOIN_SQL, aggregate_state, project_file,
+    VISIBLE_SQL, LATEST_JOIN_SQL, aggregate_state, project_file, state_sql,
 )
 from .services.directory_aggregates import (
     count_child_directories,
@@ -2382,7 +2382,7 @@ class ArchiveCatalog:
             params.append(f"{escaped}/%")
         clauses.append(VISIBLE_SQL)
         rows = self.connection.execute(
-            self._file_row_select_sql(clauses) + " ORDER BY lower(fp.path)", params,
+            self._file_row_select_sql(clauses, vault_id) + " ORDER BY lower(fp.path)", params,
         ).fetchall()
         return self._materialize_file_items(vault_id, rows, name_from_path=True)
 
@@ -2451,7 +2451,7 @@ class ArchiveCatalog:
             clauses, values = catalog._direct_child_file_clauses(
                 vault["id"], directory="", state=state, search=search or "%",
             )
-            sql = catalog._file_row_select_sql(clauses)
+            sql = catalog._file_row_select_sql(clauses, vault["id"])
             branches.append(f"SELECT scoped.*, %s::bigint AS vault_id, %s::text AS vault_name FROM ({sql}) scoped")
             params.extend([vault["id"], vault["name"], *values])
         if not branches:
@@ -2565,14 +2565,19 @@ class ArchiveCatalog:
             if self.protection_unconfirmed:
                 clauses.append("1=1" if state == "unconfirmed" else "1=0")
             else:
-                clauses.append(f"({STATE_SQL}) = %s")
+                clauses.append(f"({self._state_sql(vault_id)}) = %s")
                 params.append(state)
         return clauses, params
 
-    def _file_row_select_sql(self, clauses: list[str]) -> str:
+    def _state_sql(self, vault_id: int) -> str:
+        """The protection CASE with this Vault's upload exclusions embedded."""
+        from .services.operation_policies import get_policy
+        return state_sql(get_policy(self.connection, vault_id))
+
+    def _file_row_select_sql(self, clauses: list[str], vault_id: int) -> str:
         return f"""
             SELECT
-                {STATE_SQL} AS protection_state,
+                {self._state_sql(vault_id)} AS protection_state,
                 CASE WHEN av.availability='unknown'
                      THEN greatest(lc.observed_at, av.verified_at)
                      ELSE greatest(lc.observed_at, av.verified_at, av.availability_checked_at)
@@ -2712,7 +2717,7 @@ class ArchiveCatalog:
         clauses, params = self._direct_child_file_clauses(
             vault_id, directory=directory, state=state
         )
-        sql = self._file_row_select_sql(clauses)
+        sql = self._file_row_select_sql(clauses, vault_id)
         rows = self.connection.execute(
             f"""
             {sql}
@@ -2759,7 +2764,7 @@ class ArchiveCatalog:
         ).fetchone()
         total = int(total_row["total"] or 0) if total_row else 0
         offset = (page - 1) * page_size
-        sql = self._file_row_select_sql(clauses)
+        sql = self._file_row_select_sql(clauses, vault_id)
         rows = self.connection.execute(
             f"""
             {sql}
@@ -3238,7 +3243,7 @@ class ArchiveCatalog:
                    coalesce(SUM(classified.local_bytes), 0) AS local_bytes,
                    coalesce(SUM(classified.cloud_bytes), 0) AS cloud_bytes
             FROM (
-                SELECT {STATE_SQL} AS state,
+                SELECT {self._state_sql(vault_id)} AS state,
                     CASE WHEN lc.presence IN ('present', 'unsupported')
                          THEN coalesce(lc.size, 0) ELSE 0 END AS local_bytes,
                     CASE WHEN av.availability NOT IN ('missing', 'purged')

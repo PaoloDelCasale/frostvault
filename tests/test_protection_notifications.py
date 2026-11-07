@@ -226,20 +226,21 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             # Notification resolution never changes or removes the sole cloud copy.
             self.assertEqual(c.execute('SELECT count(*) AS n FROM archive_versions WHERE id=%s',(version,)).fetchone()['n'],1)
 
-    def test_summary_reads_success_dates_freed_space_cost_and_all_five_states(self):
+    def test_summary_reads_success_dates_freed_space_cost_and_all_six_states(self):
         from app.catalog import ArchiveCatalog
         from app.services.component_health import record_component_health
         from app.services.metadata_backups import record_backup_run
         with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
             catalog = ArchiveCatalog(c)
             for state in monitor.STATES:
+                name = '._excluded.jpg' if state == 'excluded' else state + '.jpg'
                 local = state != 'cloud_only'
                 version = None
                 if local:
-                    catalog.observe_local_copy(vault_id=self.vault_id,path=state+'.jpg',file_type='regular',
+                    catalog.observe_local_copy(vault_id=self.vault_id,path=name,file_type='regular',
                                                size=1024**3,mtime_ns=1,observed_at=NOW.isoformat())
-                if state != 'pending':
-                    version = catalog.record_archive_version(vault_id=self.vault_id,path=state+'.jpg',
+                if state not in ('pending', 'excluded'):
+                    version = catalog.record_archive_version(vault_id=self.vault_id,path=name,
                         object_key='docs/'+state,provider_version_id=state,size=1024**3,
                         storage_class='STANDARD',etag='e',uploaded_at=NOW.isoformat(),
                         observed_at=NOW.isoformat(),scan_id='scan')
@@ -247,7 +248,7 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                     c.execute("UPDATE archive_versions SET integrity='verified',plaintext_sha256=%s,availability=%s WHERE id=%s",
                               ('a'*64,availability,version))
                     if local:
-                        catalog.set_local_fingerprint(vault_id=self.vault_id,path=state+'.jpg',plaintext_sha256='a'*64,
+                        catalog.set_local_fingerprint(vault_id=self.vault_id,path=name,plaintext_sha256='a'*64,
                                                       matched_archive_version_id=version)
             record_component_health(c,vault_id=self.vault_id,component='source',ok=True,at='2026-11-02T10:00:00+00:00')
             record_component_health(c,vault_id=self.vault_id,component='audit',ok=True,at='2026-11-01T10:00:00+00:00')
@@ -271,7 +272,7 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             self.assertIn('not an AWS',summary['cost_disclaimer'])
             with patch('app.services.source_layout.vault_local_access',return_value=VaultLocalAccess(False,True,None,'absent')):
                 self.assertEqual(monitor.weekly_summary(c,now=NOW)['states'],
-                                 {**dict.fromkeys(monitor.STATES,0),'unconfirmed':5})
+                                 {**dict.fromkeys(monitor.STATES,0),'unconfirmed':6})
 
     def test_migration_removes_only_routine_history_preserving_recovery_and_copy_evidence(self):
         from tests.postgres import run_alembic

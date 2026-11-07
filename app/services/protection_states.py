@@ -8,7 +8,12 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-STATES = ("pending", "protected", "problem", "unconfirmed", "cloud_only")
+from .upload_path_rules import inline_eligibility_sql
+
+# "excluded" is a Local Copy the automatic upload never admits (fixed noise such
+# as ._* or .DS_Store, or a Vault exclude glob). It is no pending work and never
+# counts against the Vault's protection; a manual upload stays possible.
+STATES = ("pending", "protected", "problem", "unconfirmed", "cloud_only", "excluded")
 LOCAL_EXISTS_SQL = "coalesce(lc.presence, 'missing') IN ('present', 'unsupported')"
 PROTECTED_SQL = """(
     lc.presence='present' AND lc.file_type='regular'
@@ -28,15 +33,27 @@ PROBLEM_SQL = f"""(
     OR lc.presence='unsupported'
     OR (NOT coalesce({PROTECTED_SQL}, FALSE) AND ({FAILED_UPLOAD_SQL}))
 )"""
-STATE_SQL = f"""CASE
+
+
+def state_sql(policy: Any = None) -> str:
+    """The shared state CASE; ``policy`` supplies the Vault's upload globs.
+
+    None applies only the fixed noise exclusions. The expression embeds the
+    Vault's path rules, so a caller must derive it from that Vault's policy and
+    refresh derived projections when the policy's globs change.
+    """
+    return f"""CASE
     WHEN {PROBLEM_SQL} THEN 'problem'
     WHEN av.availability='unknown' THEN 'unconfirmed'
     WHEN NOT ({LOCAL_EXISTS_SQL}) AND av.id IS NOT NULL THEN
         CASE WHEN av.integrity='verified' AND av.availability='available'
              THEN 'cloud_only' ELSE 'unconfirmed' END
     WHEN {PROTECTED_SQL} THEN 'protected'
+    WHEN lc.presence='present' AND NOT ({inline_eligibility_sql(policy)}) THEN 'excluded'
     ELSE 'pending'
 END"""
+
+
 # A missing snapshot must remain visible even with no Local Copy.
 VISIBLE_SQL = f"(({LOCAL_EXISTS_SQL}) OR av.id IS NOT NULL)"
 LATEST_JOIN_SQL = """
@@ -49,8 +66,12 @@ LATEST_JOIN_SQL = """
 
 
 def aggregate_state(counts: Mapping[str, int]) -> str | None:
-    """Worst actionable observation; counts remain the authoritative summary."""
-    return next((state for state in ("problem", "unconfirmed", "pending", "protected", "cloud_only")
+    """Worst actionable observation; counts remain the authoritative summary.
+
+    Excluded files never lower the result; they are reported only when nothing
+    else is present, so a folder of ``.DS_Store`` files is not "protected".
+    """
+    return next((state for state in ("problem", "unconfirmed", "pending", "protected", "cloud_only", "excluded")
                  if counts.get(state, 0) > 0), None)
 
 
