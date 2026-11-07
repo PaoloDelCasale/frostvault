@@ -39,10 +39,15 @@ def assert_upload_multipart_journal_migration(test, run, connect):
     with connect() as c:
         test.assertEqual(c.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"], "0066_upload_multipart_journal")
         test.assertEqual(c.execute("SELECT count(*) n FROM upload_multiparts").fetchone()["n"], 1, "Refusal precedes DDL")
-        c.execute("UPDATE upload_multiparts SET state='closed',closed_at=%s", (stamp,))
+        # Only the intent's own obligation matters: once it is settled the row (still
+        # open) no longer blocks the downgrade.
+        c.execute("UPDATE upload_intents SET settled=TRUE")
+        test.assertEqual(c.execute("SELECT state FROM upload_multiparts").fetchone()["state"], "open")
+        intents = c.execute("SELECT * FROM upload_intents").fetchall()
     for revision, command in (("0065_upload_remediation", "downgrade"), ("0066_upload_multipart_journal", "upgrade")):
         result = run(revision, command)
         test.assertEqual(result.returncode, 0, result.stderr)
     with connect() as c:
         test.assertEqual({table: c.execute(f"SELECT * FROM {table} ORDER BY id").fetchall() for table in before}, before)
         test.assertEqual(c.execute("SELECT * FROM upload_intents").fetchall(), intents)
+        test.assertEqual(c.execute("SELECT count(*) n FROM upload_multiparts").fetchone()["n"], 0, "a settled intent's rows carry no obligation")

@@ -141,7 +141,8 @@ class RefusedActionTests(unittest.TestCase):
         cases = {"HeadObject": "read_permission_denied", "GetObject": "read_permission_denied",
                  "PutObject": "write_permission_denied", "CreateMultipartUpload": "write_permission_denied",
                  "UploadPart": "write_permission_denied", "CompleteMultipartUpload": "write_permission_denied",
-                 "ListObjectVersions": "list_permission_denied", "DeleteObject": "cleanup_unavailable"}
+                 "ListObjectVersions": "list_permission_denied", "DeleteObject": "cleanup_unavailable",
+                 "AbortMultipartUpload": "abort_permission_denied"}
         for operation, reason in cases.items():
             with self.subTest(operation=operation), probe(True):
                 self.assertEqual(provenance.permission_denied_reason(client_error("AccessDenied", 403, operation), "bucket"), reason)
@@ -173,10 +174,13 @@ class RefusedActionTests(unittest.TestCase):
         self.assertEqual(caught.exception.reason, "read_permission_denied")
 
     def test_every_new_reason_has_a_remedy(self):
-        for reason in ("read_permission_denied", "write_permission_denied", "list_permission_denied"):
+        for reason in ("read_permission_denied", "write_permission_denied", "list_permission_denied", "abort_permission_denied"):
             self.assertIn(reason, provenance.REMEDIES)
         self.assertIn("s3:PutObject", provenance.REMEDIES["write_permission_denied"])
         self.assertIn("s3:GetObjectVersion", provenance.REMEDIES["read_permission_denied"])
+        self.assertIn("s3:AbortMultipartUpload", provenance.REMEDIES["abort_permission_denied"])
+        self.assertNotIn("Nothing was stored", provenance.REMEDIES["abort_permission_denied"])
+        self.assertIn("still stored", provenance.REMEDIES["abort_permission_denied"])
 
 
 class WorkerRefusalTests(unittest.TestCase):

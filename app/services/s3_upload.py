@@ -187,8 +187,10 @@ class _UploadClient:
         return result
 
     def _journal_closed(self, upload_id: Any) -> None:
-        # The provider no longer holds it. A failure here only leaves the row open,
-        # which the next reconciliation resolves by listing; never fail the upload.
+        # The provider no longer holds it. A failure here only leaves the row open; it
+        # is then closed when reconciliation publishes the version or the intent is
+        # settled (or, for an upload that was aborted, aborted again by reconcile).
+        # It never fails the upload.
         if self.on_multipart is None or not upload_id:
             return
         try:

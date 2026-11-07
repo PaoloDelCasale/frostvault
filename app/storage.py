@@ -3545,6 +3545,9 @@ def _publish_upload_receipt(job: dict[str, Any], intent: dict[str, Any], respons
         catalog.set_upload_snapshot(job["id"], snapshot_json=intent["snapshot_json"])
         catalog.link_job_version(job["id"], recorded)
         catalog.connection.execute("UPDATE upload_intents SET archive_version_id=%s WHERE id=%s AND (archive_version_id IS NULL OR archive_version_id=%s)", (recorded, intent["id"], recorded))
+        # The version exists (e.g. Complete reached S3 but its response was lost): the
+        # multipart upload is no longer an obligation of this intent (#491).
+        provenance.close_multiparts(catalog.connection, intent["id"], stamp)
         # A scan may have observed this exact write before its receipt was
         # published. Only this owner/intent-fenced publication promotes its
         # observation ordering; generic discovery never grants current trust.

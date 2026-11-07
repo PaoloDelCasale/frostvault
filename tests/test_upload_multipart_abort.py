@@ -87,10 +87,49 @@ class UploadMultipartAbortTests(unittest.TestCase):
         invalidate.assert_not_called()
         row = self.row(resumed)
         self.assertEqual(row["status"], "failed", row["message"])
-        self.assertIn("write_permission_denied", row["message"])
+        self.assertIn("abort_permission_denied", row["message"])
         self.assertIn("s3:AbortMultipartUpload", row["message"])
         self.assertEqual(self.multiparts(), [("own-upload", "open")])
         self.assertEqual(self.provider.puts, 0)
+
+    def test_a_complete_whose_response_was_lost_closes_its_row_when_the_version_is_published(self):
+        # The multipart upload completed at S3 but the answer never arrived: no receipt,
+        # the row stays open until reconciliation finds the version by its token.
+        self.stable_content()
+        self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("response lost")) if stage == "accepted" else None
+        job = self.queue()
+        self.run_job(job)
+        self.provider.hook = lambda *args, **kwargs: None
+        self.assertEqual(self.row(job)["status"], "failed")
+        self.assertEqual(self.provider.puts, 1)
+        provenance.journal_multipart(storage.db, self.intent()["id"], "completed-upload", storage.now_iso())
+        self.assertEqual(self.multiparts(), [("completed-upload", "open")])
+        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        resumed = max(j["id"] for j in self.jobs())
+        self.run_job(resumed)
+        self.assert_keeper(resumed)
+        self.assertEqual((self.provider.puts, self.provider.aborted), (1, []))
+        self.assertEqual(self.multiparts(), [("completed-upload", "closed")])
+
+    def test_settling_an_unstarted_intent_closes_its_rows(self):
+        self.stable_content()
+        self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
+        intent = self.intent()
+        provenance.journal_multipart(storage.db, intent["id"], "refused-abort", storage.now_iso())
+        with self.db() as connection:
+            connection.execute("UPDATE upload_intents SET send_started=FALSE WHERE id=%s", (intent["id"],))
+            provenance._settle_unstarted(connection, intent["vault_file_id"])
+        self.assertEqual(self.multiparts(), [("refused-abort", "closed")])
+        self.assertTrue(self.intent()["settled"])
+
+    def test_a_started_unsettled_intent_keeps_its_rows(self):
+        self.stable_content()
+        self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
+        intent = self.intent()
+        provenance.journal_multipart(storage.db, intent["id"], "live-obligation", storage.now_iso())
+        with self.db() as connection:
+            provenance._settle_unstarted(connection, intent["vault_file_id"])
+        self.assertEqual(self.multiparts(), [("live-obligation", "open")])
 
     def test_the_journal_is_written_before_the_first_part_and_closed_on_completion(self):
         # The worker's own journal callback, driven the way the facade drives it.

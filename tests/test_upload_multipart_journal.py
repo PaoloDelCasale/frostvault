@@ -140,7 +140,7 @@ class ExactAbortInProofOfAbsenceTests(unittest.TestCase):
         from unittest.mock import patch
         with patch.object(provenance, "_bucket_still_ready", return_value=True), self.assertRaises(provenance.UploadBlocked) as caught:
             self.reconcile(["own"])
-        self.assertEqual(caught.exception.reason, "write_permission_denied")
+        self.assertEqual(caught.exception.reason, "abort_permission_denied")
         self.assertEqual(self.closed, [])
         self.assertEqual(self.provider.multiparts, [(KEY, "own")])
 

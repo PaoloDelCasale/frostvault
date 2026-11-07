@@ -27,10 +27,13 @@ def upgrade():
 
 
 def downgrade():
-    # An open row is a provider-side obligation (an incomplete multipart upload that
-    # may still bill and block the proof of absence). Dropping it would lose the only
-    # proof that lets the application abort it exactly.
-    pending = op.get_bind().execute(sa.text("SELECT 1 FROM upload_multiparts WHERE state = 'open' LIMIT 1")).first()
+    # An open row of an intent that is still owed reconciliation (send started, not
+    # settled) is the only proof that lets the application abort its incomplete
+    # multipart upload exactly. Rows of settled or never-sent intents carry no
+    # obligation and are dropped with the table.
+    pending = op.get_bind().execute(sa.text(
+        "SELECT 1 FROM upload_multiparts m JOIN upload_intents i ON i.id = m.intent_id "
+        "WHERE m.state = 'open' AND i.send_started AND NOT i.settled LIMIT 1")).first()
     if pending:
         raise RuntimeError("Abort or reconcile open multipart uploads of interrupted uploads before downgrade")
     op.drop_index("upload_multiparts_open_idx", table_name="upload_multiparts")
