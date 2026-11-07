@@ -605,8 +605,9 @@ are created, modified, renamed, or deleted. Native filesystem watching is the
 primary mechanism; authenticated browsers receive a Vault-scoped catalog
 revision signal and refresh the archive view without idle polling or a manual
 **Refresh list** action. A low-frequency full scan (`SCAN_INTERVAL_SECONDS`,
-default six hours) remains the reconciliation safety net for missed events,
-startup, and mount-return correctness. Set
+default six hours) remains the reconciliation safety net for missed events and
+mount-return correctness. Every healthy watcher start (new Vault, restart, or
+recovery) also runs one full scan, so nothing that arrived earlier stays unseen. Set
 `FILESYSTEM_WATCH_FORCE_POLLING=true` with Docker Desktop on Windows. On a Linux
 server, prefer the native watcher with the value `false`.
 See [docs/catalog-events.md](docs/catalog-events.md) for the SSE journal cost
