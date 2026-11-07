@@ -141,6 +141,43 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                 after = s3_client().list_object_versions(Bucket=self.bucket,Prefix=f"{self.prefix}/receipt/gap.bin")
                 self.assertEqual([v["VersionId"] for v in after["Versions"]],[receipt["VersionId"]],"Recovery issued a second provider write")
 
+    def test_interrupted_multipart_is_aborted_by_its_journaled_upload_id_and_the_upload_completes(self):
+        # #491: a crashed multipart upload whose abort never reached S3 blocks the proof of
+        # absence; resuming aborts exactly the journaled UploadId, then sends once more.
+        from botocore.exceptions import ClientError
+        from app.services import upload_provenance
+        from app.services.s3_upload import _UploadClient
+        relative_path, payload = "multipart/crashed.bin", b"c" * (9 * 1024 * 1024)
+        with tempfile.TemporaryDirectory() as directory:
+            source, database_path = prepare_plain_vault(Path(directory), relative_path=relative_path, payload=payload, bucket=self.bucket, prefix=self.prefix)
+            key = f"{self.prefix}/{relative_path}"
+            with patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(str(database_path)))):
+                queue_jobs(relative_path, "upload", 2, 1)
+                lost = ClientError({"Error": {"Code": "InternalError"}, "ResponseMetadata": {"HTTPStatusCode": 500}}, "AbortMultipartUpload")
+                with patch.object(_UploadClient, "upload_part", side_effect=RuntimeError("injected crash after CreateMultipartUpload")), \
+                        patch.object(_UploadClient, "abort_multipart_upload", side_effect=lost):
+                    process_jobs_once()
+                client = s3_client()
+                left = [u for u in client.list_multipart_uploads(Bucket=self.bucket, Prefix=key).get("Uploads", []) if u["Key"] == key]
+                self.assertEqual(len(left), 1, "the crash must leave the incomplete multipart upload behind")
+                with PostgresConnection(str(database_path)) as connection:
+                    original = connection.execute("SELECT * FROM jobs").fetchone()
+                    self.assertEqual(original["status"], "failed")
+                    intent = upload_provenance.load_for_job(connection, original["id"])
+                    journal = connection.execute("SELECT upload_id,state FROM upload_multiparts WHERE intent_id=%s", (intent["id"],)).fetchall()
+                    self.assertEqual([(r["upload_id"], r["state"]) for r in journal], [(left[0]["UploadId"], "open")])
+                    vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
+                    resumed = upload_provenance.schedule_resume(connection, vault=vault, path=relative_path, user_id=1, timestamp="2026-11-07T00:00:00+00:00")
+                process_jobs_once()
+                with PostgresConnection(str(database_path)) as connection:
+                    final = connection.execute("SELECT status,message,archive_version_id FROM jobs WHERE id=%s", (resumed["job_id"],)).fetchone()
+                    self.assertEqual(final["status"], "completed", final["message"])
+                    states = [r["state"] for r in connection.execute("SELECT state FROM upload_multiparts WHERE upload_id=%s", (left[0]["UploadId"],)).fetchall()]
+                    self.assertEqual(states, ["closed"])
+                listed = client.list_object_versions(Bucket=self.bucket, Prefix=key)
+                self.assertEqual(len(listed.get("Versions", [])), 1)
+                self.assertEqual([u for u in client.list_multipart_uploads(Bucket=self.bucket, Prefix=key).get("Uploads", []) if u["Key"] == key], [])
+
     def test_plain_upload_and_recovery_match_sha256(self):
         self._roundtrip("docs/report.txt", b"live-integrity-payload")
 

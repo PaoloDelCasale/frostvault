@@ -18,6 +18,7 @@ class VersionedProvider:
         self.delete_requests = 0
         self.multiparts = []
         self.multipart_listings = 0
+        self.aborted = []
         self.hook = lambda stage, **kwargs: None
 
     def add(self, key, payload, metadata=None, *, version=None):
@@ -71,6 +72,16 @@ class VersionedProvider:
         self.hook("list_multipart", key=Prefix)
         return {"Uploads": [{"Key": k, "UploadId": u} for k, u in self.multiparts if k.startswith(Prefix)],
                 "IsTruncated": False}
+
+    def abort_multipart_upload(self, *, Bucket, Key, UploadId):
+        from botocore.exceptions import ClientError
+        self.hook("abort_multipart", key=Key, upload_id=UploadId)
+        if (Key, UploadId) not in self.multiparts:
+            raise ClientError({"Error": {"Code": "NoSuchUpload", "Message": "provider text"},
+                               "ResponseMetadata": {"HTTPStatusCode": 404}}, "AbortMultipartUpload")
+        self.multiparts.remove((Key, UploadId))
+        self.aborted.append((Key, UploadId))
+        return {}
 
     def get_object_tagging(self, **kwargs):
         return {"TagSet": []}

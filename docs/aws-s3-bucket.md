@@ -32,7 +32,9 @@ name. The policy grants:
   blocked as `list_permission_denied` (a per-file block; uploads of other files
   are not affected) until the policy is updated and **Retry failed uploads** is used
 - object upload, version read, restore, tagging and `s3:AbortMultipartUpload`
-  (required for interrupted/cancelled SDK multipart transfers). A refused
+  (required for interrupted/cancelled SDK multipart transfers, and to abort exactly the
+  incomplete multipart upload an interrupted upload journaled before its proof of
+  absence, ADR-0029; an upload that was not journaled is never aborted). A refused
   `s3:GetObject`/`s3:GetObjectVersion` or `s3:PutObject` blocks only the affected
   file as `read_permission_denied` / `write_permission_denied` while the bucket
   itself stays ready; it never suspends the whole installation
@@ -265,7 +267,7 @@ Job retry policy. Verify `s3:AbortMultipartUpload` permission before deployment.
 | Access denied on preflight | Attach or update IAM policy from `iam/archive-operator-policy.json` |
 | A file is blocked as `list_permission_denied` | Grant `s3:ListBucketVersions` and `s3:ListBucketMultipartUploads` on the bucket (see `iam/archive-operator-policy.json`), then use Retry failed uploads |
 | A file is blocked as `read_permission_denied` | Grant `s3:GetObject` and `s3:GetObjectVersion` on the bucket objects, then use Retry failed uploads |
-| A file fails as `write_permission_denied` | Grant `s3:PutObject` and `s3:AbortMultipartUpload` on the bucket objects (nothing was stored), then use Retry failed uploads |
+| A file fails as `write_permission_denied` | Grant `s3:PutObject` and `s3:AbortMultipartUpload` on the bucket objects, then use Retry failed uploads |
 | Every upload waits for S3 readiness after a 403 | The bucket probe itself fails (installation-wide revocation): fix the IAM policy or credentials; queued Jobs resume automatically |
 | Uploads of a Vault wait with `source_volume_unavailable` | The Source Volume or Vault root cannot be read. Jobs back off (up to 5 minutes between checks) and resume by themselves; an in-app notice appears at the first check after 10 minutes of outage (about 14 minutes with that backoff) and resolves by itself when the volume is readable again or no upload waits for it |
 | Upload fails without VersionId | Same as versioning disabled; fix bucket baseline first |
