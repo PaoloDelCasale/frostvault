@@ -148,6 +148,27 @@ notification center, without a sample limit. An incomplete scan never marks
 unseen Local Copies missing. An inaccessible or unverifiable Vault root blocks
 protection. FrostVault never changes ownership or permissions automatically.
 
+An unreadable subdirectory is reported by name and is not watched, but the
+watcher of the rest of the Vault keeps running and the other files stay
+protected. Because fixing its permissions raises no event, FrostVault repeats
+the scan every 15 minutes while any path is unreadable and closes the problem
+by itself once a scan completes. (With `FILESYSTEM_WATCH_FORCE_POLLING=true` the
+polling backend cannot skip a folder it may not read; the watcher then stops,
+the Vault is still scanned at most every five minutes, and the unreadable path
+is named in the same way.)
+
+A file or folder name that is not valid UTF-8 (typical of old archives or SMB/NFS
+shares with another encoding) cannot be catalogued or become a cloud key. It is
+reported as an unsupported name with the path shown in escaped form
+(`non-utf8-\udce9.txt` stands for the byte `0xE9`), it is skipped together with
+everything beneath it, and the rest of the Vault is protected normally. Rename it
+(from a client that shows the real name); the problem closes at the next scan.
+
+Every healthy watcher start (a new Vault, a restart, or a return after a failure
+or after the Vault folder came back) is followed by a full scan, so files that
+appeared while nothing was watching are never invisible until the six-hour scan.
+See [ADR-0027](adr/0027-watcher-start-is-paired-with-a-scan.md).
+
 There is no dedicated diagnostics banner or background tree inspection.
 `/api/stats` returns catalog aggregates and a minimal `source_volume` safety
 state; it never resolves or walks an identity-unsafe root. The Source Volume

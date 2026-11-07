@@ -232,6 +232,8 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
                 return function(*args, **kwargs)
             stack.enter_context(patch("app.storage.asyncio.to_thread", side_effect=direct))
             stack.enter_context(patch("app.storage.apply_filesystem_changes", side_effect=apply))
+            # The scan paired with every watcher start has its own tests.
+            stack.enter_context(patch("app.storage.scan_vault", return_value={}))
             task = asyncio.create_task(storage._watch_vault_filesystem({"id": 2, "source_root": directory}))
             try:
                 await asyncio.wait_for(ready.wait(), 3)
@@ -466,3 +468,284 @@ class SDKTemporaryNameTests(unittest.TestCase):
         for name in ("photo.jpg.tmp.f8Fc29bA", "notes.tmp.12345678", ".user.restore-not-a-uuid.tmp.f8Fc29bA"):
             self.assertFalse(storage.is_restore_temporary_name(name), name)
             self.assertTrue(storage._filesystem_watch_filter(Change.added, name))
+
+
+class UnsupportedNameWalkTests(unittest.TestCase):
+    """Issue #494: a name that is not UTF-8 never aborts a walk."""
+
+    def make_tree(self, base: Path) -> Path:
+        root = base / "vault"
+        (root / "docs").mkdir(parents=True)
+        (root / "ok.txt").write_bytes(b"ok")
+        (root / "docs" / "fine.txt").write_bytes(b"fine")
+        raw = os.fsencode(root)
+        with open(raw + b"/non-utf8-\xe9.txt", "wb") as handle:
+            handle.write(b"bad")
+        os.mkdir(raw + b"/dir-\xff")
+        with open(raw + b"/dir-\xff/inside.txt", "wb") as handle:
+            handle.write(b"inside")
+        return root
+
+    def test_walk_skips_unsupported_names_with_their_subtree_and_continues(self):
+        from app.services.fs_preflight import PinnedTree
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.make_tree(Path(directory))
+            seen, unsupported, failed = [], [], []
+            with PinnedTree(root) as tree:
+                for entry, _ in tree.entries(
+                    on_error=lambda path, exc: failed.append(path),
+                    on_unsupported_name=unsupported.append,
+                ):
+                    seen.append(entry.relative_to(root).as_posix())
+            self.assertEqual(sorted(seen), ["docs", "docs/fine.txt", "ok.txt"])
+            self.assertEqual(failed, [])
+            self.assertEqual(
+                sorted(entry.relative_to(root).as_posix().encode("utf-8", "backslashreplace") for entry in unsupported),
+                [b"dir-\\udcff", b"non-utf8-\\udce9.txt"],
+            )
+
+    def test_scan_catalogues_the_rest_and_reports_each_name_once_without_incompleteness(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            root = self.make_tree(Path(directory))
+            connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = None
+            catalog = stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
+            observed = []
+            catalog.observe_local_copies_batch.side_effect = lambda **kw: observed.extend(e[0] for e in kw["entries"])
+            problems = []
+            stack.enter_context(patch("app.storage.report_problem", side_effect=lambda *a, **kw: problems.append(kw)))
+            resolved = []
+            stack.enter_context(patch("app.storage.resolve_stale_path_problems", side_effect=lambda *a, **kw: resolved.append(kw)))
+            stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(
+                local_operations_allowed=True, volume_alias=None, volume_health="healthy",
+            )))
+            journal = {}
+            storage._scan_tree(
+                connection, {"id": 7, "source_root": str(root)}, "scan", root=root,
+                allow_chunk_commits=False, scan_journal=journal,
+            )
+            self.assertEqual(sorted(observed), ["docs/fine.txt", "ok.txt"])
+            self.assertEqual(
+                sorted((p["event"], p["path"]) for p in problems),
+                [("file_name_unsupported", "dir-\udcff"), ("file_name_unsupported", "non-utf8-\udce9.txt")],
+            )
+            # The catalog is still complete: nothing may be blocked or left unconfirmed.
+            self.assertNotIn("incomplete", journal)
+            # A complete walk of the whole root closes every other open problem.
+            self.assertEqual(len(resolved), 1)
+            self.assertEqual(resolved[0]["event"], "file_name_unsupported")
+            self.assertEqual(resolved[0]["keep_paths"], {"dir-\\udcff", "non-utf8-\\udce9.txt"})
+
+    def test_a_subtree_walk_never_closes_other_problems(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            root = self.make_tree(Path(directory))
+            connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = None
+            stack.enter_context(patch("app.storage.ArchiveCatalog"))
+            stack.enter_context(patch("app.storage.report_problem"))
+            resolved = stack.enter_context(patch("app.storage.resolve_stale_path_problems"))
+            stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(
+                local_operations_allowed=True, volume_alias=None, volume_health="healthy",
+            )))
+            storage._scan_tree(
+                connection, {"id": 7, "source_root": str(root)}, "scan", root=root,
+                subtree=root / "docs", allow_chunk_commits=False, finalize_missing=False,
+            )
+            resolved.assert_not_called()
+
+    def test_report_problem_shows_undecodable_bytes_as_escapes(self):
+        from app.services.problems import display_path
+        self.assertEqual(display_path("a\udce9.txt"), "a\\udce9.txt")
+        self.assertEqual(display_path("plain/ünï.txt"), "plain/ünï.txt")
+
+
+class UndecodablePathErrorTests(unittest.IsolatedAsyncioTestCase):
+    def test_exception_groups_are_searched(self):
+        error = ExceptionGroup("unhandled errors in a TaskGroup", [
+            RuntimeError('Unable to decode path "/v/x\\xE9" to string'),
+        ])
+        self.assertTrue(storage._is_undecodable_path_error(error))
+        self.assertFalse(storage._is_undecodable_path_error(RuntimeError("boom")))
+        self.assertFalse(storage._is_undecodable_path_error(
+            ExceptionGroup("g", [PermissionError("Permission denied")])))
+
+    async def test_the_real_observer_failure_is_recognised(self):
+        with tempfile.TemporaryDirectory() as directory:
+            raw = os.fsencode(directory)
+            observer = awatch(directory, yield_on_timeout=True, rust_timeout=200, debounce=30)
+            failure = None
+            try:
+                await asyncio.wait_for(anext(observer), 5)
+                with open(raw + b"/non-utf8-\xe9.txt", "wb") as handle:
+                    handle.write(b"x")
+                for _ in range(20):
+                    await asyncio.wait_for(anext(observer), 5)
+            except Exception as exc:
+                failure = exc
+            finally:
+                await observer.aclose()
+            self.assertIsNotNone(failure, "the observer should stop on an undecodable path")
+            self.assertTrue(storage._is_undecodable_path_error(failure), repr(failure))
+
+
+class WatcherScanPairingTests(unittest.IsolatedAsyncioTestCase):
+    """Issues #494-#497: every healthy watcher start is paired with a scan."""
+
+    def start(self, stack, root, observers, scans, *, record_health=None):
+        self.awatch_kwargs = []
+        calls = iter(observers)
+
+        def make_observer(*args, **kwargs):
+            self.awatch_kwargs.append(kwargs)
+            return next(calls)(*args, **kwargs)
+
+        connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
+        connection.execute.return_value.fetchone.return_value = None
+        stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True)))
+        stack.enter_context(patch("app.storage._runtime_settings", return_value=SimpleNamespace(filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30)))
+        stack.enter_context(patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=False)))
+        stack.enter_context(patch("app.storage.awatch", side_effect=make_observer))
+        async def direct(function, *args, **kwargs):
+            return function(*args, **kwargs)
+        stack.enter_context(patch("app.storage.asyncio.to_thread", side_effect=direct))
+        real_sleep = asyncio.sleep
+        async def fast_sleep(delay, *args):
+            await real_sleep(min(delay, 0.01))
+        stack.enter_context(patch("app.storage.asyncio.sleep", side_effect=fast_sleep))
+        stack.enter_context(patch("app.storage._resolve_worker_error"))
+        self.report = stack.enter_context(patch("app.storage._report_worker_error"))
+        self.health = stack.enter_context(patch("app.storage._record_scan_component_health"))
+        stack.enter_context(patch("app.storage.worker_error_store.log_worker_error"))
+        self.scan = stack.enter_context(patch("app.storage.scan_vault", side_effect=scans))
+        # A dedicated Vault id, and no runtime status left behind: that module
+        # global is shared with every other test of the process.
+        self.addCleanup(storage.runtime_status.pop, 9402, None)
+        return asyncio.create_task(storage._watch_vault_filesystem({"id": 9402, "source_root": str(root)}))
+
+    @staticmethod
+    def quiet(*args, **kwargs):
+        async def generate():
+            while True:
+                yield set()
+                await asyncio.sleep(0.01)
+        return generate()
+
+    @staticmethod
+    def failing(error):
+        def make(*args, **kwargs):
+            async def generate():
+                yield set()
+                raise error
+            return generate()
+        return make
+
+    async def settle(self, condition, timeout=3):
+        deadline = asyncio.get_running_loop().time() + timeout
+        while not condition():
+            self.assertLess(asyncio.get_running_loop().time(), deadline, "condition not reached")
+            await asyncio.sleep(0.01)
+
+    async def stop(self, task):
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def test_a_new_watcher_always_starts_with_one_scan(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            task = self.start(stack, directory, [self.quiet], [{}])
+            try:
+                await self.settle(lambda: self.scan.call_count >= 1)
+                await asyncio.sleep(0.3)
+                self.assertEqual(self.scan.call_count, 1, "a reconciled Vault is not rescanned every tick")
+            finally:
+                await self.stop(task)
+
+    async def test_the_scan_waits_for_the_registration_barrier(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            release = asyncio.Event()
+            def late(*args, **kwargs):
+                async def generate():
+                    await release.wait()
+                    while True:
+                        yield set()
+                        await asyncio.sleep(0.01)
+                return generate()
+            task = self.start(stack, directory, [late], [{}])
+            try:
+                await asyncio.sleep(0.2)
+                self.assertEqual(self.scan.call_count, 0, "scanning before registration loses events in the gap")
+                release.set()
+                await self.settle(lambda: self.scan.call_count == 1)
+            finally:
+                await self.stop(task)
+
+    async def test_an_unreadable_subfolder_does_not_stop_the_observer(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            task = self.start(stack, directory, [self.quiet], [{}])
+            try:
+                await self.settle(lambda: self.awatch_kwargs)
+                self.assertTrue(self.awatch_kwargs[0]["ignore_permission_denied"])
+            finally:
+                await self.stop(task)
+
+    async def test_a_non_utf8_name_restarts_the_watcher_and_rescans_without_an_internal_error(self):
+        error = ExceptionGroup("unhandled errors in a TaskGroup", [
+            RuntimeError('Unable to decode path "/v/non-utf8-\\xE9.txt" to string'),
+        ])
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            task = self.start(stack, directory, [self.failing(error), self.quiet], [{}, {}])
+            try:
+                await self.settle(lambda: self.scan.call_count >= 2)
+                await asyncio.sleep(0.2)
+                self.assertEqual(self.scan.call_count, 2)
+            finally:
+                await self.stop(task)
+            self.report.assert_not_called()
+            self.health.assert_not_called()
+
+    async def test_other_watcher_failures_are_still_reported_and_followed_by_a_scan(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            task = self.start(stack, directory, [self.failing(RuntimeError("boom")), self.quiet], [{}, {}])
+            try:
+                await self.settle(lambda: self.scan.call_count >= 2)
+            finally:
+                await self.stop(task)
+            self.report.assert_called_once()
+            self.assertEqual(self.report.call_args.args[0], "source_watcher")
+
+    async def test_an_os_error_blames_a_path_not_the_root(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            task = self.start(stack, directory, [self.failing(PermissionError(13, "denied")), self.quiet], [{}, {}])
+            try:
+                await self.settle(lambda: self.health.call_count >= 1)
+            finally:
+                await self.stop(task)
+            message = self.health.call_args.kwargs["error"]
+            self.assertIn("unreadable path", message)
+            self.assertNotIn("root", message)
+
+    async def test_an_incomplete_scan_is_repeated_until_the_vault_is_readable(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            stack.enter_context(patch("app.storage.WATCHER_INCOMPLETE_RESCAN_SECONDS", 0.05))
+            task = self.start(stack, directory, [self.quiet], [{"local_incomplete": 1}, {"local_incomplete": 1}, {}])
+            try:
+                await self.settle(lambda: self.scan.call_count >= 3)
+                await asyncio.sleep(0.3)
+                self.assertEqual(self.scan.call_count, 3, "a complete scan ends the repetition")
+            finally:
+                await self.stop(task)
+
+    async def test_a_scan_that_found_another_scan_running_is_retried(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            stack.enter_context(patch("app.storage.WATCHER_SCAN_BUSY_SECONDS", 0.05))
+            task = self.start(stack, directory, [self.quiet], [{"already_running": 1}, {}])
+            try:
+                await self.settle(lambda: self.scan.call_count >= 2)
+                await asyncio.sleep(0.2)
+                self.assertEqual(self.scan.call_count, 2)
+            finally:
+                await self.stop(task)
+
+    async def test_restart_pauses_grow_and_are_capped(self):
+        delays = [storage._watcher_restart_delay(n) for n in range(1, 10)]
+        self.assertEqual(delays[:4], [5.0, 10.0, 20.0, 40.0])
+        self.assertEqual(max(delays), float(storage.WATCHER_RESTART_MAX_SECONDS))

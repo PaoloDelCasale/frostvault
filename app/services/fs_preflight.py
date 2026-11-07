@@ -8,6 +8,20 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
+def is_storable_name(name: str) -> bool:
+    """Whether a directory entry name can be catalogued as UTF-8 text.
+
+    Linux names are bytes. Python decodes the undecodable ones with
+    surrogateescape, and such a name can neither be stored in the catalog nor
+    become a cloud key. It is reported and skipped, never allowed to abort a walk.
+    """
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def inspect_entry(path: Path) -> tuple[str, os.stat_result] | None:
     """Classify without following symlinks; prove regular files can be opened.
 
@@ -122,13 +136,26 @@ class PinnedTree:
         except OSError as exc:
             raise TreeIdentityChanged("Visited directory is no longer accessible") from exc
 
-    def entries(self, *, on_error: Callable[[Path, OSError], None]) -> Iterator[tuple[Path, Path]]:
+    def entries(
+        self, *, on_error: Callable[[Path, OSError], None],
+        on_unsupported_name: Callable[[Path], None] | None = None,
+    ) -> Iterator[tuple[Path, Path]]:
+        """Yield (logical path, descriptor path) for every storable entry.
+
+        A name that is not valid UTF-8 is handed to ``on_unsupported_name`` and
+        skipped together with its subtree: no catalog row can exist beneath a
+        path that cannot be stored, and the rest of the walk goes on.
+        """
         def descend(fd: int, parts: tuple[str, ...]):
             logical = self.root.joinpath(*parts)
             try:
                 with os.scandir(fd) as entries:
                     for entry in entries:
                         self.validate_active()
+                        if not is_storable_name(entry.name):
+                            if on_unsupported_name is not None:
+                                on_unsupported_name(logical / entry.name)
+                            continue
                         path = logical / entry.name
                         info = entry.stat(follow_symlinks=False)
                         # Only this descriptor path is ever passed to inspection.
