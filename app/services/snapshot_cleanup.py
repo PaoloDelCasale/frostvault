@@ -12,7 +12,8 @@ import json
 from typing import Any
 
 from .database_retry import owned_connection, retry_database_unit
-from .upload_provenance import UploadBlocked, canonical, inventory, provider_identity, target, require_target
+from .cloud_preflight_gate import is_cold_storage_error, is_readiness_error
+from .upload_provenance import UploadBlocked, canonical, inventory, permission_denied_reason, provider_identity, target, require_target
 from .s3_copy import _delete_s3_version
 from .vault_paths import expected_cloud_key
 
@@ -255,6 +256,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> in
             continue
         method = "independent_lineage" if lineage else "exact_get_duplicate"
         if not lineage:
+            unreadable: str | None = None
             try:
                 exact_duplicate(client, bucket=job["s3_bucket"], key=key, version=version,
                                 digest=keeper["plaintext_sha256"], size=keeper["size"], check_active=active)
@@ -263,7 +265,22 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> in
             except (worker.OperationCancelled, worker.JobLeaseLost):
                 raise
             except Exception as exc:
-                raise UploadBlocked("proof_unavailable") from exc
+                # A refused GET is a per-file permission gap only when a fresh bucket
+                # probe still passes; otherwise it is installation-wide and must reach
+                # the readiness gate (#492). The block is raised outside the handler,
+                # unchained, so it is never read as a readiness error again.
+                if is_cold_storage_error(exc):
+                    # 403 InvalidObjectState: a version in cold storage needs an
+                    # explicit restore; the duplicate cannot be proven by GET.
+                    unreadable = "proof_unavailable"
+                else:
+                    unreadable = permission_denied_reason(exc, job["s3_bucket"], default="read_permission_denied")
+                if unreadable is None:
+                    if is_readiness_error(exc):
+                        raise
+                    unreadable = "proof_unavailable"
+            if unreadable:
+                raise UploadBlocked(unreadable)
         @retry_database_unit
         def persist_proof() -> None:
             with owned_connection(worker.db()) as connection:
