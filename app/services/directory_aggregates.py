@@ -538,6 +538,32 @@ def _run_scheduled_maintenance(*, vault_id: int | None) -> None:
             schedule_directory_aggregate_maintenance(follow_up_vault)
 
 
+def _flush_isolated(connection: Any, vault_id: int) -> dict[str, int] | None:
+    """Flush one Vault of a global sweep so its failure cannot block the others.
+
+    The work runs in a savepoint: a failing Vault rolls back only its own partial
+    rows and keeps its durable dirty/rebuild marks for the next pass, while the
+    remaining Vaults (and the worker tick that called us) proceed. Deadlock and
+    serialization victims still propagate so the whole unit is replayed.
+    """
+    from .database_retry import is_retryable_transaction_error
+    savepoint = "directory_aggregate_vault"
+    connection.execute(f"SAVEPOINT {savepoint}")
+    try:
+        result = flush_directory_aggregates(connection, vault_id=vault_id)
+    except Exception as exc:
+        try:
+            connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        finally:
+            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        if is_retryable_transaction_error(exc):
+            raise
+        _logger.exception("directory aggregate maintenance failed for Vault %s; skipping it", vault_id)
+        return None
+    connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+    return result
+
+
 def process_directory_aggregate_maintenance(
     *,
     vault_id: int | None = None,
@@ -600,7 +626,13 @@ def process_directory_aggregate_maintenance(
                 continue
             if vid not in claimed:
                 claimed.append(vid)
-            result = flush_directory_aggregates(active, vault_id=vid)
+            if vault_id is None:
+                result = _flush_isolated(active, vid)
+                if result is None:
+                    totals["skipped_vaults"] += 1
+                    continue
+            else:
+                result = flush_directory_aggregates(active, vault_id=vid)
             totals["rebuilt_directories"] += int(result["rebuilt_directories"])
             totals["full_rebuilds"] += int(result["full_rebuilds"])
             totals["dirty_file_marks"] += int(result["dirty_file_marks"])

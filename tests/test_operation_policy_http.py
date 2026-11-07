@@ -133,6 +133,31 @@ class OperationPolicyHttpTests(unittest.TestCase):
             item = ArchiveCatalog(connection).list_files_page(self.vault_id)["items"][0]
         self.assertEqual(item["state_counts"], {"excluded": 1})
 
+    def test_globs_postgresql_cannot_read_are_refused_with_422_and_supported_ones_saved(self) -> None:
+        self._authenticate(self.owner_id)
+        endpoint = "/api/vault/operation-policy"
+        for field in ("exclude_globs", "include_globs"):
+            for glob in ("[z-a]*", "a\u0000b"):
+                with self.subTest(field=field, glob=glob):
+                    response = self.client.put(endpoint, headers=self._headers(), json={field: [glob]})
+                    self.assertEqual(response.status_code, 422, response.text)
+        response = self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": ["[a-z[:digit:]]*", "[[.a.]]"]})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.client.get(endpoint).json()["exclude_globs"], ["[a-z[:digit:]]*", "[[.a.]]"])
+
+    def test_an_older_stored_unsupported_glob_does_not_block_unrelated_edits(self) -> None:
+        self._authenticate(self.owner_id)
+        with PostgresConnection(str(self.path)) as connection:
+            connection.execute(
+                "INSERT INTO vault_operation_policies(vault_id, auto_upload, stability_seconds, include_globs_json, exclude_globs_json) "
+                "VALUES (%s, TRUE, 300, '[]', '[\"[z-a]*\"]')", (self.vault_id,))
+        endpoint = "/api/vault/operation-policy"
+        response = self.client.put(endpoint, headers=self._headers(), json={"stability_seconds": 600})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["exclude_globs"], ["[z-a]*"])
+        response = self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": []})
+        self.assertEqual(response.status_code, 200, response.text)
+
     def test_local_release_accepts_only_off_or_the_four_periods(self) -> None:
         self._authenticate(self.owner_id)
         for period in (None, 90, 180, 365, 730):

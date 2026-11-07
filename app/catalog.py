@@ -7,7 +7,7 @@ from typing import Any, Sequence
 
 from .services.job_admission import TERMINAL_JOB_STATUSES, lock_vault
 from .services.protection_states import (
-    VISIBLE_SQL, LATEST_JOIN_SQL, aggregate_state, project_file, state_sql,
+    VISIBLE_SQL, LATEST_JOIN_SQL, aggregate_state, path_excluded_sql, project_file, state_sql,
 )
 from .services.directory_aggregates import (
     count_child_directories,
@@ -2574,10 +2574,15 @@ class ArchiveCatalog:
         from .services.operation_policies import get_policy
         return state_sql(get_policy(self.connection, vault_id))
 
+    def _path_excluded_sql(self, vault_id: int) -> str:
+        from .services.operation_policies import get_policy
+        return path_excluded_sql(get_policy(self.connection, vault_id))
+
     def _file_row_select_sql(self, clauses: list[str], vault_id: int) -> str:
         return f"""
             SELECT
                 {self._state_sql(vault_id)} AS protection_state,
+                {self._path_excluded_sql(vault_id)} AS path_excluded,
                 CASE WHEN av.availability='unknown'
                      THEN greatest(lc.observed_at, av.verified_at)
                      ELSE greatest(lc.observed_at, av.verified_at, av.availability_checked_at)

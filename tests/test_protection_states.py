@@ -74,6 +74,17 @@ class ProtectionProjectionTests(unittest.TestCase):
         self.assertIn('100%%', sql)
         self.assertIn("it''s", sql)
 
+    def test_excluded_keeps_the_previous_cloud_copy_indication(self):
+        result = project_file({'protection_state': 'excluded', 'integrity': 'verified', 'availability': 'available'})
+        self.assertTrue(result['previous_snapshot_protected'])
+        self.assertEqual(result['state'], 'excluded')
+        self.assertFalse(project_file({'protection_state': 'excluded'})['previous_snapshot_protected'])
+        unknown = {'protection_state': 'unconfirmed', 'integrity': 'verified', 'local_presence': 'present',
+                   'matched_archive_version_id': None, 'archive_version_id': 'v1',
+                   'local_sha256': 'b', 'version_sha256': 'a'}
+        self.assertEqual(project_file({**unknown, 'path_excluded': True})['last_known_state'], 'excluded')
+        self.assertEqual(project_file(unknown)['last_known_state'], 'pending')
+
     def test_only_failed_observation_requests_make_protection_unknown(self):
         self.assertFalse(observation_is_unconfirmed({'audit': {'healthy': False}}))
         for component in ('source', 'cloud', 'audit'):
@@ -202,12 +213,57 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         set_policy(self.connection, 9, OperationPolicy())
         self.assertEqual(self.catalog.summary(9)['states'], {'pending': 2})
 
-    def test_excluded_does_not_mask_problems_or_a_stale_file_with_a_cloud_copy(self):
+    def test_excluded_does_not_mask_problems_and_keeps_the_previous_cloud_copy_visible(self):
         failed_id, _ = self.seed('._failed', path='photos/._failed')
         self.connection.execute("INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_at, updated_at) VALUES (9, %s, 'photos/._failed', 'upload', 'failed', '2026-11-03', '2026-11-03')", (failed_id,))
         conflict_id, version = self.seed('._held', path='photos/._held', archive=True, verified=True, match=False)
         self.connection.execute('UPDATE local_copies SET cloud_only_version_id=%s WHERE vault_file_id=%s', (version, conflict_id))
-        self.assertEqual(self.catalog.summary(9)['states'], {'problem': 2})
+        # Changed after a verified upload, then excluded: the current bytes are not
+        # in the cloud (Excluded is not "safe"), but the older copy stays indicated.
+        self.seed('._stale', path='photos/._stale', archive=True, verified=True, match=False)
+        # Availability unknown wins over the rule, yet the last known state is Excluded.
+        self.seed('._unknown', path='photos/._unknown', archive=True, verified=True, availability='unknown', match=False)
+        self.assertEqual(self.catalog.summary(9)['states'], {'problem': 2, 'excluded': 1, 'unconfirmed': 1})
+        rows = {row['path']: row for row in self.catalog.list_file_rows(9)}
+        stale = rows['photos/._stale']
+        self.assertEqual(stale['state'], 'excluded')
+        self.assertTrue(stale['previous_snapshot_protected'])
+        self.assertFalse(stale['cleanup_eligible'])
+        unknown = rows['photos/._unknown']
+        self.assertEqual((unknown['state'], unknown['last_known_state']), ('unconfirmed', 'excluded'))
+        self.assertEqual(rows['photos/._failed']['state'], 'problem')
+
+    def test_a_stored_unsupported_glob_cannot_break_classification_or_rebuilds(self):
+        # Saved before the glob was validated (or by hand): it must never reach
+        # PostgreSQL as an invalid regular expression (#498 review).
+        self.seed('keep')
+        self.seed('._meta', path='photos/._meta')
+        self.connection.execute(
+            "INSERT INTO vault_operation_policies(vault_id, auto_upload, stability_seconds, include_globs_json, exclude_globs_json) "
+            "VALUES (9, TRUE, 300, '[]', %s)", ('["[z-a]*", "a\\u0000b", "[a-z[:digit:]]*"]',))
+        self.assertEqual(self.catalog.summary(9)['states'], {'pending': 1, 'excluded': 1})
+        aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
+        aggregates.mark_directory_dirty(self.connection, 9, 'photos')
+        aggregates.flush_directory_aggregates(self.connection, vault_id=9)
+        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'pending': 1, 'excluded': 1})
+        self.assertEqual(self.catalog.list_files_page(9, directory='photos', state='excluded')['total'], 1)
+
+    def test_global_maintenance_skips_a_failing_vault_and_keeps_its_marks(self):
+        self.connection.execute("INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (10, 'other', 'Other', '/other', 'bucket', 'other')")
+        for vault_id in (9, 10):
+            aggregates.request_vault_rebuild(self.connection, vault_id)
+        real = aggregates.flush_directory_aggregates
+
+        def flaky(connection, *, vault_id):
+            if vault_id == 9:
+                connection.execute("SELECT 'x' ~ '[[:alpha:'")  # a genuine PostgreSQL regex error
+            return real(connection, vault_id=vault_id)
+
+        with patch.object(aggregates, 'flush_directory_aggregates', side_effect=flaky):
+            totals = aggregates.process_directory_aggregate_maintenance(connection=self.connection, publish=False)
+        self.assertEqual((totals['skipped_vaults'], totals['vaults']), (1, 1))
+        status = {row['vault_id']: row['status'] for row in self.connection.execute('SELECT vault_id, status FROM directory_aggregate_status').fetchall()}
+        self.assertEqual(status, {9: 'rebuild_required', 10: 'ready'})
 
     def test_absent_volume_api_is_unconfirmed_without_catalog_or_cloud_mutation(self):
         _, version = self.seed('protected', archive=True, verified=True)

@@ -35,6 +35,11 @@ PROBLEM_SQL = f"""(
 )"""
 
 
+def path_excluded_sql(policy: Any = None) -> str:
+    """True for a path the automatic upload never admits (needs alias ``fp``)."""
+    return f"NOT ({inline_eligibility_sql(policy)})"
+
+
 def state_sql(policy: Any = None) -> str:
     """The shared state CASE; ``policy`` supplies the Vault's upload globs.
 
@@ -49,7 +54,7 @@ def state_sql(policy: Any = None) -> str:
         CASE WHEN av.integrity='verified' AND av.availability='available'
              THEN 'cloud_only' ELSE 'unconfirmed' END
     WHEN {PROTECTED_SQL} THEN 'protected'
-    WHEN lc.presence='present' AND NOT ({inline_eligibility_sql(policy)}) THEN 'excluded'
+    WHEN lc.presence='present' AND {path_excluded_sql(policy)} THEN 'excluded'
     ELSE 'pending'
 END"""
 
@@ -86,13 +91,16 @@ def project_file(row: Mapping[str, Any], *, unconfirmed: bool = False) -> dict[s
             and row.get("matched_archive_version_id") == row.get("archive_version_id")
             and row.get("local_sha256") is not None
             and row.get("local_sha256") == row.get("version_sha256")
-        ) else "cloud_only" if row.get("local_presence") not in {"present", "unsupported"} else "pending"
+        ) else "cloud_only" if row.get("local_presence") not in {"present", "unsupported"} else (
+            # Unknown availability hides the rule-based state; the path still tells.
+            "excluded" if row.get("path_excluded") else "pending"
+        )
     return {
         "state": "unconfirmed" if unconfirmed else known,
         "last_known_state": last_known,
         "last_known_at": row.get("protection_observed_at"),
         "previous_snapshot_protected": bool(
-            known == "pending" and (
+            known in ("pending", "excluded") and (
                 int(row.get("recoverable_version_count") or 0) > 0
                 or (row.get("integrity") == "verified" and row.get("availability") == "available")
             )
