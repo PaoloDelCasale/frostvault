@@ -83,6 +83,13 @@ The single recoverable cloud representation of a Vault File: its last verified
 content, retained until a replacement is verified.
 _Avoid_: Sync, Mirror, Unversioned, Revision
 
+**Excluded**:
+The protection state of a present Local Copy that automatic upload deliberately
+skips (default noise such as `._*` and `.DS_Store`, or the Vault's own exclusion
+rules). It is not pending work and never counts against a Vault's protection;
+a manual upload remains possible.
+_Avoid_: Ignored, Skipped, Pending
+
 **Cloud-only Conflict**:
 Different content observed at the path of a Vault File whose Local Copy was
 absent, so its verified Archive Version was the only copy. The content is held

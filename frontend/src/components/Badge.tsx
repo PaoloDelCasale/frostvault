@@ -7,6 +7,7 @@ export type BadgeState =
   | "protected"
   | "problem"
   | "unconfirmed"
+  | "excluded"
   | "both"
   | "local_only"
   | "cloud_only"
@@ -20,6 +21,7 @@ export const BADGE_STATE_VARIANT_CLASSES = {
   protected: "bg-[var(--state-both-bg)] text-[var(--state-both-fg)]",
   problem: "bg-[var(--state-missing-bg)] text-[var(--state-missing-fg)]",
   unconfirmed: "bg-[var(--state-unsupported-bg)] text-[var(--state-unsupported-fg)]",
+  excluded: "bg-[var(--state-unsupported-bg)] text-[var(--state-unsupported-fg)]",
   both: "bg-[var(--state-both-bg)] text-[var(--state-both-fg)]",
   local_only: "bg-[var(--state-local-bg)] text-[var(--state-local-fg)]",
   cloud_only: "bg-[var(--state-cloud-bg)] text-[var(--state-cloud-fg)]",
@@ -34,6 +36,7 @@ export const BADGE_STATE_LABELS: Record<BadgeState, string> = {
   protected: "Protected",
   problem: "Problem",
   unconfirmed: "Unconfirmed",
+  excluded: "Excluded",
   both: "Available",
   local_only: "Local backup",
   cloud_only: "Cloud only",

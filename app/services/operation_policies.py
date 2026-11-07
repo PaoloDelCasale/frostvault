@@ -103,6 +103,20 @@ def validate_policy(policy: OperationPolicy) -> None:
     _normalize_globs(policy.exclude_globs)
 
 
+def validate_policy_globs(policy: OperationPolicy, *, stored: OperationPolicy | None = None) -> None:
+    """Refuse a glob PostgreSQL cannot read safely (it also classifies files, #498).
+
+    Only used when saving: globs already ``stored`` are not re-judged, so an older
+    unsupported glob never blocks changing an unrelated setting, and removing it
+    is always allowed.
+    """
+    from .upload_path_rules import validate_glob
+    kept = {*_normalize_globs(stored.include_globs), *_normalize_globs(stored.exclude_globs)} if stored else set()
+    for glob in (*_normalize_globs(policy.include_globs), *_normalize_globs(policy.exclude_globs)):
+        if glob not in kept:
+            validate_glob(glob)
+
+
 def get_policy(connection: Any, vault_id: int) -> OperationPolicy:
     row = connection.execute(
         "SELECT * FROM vault_operation_policies WHERE vault_id=%s",
@@ -136,6 +150,7 @@ def set_policy(
         raise LookupError("vault_not_found")
     if str(locked.get("decommission_state") or "active") != "active":
         raise LookupError("vault_quiesced")
+    validate_policy_globs(policy, stored=get_policy(connection, vault_id))
     include_globs = _normalize_globs(policy.include_globs)
     exclude_globs = _normalize_globs(policy.exclude_globs)
     canonical = OperationPolicy(
